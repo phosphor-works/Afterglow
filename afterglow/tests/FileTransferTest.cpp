@@ -9,6 +9,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QScopeGuard>
 #include <QMutex>
 #include <QSocketNotifier>
 #include <QTemporaryDir>
@@ -237,6 +238,30 @@ TEST_F(Transfer, ReadRequiresApprovalAndStreamsContent)
     send("ac=file;fid=data;n=" + path("file"));
     ASSERT_TRUE(ended("data"));
     EXPECT_EQ(received("data"), "source data");
+}
+
+// A name that does not start with '/' is in the home directory, also when it
+// starts with ':', which Qt would take for a resource.
+TEST_F(Transfer, ANameWithAColonIsAFileInTheHomeDirectory)
+{
+    const QByteArray home = qgetenv("HOME");
+    const auto restore = qScopeGuard([&] { qputenv("HOME", home); });
+    qputenv("HOME", QFile::encodeName(dir.path()));
+    // Not dir.filePath(): it too takes ":notes" for a resource.
+    QFile source(dir.path() + QStringLiteral("/:notes"));
+    ASSERT_TRUE(source.open(QIODevice::WriteOnly));
+    source.write("home data");
+    source.close();
+    send("ac=receive;sz=1");
+    send("ac=file;fid=req;n=" + b64(":notes"));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    ASSERT_TRUE(status("OK"));
+    ASSERT_TRUE(waitFor(
+        [&] { return std::any_of(replies.begin(), replies.end(), [](auto b) { return b.contains("ac=file"); }); }));
+    send("ac=file;fid=data;n=" + b64(":notes"));
+    ASSERT_TRUE(ended("data"));
+    EXPECT_EQ(received("data"), "home data");
 }
 
 // A file in /proc states st_size 0 and holds data. QFile::atEnd() is true

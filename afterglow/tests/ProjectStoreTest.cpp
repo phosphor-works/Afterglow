@@ -82,7 +82,8 @@ TEST(ProjectStore, RejectsInvalidVersionsIdentitiesRatiosAndCommands)
         split["ratio"] = ratio;
         EXPECT_FALSE(ProjectStore::validate(project(split)).isEmpty());
     }
-    for (const auto cwd : {"relative", "", "$HOME"}) {
+    // ":/" and ":dir" are Qt resource paths, not absolute directories.
+    for (const auto cwd : {"relative", "", "$HOME", ":/", ":dir"}) {
         auto p = pane()["pane"].toObject(); p["cwd"] = cwd;
         EXPECT_FALSE(ProjectStore::validate(project({{"pane", p}})).isEmpty());
     }

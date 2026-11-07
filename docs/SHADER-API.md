@@ -417,6 +417,7 @@ The pane under the overlay keeps a text history of its own. Its `uPreviousText` 
 A fade that starts keeps the text history that the pane had.
 When a fade out starts after the overlay has shown whole, the pane under the overlay has no text history yet. Its `uPreviousText` is transparent in that frame.
 When the overlay has faded out, the pane's text history goes on from what it drew under the overlay. If a fade on another pane runs in that frame, this history starts again.
+When a fade on one pane starts or ends while a fade on another pane runs, the text history of each pane under an overlay starts again.
 A [`windowBackground`](#pass-order-and-coordinates) pack's buffers step once a frame, for the panes that show.
 The pane under the overlay reads those buffers as the last frame left them.
 When the buffers do not exist yet, the pane under the overlay makes them. They then step once in that frame.

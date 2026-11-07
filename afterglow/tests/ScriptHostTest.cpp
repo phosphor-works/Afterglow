@@ -1222,12 +1222,20 @@ TEST(ScriptTasksTest, WatchFileRefusesThePathsThatReadFileRefuses)
     ScriptTasks tasks;
     const QString tooLong = dir.path() + "/" + QString(4096, 'x');
     const QString withNul = dir.path() + QChar(0) + "watch";
-    for (const QString& path : {QStringLiteral("relative"), tooLong, withNul}) {
+    // ":/x" is a Qt resource, which QDir::isAbsolutePath takes for absolute.
+    for (const QString& path : {QStringLiteral("relative"), QStringLiteral(":/x"), tooLong, withNul}) {
         for (const char* kind : {"watch_file", "read_file"}) {
             const auto result = tasks.apply("owner", {{"kind", QString::fromLatin1(kind)}, {"name", "watch"}, {"path", path}}, {}, {});
             EXPECT_EQ(result.code, "invalid_effect") << kind;
             EXPECT_TRUE(result.error.contains("at most 4096 characters")) << kind << ' ' << result.error.toStdString();
         }
+    }
+    // So does the directory of exec.
+    for (const QString& cwd : {QStringLiteral("relative"), QStringLiteral(":/")}) {
+        const auto result =
+            tasks.apply("owner", {{"kind", "exec"}, {"name", "run"}, {"command", QStringList{QStringLiteral("true")}}, {"cwd", cwd}}, {}, {});
+        EXPECT_EQ(result.code, "invalid_effect") << cwd.toStdString();
+        EXPECT_EQ(result.error, QStringLiteral("exec cwd must be an absolute path")) << cwd.toStdString();
     }
 }
 
