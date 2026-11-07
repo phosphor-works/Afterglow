@@ -85,7 +85,8 @@ TEST(ProjectStore, RejectsInvalidVersionsIdentitiesRatiosAndCommands)
     // ":/" and ":dir" are Qt resource paths, not absolute directories.
     for (const auto cwd : {"relative", "", "$HOME", ":/", ":dir"}) {
         auto p = pane()["pane"].toObject(); p["cwd"] = cwd;
-        EXPECT_FALSE(ProjectStore::validate(project({{"pane", p}})).isEmpty());
+        EXPECT_TRUE(ProjectStore::validate(project({{"pane", p}})).startsWith("A pane directory must"))
+            << cwd << ": " << ProjectStore::validate(project({{"pane", p}})).toStdString();
     }
     auto p = pane()["pane"].toObject(); p["command"] = QJsonArray{42};
     EXPECT_FALSE(ProjectStore::validate(project({{"pane", p}})).isEmpty());

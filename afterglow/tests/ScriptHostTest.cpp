@@ -1216,7 +1216,7 @@ TEST(ScriptTasksTest, OwnerCleanupStopsTimersAndDropsAsyncCallbacks)
     EXPECT_EQ(callbacks, 1);
 }
 
-TEST(ScriptTasksTest, WatchFileRefusesThePathsThatReadFileRefuses)
+TEST(ScriptTasksTest, FileTasksAndExecRefuseADirectoryThatIsNotAbsolute)
 {
     QTemporaryDir dir;
     ScriptTasks tasks;
@@ -1230,7 +1230,7 @@ TEST(ScriptTasksTest, WatchFileRefusesThePathsThatReadFileRefuses)
             EXPECT_TRUE(result.error.contains("at most 4096 characters")) << kind << ' ' << result.error.toStdString();
         }
     }
-    // So does the directory of exec.
+    // The directory of exec has the same rule: absolute, and not a Qt resource.
     for (const QString& cwd : {QStringLiteral("relative"), QStringLiteral(":/")}) {
         const auto result =
             tasks.apply("owner", {{"kind", "exec"}, {"name", "run"}, {"command", QStringList{QStringLiteral("true")}}, {"cwd", cwd}}, {}, {});

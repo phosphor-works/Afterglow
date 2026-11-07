@@ -9,8 +9,8 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
-#include <QScopeGuard>
 #include <QMutex>
+#include <QScopeGuard>
 #include <QSocketNotifier>
 #include <QTemporaryDir>
 #include <QThread>
