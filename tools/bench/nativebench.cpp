@@ -166,7 +166,7 @@ int main(int argc, char** argv)
         // The font, shaders and animations are fixed here, not left to the
         // defaults, so runs stay comparable with the recorded baselines: those
         // ran with animated cursor, scrolling and splits, and before the
-        // overview, pane-effect and tab-switch packs existed.
+        // overview, pane-effect, tab-switch and overlay-fade packs existed.
         QJsonArray features{QStringLiteral("calt"), QStringLiteral("liga")};
         for (int i = 1; i <= 10; ++i) features.append(QStringLiteral("ss%1").arg(i, 2, 10, QLatin1Char('0')));
         QJsonObject settings{{QStringLiteral("Terminal"),QJsonObject{{QStringLiteral("cursorBlink"),mode==QLatin1String("idle-blink")},
@@ -176,7 +176,7 @@ int main(int argc, char** argv)
                 {QStringLiteral("features"),features}, {QStringLiteral("antialiasing"),QStringLiteral("grayscale")},
                 {QStringLiteral("hinting"),QStringLiteral("light")}}},
             {QStringLiteral("Shaders"),QJsonObject{{QStringLiteral("overview"),QString()}, {QStringLiteral("paneEffects"),QString()},
-                {QStringLiteral("tabTransition"),QString()}}},
+                {QStringLiteral("tabTransition"),QString()}, {QStringLiteral("overlayTransition"),QString()}}},
             {QStringLiteral("Animation"),QJsonObject{{QStringLiteral("cursor"),true}, {QStringLiteral("scroll"),true},
                 {QStringLiteral("splits"),true}}},
             {QStringLiteral("Audio"),QJsonObject{{QStringLiteral("enabled"),false}}},

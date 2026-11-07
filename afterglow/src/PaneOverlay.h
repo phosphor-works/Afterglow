@@ -28,7 +28,8 @@ class Pane;
 /// takes the host's input while it runs. The host pane owns it and goes on
 /// running underneath. It ends when the program exits, or with "cancelled"
 /// when it is cancelled or deleted first (its host closes, its owner
-/// retires, the command run that opened it ends). Its program gets SIGHUP
+/// retires, the command run that opened it ends, the control client that
+/// opened it disconnects, the user cancels it). Its program gets SIGHUP
 /// when it is deleted.
 class PaneOverlay : public QObject
 {
@@ -65,8 +66,6 @@ public:
 
     /// The overlay's own terminal.
     Pane* pane() const { return m_pane; }
-    Pane* host() const { return m_host; }
-    const QString& title() const { return m_title; }
 
     /// Ends it now, with "cancelled" and @p message.
     void cancel(const QString& message);
@@ -80,6 +79,9 @@ private:
     PaneOverlay(Pane& host);
     /// The program exited: its answer goes out.
     void programExited();
+    /// The text of the result file, at most one byte over the limit: none
+    /// when it is no regular file.
+    static QByteArray readResult(const QString& path);
     /// Answers once, and leaves the host.
     void finish(const QString& error, const QString& code, const QVariantMap& result);
 
@@ -87,7 +89,6 @@ private:
     Pane* m_pane = nullptr;
     OverlaySpec::Capture m_capture = OverlaySpec::Capture::Stdout;
     std::unique_ptr<QTemporaryFile> m_resultFile;
-    QString m_title;
     QString m_owner;
     QString m_request;
     Reply m_reply;

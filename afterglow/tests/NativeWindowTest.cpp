@@ -33,6 +33,7 @@
 #include <QUrl>
 #include <QDir>
 #include <QFileInfo>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <QAccessible>
 #include "app/NotificationCenter.h"
@@ -177,10 +178,10 @@ QList<QQuickItem*> visualDescendants(QQuickItem* root) {
     }
     return result;
 }
-// An overlay takes the keyboard one event-loop turn after it shows. The
+// A chrome panel takes the keyboard one event-loop turn after it shows. The
 // chrome is made in the background and finished by the first frame that
 // needs it, if the background has not finished it yet. The chrome root holds
-// the keys after an overlay closed, until the next one takes them.
+// the keys after a panel closed, until the next one takes them.
 bool chromeFocusReady(ChromeLayer* layer) {
     auto* focus = layer->focusedItem();
     return focus && focus->hasActiveFocus() && focus->isVisible() && focus != focus->window()->contentItem()
@@ -368,6 +369,7 @@ protected:
     void closeOverviewOntoTheFirstTab(Pane*& first, Pane*& second);
     void remoteDragDirectory(const QString& client, const QString& ready, bool move = false);
     void remoteDragToWaylandTarget(const QString& client, const QString& ready, Qt::DropAction action, bool refuse = false);
+    void overlaySwitchesAtOnce(const QString& transition);
     QTemporaryDir directory;
     std::unique_ptr<Application> application;
     TerminalWindow* window = nullptr;
@@ -854,9 +856,9 @@ TEST_F(NativeWindow, InitialMenuUpSelectsLastItem) {
     EXPECT_EQ(selected, QStringLiteral("2"));
 }
 
-TEST_F(NativeWindow, LazyChromeInitializesOverlayFocusAndTitle) {
-    // Each overlay opens after the scene is made, and while it is still being
-    // made in the background: the overlay is then open when the scene completes.
+TEST_F(NativeWindow, LazyChromeInitializesPanelFocusAndTitle) {
+    // Each panel opens after the scene is made, and while it is still being
+    // made in the background: the panel is then open when the scene completes.
     for (const bool settled : {true, false})
     for (const auto& kind : {QStringLiteral("title"), QStringLiteral("palette"), QStringLiteral("search"),
                              QStringLiteral("paste"), QStringLiteral("clipboard"), QStringLiteral("confirm"),
@@ -1109,11 +1111,11 @@ TEST_F(NativeWindow, AnEndedRunClosesOnlyItsOwnDialog) {
     ASSERT_TRUE(chrome->scriptDialog().value(QStringLiteral("open")).toBool());
     // Another flow, one whose number starts with the same digit, and another
     // owner leave it open.
-    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:4:"));
-    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:3:"));
-    window->closeScriptDialog(QStringLiteral("b@2"), QStringLiteral("afterglow.await:31:"));
+    window->closeRunWaits(QStringLiteral("a@1"), QStringLiteral("afterglow.await:4:"));
+    window->closeRunWaits(QStringLiteral("a@1"), QStringLiteral("afterglow.await:3:"));
+    window->closeRunWaits(QStringLiteral("b@2"), QStringLiteral("afterglow.await:31:"));
     EXPECT_FALSE(answer->has_value());
-    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:31:"));
+    window->closeRunWaits(QStringLiteral("a@1"), QStringLiteral("afterglow.await:31:"));
     ASSERT_TRUE(answer->has_value());
     EXPECT_EQ(**answer, QStringLiteral("Dialog canceled"));
     EXPECT_FALSE(chrome->scriptDialog().value(QStringLiteral("open")).toBool());
@@ -1301,7 +1303,7 @@ TEST_F(NativeWindow, AnOpenPromptKeepsItsAnswerFromOutsideActionsAndChords) {
     chord(Qt::Key_P);
     EXPECT_FALSE(chrome->paletteOpen());
     EXPECT_FALSE(answer->has_value());
-    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:1:"));
+    window->closeRunWaits(QStringLiteral("a@1"), QStringLiteral("afterglow.await:1:"));
     ASSERT_TRUE(answer->has_value());
 
     // A close that asks first keeps its question: the window's own close,
@@ -1362,7 +1364,7 @@ TEST_F(NativeWindow, AWindowWhoseOnlyPaneClosesGoesAfterThePaneAndItsDock) {
     EXPECT_TRUE(pane.isNull());
     EXPECT_EQ(QAccessible::accessibleInterface(area), nullptr);
 }
-TEST_F(NativeWindow, AnOverlayThatTakesTheKeyboardClearsThePanesComposition) {
+TEST_F(NativeWindow, APanelThatTakesTheKeyboardClearsThePanesComposition) {
     Pane* pane = window->focusedPane();
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
@@ -2433,7 +2435,7 @@ TEST_F(NativeWindow, ReturnOnAFocusedButtonAnswersThatButton) {
     EXPECT_EQ(confirmed, 0);
 }
 
-TEST_F(NativeWindow, AnOverlayThatOpensBelowAPromptLeavesItsFocusedButton) {
+TEST_F(NativeWindow, APanelThatOpensBelowAPromptLeavesItsFocusedButton) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
@@ -2529,7 +2531,7 @@ TEST_F(NativeWindow, AReopenedClipboardPromptStartsOnDeny) {
     EXPECT_EQ(answers, (QList<int>{1, 0}));
 }
 
-TEST_F(NativeWindow, ClosingAnOverlayReturnsTheKeysToTheOneBelow) {
+TEST_F(NativeWindow, ClosingAPanelReturnsTheKeysToTheOneBelow) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
@@ -3382,8 +3384,8 @@ TEST_F(NativeWindow, DocksTellTheirScriptOfTheirCellsTheHoveredItemAndTheWheel) 
     move((firstRect.right() + secondRect.left()) / 2.0 / dpr); // the space between them
     ASSERT_EQ(of("on_dock_hover").size(), 3);
     EXPECT_FALSE(of("on_dock_hover")[2].contains(QStringLiteral("item")));
-    // An overlay that opens under a pointer that does not move takes it off
-    // the item, and gives it back when it closes.
+    // A chrome panel that opens under a pointer that does not move takes it
+    // off the item, and gives it back when it closes.
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
@@ -5089,29 +5091,8 @@ TEST_F(NativeWindow, ClosingTheOverviewEndsTheScriptKeyModeItDrove) {
     EXPECT_EQ(keys, 0);
 }
 
-} // namespace
+// --- overlays: programs that run over a pane and answer whoever opened them ---
 
-int main(int argc, char** argv)
-{
-    // These tests open windows and send desktop-wide D-Bus signals (the
-    // launcher entry). Run them only inside the nested desktop of a runner.
-    if (qEnvironmentVariableIsEmpty("AFTERGLOW_NATIVE_ISOLATED")) {
-        std::fprintf(stderr, "Run these tests through native_window_acceptance.py or the ag-verify-live "
-                             "headless_native.py runner, which isolate the compositor and the session bus.\n");
-        return 2;
-    }
-    previousHandler = qInstallMessageHandler(recordQmlErrors);
-    // The plugin paths, the layer-shell integration and the names, as afterglow sets them.
-    prepareApplication();
-    QApplication app(argc, argv);
-    if (argc > 1 && QByteArray(argv[1]) == "--drop-target") return runDropTarget(QCoreApplication::arguments());
-    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
-
-#include "NativeWindowTest.moc"
-namespace {
 // What an overlay answered: once, from PaneOverlay's reply.
 struct OverlayAnswer {
     bool done = false;
@@ -5156,7 +5137,6 @@ void typeText(TerminalWindow* window, const QString& text) {
 bool overlaySettled(TerminalWindow* window, const Pane* pane) {
     return waitFor([&] { return !window->overlayFade(pane).second; });
 }
-} // namespace
 
 TEST_F(NativeWindow, AnOverlayOverOnePaneTakesItsInputAndReturnsItsResult) {
     Pane* pane = window->focusedPane();
@@ -5191,6 +5171,12 @@ TEST_F(NativeWindow, AnOverlayOverOnePaneTakesItsInputAndReturnsItsResult) {
     EXPECT_EQ(window->overlayFade(pane).first, 1.0);
     expectIdle(window);
 
+    // Connected after the window's own handler of the end: this one sees the
+    // fade that the end starts before a frame can advance it. After the wait
+    // below, frames may have finished a short fade already.
+    bool fadingOut = false;
+    QObject listener;
+    QObject::connect(pane->overlay(), &PaneOverlay::ended, &listener, [&] { fadingOut = window->overlayFade(pane).second; });
     typeText(window, QStringLiteral("ab\r"));
     ASSERT_TRUE(waitFor([&] { return answer->done; }));
     EXPECT_TRUE(answer->error.isEmpty()) << answer->error.toStdString();
@@ -5199,7 +5185,7 @@ TEST_F(NativeWindow, AnOverlayOverOnePaneTakesItsInputAndReturnsItsResult) {
     EXPECT_FALSE(answer->result.value(QStringLiteral("truncated")).toBool());
     // The overlay is off its host at once, and fades out on its last frame.
     EXPECT_EQ(pane->overlay(), nullptr);
-    EXPECT_TRUE(window->overlayFade(pane).second);
+    EXPECT_TRUE(fadingOut);
     EXPECT_FALSE(accessible->text(QAccessible::Value).contains(QStringLiteral("overlay-screen-text")));
     ASSERT_TRUE(overlaySettled(window, pane));
     EXPECT_EQ(window->overlayFade(pane).first, 0.0);
@@ -5270,6 +5256,28 @@ TEST_F(NativeWindow, ClosingTheHostPaneCancelsItsOverlay) {
     expectIdle(window);
 }
 
+TEST_F(NativeWindow, TheCancelOverlayActionEndsTheFocusedPanesOverlay) {
+    Pane* pane = window->focusedPane();
+    const QStringList sleeper{QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("exec sleep 30")};
+    // Its keys reach the window while the overlay has the keyboard: the
+    // program does not get them.
+    auto keyed = runOverlay(window, pane, sleeper, {{QStringLiteral("capture"), QStringLiteral("none")}});
+    ASSERT_NE(pane->overlay(), nullptr);
+    sendKey(window, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier);
+    ASSERT_TRUE(waitFor([&] { return keyed->done; }));
+    EXPECT_EQ(keyed->code, QStringLiteral("cancelled"));
+    EXPECT_EQ(pane->overlay(), nullptr);
+    // The action as afterglow ctl and scripts run it.
+    auto run = runOverlay(window, pane, sleeper, {{QStringLiteral("capture"), QStringLiteral("none")}});
+    ASSERT_NE(pane->overlay(), nullptr);
+    EXPECT_TRUE(window->runAction(pane, Action::CancelOverlay));
+    ASSERT_TRUE(waitFor([&] { return run->done; }));
+    EXPECT_EQ(run->code, QStringLiteral("cancelled"));
+    EXPECT_EQ(pane->overlay(), nullptr);
+    ASSERT_TRUE(overlaySettled(window, pane));
+    expectIdle(window);
+}
+
 TEST_F(NativeWindow, MovingAPaneOrItsTabKeepsItsOverlay) {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
@@ -5321,6 +5329,70 @@ TEST_F(NativeWindow, AResizeReachesTheOverlayAndItsHost) {
               QStringLiteral("%1 %2\n").arg(pane->rows()).arg(pane->cols()));
 }
 
+TEST_F(NativeWindow, AnOverlayOverAZoomedPaneHasTheZoomedSize) {
+    Pane* pane = window->focusedPane();
+    const int alone = pane->cols();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    Pane* other = window->splitPane(pane, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(other, nullptr);
+    window->revealPane(pane);
+    ASSERT_TRUE(waitFor([&] { return pane->cols() < alone; }));
+    const int half = pane->cols();
+    ASSERT_TRUE(window->runAction(pane, Action::TogglePaneZoom));
+    ASSERT_TRUE(waitFor([&] { return pane->cols() > half && window->accessiblePaneRect(other).isEmpty(); })) << pane->cols();
+    // The zoom animates: the grid has its size once nothing moves.
+    expectIdle(window);
+    const int cols = pane->cols(), rows = pane->rows();
+    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; read x; stty size")});
+    ASSERT_NE(pane->overlay(), nullptr);
+    Pane* program = pane->overlay()->pane();
+    // The overlay takes the zoomed grid, and the zoom stays.
+    EXPECT_EQ(program->cols(), cols);
+    EXPECT_EQ(program->rows(), rows);
+    ASSERT_TRUE(overlaySettled(window, pane));
+    expectIdle(window);
+    EXPECT_EQ(pane->cols(), cols);
+    EXPECT_TRUE(window->accessiblePaneRect(other).isEmpty());
+    typeText(window, QStringLiteral("\r"));
+    ASSERT_TRUE(waitFor([&] { return answer->done; }));
+    EXPECT_EQ(answer->result.value(QStringLiteral("stdout")).toString(), QStringLiteral("%1 %2\n").arg(rows).arg(cols));
+}
+
+TEST_F(NativeWindow, AnOverlayOnAPaneInAnotherTabShowsThatTabAndOpensAtOnce) {
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+    Pane* background = window->openTab(launch, nullptr);
+    ASSERT_NE(background, nullptr);
+    window->revealPane(first);
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }));
+    expectIdle(window);
+    const quint32 tab = window->tabIdOf(background);
+    ASSERT_NE(window->activeTabId(), tab);
+    auto answer = runOverlay(window, background, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                                  QStringLiteral("stty -echo; read x; printf 'got:%s' \"$x\"")});
+    ASSERT_NE(background->overlay(), nullptr);
+    // Its tab shows, with the focus on its pane, and slides in.
+    EXPECT_EQ(window->activeTabId(), tab);
+    EXPECT_EQ(window->focusedPane(), background);
+    EXPECT_TRUE(window->tabSwitching());
+    // The tab transition draws the change: the overlay is there at once,
+    // with no fade of its own over the slide, also once the slide ends.
+    EXPECT_EQ(window->overlayFade(background), std::make_pair(qreal(1), false));
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }));
+    EXPECT_EQ(window->overlayFade(background), std::make_pair(qreal(1), false));
+    expectIdle(window);
+    typeText(window, QStringLiteral("yes\r"));
+    ASSERT_TRUE(waitFor([&] { return answer->done; }));
+    EXPECT_EQ(answer->result.value(QStringLiteral("stdout")).toString(), QStringLiteral("got:yes"));
+    EXPECT_FALSE(screenOf(background).contains(QStringLiteral("yes"))) << screenOf(background).toStdString();
+    EXPECT_FALSE(screenOf(first).contains(QStringLiteral("yes"))) << screenOf(first).toStdString();
+    // In a tab that has settled, the end fades out and stops.
+    ASSERT_TRUE(overlaySettled(window, background));
+    expectIdle(window);
+}
+
 TEST_F(NativeWindow, AnOverlayStartsInItsDirectoryOrInHome) {
     Pane* pane = window->focusedPane();
     const QStringList pwd{QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("pwd -P")};
@@ -5352,26 +5424,108 @@ TEST_F(NativeWindow, AnOverlayReadsItsStdinAndAnswersThroughItsResultFile) {
     EXPECT_EQ(pane->overlay(), nullptr);
 }
 
+TEST_F(NativeWindow, AnOverlaysResultFileIsTheUsersAloneAndGoesWithTheOverlay) {
+    Pane* pane = window->focusedPane();
+    // The program tells where its result file is, and waits.
+    const QString named = directory.filePath(QStringLiteral("result-path"));
+    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                            QStringLiteral("stty -echo; printf '%s' \"$AFTERGLOW_RESULT\" > '%1'; read x; "
+                                                           "echo kept > \"$AFTERGLOW_RESULT\"").arg(named)},
+                             {{QStringLiteral("capture"), QStringLiteral("file")}});
+    ASSERT_NE(pane->overlay(), nullptr);
+    ASSERT_TRUE(waitFor([&] { return QFileInfo(named).size() > 0; }));
+    const QByteArray result = fileContent(named);
+    // While the program runs, only the user can read or write it.
+    struct stat info = {};
+    ASSERT_EQ(::stat(result.constData(), &info), 0) << result.toStdString();
+    EXPECT_EQ(info.st_mode & 07777, mode_t(0600));
+    EXPECT_EQ(info.st_uid, ::getuid());
+    typeText(window, QStringLiteral("\r"));
+    ASSERT_TRUE(waitFor([&] { return answer->done; }));
+    EXPECT_EQ(answer->result.value(QStringLiteral("stdout")).toString(), QStringLiteral("kept\n"));
+    // It goes with the overlay, which the window deletes later.
+    EXPECT_TRUE(waitFor([&] {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        return !QFileInfo::exists(QFile::decodeName(result));
+    })) << result.toStdString();
+}
+
+TEST_F(NativeWindow, OnlyAnOverlayThatAnswersThroughAFileGetsAfterglowResult) {
+    Pane* pane = window->focusedPane();
+    // Neither the spec's env nor what Afterglow inherited names a result
+    // file that nobody reads.
+    qputenv("AFTERGLOW_RESULT", "/inherited");
+    const auto inherited = qScopeGuard([] { qunsetenv("AFTERGLOW_RESULT"); });
+    const QString fromEnv = directory.filePath(QStringLiteral("named-by-env"));
+    const QVariantMap env{{QStringLiteral("AFTERGLOW_RESULT"), fromEnv}};
+    const QString print = QStringLiteral("printf '%s' \"${AFTERGLOW_RESULT-unset}\"");
+    auto captured = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"), print}, {{QStringLiteral("env"), env}});
+    ASSERT_TRUE(waitFor([&] { return captured->done; }));
+    EXPECT_EQ(captured->result.value(QStringLiteral("stdout")).toString(), QStringLiteral("unset"));
+    const QString shown = directory.filePath(QStringLiteral("shown"));
+    auto none = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"), print + QStringLiteral(" > '%1'").arg(shown)},
+                           {{QStringLiteral("env"), env}, {QStringLiteral("capture"), QStringLiteral("none")}});
+    ASSERT_TRUE(waitFor([&] { return none->done; }));
+    EXPECT_EQ(fileContent(shown), QByteArray("unset"));
+    // With a result file, the variable names that file, whatever env says.
+    auto file = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("echo answered > \"$AFTERGLOW_RESULT\"")},
+                           {{QStringLiteral("env"), env}, {QStringLiteral("capture"), QStringLiteral("file")}});
+    ASSERT_TRUE(waitFor([&] { return file->done; }));
+    EXPECT_EQ(file->result.value(QStringLiteral("stdout")).toString(), QStringLiteral("answered\n"));
+    EXPECT_FALSE(QFileInfo::exists(fromEnv));
+}
+
 TEST_F(NativeWindow, OverlaysAndScriptDialogsRefuseEachOther) {
     Pane* pane = window->focusedPane();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    // Through the script callbacks too, as ScriptControl applies the
+    // effects: a script sees the code of each refusal.
+    SettingsStore settings(directory.filePath(QStringLiteral("refuse-overlay.conf")));
+    Control control(settings, {});
+    control.attachWindow(window);
+    const auto callbacks = scriptCallbacks(control);
+    const auto ignore = [](const ScriptHost::EffectResult&) {};
+    const QVariantMap prompt{{QStringLiteral("kind"), QStringLiteral("prompt")}, {QStringLiteral("pane"), pane->id()},
+                             {QStringLiteral("title"), QStringLiteral("Name")},
+                             {QStringLiteral("request_id"), QStringLiteral("afterglow.await:2:1")}};
+    // ScriptHost hands ScriptControl the overlay as a spec it has read.
+    QString specError;
+    const auto spec = OverlaySpec::read({QStringLiteral("/bin/true")}, {}, &specError);
+    ASSERT_TRUE(spec) << qPrintable(specError);
+    const QVariantMap overlay{{QStringLiteral("kind"), QStringLiteral("overlay")}, {QStringLiteral("pane"), pane->id()},
+                              {QStringLiteral("spec"), QVariant::fromValue(*spec)},
+                              {QStringLiteral("request_id"), QStringLiteral("afterglow.await:3:1")}};
     auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; read x")});
     ASSERT_NE(pane->overlay(), nullptr);
     // One overlay for each pane.
     QString refusal, code;
     runOverlay(window, pane, {QStringLiteral("/bin/true")}, {}, &refusal, &code);
     EXPECT_EQ(code, QStringLiteral("busy"));
+    EXPECT_EQ(callbacks.applyOwned(QStringLiteral("a@1"), overlay, ignore).code, QStringLiteral("busy"));
     // No dialog while the overlay has the focus.
-    const QVariantMap prompt{{QStringLiteral("kind"), QStringLiteral("prompt")}, {QStringLiteral("title"), QStringLiteral("Name")},
-                             {QStringLiteral("request_id"), QStringLiteral("afterglow.await:2:1")}};
-    EXPECT_FALSE(window->showScriptDialog(QStringLiteral("a@1"), pane, prompt, [](const QString&, const QVariantMap&) {}).isEmpty());
+    const auto dialog = callbacks.applyOwned(QStringLiteral("a@1"), prompt, ignore);
+    EXPECT_FALSE(dialog.error.isEmpty());
+    EXPECT_EQ(dialog.code, QStringLiteral("busy"));
+    EXPECT_FALSE(chrome->scriptDialog().value(QStringLiteral("open")).toBool());
     typeText(window, QStringLiteral("\r"));
     ASSERT_TRUE(waitFor([&] { return answer->done; }));
     // No overlay while a dialog is open.
     ASSERT_TRUE(window->showScriptDialog(QStringLiteral("a@1"), pane, prompt, [](const QString&, const QVariantMap&) {}).isEmpty());
     runOverlay(window, pane, {QStringLiteral("/bin/true")}, {}, &refusal, &code);
     EXPECT_EQ(code, QStringLiteral("busy"));
+    const auto refused = callbacks.applyOwned(QStringLiteral("a@1"), overlay, ignore);
+    EXPECT_FALSE(refused.error.isEmpty());
+    EXPECT_EQ(refused.code, QStringLiteral("busy"));
     EXPECT_EQ(pane->overlay(), nullptr);
-    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:2:"));
+    window->closeRunWaits(QStringLiteral("a@1"), QStringLiteral("afterglow.await:2:"));
+    // Nor while the command palette is open, where an action would answer
+    // for it.
+    chrome->setPaletteOpen(true);
+    runOverlay(window, pane, {QStringLiteral("/bin/true")}, {}, &refusal, &code);
+    EXPECT_EQ(code, QStringLiteral("busy"));
+    EXPECT_EQ(pane->overlay(), nullptr);
+    chrome->setPaletteOpen(false);
 }
 
 TEST_F(NativeWindow, TheEndOfTheRunThatOpenedAnOverlayClosesIt) {
@@ -5386,10 +5540,10 @@ TEST_F(NativeWindow, TheEndOfTheRunThatOpenedAnOverlayClosesIt) {
     auto other = runOverlay(window, second, sleeper, {}, nullptr, nullptr, QStringLiteral("a@1"), QStringLiteral("afterglow.await:3:1"));
     ASSERT_NE(pane->overlay(), nullptr);
     ASSERT_NE(second->overlay(), nullptr);
-    window->closeScriptDialog(QStringLiteral("b@2"), QStringLiteral("afterglow.await:31:"));
-    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:4:"));
+    window->closeRunWaits(QStringLiteral("b@2"), QStringLiteral("afterglow.await:31:"));
+    window->closeRunWaits(QStringLiteral("a@1"), QStringLiteral("afterglow.await:4:"));
     EXPECT_FALSE(mine->done || other->done);
-    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:31:"));
+    window->closeRunWaits(QStringLiteral("a@1"), QStringLiteral("afterglow.await:31:"));
     ASSERT_TRUE(mine->done);
     EXPECT_EQ(mine->code, QStringLiteral("cancelled"));
     EXPECT_EQ(pane->overlay(), nullptr);
@@ -5437,14 +5591,24 @@ return {
         return id >= 0;
     }));
     chrome->runAction(id);
-    ASSERT_TRUE(waitFor([&] { return pane->overlay() != nullptr && QFileInfo(pidFile).size() > 0; }));
+    // The overlay closes first, then the handler resumes with "cancelled".
+    // The time limit runs from the start of the run: the listener connects
+    // as soon as the overlay shows, before a wait that the limit can outlast.
+    auto titleWhenClosed = std::make_shared<std::optional<QString>>();
+    bool listening = false;
+    ASSERT_TRUE(waitFor([&] {
+        if (!listening && pane->overlay()) {
+            QObject::connect(pane->overlay(), &PaneOverlay::ended, pane, [titleWhenClosed, pane] { *titleWhenClosed = pane->userTitle(); });
+            listening = true;
+        }
+        return listening;
+    }));
+    // The file stays after its program has gone.
+    ASSERT_TRUE(waitFor([&] { return QFileInfo(pidFile).size() > 0; }));
     QFile file(pidFile);
     ASSERT_TRUE(file.open(QIODevice::ReadOnly));
     const pid_t pid = pid_t(file.readAll().trimmed().toInt());
     ASSERT_GT(pid, 0);
-    // The overlay closes first, then the handler resumes with "cancelled".
-    auto titleWhenClosed = std::make_shared<std::optional<QString>>();
-    QObject::connect(pane->overlay(), &PaneOverlay::ended, pane, [titleWhenClosed, pane] { *titleWhenClosed = pane->userTitle(); });
     ASSERT_TRUE(waitFor([&] { return pane->userTitle().startsWith(QLatin1String("after:")); }, 5000));
     ASSERT_TRUE(titleWhenClosed->has_value());
     EXPECT_FALSE((*titleWhenClosed)->startsWith(QLatin1String("after:")));
@@ -5458,27 +5622,56 @@ return {
     expectIdle(window);
 }
 
-TEST_F(NativeWindow, WithoutAnOverlayTransitionAnOverlaySwitchesAtOnce) {
-    // An empty Shaders.overlayTransition, and a pack that does not load, as
-    // Shaders.tabTransition: no fade, never a blank pane, and no frames after.
-    for (const QString& transition : {QString(), QStringLiteral("afterglow-test-no-such-pack")}) {
-        SCOPED_TRACE(transition.toStdString());
-        restartApplication(QStringLiteral("no-fade.conf"),
-            testSettings({{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("overlayTransition"), transition}}}}),
-            {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
-        if (HasFatalFailure()) return;
-        Pane* pane = window->focusedPane();
-        auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
-                                                QStringLiteral("stty -echo; printf 'shown-at-once' > /dev/tty; read x")});
-        ASSERT_NE(pane->overlay(), nullptr);
-        EXPECT_EQ(window->overlayFade(pane), std::make_pair(qreal(1), false));
-        ASSERT_TRUE(waitFor([&] { return screenOf(pane->overlay()->pane()).contains(QStringLiteral("shown-at-once")); }));
-        ASSERT_TRUE(nextFrame(window));
-        EXPECT_EQ(window->overlayFade(pane), std::make_pair(qreal(1), false));
-        expectIdle(window);
-        typeText(window, QStringLiteral("\r"));
-        ASSERT_TRUE(waitFor([&] { return answer->done; }));
-        EXPECT_EQ(window->overlayFade(pane), std::make_pair(qreal(0), false));
-        expectIdle(window);
-    }
+// An overlay with Shaders.overlayTransition set to @p transition, which
+// draws no fade (as Shaders.tabTransition): it switches at once, never shows
+// a blank pane, and asks for no frames after.
+void NativeWindow::overlaySwitchesAtOnce(const QString& transition) {
+    restartApplication(QStringLiteral("no-fade.conf"),
+        testSettings({{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("overlayTransition"), transition}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                            QStringLiteral("stty -echo; printf 'shown-at-once' > /dev/tty; read x")});
+    ASSERT_NE(pane->overlay(), nullptr);
+    EXPECT_EQ(window->overlayFade(pane), std::make_pair(qreal(1), false));
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane->overlay()->pane()).contains(QStringLiteral("shown-at-once")); }));
+    ASSERT_TRUE(nextFrame(window));
+    EXPECT_EQ(window->overlayFade(pane), std::make_pair(qreal(1), false));
+    expectIdle(window);
+    typeText(window, QStringLiteral("\r"));
+    ASSERT_TRUE(waitFor([&] { return answer->done; }));
+    EXPECT_EQ(window->overlayFade(pane), std::make_pair(qreal(0), false));
+    expectIdle(window);
 }
+
+TEST_F(NativeWindow, WithoutAnOverlayTransitionAnOverlaySwitchesAtOnce) {
+    overlaySwitchesAtOnce(QString());
+}
+
+TEST_F(NativeWindow, AnOverlayTransitionThatDoesNotLoadSwitchesAtOnce) {
+    overlaySwitchesAtOnce(QStringLiteral("afterglow-test-no-such-pack"));
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+    // These tests open windows and send desktop-wide D-Bus signals (the
+    // launcher entry). Run them only inside the nested desktop of a runner.
+    if (qEnvironmentVariableIsEmpty("AFTERGLOW_NATIVE_ISOLATED")) {
+        std::fprintf(stderr, "Run these tests through native_window_acceptance.py or the ag-verify-live "
+                             "headless_native.py runner, which isolate the compositor and the session bus.\n");
+        return 2;
+    }
+    previousHandler = qInstallMessageHandler(recordQmlErrors);
+    // The plugin paths, the layer-shell integration and the names, as afterglow sets them.
+    prepareApplication();
+    QApplication app(argc, argv);
+    if (argc > 1 && QByteArray(argv[1]) == "--drop-target") return runDropTarget(QCoreApplication::arguments());
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
+}
+
+#include "NativeWindowTest.moc"

@@ -1038,17 +1038,26 @@ void resolveOverlays(std::vector<WindowRenderer::Pane>& panes, std::vector<Windo
             if (progress) (*progress)[i] = fade;
         }
         if (blends || fade >= 0.5f) {
+            // The overlay's grid in the pane's place: the pane's rectangle,
+            // focus, opacity, chain inputs and effects stay.
             pane.snapshot = overlay.snapshot;
-            pane.params = overlay.params;
+            pane.params.cursorPosition = overlay.cursorPosition;
+            pane.params.scrollShift = overlay.scrollShift;
+            pane.params.hoveredLink = overlay.hoveredLink;
+            pane.params.hoverRow = overlay.hoverRow;
+            pane.params.hoverColStart = overlay.hoverColStart;
+            pane.params.hoverColEnd = overlay.hoverColEnd;
         }
     }
 }
 
 } // namespace
 
+// The overview's cards, the tab a switch leaves and a closing pane take the
+// tab image, which an overlay transition would need too: their overlays
+// switch at once.
 void WindowRenderer::setOverview(Overview overview)
 {
-    // The overview's cards and the tab a switch leaves take the tab image: their overlays switch at once.
     for (OverviewTab& tab : overview.otherTabs) resolveOverlays(tab.panes);
     m_overview = std::move(overview);
 }
@@ -1057,6 +1066,16 @@ void WindowRenderer::setTabTransition(TabTransition transition)
 {
     resolveOverlays(transition.from.panes);
     m_transition = std::move(transition);
+}
+
+void WindowRenderer::setPaneEffects(PaneEffects effects)
+{
+    if (effects.closing) {
+        std::vector<Pane> closing{std::move(*effects.closing)};
+        resolveOverlays(closing);
+        effects.closing = std::move(closing.front());
+    }
+    m_effects = std::move(effects);
 }
 
 WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& panes,
@@ -1186,7 +1205,7 @@ QImage WindowRenderer::renderToImage(const QSize& size, const std::vector<Pane>&
 }
 
 void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& givenPanes, const std::vector<Pane>& docks,
-                              const std::vector<std::pair<QRect, std::uint32_t>>& givenOverlays, std::uint32_t clearColor,
+                              const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor,
                               QRhiTexture* overlayTexture, std::uint64_t overlaySerial)
 {
     // Overlays are resolved first: every pass below sees one grid per pane.
@@ -1207,7 +1226,6 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         overlayFades.assign(givenPanes.size(), -1.0f);
     }
     const std::vector<Pane>& panes = overlaid ? resolvedPanes : givenPanes;
-    const std::vector<std::pair<QRect, std::uint32_t>>& overlays = givenOverlays;
 
     QRhi* rhi = m_device.rhi();
     QRhiCommandBuffer* cb = target.begin();
@@ -1261,11 +1279,12 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             if (slice.end > slice.begin) slices.push_back(slice);
         }
     }
-    // The panes under fading overlays go after the visible ones: drawn first,
-    // with the layer and pane chains, into the tab image.
+    // The panes under fading overlays go after the others: drawn first, with
+    // the layer and pane chains, into the tab image. There are none while
+    // other tabs have that image (overlayTransitions).
     std::size_t hostBegin = 0;
     if (!overlayHosts.empty()) {
-        combined = panes;
+        if (!otherTabs) combined = panes;
         hostBegin = combined.size();
         combined.insert(combined.end(), overlayHosts.begin(), overlayHosts.end());
     }
@@ -1633,7 +1652,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             if (m_scrollbackLinesOverride) {
                 combinedLines = double(*m_scrollbackLinesOverride);
             } else {
-                for (const Pane& pane : panes) {
+                // The panes' own: an overlay's terminal has a scrollback of its own.
+                for (const Pane& pane : givenPanes) {
                     combinedLines += double(pane.snapshot->scrollbackLines);
                 }
             }
@@ -1651,7 +1671,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         }
         windowState.rect = QRect(QPoint(0, 0), px);
         // A pane's inputs, and its cursor's history: empty off the target.
-        auto regionOf = [&](const Pane& pane) {
+        // @p scrollback: the pane's own snapshot, also under an overlay.
+        auto regionOf = [&](const Pane& pane, const PaneSnapshot& scrollback) {
             const PaneSnapshot& snap = *pane.snapshot;
             ShaderRegionState st;
             st.rect = pane.params.rect.intersected(QRect(QPoint(), px));
@@ -1659,7 +1680,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             // Shader inputs must only copy pixels that exist in the target.
             if (st.rect.isEmpty()) return st;
             st.snapshot = &snap;
-            st.scrollback = {float(snap.scrollbackLines), float(combinedLines), float(m_easedScrollbackLines)};
+            st.scrollback = {float(scrollback.scrollbackLines), float(combinedLines), float(m_easedScrollbackLines)};
             st.cellSize = QSizeF(m.cellWidth, m.cellHeight);
             st.backgroundOpacity = float(pane.params.backgroundAlpha) / 255.0f;
             st.mouse = m_mouse;
@@ -1719,29 +1740,37 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             st.shaderParameters = pane.params.shaderParameters;
             return st;
         };
+        // The hosts are in the order of their panes, and have their rectangles.
+        auto nextHost = overlayHosts.cbegin();
         for (std::size_t index = 0; index < panes.size(); ++index) {
             const Pane& pane = panes[index];
-            const ShaderRegionState st = regionOf(pane);
+            const ShaderRegionState st = regionOf(pane, *givenPanes[index].snapshot);
+            // The pane as it shows without its fading overlay.
+            std::optional<ShaderRegionState> under;
+            if (overlayFades[index] >= 0) {
+                under = regionOf(*nextHost++, *givenPanes[index].snapshot);
+                under->overlayHost = true;
+            }
             if (st.rect.isEmpty()) continue;
             cards.push_back({m_overview.currentTab, int(regions.size()), st.rect, 0, toUv(st.rect),
                              pane.params.focused, pane.params.highlighted, pane.params.openProgress, pane.params.openEdge,
                              pane.params.context, pane.params.previousContext, pane.params.contextProgress,
                              pane.params.pulseProgress, pane.params.pulseEffect, pane.params.pulseColor});
             regions.push_back(st);
-            if (overlayFades[index] >= 0) {
+            if (under) {
+                hostRegions.push_back(*under);
                 ShaderRegionState fading = st;
                 fading.overlayTransition = overlayFades[index];
                 overlayRegions.push_back(std::move(fading));
             }
             if (pane.params.focused || windowState.snapshot == nullptr) {
+                // The window chain sees what shows most: the pane until its
+                // overlay is halfway in, as without the transition.
                 const QRect whole = windowState.rect;
-                windowState = st;
+                windowState = under && overlayFades[index] < 0.5f ? *under : st;
+                windowState.overlayHost = false;
                 windowState.rect = whole;
             }
-        }
-        // The panes under the fading overlays, as they show without them.
-        for (const Pane& host : overlayHosts) {
-            if (ShaderRegionState st = regionOf(host); !st.rect.isEmpty()) hostRegions.push_back(std::move(st));
         }
         std::erase_if(m_cursorTracks, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
         for (const TabSlice& slice : slices) {

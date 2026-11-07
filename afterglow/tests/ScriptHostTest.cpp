@@ -80,7 +80,7 @@ protected:
             return applyHook ? applyHook(e) : ScriptHost::EffectResult{};
         };
         c.cleanup = [this](const QString& owner) { cleaned << owner; };
-        c.closeDialogs = [this](const QString& owner, const QString& prefix) {
+        c.closeRunWaits = [this](const QString& owner, const QString& prefix) {
             closedDialogs << prefix;
             // The window answers the dialog that it closes, as TerminalWindow
             // does: the owner's, with that prefix.
@@ -152,7 +152,8 @@ protected:
     Client& newClient() { return clients.emplace_back(); }
     /// Starts @p command of @p script for a client that @p client records.
     quint64 start(const QString& script, const QString& command, Client& client, QStringList args = {}, quint32 pane = 7,
-                  std::optional<QString> input = std::nullopt, QString* error = nullptr, bool* unknown = nullptr)
+                  std::optional<QString> input = std::nullopt, QString* error = nullptr, bool* unknown = nullptr,
+                  const QString& cwd = QStringLiteral("/work"))
     {
         ScriptHost::CommandSink sink;
         Client* const c = &client;
@@ -171,7 +172,7 @@ protected:
         sink.output = writer(&Client::out);
         sink.error = writer(&Client::err);
         sink.finished = [c](int status) { c->status = status; };
-        return host->startCommand({script, command, args, QStringLiteral("/work"), pane, input, QStringLiteral("shell")},
+        return host->startCommand({script, command, args, cwd, pane, input, QStringLiteral("shell")},
                                   std::move(sink), error, unknown);
     }
 
@@ -5426,16 +5427,9 @@ TEST_F(ScriptHostTest, ProjectsExampleAddsACommandForEachSavedProject)
     EXPECT_TRUE(commands[1].runtime);
 }
 
-int main(int argc, char** argv)
-{
-    QCoreApplication app(argc, argv);
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
-
 TEST_F(ScriptHostTest, OverlayEffectsAreCheckedBeforeTheyReachTheWindow)
 {
-    write(user, "overlays.luau", R"(
+    WRITE(user, QStringLiteral("overlays.luau"), R"(
 return { on_bell = function(ev)
     local many = {}
     for i = 1, 65 do many[i] = "x" end
@@ -5444,10 +5438,14 @@ return { on_bell = function(ev)
         afterglow.overlay(ev.pane, many),
         afterglow.overlay(ev.pane, {"fzf", string.rep("a", 4097)}),
         afterglow.overlay(ev.pane, "fzf", {capture = "stderr"}),
-        { kind = "overlay", pane = ev.pane, command = {"fzf"}, stdin = 5 },
+        { kind = "overlay", pane = ev.pane.id, command = {"fzf"}, options = {stdin = 5} },
         afterglow.overlay(ev.pane, "fzf", {env = {["A=B"] = "x"}}),
         afterglow.overlay(ev.pane, "fzf", {env = {HOME = true}}),
         afterglow.overlay(ev.pane, "fzf", {title = string.rep("t", 513)}),
+        afterglow.overlay(ev.pane, "fzf", {captur = "file"}),
+        afterglow.overlay(ev.pane, "fzf", {cwd = 5}),
+        afterglow.overlay(ev.pane, "fzf", {cwd = "src"}),
+        afterglow.overlay(ev.pane, "fzf", "--multi"),
         afterglow.request("pick", afterglow.overlay(ev.pane, {"fzf", "--multi"},
             {stdin = "a\nb\n", capture = "file", cwd = "/srv/remote", env = {LANG = "C", EDITOR = false}, title = "Pick"})),
     }
@@ -5455,64 +5453,116 @@ end }
 )");
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
-    ASSERT_EQ(rec.results.size(), 9);
-    for (int i = 0; i < 8; ++i) EXPECT_FALSE(rec.results[i].second.isEmpty()) << i;
-    EXPECT_TRUE(rec.results[8].second.isEmpty()) << rec.results[8].second.toStdString();
-    // Only the valid one reaches the window, with every field it needs.
+    // Each row is refused for its own rule: an option that a helper dropped
+    // or coerced would reach the window, or be refused for another reason.
+    const char* const reasons[] = {"argv list of 1 to 64", "argv list of 1 to 64", "Invalid command argument",
+        "capture must be stdout, file or none", "option stdin must be a string", "valid variable names",
+        "valid variable names", "title is over 512", "Unknown overlay option captur", "option cwd must be a string",
+        "cwd must be an absolute path", "Overlay options must be an object"};
+    const qsizetype Refused = qsizetype(std::size(reasons));
+    ASSERT_EQ(rec.results.size(), Refused + 1);
+    for (qsizetype i = 0; i < Refused; ++i)
+        EXPECT_TRUE(rec.results[i].second.contains(QLatin1String(reasons[i]))) << i << ": " << rec.results[i].second.toStdString();
+    EXPECT_TRUE(rec.results[Refused].second.isEmpty()) << rec.results[Refused].second.toStdString();
+    // Only the valid one reaches the window, with the spec that was read.
     ASSERT_EQ(overlays.size(), 1);
     const QVariantMap& e = overlays[0];
     EXPECT_EQ(e.value("pane").toUInt(), 7u);
-    EXPECT_EQ(e.value("command").toStringList(), (QStringList{"fzf", "--multi"}));
-    EXPECT_EQ(e.value("stdin").toString(), QStringLiteral("a\nb\n"));
-    EXPECT_EQ(e.value("capture").toString(), QStringLiteral("file"));
-    EXPECT_EQ(e.value("cwd").toString(), QStringLiteral("/srv/remote"));
-    EXPECT_EQ(e.value("title").toString(), QStringLiteral("Pick"));
     EXPECT_EQ(e.value("request_id").toString(), QStringLiteral("pick"));
-    const QVariantMap env = e.value("env").toMap();
-    EXPECT_EQ(env.value("LANG").toString(), QStringLiteral("C"));
-    EXPECT_EQ(env.value("EDITOR").typeId(), QMetaType::Bool);
+    ASSERT_TRUE(e.value("spec").canConvert<OverlaySpec>());
+    const OverlaySpec spec = e.value("spec").value<OverlaySpec>();
+    EXPECT_EQ(spec.argv, (QStringList{"fzf", "--multi"}));
+    ASSERT_TRUE(spec.input.has_value());
+    EXPECT_EQ(*spec.input, QByteArray("a\nb\n"));
+    EXPECT_EQ(spec.capture, OverlaySpec::Capture::File);
+    EXPECT_EQ(spec.cwd, QStringLiteral("/srv/remote"));
+    EXPECT_EQ(spec.title, QStringLiteral("Pick"));
+    EXPECT_EQ(spec.env.value("LANG").toString(), QStringLiteral("C"));
+    EXPECT_EQ(spec.env.value("EDITOR").typeId(), QMetaType::Bool);
 }
 
-TEST(OverlaySpecTest, StdinAndArgumentsHaveTheirLimits)
+TEST(OverlaySpecTest, ArgumentsAndOptionsKeepTheirLimits)
 {
     QString error;
     const QStringList argv{QStringLiteral("fzf")};
+    auto refused = [&error](const QStringList& args, const QVariantMap& options, const char* reason) {
+        error.clear();
+        return !OverlaySpec::read(args, options, &error) && error.contains(QLatin1String(reason));
+    };
+    auto accepted = [&error](const QStringList& args, const QVariantMap& options) {
+        error.clear();
+        return OverlaySpec::read(args, options, &error).has_value();
+    };
+
+    // stdin: UTF-8 bytes count, not characters.
     const QString most(OverlaySpec::MaxInput, QLatin1Char('x'));
     const auto spec = OverlaySpec::read(argv, {{QStringLiteral("stdin"), most}}, &error);
     ASSERT_TRUE(spec) << error.toStdString();
     EXPECT_EQ(spec->input->size(), OverlaySpec::MaxInput);
-    // UTF-8 bytes count, not characters.
-    EXPECT_FALSE(OverlaySpec::read(argv, {{QStringLiteral("stdin"), most + QStringLiteral("x")}}, &error));
-    EXPECT_TRUE(OverlaySpec::read(argv, {{QStringLiteral("stdin"), QString(OverlaySpec::MaxInput / 2, QChar(0xe9))}}, &error));
-    EXPECT_FALSE(OverlaySpec::read(argv, {{QStringLiteral("stdin"), QString(OverlaySpec::MaxInput / 2 + 1, QChar(0xe9))}}, &error));
-    EXPECT_FALSE(OverlaySpec::read(argv, {{QStringLiteral("shell"), QStringLiteral("sh")}}, &error));
-    EXPECT_TRUE(error.contains(QLatin1String("shell"))) << error.toStdString();
-    EXPECT_FALSE(OverlaySpec::read({QString()}, {}, &error));
+    EXPECT_TRUE(refused(argv, {{QStringLiteral("stdin"), most + QLatin1Char('x')}}, "stdin is over 4 MiB")) << error.toStdString();
+    EXPECT_TRUE(accepted(argv, {{QStringLiteral("stdin"), QString(OverlaySpec::MaxInput / 2, QChar(0xe9))}})) << error.toStdString();
+    EXPECT_TRUE(refused(argv, {{QStringLiteral("stdin"), QString(OverlaySpec::MaxInput / 2 + 1, QChar(0xe9))}}, "stdin is over"));
+
+    // The arguments, as for exec.
+    QStringList many(OverlaySpec::MaxArguments, QStringLiteral("a"));
+    EXPECT_TRUE(accepted(many, {})) << error.toStdString();
+    many.append(QStringLiteral("a"));
+    EXPECT_TRUE(refused(many, {}, "argv list of 1 to 64")) << error.toStdString();
+    EXPECT_TRUE(accepted({QStringLiteral("fzf"), QString(OverlaySpec::MaxArgument, QLatin1Char('a'))}, {})) << error.toStdString();
+    EXPECT_TRUE(refused({QStringLiteral("fzf"), QString(OverlaySpec::MaxArgument + 1, QLatin1Char('a'))}, {}, "Invalid command argument"));
+    EXPECT_TRUE(refused({QString()}, {}, "program to run")) << error.toStdString();
     QString withNul = QStringLiteral("ab");
     withNul.insert(1, QChar::Null);
-    EXPECT_FALSE(OverlaySpec::read({withNul}, {}, &error));
+    EXPECT_TRUE(refused({withNul}, {}, "Invalid command argument")) << error.toStdString();
+
+    EXPECT_TRUE(refused(argv, {{QStringLiteral("shell"), QStringLiteral("sh")}}, "Unknown overlay option shell")) << error.toStdString();
+    EXPECT_TRUE(refused(argv, {{QStringLiteral("title"), 5}}, "option title must be a string")) << error.toStdString();
+    // Left out is the default. An empty capture is no choice.
+    EXPECT_TRUE(refused(argv, {{QStringLiteral("capture"), QStringLiteral("")}}, "capture must be")) << error.toStdString();
     const auto none = OverlaySpec::read(argv, {{QStringLiteral("capture"), QStringLiteral("none")}}, &error);
     ASSERT_TRUE(none);
     EXPECT_EQ(none->capture, OverlaySpec::Capture::None);
     EXPECT_FALSE(none->input.has_value());
+
+    // The directory: one that the window expands, never one relative to it.
+    for (const char* cwd : {"", "/srv/remote", "~", "~/src"})
+        EXPECT_TRUE(accepted(argv, {{QStringLiteral("cwd"), QString::fromLatin1(cwd)}})) << cwd << ": " << error.toStdString();
+    for (const char* cwd : {"src", "./src", "~user", "~user/src"})
+        EXPECT_TRUE(refused(argv, {{QStringLiteral("cwd"), QString::fromLatin1(cwd)}}, "cwd must be an absolute path")) << cwd;
+
+    // The environment, by the rules of exec and launch options.
+    QVariantMap env;
+    for (qsizetype i = 0; i < EnvironmentOverrides::MaxVariables; ++i) env.insert(QStringLiteral("V%1").arg(i), QString());
+    EXPECT_TRUE(accepted(argv, {{QStringLiteral("env"), env}})) << error.toStdString();
+    env.insert(QStringLiteral("ONE_MORE"), QString());
+    EXPECT_TRUE(refused(argv, {{QStringLiteral("env"), env}}, "at most 256 variables")) << error.toStdString();
+    // Names and values together.
+    const QVariantMap full{{QStringLiteral("V"), QString(EnvironmentOverrides::MaxBytes - 1, QLatin1Char('x'))}};
+    EXPECT_TRUE(accepted(argv, {{QStringLiteral("env"), full}})) << error.toStdString();
+    const QVariantMap over{{QStringLiteral("V"), QString(EnvironmentOverrides::MaxBytes, QLatin1Char('x'))}};
+    EXPECT_TRUE(refused(argv, {{QStringLiteral("env"), over}}, "over 64 KiB")) << error.toStdString();
+    EXPECT_TRUE(refused(argv, {{QStringLiteral("env"), QStringLiteral("LANG=C")}}, "env must be an object")) << error.toStdString();
+    // An empty Luau table arrives as an empty list.
+    EXPECT_TRUE(accepted(argv, {{QStringLiteral("env"), QVariantList{}}})) << error.toStdString();
 }
 
 TEST_F(ScriptHostTest, OverlayDefaultsReadTheTerminalAndCaptureStdout)
 {
-    write(user, "plain.luau", R"(
+    WRITE(user, QStringLiteral("plain.luau"), R"(
 return { on_bell = function(ev) return afterglow.overlay(ev.pane, "htop") end }
 )");
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
     ASSERT_EQ(overlays.size(), 1);
-    EXPECT_FALSE(overlays[0].contains("stdin")) << "no stdin: the program reads the terminal";
-    EXPECT_EQ(overlays[0].value("capture").toString(), QStringLiteral("stdout"));
-    EXPECT_EQ(overlays[0].value("command").toStringList(), QStringList{"htop"});
+    const OverlaySpec spec = overlays[0].value("spec").value<OverlaySpec>();
+    EXPECT_FALSE(spec.input.has_value()) << "no stdin: the program reads the terminal";
+    EXPECT_EQ(spec.capture, OverlaySpec::Capture::Stdout);
+    EXPECT_EQ(spec.argv, QStringList{"htop"});
 }
 
 TEST_F(ScriptHostTest, AnAwaitedOverlayResumesWithItsResultOrItsError)
 {
-    write(user, "pick.luau", R"(
+    WRITE(user, QStringLiteral("pick.luau"), R"(
 local log = {}
 return {
     metadata = { commands = { log = { summary = "Print what happened" } } },
@@ -5546,7 +5596,7 @@ TEST_F(ScriptHostTest, TheEndOfARunClosesTheOverlayItWaitsFor)
 {
     // As for a dialog: the window closes the overlay that the run's flow
     // waits for, and the handler resumes with "cancelled".
-    write(user, "picker.luau", R"(
+    WRITE(user, QStringLiteral("picker.luau"), R"(
 local got = "none"
 return {
     metadata = { commands = { pick = { summary = "Pick" }, got = { summary = "Print the result" } } },
@@ -5583,65 +5633,168 @@ return {
 class FzfPicker : public ScriptHostTest
 {
 protected:
-    /// Installs the package with @p fzf as its program and runs pick on pane
-    /// 7, in a directory with two files. The select dialog and the overlay
-    /// both pick the file whose name has a quote. Returns the text typed.
-    QString pick(const QString& fzf, bool expectOverlay)
+    /// Installs the package with @p fzf as its program, in a directory with
+    /// two files, and a third whose name has Ctrl+D.
+    bool install(const QString& fzf)
     {
+        program = fzf;
         installPackage(QStringLiteral("fzf-picker"));
+        if (HasFatalFailure()) return false;
         QFile manifest(user.filePath(QStringLiteral("fzf-picker/package.json")));
-        if (!manifest.open(QIODevice::ReadWrite)) return QStringLiteral("no manifest");
+        if (!manifest.open(QIODevice::ReadWrite)) {
+            ADD_FAILURE() << "no manifest";
+            return false;
+        }
         QByteArray json = manifest.readAll();
-        json.replace("\"fzf\": \"fzf\"", ("\"fzf\": \"" + fzf + "\"").toUtf8());
+        const QByteArray configured = "\"fzf\": \"" + fzf.toUtf8() + "\"";
+        json.replace("\"fzf\": \"fzf\"", configured);
+        // Not patched, the package would run the fzf of the PATH.
+        if (!json.contains(configured)) {
+            ADD_FAILURE() << "the manifest has no fzf entry to set";
+            return false;
+        }
         manifest.resize(0);
-        manifest.write(json);
+        manifest.seek(0);
+        if (manifest.write(json) != json.size()) {
+            ADD_FAILURE() << "cannot write the manifest";
+            return false;
+        }
         manifest.close();
         QDir().mkpath(files.filePath(QStringLiteral("src")));
-        for (const char* name : {"notes.txt", "src/it's.c"}) {
-            QFile file(files.filePath(QLatin1String(name)));
-            if (!file.open(QIODevice::WriteOnly)) return QStringLiteral("no file");
+        for (const char* name : {"notes.txt", "src/it's.c", "evil\x04.txt"}) {
+            QFile file(files.filePath(QString::fromUtf8(name)));
+            if (!file.open(QIODevice::WriteOnly)) {
+                ADD_FAILURE() << "cannot create " << name;
+                return false;
+            }
         }
         paneState[7].insert(QStringLiteral("cwd"), files.path());
-        bool selected = false;
-        applyHook = [&selected](const QVariantMap& e) -> ScriptHost::EffectResult {
+        host->setEnabled(true);
+        return true;
+    }
+
+    /// Answers the select dialog with src/it's.c, after @p during runs.
+    void answerSelect(const std::function<void()>& during)
+    {
+        applyHook = [this, during](const QVariantMap& e) -> ScriptHost::EffectResult {
             if (e.value("kind") != QLatin1String("select")) return {};
             selected = true;
-            for (const QVariant& item : e.value("items").toList())
-                if (item.toMap().value("title") == QLatin1String("file: src/it's.c")) return {{}, item.toMap(), {}};
-            return {QStringLiteral("not listed"), {}, QStringLiteral("cancelled")};
+            listed.clear();
+            QVariantMap pick;
+            for (const QVariant& item : e.value("items").toList()) {
+                listed << item.toMap().value("title").toString();
+                if (listed.last() == QLatin1String("file: src/it's.c")) pick = item.toMap();
+            }
+            if (during) during();
+            if (pick.isEmpty()) return {QStringLiteral("not listed"), {}, QStringLiteral("cancelled")};
+            return {{}, pick, {}};
         };
-        host->setEnabled(true);
-        if (!run(QStringLiteral("fzf-picker.pick"), 7)) return QStringLiteral("did not run");
-        auto typed = [this] {
-            return std::find_if(rec.applied.cbegin(), rec.applied.cend(), [](const QVariantMap& e) { return e.value("kind") == QLatin1String("send_text"); });
+    }
+
+    /// Runs pick on pane 7 from the palette. The select dialog and the
+    /// overlay both pick src/it's.c, after @p during runs. Returns the effect
+    /// that acted on the choice: send_text or notify.
+    std::optional<QVariantMap> pick(bool expectOverlay, const std::function<void()>& during = {})
+    {
+        answerSelect(during);
+        if (!run(QStringLiteral("fzf-picker.pick"), 7)) {
+            ADD_FAILURE() << "did not run";
+            return std::nullopt;
+        }
+        auto acted = [this] {
+            return std::find_if(rec.applied.cbegin(), rec.applied.cend(), [](const QVariantMap& e) {
+                return e.value("kind") == QLatin1String("send_text") || e.value("kind") == QLatin1String("notify");
+            });
         };
         const bool done = await([&] {
             if (!overlays.isEmpty() && pendingReply) {
                 // fzf's list on stdin, in the pane's directory.
-                const QVariantMap overlay = overlays.takeFirst();
-                EXPECT_TRUE(overlay.value("stdin").toString().contains("file: src/it's.c")) << overlay.value("stdin").toString().toStdString();
-                EXPECT_EQ(overlay.value("cwd").toString(), files.path());
-                EXPECT_EQ(overlay.value("command").toStringList().value(0), fzf);
+                const OverlaySpec spec = overlays.takeFirst().value("spec").value<OverlaySpec>();
+                listed = QString::fromUtf8(spec.input.value_or(QByteArray())).split(QLatin1Char('\n'));
+                EXPECT_EQ(spec.cwd, files.path());
+                EXPECT_EQ(spec.argv.value(0), program);
+                if (during) during();
                 std::exchange(pendingReply, {})({{}, {{"exit_code", 0}, {"stdout", "file: src/it's.c\n"}, {"truncated", false}}, {}});
             }
-            return typed() != rec.applied.cend();
+            return acted() != rec.applied.cend();
         }, 10000);
-        EXPECT_EQ(selected, !expectOverlay);
         applyHook = {};
-        if (!done) return QStringLiteral("nothing typed");
-        EXPECT_EQ(typed()->value("pane").toUInt(), 7u);
-        return typed()->value("text").toString();
+        EXPECT_EQ(selected, !expectOverlay);
+        if (!done) {
+            ADD_FAILURE() << "the pick did nothing";
+            return std::nullopt;
+        }
+        // A name with a control character would type it as a key.
+        EXPECT_TRUE(listed.contains(QStringLiteral("file: src/it's.c"))) << listed.join(QLatin1Char('|')).toStdString();
+        EXPECT_TRUE(listed.contains(QStringLiteral("file: notes.txt"))) << listed.join(QLatin1Char('|')).toStdString();
+        EXPECT_FALSE(listed.join(QLatin1Char('\n')).contains(QLatin1String("evil"))) << listed.join(QLatin1Char('|')).toStdString();
+        return *acted();
     }
+
+    /// The text that the pick types for @p path: quoted, then a space.
+    static QString typed(const QString& path) { return QLatin1Char('\'') + QString(path).replace(QLatin1String("'"), QLatin1String("'\\''")) + QStringLiteral("' "); }
+
+    QString program;
+    bool selected = false;
+    QStringList listed; ///< the entries that fzf or the select dialog got
 };
 
 TEST_F(FzfPicker, WithFzfThePickComesFromTheOverlay)
 {
     const QString fzf = QStandardPaths::findExecutable(QStringLiteral("fzf"));
     if (fzf.isEmpty()) GTEST_SKIP() << "fzf is not installed";
-    EXPECT_EQ(pick(fzf, true), QStringLiteral("'src/it'\\''s.c' "));
+    ASSERT_TRUE(install(fzf));
+    const auto acted = pick(true);
+    ASSERT_TRUE(acted);
+    EXPECT_EQ(acted->value("kind").toString(), QStringLiteral("send_text"));
+    EXPECT_EQ(acted->value("pane").toUInt(), 7u);
+    // Absolute: the pane's shell can be in another directory than the run.
+    EXPECT_EQ(acted->value("text").toString(), typed(files.path() + QStringLiteral("/src/it's.c")));
 }
 
 TEST_F(FzfPicker, WithoutFzfThePickComesFromTheSelectDialog)
 {
-    EXPECT_EQ(pick(QStringLiteral("/nonexistent/afterglow-test/fzf"), false), QStringLiteral("'src/it'\\''s.c' "));
+    ASSERT_TRUE(install(QStringLiteral("/nonexistent/afterglow-test/fzf")));
+    const auto acted = pick(false);
+    ASSERT_TRUE(acted);
+    EXPECT_EQ(acted->value("kind").toString(), QStringLiteral("send_text"));
+    EXPECT_EQ(acted->value("pane").toUInt(), 7u);
+    EXPECT_EQ(acted->value("text").toString(), typed(files.path() + QStringLiteral("/src/it's.c")));
+}
+
+TEST_F(FzfPicker, AProgramThatStartedDuringThePickGetsNoKeys)
+{
+    ASSERT_TRUE(install(QStringLiteral("/nonexistent/afterglow-test/fzf")));
+    // At the prompt when the pick starts, in an editor when it ends: the
+    // package reads the pane again after its wait.
+    const auto acted = pick(false, [this] { paneState[7].insert(QStringLiteral("command"), QStringLiteral("vim notes.txt")); });
+    ASSERT_TRUE(acted);
+    EXPECT_EQ(acted->value("kind").toString(), QStringLiteral("notify"));
+    EXPECT_TRUE(acted->value("body").toString().contains(QLatin1String("vim notes.txt"))) << acted->value("body").toString().toStdString();
+    EXPECT_TRUE(std::none_of(rec.applied.cbegin(), rec.applied.cend(),
+                             [](const QVariantMap& e) { return e.value("kind") == QLatin1String("send_text"); }));
+}
+
+TEST_F(FzfPicker, FromAShellThePathGoesToStandardOutput)
+{
+    ASSERT_TRUE(install(QStringLiteral("/nonexistent/afterglow-test/fzf")));
+    answerSelect({});
+    Client& client = newClient();
+    // aglow run in the pane's shell: the pane runs aglow, so nothing is typed.
+    paneState[7].insert(QStringLiteral("command"), QStringLiteral("aglow run fzf-picker pick"));
+    start(QStringLiteral("fzf-picker"), QStringLiteral("pick"), client, {}, 7, std::nullopt, nullptr, nullptr, files.path());
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }, 10000));
+    applyHook = {};
+    EXPECT_TRUE(selected);
+    EXPECT_EQ(client.status, 0) << client.err.toStdString();
+    EXPECT_EQ(client.out, files.path() + QStringLiteral("/src/it's.c\n"));
+    EXPECT_TRUE(std::none_of(rec.applied.cbegin(), rec.applied.cend(),
+                             [](const QVariantMap& e) { return e.value("kind") == QLatin1String("send_text"); }));
+}
+
+int main(int argc, char** argv)
+{
+    QCoreApplication app(argc, argv);
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }

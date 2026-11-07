@@ -132,6 +132,7 @@ struct PostChain::BufferState {
     /// that replaces it so a moving rectangle logs only a change of outcome.
     enum class Logged { None, Shrunk, Blocked } logged = Logged::None;
     std::uint64_t bytes = 0, used = 0;
+    std::uint64_t stepped = 0; ///< the frame (m_frame) that last drew it
 };
 
 PostChain::PostChain(GpuDevice& device)
@@ -338,8 +339,9 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
         m_gridPass.reset();
         m_format = int(format);
     }
-    // The tab image (overview cards, the tab a switch leaves, a closing pane)
-    // lives while frames use it, and goes after one that did not.
+    // The tab image (overview cards, the tab a switch leaves, a closing pane,
+    // the panes under fading overlays) lives while frames use it, and goes
+    // after one that did not.
     if (!std::exchange(m_tabImageUsed, false) || resized) releaseTabImages();
     // Layer textures come and go with the layer chains.
     const bool layersReady = layered() == bool(m_textures[FirstLayerTexture]);
@@ -592,8 +594,12 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
     // program runs (audioReactive()); an idle event chain with audio must not
     // bind it before that.
     QRhiTexture* audio = audioReactive() ? m_device.audioTexture() : nullptr;
+    // The history holds the frame's own panes' text: under a fading overlay
+    // that is the overlay's, so the pane under it reads none.
     if (m_previousText && program && program->readsPreviousText())
-        history = region ? localTexture(m_previousText.get(), region->rect, updates) : m_previousText.get();
+        history = !region                ? m_previousText.get()
+            : region->overlayHost        ? parameterTexture({}, updates)
+                                         : localTexture(m_previousText.get(), region->rect, updates);
     // Phosphor's binding table (PhosphorShaders::Bindings), with the canvas in
     // the consumer slot and the previous text in the first free one.
     namespace Bindings = PhosphorShaders::Bindings;
@@ -746,6 +752,24 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
         const std::uint64_t identitySnapshot = sharedBackground || !region.snapshot ? 0 : region.snapshot->identity.value();
         auto& passes = m_buffers[{&program, scope, step, identitySnapshot}];
         auto& samples = result[regionIndex];
+        // The window's one background buffer set steps once a frame, for the
+        // frame's own panes and with their colours. The panes under fading
+        // overlays composite first: they read it as the last frame left it.
+        // Only where it does not exist yet (the first frame, a new size) do
+        // they make and step it, and the frame's own panes take that result.
+        const std::size_t passCount = program.buffers().size();
+        if (sharedBackground && std::all_of(passes.begin(), passes.begin() + passCount, [](const auto& p) { return bool(p); })
+            && (region.overlayHost || passes[0]->stepped == m_frame)) {
+            for (std::size_t index = 0; index < passCount; ++index) {
+                auto& buffer = *passes[index];
+                buffer.used = m_frame;
+                samples.textures[index] = buffer.textures[buffer.read].get();
+                samples.samplers[index] = buffer.sampler.get();
+                samples.sizes[index] = buffer.size;
+                if (buffer.depths[buffer.read]) samples.depth = buffer.depths[buffer.read].get();
+            }
+            continue;
+        }
         const std::vector<HistoryRegion> identity{{identitySnapshot, region.rect,
             region.snapshot ? region.snapshot->defaultBg : 0, region.snapshot ? region.snapshot->defaultFg : 0,
             region.cellSize, region.backgroundOpacity}};
@@ -872,7 +896,7 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
                 }
             }
             auto& buffer = *state;
-            buffer.used = m_frame;
+            buffer.used = buffer.stepped = m_frame;
             const bool reset = buffer.frame == 0 || buffer.regions != identity || time.time < buffer.time;
             // The pass below clears the side it draws; only the side passes
             // read as "previous" needs clearing here.

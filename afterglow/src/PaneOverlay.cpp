@@ -24,19 +24,14 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
     // Deleted on failure before it answers or joins its host.
     std::unique_ptr<PaneOverlay> overlay(new PaneOverlay(host));
     overlay->m_capture = spec.capture;
-    overlay->m_title = spec.title;
     AfterglowPty::SpawnOptions options = launch.spawn;
     for (const QString& arg : spec.argv) options.argv.push_back(arg.toStdString());
+    QString cwd = spec.cwd;
+    if (cwd == QLatin1String("~") || cwd.startsWith(QLatin1String("~/"))) cwd = QDir::homePath() + cwd.mid(1);
     // A path that a remote shell reported is no directory here.
-    const bool local = !spec.cwd.isEmpty() && QDir::isAbsolutePath(spec.cwd) && QFileInfo(spec.cwd).isDir();
-    options.workingDirectory = (local ? spec.cwd : QDir::homePath()).toStdString();
-    for (auto it = spec.env.cbegin(); it != spec.env.cend(); ++it) {
-        const std::string name = it.key().toStdString();
-        std::erase_if(options.environment, [&name](const auto& entry) { return entry.first == name; });
-        std::erase(options.unsetEnvironment, name);
-        if (it.value().metaType().id() == QMetaType::Bool) options.unsetEnvironment.push_back(name);
-        else options.environment.emplace_back(name, it.value().toString().toStdString());
-    }
+    const bool local = !cwd.isEmpty() && QDir::isAbsolutePath(cwd) && QFileInfo(cwd).isDir();
+    options.workingDirectory = (local ? cwd : QDir::homePath()).toStdString();
+    applyLaunchEnvironment(options, spec.env);
     std::erase_if(options.environment, [](const auto& entry) { return entry.first == "AFTERGLOW_RESULT"; });
     std::erase(options.unsetEnvironment, std::string("AFTERGLOW_RESULT"));
     if (spec.capture == OverlaySpec::Capture::File) {
@@ -63,7 +58,7 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
     if (!spec.title.isEmpty()) pane->setUserTitle(spec.title);
     // Queued from the pty thread: the reply is set before it arrives.
     connect(pane, &Pane::closed, overlay.get(), &PaneOverlay::programExited);
-    if (!pane->start(options, launch.term, launch.cols, launch.rows, launch.cellWidth, launch.cellHeight, error)) return nullptr;
+    if (!pane->start(std::move(options), launch.term, launch.cols, launch.rows, launch.cellWidth, launch.cellHeight, error)) return nullptr;
     host.setOverlay(overlay.get());
     return overlay.release();
 }
@@ -96,8 +91,7 @@ void PaneOverlay::programExited()
     if (m_capture == OverlaySpec::Capture::Stdout) {
         output = QByteArray::fromStdString(m_pane->takeOutput(&truncated));
     } else if (m_capture == OverlaySpec::Capture::File && m_resultFile) {
-        QFile file(m_resultFile->fileName());
-        if (file.open(QIODevice::ReadOnly)) output = file.read(OverlaySpec::MaxOutput + 1);
+        output = readResult(m_resultFile->fileName());
     }
     if (output.size() > OverlaySpec::MaxOutput) {
         truncated = true;
@@ -107,6 +101,21 @@ void PaneOverlay::programExited()
            {{QStringLiteral("exit_code"), m_pane->exitCode()}, {QStringLiteral("stdout"), QString::fromUtf8(output)},
             {QStringLiteral("truncated"), truncated}});
     Q_EMIT ended();
+}
+
+QByteArray PaneOverlay::readResult(const QString& path)
+{
+    // The program can put anything at the path: a FIFO would hang the GUI
+    // thread, and a link could name another file of the user. As
+    // readScriptFile, but the text is cut at the limit, not refused.
+    const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW);
+    if (fd < 0) return {};
+    struct Close { int fd; ~Close() { ::close(fd); } } close{fd};
+    struct stat info {};
+    if (::fstat(fd, &info) || !S_ISREG(info.st_mode)) return {};
+    QFile file;
+    if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::DontCloseHandle)) return {};
+    return file.read(OverlaySpec::MaxOutput + 1);
 }
 
 void PaneOverlay::finish(const QString& error, const QString& code, const QVariantMap& result)

@@ -1,6 +1,6 @@
 ---
 name: ag-shader-pack
-description: "Write, change or preview an Afterglow shader pack (data/shaders, a package's shaders/), or change the shader contract that packs read. Covers the pack layout, the contract headers and their C++ mirrors, previews with afterglow_renderpng, and the performance check. Use when: shader pack, new effect, GLSL, pTerminal, metadata.json, overview pack, tab transition pack, pane effect, preview a shader, render a PNG, uniform layout."
+description: "Write, change or preview an Afterglow shader pack (data/shaders, a package's shaders/), or change the shader contract that packs read. Covers the pack layout, the contract headers and their C++ mirrors, previews with afterglow_renderpng, and the performance check. Use when: shader pack, new effect, GLSL, pTerminal, metadata.json, overview pack, tab transition pack, pane effect, overlay transition, overlay fade, preview a shader, render a PNG, uniform layout."
 ---
 
 <!--
@@ -26,8 +26,11 @@ stages) and an optional `README.md`.
   parameters as `p_<id>`, and `terminal_lib.glsl`.
 - Coordinates are top-down. `uv` (0, 0) is the top-left corner of the canvas.
 - A pack in a script package must declare the id `<package>.<pack>`. The registry rejects other ids.
-- The event chains (`Shaders.overview`, `tabTransition`, `paneEffects`) take one pack id, not a list. They run only
-  while their event shows, after the window chain.
+- The event chains (`Shaders.overview`, `tabTransition`, `paneEffects`, `overlayTransition`) take one pack id, not a
+  list. They run only while their event shows. The first three run after the window chain, over the window.
+  `overlayTransition` runs over one pane while its overlay fades, after the pane chain and before the window chain.
+  Its input is one pane, so `paneTexel()` does not work there: read the pane under the overlay with
+  `overlayHostTexel()`.
 
 ## The contract and its mirrors
 
@@ -70,6 +73,7 @@ Then read the PNG with the Read tool and look at it. Useful options (`--help` li
 | Overview | `--overview pane-deck --tabs 3 --highlight 4 --overview-position 3.5`; closing: `--overview-closing --overview-amount 0.6` |
 | Tab switch | `--tab-transition tab-switch --transition-progress 0.4 --transition-direction -1` |
 | Pane effects | `--pane-effects pane-effects --open-progress 0.5 --open-edge 2`, `--close-progress`, `--context 1`, `--pulse 1:0.5` |
+| Overlay transition | `--overlay $'\e[42m picker \e[0m' --overlay-progress 0.5`, with `--overlay-transition overlay-fade` (the default, `""` for none) |
 | Audio | `--audio-bands 0.8,0.4,0.2` |
 | A package's packs | `--package data/examples/packages/scripted-overview --overview scripted-overview.wall` |
 | Frame time | `--timings`, with `--pixels 3840x2160` for 4K |

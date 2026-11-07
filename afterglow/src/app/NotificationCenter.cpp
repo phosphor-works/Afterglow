@@ -477,7 +477,9 @@ void NotificationCenter::onActionInvoked(uint id, const QString& action)
     const QString client = e.clientId.isEmpty() ? QStringLiteral("0") : e.clientId;
     if (action == QLatin1String("default")) {
         if (e.focusOnActivate && e.pane) {
-            if (auto* window = qobject_cast<TerminalWindow*>(e.pane->parent())) {
+            // An overlay's program is its host's: the host is in a window.
+            Pane* const place = e.pane->overlayHost() ? e.pane->overlayHost() : e.pane.data();
+            if (auto* window = qobject_cast<TerminalWindow*>(place->parent())) {
                 // Lets the window take focus on Wayland: Qt reads the token
                 // from the environment when the window asks to be activated.
                 if (!e.activationToken.isEmpty()) qputenv("XDG_ACTIVATION_TOKEN", e.activationToken.toUtf8());

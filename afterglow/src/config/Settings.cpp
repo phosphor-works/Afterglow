@@ -370,8 +370,8 @@ PhosphorConfig::Schema buildSchema()
                                "value aligns vertical positions only. The full value aligns both axes.")),
         enumKey(QStringLiteral("antialiasing"), AntialiasingChoices, font.antialiasing,
                 QStringLiteral("How Afterglow smooths glyph edges. The rgb and bgr values use grayscale while transparency or shaders "
-                               "are active. Pane effects count as shaders. They run while a pane shows a shell on another host, as "
-                               "another user or in a container.")),
+                               "are active. Pane effects and overlay fades count as shaders. Pane effects run while a pane shows "
+                               "a shell on another host, as another user or in a container.")),
         doubleKey(QStringLiteral("gamma"), font.gamma, 0.5, 3.0,
                   QStringLiteral("Glyph coverage gamma. A value of 1 preserves coverage. Higher values increase edge coverage.")),
     };
@@ -602,10 +602,10 @@ PhosphorConfig::Schema buildSchema()
                         "each XDG data directory. The aglow run command also needs Control.enabled.")},
         intKey(QStringLiteral("commandTimeout"), d.scriptCommandTimeout, 1000, 3600000,
                QStringLiteral("Longest time in milliseconds that one run of a script command can take. This includes runs "
-                              "from a key, a menu or the palette. The time that the run waits for a task, a dialog or a "
-                              "slow reader of its output counts. The wait for standard input before the run starts does "
-                              "not count. At the limit the run ends, and aglow run exits with status 124. A change "
-                              "applies to the runs that start after it.")),
+                              "from a key, a menu or the palette. The time that the run waits for a task, a dialog, an "
+                              "overlay or a slow reader of its output counts. The wait for standard input before the run "
+                              "starts does not count. At the limit the run ends, and aglow run exits with status 124. A "
+                              "change applies to the runs that start after it.")),
         // Kibibytes, as Terminal.lastOutputLimit: read() turns them into bytes.
         intKey(QStringLiteral("commandStdinLimit"), int(d.scriptCommandStdinLimit >> 10), 0, MaxScriptCommandStdinLimitKiB,
                QStringLiteral("Kibibytes of standard input that a script command can get from aglow run. A run with "
@@ -669,10 +669,12 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("Milliseconds that a pane takes to open or close in Shaders.paneEffects. The portal of a pane "
                               "whose shell moves to another host, user or container takes the same time.")),
         curveKey(QStringLiteral("overlayCurve"), anim.overlayCurve,
-                 QStringLiteral("Curve of the fade of an overlay over its pane, in the splitCurve format. The fade stops at "
-                                "its ends, also with a spring that overshoots.")),
+                 QStringLiteral("Curve of the fade of an overlay over its pane (Shaders.overlayTransition), in the "
+                                "splitCurve format. The fade ends the first time that it reaches its end. A curve that "
+                                "overshoots does not bounce back.")),
         intKey(QStringLiteral("overlayDuration"), anim.overlayDuration, 16, 5000,
-               QStringLiteral("Duration of the fade of an overlay in milliseconds for curves other than springs.")),
+               QStringLiteral("Duration of the fade of an overlay (Shaders.overlayTransition) in milliseconds for curves "
+                              "other than springs.")),
         curveKey(QStringLiteral("cursorCurve"), anim.cursorCurve,
                  QStringLiteral("Curve of cursor motion between cells, in the splitCurve format.")),
         intKey(QStringLiteral("cursorDuration"), anim.cursorDuration, 16, 5000,
@@ -724,7 +726,7 @@ PhosphorConfig::Schema buildSchema()
                                  "the away frame around the pane. An empty value turns it off.")),
         stringKey(QStringLiteral("overlayTransition"), d.shaders.overlayTransition,
                   QStringLiteral("Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. "
-                                 "An empty value switches at once.")),
+                                 "An empty value, or a pack that does not load, switches at once.")),
         {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Parameter values for each shader reference, such as { \"bloom\": { \"strength\": 0.5 } }.")},
     };
@@ -1597,7 +1599,7 @@ Settings SettingsStore::read()
 
     s.audio.enabled = st.read<bool>(AudioGroup, QStringLiteral("enabled"));
     s.audio.inputMethod = st.read<QString>(AudioGroup, QStringLiteral("inputMethod"));
-    s.audio.inputSource = st.read<QString>(AudioGroup, QStringLiteral("inputSource"));
+    s.audio.inputSource = st.read<QString>(AudioGroup, QStringLiteral("inputSource")).trimmed();
     s.audio.framerate = st.read<int>(AudioGroup, QStringLiteral("framerate"));
     s.audio.smoothing = st.read<int>(AudioGroup, QStringLiteral("smoothing"));
     s.audio.extraSmoothing = st.read<double>(AudioGroup, QStringLiteral("extraSmoothing"));
@@ -1626,11 +1628,16 @@ Settings SettingsStore::read()
 
     // Shaders
     auto shaderList = [&strings](const char* key) { return strings(Shaders, QLatin1String(key)); };
-    s.shaders = {shaderList("background"), shaderList("text"), shaderList("cursor"), shaderList("pane"),
-                 shaderList("window"), st.read<QString>(Shaders, QStringLiteral("overview")).trimmed(),
-                 st.read<QString>(Shaders, QStringLiteral("tabTransition")).trimmed(),
-                 st.read<QString>(Shaders, QStringLiteral("paneEffects")).trimmed(),
-                 st.read<QString>(Shaders, QStringLiteral("overlayTransition")).trimmed()};
+    auto shaderRef = [&st](const char* key) { return st.read<QString>(Shaders, QLatin1String(key)).trimmed(); };
+    s.shaders = {.background = shaderList("background"),
+                 .text = shaderList("text"),
+                 .cursor = shaderList("cursor"),
+                 .pane = shaderList("pane"),
+                 .window = shaderList("window"),
+                 .overview = shaderRef("overview"),
+                 .tabTransition = shaderRef("tabTransition"),
+                 .paneEffects = shaderRef("paneEffects"),
+                 .overlayTransition = shaderRef("overlayTransition")};
     s.shaderParams = mapValue(Shaders, QStringLiteral("params"));
 
     // Hints: checked once here, not on every show_hints, which uses only the

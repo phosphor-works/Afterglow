@@ -789,6 +789,15 @@ TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
     const auto groups = Afterglow::SettingsStore::reference().value(QStringLiteral("groups")).toObject();
     const auto font = groups.value(QStringLiteral("Font")).toObject();
     EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("default")).toString(), QStringLiteral("grayscale"));
+    // The choices are the ones that the store reads, in their order. A key
+    // with a narrower set than its type (graphicsFileTransfer has no ask)
+    // lists only its own.
+    EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("choices")).toArray(),
+              (QJsonArray{QStringLiteral("grayscale"), QStringLiteral("none"), QStringLiteral("rgb"), QStringLiteral("bgr")}));
+    const auto transfer = groups.value(QStringLiteral("Terminal")).toObject().value(QStringLiteral("graphicsFileTransfer")).toObject();
+    EXPECT_EQ(transfer.value(QStringLiteral("choices")).toArray(), (QJsonArray{QStringLiteral("allow"), QStringLiteral("deny")}));
+    // A key without choices has no list.
+    EXPECT_FALSE(font.value(QStringLiteral("family")).toObject().contains(QStringLiteral("choices")));
     // 0 is the desktop's size; other sizes are clamped to 4–96, the limits
     // font_bigger keeps to. The range shows what the clamp keeps to, and the
     // description names 0.
@@ -799,6 +808,21 @@ TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
     EXPECT_TRUE(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("description")).toString().contains(QStringLiteral("clamps other values to 4–96")));
     EXPECT_TRUE(font.value(QStringLiteral("family")).toObject().value(QStringLiteral("default")).toString().isEmpty());
     EXPECT_TRUE(groups.value(QStringLiteral("Keybinds")).toObject().value(QStringLiteral("bindings")).toObject().value(QStringLiteral("default")).isObject());
+}
+
+// The reference says that an integer key drops the fraction. The JSON
+// backend truncates before the clamp sees the value, so 6.7 is 6, not 7 as
+// a rounding conversion would give. A fraction in a string is no whole
+// number: it is reported and uses the default.
+TEST_F(ConfigTest, AnIntegerKeyDropsTheFractionOfANumber)
+{
+    SettingsStore up(write(QStringLiteral("up.json"), R"({"Notifications": {"statusInterval": 6.7}})"));
+    EXPECT_EQ(up.settings().statusNotificationInterval, 6);
+    EXPECT_FALSE(mentions(up.problems(), QStringLiteral("Notifications.statusInterval")));
+
+    SettingsStore text(write(QStringLiteral("text.json"), R"({"Notifications": {"statusInterval": "6.7"}})"));
+    EXPECT_EQ(text.settings().statusNotificationInterval, Settings{}.statusNotificationInterval);
+    EXPECT_TRUE(mentions(text.problems(), QStringLiteral("Notifications.statusInterval must be a whole number")));
 }
 
 TEST(Keybinds, SupplementaryUnicodeSurvivesLiteralAndEscapedBindings)
@@ -985,6 +1009,22 @@ TEST(Keybinds, EndScriptKeyModeHasADefaultChord)
     EXPECT_EQ(moved.match(&other), Action::EndScriptKeyMode);
 }
 
+TEST(Keybinds, CancelOverlayHasADefaultChord)
+{
+    const Keybinds kb = Keybinds::defaults();
+    EXPECT_EQ(Keybinds::token(Action::CancelOverlay), QStringLiteral("cancel_overlay"));
+    EXPECT_EQ(Keybinds::defaultMap().value(QStringLiteral("cancel_overlay")).toString(), QStringLiteral("Ctrl+Shift+Alt+Escape"));
+    const QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier);
+    EXPECT_EQ(kb.match(&press), Action::CancelOverlay);
+    // The chord without Alt still ends a script's key mode.
+    const QKeyEvent endMode(QEvent::KeyPress, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(kb.match(&endMode), Action::EndScriptKeyMode);
+    const Keybinds moved = Keybinds::fromMap({{QStringLiteral("cancel_overlay"), QStringLiteral("Ctrl+Alt+Q")}});
+    EXPECT_EQ(moved.match(&press), Action::None);
+    const QKeyEvent other(QEvent::KeyPress, Qt::Key_Q, Qt::ControlModifier | Qt::AltModifier);
+    EXPECT_EQ(moved.match(&other), Action::CancelOverlay);
+}
+
 TEST_F(ConfigTest, FontFollowsTheDesktopUntilSet)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
@@ -1072,7 +1112,13 @@ TEST_F(ConfigTest, OverlayTransitionAndFadeDefaultsOverridesAndClamps)
     EXPECT_EQ(custom.settings().animation.overlayCurve, QStringLiteral("spring:20,1"));
     EXPECT_EQ(custom.settings().animation.overlayDuration, 600);
 
-    // An empty pack switches at once; a package's pack is <package>.<pack>.
+    // An invalid curve is the default, not a curve that the fade cannot run.
+    SettingsStore invalid(write(QStringLiteral("invalid.json"), R"({"Animation": {"overlayCurve": "not-a-curve"}})"));
+    EXPECT_EQ(invalid.settings().animation.overlayCurve, QStringLiteral("0.4,0,0.2,1"));
+    EXPECT_TRUE(mentions(invalid.problems(), QStringLiteral("Animation.overlayCurve is not a curve")));
+
+    // The setting keeps an empty reference and a package's <package>.<pack>
+    // as written (ShaderControlsTest resolves them into the chain).
     SettingsStore none(write(QStringLiteral("none.json"), R"({"Shaders": {"overlayTransition": ""}})"));
     EXPECT_TRUE(none.settings().shaders.overlayTransition.isEmpty());
     SettingsStore packaged(write(QStringLiteral("packaged.json"), R"({"Shaders": {"overlayTransition": " my-kit.dissolve "}})"));
@@ -1690,8 +1736,10 @@ TEST_F(ConfigTest, EnvironmentValuesMustBeStrings)
 TEST_F(ConfigTest, FamiliesAndShaderReferencesAreTrimmed)
 {
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Font": {"family": "Iosevka", "boldFamily": " ", "italicFamily": " Mono "},
-                                                                 "Shaders": {"pane": [" bloom", ""]}})"));
+                                                                 "Shaders": {"pane": [" bloom", ""]},
+                                                                 "Audio": {"inputSource": " auto "}})"));
     const Settings& s = store.settings();
+    EXPECT_EQ(s.audio.inputSource, QStringLiteral("auto"));
     EXPECT_EQ(s.font.bold.family, "Iosevka");
     EXPECT_EQ(s.font.italic.family, "Mono");
     EXPECT_EQ(s.shaders.pane, QStringList{QStringLiteral("bloom")});

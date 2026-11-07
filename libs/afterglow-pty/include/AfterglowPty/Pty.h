@@ -53,7 +53,9 @@ public:
     virtual ~IPtyListener() = default;
     virtual void ptyData(std::string_view bytes) = 0;
     /// What the child wrote to its standard output, with
-    /// SpawnOptions::captureOutput. All of it arrives before ptyClosed.
+    /// SpawnOptions::captureOutput. What the child wrote before it exited
+    /// arrives before ptyClosed. A background job that keeps the pipe after
+    /// the child exits is not waited for.
     virtual void ptyOutput(std::string_view bytes) { (void)bytes; }
     /// The child exited, or the terminal can no longer be read. @p status is
     /// the waitpid() status, or -1 when it is unknown: the child was reaped
@@ -72,7 +74,9 @@ public:
     /// it (@p options' overrides and unsets first), then the account's login
     /// shell, falling back to /bin/sh.
     static std::string defaultShell(const SpawnOptions& options = {});
-    static std::unique_ptr<Pty> spawn(const SpawnOptions& options, IPtyListener& listener, std::string* error = nullptr);
+    /// Takes @p options by value: move them in, and a large
+    /// SpawnOptions::input is not copied.
+    static std::unique_ptr<Pty> spawn(SpawnOptions options, IPtyListener& listener, std::string* error = nullptr);
 
     /// Returns at once: the child gets SIGHUP and, if it stays, SIGKILL on
     /// a background thread.
@@ -104,10 +108,13 @@ private:
     void run();
     void wake();
     bool flushPending();
-    /// Writes what is left of m_input to the child's stdin pipe; closes the
-    /// pipe once it is all written or the child closed its end.
+    /// Writes a batch of what is left of m_input to the child's stdin pipe;
+    /// closes the pipe once it is all written or the child closed its end.
     void feedInput();
-    /// Reads the child's stdout pipe until it is empty. False at its end.
+    /// Closes the child's stdin pipe and drops what it did not take.
+    void closeInput();
+    /// Reads a batch from the child's stdout pipe. False once the pipe is at
+    /// its end or failed, and closed; true while more may come.
     bool readOutput(std::vector<char>& buffer);
 
     int m_master;

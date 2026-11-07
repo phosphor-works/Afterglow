@@ -10,15 +10,15 @@
 
 # The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp).
 set -g __afterglow_actions swap_left swap_right swap_up swap_down rotate_panes_clockwise \
-    rotate_panes_counterclockwise pane_overview use_package_shaders move_pane_to_tab move_pane_to_window detach_tab \
-    save_project switch_project end_script_key_mode split_right split_down split_left split_up rename_pane \
-    close_pane new_window new_tab close_tab rename_tab move_tab_left move_tab_right goto_tab_1 goto_tab_2 \
-    goto_tab_3 goto_tab_4 goto_tab_5 goto_tab_6 goto_tab_7 goto_tab_8 goto_tab_9 close_window toggle_fullscreen \
-    next_tab previous_tab show_hints show_last_output copy_mode copy paste select_all clear_screen reset \
-    notify_on_finish focus_left focus_right focus_up focus_down equalize_splits toggle_pane_zoom resize_left \
-    resize_right resize_up resize_down font_bigger font_smaller font_reset scroll_page_up scroll_page_down \
-    scroll_top scroll_bottom jump_prompt_up jump_prompt_down search command_palette reload_config open_config \
-    show_urls_open show_urls_copy unicode_input
+    rotate_panes_counterclockwise pane_overview use_package_shaders move_pane_to_tab move_pane_to_window \
+    detach_tab save_project switch_project end_script_key_mode cancel_overlay split_right split_down split_left \
+    split_up rename_pane close_pane new_window new_tab close_tab rename_tab move_tab_left move_tab_right \
+    goto_tab_1 goto_tab_2 goto_tab_3 goto_tab_4 goto_tab_5 goto_tab_6 goto_tab_7 goto_tab_8 goto_tab_9 \
+    close_window toggle_fullscreen next_tab previous_tab show_hints show_last_output copy_mode copy paste \
+    select_all clear_screen reset notify_on_finish focus_left focus_right focus_up focus_down equalize_splits \
+    toggle_pane_zoom resize_left resize_right resize_up resize_down font_bigger font_smaller font_reset \
+    scroll_page_up scroll_page_down scroll_top scroll_bottom jump_prompt_up jump_prompt_down search \
+    command_palette reload_config open_config show_urls_open show_urls_copy unicode_input
 
 # Prints the arguments, one on each line, and nothing when there are none.
 function __afterglow_print
@@ -139,13 +139,16 @@ function __afterglow_ctl
                 end
                 return
             case --pane --cwd --layout --capture --title
-                if test $i -eq $n
-                    # The cursor is at the option's value.
-                    test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
-                    test $argv[$i] = --capture; and __afterglow_print stdout file none
-                    return
+                # --capture and --title are the options of overlay. Elsewhere they are no option of ctl.
+                if test $command = overlay; or not contains -- $argv[$i] --capture --title
+                    if test $i -eq $n
+                        # The cursor is at the option's value.
+                        test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
+                        test $argv[$i] = --capture; and __afterglow_print stdout file none
+                        return
+                    end
+                    set i (math $i + 1)
                 end
-                set i (math $i + 1)
             case '-*'
             case '*'
                 set positional (math $positional + 1)
@@ -208,8 +211,10 @@ function __afterglow_ctl
         case overlay
             contains -- --capture $argv; or set -a offer --capture\t'Where the result comes from'
             contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'
-            contains -- --title $argv; or set -a offer --title\t'The pane title meanwhile'
-            contains -- -n $argv; or contains -- --no-stdin $argv; or set -a offer --no-stdin\t'Keep standard input from the command'
+            contains -- --title $argv; or set -a offer --title\t"The pane's title while the command runs"
+            contains -- -n $argv; or contains -- --no-stdin $argv
+            or set -a offer -n\t'Keep standard input from the command' \
+                --no-stdin\t'Keep standard input from the command'
         case open-directory
             contains -- --layout $argv; or set -a offer --layout\t'A saved layout'
         case save-project

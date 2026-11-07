@@ -200,11 +200,11 @@ bool inSession(pid_t pid, pid_t session)
 
 } // namespace
 
-std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& listener, std::string* error)
+std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, std::string* error)
 {
     // Everything the child needs is built before fork(): after fork() in a
     // threaded process only async-signal-safe calls are allowed.
-    std::vector<std::string> args = options.argv;
+    std::vector<std::string> args = std::move(options.argv);
     if (args.empty()) {
         args.push_back(defaultShell(options));
     }
@@ -395,11 +395,13 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
             close(inputPipe[1]); // at its end at once
         } else {
             result->m_inputFd = inputPipe[1];
-            result->m_input = *options.input;
+            result->m_input = std::move(*options.input);
         }
     }
     for (int fd : {result->m_inputFd, result->m_outputFd}) {
-        if (fd >= 0 && fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) < 0) {
+        if (fd < 0) continue;
+        const int pipeFlags = fcntl(fd, F_GETFL);
+        if (pipeFlags < 0 || fcntl(fd, F_SETFL, pipeFlags | O_NONBLOCK) < 0) {
             if (error) *error = std::string("pipe setup failed: ") + std::strerror(errno);
             return nullptr;
         }
@@ -556,7 +558,9 @@ bool Pty::flushPending()
 
 void Pty::feedInput()
 {
-    while (m_inputOffset < m_input.size()) {
+    // Bound work per poll tick, as flushPending does: a child that reads as
+    // fast as it is fed must not starve stop() or its own output.
+    for (int writes = 0; writes < 16 && m_inputOffset < m_input.size() && !m_stop.load(); ++writes) {
         const std::size_t amount = std::min<std::size_t>(65536, m_input.size() - m_inputOffset);
         const ssize_t n = ::write(m_inputFd, m_input.data() + m_inputOffset, amount);
         if (n > 0) {
@@ -575,17 +579,26 @@ void Pty::feedInput()
             const timespec now{0, 0};
             while (sigtimedwait(&broken, nullptr, &now) < 0 && errno == EINTR) {}
         }
-        break;
+        closeInput();
+        return;
     }
+    if (m_inputOffset == m_input.size()) closeInput();
+}
+
+void Pty::closeInput()
+{
+    if (m_inputFd < 0) return;
     close(m_inputFd);
     m_inputFd = -1;
     std::string().swap(m_input);
+    m_inputOffset = 0;
 }
 
 bool Pty::readOutput(std::vector<char>& buffer)
 {
     // A finite batch, as for the terminal: a child that writes without end
-    // must not starve stop().
+    // must not starve stop(). A full batch means more may wait, not the end:
+    // closing the pipe then would cut the output and end the child with SIGPIPE.
     for (int reads = 0; reads < 16 && !m_stop.load(); ++reads) {
         const ssize_t n = ::read(m_outputFd, buffer.data(), buffer.size());
         if (n > 0) {
@@ -594,12 +607,12 @@ bool Pty::readOutput(std::vector<char>& buffer)
         }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return true;
-        break; // its end, or an error
+        // Its end, or an error.
+        close(m_outputFd);
+        m_outputFd = -1;
+        return false;
     }
-    if (m_stop.load()) return true;
-    close(m_outputFd);
-    m_outputFd = -1;
-    return false;
+    return true;
 }
 
 void Pty::run()
@@ -616,8 +629,9 @@ void Pty::run()
     bool exited = false; // the child has exited (pidfd)
     // What the child wrote to its stdout before it exited is in the pipe
     // now, at most the pipe's capacity: a write past it would have waited
-    // for this thread. A background job that kept the pipe and writes on is
-    // not waited for: a few batches take the rest.
+    // for this thread. Read it to the pipe's end. A background job that kept
+    // the pipe is not waited for: the drain stops once the pipe is empty, or
+    // after a bounded number of batches while the job writes on.
     auto drainOutput = [&] {
         for (int batches = 0; m_outputFd >= 0 && batches < 64 && !m_stop.load(); ++batches) {
             pollfd ready{m_outputFd, POLLIN, 0};
@@ -633,8 +647,12 @@ void Pty::run()
             {m_wakeFd, POLLIN, 0},
             {exited ? -1 : m_pidFd, POLLIN, 0},
             {m_execFd, POLLIN, 0},
-            {closed ? -1 : m_inputFd, POLLOUT, 0},
-            {closed ? -1 : m_outputFd, POLLIN, 0},
+            // The pipes stay in the set until the child is reaped: a child
+            // whose standard streams are the pipes can drop its last terminal
+            // fd (the master hangs up) and still read and write them. Their
+            // own end or error closes them, so they cannot spin.
+            {m_inputFd, POLLOUT, 0},
+            {m_outputFd, POLLIN, 0},
         };
         // Without a pidfd, look for the child's exit every 100 ms once the
         // terminal hung up. So too once the pidfd fired but the child could not
@@ -653,6 +671,7 @@ void Pty::run()
             const bool reaped = waitChild(child, &status, WNOHANG) == child;
             if (reaped) m_pid = -1;
             drainOutput();
+            closeInput();
             m_listener.ptyClosed(reaped ? status : -1);
             return;
         }
@@ -716,6 +735,8 @@ void Pty::run()
             if (reaped == child || (reaped < 0 && errno == ECHILD)) {
                 m_pid = -1;
                 drainOutput();
+                // A background job that holds the stdin pipe sees its end.
+                closeInput();
                 m_listener.ptyClosed(reaped == child ? status : -1);
                 return;
             }

@@ -6,6 +6,7 @@
 #include "ControlSocket.h"
 #include "IpcClient.h"
 #include "../config/Keybinds.h"
+#include "../scripting/OverlaySpec.h"
 
 #include <AfterglowProto/Run.h>
 #include <AfterglowProto/Socket.h>
@@ -65,7 +66,7 @@ of the active window or of the window that was active last.
   open-project NAME [--new]             switch to a project or launch its layout
   action NAME                           run a keybind action (split_right, new_tab...)
                                         or start a script command (script:ID.COMMAND)
-  overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n] -- CMD...
+  overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n|--no-stdin] -- CMD...
                                         run CMD over the pane until it exits, print its
                                         result and exit with its status. Standard input,
                                         unless it is a terminal or -n is given, goes to
@@ -88,7 +89,8 @@ QStringList events()
 
 // Not a setting: a call that answers in a moment, which a client can repeat.
 // Its end tells the user that afterglow hangs, not that the call failed. The
-// clients of the socket wait as long as one another.
+// clients of the socket wait as long as one another. The overlay call waits
+// for the user instead, with no limit.
 constexpr int ReplyTimeoutMs = AfterglowProto::Run::ReplyTimeoutMs;
 
 int fail(const QString& message, int status = 1)
@@ -103,14 +105,12 @@ class Client
 {
 public:
     /// @p timeoutMs: -1 waits as long as the call takes (an overlay waits for the user).
-    std::optional<QJsonValue> call(const QString& fn, const QJsonArray& args, int timeoutMs = ReplyTimeoutMs,
-                                   IpcClient::Error* failure = nullptr)
+    std::optional<QJsonValue> call(const QString& fn, const QJsonArray& args, int timeoutMs = ReplyTimeoutMs)
     {
         if (!connected()) return std::nullopt;
         IpcClient::Error error;
         auto result = m_client.call(QLatin1String(ControlSocket::Target), fn, args, timeoutMs, &error);
         if (!result) report(error);
-        if (!result && failure) *failure = error;
         return result;
     }
 
@@ -344,6 +344,37 @@ bool isUtf8(const QByteArray& bytes)
     return true;
 }
 
+/// Standard input as text, or nothing after it said why in @p status. Input
+/// over @p limit bytes or not UTF-8 is refused as aglow run refuses its
+/// input, with the status of a usage error and the message @p tooLong.
+std::optional<QString> readStdin(qsizetype limit, const QString& tooLong, int& status)
+{
+    // One byte past the limit tells that the input is over it.
+    // read() tells an error from the end, which QFile does not.
+    QByteArray bytes;
+    char buffer[64 * 1024];
+    while (bytes.size() <= limit) {
+        const ssize_t got = ::read(STDIN_FILENO, buffer, sizeof buffer);
+        if (got < 0 && errno == EINTR) continue;
+        if (got < 0) {
+            status = fail(QStringLiteral("cannot read standard input: %1").arg(QString::fromLocal8Bit(std::strerror(errno))));
+            return std::nullopt;
+        }
+        if (got == 0) break;
+        bytes.append(buffer, qsizetype(got));
+    }
+    if (bytes.size() > limit) {
+        status = fail(tooLong, AfterglowProto::Run::UsageError);
+        return std::nullopt;
+    }
+    // Decoding would put U+FFFD in place of the bytes.
+    if (!isUtf8(bytes)) {
+        status = fail(QStringLiteral("standard input is not UTF-8 text"), AfterglowProto::Run::UsageError);
+        return std::nullopt;
+    }
+    return QString::fromUtf8(bytes);
+}
+
 // The running afterglow resolves directories itself: send it absolute ones.
 QString absolute(const QString& path)
 {
@@ -566,23 +597,10 @@ int runCtl(int argc, char** argv)
         if (takeFlag(QStringLiteral("--stdin"))) {
             if (const auto error = extra(0)) return usage(*error);
             if (!trailing.isEmpty()) return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
-            // One byte past the limit tells that the input is over it.
-            // read() tells an error from the end, which QFile does not.
-            QByteArray bytes;
-            char buffer[64 * 1024];
-            while (bytes.size() <= CtlMaxText) {
-                const ssize_t got = ::read(STDIN_FILENO, buffer, sizeof buffer);
-                if (got < 0 && errno == EINTR) continue;
-                if (got < 0) {
-                    return fail(QStringLiteral("cannot read standard input: %1").arg(QString::fromLocal8Bit(std::strerror(errno))));
-                }
-                if (got == 0) break;
-                bytes.append(buffer, qsizetype(got));
-            }
-            if (bytes.size() > CtlMaxText) return fail(tooLong, AfterglowProto::Run::UsageError);
-            // Decoding would type U+FFFD in place of the bytes.
-            if (!isUtf8(bytes)) return fail(QStringLiteral("standard input is not UTF-8 text"), AfterglowProto::Run::UsageError);
-            text = QString::fromUtf8(bytes);
+            int status = 0;
+            const std::optional<QString> input = readStdin(CtlMaxText, tooLong, status);
+            if (!input) return status;
+            text = *input;
         } else {
             const bool raw = takeFlag(QStringLiteral("--raw"));
             if (const auto error = extra(-1)) return usage(*error);
@@ -681,17 +699,12 @@ int runCtl(int argc, char** argv)
         // reads the pane instead, and the call does not wait for an end of
         // file that never comes.
         if (!noInput && !isatty(STDIN_FILENO)) {
-            QFile in;
-            if (!in.open(stdin, QIODevice::ReadOnly)) return fail(QStringLiteral("cannot read standard input"));
-            QByteArray bytes;
-            while (bytes.size() <= CtlOverlayInput) {
-                const QByteArray part = in.read(CtlOverlayInput + 1 - bytes.size());
-                if (part.isEmpty()) break;
-                bytes += part;
-            }
-            if (bytes.size() > CtlOverlayInput)
-                return fail(QStringLiteral("standard input over %1 KiB: use a script for a longer list").arg(CtlOverlayInput >> 10));
-            options.insert(QStringLiteral("stdin"), QString::fromUtf8(bytes));
+            int status = 0;
+            const std::optional<QString> input = readStdin(
+                CtlOverlayInput, QStringLiteral("standard input over %1 KiB: use a script for a longer list").arg(CtlOverlayInput >> 10),
+                status);
+            if (!input) return status;
+            options.insert(QStringLiteral("stdin"), *input);
         }
         act = [&, options](qint64 pane) {
             const auto result = client.call(QStringLiteral("overlay"), {pane, QJsonArray::fromStringList(trailing), options}, -1);
@@ -699,7 +712,8 @@ int runCtl(int argc, char** argv)
             const QJsonObject done = result->toObject();
             const QByteArray out = done.value(QLatin1String("stdout")).toString().toUtf8();
             std::fwrite(out.constData(), 1, std::size_t(out.size()), stdout);
-            if (done.value(QLatin1String("truncated")).toBool()) std::fprintf(stderr, "afterglow ctl: the result was cut at 1 MiB\n");
+            if (done.value(QLatin1String("truncated")).toBool())
+                fail(QStringLiteral("the result was cut at %1 MiB").arg(OverlaySpec::MaxOutput >> 20));
             const qint64 status = done.value(QLatin1String("exit_code")).toInteger(-1);
             return status >= 0 && status <= 255 ? int(status) : 1;
         };

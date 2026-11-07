@@ -5,7 +5,6 @@
 
 #include <AfterglowRender/FontSet.h>
 #include <AfterglowRender/GpuDevice.h>
-#include <AfterglowVt/Input.h>
 
 #include <QAccessible>
 #include <QGuiApplication>
@@ -14,8 +13,6 @@
 #include <algorithm>
 
 namespace Afterglow {
-
-using AfterglowVt::Terminal;
 
 Pane* TerminalWindow::inputPane(Pane* pane)
 {
@@ -32,6 +29,11 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
     if (m_scriptDialog) return QStringLiteral("A script dialog is open");
     // Another script's key mode would take the overlay's keys from the user.
     if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
+    // A prompt, a menu or the palette has the keyboard, and the user's
+    // answer to it must not go to the overlay. A search closes below.
+    if (m_controller->paletteOpen() || m_controller->pasteConfirmOpen() || m_controller->clipboardPromptOpen()
+        || m_controller->contextMenuOpen() || m_controller->titlePromptOpen() || m_controller->confirmPromptOpen())
+        return QStringLiteral("A prompt or the command palette is open");
 
     const Settings& settings = m_settings.settings();
     const auto& metrics = m_renderer->fonts().fonts->metrics();
@@ -73,11 +75,8 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
         m_selectionPane = nullptr;
         m_autoScroll.stop();
     }
-    if (m_reportedPane == pane) {
-        // The release of a held button goes to the program that got the press.
-        m_reportedButtons = Qt::NoButton;
-        m_reportedPane = nullptr;
-    }
+    // A button held on the pane keeps its report there: the program that
+    // got the press hears its release (mouseReleaseEvent).
     if (m_hover.pane == pane) m_hover = {};
     // Onto the overlay's pane, as for a dialog: the overview's original card
     // could be in another tab.
@@ -85,7 +84,7 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
     if (tabOf(pane) != m_currentTab) switchTab(tabOf(pane));
     if (focused) {
         // The focus stays on the pane: its program hears that it lost it.
-        if (m_windowFocused) pane->sendReply(pane->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(false, t.modes()); }));
+        if (m_windowFocused) reportFocus(pane, false);
         m_inputMethodDirty = true;
         updateTitle();
         updateChrome();
@@ -96,20 +95,34 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
     } else {
         setFocusedPane(pane);
     }
+    // The pane's name is the overlay's title now (shownTitle).
+    if (QAccessible::isActive()) {
+        QAccessibleEvent event(pane, QAccessible::NameChanged);
+        QAccessible::updateAccessibility(&event);
+    }
+    updatePaneVisibility();
     startOverlayFade(pane, 1.0);
     // The overlay shows here; the window does not jump forward for it.
     if (!isActive()) alert(0);
     refreshInputMethod();
+    // The pointer is over the overlay's cells now, with the overlay's shape.
+    applyPointerShape();
     scheduleRender();
     return {};
 }
 
 void TerminalWindow::startOverlayFade(Pane* host, qreal target)
 {
-    // The overlay transition draws the fade. Without it the overlay switches
-    // at once, and no frame waits for a fade.
-    if (!m_overlayTransitionAvailable) {
+    // The overlay transition draws the fade, blending from the host in the
+    // current tab's image. Without it, or while no frame would draw the
+    // fade (the overview, a tab switch or a closing pane has the image, the
+    // host is not on screen, the window is not), the overlay switches at
+    // once: a fade that never advances would hold the frame loop and
+    // audio capture.
+    if (!m_overlayTransitionAvailable || overviewShowing() || tabSwitching() || m_closingPane || !isExposed() || !m_splits
+        || m_splits->rectOf(host).isEmpty()) {
         m_overlayFades.erase(host);
+        updateAudioCapture();
         return;
     }
     const AnimationSettings& anim = m_settings.settings().animation;
@@ -132,33 +145,49 @@ void TerminalWindow::bindOverlay(Pane* host)
     });
 }
 
-void TerminalWindow::overlayEnded(Pane* host, PaneOverlay* overlay)
+void TerminalWindow::dropOverlayUi(Pane* program)
 {
-    Pane* program = overlay->pane();
-    QObject::disconnect(overlay, nullptr, this, nullptr);
-    // What belongs to the overlay's terminal goes with it.
     dropPanePrompts(program);
     if (m_copyPane == program) stopCopyMode();
     if (m_hover.pane == program) m_hover = {};
     if (m_lastClickPane == program) m_lastClickPane = nullptr;
-    const bool focused = host == m_focused;
-    if (focused && m_controller->searchOpen()) m_controller->setSearchOpen(false);
-    program->clearSearch();
-    program->setPreedit({}, 0);
-    if (focused && isActive()) QGuiApplication::inputMethod()->reset();
-    // It fades out from where its fade is, on its last frame.
-    if (tabOf(host) >= 0 && m_overlayTransitionAvailable) {
-        startOverlayFade(host, 0.0);
-        m_overlayFades[host].last = std::make_shared<AfterglowRender::PaneSnapshot>(program->snapshot());
+    // The search bar, Unicode input and the composition act on the focused
+    // pane's input pane, which this was.
+    if (hostOf(program) == m_focused) {
+        if (m_controller->searchOpen()) m_controller->setSearchOpen(false);
+        stopUnicodeInput();
+        program->setPreedit({}, 0);
+        if (isActive()) QGuiApplication::inputMethod()->reset();
     }
+    program->clearSearch();
+}
+
+void TerminalWindow::overlayEnded(Pane* host, PaneOverlay* overlay, bool hostCloses)
+{
+    Pane* program = overlay->pane();
+    QObject::disconnect(overlay, nullptr, this, nullptr);
+    const bool focused = host == m_focused;
+    // What belongs to the overlay's terminal goes with it.
+    dropOverlayUi(program);
+    // It fades out from where its fade is, on its last frame, which keeps
+    // the overlay's identity for the renderer. A host that closes shows
+    // that frame in its closing effect instead (closePane).
+    if (!hostCloses && tabOf(host) >= 0) startOverlayFade(host, 0.0);
+    else m_overlayFades.erase(host);
+    if (const auto fade = m_overlayFades.find(host); fade != m_overlayFades.end())
+        fade->second.last = std::make_shared<AfterglowRender::PaneSnapshot>(program->takeSnapshot());
     // The host has the input again, its view and cursor where they were.
-    if (focused) {
-        if (m_windowFocused) host->sendReply(host->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(true, t.modes()); }));
+    if (focused && !hostCloses) {
+        if (m_windowFocused) reportFocus(host, true);
         m_inputMethodDirty = true;
         if (m_windowFocused && QAccessible::isActive()) {
             QAccessibleEvent event(host, QAccessible::Focus);
             QAccessible::updateAccessibility(&event);
         }
+    }
+    if (!hostCloses && QAccessible::isActive()) {
+        QAccessibleEvent event(host, QAccessible::NameChanged);
+        QAccessible::updateAccessibility(&event);
     }
     // Its program gets SIGHUP when it goes, if it still runs.
     overlay->deleteLater();
@@ -198,44 +227,42 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
     float progress = 1.0f;
     std::shared_ptr<AfterglowRender::PaneSnapshot> last;
     if (fade != m_overlayFades.end()) {
-        fade->second.progress.advance();
-        progress = float(std::clamp(fade->second.progress.value(), 0.0, 1.0));
-        last = fade->second.last;
-        if (fade->second.progress.isAnimating()) {
+        auto& value = fade->second.progress;
+        value.advance();
+        // A fade ends the first time it reaches its end: a curve that
+        // overshoots (a spring) does not swing back over it.
+        const bool reached = value.to() >= 0.5 ? value.value() >= 1.0 : value.value() <= 0.0;
+        if (value.isAnimating() && !reached) {
             animating = true;
+            progress = float(std::clamp(value.value(), 0.0, 1.0));
+            last = fade->second.last;
         } else {
             // Settled: an overlay that runs shows whole, one that ended is gone.
             m_overlayFades.erase(fade);
             if (!overlay) return;
-            last.reset();
         }
     }
     AfterglowRender::WindowRenderer::Pane::Overlay shown;
-    shown.params = wp.params;
     shown.progress = progress;
     if (overlay) {
         Pane* program = overlay->pane();
         AfterglowRender::FrameBuilder::PaneParams own;
         preparePane(program, layoutRect, own, holding, animating);
         shown.snapshot = &program->snapshot();
-        // Its own cursor and scroll position, in the host's place.
-        shown.params.cursorPosition = own.cursorPosition;
-        shown.params.scrollShift = own.scrollShift;
-        shown.params.hoveredLink = 0;
-        shown.params.hoverRow = -1;
+        // Its own cursor, scroll position and link hover, in the host's place.
+        shown.cursorPosition = own.cursorPosition;
+        shown.scrollShift = own.scrollShift;
         if (m_hover.pane == program) {
-            shown.params.hoveredLink = m_hover.link;
-            shown.params.hoverRow = m_hover.row;
-            shown.params.hoverColStart = m_hover.colStart;
-            shown.params.hoverColEnd = m_hover.colEnd;
+            shown.hoveredLink = m_hover.link;
+            shown.hoverRow = m_hover.row;
+            shown.hoverColStart = m_hover.colStart;
+            shown.hoverColEnd = m_hover.colEnd;
         }
     } else {
-        // An overlay that ended: its last frame, still, while it fades out.
+        // An overlay that ended: its last frame, still and with no cursor,
+        // while it fades out.
+        if (!last) return;
         shown.snapshot = last.get();
-        shown.params.cursorPosition.reset();
-        shown.params.scrollShift = 0;
-        shown.params.hoveredLink = 0;
-        shown.params.hoverRow = -1;
     }
     wp.overlay = shown;
 }

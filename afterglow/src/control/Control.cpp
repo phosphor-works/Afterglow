@@ -358,6 +358,13 @@ QString Control::readRegion(quint32 id, const QString& region, int limit, QVaria
     return {};
 }
 
+QString Control::localDirectory(QString& cwd)
+{
+    if (cwd == QLatin1String("~") || cwd.startsWith(QLatin1String("~/"))) cwd = QDir::homePath() + cwd.mid(1);
+    if (!cwd.isEmpty() && (!QDir::isAbsolutePath(cwd) || !QFileInfo(cwd).isDir())) return QStringLiteral("cwd must name an existing absolute directory");
+    return {};
+}
+
 namespace {
 QString launchOptions(const QString& cwd, const QStringList& command, const QVariantMap& input, PaneLaunchOptions& out)
 {
@@ -368,8 +375,7 @@ QString launchOptions(const QString& cwd, const QStringList& command, const QVar
         out.cwd = input.value(QStringLiteral("cwd")).toString();
     }
     if (out.cwd.contains(QChar::Null)) return QStringLiteral("cwd contains a null character");
-    if (out.cwd == QLatin1String("~") || out.cwd.startsWith(QLatin1String("~/"))) out.cwd = QDir::homePath() + out.cwd.mid(1);
-    if (!out.cwd.isEmpty() && (!QDir::isAbsolutePath(out.cwd) || !QFileInfo(out.cwd).isDir())) return QStringLiteral("cwd must name an existing absolute directory");
+    if (const QString error = Control::localDirectory(out.cwd); !error.isEmpty()) return error;
     for (const auto& arg : command) if (arg.contains(QChar::Null)) return QStringLiteral("command contains a null character");
     if (!command.isEmpty() && command.first().isEmpty()) return QStringLiteral("command must name a program");
     if (input.contains(QStringLiteral("size"))) {
@@ -728,12 +734,12 @@ QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMa
     return pane ? window->scriptShader(owner, pane, effect, result) : noPane(id);
 }
 
-void Control::closeScriptDialogs(const QString& owner, const QString& prefix)
+void Control::closeRunWaits(const QString& owner, const QString& prefix)
 {
-    for (auto window : m_windows) if (window) window->closeScriptDialog(owner, prefix);
+    for (auto window : m_windows) if (window) window->closeRunWaits(owner, prefix);
 }
 
-QString Control::overlay(const QString& owner, const QString& request, quint32 id, const OverlaySpec& spec, OverlayReply reply,
+QString Control::overlay(const QString& owner, const QString& request, quint32 id, const OverlaySpec& spec, PaneOverlay::Reply reply,
                          QString& code)
 {
     TerminalWindow* window = nullptr;

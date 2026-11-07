@@ -69,6 +69,10 @@ struct ShaderRegionState
     /// In an overlay transition pass, how far the overlay has faded in: 0 the
     /// pane under it, 1 the overlay (uOverlayTransition). Negative elsewhere.
     float overlayTransition = -1.0f;
+    /// The pane under a fading overlay (captureOverlayHosts): it draws before
+    /// the frame's own panes, with no text history, and reads the window's
+    /// shared background buffers as they are without stepping them.
+    bool overlayHost = false;
 };
 
 /// Seconds are doubles until they are written to the uniforms: a float of
@@ -143,6 +147,16 @@ struct ShaderChains
     {
         return alwaysOnEmpty() && overview.empty() && tabTransition.empty() && paneEffects.empty() && overlayTransition.empty();
     }
+    /// The programs of every chain, event chains included.
+    std::size_t size() const noexcept
+    {
+        std::size_t count = 0;
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition, &paneEffects,
+                                  &overlayTransition}) {
+            count += chain->size();
+        }
+        return count;
+    }
 };
 
 /// Post-processing for one window: the grid renders into an offscreen
@@ -199,8 +213,9 @@ public:
     /// After prepare(): a clearing, window-sized target for a tab that is not
     /// the current one (an overview card, the tab a switch leaves, or a
     /// closing pane), compatible with the grid's pipelines. All of them share
-    /// it in turn. terminal_panes.glsl samples it as uTabImage. It is freed
-    /// after a frame that did not ask for it.
+    /// it in turn. The panes under fading overlays (captureOverlayHosts) use
+    /// it in frames where none of those does. terminal_panes.glsl samples it
+    /// as uTabImage. It is freed after a frame that did not ask for it.
     QRhiTextureRenderTarget* tabImageTarget();
     /// Shrinks the tab in tabImageTarget() into @p tile of the overview
     /// atlas (uTabAtlas), in window pixels.
@@ -210,7 +225,8 @@ public:
     /// An always-on chain animates (time, history, feedback or spin), or an
     /// age-only program's youngest age in the last recorded frame is below
     /// its settle time, so the window renders every frame.
-    /// WindowRenderer::animating() covers the event chains.
+    /// WindowRenderer::animating() covers the event chains. The overlay
+    /// transition runs only while its host animates the fade.
     bool animated() const noexcept;
 
     /// Makes sure the offscreen textures match @p size and returns the target
@@ -244,10 +260,11 @@ public:
                    const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear, bool otherCursors = false,
                    bool hosts = false, std::size_t uboBase = 0);
 
-    /// Records the shader passes after the grid pass. Returns with the final
-    /// pass on @p swapTarget begun and drawn, so the caller can add the
-    /// docks and the chrome before ending it. Window passes clear to @p clear
-    /// (premultiplied).
+    /// Records the shader passes after the grid pass: the pane chain, the
+    /// overlay transition over setOverlayTransitions(), then the window and
+    /// event chains. Returns with the final pass on @p swapTarget begun and
+    /// drawn, so the caller can add the docks and the chrome before ending
+    /// it. Window passes clear to @p clear (premultiplied).
     void record(RenderFrame& frame, const std::vector<ShaderRegionState>& panes, const ShaderRegionState& window,
                 const ShaderFrameTime& time, QRhiRenderTarget* swapTarget, QRhiRenderPassDescriptor* swapPass,
                 const QColor& clear);
@@ -260,10 +277,11 @@ public:
 
 private:
     /// The event chain that runs this frame, if any: the overview, else a tab
-    /// switch, else pane effects.
+    /// switch, else pane effects. The overlay transition is apart: it runs
+    /// with any of them (overlayTransitionShowing()).
     const std::vector<ShaderProgramPtr>* eventChain() const noexcept;
-    /// Some program that runs this frame (always-on or the showing event
-    /// chains) matches @p test.
+    /// Some program that runs this frame (always-on, the showing event chain
+    /// or the overlay transition) matches @p test.
     template<typename Test>
     bool anyRunning(Test test) const
     {

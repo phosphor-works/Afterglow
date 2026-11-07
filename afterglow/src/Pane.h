@@ -51,9 +51,15 @@ class FileTransfer;
 class DockArea;
 class PaneOverlay;
 
+/// Applies a launch's own variables to @p options (`env` of a script or a
+/// control call): a string sets the name, false unsets it. The launch wins
+/// over what @p options had, and each name is set or unset once.
+void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantMap& environment);
+
 /// One terminal: the emulator state, the child process on its pty, and the
 /// snapshot the window renders from. The pty thread feeds the terminal under
-/// m_mutex; everything else runs on the GUI thread.
+/// m_mutex, and a captured standard output (an overlay's) under
+/// m_outputMutex; everything else runs on the GUI thread.
 class Pane : public QObject, private AfterglowVt::ITerminalHost, private AfterglowPty::IPtyListener
 {
     Q_OBJECT
@@ -63,8 +69,9 @@ public:
     ~Pane() override;
 
     /// Sizes the terminal and starts the shell on a pty of that size.
-    /// @p term is the TERM given to the shell.
-    bool start(const AfterglowPty::SpawnOptions& options, const QString& term, int cols, int rows, int cellWidth,
+    /// @p term is the TERM given to the shell. @p options moves into the
+    /// pty: its standard input can be large.
+    bool start(AfterglowPty::SpawnOptions options, const QString& term, int cols, int rows, int cellWidth,
                int cellHeight, QString* error);
     /// Applies changed config to the running terminal.
     void setOptions(const AfterglowVt::TerminalOptions& options);
@@ -133,6 +140,10 @@ public:
     /// @p extraRows below the viewport are captured for fractional scrolling.
     bool refreshSnapshot(int extraRows = 0);
     const AfterglowRender::PaneSnapshot& snapshot() const noexcept { return m_snapshot; }
+    /// Hands the snapshot out with its identity, for the last frame of a
+    /// pane that draws no more (an overlay that ended, fading out). The next
+    /// refresh captures a new one.
+    AfterglowRender::PaneSnapshot takeSnapshot();
 
     /// Unique for the life of the process; scripts and afterglow ctl use it.
     quint32 id() const noexcept { return m_id; }

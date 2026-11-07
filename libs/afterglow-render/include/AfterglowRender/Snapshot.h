@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace AfterglowRender {
@@ -68,12 +69,20 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     /// A number no other snapshot object has had, for renderer caches: an
     /// address can come back for a new pane. A copy or an assignment takes a
     /// new number too, because its content is not the original's any more.
+    /// A move takes the number with the content, and the object it leaves
+    /// takes a new one: caches stay with what they hold.
     class Identity
     {
     public:
         Identity() : m_value(next()) {}
         Identity(const Identity&) : m_value(next()) {}
+        Identity(Identity&& other) noexcept : m_value(std::exchange(other.m_value, next())) {}
         Identity& operator=(const Identity&) { m_value = next(); return *this; }
+        Identity& operator=(Identity&& other) noexcept
+        {
+            if (this != &other) m_value = std::exchange(other.m_value, next());
+            return *this;
+        }
         std::uint64_t value() const noexcept { return m_value; }
 
     private:

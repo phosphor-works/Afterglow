@@ -383,7 +383,7 @@ const EffectKind Kinds[] = {
     {"exit", false, false, {"run"}, false, {"code"}},
     {"select", true, false, {"title"}, false},
     {"prompt", true, false, {"title", "text"}, false},
-    {"overlay", true, false, {"cwd", "capture", "title"}, true},
+    {"overlay", true, false, {}, true},
     {"status", true, false, {"text", "tab_title"}, false},
     {"dock", true, false, {"id"}, false},
     {"undock", true, false, {"id"}, false},
@@ -1112,11 +1112,11 @@ void ScriptHost::finishRun(const ScriptPtr& script, quint64 handle, int status, 
         if (pane) context.insert(QStringLiteral("pane"), eventPane(pane));
         call(script, QStringLiteral("__cancel_run"), {QString::number(handle), reason, context}, CommandCallTimeoutMs, pane, handle);
     });
-    // What the handler waits for stops: its dialogs close, and its processes,
-    // file reads and sleeps end and free their slots.
+    // What the handler waits for stops: its dialogs and overlays close, and
+    // its processes, file reads and sleeps end and free their slots.
     for (const qint64 flow : std::as_const(flows)) {
         const QString prefix = AwaitPrefix + QString::number(flow) + QLatin1Char(':');
-        if (m_callbacks.closeDialogs) m_callbacks.closeDialogs(script->owner, prefix);
+        if (m_callbacks.closeRunWaits) m_callbacks.closeRunWaits(script->owner, prefix);
         m_tasks->cancel(script->owner, prefix);
         stopSleeps(*script, prefix);
     }
@@ -1515,22 +1515,11 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 } else if (it.key() != QLatin1String("env")) error = QStringLiteral("Unknown launch option %1").arg(it.key());
             }
         }
-        if (launch || kind == QLatin1String("exec") || kind == QLatin1String("overlay")) {
-            const auto value = (launch ? options : raw).value(QStringLiteral("env"));
-            if (value.isValid() && value.typeId() != QMetaType::QVariantMap
-                && !(value.typeId() == QMetaType::QVariantList && value.toList().isEmpty()))
-                error = QStringLiteral("env must be an object");
-            const auto env = value.toMap();
-            qsizetype bytes = 0;
-            for (auto it = env.begin(); it != env.end(); ++it) {
-                const auto& v = it.value();
-                bytes += it.key().toUtf8().size() + v.toString().toUtf8().size();
-                if (it.key().isEmpty() || it.key().contains(QLatin1Char('=')) || it.key().contains(QChar::Null)
-                    || !((v.typeId() == QMetaType::QString && !v.toString().contains(QChar::Null))
-                         || (v.typeId() == QMetaType::Bool && !v.toBool())))
-                    error = QStringLiteral("env needs valid variable names and string values or false to remove");
-            }
-            if (env.size() > 256 || bytes > 65536) error = QStringLiteral("Environment overrides exceed their limit");
+        if (launch || kind == QLatin1String("exec")) {
+            QVariantMap env;
+            if (const QString problem = EnvironmentOverrides::read((launch ? options : raw).value(QStringLiteral("env")), env);
+                !problem.isEmpty())
+                error = problem;
             if (launch) effect.insert(QStringLiteral("options"), options);
             else effect.insert(QStringLiteral("env"), env);
         }
@@ -1607,15 +1596,21 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 error = QStringLiteral("left, right, up and down need a target pane. new-tab and new-window take none");
         }
         if (kind == QLatin1String("overlay")) {
-            // The rules of the control socket's overlay call too.
-            const QVariant input = raw.value(QStringLiteral("stdin"));
-            if (input.isValid() && !input.isNull()) effect.insert(QStringLiteral("stdin"), input);
-            QVariantMap options{{QStringLiteral("cwd"), str(effect, "cwd")}, {QStringLiteral("capture"), str(effect, "capture")},
-                                {QStringLiteral("title"), str(effect, "title")}, {QStringLiteral("env"), effect.value(QStringLiteral("env"))}};
-            if (input.isValid() && !input.isNull()) options.insert(QStringLiteral("stdin"), input);
-            QString problem;
-            if (error.isEmpty() && !OverlaySpec::read(effect.value(QStringLiteral("command")).toStringList(), options, &problem))
-                error = problem;
+            // The helper passes the options through whole: OverlaySpec, the
+            // rules of the control socket's overlay call too, sees their own
+            // types and refuses a misspelled one. The spec that it reads goes
+            // on to the window, so a long stdin is converted once.
+            const QVariant value = raw.value(QStringLiteral("options"));
+            if (value.isValid() && !value.isNull() && value.typeId() != QMetaType::QVariantMap
+                && !(value.typeId() == QMetaType::QVariantList && value.toList().isEmpty()))
+                error = QStringLiteral("Overlay options must be an object");
+            else if (error.isEmpty()) {
+                QString problem;
+                if (auto spec = OverlaySpec::read(effect.value(QStringLiteral("command")).toStringList(), value.toMap(), &problem))
+                    effect.insert(QStringLiteral("spec"), QVariant::fromValue(std::move(*spec)));
+                else
+                    error = problem;
+            }
         }
         if (kind == QLatin1String("select")) {
             const auto entries = raw.value(QStringLiteral("items")).toList();

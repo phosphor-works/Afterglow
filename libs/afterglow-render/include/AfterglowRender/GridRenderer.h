@@ -217,14 +217,22 @@ public:
         /// A program run over the pane (an overlay), with a terminal of its
         /// own: its grid takes the place of the pane's, under the pane's
         /// docks and through the pane's chains, card and tab image. It fades
-        /// in by @c progress: 0 shows the pane, 1 the overlay. The pane fades
-        /// to the overlay's background, then the overlay comes out of it.
+        /// in by @c progress: 0 shows the pane, 1 the overlay. Between, the
+        /// overlay transition chain blends the two; without that chain the
+        /// overlay shows from halfway.
         struct Overlay
         {
             const PaneSnapshot* snapshot = nullptr;
-            /// As the pane's own, for the overlay's grid: the same rectangle.
-            FrameBuilder::PaneParams params;
             float progress = 1;
+            /// The overlay's own grid state, as in FrameBuilder::PaneParams.
+            /// The rest (rectangle, focus, opacity, chain inputs, effects) is
+            /// the pane's.
+            std::optional<QPointF> cursorPosition;
+            float scrollShift = 0;
+            std::uint32_t hoveredLink = 0;
+            int hoverRow = -1;
+            int hoverColStart = 0;
+            int hoverColEnd = -1; ///< inclusive
         };
         std::optional<Overlay> overlay = {};
     };
@@ -261,7 +269,8 @@ public:
     void setShaderChains(ShaderChains chains);
     /// The host keeps scheduling frames while this is true: an always-on
     /// shader animates, the scrollback count eases, the overview or a tab
-    /// transition shows, or a pane effect moves.
+    /// transition shows, or a pane effect moves. An overlay's fade is the
+    /// host's own animation: it schedules those frames itself.
     bool animating() const;
     /// Another tab's panes, for the overview or the tab a switch leaves.
     struct OverviewTab
@@ -320,7 +329,7 @@ public:
         std::optional<Pane> closing;
         float closingProgress = 1; ///< 0 just closed, 1 gone
     };
-    void setPaneEffects(PaneEffects effects) { m_effects = std::move(effects); }
+    void setPaneEffects(PaneEffects effects);
     bool paneEffectsShowing() const { return m_effects.active && !overviewShowing() && !transitionShowing(); }
     /// Synthetic combined rows for developer previews. Unset sums only the rendered panes.
     void setScrollbackLinesOverride(std::optional<std::uint64_t> lines) { m_scrollbackLinesOverride = lines; }

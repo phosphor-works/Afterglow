@@ -132,7 +132,7 @@ AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int
         other.panes.push_back(std::move(wp));
         // The overlays the tab had while it was current, so a tab switch
         // starts from exactly what was shown.
-        addPaneOverlays(other.overlays, shown, multiple && p != owner.focused, overrides);
+        addPaneShading(other.overlays, shown, multiple && p != owner.focused, overrides);
     });
     return other;
 }
@@ -166,7 +166,7 @@ void TerminalWindow::applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuil
     animating |= params.contextProgress < 1.0f;
 }
 
-void TerminalWindow::addPaneOverlays(std::vector<std::pair<QRect, std::uint32_t>>& overlays, const QRect& shown, bool dim,
+void TerminalWindow::addPaneShading(std::vector<std::pair<QRect, std::uint32_t>>& overlays, const QRect& shown, bool dim,
                                      const QVariantMap& overrides) const
 {
     const WindowSettings& window = m_settings.settings().window;
