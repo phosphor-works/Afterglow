@@ -533,7 +533,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Subscriptions on one connection | 256 | The subscription fails with `MALFORMED_REQUEST`. A second subscription to the same event also fails. |
 | `afterglow ctl` reply time | 10 seconds | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. `afterglow ctl overlay` waits for the program without a limit. |
 | `afterglow ctl overlay` standard input | 768 KiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |
-| `afterglow ctl overlay` request | 1 MiB | `afterglow ctl` exits with status 1 and opens nothing. JSON writes a control character as 6 bytes. Thus input below 768 KiB with many control characters can make a request over 1 MiB. |
+| `afterglow ctl overlay` request | 1 MiB | `afterglow ctl` exits with status 1 and opens nothing. JSON writes most control characters, such as U+0001, as 6 bytes. Thus input below 768 KiB with many control characters can make a request over 1 MiB. |
 | `stdin` of the `overlay` call | The request line of 1 MiB | The socket closes the connection. |
 | `stdout` of an overlay's result | 1 MiB of UTF-8 | The text is cut, and `truncated` is true. |
 | `aglow run` reply time for `list` and `input` | 10 seconds | `aglow run` stops with exit status 1. The time to connect counts toward the time of `list`. It does not wait for the reply of `cancel` or `ack`. It waits for the end of a run without a limit. |

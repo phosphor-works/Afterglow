@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "../PaneOverlay.h"
+#include "../scripting/OverlaySpec.h"
 
 #include <QHash>
 #include <QList>
@@ -164,7 +164,7 @@ public:
     /// Runs @p spec over @p pane for @p owner (a script, or a control
     /// client), with the script's @p request ID. @p code tells a refusal
     /// apart: no_pane, busy or spawn_failed.
-    QString overlay(const QString& owner, const QString& request, quint32 pane, const OverlaySpec& spec, PaneOverlay::Reply reply,
+    QString overlay(const QString& owner, const QString& request, quint32 pane, const OverlaySpec& spec, OverlayReply reply,
                     QString& code);
     /// Cancels every overlay of @p owner (a control client that has gone).
     void closeOverlays(const QString& owner, const QString& message);

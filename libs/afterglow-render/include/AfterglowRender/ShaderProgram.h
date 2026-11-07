@@ -51,7 +51,7 @@ struct alignas(16) TerminalUniformsTail
     float uScrollback[4];
     float uSignal[8][4];
     float uPalette[256][4];
-    float uOverlayTransition[4]; ///< progress, unused, unused, 1 in an overlay transition pass
+    float uOverlayTransition[4]; ///< progress, unused, unused, 1 in every pass of the overlay transition pack, its buffer passes too
 };
 
 /// Uniform block of terminal shaders (std140, binding 0): Phosphor's base

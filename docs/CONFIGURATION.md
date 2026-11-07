@@ -16,7 +16,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `cursor` | `true` |  | Animate cursor movement between cells. |
 | `cursorCurve` | `"spring:48,1"` |  | Curve of cursor motion between cells, in the splitCurve format. |
 | `cursorDuration` | `150` | 16–5000 | Duration of cursor motion in milliseconds for curves other than springs. |
-| `overlayCurve` | `"0.4,0,0.2,1"` |  | Curve of the fade of an overlay over its pane (Shaders.overlayTransition), in the splitCurve format. The fade ends the first time that it reaches its end. A curve that overshoots does not bounce back. |
+| `overlayCurve` | `"0.4,0,0.2,1"` |  | Curve of the fade of an overlay over its pane (Shaders.overlayTransition), in the splitCurve format. The fade stops the first time that it reaches its target. A curve that overshoots does not bounce back. |
 | `overlayDuration` | `180` | 16–5000 | Duration of the fade of an overlay (Shaders.overlayTransition) in milliseconds for curves other than springs. |
 | `overviewCurve` | `"spring:12,0.82"` |  | Curve of the pane overview motion, in the splitCurve format. The default spring overshoots slightly. |
 | `overviewDuration` | `450` | 16–5000 | Duration of pane overview motion in milliseconds for curves other than springs. |
@@ -77,7 +77,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `antialiasing` | `"grayscale"` | `"grayscale"`, `"none"`, `"rgb"`, `"bgr"` | How Afterglow smooths glyph edges. The rgb and bgr values use grayscale while transparency or shaders are active. Pane effects and overlay fades count as shaders. Pane effects run while a pane shows a shell on another host, as another user or in a container. |
+| `antialiasing` | `"grayscale"` | `"grayscale"`, `"none"`, `"rgb"`, `"bgr"` | How Afterglow smooths glyph edges. The rgb and bgr values use grayscale while transparency or shaders are active. Pane effects and overlay fades count as shaders. Pane effects also run while a pane shows a shell on another host, as another user or in a container. |
 | `boldFamily` | `""` |  | Font family of bold text. An empty value uses family. |
 | `boldItalicFamily` | `""` |  | Font family of bold italic text. An empty value uses the italic family. |
 | `boldWeight` | `700` | 100–900 | Weight of bold text. It selects a static font and sets the weight axis of a variable font. |

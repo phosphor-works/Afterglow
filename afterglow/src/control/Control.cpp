@@ -361,7 +361,9 @@ QString Control::readRegion(quint32 id, const QString& region, int limit, QVaria
 QString Control::localDirectory(QString& cwd)
 {
     if (cwd == QLatin1String("~") || cwd.startsWith(QLatin1String("~/"))) cwd = QDir::homePath() + cwd.mid(1);
-    if (!cwd.isEmpty() && (!QDir::isAbsolutePath(cwd) || !QFileInfo(cwd).isDir())) return QStringLiteral("cwd must name an existing absolute directory");
+    // A leading /, not QDir::isAbsolutePath: that takes a Qt resource path
+    // (":/"), which no program can start in.
+    if (!cwd.isEmpty() && (!cwd.startsWith(QLatin1Char('/')) || !QFileInfo(cwd).isDir())) return QStringLiteral("cwd must name an existing absolute directory");
     return {};
 }
 

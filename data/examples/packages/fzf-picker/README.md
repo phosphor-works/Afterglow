@@ -8,7 +8,8 @@ An overlay runs a program over a pane and returns its result to the script.
 When [fzf](https://github.com/junegunn/fzf) is installed, fzf runs in the overlay.
 Without fzf, the package shows the select dialog.
 
-Install it in the `scripts/` directory beside the configuration file. For the default configuration, run this from the repository root:
+Install it in the `scripts/` directory beside the configuration file.
+For the default configuration, run this from the repository root:
 
 ```bash
 mkdir -p ~/.config/afterglow/scripts
@@ -31,8 +32,12 @@ This check uses [shell integration](../../../docs/INPUT.md#shell-integration). W
 Because `aglow run` prints the path, you can use the result in a command:
 
 ```bash
-vim "$(aglow run fzf-picker pick)"
+f=$(aglow run fzf-picker pick) && vim "$f"
 ```
+
+When `aglow run` prints no path, it exits with status 1.
+This occurs after Escape, when nothing matches, after a project choice and after a failure.
+A failure also writes its message on standard error.
 
 The list has the saved projects, then the files below the directory of the run.
 For `aglow run`, this is the directory of the shell. For the palette or a key, it is the directory of the pane.

@@ -91,13 +91,29 @@ local function entries(ev, dir)
     return items
 end
 
+-- The end of a pick with no path, after effect when there is one. From a
+-- shell, a failure goes to stderr and the run exits with 1, so that
+-- `f=$(aglow run fzf-picker pick) && vim "$f"` stops. Otherwise a failure
+-- shows as a notification. A cancel has no message.
+local function noPath(ev, message, effect)
+    local effects = {}
+    if effect then table.insert(effects, effect) end
+    if ev.source == "shell" then
+        if message then table.insert(effects, afterglow.output_error(ev, message .. "\n")) end
+        table.insert(effects, afterglow.exit(ev, 1))
+    elseif message then
+        table.insert(effects, afterglow.notify("fzf picker", message, ev.pane.id))
+    end
+    return effects
+end
+
 -- What a choice does: a project opens. A file's absolute path goes to the
 -- client of aglow run, or to the pane's prompt.
 local function act(ev, choice, dir, event)
     local project = string.match(choice, "^project: (.+)$")
-    if project then return afterglow.open_project(project) end
+    if project then return noPath(ev, nil, afterglow.open_project(project)) end
     local file = string.match(choice, "^file: (.+)$")
-    if not file or not usable(file) then return nil end
+    if not file or not usable(file) then return noPath(ev) end
     local path = (if string.sub(dir, -1) == "/" then dir else dir .. "/") .. file
     if ev.source == "shell" then
         return afterglow.output(ev, path .. "\n")
@@ -106,17 +122,14 @@ local function act(ev, choice, dir, event)
     local pane = paneIn(event and event.terminal, ev.pane.id)
     if not pane then return nil end
     if pane.command ~= "" then
-        return afterglow.notify("fzf picker", "The pane runs " .. pane.command .. ". The path was not typed.", pane.id)
+        return noPath(ev, "The pane runs " .. pane.command .. ". The path was not typed.")
     end
     return afterglow.send_text(pane, quote(path) .. " ")
 end
 
 -- An error tells why, except a cancel: the user chose nothing.
 local function failed(ev, err)
-    if err and err.code ~= "cancelled" then
-        return afterglow.notify("fzf picker", err.message, ev.pane.id)
-    end
-    return nil
+    return noPath(ev, if err and err.code ~= "cancelled" then err.message else nil)
 end
 
 function script.run_command(_, ev)
@@ -126,7 +139,7 @@ function script.run_command(_, ev)
     local dir = ev.cwd ~= "" and ev.cwd or ev.pane.cwd
     local items = entries(ev, dir)
     if #items == 0 then
-        return afterglow.notify("fzf picker", "No projects or files to pick from.", ev.pane.id)
+        return noPath(ev, "No projects or files to pick from.")
     end
     -- Only a listed entry acts: the program's output is not typed as it is.
     local listed = {}
@@ -139,9 +152,9 @@ function script.run_command(_, ev)
             {stdin = table.concat(items, "\n"), cwd = dir, title = Title}))
         if not picked then return failed(ev, err) end
         -- Esc (130) and no match (1) choose nothing.
-        if picked.exit_code ~= 0 then return nil end
+        if picked.exit_code ~= 0 then return noPath(ev) end
         local choice = string.gsub(picked.stdout, "\n$", "")
-        if not listed[choice] then return nil end
+        if not listed[choice] then return noPath(ev) end
         return act(ev, choice, dir, event)
     end
     -- Without fzf: the select dialog, with the first entries.
@@ -153,7 +166,7 @@ function script.run_command(_, ev)
     local choice, err, event = afterglow.await(afterglow.select(ev.pane, Title, list))
     if not choice then return failed(ev, err) end
     local item = items[tonumber(choice.id)]
-    if not item then return nil end
+    if not item then return noPath(ev) end
     return act(ev, item, dir, event)
 end
 

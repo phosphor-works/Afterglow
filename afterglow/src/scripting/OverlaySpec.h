@@ -9,6 +9,7 @@
 #include <QStringList>
 #include <QVariantMap>
 
+#include <functional>
 #include <optional>
 
 namespace Afterglow {
@@ -51,7 +52,7 @@ struct OverlaySpec
     static constexpr qsizetype MaxArguments = 64;
     static constexpr qsizetype MaxArgument = 4096;
     /// UTF-8 bytes. A script builds the text in its VM of 16 MiB, beside the
-    /// list that it joins: more could not reach here.
+    /// list that it joins: 4 MiB stays well within that.
     static constexpr qsizetype MaxInput = 4 * 1024 * 1024;
     /// Of the captured answer, as for exec.
     static constexpr qsizetype MaxOutput = 1024 * 1024;
@@ -62,6 +63,10 @@ struct OverlaySpec
     /// listed is refused, not dropped.
     static std::optional<OverlaySpec> read(const QStringList& argv, const QVariantMap& options, QString* error);
 };
+
+/// The answer to an overlay: an error and its code (cancelled), or the
+/// result {exit_code, stdout, truncated}. Called once.
+using OverlayReply = std::function<void(const QString& error, const QString& code, const QVariantMap& result)>;
 
 } // namespace Afterglow
 

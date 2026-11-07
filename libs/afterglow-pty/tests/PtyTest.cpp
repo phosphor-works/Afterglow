@@ -238,10 +238,10 @@ TEST(Pty, ADeferredStartFeedsAndReadsThePipes)
     auto pty = Pty::spawn(std::move(options), listener, &error);
     ASSERT_TRUE(pty) << error;
     {
-        // No callback before start(): no thread reads yet.
-        std::lock_guard lock(listener.mutex);
-        EXPECT_TRUE(listener.output.empty());
-        EXPECT_FALSE(listener.closed);
+        // No callback before start(): a child that ran would have echoed
+        // its input and exited by the end of this wait.
+        std::unique_lock lock(listener.mutex);
+        EXPECT_FALSE(listener.changed.wait_for(lock, 300ms, [&listener] { return !listener.output.empty() || listener.closed; }));
     }
     ASSERT_TRUE(pty->start(&error)) << error;
     ASSERT_TRUE(listener.waitClosed());
@@ -317,8 +317,12 @@ TEST(Pty, TheChildGetsOnlyTheStandardStreams)
         Listener listener;
         std::string error;
         auto pty = Pty::spawn(std::move(options), listener, &error);
-        ASSERT_TRUE(pty) << error;
-        ASSERT_TRUE(listener.waitClosed());
+        // Not ASSERT: the other row still runs.
+        EXPECT_TRUE(pty) << error;
+        if (!pty) continue;
+        const bool closed = listener.waitClosed();
+        EXPECT_TRUE(closed);
+        if (!closed) continue;
         std::lock_guard lock(listener.mutex);
         EXPECT_NE(listener.terminal.find("leaks:[]"), std::string::npos) << listener.terminal;
     }

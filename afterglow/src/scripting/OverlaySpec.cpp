@@ -3,8 +3,6 @@
 
 #include "OverlaySpec.h"
 
-#include <QDir>
-
 namespace Afterglow {
 
 QString EnvironmentOverrides::read(const QVariant& value, QVariantMap& env)
@@ -71,7 +69,9 @@ std::optional<OverlaySpec> OverlaySpec::read(const QStringList& argv, const QVar
     // directory means nothing to the script or the client.
     spec.cwd = option("cwd").toString();
     if (spec.cwd.contains(QChar::Null)) return refuse(QStringLiteral("cwd must be a string without NUL"));
-    if (!spec.cwd.isEmpty() && !QDir::isAbsolutePath(spec.cwd) && spec.cwd != QLatin1String("~")
+    // A leading slash, not QDir::isAbsolutePath: that takes ":/x", a Qt
+    // resource, for absolute, and no program can start there.
+    if (!spec.cwd.isEmpty() && !spec.cwd.startsWith(QLatin1Char('/')) && spec.cwd != QLatin1String("~")
         && !spec.cwd.startsWith(QLatin1String("~/")))
         return refuse(QStringLiteral("cwd must be an absolute path, ~ or a path that starts with ~/"));
     spec.title = option("title").toString();

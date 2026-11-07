@@ -19,6 +19,7 @@
 #include "scripting/ScriptHost.h"
 #include "shell/Aglow.h"
 
+#include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Ipc.h>
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Run.h>
@@ -1407,15 +1408,14 @@ TEST(CtlBinaryTest, SaysThatNoAfterglowListens)
 /// What `afterglow ctl` did against a control target of the test's own,
 /// which answers each call with @p reply and the call's id, and the calls
 /// it got. Afterglow's overlay needs a window: the client needs only the
-/// reply. @p input goes to standard input, else @p inputFile is it.
+/// reply. @p input goes to standard input, else @p inputFd is it.
 struct AgainstTarget
 {
     Isolated outcome;
     QList<QJsonObject> calls;
 };
 
-AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, const QByteArray& input = {},
-                         const QString& inputFile = {})
+AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, const QByteArray& input = {}, int inputFd = -1)
 {
     AgainstTarget done;
     // Under /tmp: TMPDIR can be too long for a socket path.
@@ -1450,16 +1450,15 @@ AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, cons
     QProcess process;
     process.setProcessEnvironment(env);
     process.setWorkingDirectory(runtime.path());
-    if (!inputFile.isEmpty()) process.setStandardInputFile(inputFile);
+    // In the child, over the pipe that QProcess made: only dup2 runs there.
+    if (inputFd >= 0) process.setChildProcessModifier([inputFd] { ::dup2(inputFd, STDIN_FILENO); });
     process.start(QStringLiteral(AFTERGLOW_BINARY), QStringList{QStringLiteral("ctl"), QStringLiteral("overlay")} + args);
     if (!process.waitForStarted()) {
         ADD_FAILURE() << "cannot start afterglow ctl";
         return done;
     }
-    if (inputFile.isEmpty()) {
-        process.write(input);
-        process.closeWriteChannel();
-    }
+    process.write(input);
+    process.closeWriteChannel();
     // The target answers on this thread.
     if (!pumpUntil([&process] { return process.state() == QProcess::NotRunning; }, 15000)) {
         process.kill();
@@ -1516,16 +1515,17 @@ TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)
     EXPECT_TRUE(overlayOptions(r.calls).value(QStringLiteral("cwd")).toString().endsWith(QStringLiteral("/sub")));
 
     // A cut result says so. One without stdout (Control.allowReadText off)
-    // prints nothing, and a status that no shell gives is 1.
+    // prints nothing, not even that, and a status that no shell gives is 1.
     r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 0}, {QStringLiteral("stdout"), QStringLiteral("x")},
                                   {QStringLiteral("truncated"), true}}),
                    args);
     EXPECT_EQ(r.outcome.status, 0);
     EXPECT_EQ(r.outcome.out, QStringLiteral("x"));
     EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: the result was cut at 1 MiB\n"));
-    r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 3}, {QStringLiteral("truncated"), false}}), args);
+    r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 3}, {QStringLiteral("truncated"), true}}), args);
     EXPECT_EQ(r.outcome.status, 3);
     EXPECT_TRUE(r.outcome.out.isEmpty()) << qPrintable(r.outcome.out);
+    EXPECT_TRUE(r.outcome.err.isEmpty()) << qPrintable(r.outcome.err);
     for (const int status : {-1, 256}) {
         r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), status}, {QStringLiteral("stdout"), QString()}}), args);
         EXPECT_EQ(r.outcome.status, 1) << status;
@@ -1548,16 +1548,18 @@ TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)
         EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
         EXPECT_FALSE(overlayOptions(r.calls).contains(QStringLiteral("stdin"))) << qPrintable(flag);
     }
-    // A terminal is no list: the call goes at once, without stdin.
-    const int master = posix_openpt(O_RDWR | O_NOCTTY);
-    ASSERT_GE(master, 0);
-    ASSERT_EQ(grantpt(master), 0);
-    ASSERT_EQ(unlockpt(master), 0);
-    const char* terminal = ptsname(master);
-    ASSERT_NE(terminal, nullptr);
-    AgainstTarget r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {},
-                                 QString::fromLocal8Bit(terminal));
-    ::close(master);
+    // A terminal is no list: the call goes at once, without stdin. Both
+    // ends are opened with O_NOCTTY: neither becomes the controlling
+    // terminal of the test or of afterglow.
+    const AfterglowProto::UniqueFd master(posix_openpt(O_RDWR | O_NOCTTY));
+    ASSERT_TRUE(master.valid());
+    ASSERT_EQ(grantpt(master.get()), 0);
+    ASSERT_EQ(unlockpt(master.get()), 0);
+    const char* name = ptsname(master.get());
+    ASSERT_NE(name, nullptr);
+    const AfterglowProto::UniqueFd terminal(::open(name, O_RDONLY | O_NOCTTY | O_CLOEXEC));
+    ASSERT_TRUE(terminal.valid());
+    AgainstTarget r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, terminal.get());
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
     EXPECT_FALSE(overlayOptions(r.calls).contains(QStringLiteral("stdin")));
     // The limit itself goes. Escapes that JSON needs can take a list under

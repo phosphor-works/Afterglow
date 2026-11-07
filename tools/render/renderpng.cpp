@@ -480,11 +480,15 @@ int run(QGuiApplication& app)
         params.insert(ref, overrides);
     }
     const Afterglow::ShaderLibrary::Refs refs{
-        parser.values(QStringLiteral("background-shader")), parser.values(QStringLiteral("text-shader")),
-        parser.values(QStringLiteral("cursor-shader")), parser.values(QStringLiteral("pane-shader")),
-        parser.values(QStringLiteral("shader")), parser.value(QStringLiteral("overview")),
-        parser.value(QStringLiteral("tab-transition")), parser.value(QStringLiteral("pane-effects")),
-        parser.isSet(QStringLiteral("overlay")) ? parser.value(QStringLiteral("overlay-transition")) : QString()};
+        .background = parser.values(QStringLiteral("background-shader")),
+        .text = parser.values(QStringLiteral("text-shader")),
+        .cursor = parser.values(QStringLiteral("cursor-shader")),
+        .pane = parser.values(QStringLiteral("pane-shader")),
+        .window = parser.values(QStringLiteral("shader")),
+        .overview = parser.value(QStringLiteral("overview")),
+        .tabTransition = parser.value(QStringLiteral("tab-transition")),
+        .paneEffects = parser.value(QStringLiteral("pane-effects")),
+        .overlayTransition = parser.isSet(QStringLiteral("overlay")) ? parser.value(QStringLiteral("overlay-transition")) : QString()};
     const qsizetype wanted = refs.size();
     if (wanted > 0) {
         Afterglow::ShaderLibrary library;

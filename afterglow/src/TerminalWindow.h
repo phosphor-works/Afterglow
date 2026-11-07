@@ -377,7 +377,9 @@ private:
     void updateKeyMode();
     bool copyModeKey(QKeyEvent* e);
     /// Hands the key to the script holding the key mode, if one does.
-    bool scriptKeyModeKey(QKeyEvent* e);
+    /// @p shortcut is set when a binding of the user's took it instead
+    /// (cancel_overlay), so that its repeats are swallowed as a shortcut's.
+    bool scriptKeyModeKey(QKeyEvent* e, bool& shortcut);
     void stopCopyMode();
     QPointer<Pane> m_copyPane;
     struct ScriptDialog { QString owner; QPointer<Pane> pane; ScriptReply reply; QString request; };
@@ -928,8 +930,8 @@ private:
     /// The unfocused dim (when @p dim) and the dividers of a pane drawn at
     /// @p shown, as the window draws them for the current tab: colour
     /// rectangles for the renderer, not a PaneOverlay.
-    void addPaneShading(std::vector<std::pair<QRect, std::uint32_t>>& overlays, const QRect& shown, bool dim,
-                         const QVariantMap& overrides) const;
+    void addPaneShading(std::vector<std::pair<QRect, std::uint32_t>>& shading, const QRect& shown, bool dim,
+                        const QVariantMap& overrides) const;
     /// Advances the tab switch and hands it to the renderer.
     void advanceTabTransition(std::uint8_t backgroundAlpha, bool& holding, bool& animating);
     bool m_overviewAvailable = false; ///< Shaders.overview compiled

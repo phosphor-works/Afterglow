@@ -422,19 +422,23 @@ Use an overlay for an interactive picker, such as fzf.
 
 ```lua
 local items = {"alpha", "beta", "gamma"}
-local r = afterglow.await(afterglow.overlay(ev.pane, {"fzf", "--multi"}, {
+local r, _, event = afterglow.await(afterglow.overlay(ev.pane, {"fzf", "--multi"}, {
     stdin = table.concat(items, "\n"), cwd = ev.pane.cwd, title = "Pick",
 }))
 if r and r.exit_code == 0 then
+    -- The pane as it is now: a program that started during the wait would get the keys.
+    local pane = afterglow.panes(event.terminal, "pane", ev.pane)[1]
+    if not pane or pane.command ~= "" then return nil end
     -- One quoted word for each choice, with no line break: the user presses Enter.
     local words = {}
     for line in string.gmatch(r.stdout, "[^\n]+") do
         table.insert(words, "'" .. string.gsub(line, "'", "'\\''") .. "'")
     end
-    return afterglow.send_text(ev.pane, table.concat(words, " "))
+    return afterglow.send_text(pane, table.concat(words, " "))
 end
 ```
 
+`ev.pane` is the pane at the start of the handler. Read the pane again from the `terminal` of the result event before you type.
 Do not type the output of the program as it is.
 A line break runs the command line. fzf `--multi` writes one line for each choice, so each choice would run as a command.
 A control character in a name, such as Ctrl+D, acts as a key.
@@ -914,6 +918,8 @@ The other limits of areas apply to pane areas too. Pane areas do not count towar
 The keys do not reach the shell. The window shows the label.
 A script needs an `on_key` handler to start a key mode.
 One script at a time holds a window's keyboard. Another script's request returns `busy`.
+A request also returns `busy` while an [overlay](#overlays) of another script has the keyboard of the focused pane.
+In a script's own key mode, the `cancel_overlay` key still cancels the overlay of that script. `on_key` does not get that key.
 
 `on_key` receives `key`, `text`, `ctrl`, `shift`, `alt`, `meta` and `repeat`.
 `key` is the typed character, such as `a` or `A`. Other keys have a name:

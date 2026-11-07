@@ -1334,6 +1334,28 @@ TEST(Config, SchemaDefaultsHaveTheirDeclaredTypes)
     }
 }
 
+// ShaderRefs.h names the Shaders keys for the package manifest, the script
+// API and the benchmark. A key added to the schema alone would be one that
+// they do not know.
+TEST(Config, ShaderKeysOfTheSchemaAreTheSharedLists)
+{
+    const PhosphorConfig::Schema schema = SettingsStore::schema();
+    ASSERT_TRUE(schema.groups.contains(QStringLiteral("Shaders")));
+    QStringList keys;
+    for (const auto& key : schema.groups.value(QStringLiteral("Shaders"))) {
+        keys << key.key;
+        if (ShaderChainKeys.contains(key.key)) {
+            EXPECT_EQ(key.expectedType, QMetaType::QVariantList) << key.key.toStdString();
+        } else if (ShaderEventKeys.contains(key.key)) {
+            EXPECT_EQ(key.expectedType, QMetaType::QString) << key.key.toStdString();
+        }
+    }
+    QStringList expected = ShaderChainKeys + ShaderEventKeys + QStringList{QStringLiteral("params")};
+    keys.sort();
+    expected.sort();
+    EXPECT_EQ(keys, expected);
+}
+
 TEST_F(ConfigTest, StructDefaultsAgreeWithTheSchema)
 {
     // Every field, read from an empty file, is its struct default: the

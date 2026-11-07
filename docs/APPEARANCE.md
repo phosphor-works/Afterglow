@@ -215,7 +215,7 @@ A theme file that does not parse keeps its last colors until it parses again.
 
 An [overlay](SCRIPTING.md#overlays), a program that runs over a pane, fades in and out through `Shaders.overlayTransition`.
 `Animation.overlayCurve` and `Animation.overlayDuration` set the fade.
-The fade ends the first time that it reaches its end. A curve that overshoots, such as a spring, does not bounce back.
+The fade stops the first time that it reaches its target. A curve that overshoots, such as a spring, does not bounce back.
 
 See [shaders](SHADERS.md) for audio, history and visual effects.
 See [bidirectional text](BIDI.md) for text direction settings.

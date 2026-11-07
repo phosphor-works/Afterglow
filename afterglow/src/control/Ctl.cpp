@@ -31,6 +31,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <poll.h>
 #include <unistd.h>
 
 namespace Afterglow {
@@ -356,6 +357,12 @@ std::optional<QString> readStdin(qsizetype limit, const QString& tooLong, int& s
     while (bytes.size() <= limit) {
         const ssize_t got = ::read(STDIN_FILENO, buffer, sizeof buffer);
         if (got < 0 && errno == EINTR) continue;
+        if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            // A descriptor that another program left non-blocking: the input
+            // has not come yet, which is no error.
+            pollfd in{STDIN_FILENO, POLLIN, 0};
+            if (::poll(&in, 1, -1) >= 0 || errno == EINTR) continue;
+        }
         if (got < 0) {
             status = fail(QStringLiteral("cannot read standard input: %1").arg(QString::fromLocal8Bit(std::strerror(errno))));
             return std::nullopt;
@@ -712,7 +719,8 @@ int runCtl(int argc, char** argv)
             const QJsonObject done = result->toObject();
             const QByteArray out = done.value(QLatin1String("stdout")).toString().toUtf8();
             std::fwrite(out.constData(), 1, std::size_t(out.size()), stdout);
-            if (done.value(QLatin1String("truncated")).toBool())
+            // Without read access the reply has no stdout, and nothing was cut here.
+            if (done.contains(QLatin1String("stdout")) && done.value(QLatin1String("truncated")).toBool())
                 fail(QStringLiteral("the result was cut at %1 MiB").arg(OverlaySpec::MaxOutput >> 20));
             const qint64 status = done.value(QLatin1String("exit_code")).toInteger(-1);
             return status >= 0 && status <= 255 ? int(status) : 1;

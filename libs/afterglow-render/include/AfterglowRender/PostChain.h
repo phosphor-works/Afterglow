@@ -70,8 +70,10 @@ struct ShaderRegionState
     /// pane under it, 1 the overlay (uOverlayTransition). Negative elsewhere.
     float overlayTransition = -1.0f;
     /// The pane under a fading overlay (captureOverlayHosts): it draws before
-    /// the frame's own panes, with no text history, and reads the window's
-    /// shared background buffers as they are without stepping them.
+    /// the frame's own panes, with a text history of its own. It reads the
+    /// window's shared background buffers as the last frame left them,
+    /// unless they do not exist yet: then it makes and steps them, and the
+    /// frame's own panes take that result.
     bool overlayHost = false;
 };
 
@@ -403,6 +405,15 @@ private:
     std::vector<HistoryRegion> m_historyRegions;
     bool m_historyValid = false;
     double m_historyTime = 0;
+    static std::vector<HistoryRegion> historyRegions(const std::vector<ShaderRegionState>& panes);
+    /// The text history of the panes under fading overlays: the frame's own
+    /// history holds the overlays' text then. It starts from that history
+    /// where it held the same panes, and goes after a frame without a fade.
+    std::unique_ptr<QRhiTexture> m_hostHistory;
+    std::unique_ptr<QRhiTextureRenderTarget> m_hostHistoryTarget;
+    std::vector<HistoryRegion> m_hostHistoryRegions;
+    double m_hostHistoryTime = 0;
+    std::uint64_t m_hostHistoryFrame = 0; ///< m_frame of the last host composite
     /// The newest event of each EventAge kind among the last recorded frame's
     /// regions, in shader time, and that frame's time: what animated() ages.
     std::array<double, EventAgeKinds> m_eventTimes{-1e6, -1e6, -1e6};

@@ -5527,7 +5527,8 @@ TEST(OverlaySpecTest, ArgumentsAndOptionsKeepTheirLimits)
     // The directory: one that the window expands, never one relative to it.
     for (const char* cwd : {"", "/srv/remote", "~", "~/src"})
         EXPECT_TRUE(accepted(argv, {{QStringLiteral("cwd"), QString::fromLatin1(cwd)}})) << cwd << ": " << error.toStdString();
-    for (const char* cwd : {"src", "./src", "~user", "~user/src"})
+    // ":/" is absolute to QDir: a Qt resource, where no program starts.
+    for (const char* cwd : {"src", "./src", "~user", "~user/src", ":/", ":/x"})
         EXPECT_TRUE(refused(argv, {{QStringLiteral("cwd"), QString::fromLatin1(cwd)}}, "cwd must be an absolute path")) << cwd;
 
     // The environment, by the rules of exec and launch options.
@@ -5673,10 +5674,11 @@ protected:
         return true;
     }
 
-    /// Answers the select dialog with src/it's.c, after @p during runs.
-    void answerSelect(const std::function<void()>& during)
+    /// Answers the select dialog with src/it's.c after @p during runs, or
+    /// cancels it as Escape does when @p cancel is set.
+    void answerSelect(const std::function<void()>& during, bool cancel = false)
     {
-        applyHook = [this, during](const QVariantMap& e) -> ScriptHost::EffectResult {
+        applyHook = [this, during, cancel](const QVariantMap& e) -> ScriptHost::EffectResult {
             if (e.value("kind") != QLatin1String("select")) return {};
             selected = true;
             listed.clear();
@@ -5686,6 +5688,7 @@ protected:
                 if (listed.last() == QLatin1String("file: src/it's.c")) pick = item.toMap();
             }
             if (during) during();
+            if (cancel) return {QStringLiteral("Dialog canceled"), {}, QStringLiteral("cancelled")};
             if (pick.isEmpty()) return {QStringLiteral("not listed"), {}, QStringLiteral("cancelled")};
             return {{}, pick, {}};
         };
@@ -5790,6 +5793,44 @@ TEST_F(FzfPicker, FromAShellThePathGoesToStandardOutput)
     EXPECT_EQ(client.out, files.path() + QStringLiteral("/src/it's.c\n"));
     EXPECT_TRUE(std::none_of(rec.applied.cbegin(), rec.applied.cend(),
                              [](const QVariantMap& e) { return e.value("kind") == QLatin1String("send_text"); }));
+}
+
+TEST_F(FzfPicker, ACancelledPickFromAShellExitsWithOne)
+{
+    ASSERT_TRUE(install(QStringLiteral("/nonexistent/afterglow-test/fzf")));
+    answerSelect({}, true);
+    Client& client = newClient();
+    start(QStringLiteral("fzf-picker"), QStringLiteral("pick"), client, {}, 7, std::nullopt, nullptr, nullptr, files.path());
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }, 10000));
+    applyHook = {};
+    EXPECT_TRUE(selected);
+    // No path: `f=$(aglow run fzf-picker pick) && vim "$f"` stops. A
+    // cancel is no failure, so it writes no message, and nothing shows on
+    // the desktop.
+    EXPECT_EQ(client.status, 1);
+    EXPECT_TRUE(client.out.isEmpty()) << client.out.toStdString();
+    EXPECT_TRUE(client.err.isEmpty()) << client.err.toStdString();
+    EXPECT_TRUE(std::none_of(rec.applied.cbegin(), rec.applied.cend(), [](const QVariantMap& e) {
+        return e.value("kind") == QLatin1String("send_text") || e.value("kind") == QLatin1String("notify");
+    }));
+}
+
+TEST_F(FzfPicker, AFailedPickFromAShellWritesItsErrorOnStderr)
+{
+    ASSERT_TRUE(install(QStringLiteral("/nonexistent/afterglow-test/fzf")));
+    applyHook = [](const QVariantMap& e) -> ScriptHost::EffectResult {
+        if (e.value("kind") != QLatin1String("select")) return {};
+        return {QStringLiteral("A script dialog is open"), {}, QStringLiteral("busy")};
+    };
+    Client& client = newClient();
+    start(QStringLiteral("fzf-picker"), QStringLiteral("pick"), client, {}, 7, std::nullopt, nullptr, nullptr, files.path());
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }, 10000));
+    applyHook = {};
+    EXPECT_EQ(client.status, 1);
+    EXPECT_TRUE(client.out.isEmpty()) << client.out.toStdString();
+    EXPECT_TRUE(client.err.contains(QLatin1String("A script dialog is open"))) << client.err.toStdString();
+    EXPECT_TRUE(std::none_of(rec.applied.cbegin(), rec.applied.cend(),
+                             [](const QVariantMap& e) { return e.value("kind") == QLatin1String("notify"); }));
 }
 
 int main(int argc, char** argv)

@@ -833,6 +833,10 @@ void TerminalWindow::closePane(Pane* pane)
         QObject::disconnect(overlay.data(), nullptr, this, nullptr);
         overlay->cancel(QStringLiteral("The pane under the overlay closed"));
         if (overlay) overlayEnded(pane, overlay, true);
+    } else if (const auto fade = m_overlayFades.find(pane); fade != m_overlayFades.end()) {
+        // An overlay that ended still fades out: from halfway it is what shows.
+        if (fade->second.last && overlayFade(pane).first >= 0.5) shownFrame = fade->second.last;
+        m_overlayFades.erase(fade);
     }
     const int index = tabOf(pane);
     // A pane that already left its tab (its tab closed, and its program
@@ -1649,7 +1653,7 @@ void TerminalWindow::renderNow()
     }
 
     std::vector<AfterglowRender::WindowRenderer::Pane> panes;
-    std::vector<std::pair<QRect, std::uint32_t>> overlays;
+    std::vector<std::pair<QRect, std::uint32_t>> shading;
     const bool multiple = m_splits->paneCount() > 1;
     bool holding = false;
     bool animating = m_shaderControls.advance();
@@ -1693,22 +1697,20 @@ void TerminalWindow::renderNow()
         }
         panes.push_back(wp);
         const QRect shown = wp.params.rect;
-        addPaneShading(overlays, shown, multiple && p != m_focused, overrides);
+        addPaneShading(shading, shown, multiple && p != m_focused, overrides);
         if (PaneMotion& pm = motion(p); pm.bell.isAnimating()) {
             pm.bell.advance();
-            // A colour the program set (OSC 21) wins over the theme's.
-            const auto& snap = p->snapshot();
+            // A colour the program set (OSC 21) wins over the theme's: the
+            // program that shows, an overlay's over its host.
+            const auto& snap = inputPane(p)->snapshot();
             const HighlightColors& colors = m_settings.settings().colors;
             const std::uint32_t rgb = snap.visualBellColorSet ? snap.visualBellColor
                                                               : packRgba(colors.visualBell.r, colors.visualBell.g, colors.visualBell.b);
             const double strength = std::clamp(pm.bell.value(), 0.0, 1.0) * std::clamp(colors.visualBellIntensity, 0.0, 1.0);
-            overlays.emplace_back(shown, (rgb & 0x00ffffffu) | (std::uint32_t(std::lround(strength * 255)) << 24));
+            shading.emplace_back(shown, (rgb & 0x00ffffffu) | (std::uint32_t(std::lround(strength * 255)) << 24));
             animating |= pm.bell.isAnimating();
         }
     });
-    // A fade whose host this frame did not draw (another tab, a zoom) would
-    // not advance, and would hold audio capture: its overlay switches now.
-    std::erase_if(m_overlayFades, [this](const auto& fade) { return m_splits->rectOf(fade.first).isEmpty(); });
     // The overview shows other tabs' panes too, each prepared like a visible one.
     AfterglowRender::WindowRenderer::Overview overview{m_overview.open, float(m_overview.amount.value()),
         float(m_overview.position.value()), m_overview.changedAt, m_overview.movedAt, m_currentTab, {}};
@@ -1723,6 +1725,12 @@ void TerminalWindow::renderNow()
     m_renderer->setOverview(std::move(overview));
     advanceTabTransition(backgroundAlpha, holding, animating);
     advancePaneEffects(animating);
+    // A fade whose host no frame draws from now on (another tab once a
+    // switch or the overview is over, a zoom) would not advance, and would
+    // hold audio capture: its overlay switches now. A host drawn on a card
+    // or in the tab a switch leaves keeps its fade: prepareOtherTab
+    // advances it.
+    std::erase_if(m_overlayFades, [this](const auto& fade) { return !paneDrawn(fade.first); });
     // Split labels, in logical pixels for the chrome.
     QVariantList titles;
     if (multiple && m_settings.settings().window.paneTitles && !m_renderer->overviewShowing()) {
@@ -1811,7 +1819,7 @@ void TerminalWindow::renderNow()
     // is not retried, not even for an animation: every retry would fail the
     // same way and spin the loop.
     using FrameResult = AfterglowRender::WindowRenderer::FrameResult;
-    const FrameResult frame = m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
+    const FrameResult frame = m_renderer->render(panes, shading, clear, chrome, m_chrome->serial());
     if (frame == FrameResult::Retry)
         scheduleRender();
     updateAudioCapture();
@@ -3971,7 +3979,10 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
     // its repeats would close the overview, copy mode or the palette again.
     if (repeatOfShortcut && (chrome || keyboardModeActive())) return;
     if (copyModeKey(e)) { m_consumedKeys.insert(physicalKey, false); return; }
-    if (!chrome && scriptKeyModeKey(e)) { m_consumedKeys.insert(physicalKey, false); return; }
+    if (bool shortcut = false; !chrome && scriptKeyModeKey(e, shortcut)) {
+        m_consumedKeys.insert(physicalKey, shortcut);
+        return;
+    }
     if (!chrome && m_overview.open) {
         m_consumedKeys.insert(physicalKey, false);
         overviewKey(e);
@@ -4542,6 +4553,13 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
         && !m_hover.url.isEmpty()) {
         openLink(m_hover.url);
         return;
+    }
+    // Buttons another pane's program still holds (an overlay opened over it
+    // meanwhile): a press here would have its release go there. Nothing
+    // starts until they are up, so each press pairs with its release.
+    if (m_reportedButtons != Qt::NoButton && m_reportedPane != target) {
+        if (takesInput(m_reportedPane)) return;
+        m_reportedButtons = Qt::NoButton; // its pane left: no release is owed
     }
     if (e->button() == Qt::LeftButton && target->hasDragDrop()) target->dragDrop()->press(e->position().toPoint());
     const int code = mouseButtonCode(e->button());

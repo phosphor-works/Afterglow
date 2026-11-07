@@ -370,7 +370,7 @@ PhosphorConfig::Schema buildSchema()
                                "value aligns vertical positions only. The full value aligns both axes.")),
         enumKey(QStringLiteral("antialiasing"), AntialiasingChoices, font.antialiasing,
                 QStringLiteral("How Afterglow smooths glyph edges. The rgb and bgr values use grayscale while transparency or shaders "
-                               "are active. Pane effects and overlay fades count as shaders. Pane effects run while a pane shows "
+                               "are active. Pane effects and overlay fades count as shaders. Pane effects also run while a pane shows "
                                "a shell on another host, as another user or in a container.")),
         doubleKey(QStringLiteral("gamma"), font.gamma, 0.5, 3.0,
                   QStringLiteral("Glyph coverage gamma. A value of 1 preserves coverage. Higher values increase edge coverage.")),
@@ -670,7 +670,7 @@ PhosphorConfig::Schema buildSchema()
                               "whose shell moves to another host, user or container takes the same time.")),
         curveKey(QStringLiteral("overlayCurve"), anim.overlayCurve,
                  QStringLiteral("Curve of the fade of an overlay over its pane (Shaders.overlayTransition), in the "
-                                "splitCurve format. The fade ends the first time that it reaches its end. A curve that "
+                                "splitCurve format. The fade stops the first time that it reaches its target. A curve that "
                                 "overshoots does not bounce back.")),
         intKey(QStringLiteral("overlayDuration"), anim.overlayDuration, 16, 5000,
                QStringLiteral("Duration of the fade of an overlay (Shaders.overlayTransition) in milliseconds for curves "

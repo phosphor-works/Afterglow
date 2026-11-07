@@ -177,7 +177,7 @@ QVariantMap scriptKeyEvent(const QKeyEvent* e)
 }
 } // namespace
 
-bool TerminalWindow::scriptKeyModeKey(QKeyEvent* e)
+bool TerminalWindow::scriptKeyModeKey(QKeyEvent* e, bool& shortcut)
 {
     if (!m_scriptKeyMode) return false;
     // The user's ways out, which no script can take. An overlay under the
@@ -187,7 +187,11 @@ bool TerminalWindow::scriptKeyModeKey(QKeyEvent* e)
         performAction(action);
         return true;
     }
-    if (action == Action::CancelOverlay && performAction(action)) return true;
+    if (action == Action::CancelOverlay && performAction(action)) {
+        // Its repeats would reach on_key once the overlay is gone.
+        shortcut = true;
+        return true;
+    }
     // A modifier on its own is not a key for on_key: it comes with the key it changes.
     switch (e->key()) {
     case Qt::Key_Shift: case Qt::Key_Control: case Qt::Key_Alt: case Qt::Key_Meta:

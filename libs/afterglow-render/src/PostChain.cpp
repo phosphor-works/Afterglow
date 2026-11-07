@@ -232,6 +232,7 @@ void PostChain::setChains(ShaderChains chains)
     m_regionBudgetWarned = m_imageBudgetWarned = false;
     m_chains = std::move(chains);
     m_historyValid = false;
+    m_hostHistoryRegions.clear();
 }
 
 void PostChain::releaseTabImages()
@@ -265,6 +266,9 @@ void PostChain::releaseTargets()
     m_previousText.reset();
     m_historyRegions.clear();
     m_historyValid = false;
+    m_hostHistoryTarget.reset();
+    m_hostHistory.reset();
+    m_hostHistoryRegions.clear();
     for (auto& t : m_layerTargets) t.reset();
     for (auto& target : m_windowTargets) target.reset();
     m_gridTarget.reset();
@@ -343,6 +347,12 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
     // the panes under fading overlays) lives while frames use it, and goes
     // after one that did not.
     if (!std::exchange(m_tabImageUsed, false) || resized) releaseTabImages();
+    // The host history lives as long as fades run, as the tab image does.
+    if (m_hostHistory && m_hostHistoryFrame + 1 < m_frame) {
+        m_hostHistoryTarget.reset();
+        m_hostHistory.reset();
+        m_hostHistoryRegions.clear();
+    }
     // Layer textures come and go with the layer chains.
     const bool layersReady = layered() == bool(m_textures[FirstLayerTexture]);
     const bool historyReady = textHistory() == bool(m_previousText);
@@ -595,11 +605,14 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
     // bind it before that.
     QRhiTexture* audio = audioReactive() ? m_device.audioTexture() : nullptr;
     // The history holds the frame's own panes' text: under a fading overlay
-    // that is the overlay's, so the pane under it reads none.
-    if (m_previousText && program && program->readsPreviousText())
+    // that is the overlay's, so the pane under it reads its own.
+    if (m_previousText && program && program->readsPreviousText()) {
         history = !region                ? m_previousText.get()
-            : region->overlayHost        ? parameterTexture({}, updates)
-                                         : localTexture(m_previousText.get(), region->rect, updates);
+            : !region->overlayHost       ? localTexture(m_previousText.get(), region->rect, updates)
+            : m_hostHistory              ? localTexture(m_hostHistory.get(), region->rect, updates)
+            : updates                    ? parameterTexture({}, updates)
+                                         : input;
+    }
     // Phosphor's binding table (PhosphorShaders::Bindings), with the canvas in
     // the consumer slot and the previous text in the first free one.
     namespace Bindings = PhosphorShaders::Bindings;
@@ -1047,14 +1060,9 @@ void PostChain::composite(RenderFrame& frame, const std::vector<ShaderRegionStat
 {
     auto* cb = frame.commands();
     // The text history is the frame's own panes': the panes under fading
-    // overlays leave it as it is.
+    // overlays leave it as it is, and keep their own.
     if (m_previousText && !hosts) {
-        std::vector<HistoryRegion> regions;
-        for (const auto& pane : panes) {
-            regions.emplace_back(pane.snapshot ? pane.snapshot->identity.value() : 0, pane.rect,
-                                 pane.snapshot ? pane.snapshot->defaultBg : 0,
-                                 pane.snapshot ? pane.snapshot->defaultFg : 0, pane.cellSize, pane.backgroundOpacity);
-        }
+        std::vector<HistoryRegion> regions = historyRegions(panes);
         // Never carry another tab's text, or text in its old position, into
         // newly exposed panes. Clock resets also start a fresh history.
         if (!m_historyValid || regions != m_historyRegions || time.time < m_historyTime) {
@@ -1063,6 +1071,42 @@ void PostChain::composite(RenderFrame& frame, const std::vector<ShaderRegionStat
         }
         m_historyRegions = std::move(regions);
         m_historyTime = time.time;
+    } else if (m_previousText) {
+        std::vector<HistoryRegion> regions = historyRegions(panes);
+        const bool goesOn = m_hostHistory && m_hostHistoryFrame + 1 == m_frame && regions == m_hostHistoryRegions
+            && time.time >= m_hostHistoryTime;
+        if (!goesOn) {
+            QRhi* rhi = m_device.rhi();
+            if (!m_hostHistory) {
+                m_hostHistory.reset(rhi->newTexture(QRhiTexture::Format(m_format), m_size, 1,
+                                                    QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
+                if (!m_hostHistory->create()) throw std::runtime_error("overlay host history allocation failed");
+                m_hostHistoryTarget.reset(rhi->newTextureRenderTarget({m_hostHistory.get()}));
+                m_hostHistoryTarget->setRenderPassDescriptor(m_gridPass.get());
+                if (!m_hostHistoryTarget->create()) throw std::runtime_error("overlay host history target failed");
+            }
+            frame.beginPass(m_hostHistoryTarget.get(), Qt::transparent, {1.0f, 0});
+            frame.endPass();
+            // A fade starts: each pane that showed last frame where it is now
+            // takes its trails from the frame's history, which still holds them.
+            QRhiResourceUpdateBatch* seed = rhi->nextResourceUpdateBatch();
+            if (m_historyValid && time.time >= m_historyTime) {
+                for (const HistoryRegion& region : regions) {
+                    if (std::find(m_historyRegions.begin(), m_historyRegions.end(), region) == m_historyRegions.end()) continue;
+                    const QRect rect = std::get<QRect>(region).intersected(QRect(QPoint(), m_size));
+                    if (rect.isEmpty()) continue;
+                    QRhiTextureCopyDescription copy;
+                    copy.setSourceTopLeft(rect.topLeft());
+                    copy.setDestinationTopLeft(rect.topLeft());
+                    copy.setPixelSize(rect.size());
+                    seed->copyTexture(m_hostHistory.get(), m_previousText.get(), copy);
+                }
+            }
+            cb->resourceUpdate(seed);
+        }
+        m_hostHistoryRegions = std::move(regions);
+        m_hostHistoryTime = time.time;
+        m_hostHistoryFrame = m_frame;
     }
     int ubo = m_nextUbo;
     const int background = runLayerChain(frame, m_chains.background, m_layerTexture[0], panes, time, ubo, 0);
@@ -1086,6 +1130,17 @@ void PostChain::composite(RenderFrame& frame, const std::vector<ShaderRegionStat
         cb->setShaderResources(compositeBindings(int(uboBase + i), background, text, cursor, other));
         cb->draw(3);
     }
+}
+
+std::vector<PostChain::HistoryRegion> PostChain::historyRegions(const std::vector<ShaderRegionState>& panes)
+{
+    std::vector<HistoryRegion> regions;
+    for (const auto& pane : panes) {
+        regions.emplace_back(pane.snapshot ? pane.snapshot->identity.value() : 0, pane.rect,
+                             pane.snapshot ? pane.snapshot->defaultBg : 0,
+                             pane.snapshot ? pane.snapshot->defaultFg : 0, pane.cellSize, pane.backgroundOpacity);
+    }
+    return regions;
 }
 
 void PostChain::finishFrame(QRhiCommandBuffer* cb)
@@ -1232,6 +1287,13 @@ int PostChain::runRegionChain(RenderFrame& frame, const std::vector<ShaderProgra
 void PostChain::captureOverlayHosts(RenderFrame& frame, const std::vector<ShaderRegionState>& hosts, const ShaderFrameTime& time)
 {
     if (hosts.empty()) return;
+    // Their text layer, as composite(hosts) left it, is their history for
+    // the next frame of the fade. The frame's own panes draw their layers next.
+    if (m_hostHistory && m_hostHistoryFrame == m_frame) {
+        QRhiResourceUpdateBatch* keep = m_device.rhi()->nextResourceUpdateBatch();
+        keep->copyTexture(m_hostHistory.get(), m_textures[m_layerTexture[int(Layer::Text)]].get());
+        frame.commands()->resourceUpdate(keep);
+    }
     // The panes under the overlays get the pane shaders that they get with no
     // overlay, so the transition starts on exactly what showed. Their buffers
     // are their own, by snapshot, and go on from frame to frame.

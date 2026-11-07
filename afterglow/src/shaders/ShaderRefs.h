@@ -26,10 +26,10 @@ struct ShaderRefs
     QStringList cursor = {};
     QStringList pane = {};
     QStringList window = {};
-    QString overview; ///< the pane overview; empty for none
-    QString tabTransition; ///< tab switches; empty for none
-    QString paneEffects; ///< panes opening and closing; empty for none
-    QString overlayTransition; ///< overlays fading in and out over panes; empty for none
+    QString overview = {}; ///< the pane overview; empty for none
+    QString tabTransition = {}; ///< tab switches; empty for none
+    QString paneEffects = {}; ///< panes opening and closing; empty for none
+    QString overlayTransition = {}; ///< overlays fading in and out over panes; empty for none
     bool operator==(const ShaderRefs&) const = default;
     /// The packs that the references name, as ShaderChains::size() counts
     /// the programs that load.

@@ -413,22 +413,25 @@ The pass's input is the pane with the overlay. `overlayHostTexel(uv)` reads the 
 Both images have the pane's layer and pane shaders. The window shaders then run over the result.
 The pane under the overlay keeps running. While the overlay fades in, its program also runs.
 While the overlay fades out, its program has ended, and the overlay shows the program's last frame.
-The pane under the overlay reads no text history. Its `uPreviousText` is transparent.
+The pane under the overlay keeps a text history of its own. Its `uPreviousText` holds its own text from the last frame, never the overlay's.
+A fade that starts keeps the trails that the pane had.
 A [`windowBackground`](#pass-order-and-coordinates) pack's buffers step once a frame, for the panes that show.
 The pane under the overlay reads those buffers as the last frame left them.
+When the buffers do not exist yet, the pane under the overlay makes them. They then step once in that frame.
 `uScrollback` counts the history of the pane under the overlay, also in the overlay's passes. The overlay's own history does not count.
 The window shaders take the focused pane's inputs, such as its cursor and palette, from the pane under the overlay until the fade is halfway.
 After that, they take them from the overlay.
 `overlayTransitionProgress()` runs from 0, the pane under the overlay, to 1, the overlay. It stays between 0 and 1.
-The fade ends the first time that it reaches its end. A curve that overshoots, such as a spring, does not bounce back.
+The fade stops the first time that it reaches its target. A curve that overshoots, such as a spring, does not bounce back.
 `Animation.overlayCurve` and `Animation.overlayDuration` time it. The fade out runs the same pack back to 0, from where the fade is.
 Draw the pane at progress 0 and the overlay at 1. The fade then starts and ends without a jump.
 `overlayTransitionActive()` is true in every pass of this pack and false in every other pass.
 The pack's buffer passes can use all three helpers.
-The pane under the overlay is drawn only while a fade runs. It goes into the window-sized tab image.
+The pane under the overlay is drawn only while a fade runs. It goes into the window-sized tab image. Its text history lives only while fades run.
 The overview, a tab switch and a closing pane also use that image.
-While one of them shows, or while the window is hidden, an overlay opens and closes without a fade.
-A fade can already run when one of them starts. That fade then switches at its halfway point.
+While one of them shows, while the pane is not on screen or while the window is hidden, an overlay opens and closes without a fade.
+A fade can already run when one of them starts. If that one takes the tab image, the fade switches at its halfway point.
+An overview of one tab does not take the tab image, so a fade that runs in it still blends.
 Without `Shaders.overlayTransition`, or when its pack does not load, an overlay also opens and closes without a fade.
 [Overlay Fade](../data/shaders/overlay-fade/effect.frag) blends the two images.
 

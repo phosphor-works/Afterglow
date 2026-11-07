@@ -256,6 +256,10 @@ TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
     const QString missingDirectory = m_dir.filePath(QStringLiteral("missing"));
     EXPECT_EQ(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("cwd"), missingDirectory}}}),
               QStringLiteral("cwd must name an existing absolute directory"));
+    // Qt takes a resource path for absolute, and its root for a directory:
+    // the spec refuses it before the directory check.
+    EXPECT_EQ(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("cwd"), QStringLiteral(":/")}}}),
+              QStringLiteral("cwd must be an absolute path, ~ or a path that starts with ~/"));
     // Past the checks, a failure has its own code: here no pane, also for
     // the focused pane when there is none. ~ is the home directory, which
     // exists.

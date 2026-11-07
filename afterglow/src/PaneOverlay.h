@@ -36,9 +36,7 @@ class PaneOverlay : public QObject
     Q_OBJECT
 
 public:
-    /// The answer: an error and its code (cancelled), or the result
-    /// {exit_code, stdout, truncated}. Called once.
-    using Reply = std::function<void(const QString& error, const QString& code, const QVariantMap& result)>;
+    using Reply = OverlayReply;
 
     /// What the window gives the program, as for a pane of its own.
     struct Launch
