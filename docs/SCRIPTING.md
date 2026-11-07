@@ -922,7 +922,7 @@ Key releases are not reported.
 `open` opens it from the pane. `close` closes it and keeps the focus. `choose` focuses the highlighted pane.
 `open` fails with `operation_failed` while another script holds a key mode.
 The default operation is `open`.
-When the chosen pane is in another tab, that tab shows after the overview has closed.
+When the chosen pane is in another tab, that tab shows as the overview closes.
 `overview_move(pane, step)` moves the highlight by `step` cards. `step` is a whole number from -32 to 32.
 The default `step` is 0.
 `overview_move(pane, 0, target)` highlights the pane `target`. `target` is a pane record or ID.

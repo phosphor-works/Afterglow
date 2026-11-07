@@ -1222,8 +1222,6 @@ void TerminalWindow::switchTab(int index)
     if (index == m_currentTab && m_splits) {
         return; // already shown: switching would snap its animations
     }
-    // The user went somewhere else while the overview closed onto a card.
-    m_overview.reveal = nullptr;
     if (m_splits && m_currentTab < int(m_tabs.size())) {
         m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
     }
@@ -1439,9 +1437,6 @@ void TerminalWindow::openTabMenu(int index, const QPointF& pos)
 
 void TerminalWindow::setFocusedPane(Pane* pane)
 {
-    // A pane focused while the overview closes onto another tab (a click,
-    // afterglow ctl, a script) wins over the chosen card.
-    if (pane) m_overview.reveal = nullptr;
     if (pane == m_focused) {
         return;
     }
@@ -1458,7 +1453,7 @@ void TerminalWindow::setFocusedPane(Pane* pane)
         inputPane(m_focused)->setPreedit({}, 0);
     }
     // The input method is the application's: reset it only for this window's composition.
-    if (isActive() && !m_keepComposition) QGuiApplication::inputMethod()->reset();
+    if (isActive()) QGuiApplication::inputMethod()->reset();
     stopCopyMode();
     cancelKeyMode();
     // Hints and Unicode input act on the focused pane: they do not carry over.
@@ -2009,13 +2004,6 @@ bool TerminalWindow::event(QEvent* e)
         if (keyboardModeActive()) {
             ime->accept();
             return true;
-        }
-        if (!ime->commitString().isEmpty() || !ime->preeditString().isEmpty()) {
-            // The composition began after the overview closed (opening it
-            // reset the input method), so it is for the chosen card.
-            const bool was = std::exchange(m_keepComposition, true);
-            finishOverviewReveal();
-            m_keepComposition = was;
         }
         // Terminal output is not an editable document. Never translate arbitrary
         // IME replacement ranges into destructive shell keystrokes.
@@ -3920,9 +3908,6 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
     const auto taken = m_consumedKeys.constFind(physicalKey);
     const bool repeatOfTaken = repeat && taken != m_consumedKeys.constEnd();
     const bool repeatOfShortcut = repeatOfTaken && *taken;
-    // Typed while the overview closes onto another tab: the keys go there.
-    // Not the held key that chose the card, whose repeats go nowhere.
-    if (!repeatOfTaken) finishOverviewReveal();
     if (!repeat) {
         m_consumedKeys.remove(physicalKey);
         m_sentKeys.remove(physicalKey);
@@ -4295,7 +4280,6 @@ bool TerminalWindow::sendPasteEvent(QClipboard::Mode mode)
 
 void TerminalWindow::paste(QClipboard::Mode mode)
 {
-    finishOverviewReveal();
     // An overlay's program gets the paste while one runs over the pane.
     Pane* target = inputPane(m_focused);
     if (!target) {
@@ -4474,8 +4458,6 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
         closeOverview(e->button() == Qt::LeftButton ? m_overview.highlighted.data() : nullptr);
         return;
     }
-    // A click while the overview closes onto another tab lands there.
-    finishOverviewReveal();
     if (routePointerToChrome(e, e->position(), true, false)) {
         return;
     }
@@ -4872,9 +4854,6 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
         if (steps) moveOverview(current - steps, steps > 0 ? -1 : 1);
         return;
     }
-    // As a click: the wheel while the overview closes onto another tab
-    // turns there, and a dock's script sees that tab current.
-    finishOverviewReveal();
     if (routePointerToChrome(e, e->position(), false, false)) {
         return;
     }

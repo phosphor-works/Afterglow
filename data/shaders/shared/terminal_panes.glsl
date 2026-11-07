@@ -120,7 +120,7 @@ int focusedPane() {
 }
 
 // -1 when no card is highlighted. While the overview closes, the card it
-// closes onto, which may be in another tab and not focused yet.
+// closes onto.
 int highlightedPane() {
     return uPaneState.z;
 }
