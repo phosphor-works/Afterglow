@@ -1216,7 +1216,7 @@ TEST(ScriptTasksTest, OwnerCleanupStopsTimersAndDropsAsyncCallbacks)
     EXPECT_EQ(callbacks, 1);
 }
 
-TEST(ScriptTasksTest, FileTasksAndExecRefuseADirectoryThatIsNotAbsolute)
+TEST(ScriptTasksTest, FileTasksAndExecRefuseRelativeResourceLongAndNulPaths)
 {
     QTemporaryDir dir;
     ScriptTasks tasks;

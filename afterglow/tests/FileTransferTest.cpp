@@ -18,8 +18,8 @@
 #include <algorithm>
 #include <fcntl.h>
 #include <functional>
-#include <optional>
 #include <gtest/gtest.h>
+#include <optional>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>

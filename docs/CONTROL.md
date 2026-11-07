@@ -268,7 +268,7 @@ A result over 1 MiB is cut, and a message goes to standard error.
 | Option | Behavior |
 | --- | --- |
 | `--capture MODE` | `stdout` (the default), `file` or `none`, as the `capture` option |
-| `--cwd DIR` | The program's directory. The default is the directory of `afterglow ctl`. The directory must exist. When the directory of `afterglow ctl` was removed, the command fails. Then give an absolute `--cwd` or one that starts with `~`. |
+| `--cwd DIR` | The program's directory. The default is the directory of `afterglow ctl`. The directory must exist. When the directory of `afterglow ctl` was removed, `afterglow ctl` exits with status 1. Then give an absolute `--cwd`, `~` or one that starts with `~/`. |
 | `--title TEXT` | The pane's title while the overlay runs |
 | `-n`, `--no-stdin` | Standard input does not go to the program. |
 
