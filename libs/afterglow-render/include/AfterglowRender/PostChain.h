@@ -75,6 +75,9 @@ struct ShaderRegionState
     /// unless they do not exist yet: then it makes and steps them, and the
     /// frame's own panes take that result.
     bool overlayHost = false;
+    /// A popup over the pane, in framebuffer pixels: the text there is the
+    /// popup's. Empty without one, and for the pane under a fading popup.
+    QRect popup;
 };
 
 /// Seconds are doubles until they are written to the uniforms: a float of
@@ -400,8 +403,9 @@ private:
     std::unique_ptr<QRhiTexture> m_previousText;
     std::unique_ptr<QRhiTextureRenderTarget> m_historyTarget;
     /// A region's identity: PaneSnapshot::identity (0 for a window-wide
-    /// region), rectangle, default colours, cell size and opacity.
-    using HistoryRegion = std::tuple<std::uint64_t, QRect, std::uint32_t, std::uint32_t, QSizeF, float>;
+    /// region), rectangle, default colours, cell size, opacity, and the
+    /// popup over it, whose text its history holds there.
+    using HistoryRegion = std::tuple<std::uint64_t, QRect, std::uint32_t, std::uint32_t, QSizeF, float, QRect>;
     std::vector<HistoryRegion> m_historyRegions;
     bool m_historyValid = false;
     double m_historyTime = 0;

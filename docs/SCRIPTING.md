@@ -416,7 +416,8 @@ Unload and pane closure remove all contributions.
 ## Overlays
 
 An overlay runs a program over a pane and returns the result to the script.
-The program gets a terminal of its own, in the place of the pane, with the input focus.
+The program gets a terminal of its own, with the input focus.
+It takes the place of the pane, or a part of the pane as a [popup](#popups).
 The pane under it keeps running, and its program keeps its output.
 Use an overlay for an interactive picker, such as fzf.
 
@@ -452,36 +453,10 @@ The [fzf picker package](../data/examples/packages/fzf-picker/README.md) does no
 | `capture` | Where `stdout` of the result comes from. `"stdout"` (the default) reads the program's standard output. `"file"` sets `AFTERGLOW_RESULT` to the path of a new file that only you can read, and reads that file. `"none"` returns an empty `stdout`. |
 | `cwd` | The program's directory: an absolute path, `~`, or a path that starts with `~/`. Another value refuses the effect. When the directory does not exist on this machine, for example a path that a remote shell reported, the program starts in `$HOME`. |
 | `env` | Variables for the program, as for `exec`. `false` removes a variable. At most 256 variables and 64 KiB of names and values. |
-| `title` | Shows as the pane's title while the overlay runs, at most 512 characters. A border shows it in its top edge. |
-| `width`, `height` | Make the overlay a popup. Give a number of cells, such as `60`, or a percentage of the pane's grid as a string, such as `"80%"`. The border is part of the size. A side that you do not give takes the whole grid. Without both, the overlay takes the whole pane. |
-| `position` | Where a popup is in the pane: `"center"` (the default), `"top"`, `"bottom"`, `"left"`, `"right"`, `"top-left"`, `"top-right"`, `"bottom-left"` or `"bottom-right"`. |
-| `border` | `true` puts a line one cell wide around the overlay, in the theme's popup border color (`Colors.popupBorder`), with the title in its top edge. The default is `true` for a popup and `false` for a full-pane overlay. |
-
-### Popups
-
-A popup is an overlay that takes a part of the pane.
-The pane stays visible around it and keeps running. The pane's docks stay where they are.
-
-```lua
-local r = afterglow.await(afterglow.overlay(ev.pane, "fzf", {
-    stdin = table.concat(items, "\n"), title = "Pick", width = "80%", height = "60%",
-}))
-```
-
-| Rule | Value |
-| --- | --- |
-| Width | 1 to 10,000 cells, or `"1%"` to `"100%"` of the pane's columns |
-| Height | 1 to 10,000 cells, or `"1%"` to `"100%"` of the pane's rows |
-| Largest | The pane's grid. A larger size is cut to the grid. |
-| Smallest | 2 columns by 1 row inside the border. A smaller size grows to this. |
-| Border | One cell on each side. When the pane has no room for it, the popup has no border. |
-
-Each layout places the popup again: a resize, a zoom, a font change or a dock that comes or goes.
-The program gets `SIGWINCH` when its size changes.
-
-`Colors.popupDim` darkens the pane around the popup. The popup and its border keep their colors.
-The pane's cursor shows as unfocused, because the popup has the keyboard.
-The mouse acts in the popup, in the popup's own cells. A click, a scroll or a drop outside the popup does nothing and does not close it.
+| `title` | Shows as the pane's title while the overlay runs, at most 512 characters. It must not have a control character, a line break or a bidirectional control. A border shows it in its top edge. |
+| `width`, `height` | Make the overlay a popup. Give a whole number of cells, such as `60`, or a percentage of the pane's grid as a string, such as `"80%"`. The border is part of the size. A side that you do not give takes the whole grid. Without `width` and `height`, the overlay takes the whole pane. |
+| `position` | Where a popup is in the pane: `"center"` (the default), `"top"`, `"bottom"`, `"left"`, `"right"`, `"top-left"`, `"top-right"`, `"bottom-left"` or `"bottom-right"`. It has no effect without `width` or `height`. |
+| `border` | `true` puts a line one cell wide around the program's grid, in the popup border color, with the title in its top edge. `true` without `width` and `height` makes a popup that fills the pane. The default is `true` for a popup and `false` for a full-pane overlay. |
 
 An option that is not in this table, or a value of the wrong type, refuses the effect with `invalid_effect`.
 
@@ -517,7 +492,8 @@ It also closes with `cancelled`, and its program gets `SIGHUP`, in these conditi
 
 The overlay fades in and out over the pane, through the `Shaders.overlayTransition` pack.
 The default pack, Overlay Fade, blends the pane and the overlay. `Animation.overlayCurve` and `Animation.overlayDuration` set the fade.
-For a popup, the pack blends the pane and the pane as it shows with the popup: the darker pane, the border and the popup.
+For a popup, the pack blends the pane and the pane as it shows with the popup.
+That is the pane around the popup, darkened by `Colors.popupDim`, then the popup's border if it has one, then the popup.
 With an empty `Shaders.overlayTransition`, the overlay shows and goes at once.
 The overlay takes the focus. When its pane is in another tab, that tab shows.
 When several overlays open at the same time, the last one has the focus.
@@ -527,16 +503,46 @@ When the overlay closes, the focus goes back to the pane. The pane's cursor and 
 | --- | --- |
 | The pane overview, other tabs | The overlay shows where its pane is. |
 | A moved pane, a detached tab | The overlay goes with its pane. |
-| Zoom, a resize | They apply to both. The program gets the pane's new size. |
+| Zoom, a resize | They apply to both. The program gets the pane's new size, or for a popup its new place in the pane. |
 | Saved projects | Overlays are not saved. |
 | Copy mode, search, hints, paste, the mouse | They act on the overlay while its pane has the focus. |
-| Assistive technology | It reads the overlay's text in place of the pane's. |
+| Assistive technology | It reads the overlay's text in place of the pane's. For a popup, the text is at the place of the popup's grid. |
 | The pane's shaders | The pane's layer and pane shaders draw the overlay, and the pane around a popup. During a fade, they draw the pane and the overlay both. |
 
 An overlay is not a pane of its own. `afterglow ctl ls` and the terminal snapshot do not show it.
 Effects that take a pane ID, such as `send_text` and `read_text`, act on the pane under the overlay, not on its program.
 `afterglow ctl overlay` opens an overlay from a shell (see [CONTROL.md](CONTROL.md#overlays)).
 The [fzf picker package](../data/examples/packages/fzf-picker/README.md) uses fzf when it is installed, and the select dialog when it is not.
+
+### Popups
+
+A popup is an overlay that takes a part of the pane.
+The pane stays visible around it and keeps running. The pane's docks stay where they are.
+
+```lua
+local r = afterglow.await(afterglow.overlay(ev.pane, "fzf", {
+    stdin = table.concat(items, "\n"), title = "Pick", width = "80%", height = "60%",
+}))
+```
+
+| Rule | Value |
+| --- | --- |
+| Width | A whole number from 1 to 10,000 cells, or `"1%"` to `"100%"` of the pane's columns |
+| Height | A whole number from 1 to 10,000 cells, or `"1%"` to `"100%"` of the pane's rows |
+| Largest | The pane's grid. A larger size is cut to the grid. |
+| Smallest | 2 columns by 1 row inside the border, or the whole pane when the pane is smaller. A smaller size grows to this. |
+| Border | One cell on each side. When the pane has fewer than 4 columns or fewer than 3 rows, the popup has no border. |
+| Title | In the top edge of the border. A title that does not fit is cut with an ellipsis. A popup 6 cells wide or less shows no title. |
+
+Each layout places the popup again: a resize, a zoom, a font change or a dock that comes or goes.
+The program gets `SIGWINCH` when its size changes.
+
+`Colors.popupDim` darkens the pane around the popup. The popup and its border keep their colors.
+The border has the popup border color: the `popupBorder` of the theme, or `Colors.popupBorder` without a theme (see [Themes](APPEARANCE.md#themes)).
+The pane's cursor shows as unfocused, because the popup has the keyboard.
+The mouse acts in the popup, in the popup's own cells. The history scrollbar is at the right edge of the popup.
+A click outside the popup gives its pane the focus. It does not reach a program, and it does not close the popup.
+A scroll or a drop outside the popup does nothing.
 
 ## Commands
 

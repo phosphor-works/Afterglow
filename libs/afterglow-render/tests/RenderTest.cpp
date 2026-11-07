@@ -3638,7 +3638,7 @@ protected:
 
     QImage frame(const WindowRenderer::Pane& drawn) { return renderer->renderToImage(size, {drawn}, {}, snapshot.defaultBg); }
 
-    /// Whether every pixel of cell (x, y) is @p color.
+    /// Whether every pixel of @p cell is @p color.
     static bool cellIs(const QImage& image, QRect cell, QRgb color)
     {
         for (int y = cell.top(); y <= cell.bottom(); ++y)
@@ -3724,14 +3724,8 @@ TEST_F(PopupRender, APopupDrawsOverItsPaneWhichShowsDarkerAroundIt)
 
 TEST_F(PopupRender, TheOverlayTransitionBlendsThePaneAndThePaneWithItsPopup)
 {
-    QFile file(QStringLiteral(AFTERGLOW_OVERLAY_FADE_PACK));
-    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
-    ShaderProgramSource source;
-    source.id = QStringLiteral("overlay-fade");
-    source.code = file.readAll();
-    QString error;
-    const ShaderProgramPtr fade = ShaderProgram::compile(source, &error);
-    ASSERT_TRUE(fade) << error.toStdString();
+    const ShaderProgramPtr fade = overlayFade();
+    ASSERT_TRUE(fade);
     ShaderChains chains;
     chains.overlayTransition = {fade};
     renderer->setShaderChains(chains);
@@ -3748,6 +3742,113 @@ TEST_F(PopupRender, TheOverlayTransitionBlendsThePaneAndThePaneWithItsPopup)
     EXPECT_PIXEL(middle, cellCenter(2, 0), qRgb(165, 0, 0));
     EXPECT_PIXEL(middle, cell(6, 1).topLeft(), qRgb(110, 0, 0x60));
     EXPECT_PIXEL(middle, cell(5, 1).topLeft(), qRgb(110, 100, 0));
+}
+
+TEST_F(PopupRender, APanesBufferStepsOncePerFrameWhileItsPopupFades)
+{
+    // The pane under a fading popup and the pane with it carry one snapshot:
+    // its buffer set steps once a frame, not once for each.
+    ShaderProgramSource source;
+    source.id = QStringLiteral("stepping-pane");
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
+    ShaderBufferSource pass;
+    pass.feedback = true;
+    pass.scale = .5f;
+    pass.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return vec4(texture(iChannel0,uv).r+0.05,0,0,1);}";
+    source.buffers = {pass};
+    QString error;
+    const ShaderProgramPtr program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    const ShaderProgramPtr fade = overlayFade();
+    ASSERT_TRUE(fade);
+    ShaderChains chains;
+    chains.pane = {program};
+    chains.overlayTransition = {fade};
+    renderer->setShaderChains(chains);
+    auto draw = [&](std::optional<float> progress, int n) {
+        renderer->setClockOverride(float(n + 1));
+        WindowRenderer::Pane drawn = progress ? withPopup(true, *progress) : pane;
+        if (drawn.overlay) drawn.overlay->popup->dim = 0;
+        return frame(drawn);
+    };
+    const auto steps = [](double count) { return qRgb(qRound(count * 0.05 * 255), 0, 0); };
+    EXPECT_PIXEL_NEAR(draw(std::nullopt, 0), cellCenter(2, 0), steps(1), 3);
+    for (int n = 1; n <= 3; ++n) {
+        SCOPED_TRACE(n);
+        EXPECT_PIXEL_NEAR(draw(0.5f, n), cellCenter(2, 0), steps(n + 1), 3);
+    }
+    EXPECT_PIXEL_NEAR(draw(std::nullopt, 4), cellCenter(2, 0), steps(5), 3);
+}
+
+TEST_F(PopupRender, ThePanesCursorIsUnfocusedOnlyWhileItsPopupRuns)
+{
+    // The pane's cursor at (1, 1), beside the popup.
+    terminal->feed("\x1b[2;2H\x1b[?25h");
+    snapshot.capture(*terminal);
+    const QRgb red = qRgb(220, 0, 0);
+    WindowRenderer::Pane running = withPopup(true);
+    running.overlay->popup->dim = 0;
+    // A box: the cell's background shows in its middle.
+    EXPECT_PIXEL(frame(running), cellCenter(1, 1), red);
+    // One that ended fades out: the pane has the keyboard again, and its
+    // cursor is a focused block.
+    WindowRenderer::Pane ended = running;
+    ended.overlay->running = false;
+    const QImage image = frame(ended);
+    EXPECT_FALSE(shows(image, QRect(cellCenter(1, 1), QSize(1, 1)), red));
+}
+
+TEST_F(PopupRender, ATitleThatDoesNotFitIsCutAndAZeroWidthCharacterTakesNoCell)
+{
+    const QRgb yellow = qRgb(255, 255, 0), blue = qRgb(0, 0, 0xc0);
+    // The frame is 8 cells wide from cell 4: room for 2 title cells, here
+    // one and an ellipsis, between a space each side.
+    WindowRenderer::Pane cut = withPopup(true);
+    cut.overlay->popup->title = "ABCDEFGHIJ";
+    const QImage image = frame(cut);
+    EXPECT_TRUE(cellIs(image, cell(6, 0), blue));
+    EXPECT_TRUE(shows(image, cell(7, 0), yellow));
+    EXPECT_FALSE(cellIs(image, cell(8, 0), blue)) << "the ellipsis, small dots in the title's colour";
+    EXPECT_TRUE(cellIs(image, cell(9, 0), blue));
+    // A zero-width space with nothing to join takes no cell.
+    WindowRenderer::Pane joined = withPopup(true);
+    joined.overlay->popup->title = "​T";
+    const QImage title = frame(joined);
+    EXPECT_TRUE(shows(title, cell(7, 0), yellow));
+    EXPECT_TRUE(cellIs(title, cell(8, 0), blue));
+}
+
+TEST_F(PopupRender, SquareCornersAndATitleInVisualOrder)
+{
+    const QRgb yellow = qRgb(255, 255, 0), cyan = qRgb(0, 255, 255);
+    // A square corner goes through the middle of its cell.
+    WindowRenderer::Pane square = withPopup(true);
+    square.overlay->popup->roundedCorners = false;
+    const QImage corners = frame(square);
+    for (const QRect& corner : {cell(4, 0), cell(11, 0), cell(4, 3), cell(11, 3)})
+        EXPECT_TRUE(shows(corners, QRect(corner.center() - QPoint(1, 1), QSize(3, 3)), cyan)) << corner.x() / cw << "," << corner.y() / ch;
+    // An alef, then a full block, which takes the right-to-left direction of
+    // the title: with bidi the block shows first.
+    WindowRenderer::Pane mixed = withPopup(true);
+    mixed.overlay->popup->title = "א█";
+    EXPECT_TRUE(cellIs(frame(mixed), cell(8, 0), yellow));
+    mixed.overlay->popup->bidi = true;
+    EXPECT_TRUE(cellIs(frame(mixed), cell(7, 0), yellow));
+}
+
+TEST_F(PopupRender, APopupPastItsPaneIsClippedToThePane)
+{
+    // A frame wider than the pane, and a popup that goes past its right edge.
+    const QSize wide((Cols + 4) * cw, Rows * ch);
+    WindowRenderer::Pane drawn = withPopup(true);
+    drawn.overlay->popup->rect = QRect((Cols - 3) * cw, ch, 6 * cw, 2 * ch);
+    const QImage image = renderer->renderToImage(wide, {drawn}, {}, 0xff000000u);
+    EXPECT_TRUE(cellIs(image, cell(Cols - 3, 1), qRgb(0, 200, 0)));
+    EXPECT_TRUE(cellIs(image, cell(Cols - 1, 2), qRgb(0, 0, 0xc0)));
+    for (int x = Cols; x < Cols + 4; ++x) {
+        EXPECT_TRUE(cellIs(image, cell(x, 1), qRgb(0, 0, 0))) << x;
+        EXPECT_TRUE(cellIs(image, cell(x, 0), qRgb(0, 0, 0))) << x;
+    }
 }
 
 int main(int argc, char** argv)

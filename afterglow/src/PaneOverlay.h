@@ -24,8 +24,8 @@ namespace Afterglow {
 class Pane;
 
 /// A program run over a pane, with its result returned to whoever opened
-/// it: a terminal of its own, drawn in place of the host pane's grid, that
-/// takes the host's input while it runs. The host pane owns it and goes on
+/// it: a terminal of its own, drawn in place of the host pane's grid or as
+/// a popup over a part of it, that takes the host's input while it runs. The host pane owns it and goes on
 /// running underneath. It ends when the program exits, or with "cancelled"
 /// when it is cancelled or deleted first (its host closes, its owner
 /// retires, the command run that opened it ends, the control client that
@@ -66,8 +66,9 @@ public:
     /// The overlay's own terminal.
     Pane* pane() const { return m_pane; }
 
-    /// The spec's title, which a popup's border shows.
+    /// The spec's title, which a popup's border shows (UTF-8 there).
     const QString& title() const { return m_title; }
+    const std::string& borderTitle() const { return m_borderTitle; }
     /// A box over its host, which shows around it (OverlaySpec::popup).
     bool popup() const { return m_shape.popup(); }
     /// Where its program's grid is in the host's grid, and its border.
@@ -99,6 +100,7 @@ private:
     OverlaySpec::Capture m_capture = OverlaySpec::Capture::Stdout;
     std::unique_ptr<QTemporaryFile> m_resultFile;
     QString m_title;
+    std::string m_borderTitle;
     OverlaySpec m_shape; ///< the size, position and border only
     OverlaySpec::Placement m_placement;
     QString m_owner;

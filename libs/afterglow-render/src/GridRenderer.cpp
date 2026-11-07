@@ -14,6 +14,7 @@
 
 #include <AfterglowVt/Unicode.h>
 
+#include <fribidi.h>
 #include <hb.h>
 
 #include <QColor>
@@ -28,6 +29,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <numeric>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -1109,12 +1111,15 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
     frame.seenFrame = m_frameCounter + 1;
     const std::uint32_t background = overlay.snapshot->defaultBg;
     if (frame.snapshot && frame.cols == cols && frame.rows == rows && frame.title == popup.title
-        && frame.borderColor == popup.borderColor && frame.titleColor == popup.titleColor && frame.background == background)
+        && frame.roundedCorners == popup.roundedCorners && frame.bidi == popup.bidi && frame.borderColor == popup.borderColor
+        && frame.titleColor == popup.titleColor && frame.background == background)
         return *frame.snapshot;
     if (!frame.snapshot) frame.snapshot = std::make_unique<PaneSnapshot>();
     frame.cols = cols;
     frame.rows = rows;
     frame.title = popup.title;
+    frame.roundedCorners = popup.roundedCorners;
+    frame.bidi = popup.bidi;
     frame.borderColor = popup.borderColor;
     frame.titleColor = popup.titleColor;
     frame.background = background;
@@ -1142,8 +1147,8 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
         cell.underlineColor = cell.fg;
         return &cell;
     };
-    // Rounded corners, as box-drawing sprites: the line meets itself
-    // exactly at any cell size.
+    // Corners as box-drawing sprites: the line meets itself exactly at any
+    // cell size.
     const int right = s.cols - 1, bottom = s.rows - 1;
     for (int x = 1; x < right; ++x) {
         put(x, 0, U'\u2500', popup.borderColor);
@@ -1153,10 +1158,11 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
         put(0, y, U'\u2502', popup.borderColor);
         put(right, y, U'\u2502', popup.borderColor);
     }
-    put(0, 0, U'\u256D', popup.borderColor);
-    put(right, 0, U'\u256E', popup.borderColor);
-    put(0, bottom, U'\u2570', popup.borderColor);
-    put(right, bottom, U'\u256F', popup.borderColor);
+    const bool round = popup.roundedCorners;
+    put(0, 0, round ? U'\u256D' : U'\u250C', popup.borderColor);
+    put(right, 0, round ? U'\u256E' : U'\u2510', popup.borderColor);
+    put(0, bottom, round ? U'\u2570' : U'\u2514', popup.borderColor);
+    put(right, bottom, round ? U'\u256F' : U'\u2518', popup.borderColor);
 
     // The title in the top edge, "─ title ─", cut with an ellipsis where it
     // does not fit: a grapheme cluster to a cell or two.
@@ -1173,6 +1179,9 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
             if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) continue;
             const AfterglowVt::Unicode::Props props = AfterglowVt::Unicode::props(cp);
             if (segmenter.breaksBefore(props) || clusters.empty()) {
+                // A zero-width character with nothing to join (a format
+                // character, a lone mark) would take a blank cell.
+                if (props.width == 0) continue;
                 clusters.push_back({std::u32string(1, cp), std::clamp(int(props.width), 1, 2)});
             } else {
                 clusters.back().text += cp;
@@ -1191,6 +1200,28 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
             while (count < clusters.size() && kept + clusters[count].width <= room - 1) kept += clusters[count++].width;
             clusters.resize(count);
             clusters.push_back({std::u32string(1, U'\u2026'), 1});
+        }
+        if (popup.bidi && clusters.size() > 1) {
+            // Each cluster in its visual place, as a pane's line with
+            // Terminal.bidi on, by its first character.
+            const auto count = FriBidiStrIndex(clusters.size());
+            std::vector<FriBidiChar> characters;
+            for (const Cluster& c : clusters) characters.push_back(FriBidiChar(c.text.front()));
+            std::vector<FriBidiCharType> types(clusters.size());
+            std::vector<FriBidiBracketType> brackets(clusters.size());
+            std::vector<FriBidiLevel> levels(clusters.size());
+            std::vector<FriBidiStrIndex> map(clusters.size());
+            std::iota(map.begin(), map.end(), FriBidiStrIndex(0));
+            fribidi_get_bidi_types(characters.data(), count, types.data());
+            fribidi_get_bracket_types(characters.data(), count, types.data(), brackets.data());
+            FriBidiParType direction = FRIBIDI_PAR_ON;
+            if (fribidi_get_par_embedding_levels_ex(types.data(), brackets.data(), count, &direction, levels.data())
+                && fribidi_reorder_line(0, types.data(), count, 0, direction, levels.data(), nullptr, map.data())) {
+                std::vector<Cluster> visual;
+                visual.reserve(clusters.size());
+                for (const FriBidiStrIndex logical : map) visual.push_back(std::move(clusters[std::size_t(logical)]));
+                clusters = std::move(visual);
+            }
         }
         int x = 3;
         if (room > 0) put(2, 0, U' ', popup.borderColor);
@@ -1365,7 +1396,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
                               const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor,
                               QRhiTexture* overlayTexture, std::uint64_t overlaySerial)
 {
-    // Overlays are resolved first: every pass below sees one grid per pane.
+    // Overlays are resolved first: every pass below sees one grid per pane,
+    // and a popup over it as Pane::overlay.
     // An overlay that fades runs the overlay transition, which blends from
     // the pane under it in the tab image: not while the overview, a tab
     // switch or a closing pane has that image.
@@ -1375,7 +1407,11 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     std::vector<Pane> resolvedPanes;
     std::vector<Pane> overlayHosts; ///< the panes under fading overlays, as they show without them
     std::vector<float> overlayFades; ///< by pane: how far its overlay has faded in, or -1
-    const bool overlaid = std::any_of(givenPanes.begin(), givenPanes.end(), [](const Pane& pane) { return pane.overlay.has_value(); });
+    // A popup that shows whole is drawn as it is given: only the others
+    // change the panes, which then go into a copy.
+    const bool overlaid = std::any_of(givenPanes.begin(), givenPanes.end(), [](const Pane& pane) {
+        return pane.overlay && !(pane.overlay->popup && pane.overlay->snapshot && pane.overlay->progress >= 1.0f);
+    });
     if (overlaid) {
         resolvedPanes = givenPanes;
         resolveOverlays(resolvedPanes, overlayTransitions ? &overlayHosts : nullptr, &overlayFades);
@@ -1488,18 +1524,21 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     }
     // A pane's instances, from its cache when nothing it shows has changed.
     // Subpixel text needs an opaque target that no chain resamples.
-    auto appendPane = [&](const Pane& pane, bool subpixelTarget) -> DrawRange {
+    // A pane under a fading popup shows in the frame twice, focused and as
+    // the popup leaves it: each has its own cache, or both rebuild each frame.
+    auto appendPane = [&](const Pane& pane, bool subpixelTarget, bool overlayHost = false) -> DrawRange {
         const auto first = std::uint32_t(m_frame.size());
         FrameBuilder::PaneParams pp = pane.params;
-        // A popup over the pane has its keyboard: its cursor shows unfocused.
-        if (popupOver(pane)) pp.focused = false;
+        // A popup that runs over the pane has its keyboard: the pane's cursor
+        // shows unfocused.
+        if (const Pane::Overlay* popup = popupOver(pane); popup && popup->running) pp.focused = false;
         pp.allowSubpixel = pp.allowSubpixel && subpixelTarget
             && pp.backgroundAlpha == 255 && !pane.snapshot->hasTransparentBackgrounds;
         // Blink phases that cannot change what is drawn do not rebuild the pane.
         const bool cursorBlinks = pp.cursorBlinkOverride < 0 ? pane.snapshot->cursorBlink : pp.cursorBlinkOverride != 0;
         if (!pp.focused || !cursorBlinks) pp.cursorBlinkOn = true;
         if (!pane.snapshot->hasBlinkingText) pp.textBlinkOn = true;
-        PaneCache& cache = m_paneCache[pane.snapshot->identity.value()];
+        PaneCache& cache = (overlayHost ? m_hostPaneCache : m_paneCache)[pane.snapshot->identity.value()];
         const bool reusable = cache.snapshotVersion == pane.snapshot->version && cache.fontEpoch == m_fontEpoch
             && cache.glyphEpoch == res.glyphs.epoch() && cache.fontIdentity == res.fonts->identity() && cache.rect == pp.rect
             && cache.origin == pp.contentOrigin && cache.focused == pp.focused && cache.blinkOn == pp.cursorBlinkOn && cache.textBlinkOn == pp.textBlinkOn
@@ -1541,8 +1580,9 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     };
     m_frame.clear();
     m_ranges.clear();
-    for (const Pane& pane : drawn) {
-        DrawRange range = appendPane(pane, !m_translucent && !post);
+    for (std::size_t index = 0; index < drawn.size(); ++index) {
+        const Pane& pane = drawn[index];
+        DrawRange range = appendPane(pane, !m_translucent && !post, !overlayHosts.empty() && index >= hostBegin);
         if (!pane.docks.empty()) {
             range.content = dockedContent(range.scissor, pane.docks);
             // A pane's docks: each its own small pane, in the pane's opacity
@@ -1583,6 +1623,12 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             inner.scissor = inner.content = inner.scissor.intersected(range.scissor);
             range.docks.push_back(std::move(inner));
             range.popup = whole.intersected(range.scissor);
+            range.popupDocks = popup->popup->border && m.cellWidth > 0 && m.cellHeight > 0 ? 2 : 1;
+            range.popupRuns = popup->running;
+            const QRect pane = range.scissor;
+            range.popupClear = std::uint32_t(m_frame.size());
+            m_frame.push_back({float(pane.x()), float(pane.y()), float(pane.width()), float(pane.height()), 0, 0, 0, 0, 0,
+                               std::uint32_t(InstanceKind::Solid)});
             const float dim = std::isfinite(popup->popup->dim) ? std::clamp(popup->popup->dim, 0.0f, 1.0f) : 0.0f;
             if (dim > 0) {
                 // Black over the rest of the pane: drawn around the popup.
@@ -1754,8 +1800,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         cb->setShaderResources(m_pageBindings.front().get());
         cb->setVertexInput(0, 1, &input);
     };
-    // Inside @p clip, the range's content unless given.
-    auto drawImages = [&](const DrawRange& range, ImageDraw::Layer layer, std::optional<QRect> clip = std::nullopt) {
+    auto drawImages = [&](const DrawRange& range, ImageDraw::Layer layer) {
         bool bound = false;
         for (const ImageDraw& draw : range.images) {
             if (draw.layer != layer) {
@@ -1771,7 +1816,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             }
             cb->setGraphicsPipeline(gridPipelines->image.get());
             cb->setViewport({0, 0, float(px.width()), float(px.height())});
-            cb->setScissor(scissor(clip.value_or(range.content)));
+            cb->setScissor(scissor(range.content));
             cb->setShaderResources(srb);
             cb->setVertexInput(0, 1, &input);
             cb->draw(4, 1, 0, draw.instance);
@@ -1881,12 +1926,14 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             // Shader inputs must only copy pixels that exist in the target.
             if (st.rect.isEmpty()) return st;
             st.snapshot = &snap;
+            if (const Pane::Overlay* popup = popupOver(pane)) st.popup = popup->popup->rect;
             st.scrollback = {float(scrollback.scrollbackLines), float(combinedLines), float(m_easedScrollbackLines)};
             st.cellSize = QSizeF(m.cellWidth, m.cellHeight);
             st.backgroundOpacity = float(pane.params.backgroundAlpha) / 255.0f;
             st.mouse = m_mouse;
             // The cursor is a popup's while one has the pane's keyboard.
-            const Pane::Overlay* popup = popupOver(pane);
+            const Pane::Overlay* over = popupOver(pane);
+            const Pane::Overlay* popup = over && over->running ? over : nullptr;
             const PaneSnapshot& typed = popup ? *popup->snapshot : snap;
             const QPoint typedOrigin = popup ? popup->popup->rect.topLeft() : pane.params.contentOrigin;
             const float typedShift = popup ? popup->scrollShift : pane.params.scrollShift;
@@ -2139,59 +2186,64 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     // the composite puts them together in the grid target, over @p ranges
     // and their @p states. @p hosts: the panes under fading overlays.
     auto drawLayered = [&](std::span<const DrawRange> ranges, const std::vector<ShaderRegionState>& states, bool hosts) {
-        // Each draws inside the scissor it is given.
         const struct
         {
             PostChain::Layer layer;
-            std::function<void(const DrawRange&, const QRect&)> draw;
+            std::function<void(const DrawRange&)> draw;
         } layers[] = {
             {PostChain::Layer::Background,
-             [&](const DrawRange& range, const QRect&) {
+             [&](const DrawRange& range) {
                  drawBackgrounds(range);
                  drawImages(range, ImageDraw::Layer::BelowText);
              }},
             {PostChain::Layer::Text,
-             [&](const DrawRange& range, const QRect& clip) {
+             [&](const DrawRange& range) {
                  drawSpan(range.textStart, range.cursorStart);
-                 drawImages(range, ImageDraw::Layer::AboveText, clip);
+                 drawImages(range, ImageDraw::Layer::AboveText);
              }},
-            {PostChain::Layer::Cursor, [&](const DrawRange& range, const QRect&) { drawSpan(range.cursorStart, range.cursorOtherStart); }},
-            {PostChain::Layer::OtherCursor, [&](const DrawRange& range, const QRect&) { drawSpan(range.cursorOtherStart, range.end); }},
+            {PostChain::Layer::Cursor, [&](const DrawRange& range) { drawSpan(range.cursorStart, range.cursorOtherStart); }},
+            {PostChain::Layer::OtherCursor, [&](const DrawRange& range) { drawSpan(range.cursorOtherStart, range.end); }},
         };
         for (const auto& [layer, draw] : layers) {
             frame.beginPass(m_post->layerTarget(layer), Qt::transparent, {1.0f, 0}, std::exchange(firstUpdates, nullptr));
             bindGrid();
             // Each layer is a target of its own, where a dock's background
             // covers nothing of the pane's text and cursors: those keep to
-            // the content rectangle, out of the pane's docks, and out of a
-            // popup over it. Backgrounds drawn later replace what is under
-            // them in their own layer.
+            // the content rectangle, out of the pane's docks. Backgrounds
+            // drawn later replace what is under them in their own layer. In
+            // the others, what the pane drew under a popup is cleared before
+            // the popup's border and grid draw there.
+            auto drawOne = [&](const DrawRange& r) {
+                if (r.scissor.isEmpty()) return;
+                cb->setScissor(scissor(r.content));
+                draw(r);
+            };
             for (const DrawRange& range : ranges) {
-                forEachDrawn(range, [&](const DrawRange& r) {
-                    if (r.scissor.isEmpty()) return;
-                    if (layer == PostChain::Layer::Background || &r != &range) {
-                        cb->setScissor(scissor(r.content));
-                        draw(r, r.content);
-                        return;
-                    }
-                    forEachAround(r.content, r.popup, [&](const QRect& part) {
-                        cb->setScissor(scissor(part));
-                        draw(r, part);
-                    });
-                });
+                const std::size_t own = range.docks.size() - range.popupDocks;
+                drawOne(range);
+                for (std::size_t d = 0; d < own; ++d) drawOne(range.docks[d]);
+                if (layer != PostChain::Layer::Background && range.popupClear && !range.popup.isEmpty()) {
+                    cb->setGraphicsPipeline(gridPipelines->fill.get());
+                    cb->setShaderResources(m_pageBindings.front().get());
+                    cb->setScissor(scissor(range.popup));
+                    cb->draw(4, 1, 0, *range.popupClear);
+                }
+                for (std::size_t d = own; d < range.docks.size(); ++d) drawOne(range.docks[d]);
             }
             frame.endPass();
         }
         // By pane, not by dock: the window hides a dock's cursor (?25l), and
-        // the pane's own cursors keep out of its docks. A popup's grid, the
-        // last of them, has the pane's keyboard.
+        // the pane's own cursors keep out of its docks. A popup that runs,
+        // the last of them, has the pane's keyboard: the pane's cursor shows
+        // unfocused then, a box that is the same under the text or over it.
         std::vector<bool> cursorBelowText;
+        bool otherCursors = false;
         for (const DrawRange& range : ranges) {
             if (!range.scissor.intersected(QRect(QPoint(), px)).isEmpty())
-                cursorBelowText.push_back(range.popup.isEmpty() || range.docks.empty() ? range.cursorBelowText
-                                                                                         : range.docks.back().cursorBelowText);
+                cursorBelowText.push_back(range.popupRuns && !range.docks.empty() ? range.docks.back().cursorBelowText
+                                                                                  : range.cursorBelowText);
+            forEachDrawn(range, [&](const DrawRange& r) { otherCursors |= r.cursorOtherStart < r.end; });
         }
-        const bool otherCursors = std::any_of(ranges.begin(), ranges.end(), [](const auto& r) { return r.cursorOtherStart < r.end; });
         m_post->composite(frame, states, cursorBelowText, time, clear, otherCursors, hosts, hosts ? regions.size() : 0);
         bindGrid();
         for (const DrawRange& range : ranges) drawDim(range);
@@ -2262,6 +2314,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
 
     // Panes not drawn this frame (closed, or in another tab) drop their cache.
     std::erase_if(m_paneCache, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
+    std::erase_if(m_hostPaneCache, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
     std::erase_if(m_popupFrames, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
     // Bindings of textures not drawn for a while (deleted or scrolled away).
     std::erase_if(m_imageBindings, [this](const auto& kv) { return kv.second.lastUsed + 120 < m_frameCounter; });

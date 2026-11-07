@@ -25,6 +25,7 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
     std::unique_ptr<PaneOverlay> overlay(new PaneOverlay(host));
     overlay->m_capture = spec.capture;
     overlay->m_title = spec.title;
+    overlay->m_borderTitle = spec.title.toStdString();
     overlay->m_shape.width = spec.width;
     overlay->m_shape.height = spec.height;
     overlay->m_shape.position = spec.position;

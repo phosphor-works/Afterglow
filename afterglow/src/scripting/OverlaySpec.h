@@ -76,8 +76,9 @@ struct OverlaySpec
     /// Where the overlay goes in a host grid of @p cols by @p rows: its
     /// program's grid, in the host's cells, and whether a border (one cell
     /// on each side) goes around it. The whole popup stays in the host grid.
-    /// The program gets at least 2 columns by 1 row, and the border goes
-    /// when the host has no room for it.
+    /// The program gets at least 2 columns by 1 row, or the whole host when
+    /// it is smaller, and the border goes when the host has fewer than 4
+    /// columns or 3 rows.
     struct Placement
     {
         QRect grid;

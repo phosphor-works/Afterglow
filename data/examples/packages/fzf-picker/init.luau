@@ -149,7 +149,7 @@ function script.run_command(_, ev)
     -- fzf when it runs: its list on stdin, its screen on the pane, its choice on stdout.
     if afterglow.await(afterglow.exec("fzf:" .. ev.run, {config.fzf, "--version"})) then
         local picked, err, event = afterglow.await(afterglow.overlay(ev.pane, {config.fzf, "--layout=reverse", "--prompt=pick> "},
-            {stdin = table.concat(items, "\n"), cwd = dir, title = Title, width = "80%", height = "60%"}))
+            {stdin = table.concat(items, "\n"), cwd = dir, title = Title, width = config.width, height = config.height}))
         if not picked then return failed(ev, err) end
         -- No match (1) and Escape (130) choose nothing. Another status is a
         -- failure, such as 2 for an option that an old fzf does not know.

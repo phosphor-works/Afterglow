@@ -225,9 +225,13 @@ public:
         {
             const PaneSnapshot* snapshot = nullptr;
             float progress = 1;
+            /// It runs and has the pane's keyboard. One that ended fades out
+            /// on its last frame, and the pane has its keyboard again.
+            bool running = true;
             /// The overlay's own grid state, as in FrameBuilder::PaneParams.
             /// The rest (rectangle, focus, opacity, chain inputs, effects) is
-            /// the pane's, or for a popup the pane's but its rectangle.
+            /// the pane's. For a popup, its rectangle is its own, and while it
+            /// runs, so is the cursor of the chain inputs.
             std::optional<QPointF> cursorPosition;
             float scrollShift = 0;
             std::uint32_t hoveredLink = 0;
@@ -235,8 +239,8 @@ public:
             int hoverColStart = 0;
             int hoverColEnd = -1; ///< inclusive
             /// A box over the pane, at Popup::rect. The pane is drawn first,
-            /// darker and with an unfocused cursor, then the border, then
-            /// the popup's grid.
+            /// with an unfocused cursor while the popup runs, then the border,
+            /// then the popup's grid, then the dim around them.
             struct Popup
             {
                 /// The popup's grid, in framebuffer pixels; cell (0,0) is
@@ -246,6 +250,10 @@ public:
                 /// (UTF-8) in its top edge, on the grid's default background.
                 bool border = false;
                 std::string title;
+                bool roundedCorners = true; ///< else square
+                /// The title in visual order, as a pane's text with
+                /// Terminal.bidi on: else in logical order.
+                bool bidi = false;
                 std::uint32_t borderColor = 0; ///< packRgba
                 std::uint32_t titleColor = 0;
                 /// The opacity of a black layer over the pane around the popup.
@@ -451,6 +459,13 @@ private:
         /// A popup over the pane, with its border: in a layer target the
         /// pane's text and cursors keep out of it.
         QRect popup = {};
+        /// How many of @c docks, the last ones, are the popup's border and grid.
+        std::size_t popupDocks = 0;
+        /// The popup runs: its cursor is the one the pane's keyboard moves.
+        bool popupRuns = false;
+        /// A transparent instance over the pane, which clears @c popup in the
+        /// text and cursor layers before the popup draws there.
+        std::optional<std::uint32_t> popupClear = {};
         /// The black layer over the pane around a popup (an instance).
         std::optional<std::uint32_t> dim = {};
     };
@@ -460,13 +475,16 @@ private:
         int cols = 0;
         int rows = 0;
         std::string title;
+        bool roundedCorners = true;
+        bool bidi = false;
         std::uint32_t borderColor = 0;
         std::uint32_t titleColor = 0;
         std::uint32_t background = 0;
         std::uint64_t seenFrame = 0;
         std::unique_ptr<PaneSnapshot> snapshot;
     };
-    /// The border of @p popup around its grid of @p cols by @p rows.
+    /// The border of @p popup as a grid of @p cols by @p rows cells, the
+    /// border's own cells included.
     const PaneSnapshot& popupFrame(const Pane::Overlay& popup, int cols, int rows);
     std::unordered_map<std::uint64_t, PopupFrame> m_popupFrames;
     QRhiShaderResourceBindings* imageBindings(QRhiTexture* texture, std::uint64_t serial);
@@ -564,6 +582,7 @@ private:
         std::uint64_t seenFrame = 0;
     };
     std::unordered_map<std::uint64_t, PaneCache> m_paneCache; ///< by PaneSnapshot::identity
+    std::unordered_map<std::uint64_t, PaneCache> m_hostPaneCache; ///< the panes under fading overlays
     std::vector<Instance> m_scratch;
 };
 

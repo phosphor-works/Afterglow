@@ -232,7 +232,7 @@ TEST(Themes, ReadsJsonThemes)
     EXPECT_TRUE(theme->palette[1] == Rgb(0xff, 0x00, 0x00));
 }
 
-TEST(Themes, ReadAPopupBorderInEachFormat)
+TEST(Themes, ReadsAPopupBorderInJsonGhosttyAndKittyThemes)
 {
     const auto json = Themes::parse(R"({"background": "#101010", "popupBorder": "#a0b0c0"})");
     ASSERT_TRUE(json);
@@ -335,11 +335,13 @@ TEST_F(ConfigTest, APopupBorderComesFromTheThemeOrItsColorsOrTheConfig)
         EXPECT_TRUE(store.problems().isEmpty()) << json.toStdString() << ": " << store.problems().join(QLatin1Char('\n')).toStdString();
         return store.settings().window.popupBorderColor;
     };
-    // No theme: the default, or the user's own.
+    // No theme: halfway from the background to the text in use, or the user's own.
     EXPECT_EQ(borderOf("{}"), AfterglowRender::packRgba(0x7a, 0x7a, 0x7a));
+    EXPECT_EQ(borderOf(R"({"Colors": {"background": "#ffffff", "foreground": "#000000"}})"), AfterglowRender::packRgba(0x80, 0x80, 0x80));
     EXPECT_EQ(borderOf(R"({"Colors": {"popupBorder": "#123456"}})"), AfterglowRender::packRgba(0x12, 0x34, 0x56));
-    // The bundled themes set none: halfway from their background to their text.
-    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-dark"}})"), AfterglowRender::packRgba(0x7a, 0x7a, 0x7a));
+    // The bundled themes set none: halfway from their background to their
+    // text, not the config's.
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-dark", "popupBorder": "#ff00ff"}})"), AfterglowRender::packRgba(0x7a, 0x7a, 0x7a));
     EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-light"}})"), AfterglowRender::packRgba(0x91, 0x90, 0x91));
     // A theme replaces the config's, as it does the divider.
     EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-light", "popupBorder": "#123456"}})"),
@@ -354,9 +356,39 @@ TEST_F(ConfigTest, APopupBorderComesFromTheThemeOrItsColorsOrTheConfig)
     EXPECT_EQ(borderOf(R"({"Colors": {"theme": "boxed"}})"), AfterglowRender::packRgba(0xff, 0x88, 0x00));
     EXPECT_EQ(borderOf(R"({"Colors": {"theme": "Night"}})"), AfterglowRender::packRgba(0x64, 0x64, 0x64));
     EXPECT_EQ(borderOf(R"({"Colors": {"theme": "Paper"}})"), AfterglowRender::packRgba(0x80, 0x80, 0x80));
-    // light: and dark: pick a theme, and get its fallback.
-    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "light:afterglow-light,dark:afterglow-light"}})"),
+    // light: and dark: pick a theme, and get its fallback. With no desktop
+    // preference (no QGuiApplication here) the dark one counts.
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "light:afterglow-dark,dark:afterglow-light"}})"),
               AfterglowRender::packRgba(0x91, 0x90, 0x91));
+}
+
+TEST_F(ConfigTest, PopupCornersAreRoundedOrSquare)
+{
+    auto cornersOf = [&](const QByteArray& json) {
+        SettingsStore store(write(QStringLiteral("config.json"), json));
+        return store.settings().window.popupCorners;
+    };
+    EXPECT_EQ(cornersOf("{}"), WindowSettings::PopupCorners::Rounded);
+    EXPECT_EQ(cornersOf(R"({"Window": {"popupCorners": "square"}})"), WindowSettings::PopupCorners::Square);
+    // A value that is not a choice keeps the default.
+    EXPECT_EQ(cornersOf(R"({"Window": {"popupCorners": "pointy"}})"), WindowSettings::PopupCorners::Rounded);
+}
+
+TEST_F(ConfigTest, AThemeWhosePopupBorderChangesAppliesOnReload)
+{
+    const QString theme = write(QStringLiteral("theme.json"), R"({"background": "#000000", "popupBorder": "#112233"})");
+    SettingsStore store(write(QStringLiteral("config.json"),
+                              QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}}}}).toJson()));
+    ASSERT_EQ(store.settings().window.popupBorderColor, AfterglowRender::packRgba(0x11, 0x22, 0x33));
+    int changes = 0;
+    QObject::connect(&store, &SettingsStore::changed, [&](const Settings& previous) {
+        ++changes;
+        EXPECT_EQ(previous.window.popupBorderColor, AfterglowRender::packRgba(0x11, 0x22, 0x33));
+    });
+    write(QStringLiteral("theme.json"), R"({"background": "#000000", "popupBorder": "#445566"})");
+    store.reload();
+    EXPECT_EQ(store.settings().window.popupBorderColor, AfterglowRender::packRgba(0x44, 0x55, 0x66));
+    EXPECT_EQ(changes, 1);
 }
 
 namespace {
@@ -435,6 +467,12 @@ TEST_F(ConfigTest, PlasmaThemeTakesTheDesktopColorsOverTheNamedTheme)
     EXPECT_EQ(s.window.popupBorderColor, AfterglowRender::packRgba(half(20, 230), half(22, 231), half(24, 232)));
     EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
     EXPECT_TRUE(store.watchedPaths().contains(m_home.filePath(QStringLiteral("kdeglobals"))));
+    // Also over a theme that sets its own, picked for its own background.
+    QDir().mkpath(m_home.filePath(QStringLiteral("afterglow/themes")));
+    write(QStringLiteral("afterglow/themes/boxed.json"), R"({"background": "#ffffff", "divider": "#00ff00", "popupBorder": "#ff8800"})");
+    SettingsStore boxed(write(QStringLiteral("boxed.json"), R"({"Colors": {"theme": "plasma:boxed"}})"));
+    EXPECT_EQ(boxed.settings().window.dividerColor, AfterglowRender::packRgba(mix(20, 230), mix(22, 231), mix(24, 232)));
+    EXPECT_EQ(boxed.settings().window.popupBorderColor, AfterglowRender::packRgba(half(20, 230), half(22, 231), half(24, 232)));
 }
 
 TEST_F(ConfigTest, PlasmaColorsReadHexValuesTheViewSectionAndTheSystemFile)

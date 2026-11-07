@@ -382,12 +382,13 @@ afterglow = {
     exit = function(run, code) return { kind = "exit", run = runId(run), code = code } end,
     select = function(pane, title, items) return {kind="select", pane=paneId(pane), title=title, items=items} end,
     prompt = function(pane, title, text) return {kind="prompt", pane=paneId(pane), title=title, text=text or ""} end,
-    -- Runs command over the pane, in its place and with the input focus, until it exits. Await it:
-    -- the result is {exit_code, stdout, truncated}. options: stdin (text for its stdin),
-    -- capture ("stdout", the default, "file" or "none"), cwd, env, title. width and height
-    -- (cells, or "80%") make it a popup over the pane, at position ("center" and the other
-    -- anchors), with a border unless border = false. They pass through whole, so a misspelled
-    -- option is refused rather than dropped.
+    -- Runs command over the pane, with the input focus, until it exits: in the pane's place,
+    -- or as a popup over a part of it. Await it: the result is {exit_code, stdout, truncated}.
+    -- options: stdin (text for its stdin), capture ("stdout", the default, "file" or "none"),
+    -- cwd, env, title. width and height (whole cells, or "80%") make it a popup, at position
+    -- ("center" and the other anchors), with a border unless border = false; border = true
+    -- alone makes one that fills the pane. They pass through whole, so a misspelled option is
+    -- refused rather than dropped.
     overlay = function(pane, command, options)
         return { kind = "overlay", pane = paneId(pane), command = list(command), options = options }
     end,

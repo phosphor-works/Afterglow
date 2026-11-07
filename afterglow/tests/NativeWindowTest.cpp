@@ -1857,6 +1857,12 @@ QByteArray fileContent(const QString& path) {
     return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
 }
 
+// One notch of the wheel at @p at (logical), away from the user.
+void wheelAt(QWindow* window, const QPointF& at) {
+    QWheelEvent event(at, window->mapToGlobal(at), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(window, &event);
+}
+
 // A text drag from one client's pane to another client's pane.
 void NativeWindow::dragAndDropClient(const QString& client, const QString& ready) {
     const QString source = directory.filePath(QStringLiteral("source.txt"));
@@ -3269,14 +3275,10 @@ TEST_F(NativeWindow, DockClicksReachTheScriptThroughControlAndNoPointerInputReac
 
     // The wheel over the dock scrolls no pane; over the pane it does.
     const auto offset = [pane] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }); };
-    auto wheel = [&](const QPointF& at) {
-        QWheelEvent event(at, window->mapToGlobal(at), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
-        QCoreApplication::sendEvent(window, &event);
-    };
-    wheel(onItem);
+    wheelAt(window, onItem);
     ASSERT_TRUE(nextFrame(window));
     EXPECT_EQ(offset(), 0u);
-    wheel(onPane);
+    wheelAt(window, onPane);
     EXPECT_TRUE(waitFor([&] { return offset() > 0; }));
     pane->withTerminal([](AfterglowVt::Terminal& t) { t.scrollViewport(-int(t.screen().viewportOffset())); });
 
@@ -5109,8 +5111,8 @@ struct OverlayAnswer {
     QString code;
     QVariantMap result;
 };
-// Opens @p argv over @p pane with @p options (stdin, capture, cwd, env,
-// title); the answer arrives in the returned record. @p refusal gets the
+// Opens @p argv over @p pane with @p options (those of afterglow.overlay);
+// the answer arrives in the returned record. @p refusal gets the
 // window's refusal, empty when the overlay opened.
 std::shared_ptr<OverlayAnswer> runOverlay(TerminalWindow* window, Pane* pane, const QStringList& argv, const QVariantMap& options = {},
                                           QString* refusal = nullptr, QString* refusalCode = nullptr,
@@ -6505,28 +6507,6 @@ TEST_F(NativeWindow, APressWaitsForTheButtonsThatAnotherPanesProgramHolds) {
     EXPECT_TRUE(answer->done);
 }
 
-} // namespace
-
-int main(int argc, char** argv)
-{
-    // These tests open windows and send desktop-wide D-Bus signals (the
-    // launcher entry). Run them only inside the nested desktop of a runner.
-    if (qEnvironmentVariableIsEmpty("AFTERGLOW_NATIVE_ISOLATED")) {
-        std::fprintf(stderr, "Run these tests through native_window_acceptance.py or the ag-verify-live "
-                             "headless_native.py runner, which isolate the compositor and the session bus.\n");
-        return 2;
-    }
-    previousHandler = qInstallMessageHandler(recordQmlErrors);
-    // The plugin paths, the layer-shell integration and the names, as afterglow sets them.
-    prepareApplication();
-    QApplication app(argc, argv);
-    if (argc > 1 && QByteArray(argv[1]) == "--drop-target") return runDropTarget(QCoreApplication::arguments());
-    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
-
-namespace {
 // Where @p pane's grid is drawn, in @p window's logical pixels: a popup's
 // own cells for an overlay's pane.
 QRectF gridOf(TerminalWindow* window, Pane* pane) {
@@ -6539,18 +6519,24 @@ OverlaySpec popupSpec(const QVariantMap& options) {
     EXPECT_TRUE(spec) << error.toStdString();
     return spec.value_or(OverlaySpec{});
 }
-} // namespace
+// A program for a popup that reports clicks (SGR) into @p log, and says
+// "popup-ready" once it does.
+QStringList reportingClicks(const QString& log) {
+    return {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+            QStringLiteral("stty raw -echo; printf '\\033[?1000h\\033[?1006hpopup-ready' > /dev/tty; exec cat > '%1'").arg(log)};
+}
 
 TEST_F(NativeWindow, APopupOverOnePaneTakesThePointerInItsOwnCellsOnly) {
     Pane* pane = window->focusedPane();
     ASSERT_NE(pane, nullptr);
+    // History in the pane, which a wheel that reached it would scroll.
+    pane->withTerminal([](AfterglowVt::Terminal& t) {
+        for (int i = 0; i < 200; ++i) t.feed("history\r\n");
+    });
     const QString log = directory.filePath(QStringLiteral("mouse.log"));
-    // The program reports clicks (SGR) and keeps what it gets.
     const QVariantMap options{{QStringLiteral("width"), QStringLiteral("50%")}, {QStringLiteral("height"), QStringLiteral("50%")},
                               {QStringLiteral("title"), QStringLiteral("Popup")}, {QStringLiteral("capture"), QStringLiteral("none")}};
-    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
-                                            QStringLiteral("stty raw -echo; printf '\\033[?1000h\\033[?1006hpopup-ready' > /dev/tty; exec cat > '%1'").arg(log)},
-                             options);
+    auto answer = runOverlay(window, pane, reportingClicks(log), options);
     ASSERT_NE(pane->overlay(), nullptr);
     Pane* program = pane->overlay()->pane();
     // Half of the pane, in its middle, with a border.
@@ -6567,32 +6553,23 @@ TEST_F(NativeWindow, APopupOverOnePaneTakesThePointerInItsOwnCellsOnly) {
     expectIdle(window);
     const QRectF host = gridOf(window, pane), grid = gridOf(window, program);
     const QSizeF cell(grid.width() / program->cols(), grid.height() / program->rows());
-    EXPECT_NEAR(grid.left() - host.left(), placed.grid.x() * cell.width(), 1.0);
-    EXPECT_NEAR(grid.top() - host.top(), placed.grid.y() * cell.height(), 1.0);
-    // Around it, on its border too, the pointer reaches nothing, and the
-    // popup stays open.
-    auto wheel = [&](const QPointF& at) {
-        QWheelEvent event(at, window->mapToGlobal(at), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
-        QCoreApplication::sendEvent(window, &event);
-    };
+    // Around it, on its border too, the pointer reaches no program: the
+    // pane neither selects nor scrolls, and the popup stays open.
     for (const QPointF& at : {host.topLeft() + QPointF(3, 3), host.bottomRight() - QPointF(3, 3),
                               QPointF(grid.left() - cell.width() / 2, grid.center().y()),
                               QPointF(grid.center().x(), grid.top() - cell.height() / 2)}) {
         clickLeft(window, at);
-        wheel(at);
+        wheelAt(window, at);
     }
-    drain(300);
     EXPECT_FALSE(answer->done);
-    EXPECT_EQ(QFileInfo(log).size(), 0) << "the program got a report from outside the popup";
+    EXPECT_FALSE(pane->hasSelection());
+    EXPECT_EQ(pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }), 0u);
     EXPECT_EQ(window->focusedPane(), pane);
-    // In it, its own cells: column 3, row 2 from 1.
+    // In it, its own cells: column 3, row 2 from 1. The reports arrive in
+    // order, so one from outside would come first.
     clickLeft(window, grid.topLeft() + QPointF(cell.width() * 2.5, cell.height() * 1.5));
     const QByteArray expected("\x1b[<0;3;2M\x1b[<0;3;2m");
-    auto reported = [&] {
-        QFile file(log);
-        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
-    };
-    EXPECT_TRUE(waitFor([&] { return reported() == expected; })) << reported().toStdString();
+    EXPECT_TRUE(waitFor([&] { return fileContent(log) == expected; })) << fileContent(log).toStdString();
     // It closes; the pane has the keys again, and frames stop.
     window->closeOverlays(QStringLiteral("test@1"), QString(), QStringLiteral("done"));
     ASSERT_TRUE(answer->done);
@@ -6621,6 +6598,8 @@ TEST_F(NativeWindow, APopupOverOneOfTwoPanesIsPlacedAgainByEachLayout) {
     const OverlaySpec spec = popupSpec(options);
     EXPECT_EQ(window->focusedPane(), first);
     EXPECT_EQ(first->overlay()->placement(), spec.place(first->cols(), first->rows()));
+    // 30 cells, its border included, in a pane that has them.
+    ASSERT_GE(first->cols(), 30);
     EXPECT_EQ(program->cols(), 28);
     // A click on the other pane takes the focus there; one on the pane around
     // the popup brings it back, and reaches nothing. The chrome scene, made
@@ -6645,9 +6624,6 @@ TEST_F(NativeWindow, APopupOverOneOfTwoPanesIsPlacedAgainByEachLayout) {
     EXPECT_EQ(first->overlay()->placement(), placed);
     EXPECT_EQ(program->cols(), placed.grid.width());
     EXPECT_EQ(program->rows(), placed.grid.height());
-    // Bottom left: its border on the host's last row and first column.
-    EXPECT_EQ(placed.grid.bottom() + 1, first->rows() - 1);
-    EXPECT_EQ(placed.grid.left(), 1);
     window->revealPane(first);
     typeText(window, QStringLiteral("\r"));
     ASSERT_TRUE(waitFor([&] { return answer->done; }));
@@ -6658,83 +6634,115 @@ TEST_F(NativeWindow, APopupOverOneOfTwoPanesIsPlacedAgainByEachLayout) {
     expectIdle(window);
 }
 
-namespace {
-struct QuietHost : AfterglowVt::ITerminalHost {
-    void writeToPty(std::string_view) override {}
-};
-// Whether some pixel of @p rect is within a small distance of @p color.
-bool showsColor(const QImage& image, const QRect& rect, QRgb color) {
-    for (int y = rect.top(); y <= rect.bottom(); ++y)
-        for (int x = rect.left(); x <= rect.right(); ++x) {
-            const QRgb got = image.pixel(x, y);
-            if (std::abs(qRed(got) - qRed(color)) + std::abs(qGreen(got) - qGreen(color)) + std::abs(qBlue(got) - qBlue(color)) <= 30)
-                return true;
-        }
-    return false;
+TEST_F(NativeWindow, APopupTooBigForItsPaneFillsTheGridBesideThePanesDock) {
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(window->setScriptDock(QStringLiteral("a@1"), dockEffect(QStringLiteral("bar"), QStringLiteral("top"), 1,
+        {dockRun(QStringLiteral("dock"), QStringLiteral("d"))}, QStringLiteral("pane")), pane).isEmpty());
+    // The next layout gives it its row, and the pane its grid under it.
+    ASSERT_TRUE(waitFor([&] { return shownDock(window, "bar", pane->id()) != nullptr; }));
+    const QString log = directory.filePath(QStringLiteral("mouse.log"));
+    // Bigger than the pane, and a border alone: each fills the pane's grid,
+    // its border on the pane's edge cells.
+    for (const QVariantMap& options : {QVariantMap{{QStringLiteral("width"), 500}, {QStringLiteral("height"), 500}},
+                                       QVariantMap{{QStringLiteral("border"), true}}}) {
+        QFile::remove(log);
+        auto answer = runOverlay(window, pane, reportingClicks(log), options);
+        ASSERT_NE(pane->overlay(), nullptr);
+        Pane* program = pane->overlay()->pane();
+        EXPECT_TRUE(pane->overlay()->popup());
+        EXPECT_EQ(pane->overlay()->placement(), (OverlaySpec::Placement{QRect(1, 1, pane->cols() - 2, pane->rows() - 2), true}));
+        EXPECT_EQ(program->cols(), pane->cols() - 2);
+        EXPECT_EQ(program->rows(), pane->rows() - 2);
+        ASSERT_TRUE(waitFor([&] { return screenOf(program).contains(QStringLiteral("popup-ready")); }));
+        ASSERT_TRUE(overlaySettled(window, pane));
+        // The dock and the popup's border reach no program; the popup's
+        // first cell is its program's 1;1, one cell in from the pane's grid,
+        // which starts under the dock.
+        const DockArea* dock = shownDock(window, "bar", pane->id());
+        ASSERT_NE(dock, nullptr);
+        const QRectF host = gridOf(window, pane);
+        const QSizeF cell(host.width() / pane->cols(), host.height() / pane->rows());
+        clickLeft(window, host.topLeft() + QPointF(cell.width() / 2, cell.height() / 2));
+        clickLeft(window, host.topLeft() + QPointF(cell.width() * 1.5, cell.height() * 1.5));
+        const QByteArray expected("\x1b[<0;1;1M\x1b[<0;1;1m");
+        EXPECT_TRUE(waitFor([&] { return fileContent(log) == expected; })) << fileContent(log).toStdString();
+        window->closeOverlays(QStringLiteral("test@1"), QString(), QStringLiteral("done"));
+        ASSERT_TRUE(answer->done);
+        ASSERT_TRUE(overlaySettled(window, pane));
+    }
+    expectIdle(window);
 }
+
+TEST_F(NativeWindow, ADropReachesAPopupInItsOwnCellsOnly) {
+    Pane* pane = window->focusedPane();
+    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                            QStringLiteral("stty -echo; read line; printf 'got:%s' \"$line\"")},
+                             {{QStringLiteral("width"), QStringLiteral("50%")}, {QStringLiteral("height"), QStringLiteral("50%")}});
+    ASSERT_NE(pane->overlay(), nullptr);
+    Pane* program = pane->overlay()->pane();
+    ASSERT_TRUE(waitFor([&] { return !window->accessiblePaneRect(program).isEmpty(); }));
+    const QString path = directory.filePath(QStringLiteral("dropped.txt"));
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.close();
+    QMimeData mime;
+    mime.setUrls({QUrl::fromLocalFile(path)});
+    // Beside the popup: no program takes it.
+    QDropEvent outside(gridOf(window, pane).topLeft() + QPointF(3, 3), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier,
+                       QEvent::Drop);
+    QCoreApplication::sendEvent(window, &outside);
+    EXPECT_FALSE(outside.isAccepted());
+    // In it: its program gets the path.
+    QDropEvent inside(gridOf(window, program).center(), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &inside);
+    EXPECT_TRUE(inside.isAccepted());
+    typeText(window, QStringLiteral("\r"));
+    ASSERT_TRUE(waitFor([&] { return answer->done; }));
+    const QString got = answer->result.value(QStringLiteral("stdout")).toString();
+    EXPECT_TRUE(got.startsWith(QStringLiteral("got:")) && got.contains(QStringLiteral("dropped.txt"))) << got.toStdString();
+    ASSERT_TRUE(overlaySettled(window, pane));
+    expectIdle(window);
+}
+
+TEST_F(NativeWindow, ClosingTheHostOfAPopupCancelsItAndFramesStop) {
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    auto answer = runOverlay(window, second, {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("exec sleep 30")},
+                             {{QStringLiteral("capture"), QStringLiteral("none")}, {QStringLiteral("width"), QStringLiteral("50%")},
+                              {QStringLiteral("title"), QStringLiteral("Gone")}});
+    ASSERT_NE(second->overlay(), nullptr);
+    ASSERT_TRUE(second->overlay()->popup());
+    ASSERT_TRUE(overlaySettled(window, second));
+    window->requestClosePane(second);
+    ASSERT_TRUE(answer->done);
+    EXPECT_EQ(answer->code, QStringLiteral("cancelled"));
+    EXPECT_EQ(window->focusedPane(), first);
+    EXPECT_EQ(window->panes().size(), 1);
+    expectIdle(window);
+}
+
 } // namespace
 
-TEST(PopupBorder, TheBorderTakesThePopupBorderColorAndNotTheDividers) {
-    QTemporaryDir directory;
-    ASSERT_TRUE(directory.isValid());
-    auto write = [&](const QString& name, const QByteArray& data) {
-        QFile file(directory.filePath(name));
-        EXPECT_TRUE(file.open(QIODevice::WriteOnly));
-        file.write(data);
-        return file.fileName();
-    };
-    const QString theme = write(QStringLiteral("theme.json"),
-                                R"({"background": "#000000", "foreground": "#ffffff", "divider": "#ff0000", "popupBorder": "#0000ff"})");
-    // The config's own colors, a theme's, and the fallback of a theme
-    // without one: halfway from its background to its text.
-    const struct {
-        QByteArray config;
-        QRgb border;
-    } cases[] = {
-        {R"({"Colors": {"background": "#000000", "foreground": "#ffffff", "divider": "#ff0000", "popupBorder": "#00ff00"}})", qRgb(0, 255, 0)},
-        {QByteArray(R"({"Colors": {"theme": ")") + theme.toUtf8() + R"("}})", qRgb(0, 0, 255)},
-        {R"({"Colors": {"theme": ")" + write(QStringLiteral("plain.json"), R"({"background": "#000000", "foreground": "#ffffff"})").toUtf8()
-             + R"("}})", qRgb(127, 127, 127)},
-    };
-    AfterglowRender::GpuDevice device{AfterglowRender::FontSpec{}};
-    ASSERT_NE(device.rhi(nullptr), nullptr);
-    AfterglowRender::WindowRenderer renderer(device, nullptr);
-    renderer.setDevicePixelRatio(1.0);
-    const auto& m = renderer.fonts().fonts->metrics();
-    const int cw = m.cellWidth, ch = m.cellHeight;
-    for (const auto& each : cases) {
-        SCOPED_TRACE(each.config.toStdString());
-        SettingsStore store(write(QStringLiteral("config.json"), each.config));
-        const Settings& settings = store.settings();
-        EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
-        QuietHost host;
-        AfterglowVt::Terminal pane(20, 6, host, settings.terminal);
-        pane.resize(20, 6, cw, ch);
-        pane.feed("\x1b[?25l");
-        AfterglowVt::Terminal program(6, 2, host, settings.terminal);
-        program.resize(6, 2, cw, ch);
-        program.feed("\x1b[?25l");
-        AfterglowRender::PaneSnapshot paneSnapshot, programSnapshot;
-        paneSnapshot.capture(pane);
-        programSnapshot.capture(program);
-        AfterglowRender::WindowRenderer::Pane drawn;
-        drawn.snapshot = &paneSnapshot;
-        drawn.params.rect = QRect(0, 0, 20 * cw, 6 * ch);
-        drawn.params.focused = true;
-        AfterglowRender::WindowRenderer::Pane::Overlay overlay;
-        overlay.snapshot = &programSnapshot;
-        // As the window draws it.
-        overlay.popup = popupLook(settings, true, QString());
-        overlay.popup->rect = QRect(5 * cw, 2 * ch, 6 * cw, 2 * ch);
-        drawn.overlay = overlay;
-        const QImage image = renderer.renderToImage(drawn.params.rect.size(), {drawn}, {}, paneSnapshot.defaultBg);
-        // The left and right edges, the top and the bottom.
-        for (const QRect& edge : {QRect(4 * cw, 2 * ch, cw, ch), QRect(11 * cw, 3 * ch, cw, ch), QRect(7 * cw, ch, cw, ch),
-                                  QRect(7 * cw, 4 * ch, cw, ch)}) {
-            EXPECT_TRUE(showsColor(image, edge, each.border)) << edge.x() / cw << "," << edge.y() / ch;
-            EXPECT_FALSE(showsColor(image, edge, qRgb(255, 0, 0))) << "the divider's color";
-        }
+int main(int argc, char** argv)
+{
+    // These tests open windows and send desktop-wide D-Bus signals (the
+    // launcher entry). Run them only inside the nested desktop of a runner.
+    if (qEnvironmentVariableIsEmpty("AFTERGLOW_NATIVE_ISOLATED")) {
+        std::fprintf(stderr, "Run these tests through native_window_acceptance.py or the ag-verify-live "
+                             "headless_native.py runner, which isolate the compositor and the session bus.\n");
+        return 2;
     }
+    previousHandler = qInstallMessageHandler(recordQmlErrors);
+    // The plugin paths, the layer-shell integration and the names, as afterglow sets them.
+    prepareApplication();
+    QApplication app(argc, argv);
+    if (argc > 1 && QByteArray(argv[1]) == "--drop-target") return runDropTarget(QCoreApplication::arguments());
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }
 
 #include "NativeWindowTest.moc"

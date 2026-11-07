@@ -17,7 +17,7 @@ namespace Afterglow {
 /// Colours from a theme file. Each one is optional: what a theme leaves out
 /// keeps the value from the config, except the divider and the popup border,
 /// which a theme without them derives from its own background and foreground
-/// (Themes::between).
+/// (Themes::derivedDivider, Themes::derivedPopupBorder).
 struct Theme
 {
     std::optional<AfterglowVt::Rgb> foreground;
@@ -49,13 +49,14 @@ constexpr AfterglowVt::Rgb between(AfterglowVt::Rgb from, AfterglowVt::Rgb to, i
     auto part = [&](std::uint8_t a, std::uint8_t b) { return std::uint8_t(a + (b - a) * numerator / denominator); };
     return {part(from.r, to.r), part(from.g, to.g), part(from.b, to.b)};
 }
-/// The fallbacks for a theme without a divider or a popup border: a fifth
-/// and half of the way from its background to its text, for light and dark
-/// themes alike.
+/// The divider of a theme without one: a fifth of the way from its
+/// background to its text, for light and dark themes alike.
 constexpr AfterglowVt::Rgb derivedDivider(AfterglowVt::Rgb background, AfterglowVt::Rgb foreground)
 {
     return between(background, foreground, 1, 5);
 }
+/// The popup border of a theme or a config without one: halfway from the
+/// background to the text.
 constexpr AfterglowVt::Rgb derivedPopupBorder(AfterglowVt::Rgb background, AfterglowVt::Rgb foreground)
 {
     return between(background, foreground, 1, 2);
@@ -103,8 +104,7 @@ bool isKonsole(const QByteArray& data);
 /// Reads a theme: afterglow's JSON (one object with the colour keys
 /// foreground, background, cursor, cursorText, selectionForeground,
 /// selectionBackground, divider, popupBorder, the highlight colours and
-/// palette), a
-/// Ghostty theme ("palette = 0=#1d1f21", "cursor-color = ..."), a kitty
+/// palette), a Ghostty theme ("palette = 0=#1d1f21", "cursor-color = ..."), a kitty
 /// one ("color0 #1d1f21", "cursor ...") or a Konsole color scheme ([Color0]
 /// to [Color7], their Intense forms for 8 to 15, [Foreground] and
 /// [Background]; Konsole's faint and intense text colours, wallpaper and

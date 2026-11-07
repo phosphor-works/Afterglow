@@ -405,11 +405,12 @@ While the overview shows, other tabs use two more window-sized textures. Aftergl
 
 ### Overlay transitions
 
-An [overlay](SCRIPTING.md#overlays) runs a program over a pane, in the pane's place.
+An [overlay](SCRIPTING.md#overlays) runs a program over a pane, in the pane's place or as a popup over a part of it.
 `Shaders.overlayTransition` names the pack that blends the pane and the overlay while the overlay opens and closes.
 Afterglow runs it while the fade runs, over that pane alone, after the pane chain and before the window chain.
 The pass's input is the pane with the overlay. `overlayHostTexel(uv)` reads the pane under the overlay at the pass's canvas uv.
-For a [popup](SCRIPTING.md#popups), the input is the whole pane as it shows with the popup: the darker pane, the border and the popup.
+For a [popup](SCRIPTING.md#popups), the input is the whole pane as it shows with the popup.
+That is the pane around the popup, darkened by `Colors.popupDim`, then the popup's border if it has one, then the popup.
 `overlayHostTexel()` stays half a pixel inside the pane, so it never reads a divider or another pane.
 Both images have the pane's layer and pane shaders. The window shaders then run over the result.
 The pane under the overlay keeps running. While the overlay fades in, its program also runs.
@@ -417,6 +418,8 @@ While the overlay fades out, its program has ended, and the overlay shows the pr
 The pane under the overlay keeps a text history of its own. Its `uPreviousText` holds its own text from the last frame, never the overlay's.
 A fade that starts keeps the text history that the pane had.
 When a fade out starts after the overlay has shown whole, the pane under the overlay has no text history yet. Its `uPreviousText` is transparent in that frame.
+This is also so for a popup: the text history of the pane with its popup is not the history of the pane under it.
+A pane's own buffers step once a frame, also while a popup over it fades. The pane under the popup steps them, and the pane with the popup reads that step.
 When the overlay has faded out, the pane's text history goes on from what it drew under the overlay. If a fade on another pane runs in that frame, this history starts again.
 When a fade on another pane starts or ends, the text history of each pane whose fade goes on starts again.
 A [`windowBackground`](#pass-order-and-coordinates) pack's buffers step once a frame, for the panes that show.
@@ -425,13 +428,17 @@ When the buffers do not exist yet, the pane under the overlay makes them. They t
 `uScrollback` counts the history of the pane under the overlay, also in the overlay's passes. The overlay's own history does not count.
 The window shaders take the focused pane's inputs, such as its cursor and palette, from the pane under the overlay until the fade is halfway.
 After that, they take them from the overlay.
+While a popup runs, the cursor inputs of its pane (`uCursorRect`, `uPreviousCursor`, the cursor color, style and visibility) are the popup's cursor, in framebuffer pixels.
+The palette, the default colors, the theme's cursor colors and the text history stay the pane's.
+While a popup fades out, its program has ended: the cursor inputs are the pane's again.
 `overlayTransitionProgress()` runs from 0, the pane under the overlay, to 1, the overlay. It stays between 0 and 1.
 The fade stops the first time that it reaches its target. A curve that overshoots, such as a spring, does not bounce back.
 `Animation.overlayCurve` and `Animation.overlayDuration` time it. The fade out runs the same pack back to 0, from where the fade is.
 Draw the pane at progress 0 and the overlay at 1. The fade then starts and ends without a jump.
 `overlayTransitionActive()` is true in every pass of this pack and false in every other pass.
 The pack's buffer passes can use all three helpers.
-The pane under the overlay is drawn only while a fade runs. It goes into the window-sized tab image. Its text history lives until the frame after the last fade.
+A full-pane overlay hides the pane under it: that pane is drawn only while a fade runs. It goes into the window-sized tab image. Its text history lives until the frame after the last fade.
+A popup does not hide its pane, which is drawn in every frame. Only the image of the pane under a fading popup goes into the tab image.
 The overview, a tab switch and a closing pane also use that image.
 An overlay opens and closes without a fade while one of them shows.
 It also does so while the pane is not on screen or the window is hidden.

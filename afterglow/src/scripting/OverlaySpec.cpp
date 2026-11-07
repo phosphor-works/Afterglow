@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "OverlaySpec.h"
+#include "ScriptNames.h"
 
 #include <QRegularExpression>
 
@@ -26,11 +27,11 @@ constexpr std::pair<const char*, OverlaySpec::Position> Positions[] = {
 std::optional<OverlaySpec::Extent> extent(const QVariant& v)
 {
     if (v.typeId() == QMetaType::QString) {
-        static const QRegularExpression Percent(QStringLiteral("^([0-9]{1,3})%$"));
+        // 1 to 100, written as such: no sign, no leading zero, nothing after.
+        static const QRegularExpression Percent(QStringLiteral("\\A(100|[1-9][0-9]?)%\\z"));
         const QRegularExpressionMatch match = Percent.match(v.toString());
-        const int percent = match.hasMatch() ? match.captured(1).toInt() : 0;
-        if (percent < 1 || percent > 100) return std::nullopt;
-        return OverlaySpec::Extent{percent, true};
+        if (!match.hasMatch()) return std::nullopt;
+        return OverlaySpec::Extent{match.captured(1).toInt(), true};
     }
     switch (v.typeId()) {
     case QMetaType::Int:
@@ -152,6 +153,8 @@ std::optional<OverlaySpec> OverlaySpec::read(const QStringList& argv, const QVar
         return refuse(QStringLiteral("cwd must be an absolute path, ~ or a path that starts with ~/"));
     spec.title = option("title").toString();
     if (spec.title.size() > MaxTitle) return refuse(QStringLiteral("The overlay title is over %1 characters").arg(MaxTitle));
+    if (std::any_of(spec.title.begin(), spec.title.end(), unprintable))
+        return refuse(QStringLiteral("The overlay title has a control character, a line break or a bidirectional control"));
     if (const QString problem = EnvironmentOverrides::read(option("env"), spec.env); !problem.isEmpty()) return refuse(problem);
     // Unset and null both leave an option at its default.
     for (const char* key : {"width", "height"}) {
@@ -168,9 +171,12 @@ std::optional<OverlaySpec> OverlaySpec::read(const QStringList& argv, const QVar
         const QString name = value.typeId() == QMetaType::QString ? value.toString() : QString();
         const auto known = std::find_if(std::begin(Positions), std::end(Positions),
                                         [&name](const auto& p) { return name == QLatin1String(p.first); });
-        if (known == std::end(Positions))
-            return refuse(QStringLiteral("position must be center, top, bottom, left, right, top-left, top-right, bottom-left or "
-                                         "bottom-right"));
+        if (known == std::end(Positions)) {
+            QStringList names;
+            for (const auto& [each, position] : Positions) names.append(QLatin1String(each));
+            const QString last = names.takeLast();
+            return refuse(QStringLiteral("position must be %1 or %2").arg(names.join(QStringLiteral(", ")), last));
+        }
         spec.position = known->second;
     }
     if (const QVariant value = option("border"); given(value)) {

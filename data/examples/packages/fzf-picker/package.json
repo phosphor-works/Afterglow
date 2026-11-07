@@ -9,7 +9,9 @@
   "config": {
     "fzf": "fzf",
     "max_depth": 4,
-    "max_files": 5000
+    "max_files": 5000,
+    "width": "80%",
+    "height": "60%"
   },
   "commands": {
     "pick": {"summary": "Pick a saved project or a file, with fzf in an overlay when it is installed", "palette": "Pick a project or file"}

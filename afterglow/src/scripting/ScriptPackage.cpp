@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ScriptPackage.h"
 #include "ScriptFiles.h"
+#include "ScriptNames.h"
 #include "ScriptState.h"
 #include "../shaders/ShaderRefs.h"
 #include <QDir>
@@ -41,15 +42,6 @@ QString shown(QString name)
     name.truncate(64);
     if (name.back().isHighSurrogate()) name.chop(1);
     return name + QStringLiteral("…");
-}
-/// What a command's text must not hold: controls, the line and paragraph
-/// separators, and the bidirectional controls. They could break or reorder
-/// a help line, a palette entry or the terminal line that shows them.
-bool unprintable(QChar c)
-{
-    const char16_t u = c.unicode();
-    return u < 0x20 || (u >= 0x7f && u < 0xa0) || u == 0x061c || u == 0x200e || u == 0x200f || u == 0x2028 || u == 0x2029
-        || (u >= 0x202a && u <= 0x202e) || (u >= 0x2066 && u <= 0x2069);
 }
 struct Builder
 {

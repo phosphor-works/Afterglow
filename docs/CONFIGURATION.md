@@ -51,18 +51,18 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `boldIsBright` | `false` |  | Use bright colors 8–15 for bold text with colors 0–7. |
 | `cursor` | `""` |  | Cursor color. An empty value uses the foreground. |
 | `cursorText` | `""` |  | Text color under a block cursor. An empty value uses the background. |
-| `divider` | `"#3a3a42"` |  | Color of the dividers between panes. A theme replaces it. A theme without a divider color gets one between its background and text colors. |
+| `divider` | `"#3a3a42"` |  | Color of the dividers between panes. An empty value uses the default. A theme replaces it. A theme without a divider color gets one a fifth of the way from its background color to its text color. |
 | `foreground` | `"#d8d8d8"` |  | Default text color. |
 | `minimumContrast` | `1` | 1–21 | Minimum contrast ratio between text and its background. Afterglow changes the color of text with less contrast. A value of 1 keeps every color. A value of 4.5 is the WCAG AA level for normal text. |
 | `palette` | `["#1c1c1c", "#cc5555", "#55cc55", "#cdcd55", "#5455cb", "#cc55cc", "#7acaca", "#cccccc", "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"]` |  | The 16 ANSI colors, from black to bright white. |
-| `popupBorder` | `"#7a7a7a"` |  | Color of the border around a popup overlay. A theme replaces it. A theme without a popup border color gets one halfway between its background and text colors. |
-| `popupDim` | `0.35` | 0–1 | Opacity of a black layer over a pane while a popup overlay runs over it. The popup and its border stay as they are. A value of 0 turns the darkening off. |
+| `popupBorder` | `""` |  | Color of the border around a popup overlay. An empty value uses the color halfway from the background color to the text color. A theme replaces it. A theme without a popup border color gets the color halfway from its background color to its text color. |
+| `popupDim` | `0.35` | 0–1 | Opacity of a black layer over the pane around a popup overlay. The popup and its border stay as they are. A value of 0 turns the darkening off. |
 | `searchCurrentMatch` | `"#ff8c42"` |  | Background color of the current search match. |
 | `searchMatch` | `"#e5c07b"` |  | Background color of search matches. |
 | `searchMatchText` | `"#101010"` |  | Text color of search matches. |
 | `selectionBackground` | `""` |  | Selection background color. An empty value reverses the cell colors. |
 | `selectionForeground` | `""` |  | Selected text color. An empty value reverses the cell colors. |
-| `theme` | `""` |  | Theme name or file path. An empty value uses no theme. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A theme replaces each color that it sets, and the divider color. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with a slash is a file path. A relative path starts at the directory of the config file. |
+| `theme` | `""` |  | Theme name or file path. An empty value uses no theme. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A theme replaces each color that it sets, and the divider and popup border colors. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with a slash is a file path. A relative path starts at the directory of the config file. |
 | `unfocusedDim` | `0.19` | 0–1 | Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off. |
 | `visualBell` | `"#ffffff"` |  | Color of the visual bell flash. A color that a program sets with OSC 21 replaces it. |
 | `visualBellIntensity` | `0.18` | 0–1 | Opacity of the visual bell flash when it starts. A value of 0 hides the flash. |
@@ -236,6 +236,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `initialRows` | `30` | 4–500 | Rows of a new window. |
 | `padding` | `6` | 0–200 | Space around the grid in logical pixels. |
 | `paneTitles` | `false` |  | Show pane titles in tabs with two or more panes. |
+| `popupCorners` | `"rounded"` | `"rounded"`, `"square"` | Corners of the border around a popup overlay. The rounded value curves each corner. The square value makes each corner a right angle. |
 | `scrollbar` | `"auto"` | `"auto"`, `"always"`, `"never"` | When the history scrollbar shows. The auto value shows the scrollbar while the view scrolls or the pointer is over it, then fades it out. |
 | `scrollbarHideDelay` | `1200` | 0–60000 | Milliseconds an auto scrollbar stays visible after the last scroll or after the pointer leaves. |
 | `startMode` | `"normal"` | `"normal"`, `"maximized"`, `"fullscreen"` | How new windows open. |

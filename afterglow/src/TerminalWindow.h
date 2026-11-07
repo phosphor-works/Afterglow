@@ -73,7 +73,7 @@ inline QString textPrefix(const QString& text, qsizetype limit)
 /// How a popup overlay looks with @p settings: the theme's popup border
 /// colour for its border line (when @p border), the text colour for
 /// @p title, and Colors.popupDim over the pane around it.
-AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border, const QString& title);
+AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border, const std::string& title);
 
 /// A top-level terminal window: a split tree of panes drawn in one render
 /// pass on the shared GpuDevice.
@@ -184,7 +184,8 @@ public:
     /// The overview for scripts: open, highlighted and its cards, by pane ID.
     QVariantMap overviewState() const;
     /// Runs @p spec over @p pane (an overlay): it shows in the pane's place,
-    /// with the pane's tab and the focus, until the program exits. Refused
+    /// or as a popup over a part of it with the pane showing around it, with
+    /// the pane's tab and the focus, until the program exits. Refused
     /// while the pane has one, a script dialog is open in this window,
     /// another owner's key mode holds the keyboard, or a prompt, a menu or
     /// the command palette is open. An open search closes.
@@ -293,7 +294,8 @@ private:
     static Pane* inputPane(Pane* pane);
     /// The pane whose program the pointer at @p pos (logical) reaches over
     /// @p pane: inputPane(), or none where a popup leaves the pane showing.
-    /// A click there does nothing and leaves the popup open.
+    /// A click there focuses the pane, reaches no program and leaves the
+    /// popup open.
     Pane* pointerTarget(Pane* pane, const QPointF& pos) const;
     /// The pane in the tab for @p pane: the host of an overlay's pane, else
     /// @p pane itself.
@@ -935,13 +937,14 @@ private:
         /// where it was when it was a popup.
         std::shared_ptr<AfterglowRender::PaneSnapshot> last;
         std::optional<OverlaySpec::Placement> lastPopup;
-        QString lastTitle;
+        std::string lastTitle; ///< UTF-8, as the border shows it
         /// prepareOverlay advanced it in the frame that is being built.
         bool advanced = false;
     };
-    /// A popup's grid at @p placement in @p host's grid, drawn at @p origin
-    /// (the host's cell 0,0), into @p shown.
-    void preparePopup(const OverlaySpec::Placement& placement, const QString& title, QPoint origin,
+    /// A popup's grid at @p placement in its host's grid, drawn at @p origin
+    /// (the host's cell 0,0), with @p title (UTF-8) in its border, into
+    /// @p shown.
+    void preparePopup(const OverlaySpec::Placement& placement, const std::string& title, QPoint origin,
                       AfterglowRender::WindowRenderer::Pane::Overlay& shown) const;
     std::unordered_map<const Pane*, OverlayFade> m_overlayFades;
     CurveCache m_overlayCurve;
