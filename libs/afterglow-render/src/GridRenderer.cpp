@@ -1201,9 +1201,9 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
             clusters.resize(count);
             clusters.push_back({std::u32string(1, U'\u2026'), 1});
         }
-        if (popup.bidi && clusters.size() > 1) {
-            // Each cluster in its visual place, as a pane's line with
-            // Terminal.bidi on, by its first character.
+        if (popup.bidi != AfterglowVt::BidiMode::Off && clusters.size() > 1) {
+            // Each cluster in its visual place, by its first character, as
+            // PaneSnapshot::applyBidi places a pane's.
             const auto count = FriBidiStrIndex(clusters.size());
             std::vector<FriBidiChar> characters;
             for (const Cluster& c : clusters) characters.push_back(FriBidiChar(c.text.front()));
@@ -1214,7 +1214,9 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
             std::iota(map.begin(), map.end(), FriBidiStrIndex(0));
             fribidi_get_bidi_types(characters.data(), count, types.data());
             fribidi_get_bracket_types(characters.data(), count, types.data(), brackets.data());
-            FriBidiParType direction = FRIBIDI_PAR_ON;
+            FriBidiParType direction = popup.bidi == AfterglowVt::BidiMode::LeftToRight ? FRIBIDI_PAR_LTR
+                : popup.bidi == AfterglowVt::BidiMode::RightToLeft                       ? FRIBIDI_PAR_RTL
+                                                                                         : FRIBIDI_PAR_ON;
             if (fribidi_get_par_embedding_levels_ex(types.data(), brackets.data(), count, &direction, levels.data())
                 && fribidi_reorder_line(0, types.data(), count, 0, direction, levels.data(), nullptr, map.data())) {
                 std::vector<Cluster> visual;
@@ -1524,8 +1526,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     }
     // A pane's instances, from its cache when nothing it shows has changed.
     // Subpixel text needs an opaque target that no chain resamples.
-    // A pane under a fading popup shows in the frame twice, focused and as
-    // the popup leaves it: each has its own cache, or both rebuild each frame.
+    // A pane under a fading popup shows in the frame twice, once with the
+    // popup and once without it, with another focus: the second gets a cache
+    // of its own, or both rebuild each frame. The pane under a full-pane
+    // overlay shows once, and keeps its cache.
     auto appendPane = [&](const Pane& pane, bool subpixelTarget, bool overlayHost = false) -> DrawRange {
         const auto first = std::uint32_t(m_frame.size());
         FrameBuilder::PaneParams pp = pane.params;
@@ -1538,7 +1542,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         const bool cursorBlinks = pp.cursorBlinkOverride < 0 ? pane.snapshot->cursorBlink : pp.cursorBlinkOverride != 0;
         if (!pp.focused || !cursorBlinks) pp.cursorBlinkOn = true;
         if (!pane.snapshot->hasBlinkingText) pp.textBlinkOn = true;
-        PaneCache& cache = (overlayHost ? m_hostPaneCache : m_paneCache)[pane.snapshot->identity.value()];
+        const std::uint64_t identity = pane.snapshot->identity.value();
+        const auto drawn = m_paneCache.find(identity);
+        const bool twice = overlayHost && drawn != m_paneCache.end() && drawn->second.seenFrame == m_frameCounter + 1;
+        PaneCache& cache = (twice ? m_hostPaneCache : m_paneCache)[identity];
         const bool reusable = cache.snapshotVersion == pane.snapshot->version && cache.fontEpoch == m_fontEpoch
             && cache.glyphEpoch == res.glyphs.epoch() && cache.fontIdentity == res.fonts->identity() && cache.rect == pp.rect
             && cache.origin == pp.contentOrigin && cache.focused == pp.focused && cache.blinkOn == pp.cursorBlinkOn && cache.textBlinkOn == pp.textBlinkOn
@@ -1625,10 +1632,12 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             range.popup = whole.intersected(range.scissor);
             range.popupDocks = popup->popup->border && m.cellWidth > 0 && m.cellHeight > 0 ? 2 : 1;
             range.popupRuns = popup->running;
-            const QRect pane = range.scissor;
-            range.popupClear = std::uint32_t(m_frame.size());
-            m_frame.push_back({float(pane.x()), float(pane.y()), float(pane.width()), float(pane.height()), 0, 0, 0, 0, 0,
-                               std::uint32_t(InstanceKind::Solid)});
+            if (post && m_post->layered()) {
+                const QRect pane = range.scissor;
+                range.popupClear = std::uint32_t(m_frame.size());
+                m_frame.push_back({float(pane.x()), float(pane.y()), float(pane.width()), float(pane.height()), 0, 0, 0, 0, 0,
+                                   std::uint32_t(InstanceKind::Solid)});
+            }
             const float dim = std::isfinite(popup->popup->dim) ? std::clamp(popup->popup->dim, 0.0f, 1.0f) : 0.0f;
             if (dim > 0) {
                 // Black over the rest of the pane: drawn around the popup.

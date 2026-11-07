@@ -25,6 +25,10 @@
 #include <unordered_map>
 #include <vector>
 
+namespace AfterglowVt {
+enum class BidiMode : std::uint8_t;
+}
+
 class QRhiBuffer;
 class QRhiGraphicsPipeline;
 class QRhiRenderPassDescriptor;
@@ -251,9 +255,9 @@ public:
                 bool border = false;
                 std::string title;
                 bool roundedCorners = true; ///< else square
-                /// The title in visual order, as a pane's text with
-                /// Terminal.bidi on: else in logical order.
-                bool bidi = false;
+                /// The order of the title, as Terminal.bidi orders a pane's
+                /// text: logical when off, else visual with that direction.
+                AfterglowVt::BidiMode bidi{}; ///< Off
                 std::uint32_t borderColor = 0; ///< packRgba
                 std::uint32_t titleColor = 0;
                 /// The opacity of a black layer over the pane around the popup.
@@ -476,7 +480,7 @@ private:
         int rows = 0;
         std::string title;
         bool roundedCorners = true;
-        bool bidi = false;
+        AfterglowVt::BidiMode bidi{};
         std::uint32_t borderColor = 0;
         std::uint32_t titleColor = 0;
         std::uint32_t background = 0;

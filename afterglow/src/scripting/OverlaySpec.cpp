@@ -22,8 +22,8 @@ constexpr std::pair<const char*, OverlaySpec::Position> Positions[] = {
     {"bottom-right", OverlaySpec::Position::BottomRight},
 };
 
-/// Cells as an integer, or a percentage as a string: "80%". JSON and Luau
-/// give numbers as doubles, JSON integers also as qlonglong.
+/// Cells as an integer, or a percentage as a string: "80%". JSON integers and
+/// Luau whole numbers arrive as qlonglong, other numbers as double.
 std::optional<OverlaySpec::Extent> extent(const QVariant& v)
 {
     if (v.typeId() == QMetaType::QString) {
@@ -116,7 +116,8 @@ std::optional<OverlaySpec> OverlaySpec::read(const QStringList& argv, const QVar
     if (argv.isEmpty() || argv.size() > MaxArguments)
         return refuse(QStringLiteral("An overlay needs an argv list of 1 to %1 strings").arg(MaxArguments));
     for (const QString& arg : argv) {
-        if (arg.size() > MaxArgument || arg.contains(QChar::Null)) return refuse(QStringLiteral("Invalid command argument"));
+        if (arg.size() > MaxArgument || arg.contains(QChar::Null))
+            return refuse(QStringLiteral("A command argument is over %1 characters or has a NUL character").arg(MaxArgument));
     }
     if (argv.first().isEmpty()) return refuse(QStringLiteral("An overlay needs a program to run"));
     spec.argv = argv;

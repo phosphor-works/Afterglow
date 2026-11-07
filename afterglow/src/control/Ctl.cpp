@@ -73,8 +73,8 @@ of the active window or of the window that was active last.
                                         result and exit with its status. Standard input,
                                         unless it is a terminal or -n is given, goes to
                                         CMD (at most 768 KiB). A width, a height or
-                                        --border makes a popup over a part of the pane:
-                                        cells or a percentage of the pane, at POS
+                                        --border makes a popup: cells or a percentage
+                                        of the pane, at POS
                                         (center, top, bottom, left, right, top-left,
                                         top-right, bottom-left or bottom-right)
   watch                                 print events as JSON lines until interrupted
@@ -444,12 +444,15 @@ int runCtl(int argc, char** argv)
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
     auto takeFlag = [&args](const QString& flag) { return args.removeAll(flag) > 0; };
-    // An option that needs a value and came last, or came twice: a usage
-    // error of its own, not an unknown option.
-    std::optional<QString> missingValue, repeatedValue;
-    auto takeValue = [&args, &missingValue, &repeatedValue](const QString& flag) -> std::optional<QString> {
+    // An option that needs a value and came last: a usage error of its own,
+    // not an unknown option. So is one given twice, which shows as a word
+    // left once every option took its value (extra).
+    std::optional<QString> missingValue;
+    QStringList takenValues;
+    auto takeValue = [&args, &missingValue, &takenValues](const QString& flag) -> std::optional<QString> {
         const qsizetype i = args.indexOf(flag);
         if (i < 0) return std::nullopt;
+        takenValues.append(flag);
         if (i + 1 >= args.size()) {
             missingValue = flag;
             args.removeAt(i);
@@ -457,7 +460,6 @@ int runCtl(int argc, char** argv)
         }
         const QString v = args[i + 1];
         args.remove(i, 2);
-        if (args.contains(flag) && !repeatedValue) repeatedValue = flag;
         return v;
     };
 
@@ -465,9 +467,11 @@ int runCtl(int argc, char** argv)
     // Options left after a command took its own are typing errors. With
     // @p shortOptions the command has options such as -n: a word like -W is
     // one too, and not an argument.
-    auto extra = [&args, &missingValue, &repeatedValue](qsizetype positional, bool shortOptions = false) -> std::optional<QString> {
+    auto extra = [&args, &missingValue, &takenValues](qsizetype positional, bool shortOptions = false) -> std::optional<QString> {
         if (missingValue) return QStringLiteral("%1 needs a value").arg(*missingValue);
-        if (repeatedValue) return QStringLiteral("%1 is given more than once").arg(*repeatedValue);
+        for (const QString& arg : std::as_const(args)) {
+            if (takenValues.contains(arg)) return QStringLiteral("%1 is given more than once").arg(arg);
+        }
         for (const QString& arg : std::as_const(args)) {
             const bool shortOption = shortOptions && arg.size() > 1 && arg[0] == QLatin1Char('-') && arg[1].isLetter();
             if (arg.startsWith(QLatin1String("--")) || shortOption) return QStringLiteral("unknown option %1").arg(arg);
@@ -738,8 +742,9 @@ int runCtl(int argc, char** argv)
         if (title) options.insert(QStringLiteral("title"), *title);
         // A count of cells goes as a number, a percentage as text, by the
         // rules of afterglow.overlay.
+        // No leading zero, as in a percentage.
         auto size = [](const QString& value) {
-            const std::optional<quint32> cells = decimal(value);
+            const std::optional<quint32> cells = value.startsWith(QLatin1Char('0')) ? std::nullopt : decimal(value);
             return cells ? QJsonValue(qint64(*cells)) : QJsonValue(value);
         };
         if (const auto w = width ? width : longWidth) options.insert(QStringLiteral("width"), size(*w));
@@ -748,7 +753,11 @@ int runCtl(int argc, char** argv)
         if (border || noBorder) options.insert(QStringLiteral("border"), border);
         // Checked here by the rules afterglow reads them by: a bad value is a
         // usage error before any input is read or a connection made.
-        if (QString problem; !OverlaySpec::read(trailing, options.toVariantMap(), &problem)) return usage(problem);
+        // Its messages start as sentences do; usage errors do not.
+        if (QString problem; !OverlaySpec::read(trailing, options.toVariantMap(), &problem)) {
+            if (!problem.isEmpty()) problem[0] = problem[0].toLower();
+            return usage(problem);
+        }
         // A list piped in, as for fzf. A terminal is no list: the program
         // reads the pane instead, and the call does not wait for an end of
         // file that never comes.

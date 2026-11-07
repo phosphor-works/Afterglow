@@ -1479,9 +1479,9 @@ Settings SettingsStore::read()
         hl.visualBell = theme->visualBell.value_or(hl.visualBell);
         hl.visualBellIntensity = theme->visualBellIntensity.value_or(hl.visualBellIntensity);
         // A theme without a divider or a popup border (every theme of another
-        // terminal, and the bundled ones for the popup border) gets one
-        // derived from its background and text, which suits light and dark
-        // alike. The config's are not used: they need not suit the theme's
+        // terminal, most bundled ones, and every bundled one for the popup
+        // border) gets one derived from its background and text, which suits
+        // light and dark alike. The config's are not used: they need not suit the theme's
         // background.
         divider = theme->divider.value_or(Themes::derivedDivider(t.defaultBackground, t.defaultForeground));
         popupBorder = theme->popupBorder;

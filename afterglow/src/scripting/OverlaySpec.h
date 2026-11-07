@@ -24,8 +24,8 @@ struct EnvironmentOverrides
     static constexpr qsizetype MaxBytes = 64 * 1024;
 
     /// @p value as variables in @p env (a string sets one, false unsets it),
-    /// or an error. Nothing, and an empty list (an empty Luau table), are no
-    /// overrides.
+    /// or an error. Nothing, an empty object (an empty Luau table) and an
+    /// empty JSON list are no overrides.
     static QString read(const QVariant& value, QVariantMap& env);
 };
 

@@ -70,9 +70,10 @@ inline QString textPrefix(const QString& text, qsizetype limit)
     return text.left(limit > 0 && text.at(limit).isLowSurrogate() ? limit - 1 : limit);
 }
 
-/// How a popup overlay looks with @p settings: the theme's popup border
-/// colour for its border line (when @p border), the text colour for
-/// @p title, and Colors.popupDim over the pane around it.
+/// How a popup overlay looks with @p settings: the popup border colour for
+/// its border line (when @p border) with Window.popupCorners, the text
+/// colour for @p title (UTF-8) in Terminal.bidi's order, and Colors.popupDim
+/// over the pane around it.
 AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border, const std::string& title);
 
 /// A top-level terminal window: a split tree of panes drawn in one render
@@ -307,8 +308,9 @@ private:
         if (pane && pane->overlayHost()) return inputPane(pane->overlayHost()) == pane && tabOf(pane->overlayHost()) >= 0;
         return pane && tabOf(pane) >= 0;
     }
-    /// The title that shows for @p pane (window, tab, split label): its
-    /// overlay's while that has one, else its own.
+    /// The title that shows for @p pane (window, tab, and the split label
+    /// under a full-pane overlay): its overlay's while that has one, else
+    /// its own. A popup's split label keeps the pane's own title.
     static QString shownTitle(const Pane* pane);
     /// Tells @p pane's own program that it got or lost the focus, when it
     /// asked to hear it (mode 1004). Not its overlay's: callers choose.

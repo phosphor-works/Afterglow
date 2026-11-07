@@ -106,10 +106,15 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
     } else {
         setFocusedPane(pane);
     }
-    // The pane's name is the overlay's title now (shownTitle).
+    // The pane's name is the overlay's title now (shownTitle), and a
+    // popup's grid is where its text is.
     if (QAccessible::isActive()) {
         QAccessibleEvent event(pane, QAccessible::NameChanged);
         QAccessible::updateAccessibility(&event);
+        if (spec.popup()) {
+            QAccessibleEvent moved(pane, QAccessible::LocationChanged);
+            QAccessible::updateAccessibility(&moved);
+        }
     }
     updatePaneVisibility();
     startOverlayFade(pane, 1.0);
@@ -210,6 +215,10 @@ void TerminalWindow::overlayEnded(Pane* host, PaneOverlay* overlay, bool hostClo
     if (!hostCloses && QAccessible::isActive()) {
         QAccessibleEvent event(host, QAccessible::NameChanged);
         QAccessible::updateAccessibility(&event);
+        if (overlay->popup()) {
+            QAccessibleEvent moved(host, QAccessible::LocationChanged);
+            QAccessible::updateAccessibility(&moved);
+        }
     }
     // Its program gets SIGHUP when it goes, if it still runs.
     overlay->deleteLater();
@@ -314,8 +323,8 @@ AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& 
     popup.border = border;
     popup.title = title;
     popup.roundedCorners = settings.window.popupCorners == WindowSettings::PopupCorners::Rounded;
-    popup.bidi = settings.terminal.bidi != AfterglowVt::BidiMode::Off;
-    // The theme's: its popup border for the line, its text for the title.
+    popup.bidi = settings.terminal.bidi;
+    // The settings': the popup border for the line, the text colour for the title.
     popup.borderColor = settings.window.popupBorderColor;
     popup.titleColor = AfterglowRender::packRgba(settings.terminal.defaultForeground);
     popup.dim = float(settings.window.popupDim);

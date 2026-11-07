@@ -62,8 +62,8 @@ Create `config.json` beside `package.json` to override the defaults:
 | `fzf` | `fzf` | The fzf program |
 | `max_depth` | 4 | The depth of directories that the file search goes into |
 | `max_files` | 5000 | The most files in the list. Saved projects do not count toward this limit. |
-| `width` | `"80%"` | The width of the fzf popup: a number of cells, or a percentage of the pane as a string |
-| `height` | `"60%"` | The height of the fzf popup: a number of cells, or a percentage of the pane as a string |
+| `width` | `"80%"` | The width of the fzf popup: a whole number of cells, or a percentage of the pane as a string |
+| `height` | `"60%"` | The height of the fzf popup: a whole number of cells, or a percentage of the pane as a string |
 
 The select dialog shows the first 500 entries.
 When the pick fails for a reason other than a cancel, the package tells why.

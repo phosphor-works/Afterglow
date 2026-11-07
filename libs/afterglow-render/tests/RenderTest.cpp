@@ -3798,6 +3798,31 @@ TEST_F(PopupRender, ThePanesCursorIsUnfocusedOnlyWhileItsPopupRuns)
     EXPECT_FALSE(shows(image, QRect(cellCenter(1, 1), QSize(1, 1)), red));
 }
 
+TEST_F(PopupRender, TheCursorInputsAreThePopupsWhileItRunsAndThePanesOnceItEnds)
+{
+    // The pane's cursor at its (1, 1), the popup's at its own (1, 0), which
+    // is the pane's (6, 1).
+    terminal->feed("\x1b[2;2H\x1b[?25h");
+    snapshot.capture(*terminal);
+    popupTerminal->feed("\x1b[?25h");
+    popupSnapshot.capture(*popupTerminal);
+    auto glsl = [](double v) { return QString::number(v, 'f', 3).toStdString(); };
+    auto cursorAt = [&](int x, int y) {
+        const std::string body = "fragColor = all(lessThan(abs(uCursorRect - vec4(" + glsl(x * cw) + "," + glsl(y * ch) + "," + glsl(cw)
+            + "," + glsl(ch) + ")), vec4(0.1))) ? vec4(0,1,0,1) : vec4(1,0,0,1);";
+        ShaderChains chains;
+        chains.pane = {layerShader("cursor-at", body.c_str())};
+        renderer->setShaderChains(chains);
+    };
+    WindowRenderer::Pane running = withPopup(true);
+    cursorAt(6, 1);
+    EXPECT_PIXEL(frame(running), cellCenter(2, 0), qRgb(0, 255, 0));
+    WindowRenderer::Pane ended = running;
+    ended.overlay->running = false;
+    cursorAt(1, 1);
+    EXPECT_PIXEL(frame(ended), cellCenter(2, 0), qRgb(0, 255, 0));
+}
+
 TEST_F(PopupRender, ATitleThatDoesNotFitIsCutAndAZeroWidthCharacterTakesNoCell)
 {
     const QRgb yellow = qRgb(255, 255, 0), blue = qRgb(0, 0, 0xc0);
@@ -3812,7 +3837,7 @@ TEST_F(PopupRender, ATitleThatDoesNotFitIsCutAndAZeroWidthCharacterTakesNoCell)
     EXPECT_TRUE(cellIs(image, cell(9, 0), blue));
     // A zero-width space with nothing to join takes no cell.
     WindowRenderer::Pane joined = withPopup(true);
-    joined.overlay->popup->title = "​T";
+    joined.overlay->popup->title = "\u200BT";
     const QImage title = frame(joined);
     EXPECT_TRUE(shows(title, cell(7, 0), yellow));
     EXPECT_TRUE(cellIs(title, cell(8, 0), blue));
@@ -3830,9 +3855,9 @@ TEST_F(PopupRender, SquareCornersAndATitleInVisualOrder)
     // An alef, then a full block, which takes the right-to-left direction of
     // the title: with bidi the block shows first.
     WindowRenderer::Pane mixed = withPopup(true);
-    mixed.overlay->popup->title = "א█";
+    mixed.overlay->popup->title = "\u05D0\u2588";
     EXPECT_TRUE(cellIs(frame(mixed), cell(8, 0), yellow));
-    mixed.overlay->popup->bidi = true;
+    mixed.overlay->popup->bidi = AfterglowVt::BidiMode::Auto;
     EXPECT_TRUE(cellIs(frame(mixed), cell(7, 0), yellow));
 }
 
@@ -3858,6 +3883,8 @@ int main(int argc, char** argv)
     if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
         qputenv("QT_QPA_PLATFORM", "offscreen");
     }
+    // Not the desktop's theme plugin, which reaches the desktop's services.
+    qputenv("QT_QPA_PLATFORMTHEME", "generic");
     QGuiApplication app(argc, argv);
     if (QGuiApplication::platformName() == QLatin1String("wayland")) {
         try {

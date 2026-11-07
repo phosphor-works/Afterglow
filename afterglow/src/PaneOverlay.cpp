@@ -24,7 +24,6 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
     // Deleted on failure before it answers or joins its host.
     std::unique_ptr<PaneOverlay> overlay(new PaneOverlay(host));
     overlay->m_capture = spec.capture;
-    overlay->m_title = spec.title;
     overlay->m_borderTitle = spec.title.toStdString();
     overlay->m_shape.width = spec.width;
     overlay->m_shape.height = spec.height;

@@ -1400,7 +1400,15 @@ TEST(CtlBinaryTest, UsageErrorsExitWithTwoBeforeAnyConnection)
                     QStringLiteral("--border and --no-border exclude each other")},
           std::pair{QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("-W"), QStringLiteral("5"), QStringLiteral("--"),
                                 QStringLiteral("fzf")},
-                    QStringLiteral("unknown option -W")}}) {
+                    QStringLiteral("unknown option -W")},
+          // A leading zero, as a percentage refuses one.
+          std::pair{QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("-w"), QStringLiteral("060"), QStringLiteral("--"),
+                                QStringLiteral("fzf")},
+                    QStringLiteral("width must be a number of cells from 1 to 10000, or a percentage from \"1%\" to \"100%\"")},
+          // The rules of afterglow.overlay, in the words of a usage error.
+          std::pair{QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("--title"), QStringLiteral("a\tb"), QStringLiteral("--"),
+                                QStringLiteral("fzf")},
+                    QStringLiteral("the overlay title has a control character, a line break or a bidirectional control")}}) {
         const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
         EXPECT_EQ(r.status, 2) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.err);
         EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n\nUsage: afterglow ctl ").arg(message))) << qPrintable(r.err);
@@ -1608,8 +1616,8 @@ TEST(CtlOverlayTest, SendsAPopupsOptionsInTheirJsonTypes)
     // value stays a flag.
     AgainstTarget r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 0}}),
                                  {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("-w"), QStringLiteral("--no-border"),
-                                                     QStringLiteral("60"), QStringLiteral("--height"), QStringLiteral("60%"), QStringLiteral("--position"),
-                                                     QStringLiteral("top-right"), QStringLiteral("--"), QStringLiteral("fzf")});
+                                  QStringLiteral("60"), QStringLiteral("--height"), QStringLiteral("60%"), QStringLiteral("--position"),
+                                  QStringLiteral("top-right"), QStringLiteral("--"), QStringLiteral("fzf")});
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
     const QJsonObject options = overlayOptions(r.calls);
     EXPECT_TRUE(options.value(QStringLiteral("width")).isDouble());
@@ -1621,6 +1629,13 @@ TEST(CtlOverlayTest, SendsAPopupsOptionsInTheirJsonTypes)
     r = ctlAgainst(overlayResult({}), {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--"), QStringLiteral("fzf")});
     for (const char* key : {"width", "height", "position", "border"})
         EXPECT_FALSE(overlayOptions(r.calls).contains(QLatin1String(key))) << key;
+    // A value spelled as an option that came before is a value, not that
+    // option given twice.
+    r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 0}}),
+                   {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--capture"), QStringLiteral("none"), QStringLiteral("--title"),
+                    QStringLiteral("--capture"), QStringLiteral("--"), QStringLiteral("fzf")});
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("title")).toString(), QStringLiteral("--capture"));
 }
 
 TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)

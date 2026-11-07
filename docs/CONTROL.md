@@ -260,7 +260,7 @@ The program shows in the place of the pane, or over a part of it as a popup, wit
 selected=$(git branch --format='%(refname:short)' | afterglow ctl overlay -w 80% -h 60% -- fzf) && git switch "$selected"
 ```
 
-`afterglow ctl overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n|--no-stdin] [-w|--width N|N%] [-h|--height N|N%] [--position POS] [--border|--no-border] -- CMD...`
+`afterglow ctl overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n|--no-stdin] [-w|--width N[%]] [-h|--height N[%]] [--position POS] [--border|--no-border] -- CMD...`
 opens the overlay over the [target pane](#which-process-and-pane).
 It waits until the program exits, with no time limit.
 Then it writes the result's `stdout` to its standard output, and exits with the program's exit status.
@@ -270,7 +270,7 @@ A result over 1 MiB is cut, and a message goes to standard error.
 | --- | --- |
 | `--capture MODE` | `stdout` (the default), `file` or `none`, as the `capture` option |
 | `--cwd DIR` | The program's directory. The default is the directory of `afterglow ctl`. The directory must exist. When the directory of `afterglow ctl` was removed, `afterglow ctl` exits with status 1. Then give an absolute `--cwd`, `~` or one that starts with `~/`. |
-| `--title TEXT` | The pane's title while the overlay runs |
+| `--title TEXT` | The pane's title while the overlay runs. It must not have a control character, a line break or a bidirectional control. |
 | `-n`, `--no-stdin` | Standard input does not go to the program. |
 | `-w`, `--width N` | A popup N cells wide, or `N%` of the pane's columns. The border is part of the width. |
 | `-h`, `--height N` | A popup N cells tall, or `N%` of the pane's rows. The border is part of the height. |
@@ -280,8 +280,9 @@ A result over 1 MiB is cut, and a message goes to standard error.
 A width, a height or `--border` makes the overlay a popup: the pane stays visible around it.
 `--border` alone makes a popup that fills the pane, with the program inside the border.
 [SCRIPTING.md](SCRIPTING.md#popups) gives the limits and the layout.
-`afterglow ctl` checks these options before it reads standard input or connects. A value that breaks a rule is a usage error, with exit status 2.
-An option that you give two times is a usage error too.
+`afterglow ctl` checks the options and the command before it reads standard input or connects.
+A value that breaks a rule of [SCRIPTING.md](SCRIPTING.md#overlays) is a usage error, with exit status 2.
+Afterglow checks that the `--cwd` directory exists. When it does not, `afterglow ctl` exits with status 1.
 
 Without `-n`, standard input goes to the program when it is not a terminal.
 The input goes in the request, so it is at most 768 KiB. For a longer list, use a script.
@@ -308,7 +309,7 @@ The `overlay` call takes the pane (0 for the focused pane), the argv list and an
 | `position` | string |
 | `border` | boolean |
 
-It answers when the program exits: the reply comes later, and other calls on the connection get their replies meanwhile.
+The `overlay` call answers when the program exits: the reply comes later, and other calls on the connection get their replies meanwhile.
 An argv list or an option that breaks a rule fails the call with `CALL_FAILED`, and no program starts.
 An empty `cwd` starts the program in the home directory.
 Other failures have their own error codes:
@@ -554,6 +555,8 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Subscriptions on one connection | 256 | The subscription fails with `MALFORMED_REQUEST`. A second subscription to the same event also fails. |
 | `afterglow ctl` reply time | 10 seconds | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. `afterglow ctl overlay` waits for the program without a limit. |
 | `afterglow ctl overlay` standard input | 768 KiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |
+| `afterglow ctl overlay` command | 64 words of at most 4096 UTF-16 units | `afterglow ctl` exits with status 2 before it connects. |
+| `afterglow ctl overlay --title` | 512 UTF-16 units | `afterglow ctl` exits with status 2 before it connects. |
 | `afterglow ctl overlay` request | 1 MiB | `afterglow ctl` exits with status 1 and opens nothing. JSON writes most C0 control characters, such as U+0001, as 6 bytes. Thus input below 768 KiB with many control characters can make a request over 1 MiB. |
 | `stdin` of the `overlay` call | The request line of 1 MiB | The socket closes the connection. |
 | `stdout` of an overlay's result | 1 MiB of UTF-8 | The text is cut, and `truncated` is true. |
@@ -611,7 +614,7 @@ The other commands stop with a usage error when you give such words.
 | --- | --- |
 | 0 | The command succeeded. `afterglow ctl --help` also exits with status 0. |
 | 1 | An error, for example no Afterglow, a call that failed or no reply in 10 seconds. |
-| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 768 KiB or not UTF-8 text. `afterglow ctl` checks the text before it connects. |
+| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option that takes a value, given two times, is a usage error too. So is an `overlay` option that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 768 KiB or not UTF-8 text. `afterglow ctl` checks the text before it connects. |
 | 0 to 255 from `overlay` | `afterglow ctl overlay` exits with the exit status of its program. Thus a status of 1 or 2 can come from the program. A failed or cancelled overlay gives 1. So does an exit status outside 0 to 255. |
 
 `afterglow ctl watch` prints events until the connection or a subscription ends.

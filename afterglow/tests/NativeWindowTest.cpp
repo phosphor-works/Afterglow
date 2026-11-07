@@ -22,7 +22,6 @@
 #include "TerminalWindow.h"
 #include "config/Settings.h"
 #include <AfterglowRender/FontSet.h>
-#include <AfterglowRender/GpuDevice.h>
 #include <AfterglowRender/Snapshot.h>
 #include <QApplication>
 #include <QElapsedTimer>
@@ -6561,8 +6560,15 @@ TEST_F(NativeWindow, APopupOverOnePaneTakesThePointerInItsOwnCellsOnly) {
         clickLeft(window, at);
         wheelAt(window, at);
     }
+    // A drag across the pane around it.
+    mouseAt(window, QEvent::MouseButtonPress, host.topLeft() + QPointF(3, 3), Qt::LeftButton, Qt::LeftButton);
+    dragLeft(window, host.topLeft() + QPointF(host.width() / 3, 3));
+    mouseAt(window, QEvent::MouseButtonRelease, host.topLeft() + QPointF(host.width() / 3, 3), Qt::LeftButton, Qt::NoButton);
+    // A frame moves the view by what the wheel scrolled.
+    ASSERT_TRUE(nextFrame(window));
     EXPECT_FALSE(answer->done);
     EXPECT_FALSE(pane->hasSelection());
+    EXPECT_FALSE(program->hasSelection());
     EXPECT_EQ(pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }), 0u);
     EXPECT_EQ(window->focusedPane(), pane);
     // In it, its own cells: column 3, row 2 from 1. The reports arrive in
@@ -6645,6 +6651,7 @@ TEST_F(NativeWindow, APopupTooBigForItsPaneFillsTheGridBesideThePanesDock) {
     // its border on the pane's edge cells.
     for (const QVariantMap& options : {QVariantMap{{QStringLiteral("width"), 500}, {QStringLiteral("height"), 500}},
                                        QVariantMap{{QStringLiteral("border"), true}}}) {
+        SCOPED_TRACE(QJsonDocument(QJsonObject::fromVariantMap(options)).toJson(QJsonDocument::Compact).toStdString());
         QFile::remove(log);
         auto answer = runOverlay(window, pane, reportingClicks(log), options);
         ASSERT_NE(pane->overlay(), nullptr);
@@ -6662,6 +6669,7 @@ TEST_F(NativeWindow, APopupTooBigForItsPaneFillsTheGridBesideThePanesDock) {
         ASSERT_NE(dock, nullptr);
         const QRectF host = gridOf(window, pane);
         const QSizeF cell(host.width() / pane->cols(), host.height() / pane->rows());
+        clickLeft(window, QRectF(dock->rect()).center() / window->devicePixelRatio());
         clickLeft(window, host.topLeft() + QPointF(cell.width() / 2, cell.height() / 2));
         clickLeft(window, host.topLeft() + QPointF(cell.width() * 1.5, cell.height() * 1.5));
         const QByteArray expected("\x1b[<0;1;1M\x1b[<0;1;1m");

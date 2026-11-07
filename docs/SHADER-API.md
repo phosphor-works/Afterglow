@@ -418,7 +418,8 @@ While the overlay fades out, its program has ended, and the overlay shows the pr
 The pane under the overlay keeps a text history of its own. Its `uPreviousText` holds its own text from the last frame, never the overlay's.
 A fade that starts keeps the text history that the pane had.
 When a fade out starts after the overlay has shown whole, the pane under the overlay has no text history yet. Its `uPreviousText` is transparent in that frame.
-This is also so for a popup: the text history of the pane with its popup is not the history of the pane under it.
+When a popup's fade out starts after the popup has shown whole, the pane under it also has no text history yet. The history of the pane with its popup is not the history of the pane under it.
+When a popup opens or closes without a fade, the text history of every pane starts again, as when a full-pane overlay opens or closes.
 A pane's own buffers step once a frame, also while a popup over it fades. The pane under the popup steps them, and the pane with the popup reads that step.
 When the overlay has faded out, the pane's text history goes on from what it drew under the overlay. If a fade on another pane runs in that frame, this history starts again.
 When a fade on another pane starts or ends, the text history of each pane whose fade goes on starts again.
@@ -428,7 +429,7 @@ When the buffers do not exist yet, the pane under the overlay makes them. They t
 `uScrollback` counts the history of the pane under the overlay, also in the overlay's passes. The overlay's own history does not count.
 The window shaders take the focused pane's inputs, such as its cursor and palette, from the pane under the overlay until the fade is halfway.
 After that, they take them from the overlay.
-While a popup runs, the cursor inputs of its pane (`uCursorRect`, `uPreviousCursor`, the cursor color, style and visibility) are the popup's cursor, in framebuffer pixels.
+While a popup runs, the cursor inputs of its pane (`uCursorRect`, `uPreviousCursorRect`, the cursor color, style and visibility) are the popup's cursor, in canvas pixels.
 The palette, the default colors, the theme's cursor colors and the text history stay the pane's.
 While a popup fades out, its program has ended: the cursor inputs are the pane's again.
 `overlayTransitionProgress()` runs from 0, the pane under the overlay, to 1, the overlay. It stays between 0 and 1.
@@ -438,7 +439,7 @@ Draw the pane at progress 0 and the overlay at 1. The fade then starts and ends 
 `overlayTransitionActive()` is true in every pass of this pack and false in every other pass.
 The pack's buffer passes can use all three helpers.
 A full-pane overlay hides the pane under it: that pane is drawn only while a fade runs. It goes into the window-sized tab image. Its text history lives until the frame after the last fade.
-A popup does not hide its pane, which is drawn in every frame. Only the image of the pane under a fading popup goes into the tab image.
+A popup does not hide its pane: the pane and the popup are drawn in every frame. While a popup fades, the pane as it shows without the popup also goes into the tab image.
 The overview, a tab switch and a closing pane also use that image.
 An overlay opens and closes without a fade while one of them shows.
 It also does so while the pane is not on screen or the window is hidden.

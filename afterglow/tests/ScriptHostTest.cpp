@@ -5468,7 +5468,7 @@ end }
     host->dispatch("on_bell", 7);
     // Each row is refused for its own rule: an option that a helper dropped
     // or coerced would reach the window, or be refused for another reason.
-    const char* const reasons[] = {"argv list of 1 to 64", "argv list of 1 to 64", "Invalid command argument",
+    const char* const reasons[] = {"argv list of 1 to 64", "argv list of 1 to 64", "A command argument is over 4096 characters or has a NUL",
         "capture must be stdout, file or none", "option stdin must be a string", "valid variable names",
         "valid variable names", "title is over 512", "Unknown overlay option captur", "option cwd must be a string",
         "cwd must be an absolute path", "Overlay options must be an object"};
@@ -5522,11 +5522,11 @@ TEST(OverlaySpecTest, ArgumentsAndOptionsKeepTheirLimits)
     many.append(QStringLiteral("a"));
     EXPECT_TRUE(refused(many, {}, "argv list of 1 to 64")) << error.toStdString();
     EXPECT_TRUE(accepted({QStringLiteral("fzf"), QString(OverlaySpec::MaxArgument, QLatin1Char('a'))}, {})) << error.toStdString();
-    EXPECT_TRUE(refused({QStringLiteral("fzf"), QString(OverlaySpec::MaxArgument + 1, QLatin1Char('a'))}, {}, "Invalid command argument"));
+    EXPECT_TRUE(refused({QStringLiteral("fzf"), QString(OverlaySpec::MaxArgument + 1, QLatin1Char('a'))}, {}, "A command argument is over 4096 characters or has a NUL"));
     EXPECT_TRUE(refused({QString()}, {}, "program to run")) << error.toStdString();
     QString withNul = QStringLiteral("ab");
     withNul.insert(1, QChar::Null);
-    EXPECT_TRUE(refused({withNul}, {}, "Invalid command argument")) << error.toStdString();
+    EXPECT_TRUE(refused({withNul}, {}, "A command argument is over 4096 characters or has a NUL")) << error.toStdString();
 
     EXPECT_TRUE(refused(argv, {{QStringLiteral("shell"), QStringLiteral("sh")}}, "Unknown overlay option shell")) << error.toStdString();
     EXPECT_TRUE(refused(argv, {{QStringLiteral("title"), 5}}, "option title must be a string")) << error.toStdString();
@@ -5556,8 +5556,10 @@ TEST(OverlaySpecTest, ArgumentsAndOptionsKeepTheirLimits)
     const QVariantMap over{{QStringLiteral("V"), QString(EnvironmentOverrides::MaxBytes, QLatin1Char('x'))}};
     EXPECT_TRUE(refused(argv, {{QStringLiteral("env"), over}}, "over 64 KiB")) << error.toStdString();
     EXPECT_TRUE(refused(argv, {{QStringLiteral("env"), QStringLiteral("LANG=C")}}, "env must be an object")) << error.toStdString();
-    // An empty Luau table arrives as an empty list.
+    // An empty JSON list, from the control socket, and an empty object, as
+    // an empty Luau table arrives.
     EXPECT_TRUE(accepted(argv, {{QStringLiteral("env"), QVariantList{}}})) << error.toStdString();
+    EXPECT_TRUE(accepted(argv, {{QStringLiteral("env"), QVariantMap{}}})) << error.toStdString();
 }
 
 TEST_F(ScriptHostTest, PopupOptionsAreCheckedAndReachTheWindow)
@@ -5576,7 +5578,6 @@ return { on_bell = function(ev)
         afterglow.overlay(ev.pane, "fzf", {border = "yes"}),
         afterglow.overlay(ev.pane, "fzf", {width = math.huge}),
         afterglow.overlay(ev.pane, "fzf", {width = 1e300}),
-        afterglow.overlay(ev.pane, "fzf", {width = -0}),
         afterglow.overlay(ev.pane, "fzf", {width = {}}),
         afterglow.overlay(ev.pane, "fzf", {position = {}}),
         afterglow.overlay(ev.pane, "fzf", {title = "a\nb"}),
@@ -5590,7 +5591,7 @@ end }
     host->dispatch("on_bell", 7);
     // Each row is refused for its own rule.
     const char* const reasons[] = {"width", "width", "height", "height", "width", "width", "position", "position", "border",
-                                   "width", "width", "width", "width", "position", "title", "title"};
+                                   "width", "width", "width", "position", "title", "title"};
     const int refusedRows = int(std::size(reasons));
     ASSERT_EQ(rec.results.size(), refusedRows + 2);
     for (int i = 0; i < refusedRows; ++i)
@@ -5624,7 +5625,8 @@ TEST(OverlaySpecTest, PopupOptionsTakeCellsPercentagesPositionsAndABorder)
         EXPECT_TRUE(spec) << error.toStdString();
         return spec.value_or(OverlaySpec{});
     };
-    // The control call's JSON gives integers as qlonglong, Luau as doubles.
+    // JSON and Luau give whole numbers as qlonglong; a double such as 60.0
+    // is taken too.
     EXPECT_EQ(taken({{"width", qlonglong(60)}}).width, (OverlaySpec::Extent{60, false}));
     EXPECT_EQ(taken({{"width", 60.0}}).width, (OverlaySpec::Extent{60, false}));
     EXPECT_EQ(taken({{"height", "1%"}}).height, (OverlaySpec::Extent{1, true}));
@@ -5632,7 +5634,7 @@ TEST(OverlaySpecTest, PopupOptionsTakeCellsPercentagesPositionsAndABorder)
     EXPECT_EQ(taken({{"width", OverlaySpec::MaxCells}}).width, (OverlaySpec::Extent{OverlaySpec::MaxCells, false}));
     for (const QVariant& bad : {QVariant(0), QVariant(-3), QVariant(2.5), QVariant(OverlaySpec::MaxCells + 1), QVariant("0%"),
                                 QVariant("101%"), QVariant("80"), QVariant(" 80%"), QVariant("80 %"), QVariant("%"), QVariant(true),
-                                QVariant(std::nan("")), QVariant("080%"), QVariant("+80%"), QVariant("80%\n")}) {
+                                QVariant(std::nan("")), QVariant(-0.0), QVariant("080%"), QVariant("+80%"), QVariant("80%\n")}) {
         EXPECT_FALSE(read({{"width", bad}})) << bad.toString().toStdString();
         EXPECT_TRUE(error.startsWith(QLatin1String("width"))) << error.toStdString();
     }

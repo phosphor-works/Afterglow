@@ -82,8 +82,8 @@ TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
         {R"({"Colors": {"theme": ")" + boxed.toUtf8() + R"("}})", qRgb(0, 0, 255), qRgb(255, 255, 255), qRgb(0, 0, 0)},
         {R"({"Colors": {"theme": ")" + plain.toUtf8() + R"(", "popupBorder": "#ff00ff"}})", qRgb(0, 127, 0), qRgb(0, 255, 0),
          qRgb(0, 0, 0)},
-        {R"({"Colors": {"background": "#ffffff", "foreground": "#000000", "popupDim": 0.5}})", qRgb(128, 128, 128), qRgb(0, 0, 0),
-         qRgb(128, 128, 128)},
+        {R"({"Colors": {"background": "#ffffff", "foreground": "#000000", "popupDim": 0.2}})", qRgb(128, 128, 128), qRgb(0, 0, 0),
+         qRgb(204, 204, 204)},
     };
     AfterglowRender::WindowRenderer renderer(*s_device, nullptr);
     renderer.setDevicePixelRatio(1.0);
@@ -134,6 +134,8 @@ int main(int argc, char** argv)
     ::testing::InitGoogleTest(&argc, argv);
     // Vulkan needs a real platform; the offscreen QPA has no Vulkan support.
     if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) qputenv("QT_QPA_PLATFORM", "offscreen");
+    // Not the desktop's theme plugin, which reaches the desktop's services.
+    qputenv("QT_QPA_PLATFORMTHEME", "generic");
     QGuiApplication app(argc, argv);
     if (QGuiApplication::platformName() == QLatin1String("wayland")) {
         try {

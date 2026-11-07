@@ -158,7 +158,7 @@ The intense colors are palette entries 8 to 15.
 Afterglow has no counterpart for the faint and intense text colors, the wallpaper or the opacity of a Konsole color scheme.
 An Afterglow JSON theme is one object with color keys.
 The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeground`, `selectionBackground`, `divider` and `popupBorder`.
-A key can have `-` or `_` between its words, in any case, such as `popup-border` in a Ghostty theme.
+A color key can have `-` or `_` between its words, in any case, such as `popup-border` in a Ghostty theme.
 `searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.
 Afterglow logs other keys in a JSON theme.
 A color in a theme or in `Colors` is a Qt color name, such as `#1e1e2e`, `#fff` or `red`.
@@ -229,7 +229,7 @@ A [popup overlay](SCRIPTING.md#popups) takes a part of the pane, and the pane st
 | --- | --- | --- |
 | `Colors.popupDim` | 0.35 | Opacity of a black layer over the pane around a popup, from 0 to 1. A value outside this range becomes 0 or 1. A value of 0 turns the darkening off. |
 | `Colors.popupBorder` | `""` | Color of the popup's border line. An empty value uses the color halfway from the background color to the text color. A theme replaces it, as described in [Themes](#themes). |
-| `Window.popupCorners` | `rounded` | Corners of the popup's border: `rounded` or `square` |
+| `Window.popupCorners` | `rounded` | Corners of the popup's border: `rounded` or `square`. |
 
 The title in the border uses the text color.
 
