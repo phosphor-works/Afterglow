@@ -415,8 +415,8 @@ The pane under the overlay keeps running. While the overlay fades in, its progra
 While the overlay fades out, its program has ended, and the overlay shows the program's last frame.
 The pane under the overlay keeps a text history of its own. Its `uPreviousText` holds its own text from the last frame, never the overlay's.
 A fade that starts keeps the text history that the pane had.
-When a fade out starts, the pane under the overlay has no text history yet. Its `uPreviousText` is transparent in that frame.
-When the overlay has faded out, the pane's text history goes on from what it drew under the overlay.
+When a fade out starts after the overlay has shown whole, the pane under the overlay has no text history yet. Its `uPreviousText` is transparent in that frame.
+When the overlay has faded out, the pane's text history goes on from what it drew under the overlay. If another overlay fades in that frame, the history starts again.
 A [`windowBackground`](#pass-order-and-coordinates) pack's buffers step once a frame, for the panes that show.
 The pane under the overlay reads those buffers as the last frame left them.
 When the buffers do not exist yet, the pane under the overlay makes them. They then step once in that frame.
@@ -429,7 +429,7 @@ The fade stops the first time that it reaches its target. A curve that overshoot
 Draw the pane at progress 0 and the overlay at 1. The fade then starts and ends without a jump.
 `overlayTransitionActive()` is true in every pass of this pack and false in every other pass.
 The pack's buffer passes can use all three helpers.
-The pane under the overlay is drawn only while a fade runs. It goes into the window-sized tab image. Its text history lives only while fades run.
+The pane under the overlay is drawn only while a fade runs. It goes into the window-sized tab image. Its text history lives until the frame after the last fade.
 The overview, a tab switch and a closing pane also use that image.
 An overlay opens and closes without a fade while one of them shows.
 It also does so while the pane is not on screen or the window is hidden.

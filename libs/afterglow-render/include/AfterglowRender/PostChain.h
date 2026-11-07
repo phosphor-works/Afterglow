@@ -415,7 +415,9 @@ private:
     bool hostsReadHistory() const;
     /// The text history of the panes under fading overlays: the frame's own
     /// history holds the overlays' text then. It starts from that history
-    /// where it held the same panes, and goes after a frame without a fade.
+    /// where it held the same panes. In the frame after the last fade, the
+    /// frame's own history takes the panes' text back from it, and then it
+    /// goes.
     std::unique_ptr<QRhiTexture> m_hostHistory;
     std::unique_ptr<QRhiTextureRenderTarget> m_hostHistoryTarget;
     std::vector<HistoryRegion> m_hostHistoryRegions;

@@ -6412,6 +6412,41 @@ TEST_F(NativeWindow, AFadeOutGoesOnWhileATabSwitchOrTheOverviewStillShowsItsHost
     expectIdle(window);
 }
 
+TEST_F(NativeWindow, AFadeThatNoFrameAdvancesEndsAtOnceAlsoInTheTabASwitchLeaves) {
+    // A fade far longer than the switch.
+    restartApplication(QStringLiteral("hidden-fade.conf"),
+        testSettings({{QStringLiteral("Animation"), QJsonObject{{QStringLiteral("overlayDuration"), 3000}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    Pane* host = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    Pane* zoomed = window->splitPane(host, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(zoomed, nullptr);
+    Pane* elsewhere = window->openTab(launch, nullptr);
+    ASSERT_NE(elsewhere, nullptr);
+    window->revealPane(host);
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }));
+    expectIdle(window);
+    // With no frame between them: the overlay starts to fade in, a zoom of
+    // the other pane hides its host, and a switch leaves the tab. The switch
+    // draws that tab, zoomed: no frame advances the fade, which ends with
+    // the first one, while the switch still runs.
+    auto answer = runOverlay(window, host, {QStringLiteral("/bin/sleep"), QStringLiteral("30")}, {{QStringLiteral("capture"), QStringLiteral("none")}});
+    ASSERT_NE(host->overlay(), nullptr);
+    ASSERT_TRUE(window->overlayFade(host).second);
+    window->revealPane(zoomed);
+    ASSERT_TRUE(window->runAction(zoomed, Action::TogglePaneZoom));
+    window->revealPane(elsewhere);
+    ASSERT_TRUE(window->tabSwitching());
+    ASSERT_TRUE(nextFrame(window));
+    ASSERT_TRUE(window->tabSwitching());
+    EXPECT_EQ(window->overlayFade(host), std::make_pair(qreal(1), false));
+    EXPECT_FALSE(answer->done);
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }));
+    expectIdle(window);
+}
+
 TEST_F(NativeWindow, APressWaitsForTheButtonsThatAnotherPanesProgramHolds) {
     // cat -v shows the reports that each program gets, in SGR coordinates.
     PaneLaunchOptions launch;

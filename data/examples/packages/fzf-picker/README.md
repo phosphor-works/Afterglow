@@ -62,6 +62,6 @@ Create `config.json` beside `package.json` to override the defaults:
 | `max_files` | 5000 | The most files in the list. Saved projects do not count toward this limit. |
 
 The select dialog shows the first 500 entries.
-When the overlay fails for a reason other than a cancel, the package tells why.
+When the pick fails for a reason other than a cancel, the package tells why.
 For example, the pane can have an overlay already, or fzf can exit with an error.
 From the palette or a key, a notification shows the message. From `aglow run`, the message goes to standard error.

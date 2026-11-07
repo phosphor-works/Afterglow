@@ -387,7 +387,11 @@ QString absolute(const QString& path)
 {
     // Not QDir::isAbsolutePath: it takes ":dir" for a Qt resource.
     if (path.isEmpty() || path.startsWith(QLatin1Char('~')) || path.startsWith(QLatin1Char('/'))) return path;
-    return QDir::cleanPath(QDir::currentPath() + QLatin1Char('/') + path);
+    // A directory that was removed has no path: the running afterglow then
+    // refuses the relative one, rather than starting in /.
+    const QString here = QDir::currentPath();
+    if (here.isEmpty()) return path;
+    return QDir::cleanPath(here + QLatin1Char('/') + path);
 }
 
 const QStringList Commands = {

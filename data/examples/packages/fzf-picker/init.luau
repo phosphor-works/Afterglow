@@ -154,6 +154,8 @@ function script.run_command(_, ev)
         -- No match (1) and Escape (130) choose nothing. Another status is a
         -- failure, such as 2 for an option that an old fzf does not know.
         if picked.exit_code == 1 or picked.exit_code == 130 then return noPath(ev) end
+        -- -1: the status is not known.
+        if picked.exit_code == -1 then return noPath(ev, config.fzf .. " ended with a status that is not known.") end
         if picked.exit_code ~= 0 then
             return noPath(ev, config.fzf .. " exited with status " .. tostring(picked.exit_code) .. ".")
         end

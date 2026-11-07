@@ -5855,6 +5855,28 @@ TEST_F(FzfPicker, AnFzfErrorFromAShellWritesItsStatusOnStderr)
                              [](const QVariantMap& e) { return e.value("kind") == QLatin1String("notify"); }));
 }
 
+TEST_F(FzfPicker, AnFzfErrorFromThePaletteShowsItsStatus)
+{
+    QTemporaryDir bin;
+    ASSERT_TRUE(bin.isValid());
+    const QString fake = bin.filePath(QStringLiteral("fzf"));
+    WRITE(bin, QStringLiteral("fzf"), "#!/bin/sh\nexit 0\n");
+    ASSERT_TRUE(QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    ASSERT_TRUE(install(fake));
+    ASSERT_TRUE(run(QStringLiteral("fzf-picker.pick"), 7));
+    ASSERT_TRUE(await([&] { return !overlays.isEmpty() && bool(pendingReply); }, 10000));
+    std::exchange(pendingReply, {})({{}, {{"exit_code", 2}, {"stdout", ""}, {"truncated", false}}, {}});
+    const auto notice = [this] {
+        return std::find_if(rec.applied.cbegin(), rec.applied.cend(),
+                            [](const QVariantMap& e) { return e.value("kind") == QLatin1String("notify"); });
+    };
+    ASSERT_TRUE(await([&] { return notice() != rec.applied.cend(); }, 10000));
+    EXPECT_TRUE(notice()->value("body").toString().contains(QLatin1String("exited with status 2")))
+        << notice()->value("body").toString().toStdString();
+    EXPECT_TRUE(std::none_of(rec.applied.cbegin(), rec.applied.cend(),
+                             [](const QVariantMap& e) { return e.value("kind") == QLatin1String("send_text"); }));
+}
+
 TEST_F(FzfPicker, AProjectPickedFromAShellOpensItAndPrintsNoPath)
 {
     ASSERT_TRUE(install(QStringLiteral("/nonexistent/afterglow-test/fzf")));

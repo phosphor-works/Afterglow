@@ -57,7 +57,8 @@ QString Control::openDirectory(const QString& requested, const QString& layout, 
 {
     QString path = requested;
     if (path == QLatin1String("~") || path.startsWith(QLatin1String("~/"))) path = QDir::homePath() + path.mid(1);
-    if (!QDir::isAbsolutePath(path) || path.contains(QChar::Null) || path.size() > 4096)
+    // Not QDir::isAbsolutePath: it takes ":dir" for a Qt resource.
+    if (!path.startsWith(QLatin1Char('/')) || path.contains(QChar::Null) || path.size() > 4096)
         return QStringLiteral("project directory must be absolute or start with ~/");
     path = QFileInfo(path).canonicalFilePath();
     if (path.isEmpty() || !QFileInfo(path).isDir() || ::access(QFile::encodeName(path).constData(), X_OK) != 0)

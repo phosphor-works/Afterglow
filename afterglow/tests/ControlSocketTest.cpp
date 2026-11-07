@@ -264,6 +264,7 @@ TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
     // pane.
     const QJsonObject tab = call(client, QStringLiteral("newTab"), {7, QStringLiteral(":/"), QJsonArray{}});
     EXPECT_EQ(tab.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+    EXPECT_EQ(tab.value(QStringLiteral("code")).toString(), QStringLiteral("CALL_FAILED"));
     EXPECT_EQ(tab.value(QStringLiteral("message")).toString(), QStringLiteral("cwd must name an existing absolute directory"));
     // Past the checks, a failure has its own code: here no pane, also for
     // the focused pane when there is none. ~ is the home directory, which
