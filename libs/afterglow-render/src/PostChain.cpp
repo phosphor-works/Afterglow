@@ -347,7 +347,7 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
     // the panes under fading overlays) lives while frames use it, and goes
     // after one that did not.
     if (!std::exchange(m_tabImageUsed, false) || resized) releaseTabImages();
-    // The host history lives as long as fades run, as the tab image does.
+    // The host history lives until the frame after the last fade, as the tab image does.
     if (m_hostHistory && m_hostHistoryFrame + 1 < m_frame) {
         m_hostHistoryTarget.reset();
         m_hostHistory.reset();

@@ -383,16 +383,18 @@ std::optional<QString> readStdin(qsizetype limit, const QString& tooLong, int& s
 }
 
 // The running afterglow resolves directories itself: send it absolute ones.
-QString absolute(const QString& path)
+// None when the path is relative and the current directory was removed:
+// it has no path then, and the directory would become /.
+std::optional<QString> absolute(const QString& path)
 {
     // Not QDir::isAbsolutePath: it takes ":dir" for a Qt resource.
     if (path.isEmpty() || path.startsWith(QLatin1Char('~')) || path.startsWith(QLatin1Char('/'))) return path;
-    // A directory that was removed has no path: the running afterglow then
-    // refuses the relative one, rather than starting in /.
     const QString here = QDir::currentPath();
-    if (here.isEmpty()) return path;
+    if (here.isEmpty()) return std::nullopt;
     return QDir::cleanPath(here + QLatin1Char('/') + path);
 }
+
+const QString NoCurrentDirectory = QStringLiteral("the current directory was removed, so give an absolute directory");
 
 const QStringList Commands = {
     QStringLiteral("ls"), QStringLiteral("send-text"), QStringLiteral("get-text"), QStringLiteral("split"),
@@ -552,7 +554,9 @@ int runCtl(int argc, char** argv)
         const auto layout = takeValue(QStringLiteral("--layout")).value_or(QString());
         if (const auto error = extra(1)) return usage(*error);
         if (args.size() != 1) return usage(QStringLiteral("open-directory takes PATH [--layout NAME]"));
-        return printObject(QStringLiteral("openDirectory"), {absolute(args.first()), layout});
+        const auto path = absolute(args.first());
+        if (!path) return fail(NoCurrentDirectory);
+        return printObject(QStringLiteral("openDirectory"), {*path, layout});
     }
     if (command == QLatin1String("projects")) {
         if (const auto error = extra(0)) return usage(*error);
@@ -572,7 +576,9 @@ int runCtl(int argc, char** argv)
     if (command == QLatin1String("new-window")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());
         if (const auto error = extra(0)) return usage(*error);
-        return printPane(QStringLiteral("newWindow"), {absolute(cwd), QJsonArray::fromStringList(trailing)});
+        const auto dir = absolute(cwd);
+        if (!dir) return fail(NoCurrentDirectory);
+        return printPane(QStringLiteral("newWindow"), {*dir, QJsonArray::fromStringList(trailing)});
     }
 
     // In parts, each whole: a surrogate pair never splits. Text over
@@ -659,8 +665,10 @@ int runCtl(int argc, char** argv)
     } else if (command == QLatin1String("new-tab")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());
         if (const auto error = extra(0)) return usage(*error);
-        act = [&, cwd](qint64 pane) {
-            return printPane(QStringLiteral("newTab"), {pane, absolute(cwd), QJsonArray::fromStringList(trailing)});
+        const auto dir = absolute(cwd);
+        if (!dir) return fail(NoCurrentDirectory);
+        act = [&, dir = *dir](qint64 pane) {
+            return printPane(QStringLiteral("newTab"), {pane, dir, QJsonArray::fromStringList(trailing)});
         };
     } else if (command == QLatin1String("move-pane")) {
         const std::optional<quint32> target = paneNumber(args.value(0));
@@ -698,14 +706,17 @@ int runCtl(int argc, char** argv)
         };
     } else if (command == QLatin1String("overlay")) {
         const QString capture = takeValue(QStringLiteral("--capture")).value_or(QStringLiteral("stdout"));
-        const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QDir::currentPath());
+        // By default the directory of ctl, which "." names.
+        const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QStringLiteral("."));
         const std::optional<QString> title = takeValue(QStringLiteral("--title"));
         const bool noInput = takeFlag(QStringLiteral("-n")) | takeFlag(QStringLiteral("--no-stdin"));
         if (const auto error = extra(0)) return usage(*error);
         if (trailing.isEmpty()) return usage(QStringLiteral("overlay needs a command after --"));
         if (capture != QLatin1String("stdout") && capture != QLatin1String("file") && capture != QLatin1String("none"))
             return usage(QStringLiteral("--capture takes stdout, file or none"));
-        QJsonObject options{{QStringLiteral("capture"), capture}, {QStringLiteral("cwd"), absolute(cwd)}};
+        const auto dir = absolute(cwd);
+        if (!dir) return fail(NoCurrentDirectory);
+        QJsonObject options{{QStringLiteral("capture"), capture}, {QStringLiteral("cwd"), *dir}};
         if (title) options.insert(QStringLiteral("title"), *title);
         // A list piped in, as for fzf. A terminal is no list: the program
         // reads the pane instead, and the call does not wait for an end of

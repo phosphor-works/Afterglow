@@ -3511,9 +3511,10 @@ TEST_F(Render, TheTrailsOfThePaneUnderAnOverlayOutlastItsFadeOut)
     frame(0, std::nullopt);
     frame(1, 1.0f); // the overlay alone: the pane is not drawn
     // The fade out starts after the overlay showed whole: the pane under it
-    // has no history yet, so its old block at 0 leaves no trail.
+    // has no history yet, so the overlay's block at (5,1), which the frame's
+    // own history holds, leaves no trail there. The fade adds 2% of it.
     const QImage start = frame(2, 0.02f);
-    EXPECT_PIXEL(start, cellCenter(0, 0), rgb(snapshot.defaultBg));
+    EXPECT_PIXEL_NEAR(start, cellCenter(5, 1), rgb(snapshot.defaultBg), 8);
     frame(3, 0.01f);
     const QImage image = frame(4, std::nullopt);
     EXPECT_PIXEL(image, cellCenter(2, 0), red);

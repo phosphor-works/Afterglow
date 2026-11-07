@@ -6178,7 +6178,11 @@ TEST_F(NativeWindow, ClosingAFocusedHostSendsItNoFocusAndLeavesNoFade) {
     if (hearsFocus) {
         ASSERT_TRUE(host->sendInput("@marker@"));
         ASSERT_TRUE(waitFor([&] { return fileContent(reports).contains("@marker@"); })) << fileContent(reports).toStdString();
-        EXPECT_FALSE(fileContent(reports).contains("^[[I")) << fileContent(reports).toStdString();
+        // The window can have reported a focus-in before the overlay took
+        // the focus: only what came after that focus-out counts.
+        const QByteArray got = fileContent(reports);
+        const QByteArray afterOverlay = got.mid(got.lastIndexOf("^[[O"));
+        EXPECT_FALSE(afterOverlay.contains("^[[I")) << got.toStdString();
     }
     ASSERT_TRUE(waitFor([&] {
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);

@@ -266,6 +266,10 @@ TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
     EXPECT_EQ(tab.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
     EXPECT_EQ(tab.value(QStringLiteral("code")).toString(), QStringLiteral("CALL_FAILED"));
     EXPECT_EQ(tab.value(QStringLiteral("message")).toString(), QStringLiteral("cwd must name an existing absolute directory"));
+    // So does a project directory.
+    const QJsonObject project = call(client, QStringLiteral("openDirectory"), {QStringLiteral(":/"), QString()});
+    EXPECT_EQ(project.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+    EXPECT_EQ(project.value(QStringLiteral("message")).toString(), QStringLiteral("project directory must be absolute or start with ~/"));
     // Past the checks, a failure has its own code: here no pane, also for
     // the focused pane when there is none. ~ is the home directory, which
     // exists.

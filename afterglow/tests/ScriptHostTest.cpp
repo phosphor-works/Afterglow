@@ -5734,6 +5734,18 @@ protected:
         return *acted();
     }
 
+    /// Installs the package with an fzf in @p bin that starts (its --version
+    /// probe succeeds), so the pick takes the overlay, whose result the test
+    /// then gives.
+    void installStartingFzf(QTemporaryDir& bin)
+    {
+        ASSERT_TRUE(bin.isValid());
+        const QString fake = bin.filePath(QStringLiteral("fzf"));
+        WRITE(bin, QStringLiteral("fzf"), "#!/bin/sh\nexit 0\n");
+        ASSERT_TRUE(QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        ASSERT_TRUE(install(fake));
+    }
+
     /// The text that the pick types for @p path: quoted, then a space.
     static QString typed(const QString& path) { return QLatin1Char('\'') + QString(path).replace(QLatin1String("'"), QLatin1String("'\\''")) + QStringLiteral("' "); }
 
@@ -5838,11 +5850,8 @@ TEST_F(FzfPicker, AnFzfErrorFromAShellWritesItsStatusOnStderr)
     // An fzf that starts, and then exits with 2 in the overlay, as an old
     // fzf does for an option that it does not know.
     QTemporaryDir bin;
-    ASSERT_TRUE(bin.isValid());
-    const QString fake = bin.filePath(QStringLiteral("fzf"));
-    WRITE(bin, QStringLiteral("fzf"), "#!/bin/sh\nexit 0\n");
-    ASSERT_TRUE(QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
-    ASSERT_TRUE(install(fake));
+    installStartingFzf(bin);
+    if (HasFatalFailure()) return;
     Client& client = newClient();
     start(QStringLiteral("fzf-picker"), QStringLiteral("pick"), client, {}, 7, std::nullopt, nullptr, nullptr, files.path());
     ASSERT_TRUE(await([&] { return !overlays.isEmpty() && bool(pendingReply); }, 10000));
@@ -5857,24 +5866,33 @@ TEST_F(FzfPicker, AnFzfErrorFromAShellWritesItsStatusOnStderr)
 
 TEST_F(FzfPicker, AnFzfErrorFromThePaletteShowsItsStatus)
 {
+    // From the palette the status shows in a notice, and -1, a status that
+    // Afterglow could not read, is named as unknown.
     QTemporaryDir bin;
-    ASSERT_TRUE(bin.isValid());
-    const QString fake = bin.filePath(QStringLiteral("fzf"));
-    WRITE(bin, QStringLiteral("fzf"), "#!/bin/sh\nexit 0\n");
-    ASSERT_TRUE(QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
-    ASSERT_TRUE(install(fake));
-    ASSERT_TRUE(run(QStringLiteral("fzf-picker.pick"), 7));
-    ASSERT_TRUE(await([&] { return !overlays.isEmpty() && bool(pendingReply); }, 10000));
-    std::exchange(pendingReply, {})({{}, {{"exit_code", 2}, {"stdout", ""}, {"truncated", false}}, {}});
-    const auto notice = [this] {
-        return std::find_if(rec.applied.cbegin(), rec.applied.cend(),
-                            [](const QVariantMap& e) { return e.value("kind") == QLatin1String("notify"); });
-    };
-    ASSERT_TRUE(await([&] { return notice() != rec.applied.cend(); }, 10000));
-    EXPECT_TRUE(notice()->value("body").toString().contains(QLatin1String("exited with status 2")))
-        << notice()->value("body").toString().toStdString();
-    EXPECT_TRUE(std::none_of(rec.applied.cbegin(), rec.applied.cend(),
-                             [](const QVariantMap& e) { return e.value("kind") == QLatin1String("send_text"); }));
+    installStartingFzf(bin);
+    if (HasFatalFailure()) return;
+    for (const auto& [code, said] : {std::pair{2, "exited with status 2"}, std::pair{-1, "status that is not known"}}) {
+        rec.applied.clear();
+        if (!run(QStringLiteral("fzf-picker.pick"), 7) || !await([&] { return !overlays.isEmpty() && bool(pendingReply); }, 10000)) {
+            ADD_FAILURE() << code << ": no overlay";
+            continue;
+        }
+        overlays.clear();
+        std::exchange(pendingReply, {})({{}, {{"exit_code", code}, {"stdout", ""}, {"truncated", false}}, {}});
+        const auto notice = [this] {
+            return std::find_if(rec.applied.cbegin(), rec.applied.cend(),
+                                [](const QVariantMap& e) { return e.value("kind") == QLatin1String("notify"); });
+        };
+        if (!await([&] { return notice() != rec.applied.cend(); }, 10000)) {
+            ADD_FAILURE() << code << ": no notice";
+            continue;
+        }
+        const QString body = notice()->value("body").toString();
+        EXPECT_TRUE(body.contains(QLatin1String(said))) << code << ": " << body.toStdString();
+        EXPECT_FALSE(body.contains(QLatin1String("status -1"))) << body.toStdString();
+        EXPECT_TRUE(std::none_of(rec.applied.cbegin(), rec.applied.cend(),
+                                 [](const QVariantMap& e) { return e.value("kind") == QLatin1String("send_text"); }));
+    }
 }
 
 TEST_F(FzfPicker, AProjectPickedFromAShellOpensItAndPrintsNoPath)

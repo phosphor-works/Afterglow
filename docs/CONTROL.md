@@ -248,6 +248,7 @@ A working directory must be absolute, `~`, or start with `~/`, and the directory
 This rule also applies to the `cwd` option of `overlay`.
 For `newTab` and `newWindow`, an empty working directory uses the `Window.workingDirectory` setting.
 `afterglow ctl` changes a relative directory into an absolute one before it sends it.
+When the current directory was removed, `afterglow ctl` refuses a relative directory and exits with status 1.
 
 ## Overlays
 

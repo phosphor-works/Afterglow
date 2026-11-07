@@ -1393,6 +1393,36 @@ TEST(CtlBinaryTest, UsageErrorsExitWithTwoBeforeAnyConnection)
     EXPECT_EQ(big.err, QStringLiteral("afterglow ctl: standard input over 768 KiB: use a script for a longer list\n"));
 }
 
+// A current directory that was removed has no path: a relative directory
+// cannot be made absolute, and ctl says so before it connects.
+TEST(CtlBinaryTest, ARelativeDirectoryNeedsACurrentDirectory)
+{
+    QTemporaryDir parent;
+    ASSERT_TRUE(parent.isValid());
+    const QString script = QStringLiteral("cd \"$1\" && mkdir gone && cd gone && rmdir ../gone && shift && exec \"$@\"");
+    const QString ctl = QStringLiteral("ctl");
+    for (const QStringList& command :
+         {QStringList{ctl, QStringLiteral("new-tab"), QStringLiteral("--cwd"), QStringLiteral("sub")},
+          QStringList{ctl, QStringLiteral("new-window"), QStringLiteral("--cwd"), QStringLiteral(".")},
+          QStringList{ctl, QStringLiteral("open-directory"), QStringLiteral("sub")},
+          // The overlay's default directory is the current one.
+          QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("-n"), QStringLiteral("--"), QStringLiteral("true")}}) {
+        const Isolated r = isolate(QStringLiteral("/bin/sh"),
+                                   QStringList{QStringLiteral("-c"), script, QStringLiteral("sh"), parent.path(),
+                                               QStringLiteral(AFTERGLOW_BINARY)}
+                                       + command);
+        EXPECT_EQ(r.status, 1) << qPrintable(command.join(QLatin1Char(' '))) << qPrintable(r.err);
+        EXPECT_EQ(r.err, QStringLiteral("afterglow ctl: the current directory was removed, so give an absolute directory\n"))
+            << qPrintable(command.join(QLatin1Char(' ')));
+    }
+    // An absolute directory needs none.
+    const Isolated absolute = isolate(QStringLiteral("/bin/sh"),
+                                      {QStringLiteral("-c"), script, QStringLiteral("sh"), parent.path(),
+                                       QStringLiteral(AFTERGLOW_BINARY), ctl, QStringLiteral("new-window"), QStringLiteral("--cwd"),
+                                       QStringLiteral("/")});
+    EXPECT_FALSE(absolute.err.contains(QLatin1String("current directory"))) << qPrintable(absolute.err);
+}
+
 TEST(CtlBinaryTest, SaysThatNoAfterglowListens)
 {
     // A valid command line connects, also with a pane given, and finds nobody.
