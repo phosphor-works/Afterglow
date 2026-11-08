@@ -52,7 +52,8 @@ bool readCapped(const QString& path, qint64 limit, QByteArray& bytes)
 }
 
 // Mirror the resolver's include search, retaining missing candidates as well
-// as resolved paths so a broken shader can recover without a config change.
+// as found ones so a broken shader can recover without a config change. The
+// watch follows a candidate that is a link to its target.
 void collectIncludes(const QString& source, const QString& dir, const QStringList& includeDirs,
                      QStringList& watched, QSet<QString>& seen, int depth = 0)
 {
@@ -81,7 +82,6 @@ void collectIncludes(const QString& source, const QString& dir, const QStringLis
             const QFileInfo info(candidate);
             if (!info.exists() || !info.isFile()) continue;
             const auto resolved = info.canonicalFilePath();
-            watched << resolved;
             if (!seen.contains(resolved)) {
                 seen.insert(resolved);
                 // The resolver reports an oversized include; only watch it here.
@@ -323,8 +323,9 @@ QString cacheKey(const QString& ref, const QVariantMap& overrides)
     return ref + QLatin1Char('\x1f') + QString::fromUtf8(QJsonDocument::fromVariant(overrides).toJson(QJsonDocument::Compact));
 }
 
-/// What a cached program was built from: each dependency's size and times, or
-/// its absence. Two change signals for one edit then rebuild once.
+/// What a cached program was built from: each dependency's target, size and
+/// times, or its absence. Two change signals for one edit then rebuild once,
+/// and a link retargeted to a file of the same size and times still counts.
 QByteArray signature(const QStringList& paths)
 {
     QByteArray out;
@@ -335,7 +336,8 @@ QByteArray signature(const QStringList& paths)
         const QFileInfo info(path);
         out += path.toUtf8() + '\0';
         if (info.exists()) {
-            out += QByteArray::number(info.size()) + ':' + QByteArray::number(info.lastModified().toMSecsSinceEpoch()) + ':'
+            out += info.canonicalFilePath().toUtf8() + '\0' + QByteArray::number(info.size()) + ':'
+                + QByteArray::number(info.lastModified().toMSecsSinceEpoch()) + ':'
                 + QByteArray::number(info.metadataChangeTime().toMSecsSinceEpoch());
         }
         out += '\n';

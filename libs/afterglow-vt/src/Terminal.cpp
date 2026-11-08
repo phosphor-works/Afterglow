@@ -4228,13 +4228,17 @@ void Terminal::semanticPrompt(std::string_view args)
         // background (imgcat &) still sends it while the shell shows its
         // prompt. A second prompt with no part since the first means the
         // sender is gone (an interrupted imgcat): its data is given back.
-        if (m_iterm2Receiving) {
+        // Only a prompt after a command counts: shells send A again each
+        // time they redraw the same prompt (a resize, Ctrl+L, an async
+        // prompt segment, a continuation line), with no C or D between.
+        if (m_iterm2Receiving && m_commandSincePrompt) {
             if (m_iterm2PromptSincePart) {
                 endITerm2Multipart();
             } else {
                 m_iterm2PromptSincePart = true;
             }
         }
+        m_commandSincePrompt = false;
         if (m_programStatus.endActivity()) {
             m_host.programStatusChanged();
         }
@@ -4262,6 +4266,7 @@ void Terminal::semanticPrompt(std::string_view args)
         m_semanticZone = SemanticZone::Output;
         m_promptClickEvents = false;
         m_promptRedrawPending = false;
+        m_commandSincePrompt = true;
         std::optional<std::string> reported = std::exchange(m_explicitCommand, std::nullopt);
         if (!m_modes.altScreen) {
             // The command line the shell reported, else what was typed
@@ -4283,6 +4288,7 @@ void Terminal::semanticPrompt(std::string_view args)
     case 'D': { // command finished, D ; exit-code
         m_semanticZone = SemanticZone::Output;
         m_promptRedrawPending = false;
+        m_commandSincePrompt = true;
         int code = -1;
         if (args.size() > 2 && args[1] == ';') {
             const std::string_view rest = args.substr(2);

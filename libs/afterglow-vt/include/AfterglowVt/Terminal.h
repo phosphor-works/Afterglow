@@ -637,8 +637,12 @@ private:
     std::string m_iterm2Args;
     std::string m_iterm2Data;
     std::size_t m_iterm2Limit = 0;
-    /// A prompt (133 A) came with no FilePart since: a second one ends the file.
+    /// A new prompt (133 A or N, 633 A, after a C or D) came with no FilePart
+    /// since: a second one ends the file.
     bool m_iterm2PromptSincePart = false;
+    /// A command started or finished (C or D) since the last prompt mark: the
+    /// next one is a new prompt, not the shell drawing the same one again.
+    bool m_commandSincePrompt = false;
     void endITerm2Multipart();
     void semanticPrompt(std::string_view args);
     void vscodeShellIntegration(std::string_view args);

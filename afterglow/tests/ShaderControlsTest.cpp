@@ -12,6 +12,8 @@
 #include <QThread>
 #include <QSet>
 #include <gtest/gtest.h>
+#include <cstdio>
+#include <functional>
 #include <limits>
 #include <tuple>
 using namespace Afterglow;
@@ -698,14 +700,54 @@ TEST(ShaderReload, MissingNestedIncludesRecoverAndStayWatchedAfterAtomicReplacem
     // Dropping references retires the include watches. (The pack's own stage
     // stays with the registry, which reports edits to any pack.) With nothing
     // cached no edit could emit changed(), so the watched set is the check.
-    // Both exist, so each is watched under its canonical path too.
-    const QString includePath = QFileInfo(include).canonicalFilePath();
-    const QString nestedPath = QFileInfo(nested).canonicalFilePath();
-    EXPECT_TRUE(library.watchedPaths().contains(includePath));
-    EXPECT_TRUE(library.watchedPaths().contains(nestedPath));
+    EXPECT_TRUE(library.watchedPaths().contains(include));
+    EXPECT_TRUE(library.watchedPaths().contains(nested));
     library.build({}, {});
-    EXPECT_FALSE(library.watchedPaths().contains(includePath));
-    EXPECT_FALSE(library.watchedPaths().contains(nestedPath));
+    EXPECT_FALSE(library.watchedPaths().contains(include));
+    EXPECT_FALSE(library.watchedPaths().contains(nested));
+    ASSERT_TRUE(QDir(dir).removeRecursively());
+}
+
+// The include is reached through links outside the pack, which the registry
+// does not watch: only the watch of the include follows them.
+TEST(ShaderReload, AnIncludeThroughALinkThatIsRetargetedRebuilds)
+{
+    const auto dir = writePack(QStringLiteral("reload-linked"), "#include \"lib/color.glsl\"\n" + ShaderBody);
+    ASSERT_FALSE(dir.isEmpty());
+    QTemporaryDir outside;
+    ASSERT_TRUE(outside.isValid());
+    for (const char* name : {"a", "b"}) ASSERT_TRUE(QDir().mkpath(outside.filePath(QString::fromLatin1(name))));
+    ASSERT_TRUE(writeShaderFixture(outside.filePath(QStringLiteral("a/color.glsl")), "float shade(){return 0.25;}\n"));
+    ASSERT_TRUE(writeShaderFixture(outside.filePath(QStringLiteral("b/color.glsl")), "float shade(){return 0.5;}\n"));
+    // lib -> OUTSIDE/current -> OUTSIDE/a
+    const QString current = outside.filePath(QStringLiteral("current"));
+    ASSERT_TRUE(QFile::link(outside.filePath(QStringLiteral("a")), current));
+    ASSERT_TRUE(QFile::link(current, dir + QStringLiteral("/lib")));
+    ShaderLibrary library;
+    ShaderLibrary::Refs refs; refs.window = {QStringLiteral("reload-linked")};
+    int changes = 0;
+    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] { ++changes; });
+    auto first = library.build(refs, {});
+    ASSERT_EQ(first.window.size(), 1u);
+    const auto rebuilds = [&](const std::function<void()>& change) {
+        const int before = changes;
+        change();
+        ASSERT_TRUE(waitForShaderChange(changes, before));
+        auto rebuilt = library.build(refs, {});
+        ASSERT_EQ(rebuilt.window.size(), 1u);
+        EXPECT_NE(rebuilt.window.front(), first.window.front());
+        first = std::move(rebuilt);
+    };
+    // An edit of the target.
+    rebuilds([&] { ASSERT_TRUE(writeShaderFixture(outside.filePath(QStringLiteral("a/color.glsl")), "float shade(){return 0.75;}\n")); });
+    // The link retargeted as dotfile managers do it: a new one renamed over the old.
+    rebuilds([&] {
+        const QString next = current + QStringLiteral(".next");
+        ASSERT_TRUE(QFile::link(outside.filePath(QStringLiteral("b")), next));
+        ASSERT_EQ(::rename(QFile::encodeName(next).constData(), QFile::encodeName(current).constData()), 0);
+    });
+    // The new target is watched.
+    rebuilds([&] { ASSERT_TRUE(writeShaderFixture(outside.filePath(QStringLiteral("b/color.glsl")), "float shade(){return 1.0;}\n")); });
     ASSERT_TRUE(QDir(dir).removeRecursively());
 }
 

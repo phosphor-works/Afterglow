@@ -549,7 +549,7 @@ Remote commands need all of these:
 - A shared ssh connection. `afterglow ssh` makes one in `XDG_RUNTIME_DIR`, or uses the `ControlPath` of your SSH configuration. `XDG_RUNTIME_DIR` must be an absolute path of letters, digits, `/`, `.`, `_` and `-`, which ssh reads as a path and nothing more. Afterglow does not check that only you can enter it: keep it private, as systemd makes it.
 - No `ControlPath none` and no `ControlMaster no`, on the command line or in your SSH configuration. Afterglow keeps that choice and forwards no socket for the session.
 - With your own `ControlPath` and a `ControlMaster` other than `auto` or `autoask`: a master that runs already.
-- With `-M` on the command line: your own `ControlPath`. ssh with `-M` does not use a master that runs already. Thus the session would not use the connection that `afterglow ssh` makes, which holds the forward.
+- With `-M` on the command line: your own `ControlPath`, and a master that runs already on it. `-M` sets `ControlMaster yes`, and ssh with `-M` does not join a master. The forward goes on the master that runs, and the session authenticates on its own. A master that `afterglow ssh` made would hold the forward with no session, and end after its `ControlPersist`.
 - No tmux around `afterglow ssh` on this computer. In tmux, `AFTERGLOW_PANE_ID` can name another pane.
 - `aglow` on the remote host, with the protocol of this Afterglow. `aglow --version` shows the protocol.
 - `aglow` on the `PATH` that the login shell of the remote user gets without a terminal. The probe below runs there.
@@ -594,12 +594,15 @@ The pane gives the path to `aglow run` only after the forward is there.
 A remote directory with `:` or `\`, or a local runtime directory with one, gets no socket, because ssh splits `-R` at `:`.
 
 The local socket closes when the `afterglow ssh` process ends, when its pane closes or when a setting turns remote commands off.
-Its runs end, and their clients lose the connection with no reply: the socket closes at once.
+Its runs end. Each client gets the reply to its run, an error that gives the reason, and then the connection closes.
+A client that does not read for 5 seconds loses the connection with no reply.
 Afterglow then runs `ssh -O cancel` with the same options and the same `-R` value.
 When the forward comes after the socket closed, `afterglow ssh` cancels it itself.
 When the shared connection has already gone, there is nothing to cancel.
 A pane has at most 16 sessions, and Afterglow at most 256.
-The socket of a session takes any number of connections, from every process of the remote user.
+The socket of a session takes connections from every process of the remote user, at most 64 at the same time.
+Each `aglow run` uses one connection. Afterglow closes a connection over the limit before it reads a request, and logs a warning.
+`aglow run` then fails with a message that starts with `lost Afterglow`.
 
 The socket has one target, `remote`.
 It has the calls `list`, `input`, `run`, `ack` and `cancel` of [the commands target](#the-commands-target), and the same events.
@@ -726,6 +729,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Socket path of an ssh session on the remote host, `DIRECTORY/TOKEN.sock` | 103 bytes | Afterglow forwards no socket for the session. The pane answers `error=length`. |
 | Socket path of an ssh session on this computer | 107 bytes. The name `/afterglow-remote-TOKEN.sock` adds 39 bytes, so `XDG_RUNTIME_DIR` can have at most 68 | `openRemoteSocket` fails, and `afterglow ssh` forwards no socket. |
 | Sessions of remote commands | 16 for each pane, 256 in Afterglow | `openRemoteSocket` fails, and `afterglow ssh` forwards no socket. |
+| Connections to the socket of one ssh session | 64 at the same time | Afterglow closes the new connection before it reads a request, and logs a warning once until a connection closes. `aglow run` fails with exit status 1. |
 | Request line | 1 MiB | The socket closes the connection. `afterglow ctl send-text` sends long text in parts. |
 | `afterglow ctl send-text` text | 32 MiB of UTF-8 | `afterglow ctl` exits with status 2 and sends nothing. It checks the text before it connects. |
 | Text that a program has not read | 32 MiB for each pane | `sendText` fails. Parts that `afterglow ctl send-text` sent before stay typed. |

@@ -173,11 +173,6 @@ public:
     qint64 waitingOutputBytes() const;
     /// Replaces MaxWaitingOutputBytes for the budget. A test hook: a test need not fill 256 MiB.
     void setMaxWaitingOutputBytes(qint64 bytes);
-    /// The bytes of the line that the router writes for the event @p event
-    /// of @p target with the arguments (@p id, @p text), '\n' included: what
-    /// the client counts for its ack. Measured without a second encoding of
-    /// the text, which can be 1 MiB. Public for its test.
-    static qint64 eventLineBytes(QLatin1String target, const char* event, const QString& id, const QString& text);
 
 private:
     friend class CommandApi;

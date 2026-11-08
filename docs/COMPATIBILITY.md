@@ -178,8 +178,10 @@ Downloads permit 8 MiB of decoded data and one pending application request.
 A `MultipartFile` download stops when its data passes the 8 MiB limit. An inline image in parts can have 96 MiB of base64 data.
 `MultipartFile` arguments have a 4,096-byte limit. Longer arguments refuse the file.
 A new `MultipartFile`, a terminal reset or the end of the pane's program ends a file that has no `FileEnd`.
-One shell prompt does not end it, because a job in the background can still send it.
-A second prompt with no `FilePart` after the first ends it, because the program that sent it has stopped.
+A new shell prompt is a prompt mark (OSC 133 `A` or `N`, or OSC 633 `A`) after a command mark (`C` or `D`).
+One new prompt does not end the file, because a job in the background can still send it.
+A second new prompt with no `FilePart` after the first ends it, because the program that sent it has stopped.
+A prompt mark with no command mark before it does not count, because a shell sends it each time it draws the same prompt again.
 OSC 1337 downloads are not resumable, and they do not upload files.
 Afterglow supports the Kitty file-transfer protocol separately. See [Kitty file transfer](DESKTOP.md#kitty-file-transfer).
 IME context does not permit arbitrary surrounding-text edits.
@@ -271,7 +273,7 @@ Inside tmux, `aglow run` sends the query in tmux passthrough (`DCS tmux; ... ST`
 tmux answers DA1 itself at once, and keeps the DA1 answer of the terminal.
 Thus inside tmux the guard is a status report (`CSI 5 n`) in the same passthrough. tmux passes its answer (`CSI 0 n`) to the pane.
 When `allow-passthrough` is off, tmux passes nothing, and `aglow run` asks tmux for that option first.
-tmux gets half of the wait for its answer, and the query gets the rest. When tmux answers later, `aglow run` sends no query, because the query could not wait for its reply.
+tmux gets half of the wait for its answer, and the query gets the rest. When tmux answers later, `aglow run` sends no query. The query goes through the same tmux server, which is slow to answer, and a late reply would go to the shell.
 `aglow run` asks the terminal only when standard output is its terminal and its process group is in the foreground there.
 When its output goes into a pipeline, the program at the end of the pipeline can read the terminal and take the reply. Then `aglow run` asks nothing.
 A background job asks nothing, because a change of the terminal modes would stop it (`SIGTTOU`).

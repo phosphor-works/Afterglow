@@ -678,9 +678,9 @@ PhosphorConfig::Schema buildSchema()
                               "1. A run from a key, a menu or the palette counts only its standard error.")),
         intKey(QStringLiteral("cpuBudget"), d.scriptCpuBudget, 10, 1000,
                QStringLiteral("Milliseconds of handler time that one script can use in each second. Past it, Afterglow "
-                              "drops the script's events, and delays its results, timers, keys and command runs. Afterglow "
-                              "disables a script that has a call wait in 5 seconds, each less than 3 seconds after the one "
-                              "before. Dropped events do not count toward that.")),
+                              "drops the script's events, and delays its results, timers, keys and command runs. Each second "
+                              "in which a call of the script waits counts. After 5 such seconds, each less than 3 seconds "
+                              "after the one before, Afterglow disables the script. Dropped events do not count.")),
     };
     const AudioSettings& audio = d.audio;
     schema.groups[AudioGroup] = {
@@ -905,8 +905,10 @@ bool hasReadableType(const KeyDef& def, const QJsonValue& raw)
 /// t, r, u and e), and a list or map of another JSON type as empty or as the
 /// JSON that its text holds. So @p defaults gets the default of each such
 /// key, for read() to lay over the file: each "Using the default" is true.
+/// While @p neverRead, read() keeps Scripts.enabled and Control.enabled off
+/// unless a boolean override sets them, so their text says that instead.
 QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObject& file, const QJsonObject& overrides,
-                            QJsonObject* defaults)
+                            QJsonObject* defaults, bool neverRead)
 {
     QStringList out;
     QSet<QString> groups;
@@ -943,7 +945,11 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
                 defaults->insert(group.key(), keys);
             };
             if (def.expectedType == QMetaType::Bool && !isBoolValue(raw)) {
-                out << QStringLiteral("%1 must be true or false. Using the default").arg(name);
+                const bool heldOff = neverRead && def.key == QLatin1String("enabled")
+                                     && (group.key() == ScriptsGroup || group.key() == ControlGroup);
+                out << (heldOff ? QStringLiteral("%1 must be true or false. It stays off until the file can be read")
+                                : QStringLiteral("%1 must be true or false. Using the default"))
+                           .arg(name);
             } else if (def.expectedType == QMetaType::Int && !isIntValue(raw)) {
                 out << (isOutOfIntRange(raw) ? QStringLiteral("%1 is too large or too small. Using the default")
                                              : QStringLiteral("%1 must be a whole number. Using the default"))
@@ -1057,7 +1063,7 @@ SettingsStore::~SettingsStore() = default;
 
 namespace {
 /// What a file that has not been read since the start leaves on. A -o
-/// override of either key still wins (read()).
+/// override of either key that is true or false still wins (read()).
 const QString NeverReadNote =
     QStringLiteral(". Using the defaults, with Scripts.enabled and Control.enabled off unless -o sets them");
 } // namespace
@@ -1295,16 +1301,8 @@ void SettingsStore::watch()
         }
     }
     paths << Themes::candidates(m_themeName, Themes::searchDirs(configDirectory()), configDirectory());
-    // The watch of a link follows its target until the target goes, and
-    // then only the link's directory: a target made again elsewhere would
-    // never be seen. The target's own path is watched too.
-    for (qsizetype i = 0, count = paths.size(); i < count; ++i) {
-        QString link = paths[i];
-        for (int depth = 0; depth < 16 && QFileInfo(link).isSymLink(); ++depth) {
-            link = QFileInfo(link).symLinkTarget();
-            paths << link;
-        }
-    }
+    // The set follows each link to its target, also a target that goes and
+    // comes back, and a link that is retargeted.
     m_files.setPaths(paths);
 }
 
@@ -1363,7 +1361,7 @@ Settings SettingsStore::read()
     const PhosphorConfig::Store& st = *m_store;
     Settings s;
     QJsonObject defaults;
-    QStringList problems = malformedValues(st.schema(), m_backend->jsonRootSnapshot(), m_overrides, &defaults);
+    QStringList problems = malformedValues(st.schema(), m_backend->jsonRootSnapshot(), m_overrides, &defaults, m_neverRead);
     // The defaults of keys that hold another JSON type, over the overrides,
     // which the backend lays over the file for every read below.
     QJsonObject overlay = m_overrides;

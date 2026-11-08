@@ -10,8 +10,6 @@
 #include <AfterglowProto/Random.h>
 #include <AfterglowProto/Remote.h>
 
-#include <PhosphorIpc/IpcProtocol.h>
-
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLoggingCategory>
@@ -512,18 +510,19 @@ bool CommandSocket::pump(quint64 connection, const QString& id)
         run->outputBytes -= cost(out);
         m_budget->outputBytes -= cost(out);
         const QJsonArray args{id, out.text};
-        // The client counts the lines it reads: the same bytes.
-        if (run->credit) {
-            const qint64 line = eventLineBytes(target(), out.event, id, out.text);
-            run->unacknowledged += line;
-            if (const auto books = m_connections.find(connection); books != m_connections.end()) books->unacknowledged += line;
-        }
+        qint64 line = 0;
         // False: the client has gone, or fell more than 16 MiB behind.
-        if (!m_router.sendEvent(connection, target(), QLatin1String(out.event), args)) {
+        if (!m_router.sendEvent(connection, target(), QLatin1String(out.event), args, &line)) {
             std::deque<Output> rest = takeOutput(*run);
             if (out.sent) out.sent(false);
             dropped(rest);
             return false;
+        }
+        // The client counts the lines it reads: the same bytes. Before the
+        // callback, which can come back here and read the window.
+        if (run->credit) {
+            run->unacknowledged += line;
+            if (const auto books = m_connections.find(connection); books != m_connections.end()) books->unacknowledged += line;
         }
         if (out.sent) out.sent(true);
     }
@@ -577,31 +576,6 @@ qint64 CommandSocket::waitingOutputBytes() const
 void CommandSocket::setMaxWaitingOutputBytes(qint64 bytes)
 {
     m_budget->maxOutputBytes = bytes;
-}
-
-qint64 CommandSocket::eventLineBytes(QLatin1String target, const char* event, const QString& id, const QString& text)
-{
-    // The frame around an empty text, and then the text as Qt's JSON writer
-    // escapes it: \" \\ \b \f \n \r \t, \u00XX for the other C0 controls,
-    // UTF-8 for the rest, and \uXXXX for a surrogate without its pair.
-    // A test holds this to PhosphorIpc::writeLine for every UTF-16 unit.
-    qint64 bytes = PhosphorIpc::writeLine(PhosphorIpc::buildEvent(target, QLatin1String(event), QJsonArray{id, QString()})).size();
-    const qsizetype size = text.size();
-    for (qsizetype i = 0; i < size; ++i) {
-        const char16_t u = text[i].unicode();
-        if (u < 0x80) {
-            if (u == '"' || u == '\\' || u == '\b' || u == '\f' || u == '\n' || u == '\r' || u == '\t') bytes += 2;
-            else bytes += u < 0x20 ? 6 : 1;
-        } else if (u < 0x800) {
-            bytes += 2;
-        } else if (QChar::isHighSurrogate(u) && i + 1 < size && text[i + 1].isLowSurrogate()) {
-            bytes += 4;
-            ++i;
-        } else {
-            bytes += QChar::isSurrogate(u) ? 6 : 3;
-        }
-    }
-    return bytes;
 }
 
 int CommandSocket::waitingInputs() const

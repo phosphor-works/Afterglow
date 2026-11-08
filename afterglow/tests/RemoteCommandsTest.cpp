@@ -40,6 +40,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QThread>
@@ -51,6 +52,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -791,11 +793,14 @@ TEST_F(RemoteCommandsTest, EachSettingOfTheGateClosesTheSessionsAndRefusesNewOne
         EXPECT_FALSE(exists(opened.socket));
         // The pane answers that there is no socket.
         EXPECT_EQ(m_answers.value(FakePane), Remote::Answer{});
-        // The client loses its connection, and gets no reply to its run.
+        // The client gets the reason as the reply to its run, and then loses its connection.
         EXPECT_TRUE(pumpUntil([&] { return client.state() == QLocalSocket::UnconnectedState; }));
         while (client.canReadLine()) frames << QJsonDocument::fromJson(client.readLine()).object();
-        for (const QJsonObject& frame : std::as_const(frames))
-            EXPECT_FALSE(frame.value(QStringLiteral("id")).toInteger() == run && frame.value(QStringLiteral("type")) == QLatin1String("reply"));
+        ASSERT_FALSE(frames.isEmpty());
+        EXPECT_EQ(frames.last().value(QStringLiteral("id")).toInteger(), run);
+        EXPECT_EQ(frames.last().value(QStringLiteral("type")), QStringLiteral("error"));
+        EXPECT_EQ(frames.last().value(QStringLiteral("message")),
+                  QStringLiteral("remote commands are off (%1.%2) in the running afterglow").arg(QLatin1String(group), QLatin1String(key)));
         // The forward goes too.
         EXPECT_TRUE(pumpUntil([&] { return runsWith(opened.path + QLatin1Char(':') + opened.socket).size() == 1; }));
         // Nothing opens while it is off.
@@ -1053,6 +1058,18 @@ TEST_F(RemoteCommandsTest, TheProbeIsNoMasterOfItsOwnForAUsersDashM)
     // The session keeps the user's -M.
     EXPECT_TRUE(runs().last().contains(QStringLiteral("-M")));
     EXPECT_EQ(finish(*process), 7);
+    // ssh -G shows -M as ControlMaster yes: with no master on that path, the
+    // probe would be a master that the session does not join.
+    process = helper({QStringLiteral("-vM"), QStringLiteral("prod")},
+                     {{QStringLiteral("FAKE_CONTROL_PATH"), userPath}, {QStringLiteral("FAKE_CHECK"), QStringLiteral("255")}});
+    EXPECT_EQ(runsWith(QStringLiteral("-O"), QStringLiteral("check")).size(), 1);
+    EXPECT_TRUE(runsWith(QStringLiteral("-T")).isEmpty());
+    EXPECT_TRUE(m_remote->tokens().isEmpty());
+    EXPECT_TRUE(runs().last().contains(QStringLiteral("-vM")));
+    EXPECT_EQ(finish(*process), 7);
+    EXPECT_TRUE(m_stderr.contains(QLatin1String("no remote commands in this session: no master runs on the ControlPath, "
+                                                "which -M needs")))
+        << qPrintable(m_stderr);
 }
 
 TEST_F(RemoteCommandsTest, ADashMWithoutAControlPathOfTheUsersGetsNoRemoteCommands)
@@ -1100,6 +1117,64 @@ TEST_F(RemoteCommandsTest, ALiveSocketHoldsItsLockAndAWaitingForwardAnswersNothi
     EXPECT_FALSE(m_remote->failed(version.token, QStringLiteral("forward")).isEmpty());
     m_remote->paneClosed(FakePane);
     EXPECT_FALSE(exists(opened.socket + QStringLiteral(".lock")));
+}
+
+TEST_F(RemoteCommandsTest, TheSocketOfASessionRefusesConnectionsPastItsCapAndLogsOnce)
+{
+    static int warnings = 0;
+    warnings = 0;
+    static QtMessageHandler previous = nullptr;
+    previous = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext& context, const QString& message) {
+        if (type == QtWarningMsg && context.category && QLatin1String(context.category) == QLatin1String("afterglow.commands")
+            && message.contains(QLatin1String("refuses more")))
+            ++warnings;
+        else if (previous)
+            previous(type, context, message);
+    });
+    const auto restore = qScopeGuard([] { qInstallMessageHandler(previous); });
+    ASSERT_TRUE(start());
+    m_scripts->setEnabled(true);
+    const auto watched = sleeper();
+    RemoteSockets::Opened opened;
+    ASSERT_EQ(m_remote->open(request(watched->processId()), opened), QString());
+    // A reply on each shows that the router took the connection.
+    const auto answered = [&](QLocalSocket& client) {
+        const qint64 id = send(client, QStringLiteral("remote"), QStringLiteral("list"), {});
+        bool reply = false;
+        pumpUntil([&] {
+            while (client.canReadLine()) {
+                if (QJsonDocument::fromJson(client.readLine()).object().value(QStringLiteral("id")).toInteger() == id) reply = true;
+            }
+            return reply || client.state() == QLocalSocket::UnconnectedState;
+        });
+        return reply;
+    };
+    std::vector<std::unique_ptr<QLocalSocket>> clients;
+    for (int i = 0; i < RemoteSockets::MaxConnectionsPerSession; ++i) {
+        clients.push_back(std::make_unique<QLocalSocket>());
+        ASSERT_TRUE(connectTo(*clients.back(), opened.socket));
+        ASSERT_TRUE(answered(*clients.back())) << i;
+    }
+    // Past the cap, a connection closes before the router reads its request.
+    for (int i = 0; i < 2; ++i) {
+        QLocalSocket over;
+        ASSERT_TRUE(connectTo(over, opened.socket));
+        EXPECT_FALSE(answered(over));
+        EXPECT_EQ(over.state(), QLocalSocket::UnconnectedState);
+    }
+    EXPECT_EQ(warnings, 1);
+    // A connection that closes makes room.
+    clients.front()->disconnectFromServer();
+    QLocalSocket next;
+    ASSERT_TRUE(pumpUntil([&] {
+        next.abort();
+        return connectTo(next, opened.socket) && answered(next);
+    }));
+    QLocalSocket over;
+    ASSERT_TRUE(connectTo(over, opened.socket));
+    EXPECT_FALSE(answered(over));
+    // A full socket again, after one closed: logged again.
+    EXPECT_EQ(warnings, 2);
 }
 
 TEST_F(RemoteCommandsTest, AHostNameIsShortTextAndAPaneHasSixteenSessionsAtMost)
@@ -1179,9 +1254,9 @@ TEST_F(RemoteCommandsTest, AForwardThatAfterglowConfirmsTooLateIsCancelledWithTh
 {
     ASSERT_TRUE(start());
     // As ssh -O forward runs, the test opens its gate and then holds the
-    // event loop longer than the helper waits for remoteSocketForwarded.
-    // Afterglow takes that call only after the helper gave up on it,
-    // cancelled the forward and sent remoteSocketFailed behind it.
+    // event loop until the helper gave up on remoteSocketForwarded and
+    // cancelled the forward. Afterglow takes that call late, and the
+    // remoteSocketFailed that the helper sends behind it after.
     const QString gate = m_dir.filePath(QStringLiteral("gate"));
     QTimer stall;
     QObject::connect(&stall, &QTimer::timeout, [&] {
@@ -1189,7 +1264,10 @@ TEST_F(RemoteCommandsTest, AForwardThatAfterglowConfirmsTooLateIsCancelledWithTh
         stall.stop();
         QFile open(gate);
         EXPECT_TRUE(open.open(QIODevice::WriteOnly));
-        QThread::msleep(3000);
+        // Until the helper gave up on the call: it cancels the forward then.
+        QElapsedTimer held;
+        held.start();
+        while (runsWith(QStringLiteral("-O"), QStringLiteral("cancel")).isEmpty() && held.elapsed() < 10000) QThread::msleep(10);
     });
     stall.start(5);
     auto process = helper({QStringLiteral("-v"), QStringLiteral("prod")}, {{QStringLiteral("FAKE_FORWARD_GATE"), gate}});

@@ -76,22 +76,25 @@ struct RemoteSockets::Session
     Remote::Answer answer;
     /// The pane gives the answer: an error at once, a path once its forward came.
     bool answering = false;
+    /// The router refused a connection since one last closed: logged once.
+    bool full = false;
     // The target goes before the router that it unregisters from.
     std::unique_ptr<PhosphorIpc::IpcRouter> router;
     std::unique_ptr<CommandSocket> commands;
 
     /// Closes the local socket. The runs from it end, as when their client
-    /// goes. Their replies fail with @p reason, but IpcRouter::stop() aborts
-    /// the connections and drops what waits to be written: the clients see
-    /// only the close until phosphor-ipc can flush on stop. The router and the target are destroyed from
-    /// the event loop of @p context, or now without one: this can run
-    /// inside a call of that router (a remote run's handler that turns the
-    /// setting off or closes the pane), and the router must not be destroyed
-    /// inside its own call (IpcRouter's contract).
+    /// goes, and their replies fail with @p reason. The router delivers
+    /// what waits to be written, those replies last, before it closes each
+    /// connection: the clients learn why. The router and the target are
+    /// destroyed from the event loop of @p context, or now without one:
+    /// this can run inside a call of that router (a remote run's handler
+    /// that turns the setting off or closes the pane), and the router must
+    /// not be destroyed inside its own call (IpcRouter's contract). Without
+    /// a context Afterglow quits, and no event loop is left to deliver.
     void closeSocket(const QString& reason, QObject* context)
     {
         if (commands) commands->cancelAll(reason);
-        if (router) router->stop();
+        if (router) router->stop(context ? PhosphorIpc::IpcRouter::StopMode::Flush : PhosphorIpc::IpcRouter::StopMode::Abort);
         if (!socket.isEmpty()) QFile::remove(socket);
         if (lock >= 0) InstanceSocket::unlock(socket, lock);
         lock = -1;
@@ -194,6 +197,21 @@ QString RemoteSockets::open(const Request& request, Opened& out)
         if (session->lock < 0) return QStringLiteral("cannot lock %1.lock").arg(local);
         session->socket = local;
         session->router = std::make_unique<PhosphorIpc::IpcRouter>();
+        // Every process of the remote user can connect: each connection is a
+        // descriptor here and a channel of the shared ssh connection.
+        session->router->setMaxConnections(MaxConnectionsPerSession);
+        connect(session->router.get(), &PhosphorIpc::IpcRouter::connectionRefused, this,
+                [this, host = request.host, refused = std::weak_ptr<Session>(session)] {
+                    const std::shared_ptr<Session> s = refused.lock();
+                    // Once for each time the socket is full, not for each client that a loop opens.
+                    if (!s || std::exchange(s->full, true)) return;
+                    qCWarning(lcCommands) << "the remote socket of the ssh session to" << host << "has"
+                                          << MaxConnectionsPerSession << "connections, and refuses more";
+                });
+        connect(session->router.get(), &PhosphorIpc::IpcRouter::connectionClosed, this,
+                [refused = std::weak_ptr<Session>(session)] {
+                    if (const std::shared_ptr<Session> s = refused.lock()) s->full = false;
+                });
         // Only the user can connect: the router binds the socket with mode 0600.
         if (!session->router->start(local)) return QStringLiteral("cannot listen on %1").arg(local);
         session->commands = std::make_unique<CommandSocket>(m_control, m_scripts, m_settings, *session->router,

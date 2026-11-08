@@ -81,7 +81,8 @@ return {
         wait = { summary = "Wait MS", usage = "MS" },
         where = { summary = "Print the pane, directory and source" },
         flood = { summary = "Write MIB parts of 1 MiB, each awaited", usage = "MIB" },
-        count = { summary = "Print how many flood parts have gone" },
+        escaped = { summary = "Write N parts that JSON escapes, each awaited", usage = "N" },
+        count = { summary = "Print how many flood or escaped parts have gone" },
         spew = { summary = "Write MIB parts of 1 MiB at once, then exit 3", usage = "MIB" },
         twin = { summary = "Write 5 MiB, then nothing, each with a result" },
         results = { summary = "Print the results of twin" },
@@ -106,6 +107,14 @@ return {
             return afterglow.output(ev, "done\n")
         elseif command == "flood" then
             local part = string.rep("x", 1048576)
+            for _ = 1, tonumber(ev.args[1]) do
+                assert(afterglow.await(afterglow.output(ev, part)))
+                flooded += 1
+            end
+            return afterglow.output(ev, "done\n")
+        elseif command == "escaped" then
+            -- On the wire a quote takes 2 bytes, a control character 6 and an e with acute 2.
+            local part = string.rep("\"\1\u{e9}a", 131072)
             for _ = 1, tonumber(ev.args[1]) do
                 assert(afterglow.await(afterglow.output(ev, part)))
                 flooded += 1
@@ -354,7 +363,7 @@ TEST_F(CommandSocketTest, ListsTheCommandsAndEachInTheSchema)
     QLocalSocket client;
     ASSERT_TRUE(connect(client));
     const QJsonArray list = call(client, QStringLiteral("list")).value(QStringLiteral("result")).toArray();
-    ASSERT_EQ(list.size(), 10);
+    ASSERT_EQ(list.size(), 11);
     auto entry = [&list](const char* name) {
         for (const QJsonValue& v : list)
             if (v.toObject().value(QStringLiteral("command")) == QLatin1String(name)) return v.toObject();
@@ -515,32 +524,6 @@ TEST_F(CommandSocketTest, ARunWhoseInputHasNotEndedIsRefusedAndKeepsIt)
     EXPECT_EQ(m_commands->waitingInputBytes(), 0);
 }
 
-TEST(CommandSocketEventTest, TheLineBytesAreThoseOfTheRoutersLine)
-{
-    const QString id = QStringLiteral("run-1_A");
-    const auto line = [&](const QString& text) {
-        return qint64(PhosphorIpc::writeLine(PhosphorIpc::buildEvent(QStringLiteral("commands"), QStringLiteral("stdout"),
-                                                                     QJsonArray{id, text}))
-                          .size());
-    };
-    const auto bytes = [&](const QString& text) {
-        return CommandSocket::eventLineBytes(QLatin1String("commands"), "stdout", id, text);
-    };
-    EXPECT_EQ(bytes(QString()), line(QString()));
-    // Every UTF-16 unit alone, lone surrogates included, between two letters.
-    for (char32_t u = 0; u <= 0xffff; ++u) {
-        const QString text = QLatin1Char('a') + QChar(char16_t(u)) + QLatin1Char('b');
-        ASSERT_EQ(bytes(text), line(text)) << std::hex << unsigned(u);
-    }
-    // A surrogate at either end, pairs, and pairs out of order.
-    const QString pair = QString::fromUcs4(U"\U0001F600");
-    for (const QString& text : {QString(QChar(0xd83d)), QString(QChar(0xde00)), pair, pair + pair, pair.mid(1) + pair.mid(0, 1),
-                                QStringLiteral("\"\\\b\f\n\r\t\x01\x1f\x7f") + pair + QChar(0xe9) + QChar(0x20ac)})
-        EXPECT_EQ(bytes(text), line(text)) << text.toUtf8().toHex().constData();
-    const QString big = QString(300000, QChar(0x2028)) + QString(300000, QLatin1Char('"'));
-    EXPECT_TRUE(bytes(big) == line(big));
-}
-
 TEST_F(CommandSocketTest, ARunIdBelongsToItsConnection)
 {
     ASSERT_TRUE(start());
@@ -677,6 +660,36 @@ TEST_F(CommandSocketTest, TheRunsOfAConnectionShareItsWindow)
     EXPECT_EQ(got.out.size(), 12 * 1048576 + 10);
     EXPECT_EQ(exitOf(got.answers.value(a)), 0);
     EXPECT_EQ(exitOf(got.answers.value(b)), 0);
+}
+
+TEST_F(CommandSocketTest, TheWindowCountsTheBytesOfTheLinesAsTheClientReadsThem)
+{
+    ASSERT_TRUE(start(R"({"Scripts": {"commandOutputLimit": 65536}})"));
+    QLocalSocket client, other;
+    ASSERT_TRUE(connect(client));
+    ASSERT_TRUE(connect(other));
+    client.setReadBufferSize(64 * 1024);
+    // Its text is 512 Ki UTF-16 units and 640 KiB of UTF-8, and its line
+    // on the wire 1.375 MiB: three lines fill the window. A count of the
+    // text in either form would let more parts go.
+    const QString part = QStringLiteral("\"\x01\u00e9a").repeated(131072);
+    const qint64 line = PhosphorIpc::writeLine(PhosphorIpc::buildEvent(QStringLiteral("commands"), QStringLiteral("stdout"),
+                                                                        QJsonArray{QStringLiteral("e"), part}))
+                            .size();
+    const qint64 window = (CommandSocket::AckWindow + line - 1) / line;
+    ASSERT_EQ(window, 3);
+    const qint64 run = send(client, QStringLiteral("run"), {QStringLiteral("e"), QStringLiteral("cmds"), QStringLiteral("escaped"),
+                                                          QJsonArray{QStringLiteral("4")}, QString(), 0});
+    ASSERT_TRUE(waitFor([this] { return m_commands->waitingOutputBytes() > 0; }));
+    const int parts = output(until(other, send(other, QStringLiteral("run"), {QStringLiteral("c"), QStringLiteral("cmds"),
+                                                                            QStringLiteral("count"), QJsonArray{}, QString(), 0})),
+                             "stdout").toInt();
+    EXPECT_EQ(parts, window);
+    // Acknowledging what it read lets the rest go, and leaves nothing waiting.
+    const Drained got = drain(client, {run}, true);
+    EXPECT_TRUE(got.out == part.repeated(4) + QStringLiteral("done\n"));
+    EXPECT_EQ(exitOf(got.answers.value(run)), 0);
+    EXPECT_EQ(m_commands->waitingOutputBytes(), 0);
 }
 
 TEST_F(CommandSocketTest, ManySmallRunsFillTheWindowAndTheClientAcknowledgesTheirTotal)
@@ -883,7 +896,7 @@ TEST_F(CommandSocketTest, TheProtoClientSpeaksTheRoutersWireFormat)
         ASSERT_TRUE(ipc.connect(path, &error)) << error.message;
         const auto list = ipc.call("commands", "list", {}, 5000, &error);
         ASSERT_TRUE(list) << error.message;
-        ASSERT_EQ(list->toArray().size(), 10u);
+        ASSERT_EQ(list->toArray().size(), 11u);
         EXPECT_EQ(list->toArray()[0]["command"].toString(), "count");
 
         // Stdin before the run, then a deferred reply after the run's events.

@@ -274,6 +274,11 @@ public:
                 fail("the socket " + m_socket.path + " has no target for remote commands: afterglow ssh did not forward it");
             } else if (!m_socket.own) {
                 fail("the running Afterglow " + off);
+            } else if (sessionName(m_socket.path)) {
+                // It holds only the target of remote runs, which act on the
+                // pane of its ssh session.
+                fail("$AFTERGLOW_SOCKET is the socket of an ssh session on this computer. It takes commands only on the "
+                     "remote host, where afterglow ssh forwards it as DIRECTORY/TOKEN.sock");
             } else if (afterglowName(m_socket.path)) {
                 // Every pane sets $AFTERGLOW_SOCKET to such a name: the hint
                 // below is for a socket that the user named by hand.
@@ -427,11 +432,21 @@ private:
     }
 
     /// Whether @p path has the name of a socket of an Afterglow,
-    /// afterglow-*.sock (sharedSocketPath, ownSocketPath).
+    /// afterglow-*.sock (sharedSocketPath, ownSocketPath), and not that of
+    /// an ssh session's socket (sessionName()).
     static bool afterglowName(std::string_view path)
     {
         const std::string_view name = path.substr(path.rfind('/') + 1);
-        return name.starts_with("afterglow-") && name.ends_with(".sock");
+        return name.starts_with("afterglow-") && name.ends_with(".sock") && !sessionName(path);
+    }
+
+    /// Whether @p path has the name of the local socket of an ssh session,
+    /// afterglow-remote-TOKEN.sock (RemoteSockets), which afterglow ssh
+    /// forwards to the remote host.
+    static bool sessionName(std::string_view path)
+    {
+        const std::string_view name = path.substr(path.rfind('/') + 1);
+        return name.starts_with("afterglow-remote-") && name.ends_with(".sock");
     }
 
     /// Why the local lookup gives no socket to use.

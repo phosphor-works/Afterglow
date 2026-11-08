@@ -7040,6 +7040,43 @@ TEST_F(NativeWindow, HintsThatOpenWhileTheViewEasesSitOnTheRowsWhereItStops) {
         << QGuiApplication::clipboard()->text().toStdString() << " " << url.toStdString();
 }
 
+TEST_F(NativeWindow, LinkLabelsOnAHeldFrameStayUntilTheHoldEnds) {
+    Pane* pane = window->focusedPane();
+    const auto generation = [pane] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.generation(); }); };
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[H\x1b[2Jhttps://example.com/drawn\r\n"); });
+    ASSERT_TRUE(nextFrame(window));
+    ASSERT_EQ(pane->snapshot().generation, generation());
+    // A program begins an update (DEC 2026) and writes into it: the pane
+    // keeps drawing the frame before it.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?2026h\x1b[H\x1b[2Jhttps://example.com/next\r\n"); });
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(window->runAction(pane, Action::UrlsCopy));
+    ASSERT_EQ(chrome->urlHints().size(), 1);
+    ASSERT_NE(pane->snapshot().generation, generation());
+    // The labels sit on the text drawn: a letter takes its link, and does
+    // not close the labels because the terminal went on behind the frame.
+    const QString label = chrome->urlHints().front().toMap().value(QStringLiteral("label")).toString();
+    for (const QChar letter : label)
+        sendKey(window, Qt::Key_A + (letter.toLower().unicode() - u'a'), Qt::NoModifier, QString(letter));
+    EXPECT_TRUE(waitFor([&] { return QGuiApplication::clipboard()->text() == QLatin1String("https://example.com/drawn"); }))
+        << QGuiApplication::clipboard()->text().toStdString();
+    EXPECT_TRUE(chrome->urlHints().isEmpty());
+    // The update ends, and the next one begins.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?2026l"); });
+    ASSERT_TRUE(nextFrame(window));
+    ASSERT_EQ(pane->snapshot().generation, generation());
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?2026h\x1b[H\x1b[2Jhttps://example.com/last\r\n"); });
+    ASSERT_TRUE(window->runAction(pane, Action::UrlsCopy));
+    ASSERT_EQ(chrome->urlHints().size(), 1);
+    // Labels found on a held frame go with the first frame that shows other
+    // text, before the chrome draws them over it.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?2026l"); });
+    ASSERT_TRUE(nextFrame(window));
+    EXPECT_EQ(pane->snapshot().generation, generation());
+    EXPECT_TRUE(chrome->urlHints().isEmpty());
+}
+
 TEST_F(NativeWindow, ASplitWhoseShellDoesNotStartKeepsTheZoom) {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;

@@ -45,7 +45,9 @@ enum class Passthrough {
 };
 
 /// The least time that the query gets after tmux answered. A query that
-/// cannot wait for its answer would leave the answer to the shell.
+/// cannot wait for its answer would leave the answer to the shell. tmux
+/// gets half of the wait, so this is a guard: only a wait under twice this,
+/// or a tmux that is slow to exit after its answer, comes near it.
 constexpr long long MinQueryMs = 200;
 
 /// Asks tmux by @p deadline (nowMs()). tmux waits for its server, which may

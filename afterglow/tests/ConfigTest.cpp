@@ -29,6 +29,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -1047,7 +1048,7 @@ TEST(Config, ScriptCommandLimitsOfTheHostMatchTheSettingDefaults)
                             .value(QStringLiteral("Scripts")).toObject()
                             .value(QStringLiteral("cpuBudget")).toObject()
                             .value(QStringLiteral("description")).toString();
-    EXPECT_TRUE(cpu.contains(QStringLiteral("in %1 seconds, each less than %2 seconds after")
+    EXPECT_TRUE(cpu.contains(QStringLiteral("After %1 such seconds, each less than %2 seconds after")
                                  .arg(ScriptHost::MaxCpuOverruns)
                                  .arg(ScriptHost::CpuOverrunGapMs / 1000)))
         << cpu.toStdString();
@@ -2786,7 +2787,11 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     SettingsStore unclearStore(path, unclear);
     EXPECT_FALSE(unclearStore.settings().scripts);
     EXPECT_FALSE(unclearStore.settings().control.enabled);
-    EXPECT_TRUE(mentions(unclearStore.problems(), QStringLiteral("Scripts.enabled must be true or false")));
+    // It stays off, so the text must not say that it uses the default.
+    EXPECT_TRUE(mentions(unclearStore.problems(),
+                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file can be read")))
+        << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_FALSE(mentions(unclearStore.problems(), QStringLiteral("Scripts.enabled must be true or false. Using the default")));
     // An editor that saves in place empties the file first: its text may
     // still turn them off.
     write(QStringLiteral("config.json"), "");
@@ -2927,7 +2932,6 @@ TEST_F(ConfigTest, AConfigLinkWhoseTargetComesBackReloads)
     ASSERT_TRUE(QFile::link(target, link));
     SettingsStore store(link);
     ASSERT_EQ(store.settings().window.padding, 9);
-    EXPECT_TRUE(store.watchedPaths().contains(target));
     // A link without a target cannot be read (PhosphorConfig opens it), so
     // the settings stay until the target comes back.
     ASSERT_TRUE(QFile::remove(target));
@@ -2935,6 +2939,37 @@ TEST_F(ConfigTest, AConfigLinkWhoseTargetComesBackReloads)
     EXPECT_EQ(store.settings().window.padding, 9);
     write(QStringLiteral("dotfiles/config.json"), R"({"Window": {"padding": 12}})");
     EXPECT_TRUE(waitUntil([&] { return store.settings().window.padding == 12; }));
+}
+
+// Dotfile managers (Home Manager, stow, chezmoi) switch the link, or a
+// linked directory above the file, to a new target.
+TEST_F(ConfigTest, AConfigLinkOrALinkedDirectoryThatIsRetargetedReloads)
+{
+    const auto app = watchApplication();
+    for (const char* dir : {"one", "two", "three"}) ASSERT_TRUE(QDir().mkpath(m_home.filePath(QString::fromLatin1(dir))));
+    write(QStringLiteral("one/config.json"), R"({"Window": {"padding": 9}})");
+    write(QStringLiteral("two/config.json"), R"({"Window": {"padding": 12}})");
+    write(QStringLiteral("three/config.json"), R"({"Window": {"padding": 15}})");
+    // linked -> one, and config.json -> linked/config.json.
+    const QString linked = m_home.filePath(QStringLiteral("linked"));
+    const QString link = m_home.filePath(QStringLiteral("config.json"));
+    ASSERT_TRUE(QFile::link(m_home.filePath(QStringLiteral("one")), linked));
+    ASSERT_TRUE(QFile::link(linked + QStringLiteral("/config.json"), link));
+    SettingsStore store(link);
+    ASSERT_EQ(store.settings().window.padding, 9);
+    // As the tools switch a link: a new one renamed over the old.
+    const auto retarget = [&](const QString& path, const QString& target) {
+        const QString next = path + QStringLiteral(".next");
+        ASSERT_TRUE(QFile::link(target, next));
+        ASSERT_EQ(::rename(QFile::encodeName(next).constData(), QFile::encodeName(path).constData()), 0);
+    };
+    retarget(linked, m_home.filePath(QStringLiteral("two")));
+    EXPECT_TRUE(waitUntil([&] { return store.settings().window.padding == 12; }));
+    retarget(link, m_home.filePath(QStringLiteral("three/config.json")));
+    EXPECT_TRUE(waitUntil([&] { return store.settings().window.padding == 15; }));
+    // The new target is watched: an edit of it reloads.
+    write(QStringLiteral("three/config.json"), R"({"Window": {"padding": 18}})");
+    EXPECT_TRUE(waitUntil([&] { return store.settings().window.padding == 18; }));
 }
 
 // afterglow --config DIR/config.json takes DIR/themes, as it takes DIR/scripts.

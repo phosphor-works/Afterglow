@@ -68,7 +68,9 @@ struct ScriptTasks::Task : QObject {
     QProcess* process = nullptr;
     qint64 group = 0; ///< the process group of a started job, which outlives its leader
     QByteArray output, errors;
+    quint64 key = 0; ///< of a timer or a watcher
     bool done = false, truncated = false;
+    bool fired = false; ///< a one-shot timer whose call has not been claimed
     std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
     explicit Task(QObject* parent) : QObject(parent) {}
 };
@@ -84,6 +86,7 @@ void ScriptTasks::finish(Task* task, Result result, bool deliver)
     *task->cancelled = true;
     m_tasks[task->owner].remove(task->id);
     if (m_tasks[task->owner].isEmpty()) m_tasks.remove(task->owner);
+    if (task->key) m_keyed.remove(task->key);
     // Children the job left behind stay in its group after a normal exit.
     if (task->group > 0) ::kill(-pid_t(task->group), SIGKILL);
     if (auto* process = task->process; process && process->state() != QProcess::NotRunning) {
@@ -111,6 +114,13 @@ void ScriptTasks::cancel(const QString& owner, const QString& prefix)
     for (auto* task : tasks) {
         if (task->complete && task->request.startsWith(prefix)) finish(task, {}, false);
     }
+}
+bool ScriptTasks::claim(quint64 key)
+{
+    auto* task = m_keyed.value(key);
+    if (!task) return false;
+    if (task->fired) finish(task, {}, false);
+    return true;
 }
 Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion complete, Event event)
 {
@@ -140,13 +150,15 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
         if (delay < 0 || repeat < 0 || (repeat && repeat < 250)) return reject(QStringLiteral("Timers require delay_ms >= 1 and repeat_ms = 0 or >= 250"));
         auto* timer = new QTimer(task);
         timer->setSingleShot(true);
-        const quint64 repeating = repeat ? ++m_lastRepeating : 0;
-        connect(timer, &QTimer::timeout, task, [this, task, timer, repeat, repeating] {
+        task->key = ++m_lastKey;
+        m_keyed.insert(task->key, task);
+        connect(timer, &QTimer::timeout, task, [this, task, timer, repeat] {
             if (task->done) return;
+            // A copy: the call can end the task.
             const auto event = task->event;
-            const QVariantMap data{{QStringLiteral("name"), task->id}};
-            if (!repeat) finish(task, {}, false);
-            if (event) event(QStringLiteral("on_timer"), data, repeating);
+            if (!repeat) task->fired = true;
+            if (event) event(QStringLiteral("on_timer"), {{QStringLiteral("name"), task->id}}, task->key);
+            else if (!repeat) finish(task, {}, false);
             if (repeat && !task->done) timer->start(repeat);
         });
         timer->start(delay);
@@ -159,10 +171,12 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
         auto* watcher = new PhosphorFsLoader::WatchedFileSet(task);
         watcher->setDebounceInterval(250);
         watcher->setPaths({path});
-        connect(watcher, &PhosphorFsLoader::WatchedFileSet::filesChanged, task, [task, path, repeating = ++m_lastRepeating] {
+        task->key = ++m_lastKey;
+        m_keyed.insert(task->key, task);
+        connect(watcher, &PhosphorFsLoader::WatchedFileSet::filesChanged, task, [task, path] {
             if (task->done) return;
             task->event(QStringLiteral("on_file_changed"), {{QStringLiteral("name"), task->id},
-                {QStringLiteral("path"), path}, {QStringLiteral("exists"), QFileInfo::exists(path)}}, repeating);
+                {QStringLiteral("path"), path}, {QStringLiteral("exists"), QFileInfo::exists(path)}}, task->key);
         });
         return {};
     }

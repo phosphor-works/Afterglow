@@ -281,7 +281,8 @@ Q_SIGNALS:
     /// @p reset: they held a terminal reset, which ended every file transfer.
     void terminalProtocolLost(DragDrop::Lost lost, bool reset);
     /// @p paths holds at most the first 100 of @p total paths: see FileTransfer::permissionRequested.
-    void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
+    void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths, int total,
+        bool othersRefused);
     void closed();
 
 private:

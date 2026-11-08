@@ -6742,6 +6742,56 @@ TEST_F(ScriptHostTest, ARepeatingTimerPastTheBudgetWaitsWithOneCallNotOneForEach
     EXPECT_GE(stats["dropped_callbacks"].toULongLong(), 2u);
 }
 
+TEST_F(ScriptHostTest, ACancelWhileATimersCallWaitsForCpuTimeStopsTheCall)
+{
+    // The key waits for CPU time first. Both timers tick behind it, and their
+    // calls wait too. The key cancels both: once afterglow.cancel has
+    // returned, no on_timer comes, of the one-shot timer or the repeating one.
+    WRITE(user, "late.luau", R"(return {
+    on_bell = function()
+        local t = os.clock() while os.clock() - t < 0.015 do end
+        return { afterglow.copy("bell"), afterglow.timer("once", 50), afterglow.timer("tick", 50, 250) }
+    end,
+    on_key = function(ev) return { afterglow.cancel("once"), afterglow.cancel("tick"), afterglow.copy(ev.key) } end,
+    on_timer = function(ev) return afterglow.copy(ev.name) end,
+})");
+    host->setCpuBudget(10);
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.owners.size(), 1);
+    host->dispatchTo(rec.owners[0], "on_key", 7, {{"key", "a"}});
+    // The ticks come while the key waits.
+    await([] { return false; }, 300);
+    ASSERT_EQ(rec.applied.size(), 1);
+    ASSERT_TRUE(await([&] { return rec.applied.size() > 1; }, 4000));
+    // Past the repeating timer's next interval.
+    await([] { return false; }, 600);
+    QStringList copied;
+    for (const auto& effect : std::as_const(rec.applied)) copied << effect.value("text").toString();
+    EXPECT_EQ(copied, (QStringList{"bell", "a"})) << copied.join(',').toStdString();
+    const auto stats = firstDiagnostic();
+    EXPECT_GE(stats["delayed_callbacks"].toULongLong(), 3u);
+}
+
+TEST_F(ScriptHostTest, AScriptLinkPointedElsewhereReloadsOnEditsOfItsNewTarget)
+{
+    WRITE(files, "a.luau", "return {metadata={id='first'}}");
+    WRITE(files, "b.luau", "return {metadata={id='second'}}");
+    ASSERT_TRUE(QFile::link(files.filePath("a.luau"), user.filePath("linked.luau")));
+    host->setEnabled(true);
+    EXPECT_EQ(host->scriptIds(), QStringList{"first"});
+    ASSERT_TRUE(QFile::remove(user.filePath("linked.luau")));
+    ASSERT_TRUE(QFile::link(files.filePath("b.luau"), user.filePath("linked.luau")));
+    ASSERT_TRUE(await([&] { return host->scriptIds() == QStringList{"second"}; }, 5000));
+    // The rescans of the new link are over: a late one would read the edit
+    // below without a watch.
+    await([] { return false; }, 500);
+    // A watch of the link's path stays on the old target: the new target's
+    // own watch sees the edit.
+    WRITE(files, "b.luau", "return {metadata={id='third'}}");
+    EXPECT_TRUE(await([&] { return host->scriptIds() == QStringList{"third"}; }, 5000));
+}
+
 TEST_F(ScriptHostTest, ARemoteReadWithABadLimitStaysAnInvalidEffect)
 {
     // The remote gate does not hide the first refusal, a bad max_bytes.

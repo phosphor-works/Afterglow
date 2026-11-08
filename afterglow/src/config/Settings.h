@@ -411,7 +411,7 @@ private:
     bool m_applyQueued = false;
     /// No read of the file has worked since the start: read() keeps
     /// Scripts.enabled and Control.enabled off, which the file may set,
-    /// unless an override sets them.
+    /// unless an override sets them to true or false.
     bool m_neverRead = true;
     QStringList m_fileProblems;
     QStringList m_readProblems;

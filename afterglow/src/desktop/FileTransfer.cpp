@@ -513,8 +513,10 @@ struct FileTransfer::Worker {
         // not ask again after the No: the next dialog of the session opens
         // in the cooldown. Like any dialog, it lists the first files that
         // wait, which include those that came after the No and before it
-        // opened. A No of that dialog grants no other: the cooldown refuses
-        // the files that are left, so a program cannot keep a dialog open.
+        // opened. It is the last dialog for the files that wait: after its
+        // answer, Yes or No, the files that it did not list get EPERM, so a
+        // program cannot keep a dialog open. The answer can come after the
+        // cooldown ends, so the refusal does not depend on the cooldown.
         bool afterNo = false;
         // The dialog that shows opened in the cooldown, after a No.
         bool askedAfterNo = false;
@@ -931,9 +933,12 @@ struct FileTransfer::Worker {
             }
         }
         const int total = int(s.holding ? s.heldOrder.size() : s.requests.size());
+        // A receive reads only the listed files. A send gets a dialog for the
+        // files that it did not list, except after the dialog in the cooldown.
+        const bool othersRefused = !s.sending || s.askedAfterNo;
         s.asking = true;
-        QMetaObject::invokeMethod(owner, [o = owner, token = s.token, writing = s.sending, paths, total] {
-            Q_EMIT o->permissionRequested(token, writing, paths, total);
+        QMetaObject::invokeMethod(owner, [o = owner, token = s.token, writing = s.sending, paths, total, othersRefused] {
+            Q_EMIT o->permissionRequested(token, writing, paths, total, othersRefused);
         });
     }
     // Why a file command of a send session cannot be written, or nothing.
@@ -1026,8 +1031,9 @@ struct FileTransfer::Worker {
         afterHeld(s);
     }
     // A Yes for a send session: the files that the dialog listed run, each
-    // with the commands that waited for it.
-    void grant(const QByteArray& id)
+    // with the commands that waited for it. With @p last, the files that wait
+    // after them get EPERM, and no other dialog.
+    void grant(const QByteArray& id, bool last)
     {
         Session& s = *sessions.at(id);
         s.granted = true;
@@ -1053,7 +1059,12 @@ struct FileTransfer::Worker {
                 dispatch(*found->second, f);
             }
         }
-        if (const auto found = sessions.find(id); found != sessions.end())
+        const auto found = sessions.find(id);
+        if (found == sessions.end())
+            return;
+        if (last)
+            refuseHeld(*found->second, found->second->heldOrder.size(), "EPERM");
+        else
             afterHeld(*found->second);
     }
     // Takes the id by value: callers pass references to the key that this erases.
@@ -1091,17 +1102,17 @@ struct FileTransfer::Worker {
             // A later No refuses the files of its own dialog. Those that the
             // user approved before finish. Those that came while it showed
             // get one more dialog in the cooldown, unless this dialog was
-            // that one.
+            // that one: then they are refused too.
             if (s.granted) {
                 s.afterNo = !s.askedAfterNo && s.heldOrder.size() > s.asked;
-                refuseHeld(s, s.asked, "EPERM");
+                refuseHeld(s, s.askedAfterNo ? s.heldOrder.size() : s.asked, "EPERM");
             }
             else {
                 status(s, { }, "EPERM");
                 remove(id);
             }
         } else if (s.holding)
-            grant(id);
+            grant(id, s.askedAfterNo);
         else {
             s.approved = true;
             // The dialog listed the first requests. The program reads none of
@@ -2315,7 +2326,8 @@ void FileTransfer::Worker::delta(Session& s, const QByteArray& fid, File& file)
 
 void FileTransfer::endPasswordPause() { g_passwordsBlockedUntil.store(0); }
 
-FileTransfer::Question FileTransfer::question(bool writing, const QStringList& paths, int total, const QString& asker)
+FileTransfer::Question FileTransfer::question(bool writing, const QStringList& paths, int total, bool othersRefused,
+    const QString& asker)
 {
     Question q;
     // A remote program can name any file, and chooses where files go: the
@@ -2338,10 +2350,16 @@ FileTransfer::Question FileTransfer::question(bool writing, const QStringList& p
     if (paths.size() > QuestionPaths)
         q.text += QLatin1Char('\n') + tr("and %n more", nullptr, int(paths.size() - QuestionPaths));
     // A Yes covers the listed paths only.
-    if (const int rest = total - int(paths.size()); rest > 0)
-        q.text += QLatin1Char('\n')
-            + (writing ? tr("Files not in this list: %1. They get a question of their own.").arg(rest)
-                       : tr("Requested files not in this list: %1. They are refused.").arg(rest));
+    if (const int rest = total - int(paths.size()); rest > 0) {
+        QString others;
+        if (!writing)
+            others = tr("Requested files not in this list: %1. They are refused.");
+        else if (othersRefused)
+            others = tr("Files not in this list: %1. They are refused.");
+        else
+            others = tr("Files not in this list: %1. They get a question of their own.");
+        q.text += QLatin1Char('\n') + others.arg(rest);
+    }
     if (!writing && std::any_of(paths.begin(), paths.end(), [](const QString& p) { return p.endsWith(QLatin1Char('/')); }))
         q.text += QLatin1Char('\n') + tr("A path that ends with a slash is a directory. The program can read all the files in it.");
     q.detail = paths.join(QLatin1Char('\n'));

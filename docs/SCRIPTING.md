@@ -279,10 +279,11 @@ When a script has used its budget, these steps occur:
 These calls wait:
 
 - Results, also the results that resume a handler after `afterglow.await` or `afterglow.sleep`.
-- `on_timer` and `on_file_changed`. A one-shot timer and a file change do not come again, so Afterglow does not drop them.
-  A repeating timer or a watcher has one call that waits, at most.
-  A tick or a change that comes while that call waits adds no call. `dropped_callbacks` counts it.
-  The call that waits gets the newest event, so a watcher's `exists` is that of the last change.
+- `on_timer` and `on_file_changed`. A one-shot timer and a file change do not come again, so the CPU budget does not drop their calls.
+  A repeating timer or a watcher has one call that waits for CPU time, at most.
+  A tick or a change that comes while that call waits gives its event to the call, and adds no call. `dropped_callbacks` counts the tick or the change.
+  So the call that waits gets the newest event, and a watcher's `exists` is that of the last change.
+  When the script cancels the timer or the watcher while its call waits, the call does not run.
 - `on_key`, and the clicks, hovers, layouts and the `start`, `end` and `cancel` calls of dock events.
 - The start of a command run, and the cleanup of a run that ended.
 - An event that comes after the script has time again, but before the calls that wait have run. It runs after them, with a new snapshot.
@@ -399,6 +400,7 @@ Task names are strings of 1 to 64 UTF-16 units, and belong to one script instanc
 Limits are 16 active tasks for each script and 128 in total.
 Reusing an active name returns `busy`.
 `afterglow.cancel(name)` cancels the owned timer, watcher or job.
+A one-shot timer stays active until its `on_timer` call starts. A cancel before that stops the call, also when the call waits for CPU time.
 
 | Effect | Behavior |
 | --- | --- |
@@ -414,11 +416,12 @@ A script that has 16 active tasks, or a total of 128 active tasks, gets `rate_li
 | `delay_ms` | 1 to 3,600,000 ms. `afterglow.timer` requires it |
 | `repeat_ms` | 0 for one callback, or 250 to 3,600,000 ms |
 
-The next interval starts when the handler returns or first waits.
-When the call waits for CPU time, the next interval starts at once. A tick that comes while the call waits adds no call (see [CPU time](#cpu-time)).
-So an `on_timer` that waits can still wait when the next tick comes.
+The next interval starts when the handler returns or first waits for a result.
+So an `on_timer` that waits for a result can still wait when the next tick comes.
 Waiting handlers then collect until waits return `busy`.
 For slow work, use a single timer and start it again at the end of the handler.
+When the call of `on_timer` waits for CPU time, the next interval starts at once.
+A tick that comes while that call waits for CPU time adds no call (see [CPU time](#cpu-time)).
 Watcher events contain `name`, `path` and `exists`.
 Watchers handle atomic file replacement and combine changes within 250 ms.
 
@@ -1200,6 +1203,7 @@ Timing fields are `last_call_ms`, `max_call_ms` and `total_call_ms`.
 `cpu_ms` is the handler time of the last second, which `Scripts.cpuBudget` limits.
 Diagnostics also count what Afterglow dropped.
 `dropped_callbacks` counts calls dropped at either handler call limit, or at the CPU budget.
+It also counts the ticks and the changes that a waiting call of a timer or a watcher takes in.
 `delayed_callbacks` counts calls that waited for the CPU budget.
 `dropped_effects` and `dropped_results` count dropped effects and results.
 `waiting` is the number of handlers that wait for a result.

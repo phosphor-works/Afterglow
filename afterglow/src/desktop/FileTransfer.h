@@ -25,12 +25,14 @@ public:
     /// The prompt of a permission request from @p asker: the question, with
     /// the first paths, a count of the others and a count of the paths that
     /// the answer does not cover, and the detail, with every path that
-    /// permissionRequested gives.
+    /// permissionRequested gives. @p othersRefused tells whether the paths
+    /// that the answer does not cover are refused or get a question of their own.
     struct Question {
         QString text;
         QString detail;
     };
-    static Question question(bool writing, const QStringList& paths, int total, const QString& asker = { });
+    static Question question(bool writing, const QStringList& paths, int total, bool othersRefused,
+        const QString& asker = { });
     /// Ends the pause after a wrong password at once, in every pane. A test
     /// calls it, so that its pause does not reach the tests after it.
     static void endPasswordPause();
@@ -67,7 +69,10 @@ Q_SIGNALS:
     /// waiting file has reached handle() and the worker. The files wait
     /// until the answer. The paths stay as they are: what comes later waits
     /// for a request of its own, and a Yes approves only @p paths.
-    void permissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
+    /// @p othersRefused: the answer refuses the files that @p paths does not
+    /// hold, with no other request for them. That is always so for a read,
+    /// and for a write in the request that opens in the cooldown after a No.
+    void permissionRequested(const QString& token, bool writing, const QStringList& paths, int total, bool othersRefused);
 
 private:
     struct Worker;

@@ -626,10 +626,14 @@ RemoteResult forwardRemote(const QByteArrayList& args, const Arguments& parsed, 
     if (!user.own && !config.controlMaster) {
         // The user's ControlPath, whose ControlMaster makes no master on its
         // own: only a master that runs already saves the second sign-in.
+        // ssh -G shows a -M as ControlMaster yes, so a -M comes here too.
         const auto check = capture(control + QByteArrayList{"-O", "check", "--", destination}, signals, {}, true);
         if (!check) return skip("ssh -O check did not run");
         if (const auto exit = died(*check)) return {exit};
-        if (check->status != 0) return skip("no master runs on the ControlPath, and ControlMaster is not auto");
+        if (check->status != 0) {
+            return skip(hasFlag(args, parsed, 'M') ? "no master runs on the ControlPath, which -M needs"
+                                                   : "no master runs on the ControlPath, and ControlMaster is not auto");
+        }
         // As a client of that master, whatever ControlMaster says.
         probe << "-o" << "ControlMaster=no";
     }

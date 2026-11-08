@@ -76,6 +76,7 @@ struct Transfer : testing::Test {
     // Every list that a prompt showed, in order.
     QList<QStringList> promptedLists;
     int promptedTotal = 0;
+    bool promptedOthersRefused = false;
     int prompts = 0;
     int closed = 0;
     // A prompt is approved at once.
@@ -84,11 +85,12 @@ struct Transfer : testing::Test {
     {
         QObject::connect(&service, &FileTransfer::reply, &service, [this](const QByteArray& b) { replies.append(b); });
         QObject::connect(&service, &FileTransfer::permissionRequested, &service,
-            [this](const QString& t, bool, const QStringList& paths, int total) {
+            [this](const QString& t, bool, const QStringList& paths, int total, bool othersRefused) {
                 token = t;
                 prompted = paths;
                 promptedLists.append(paths);
                 promptedTotal = total;
+                promptedOthersRefused = othersRefused;
                 ++prompts;
                 if (autoApprove)
                     service.approve(t, true);
@@ -364,32 +366,35 @@ TEST(TransferQuestion, ShowsTheFirstPathsAndCountsTheRest)
     const QString write = QStringLiteral("A terminal program wants to write these files on this computer. Existing files can be replaced. Allow it?");
     const QString read = QStringLiteral("A terminal program wants to read these files on this computer. Allow it?");
     // No path: the question alone.
-    EXPECT_EQ(FileTransfer::question(true, { }, 0).text, write);
+    EXPECT_EQ(FileTransfer::question(true, { }, 0, false).text, write);
     // 10 of 10 fit in the question.
-    const auto ten = FileTransfer::question(true, paths.mid(0, 10), 10);
+    const auto ten = FileTransfer::question(true, paths.mid(0, 10), 10, false);
     EXPECT_TRUE(ten.text.endsWith(QStringLiteral("/home/u/f9")));
     EXPECT_FALSE(ten.text.contains(QStringLiteral("more")));
     EXPECT_EQ(ten.detail, QStringList(paths.mid(0, 10)).join(QLatin1Char('\n')));
     // 11 of 11: one more.
-    const auto eleven = FileTransfer::question(true, paths.mid(0, 11), 11);
+    const auto eleven = FileTransfer::question(true, paths.mid(0, 11), 11, false);
     EXPECT_FALSE(eleven.text.contains(QStringLiteral("/home/u/f10")));
     EXPECT_TRUE(eleven.text.endsWith(QStringLiteral("/home/u/f9\nand 1 more")));
     // 100 of 100: the detail has every path.
-    const auto hundred = FileTransfer::question(false, paths.mid(0, 100), 100);
+    const auto hundred = FileTransfer::question(false, paths.mid(0, 100), 100, true);
     EXPECT_TRUE(hundred.text.startsWith(read + QLatin1Char('\n')));
     EXPECT_TRUE(hundred.text.endsWith(QStringLiteral("and 90 more")));
     EXPECT_TRUE(hundred.detail.endsWith(QStringLiteral("/home/u/f99")));
     // 100 of 101: the answer does not cover the last one.
-    const auto writeMore = FileTransfer::question(true, paths.mid(0, 100), 101);
+    const auto writeMore = FileTransfer::question(true, paths.mid(0, 100), 101, false);
     EXPECT_TRUE(writeMore.text.endsWith(QStringLiteral("and 90 more\nFiles not in this list: 1. They get a question of their own.")));
-    const auto readMore = FileTransfer::question(false, paths.mid(0, 100), 101);
+    const auto readMore = FileTransfer::question(false, paths.mid(0, 100), 101, true);
     EXPECT_TRUE(readMore.text.endsWith(QStringLiteral("and 90 more\nRequested files not in this list: 1. They are refused.")));
+    // The dialog in the cooldown after a No: the files that it does not list are refused.
+    const auto writeLast = FileTransfer::question(true, paths.mid(0, 100), 101, true);
+    EXPECT_TRUE(writeLast.text.endsWith(QStringLiteral("and 90 more\nFiles not in this list: 1. They are refused.")));
     EXPECT_FALSE(readMore.detail.contains(QStringLiteral("/home/u/f100")));
     // 0 of 5: only the count.
-    EXPECT_EQ(FileTransfer::question(false, { }, 5).text, read + QStringLiteral("\nRequested files not in this list: 5. They are refused."));
+    EXPECT_EQ(FileTransfer::question(false, { }, 5, true).text, read + QStringLiteral("\nRequested files not in this list: 5. They are refused."));
     // Who asks, and a long path cut in the middle of the question but whole in the detail.
     const QString longPath = QStringLiteral("/") + QString(300, QLatin1Char('a')) + QStringLiteral("/end");
-    const auto named = FileTransfer::question(true, { longPath }, 1, QStringLiteral("vim in tab 2"));
+    const auto named = FileTransfer::question(true, { longPath }, 1, false, QStringLiteral("vim in tab 2"));
     EXPECT_TRUE(named.text.startsWith(QStringLiteral("vim in tab 2 wants to write")));
     const QString line = named.text.section(QLatin1Char('\n'), 1, 1);
     EXPECT_EQ(line.size(), FileTransfer::QuestionLength);
@@ -397,14 +402,14 @@ TEST(TransferQuestion, ShowsTheFirstPathsAndCountsTheRest)
     EXPECT_EQ(named.detail, longPath);
     // Where a long path resolves stays a line of its own, cut on its own.
     const QString resolved = longPath + QStringLiteral("\n  resolves to ") + longPath;
-    const auto both = FileTransfer::question(true, { resolved }, 1);
+    const auto both = FileTransfer::question(true, { resolved }, 1, false);
     EXPECT_EQ(both.text.section(QLatin1Char('\n'), 1, 1).size(), FileTransfer::QuestionLength);
     EXPECT_TRUE(both.text.section(QLatin1Char('\n'), 2, 2).startsWith(QStringLiteral("  resolves to ")));
     EXPECT_EQ(both.detail, resolved);
     // A directory that a program reads is read whole.
-    const auto directory = FileTransfer::question(false, { QStringLiteral("/home/u/dir/") }, 1);
+    const auto directory = FileTransfer::question(false, { QStringLiteral("/home/u/dir/") }, 1, true);
     EXPECT_TRUE(directory.text.contains(QStringLiteral("ends with a slash")));
-    EXPECT_FALSE(FileTransfer::question(false, { QStringLiteral("/home/u/file") }, 1).text.contains(QStringLiteral("slash")));
+    EXPECT_FALSE(FileTransfer::question(false, { QStringLiteral("/home/u/file") }, 1, true).text.contains(QStringLiteral("slash")));
 }
 TEST_F(Transfer, CompressedFileAndLinksCommit)
 {
@@ -1563,6 +1568,46 @@ TEST_F(Transfer, ANoOfThePromptAfterANoOpensNoOther)
     // The session goes on: the file that the user approved finishes.
     send("ac=end_data;fid=a;d=" + b64("x"));
     ASSERT_TRUE(fileStatus("a", "OK"));
+}
+// The prompt after a later No is the last one for the files that wait. It
+// says that the files it does not list are refused, and a Yes refuses them,
+// also when the Yes comes after the cooldown has ended.
+TEST_F(Transfer, AYesOfThePromptAfterANoRefusesTheFilesThatItDidNotList)
+{
+    send("ac=send");
+    send("ac=file;fid=a;n=" + path("a"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 1; }));
+    EXPECT_FALSE(promptedOthersRefused);
+    service.approve(token, true);
+    ASSERT_TRUE(fileStatus("a", "STARTED"));
+    send("ac=file;fid=b;n=" + path("b"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 2; }));
+    EXPECT_FALSE(promptedOthersRefused);
+    for (int i = 0; i < 101; ++i)
+        send("ac=file;fid=c" + QByteArray::number(i) + ";n=" + b64(file("c").toUtf8() + QByteArray::number(i)));
+    ASSERT_TRUE(barrier());
+    service.approve(token, false);
+    ASSERT_TRUE(fileStatus("b", "EPERM"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 3; }));
+    EXPECT_EQ(prompted.size(), 100);
+    EXPECT_EQ(promptedTotal, 101);
+    EXPECT_TRUE(promptedOthersRefused);
+    // The denial cooldown is 10 seconds.
+    QElapsedTimer cooldown;
+    cooldown.start();
+    while (cooldown.elapsed() < 10500) {
+        QCoreApplication::processEvents();
+        QThread::msleep(10);
+    }
+    service.approve(token, true);
+    ASSERT_TRUE(fileStatus("c0", "STARTED"));
+    ASSERT_TRUE(fileStatus("c100", "EPERM"));
+    ASSERT_TRUE(barrier());
+    EXPECT_EQ(prompts, 3);
+    // After the cooldown, a file that comes later gets a prompt of its own.
+    send("ac=file;fid=d;n=" + path("d"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 4; }));
+    EXPECT_FALSE(promptedOthersRefused);
 }
 // A level that did not exist when the prompt showed, and that exists now as
 // a directory, is part of the path that is read: not the file of the same

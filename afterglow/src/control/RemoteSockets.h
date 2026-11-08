@@ -52,6 +52,11 @@ public:
     static constexpr int MaxSessionsPerPane = 16;
     /// Sessions of the process at most, each a socket and a pidfd.
     static constexpr int MaxSessions = 256;
+    /// Connections open at once on the socket of one session, at most. Each
+    /// `aglow run` takes one, and Scripts.commandRunLimit lets at most 16
+    /// runs of a script go at once. The router closes a connection past it
+    /// at accept, before it reads a request.
+    static constexpr int MaxConnectionsPerSession = 64;
     /// UTF-16 units of the host name of a session (ev.remote.host) at most.
     static constexpr qsizetype MaxHostLength = 255;
 

@@ -367,18 +367,28 @@ TEST(Extensions, ITerm2InterruptedMultipartFileLeavesNoImage)
     t.feed("\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FilePart=VyZQ==\x07");
     t.feed("\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FileEnd\x07");
     EXPECT_EQ(t.graphics().placements().size(), 3u);
-    // Cut off by two prompts with no part between: the sender was
-    // interrupted, so its data is given back and a late FileEnd does nothing.
+    // Not cut off by the shell drawing its prompt again (a resize, Ctrl+L):
+    // the prompt marks come with no command between them.
     t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
     t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
-    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]133;A;redraw=1\x07$ \x1b]133;B\x07\x1b]633;A\x07$ \x1b]633;B\x07");
     t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
-    EXPECT_EQ(t.graphics().placements().size(), 3u);
-    // A header with no part yet is cut off the same way.
+    EXPECT_EQ(t.graphics().placements().size(), 4u);
+    // Cut off by two new prompts, each after a command, with no part between:
+    // the sender was interrupted, so its data is given back and a late
+    // FileEnd does nothing.
+    t.feed("\x1b]133;C\x07\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    t.feed("\x1b]133;D;130\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 4u);
+    // A header with no part yet is cut off the same way, also by the marks of
+    // OSC 633 and by 133 N, which finishes the command itself.
     t.feed("\x1b]1337;MultipartFile=inline=1\x07");
-    t.feed("\x1b]133;A\x07\x1b]133;A\x07");
+    t.feed("\x1b]633;D;1\x07\x1b]633;A\x07\x1b]633;C\x07\x1b]133;N\x07");
     t.feed("\x1b]1337;FilePart=cGljdHVyZQ==\x07\x1b]1337;FileEnd\x07");
-    EXPECT_EQ(t.graphics().placements().size(), 3u);
+    EXPECT_EQ(t.graphics().placements().size(), 4u);
 }
 
 TEST(Extensions, ITerm2ImageSizes)

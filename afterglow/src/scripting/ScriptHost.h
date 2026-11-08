@@ -322,9 +322,9 @@ private:
     /// visits candidates highest priority first: the first to claim an id keeps it.
     QStringList performScan(const QStringList& directories) override;
     void retire(const ScriptPtr& script);
-    /// @p repeating: the ScriptTasks key of a repeating timer or a watcher,
-    /// whose calls do not queue behind each other for CPU time.
-    void emitOwned(const ScriptPtr&, const QString& handler, QVariantMap event, quint32 pane, quint64 repeating = 0);
+    /// @p taskKey: the ScriptTasks key of a timer or a watcher, whose calls
+    /// do not queue behind each other for CPU time, and which claims its task.
+    void emitOwned(const ScriptPtr&, const QString& handler, QVariantMap event, quint32 pane, quint64 taskKey = 0);
 
     Callbacks m_callbacks;
     std::unique_ptr<ScriptTasks> m_tasks;

@@ -287,7 +287,7 @@ A requested directory ends with a slash: the program can read all the files in i
 | Request | What the dialog lists | What happens to the other paths |
 | --- | --- | --- |
 | Receive | The first 100 requested paths | The other requests get `EPERM`. |
-| Send | The destinations of the files that wait, up to 100 | A file that came later, or that the dialog did not list, gets a dialog of its own. |
+| Send | The destinations of the files that wait, up to 100 | A file that came later, or that the dialog did not list, gets a dialog of its own. After the dialog in the cooldown that follows a denial, the files that it did not list get `EPERM`. |
 
 A send session starts at once, because the program names its destinations only after the start.
 The dialog opens when Afterglow has handled every command that had reached the window when Afterglow held the first destination.
@@ -299,7 +299,9 @@ If you deny the first dialog of a session, the session ends with `EPERM`.
 If you deny a later dialog, its files get `EPERM`. The files that you approved before continue.
 The files that came while the dialog was open get one more dialog, in the cooldown that follows the denial.
 That dialog lists the first 100 files that wait. These can include files that came after the denial and before the dialog opened.
-If you deny that dialog too, no other dialog opens: the files that wait get `EPERM`.
+It is the last dialog for these files. When you answer it with **Yes** or **No**, the files that it does not list get `EPERM`. The dialog tells you this.
+If you deny that dialog, the cooldown of 10 seconds starts again.
+A file that comes in a cooldown gets `EPERM`. A file that comes after the cooldown gets a dialog of its own.
 Afterglow writes an approved file only where the dialog showed:
 
 - A directory that existed when the dialog opened must still be at the path where links led it then.
@@ -356,7 +358,7 @@ Give the option one of these values instead:
 | Sessions per pane | 8 | The new session gets `EBUSY`. |
 | Files per session | 16,384 | The file gets `EINVAL`. A receive listing gets `EFBIG`. |
 | Open files of regular and delta transfers per pane | 128 | The file gets `EBUSY` until another file completes. An upload holds two from its first data: its temporary file and its directory. A delta upload holds these and its old file from its start. |
-| Open files of the transfers of all panes | Half of the `RLIMIT_NOFILE` soft limit of Afterglow | The file gets `EBUSY`. A delta upload holds three: its output, its old file and the stream of its signature. |
+| Open files of the transfers of all panes | Half of the `RLIMIT_NOFILE` soft limit of Afterglow | The file gets `EBUSY`. A delta upload holds four: its temporary file, its directory, its old file and the stream of its signature. |
 | Outgoing file streams per pane | 128 | The file gets `EBUSY`. |
 | Decoded data per packet | 4,096 bytes | The file fails with an error status. |
 | Command size | 16,384 bytes | Every transfer in the pane is canceled with `ENOMEM`. |

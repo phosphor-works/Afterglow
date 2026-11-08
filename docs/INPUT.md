@@ -199,6 +199,9 @@ It needs two or more letters, and each letter can occur only one time. Other val
 A pane content change, a scroll of the pane or a change of the layout cancels the hints.
 The same is true for the URL labels of `show_urls_open` and `show_urls_copy`.
 In a pane with continuous output, the labels therefore close at the next output.
+A pane can hold its last frame while a program updates it (synchronized output, mode 2026).
+URL labels that open then are on the text of that frame.
+They stay until the hold ends, and close when the next frame shows other text.
 
 ## Links and URL hints
 
@@ -308,9 +311,10 @@ The install and the session share one connection.
 You authenticate once when your SSH configuration sets `ControlMaster auto`, or else when `XDG_RUNTIME_DIR` is an absolute path of letters, digits, `/`, `.`, `_` and `-`.
 Afterglow puts its own control socket there, so keep that directory private to you, as systemd makes it.
 For this first connection, Afterglow's shared connection replaces a `ControlPath none` setting for that host.
-With `-M`, ssh does not use a shared connection. Then the install shares nothing and does not become the master. The session authenticates on its own.
 The reason is that `ssh -G` shows `none` and the default value in the same way.
 To keep `ControlPath none`, set `Terminal.sshTerminfo` to `fallback`.
+With `-M`, the session does not join a master that runs already, and the install does not become a master.
+Thus the session authenticates on its own. When no master runs, you authenticate two times: for the install and for the session.
 Afterglow records the host in `$XDG_STATE_HOME/afterglow/ssh-terminfo`, by default under `~/.local/state`.
 The file holds only hashes. A host without `tic` is recorded as a fallback host.
 Afterglow does not install the entry on that host again until the entry changes.

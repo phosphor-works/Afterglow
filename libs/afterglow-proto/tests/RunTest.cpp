@@ -1059,6 +1059,27 @@ TEST(RunClient, ThePaneSocketWithoutTheCommandsTargetHasCommandsOff)
               "aglow run: the Afterglow at $AFTERGLOW_SOCKET takes no commands (Control.enabled or Scripts.enabled is off)\n");
 }
 
+TEST(RunClient, TheLocalSocketOfAnSshSessionSaysWhereItTakesCommands)
+{
+    // It holds only the target of remote runs: Control.enabled and
+    // Scripts.enabled are not the cause.
+    FakeServer server;
+    TempDir runtime;
+    ASSERT_FALSE(runtime.path().empty());
+    const std::string session = runtime.path() + "/afterglow-remote-0123456789abcdef.sock";
+    ASSERT_EQ(::symlink(server.path().c_str(), session.c_str()), 0);
+    Client client(server, {}, {.socket = false, .variables = {{"AFTERGLOW_SOCKET", session}}});
+    ASSERT_TRUE(server.accept());
+    const auto call = expect(server, "list");
+    ASSERT_TRUE(call);
+    EXPECT_EQ((*call)["target"].toString(), Run::Target);
+    server.error(*call, "NO_SUCH_TARGET", "no such target");
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.err, "aglow run: $AFTERGLOW_SOCKET is the socket of an ssh session on this computer. It takes commands "
+                           "only on the remote host, where afterglow ssh forwards it as DIRECTORY/TOKEN.sock\n");
+}
+
 TEST(RunClient, InputWaitsForASlowLinkWithoutATimeLimit)
 {
     // A part that the socket cannot hold: its send waits for the terminal,
