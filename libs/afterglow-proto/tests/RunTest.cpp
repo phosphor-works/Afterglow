@@ -623,6 +623,14 @@ TEST(RunClient, RefusesWhatTheTerminalWouldBeforeItConnects)
         EXPECT_FALSE(outcome.err.empty());
         EXPECT_FALSE(server.connectionWaits()) << outcome.err;
     }
+    // A directory longer than the terminal takes, before any input goes.
+    FakeServer server;
+    Client client(server, {"tools", "greet"}, {.cwd = "/" + std::string(Run::MaxCwdLength, 'd')});
+    ASSERT_TRUE(client.started());
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, Run::UsageError) << outcome.err;
+    EXPECT_NE(outcome.err.find("working directory"), std::string::npos) << outcome.err;
+    EXPECT_FALSE(server.connectionWaits()) << outcome.err;
 }
 
 TEST(RunClient, SendsTheWorkingDirectoryOrNoneForADeletedOne)

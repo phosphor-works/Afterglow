@@ -188,8 +188,10 @@ public:
 
     /// What the pane answers to `aglow run`'s query for the socket of its
     /// ssh session (OSC 24569). RemoteSockets sets it, and the pane passes
-    /// it on to its overlay's program. GUI thread.
-    void setRemoteSocket(const AfterglowProto::Remote::Answer& answer);
+    /// it on to its overlay's program, or @p overlay when an ssh session
+    /// runs in the overlay itself. GUI thread.
+    void setRemoteSocket(const AfterglowProto::Remote::Answer& answer,
+                         const std::optional<AfterglowProto::Remote::Answer>& overlay = std::nullopt);
     AfterglowProto::Remote::Answer remoteSocketAnswer() const;
 
     /// Where the pane's shell runs when that is not here as you (OSC 3008,

@@ -124,6 +124,12 @@ bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols,
     std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_PANE_ID"));
     // An overlay's program acts on the pane it runs over.
     opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_overlayHost ? m_overlayHost->id() : m_id));
+    // Marks the overlay's own terminal: an `afterglow ssh` there gets an
+    // OSC 24569 answer of its own, apart from the pane's (RemoteSockets).
+    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_OVERLAY"; });
+    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_OVERLAY"));
+    if (m_overlayHost) opts.environment.emplace_back("AFTERGLOW_OVERLAY", "1");
+    else opts.unsetEnvironment.emplace_back("AFTERGLOW_OVERLAY");
     // The pane ID means something only to this process: `afterglow ctl` in a
     // second instance's pane must reach that instance, not the first.
     std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_SOCKET"; });
@@ -1009,15 +1015,15 @@ void Pane::deliverEvents()
     for (const auto& event : events) event();
 }
 
-void Pane::setRemoteSocket(const AfterglowProto::Remote::Answer& answer)
+void Pane::setRemoteSocket(const AfterglowProto::Remote::Answer& answer, const std::optional<AfterglowProto::Remote::Answer>& overlay)
 {
     {
         std::lock_guard lock(m_mutex);
         m_remoteSocket = answer;
     }
-    // The ssh session can run in the overlay, whose program has the pane's
-    // AFTERGLOW_PANE_ID: its terminal is where aglow run asks.
-    if (m_overlay) m_overlay->pane()->setRemoteSocket(answer);
+    // The overlay's program has the pane's AFTERGLOW_PANE_ID. Its terminal
+    // answers for an ssh session that it runs itself, else as the pane does.
+    if (m_overlay) m_overlay->pane()->setRemoteSocket(overlay.value_or(answer));
 }
 
 AfterglowProto::Remote::Answer Pane::remoteSocketAnswer() const

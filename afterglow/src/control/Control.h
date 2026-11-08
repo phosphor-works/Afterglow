@@ -72,7 +72,8 @@ public:
     bool hasPane(quint32 id) const { return find(id); }
     /// Sets what @p pane answers to `aglow run`'s query for its ssh
     /// session's socket (RemoteSockets). False when there is no such pane.
-    bool setRemoteSocket(quint32 pane, const AfterglowProto::Remote::Answer& answer);
+    bool setRemoteSocket(quint32 pane, const AfterglowProto::Remote::Answer& answer,
+                         const std::optional<AfterglowProto::Remote::Answer>& overlay);
     /// The focused pane of the active window, else of the window that was
     /// active last: `afterglow ctl` run from another program's window.
     std::optional<quint32> focusedPane() const;

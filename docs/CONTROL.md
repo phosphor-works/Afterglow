@@ -250,7 +250,7 @@ Another number fails with `CALL_FAILED`.
 | `overlay` | pane, argv, options | An object: `exit_code`, `stdout` and `truncated`. See [overlays](#overlays). |
 | `overlayInput` | input name, text, end | `true`. Standard input for an `overlay` of the connection, in parts. See [overlays](#overlays). |
 | `remoteCommandsEnabled` | None | `true` when `afterglow ssh` can forward a socket for [remote commands](#remote-commands) |
-| `openRemoteSocket` | pane, process, host, directory, protocol, ssh options, destination | An object: `token`, `socket` and `path`, or `token` and `error`. See [remote commands](#remote-commands). |
+| `openRemoteSocket` | pane, process, host, directory, protocol, ssh options, destination, overlay | An object: `token`, `socket` and `path`, or `token` and `error`. See [remote commands](#remote-commands). |
 | `remoteSocketForwarded` | token | None. `ssh -O forward` added the forward. Fails when the socket has closed. See [remote commands](#remote-commands). |
 | `remoteSocketFailed` | token, reason | None. The reason is `forward`. |
 
@@ -438,7 +438,7 @@ For a run that no person watches, set a time limit with `timeout(1)`, for exampl
 | --- | --- |
 | 0 to 255 | The exit status of the command. |
 | 1 | An error, for example no Afterglow, commands that are off or a pane that does not exist. Also no list of commands in 10 seconds, for the query to the terminal, the connection and the list together. A failed handler, a run over a limit and a working directory that is not UTF-8 also give status 1. |
-| 2 | A usage error, or a script or command that does not exist. Arguments that do not fit in one request of 1 MiB also give status 2. So do more than 256 arguments, and an argument over 4096 UTF-16 units or not in UTF-8. Standard input that is not UTF-8 text or is over `Scripts.commandStdinLimit` also gives status 2. |
+| 2 | A usage error, or a script or command that does not exist. Arguments that do not fit in one request of 1 MiB also give status 2. So do more than 256 arguments, an argument over 4096 UTF-16 units or not in UTF-8, and a working directory over 4096 UTF-16 units. Standard input that is not UTF-8 text or is over `Scripts.commandStdinLimit` also gives status 2. |
 | 124 | The run took longer than `Scripts.commandTimeout`. |
 | 126 | Only `afterglow run`: the `aglow` next to `afterglow` cannot run. |
 | 127 | Only `afterglow run`: there is no `aglow` next to `afterglow`, the build has no `aglow`, or `afterglow` cannot find its own executable. |
@@ -674,6 +674,7 @@ These are the arguments of `openRemoteSocket`, in their order:
 | protocol | The protocol of the remote `aglow` | It is not a whole number, or it is larger than 10^9 or smaller than -10^9. Another protocol gives the `error` `version` |
 | ssh options | The options for `ssh -O cancel`: `-F none -S CONTROLPATH` | There are more than 256 |
 | destination | The ssh destination | It is empty, or it starts with `-` |
+| overlay | `true` when `afterglow ssh` runs in the pane's overlay (`AFTERGLOW_OVERLAY` is `1`). The overlay's terminal then answers OSC 24569 for the session, and the pane keeps the answer of its own session | — |
 
 The call also fails when Afterglow has 256 sessions, when `XDG_RUNTIME_DIR` is not set, or when the local socket path would be over 107 bytes.
 `afterglow ssh` then forwards no socket.
@@ -753,6 +754,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Arguments of `aglow run` | One request of 1 MiB | `aglow run` exits with status 2 before it connects. |
 | Arguments of one run | 256 | `aglow run` exits with status 2 before it connects. A `run` call with more fails with `CALL_FAILED`. |
 | One argument of a run | 4096 UTF-16 units | `aglow run` exits with status 2 before it connects. A `run` call with a longer argument fails with `CALL_FAILED`. |
+| The directory of a run | 4096 UTF-16 units | `aglow run` exits with status 2 before it connects. A `run` call with a longer directory fails with `CALL_FAILED`. |
 | `run` calls that wait, on one connection | 256 | `run` fails with `CALL_FAILED`. |
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `notify` title | 256 UTF-16 units | The title is cut. |

@@ -53,6 +53,7 @@ inline constexpr const char* InputTooLarge = "INPUT_TOO_LARGE";
 /// The client refuses more before it connects, as a usage error.
 inline constexpr std::size_t MaxArgs = 256;
 inline constexpr std::size_t MaxArgLength = 4096; ///< UTF-16 code units of one argument
+inline constexpr std::size_t MaxCwdLength = 4096; ///< UTF-16 code units of the directory of a run
 
 /// Exit statuses besides the command's own.
 inline constexpr int UsageError = 2; ///< a usage error, an unknown command or refused input, as in `afterglow ctl`

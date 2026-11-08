@@ -34,7 +34,8 @@ namespace {
 
 // The client refuses what the terminal would, before it connects.
 static_assert(ScriptHost::MaxCommandArgs == int(AfterglowProto::Run::MaxArgs)
-              && ScriptHost::MaxCommandArgLength == int(AfterglowProto::Run::MaxArgLength));
+              && ScriptHost::MaxCommandArgLength == int(AfterglowProto::Run::MaxArgLength)
+              && ScriptHost::MaxCommandCwdLength == int(AfterglowProto::Run::MaxCwdLength));
 
 /// The exit status of a run that its client cancelled, as for SIGINT.
 constexpr int Cancelled = 130;

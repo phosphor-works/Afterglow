@@ -11,6 +11,7 @@
 #include <QStringList>
 
 #include <functional>
+#include <optional>
 #include <memory>
 
 namespace Afterglow {
@@ -45,7 +46,10 @@ class RemoteSockets : public QObject
 
 public:
     /// Sets what @p pane answers to the query. False when there is no such pane.
-    using PaneAnswer = std::function<bool(quint32 pane, const AfterglowProto::Remote::Answer& answer)>;
+    /// The answer of the pane, and the answer of its overlay's terminal
+    /// when an ssh session runs there (else the overlay answers as the pane).
+    using PaneAnswer = std::function<bool(quint32 pane, const AfterglowProto::Remote::Answer& answer,
+                                          const std::optional<AfterglowProto::Remote::Answer>& overlay)>;
 
     /// Sessions of one pane at most: its ssh sessions in the background and
     /// the one in front. A client in a loop opens no more.
@@ -80,6 +84,8 @@ public:
         /// always "ssh".
         QStringList ssh;
         QString destination;
+        /// `afterglow ssh` runs in the pane's overlay (AFTERGLOW_OVERLAY).
+        bool overlay = false;
     };
     /// What open() made.
     struct Opened

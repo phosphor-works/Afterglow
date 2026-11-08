@@ -151,11 +151,12 @@ void Control::attachPane(Pane* pane)
     Q_EMIT paneCreated(id);
 }
 
-bool Control::setRemoteSocket(quint32 pane, const AfterglowProto::Remote::Answer& answer)
+bool Control::setRemoteSocket(quint32 pane, const AfterglowProto::Remote::Answer& answer,
+                              const std::optional<AfterglowProto::Remote::Answer>& overlay)
 {
     Pane* target = find(pane);
     if (!target) return false;
-    target->setRemoteSocket(answer);
+    target->setRemoteSocket(answer, overlay);
     return true;
 }
 

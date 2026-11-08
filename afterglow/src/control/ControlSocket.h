@@ -94,9 +94,10 @@ public:
     /// remote aglow's, @p ssh the options and @p destination the
     /// destination that reach the shared connection, for the cancel of the
     /// forward. Returns {token, socket, path}, or {token, error} with the
-    /// reason version or length.
+    /// reason version or length. @p overlay: `afterglow ssh` runs in the
+    /// pane's overlay, whose terminal answers for the session.
     Q_INVOKABLE QVariantMap openRemoteSocket(double pane, double pid, const QString& host, const QString& directory,
-                                             double protocol, const QStringList& ssh, const QString& destination);
+                                             double protocol, const QStringList& ssh, const QString& destination, bool overlay);
     /// `ssh -O forward` added the forward of @p token: the pane answers with
     /// its path. It fails when the session has ended, and the client then
     /// cancels the forward (RemoteSockets::forwarded).

@@ -66,6 +66,7 @@ struct RemoteSockets::Session
     QString token;
     quint32 pane = 0;
     quint64 order = 0;
+    bool overlay = false; ///< runs in the pane's overlay, which answers for it
     int pidfd = -1;
     int lock = -1; ///< InstanceSocket::lock of the local socket
     std::unique_ptr<QSocketNotifier> watch;
@@ -175,6 +176,7 @@ QString RemoteSockets::open(const Request& request, Opened& out)
     session->token = QString::fromStdString(*token);
     session->pane = request.pane;
     session->order = ++m_opened;
+    session->overlay = request.overlay;
     session->ssh = request.ssh;
     session->destination = request.destination;
     session->pidfd = int(::syscall(SYS_pidfd_open, pid_t(request.pid), 0));
@@ -294,11 +296,15 @@ void RemoteSockets::close(const QString& token, const QString& reason)
 
 bool RemoteSockets::refresh(quint32 pane)
 {
-    const Session* newest = nullptr;
+    // The newest of the pane's own sessions, and of its overlay's: an ssh
+    // session in the overlay does not take the answer of the pane's.
+    const Session* newest[2] = {nullptr, nullptr};
     for (const auto& session : std::as_const(m_sessions)) {
-        if (session->pane == pane && session->answering && (!newest || session->order > newest->order)) newest = session.get();
+        const Session*& slot = newest[session->overlay];
+        if (session->pane == pane && session->answering && (!slot || session->order > slot->order)) slot = session.get();
     }
-    return m_answer(pane, newest ? newest->answer : Remote::Answer{});
+    return m_answer(pane, newest[0] ? newest[0]->answer : Remote::Answer{},
+                    newest[1] ? std::optional(newest[1]->answer) : std::nullopt);
 }
 
 void RemoteSockets::cancel(const Session& session) const

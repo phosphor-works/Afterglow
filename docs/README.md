@@ -14,6 +14,9 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 | Move panes or save layouts | [Projects](PROJECTS.md) |
 | Read the design of detachable sessions (not implemented yet) | [The mux daemon](MUX.md) |
 | Control a running instance | [Command line and control socket](CONTROL.md) |
+| Run the commands of scripts from a shell with `aglow run` | [Script commands](CONTROL.md#script-commands) |
+| Run script commands from a remote host in an `afterglow ssh` session | [Remote commands](CONTROL.md#remote-commands) |
+| Run a program such as fzf over a pane, or in a popup | [Overlays](SCRIPTING.md#overlays) and [`afterglow ctl overlay`](CONTROL.md#overlays) |
 | Write scripts | [Luau API](SCRIPTING.md) |
 | Install or write packages | [Packages and state](PACKAGES.md) |
 | Configure reactive effects | [Shaders](SHADERS.md) |

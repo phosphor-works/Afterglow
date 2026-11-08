@@ -34,12 +34,12 @@ pane that this shell runs in, else on the focused pane.
   --pane N          the pane that the command acts on, a pane ID from 1
   -h, --help        show this help
 
-%1 finds Afterglow by $AFTERGLOW_SOCKET, else by the socket of the
-Wayland display. On the host of a session of afterglow ssh, it asks the
-terminal for the socket of the session, but only in the foreground with
-standard output on the terminal. Else $AFTERGLOW_SOCKET can name that
-socket. A run there has the commands that a script marks remote, and acts
-on the pane of the ssh session.
+%1 finds Afterglow by $AFTERGLOW_SOCKET when it names a socket on this
+host. Else it asks the terminal for the socket of an afterglow ssh
+session, but only in the foreground with standard output on the
+terminal. Else it uses the socket of the Wayland display. A run through
+the socket of an ssh session has the commands that a script marks
+remote, and acts on the pane of the ssh session.
 
 A command that reads standard input gets it only when standard input is not
 a terminal. Input that is not UTF-8 text is refused, and so is input over
@@ -929,6 +929,9 @@ int start(Client& client, const std::vector<std::string>& args)
         }
         const auto directory = workingDirectory(environment);
         if (!directory) return client.fail("the working directory is not UTF-8 text");
+        // Before any input goes: the terminal refuses the run.
+        if (*utf16Length(*directory) > MaxCwdLength)
+            return client.usage("the working directory is over " + std::to_string(MaxCwdLength) + " UTF-16 units");
         const auto id = randomHex(16);
         if (!id) return client.fail("the kernel gave no random bytes for the run ID");
         run = *id;

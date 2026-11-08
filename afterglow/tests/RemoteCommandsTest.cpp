@@ -283,10 +283,12 @@ protected:
         m_commands = std::make_unique<CommandSocket>(*m_control, *m_scripts, *m_settings, m_instance->router());
         m_controlSocket = std::make_unique<ControlSocket>(*m_control, *m_settings, m_instance->router());
         m_remote = std::make_unique<RemoteSockets>(*m_control, *m_scripts, *m_settings,
-                                                   [this](quint32 pane, const Remote::Answer& answer) {
-                                                       if (m_pane && pane == m_pane->id()) m_pane->setRemoteSocket(answer);
+                                                   [this](quint32 pane, const Remote::Answer& answer,
+                                                          const std::optional<Remote::Answer>& overlay) {
+                                                       if (m_pane && pane == m_pane->id()) m_pane->setRemoteSocket(answer, overlay);
                                                        else if (pane != FakePane) return false;
                                                        m_answers.insert(pane, answer);
+                                                       m_overlayAnswers.insert(pane, overlay);
                                                        return true;
                                                    });
         m_remote->setSsh(fakeSsh());
@@ -439,6 +441,8 @@ protected:
         env.insert(QStringLiteral("FAKE_PROTOCOL"), QString::number(AfterglowProto::ProtocolVersion));
         // In tmux, the helper cannot trust AFTERGLOW_PANE_ID: the test may run in one.
         env.remove(QStringLiteral("TMUX"));
+        // Nor in an overlay, unless the test asks for one.
+        env.remove(QStringLiteral("AFTERGLOW_OVERLAY"));
         for (auto it = fake.cbegin(); it != fake.cend(); ++it) env.insert(it.key(), it.value());
         process->setProcessEnvironment(env);
         QFile::remove(release());
@@ -488,6 +492,7 @@ protected:
     std::unique_ptr<ControlSocket> m_controlSocket;
     std::unique_ptr<RemoteSockets> m_remote;
     QHash<quint32, Remote::Answer> m_answers;
+    QHash<quint32, std::optional<Remote::Answer>> m_overlayAnswers;
     /// A real pane, for the acceptance test. The fixture owns it: a failed
     /// assertion leaves it to TearDown, after the sessions that answer to it.
     std::unique_ptr<Pane> m_pane;
@@ -707,6 +712,43 @@ TEST_F(RemoteCommandsTest, AFailedForwardClosesTheSocketAndGivesItsReason)
     EXPECT_TRUE(pumpUntil([&] { return m_remote->tokens().isEmpty(); }));
     EXPECT_EQ(m_answers.value(FakePane), Remote::Answer{});
     expectNoCancel();
+}
+
+TEST_F(RemoteCommandsTest, AnSshSessionInTheOverlayAnswersThereAndLeavesThePanesAnswer)
+{
+    ASSERT_TRUE(start());
+    const auto inPane = sleeper();
+    const auto inOverlay = sleeper();
+    RemoteSockets::Opened pane;
+    ASSERT_EQ(m_remote->open(request(inPane->processId()), pane), QString());
+    ASSERT_EQ(m_remote->forwarded(pane.token), QString());
+    const Remote::Answer paneAnswer{pane.path.toStdString(), Remote::Error::Off};
+    EXPECT_EQ(m_overlayAnswers.value(FakePane), std::nullopt) << "the overlay answers as the pane";
+    // The newer session runs in the overlay: the pane keeps its own answer.
+    RemoteSockets::Request overlay = request(inOverlay->processId());
+    overlay.overlay = true;
+    RemoteSockets::Opened opened;
+    ASSERT_EQ(m_remote->open(overlay, opened), QString());
+    ASSERT_EQ(m_remote->forwarded(opened.token), QString());
+    EXPECT_EQ(m_answers.value(FakePane), paneAnswer);
+    EXPECT_EQ(m_overlayAnswers.value(FakePane), std::optional(Remote::Answer{opened.path.toStdString(), Remote::Error::Off}));
+    // Once it ends, the overlay answers as the pane again.
+    inOverlay->kill();
+    inOverlay->waitForFinished();
+    EXPECT_TRUE(pumpUntil([&] { return m_remote->tokens().size() == 1; }));
+    EXPECT_EQ(m_answers.value(FakePane), paneAnswer);
+    EXPECT_EQ(m_overlayAnswers.value(FakePane), std::nullopt);
+}
+
+TEST_F(RemoteCommandsTest, AfterglowSshInAnOverlayOpensTheOverlaysSession)
+{
+    ASSERT_TRUE(start());
+    auto process = helper({QStringLiteral("prod")}, {{QStringLiteral("AFTERGLOW_OVERLAY"), QStringLiteral("1")}});
+    ASSERT_EQ(m_remote->tokens().size(), 1);
+    const QString path = QStringLiteral("/run/user/1000/afterglow/%1.sock").arg(m_remote->tokens().first());
+    EXPECT_EQ(m_overlayAnswers.value(FakePane), std::optional(Remote::Answer{path.toStdString(), Remote::Error::Off}));
+    EXPECT_EQ(m_answers.value(FakePane), Remote::Answer{}) << "the pane has no session of its own";
+    EXPECT_EQ(finish(*process), 7);
 }
 
 TEST_F(RemoteCommandsTest, AnotherProtocolOrALongPathGetsNoSocket)
@@ -1204,7 +1246,7 @@ TEST_F(RemoteCommandsTest, TheRemoteSessionsShareTheWaitingInputBudgetOfTheProce
 {
     ASSERT_TRUE(start());
     // As Application makes it: the sessions count toward the budget of the process's own socket.
-    RemoteSockets shared(*m_control, *m_scripts, *m_settings, [](quint32, const Remote::Answer&) { return true; },
+    RemoteSockets shared(*m_control, *m_scripts, *m_settings, [](quint32, const Remote::Answer&, const std::optional<Remote::Answer>&) { return true; },
                          m_commands->budget());
     shared.setSsh(fakeSsh());
     const auto watched = sleeper();
