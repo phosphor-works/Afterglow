@@ -63,11 +63,12 @@ public:
     /// Runs @p argv over @p pane (0: the focused pane) and answers once it
     /// exits, with {exit_code, stdout, truncated}: stdout only with
     /// Control.allowReadText. @p options: stdin, capture (stdout, file or
-    /// none), cwd, env and title, as for the overlay effect, with a cwd that
-    /// must exist. A refusal or a cancel fails the call with the code busy,
-    /// no_pane, spawn_failed or cancelled. The overlay is cancelled when the
-    /// caller's connection closes. The option input names the standard
-    /// input that overlayInput() sent on this connection, in place of stdin.
+    /// none), cwd, env, title, width, height, position and border, as for
+    /// the overlay effect (OverlaySpec::read), with a cwd that must exist.
+    /// A refusal or a cancel fails the call with the code busy, no_pane,
+    /// spawn_failed or cancelled. The overlay is cancelled when the caller's
+    /// connection closes. The option input names the standard input that
+    /// overlayInput() sent on this connection, in place of stdin.
     Q_INVOKABLE void overlay(double pane, const QStringList& argv, const QVariantMap& options);
     /// Standard input for an overlay of this connection, in parts, before
     /// overlay() names it with its input option: input that does not fit in

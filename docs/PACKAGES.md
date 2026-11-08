@@ -242,7 +242,7 @@ The stored data remains available for a later installation.
 | [Scene controls](../data/examples/packages/scene-controls/README.md) | Selects, changes and saves shader parameters |
 | [Contextual scene](../data/examples/packages/contextual-scene/README.md) | Changes scene intensity from audio and history data |
 | [Scripted overview](../data/examples/packages/scripted-overview/README.md) | Drives the pane overview from its own keys, with its own overview shader |
-| [fzf picker](../data/examples/packages/fzf-picker/README.md) | Picks a saved project or a file with fzf in an overlay, or with the select dialog without fzf |
+| [fzf picker](../data/examples/packages/fzf-picker/README.md) | Picks a saved project or a file with fzf in a popup overlay, or with the select dialog without fzf |
 
 Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
 A package in a system data directory, such as `/usr/share/afterglow/scripts`, also loads.

@@ -3612,6 +3612,294 @@ bool hasVulkanDevice()
     return count > 0;
 }
 
+class PopupRender : public Render
+{
+protected:
+    /// The pane: red, with a white X in column 0 and in columns 4 to 11,
+    /// under the popup and its border. The popup: a 6 by 2 grid at cell
+    /// (5, 1), blue, with a green cell at its own (0, 0).
+    void SetUp() override
+    {
+        Render::SetUp();
+        if (!s_device) return;
+        std::string fill = "\x1b[?25l\x1b[48;2;220;0;0m\x1b[38;2;255;255;255m";
+        for (int row = 0; row < Rows; ++row) fill += "X   " + std::string(8, 'X') + std::string(Cols - 12, ' ');
+        render(fill);
+        popupTerminal = std::make_unique<AfterglowVt::Terminal>(6, 2, popupHost);
+        popupTerminal->resize(6, 2, cw, ch);
+        popupTerminal->feed("\x1b[?25l\x1b]11;rgb:00/00/c0\x1b\\\x1b[48;2;0;200;0m \x1b[0m");
+        popupSnapshot.capture(*popupTerminal);
+        size = QSize(Cols * cw, Rows * ch);
+        pane.snapshot = &snapshot;
+        pane.params.rect = QRect(QPoint(0, 0), size);
+        pane.params.focused = true;
+    }
+
+    WindowRenderer::Pane withPopup(bool border, float progress = 1.0f) const
+    {
+        WindowRenderer::Pane drawn = pane;
+        WindowRenderer::Pane::Overlay overlay;
+        overlay.snapshot = &popupSnapshot;
+        overlay.progress = progress;
+        WindowRenderer::Pane::Overlay::Popup popup;
+        popup.rect = QRect(5 * cw, ch, 6 * cw, 2 * ch);
+        popup.border = border;
+        popup.title = "T";
+        popup.borderColor = packRgba(0, 255, 255);
+        popup.titleColor = packRgba(255, 255, 0);
+        popup.dim = 0.5f;
+        overlay.popup = popup;
+        drawn.overlay = overlay;
+        return drawn;
+    }
+
+    QImage frame(const WindowRenderer::Pane& drawn) { return renderer->renderToImage(size, {drawn}, {}, snapshot.defaultBg); }
+
+    /// Whether every pixel of @p cell is @p color.
+    static bool cellIs(const QImage& image, QRect cell, QRgb color)
+    {
+        for (int y = cell.top(); y <= cell.bottom(); ++y)
+            for (int x = cell.left(); x <= cell.right(); ++x) {
+                const QRgb got = image.pixel(x, y);
+                if (std::abs(qRed(got) - qRed(color)) + std::abs(qGreen(got) - qGreen(color)) + std::abs(qBlue(got) - qBlue(color)) > 6)
+                    return false;
+            }
+        return true;
+    }
+    QRect cell(int x, int y) const { return QRect(x * cw, y * ch, cw, ch); }
+    /// Whether some pixel of @p rect is near @p color.
+    static bool shows(const QImage& image, QRect rect, QRgb color)
+    {
+        for (int y = rect.top(); y <= rect.bottom(); ++y)
+            for (int x = rect.left(); x <= rect.right(); ++x) {
+                const QRgb got = image.pixel(x, y);
+                if (std::abs(qRed(got) - qRed(color)) + std::abs(qGreen(got) - qGreen(color)) + std::abs(qBlue(got) - qBlue(color)) <= 30)
+                    return true;
+            }
+        return false;
+    }
+
+    NullHost popupHost;
+    std::unique_ptr<AfterglowVt::Terminal> popupTerminal;
+    PaneSnapshot popupSnapshot;
+    QSize size;
+    WindowRenderer::Pane pane;
+};
+
+TEST_F(PopupRender, APopupDrawsOverItsPaneWhichShowsDarkerAroundIt)
+{
+    const QRgb red = qRgb(220, 0, 0), dimmed = qRgb(110, 0, 0), blue = qRgb(0, 0, 0xc0), green = qRgb(0, 200, 0);
+    // One pass, the layered path (the pane's text in a layer of its own,
+    // which a popup's background does not cover), and a pane chain.
+    for (const int path : {0, 1, 2}) {
+        ShaderChains chains;
+        if (path == 1) chains.text = {ShaderProgram::passthrough()};
+        if (path == 2) chains.pane = {layerShader("plain", "")};
+        renderer->setShaderChains(chains);
+        SCOPED_TRACE(testing::Message() << "path " << path);
+        const QImage plain = frame(pane);
+        EXPECT_PIXEL(plain, cellCenter(2, 0), red);
+        EXPECT_TRUE(shows(plain, cell(0, 0), qRgb(255, 255, 255)));
+        for (const bool border : {true, false}) {
+            SCOPED_TRACE(testing::Message() << (border ? "with" : "without") << " a border");
+            const QImage image = frame(withPopup(border));
+            // The pane around it shows, through a black layer at half.
+            EXPECT_PIXEL(image, cellCenter(2, 0), dimmed);
+            EXPECT_PIXEL(image, cellCenter(Cols - 1, Rows - 1), dimmed);
+            EXPECT_TRUE(shows(image, cell(0, 0), qRgb(128, 128, 128))) << "the pane's text, darker";
+            EXPECT_FALSE(shows(image, cell(0, 0), qRgb(255, 255, 255)));
+            // The popup's grid as it is, none of the pane's text in it.
+            EXPECT_TRUE(cellIs(image, cell(5, 1), green));
+            for (int x = 6; x < 11; ++x) EXPECT_TRUE(cellIs(image, cell(x, 1), blue)) << x;
+            for (int x = 5; x < 11; ++x) EXPECT_TRUE(cellIs(image, cell(x, 2), blue)) << x;
+            if (border) {
+                // A line in its colour on the popup's background, the title in
+                // the top edge, and nothing of the pane's text under them.
+                for (const QRect& edge : {cell(4, 1), cell(11, 2), cell(9, 0), cell(8, 3), cell(4, 0), cell(11, 3)}) {
+                    EXPECT_TRUE(shows(image, edge, qRgb(0, 255, 255))) << edge.x() / cw << "," << edge.y() / ch;
+                    EXPECT_TRUE(shows(image, edge, blue)) << edge.x() / cw << "," << edge.y() / ch;
+                    EXPECT_FALSE(shows(image, edge, red)) << edge.x() / cw << "," << edge.y() / ch;
+                    EXPECT_FALSE(shows(image, edge, qRgb(255, 255, 255))) << edge.x() / cw << "," << edge.y() / ch;
+                }
+                EXPECT_TRUE(shows(image, cell(7, 0), qRgb(255, 255, 0))) << "the title";
+                EXPECT_TRUE(cellIs(image, cell(6, 0), blue)) << "a space before the title";
+                EXPECT_TRUE(cellIs(image, cell(8, 0), blue)) << "a space after the title";
+            } else {
+                // The pane shows right up to the grid, darker.
+                for (const QRect& around : {cell(4, 1), cell(11, 2), cell(8, 0), cell(8, 3)}) {
+                    EXPECT_TRUE(shows(image, around, dimmed)) << around.x() / cw << "," << around.y() / ch;
+                    EXPECT_FALSE(shows(image, around, blue)) << around.x() / cw << "," << around.y() / ch;
+                }
+            }
+        }
+        // Without the darkening the pane around it is as it was.
+        WindowRenderer::Pane bright = withPopup(true);
+        bright.overlay->popup->dim = 0;
+        EXPECT_PIXEL(frame(bright), cellCenter(2, 0), red);
+    }
+}
+
+TEST_F(PopupRender, TheOverlayTransitionBlendsThePaneAndThePaneWithItsPopup)
+{
+    const ShaderProgramPtr fade = overlayFade();
+    ASSERT_TRUE(fade);
+    ShaderChains chains;
+    chains.overlayTransition = {fade};
+    renderer->setShaderChains(chains);
+    const QImage plain = frame(pane);
+    // The second image: the whole pane as it shows with the popup, as
+    // without a transition.
+    renderer->setShaderChains({});
+    const QImage shown = frame(withPopup(true));
+    renderer->setShaderChains(chains);
+    EXPECT_TRUE(frame(withPopup(true, 0.0f)) == plain);
+    EXPECT_TRUE(frame(withPopup(true, 1.0f)) == shown);
+    const QImage middle = frame(withPopup(true, 0.5f));
+    // The pane, between itself and darker; the popup, between the pane and itself.
+    EXPECT_PIXEL(middle, cellCenter(2, 0), qRgb(165, 0, 0));
+    EXPECT_PIXEL(middle, cell(6, 1).topLeft(), qRgb(110, 0, 0x60));
+    EXPECT_PIXEL(middle, cell(5, 1).topLeft(), qRgb(110, 100, 0));
+}
+
+TEST_F(PopupRender, APanesBufferStepsOncePerFrameWhileItsPopupFades)
+{
+    // The pane under a fading popup and the pane with it carry one snapshot:
+    // its buffer set steps once a frame, not once for each.
+    ShaderProgramSource source;
+    source.id = QStringLiteral("stepping-pane");
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
+    ShaderBufferSource pass;
+    pass.feedback = true;
+    pass.scale = .5f;
+    pass.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return vec4(texture(iChannel0,uv).r+0.05,0,0,1);}";
+    source.buffers = {pass};
+    QString error;
+    const ShaderProgramPtr program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    const ShaderProgramPtr fade = overlayFade();
+    ASSERT_TRUE(fade);
+    ShaderChains chains;
+    chains.pane = {program};
+    chains.overlayTransition = {fade};
+    renderer->setShaderChains(chains);
+    auto draw = [&](std::optional<float> progress, int n) {
+        renderer->setClockOverride(float(n + 1));
+        WindowRenderer::Pane drawn = progress ? withPopup(true, *progress) : pane;
+        if (drawn.overlay) drawn.overlay->popup->dim = 0;
+        return frame(drawn);
+    };
+    const auto steps = [](double count) { return qRgb(qRound(count * 0.05 * 255), 0, 0); };
+    EXPECT_PIXEL_NEAR(draw(std::nullopt, 0), cellCenter(2, 0), steps(1), 3);
+    for (int n = 1; n <= 3; ++n) {
+        SCOPED_TRACE(n);
+        EXPECT_PIXEL_NEAR(draw(0.5f, n), cellCenter(2, 0), steps(n + 1), 3);
+    }
+    EXPECT_PIXEL_NEAR(draw(std::nullopt, 4), cellCenter(2, 0), steps(5), 3);
+}
+
+TEST_F(PopupRender, ThePanesCursorIsUnfocusedOnlyWhileItsPopupRuns)
+{
+    // The pane's cursor at (1, 1), beside the popup.
+    terminal->feed("\x1b[2;2H\x1b[?25h");
+    snapshot.capture(*terminal);
+    const QRgb red = qRgb(220, 0, 0);
+    WindowRenderer::Pane running = withPopup(true);
+    running.overlay->popup->dim = 0;
+    // A box: the cell's background shows in its middle.
+    EXPECT_PIXEL(frame(running), cellCenter(1, 1), red);
+    // One that ended fades out: the pane has the keyboard again, and its
+    // cursor is a focused block.
+    WindowRenderer::Pane ended = running;
+    ended.overlay->running = false;
+    const QImage image = frame(ended);
+    EXPECT_FALSE(shows(image, QRect(cellCenter(1, 1), QSize(1, 1)), red));
+}
+
+TEST_F(PopupRender, TheCursorInputsAreThePopupsWhileItRunsAndThePanesOnceItEnds)
+{
+    // The pane's cursor at its (1, 1), the popup's at its own (1, 0), which
+    // is the pane's (6, 1).
+    terminal->feed("\x1b[2;2H\x1b[?25h");
+    snapshot.capture(*terminal);
+    popupTerminal->feed("\x1b[?25h");
+    popupSnapshot.capture(*popupTerminal);
+    auto glsl = [](double v) { return QString::number(v, 'f', 3).toStdString(); };
+    auto cursorAt = [&](int x, int y) {
+        const std::string body = "fragColor = all(lessThan(abs(uCursorRect - vec4(" + glsl(x * cw) + "," + glsl(y * ch) + "," + glsl(cw)
+            + "," + glsl(ch) + ")), vec4(0.1))) ? vec4(0,1,0,1) : vec4(1,0,0,1);";
+        ShaderChains chains;
+        chains.pane = {layerShader("cursor-at", body.c_str())};
+        renderer->setShaderChains(chains);
+    };
+    // The pane away from the frame's corner: the inputs are in the pane's
+    // own pixels, not the frame's.
+    const QPoint offset(2 * cw, ch);
+    const QSize bigger = size + QSize(offset.x(), offset.y());
+    WindowRenderer::Pane running = withPopup(true);
+    running.params.rect.translate(offset);
+    running.params.contentOrigin = running.params.rect.topLeft();
+    running.overlay->popup->rect.translate(offset);
+    cursorAt(6, 1);
+    EXPECT_PIXEL(renderer->renderToImage(bigger, {running}, {}, snapshot.defaultBg), cellCenter(4, 1), qRgb(0, 255, 0));
+    WindowRenderer::Pane ended = running;
+    ended.overlay->running = false;
+    cursorAt(1, 1);
+    EXPECT_PIXEL(renderer->renderToImage(bigger, {ended}, {}, snapshot.defaultBg), cellCenter(4, 1), qRgb(0, 255, 0));
+}
+
+TEST_F(PopupRender, ATitleThatDoesNotFitIsCutAndAZeroWidthCharacterTakesNoCell)
+{
+    const QRgb yellow = qRgb(255, 255, 0), blue = qRgb(0, 0, 0xc0);
+    // The frame is 8 cells wide from cell 4: room for 2 title cells, here
+    // one and an ellipsis, between a space each side.
+    WindowRenderer::Pane cut = withPopup(true);
+    cut.overlay->popup->title = "ABCDEFGHIJ";
+    const QImage image = frame(cut);
+    EXPECT_TRUE(cellIs(image, cell(6, 0), blue));
+    EXPECT_TRUE(shows(image, cell(7, 0), yellow));
+    EXPECT_FALSE(cellIs(image, cell(8, 0), blue)) << "the ellipsis, small dots in the title's colour";
+    EXPECT_TRUE(cellIs(image, cell(9, 0), blue));
+    // A zero-width space with nothing to join takes no cell.
+    WindowRenderer::Pane joined = withPopup(true);
+    joined.overlay->popup->title = "\u200BT";
+    const QImage title = frame(joined);
+    EXPECT_TRUE(shows(title, cell(7, 0), yellow));
+    EXPECT_TRUE(cellIs(title, cell(8, 0), blue));
+}
+
+TEST_F(PopupRender, SquareCornersAndATitleInVisualOrder)
+{
+    const QRgb yellow = qRgb(255, 255, 0), cyan = qRgb(0, 255, 255);
+    // A square corner goes through the middle of its cell.
+    WindowRenderer::Pane square = withPopup(true);
+    square.overlay->popup->roundedCorners = false;
+    const QImage corners = frame(square);
+    for (const QRect& corner : {cell(4, 0), cell(11, 0), cell(4, 3), cell(11, 3)})
+        EXPECT_TRUE(shows(corners, QRect(corner.center() - QPoint(1, 1), QSize(3, 3)), cyan)) << corner.x() / cw << "," << corner.y() / ch;
+    // An alef, then a full block, which takes the right-to-left direction of
+    // the title: with bidi the block shows first.
+    WindowRenderer::Pane mixed = withPopup(true);
+    mixed.overlay->popup->title = "\u05D0\u2588";
+    EXPECT_TRUE(cellIs(frame(mixed), cell(8, 0), yellow));
+    mixed.overlay->popup->bidi = AfterglowVt::BidiMode::Auto;
+    EXPECT_TRUE(cellIs(frame(mixed), cell(7, 0), yellow));
+}
+
+TEST_F(PopupRender, APopupPastItsPaneIsClippedToThePane)
+{
+    // A frame wider than the pane, and a popup that goes past its right edge.
+    const QSize wide((Cols + 4) * cw, Rows * ch);
+    WindowRenderer::Pane drawn = withPopup(true);
+    drawn.overlay->popup->rect = QRect((Cols - 3) * cw, ch, 6 * cw, 2 * ch);
+    const QImage image = renderer->renderToImage(wide, {drawn}, {}, 0xff000000u);
+    EXPECT_TRUE(cellIs(image, cell(Cols - 3, 1), qRgb(0, 200, 0)));
+    EXPECT_TRUE(cellIs(image, cell(Cols - 1, 2), qRgb(0, 0, 0xc0)));
+    for (int x = Cols; x < Cols + 4; ++x) {
+        EXPECT_TRUE(cellIs(image, cell(x, 1), qRgb(0, 0, 0))) << x;
+        EXPECT_TRUE(cellIs(image, cell(x, 0), qRgb(0, 0, 0))) << x;
+    }
+}
+
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);
@@ -3619,6 +3907,8 @@ int main(int argc, char** argv)
     if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
         qputenv("QT_QPA_PLATFORM", "offscreen");
     }
+    // Not the desktop's theme plugin, which reaches the desktop's services.
+    qputenv("QT_QPA_PLATFORMTHEME", "generic");
     QGuiApplication app(argc, argv);
     if (QGuiApplication::platformName() != QLatin1String("wayland")) {
         s_noVulkan = true;

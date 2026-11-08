@@ -5,7 +5,9 @@
 
 This Luau package picks a saved project or a file in an overlay.
 An overlay runs a program over a pane and returns its result to the script.
-When [fzf](https://github.com/junegunn/fzf) is installed, fzf runs in the overlay.
+When [fzf](https://github.com/junegunn/fzf) is installed, fzf runs in a popup overlay.
+By default, the popup is 80% of the width and 60% of the height of the pane, in the center.
+The pane stays visible around it.
 Without fzf, the package shows the select dialog.
 
 Install it in the `scripts/` directory beside the configuration file.
@@ -60,6 +62,8 @@ Create `config.json` beside `package.json` to override the defaults:
 | `fzf` | `fzf` | The fzf program |
 | `max_depth` | 4 | The depth of directories that the file search goes into |
 | `max_files` | 5000 | The most files in the list. Saved projects do not count toward this limit. |
+| `width` | `"80%"` | The width of the fzf popup: a whole number of cells, or a percentage of the pane as a string |
+| `height` | `"60%"` | The height of the fzf popup: a whole number of cells, or a percentage of the pane as a string |
 
 The select dialog shows the first 500 entries.
 When the pick fails for a reason other than a cancel, the package tells why.

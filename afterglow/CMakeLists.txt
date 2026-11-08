@@ -133,15 +133,22 @@ target_include_directories(afterglow_audio PUBLIC src)
 target_compile_definitions(afterglow_audio PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(afterglow_audio PUBLIC PhosphorAudio::PhosphorAudio Qt6::Core)
 
+# An overlay's options and a popup's place: the script host and the control
+# socket read them, and afterglow_renderpng places its popups by them.
+qt_add_library(afterglow_overlayspec STATIC src/scripting/OverlaySpec.cpp src/scripting/OverlaySpec.h)
+target_include_directories(afterglow_overlayspec PUBLIC src)
+target_compile_definitions(afterglow_overlayspec PRIVATE QT_NO_CAST_FROM_ASCII)
+target_link_libraries(afterglow_overlayspec PUBLIC Qt6::Core)
+
 # The script host, shared with its tests. The Control binding lives in the app.
 qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h
     src/scripting/ScriptTasks.cpp src/scripting/ScriptTasks.h
     src/scripting/ScriptPackage.cpp src/scripting/ScriptPackage.h
-    src/scripting/ScriptState.cpp src/scripting/ScriptState.h
-    src/scripting/OverlaySpec.cpp src/scripting/OverlaySpec.h)
+    src/scripting/ScriptState.cpp src/scripting/ScriptState.h)
 target_include_directories(afterglow_scripting PUBLIC src)
 target_compile_definitions(afterglow_scripting PRIVATE QT_NO_CAST_FROM_ASCII)
-target_link_libraries(afterglow_scripting PUBLIC PhosphorScripting::PhosphorScripting PhosphorFsLoader::PhosphorFsLoader Qt6::Core Qt6::Concurrent)
+target_link_libraries(afterglow_scripting PUBLIC afterglow_overlayspec PhosphorScripting::PhosphorScripting PhosphorFsLoader::PhosphorFsLoader
+    Qt6::Core Qt6::Concurrent)
 qt_add_resources(afterglow_scripting afterglow_scripting_prelude
     PREFIX /afterglow/scripting
     BASE src/scripting

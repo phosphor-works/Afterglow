@@ -72,6 +72,11 @@ qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp)
 target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# A popup as the window's settings make it look, rendered offscreen.
+qt_add_executable(afterglow_popup_tests PopupLookTest.cpp)
+target_link_libraries(afterglow_popup_tests PRIVATE afterglow_app GTest::gtest)
+gtest_discover_tests(afterglow_popup_tests DISCOVERY_MODE PRE_TEST PROPERTIES RESOURCE_LOCK gpu)
+
 qt_add_executable(afterglow_signal_tests QuitSignalsTest.cpp)
 target_link_libraries(afterglow_signal_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_signal_tests)

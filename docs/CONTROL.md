@@ -257,14 +257,15 @@ When the current directory was removed, `afterglow ctl` refuses a relative direc
 ## Overlays
 
 An overlay runs a program over a pane until the program exits, and returns its result.
-The program shows in the place of the pane, with the input focus.
+The program shows in the place of the pane, or over a part of it as a popup, with the input focus.
 [SCRIPTING.md](SCRIPTING.md#overlays) describes overlays and the options.
 
 ```sh
-selected=$(git branch --format='%(refname:short)' | afterglow ctl overlay -- fzf) && git switch "$selected"
+selected=$(git branch --format='%(refname:short)' | afterglow ctl overlay -w 80% -h 60% -- fzf) && git switch "$selected"
 ```
 
-`afterglow ctl overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n|--no-stdin] -- CMD...` opens the overlay over the [target pane](#which-process-and-pane).
+`afterglow ctl overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n|--no-stdin] [-w|--width N[%]] [-h|--height N[%]] [--position POS] [--border|--no-border] -- CMD...`
+opens the overlay over the [target pane](#which-process-and-pane).
 It waits until the program exits, with no time limit.
 Then it writes the result's `stdout` to its standard output, and exits with the program's exit status.
 A result over 1 MiB is cut, and a message goes to standard error.
@@ -273,8 +274,19 @@ A result over 1 MiB is cut, and a message goes to standard error.
 | --- | --- |
 | `--capture MODE` | `stdout` (the default), `file` or `none`, as the `capture` option |
 | `--cwd DIR` | The program's directory. The default is the directory of `afterglow ctl`. The directory must exist. When the directory of `afterglow ctl` was removed, `afterglow ctl` exits with status 1. Then give an absolute `--cwd`, `~` or one that starts with `~/`. |
-| `--title TEXT` | The pane's title while the overlay runs |
+| `--title TEXT` | The pane's title while the overlay runs. It must not have a control character, a line break or a bidirectional control. |
 | `-n`, `--no-stdin` | Standard input does not go to the program. |
+| `-w`, `--width N` | A popup N cells wide, or `N%` of the pane's columns. The border is part of the width. N has no leading zero. |
+| `-h`, `--height N` | A popup N cells tall, or `N%` of the pane's rows. The border is part of the height. N has no leading zero. |
+| `--position POS` | Where the popup is: `center` (the default), `top`, `bottom`, `left`, `right`, `top-left`, `top-right`, `bottom-left` or `bottom-right`. It has no effect without `-w` or `-h`. |
+| `--border`, `--no-border` | A border around the program, or none. A popup has a border by default, and a full-pane overlay has none. |
+
+A width, a height or `--border` makes the overlay a popup: the pane stays visible around it.
+`--border` alone makes a popup that fills the pane, with the program inside the border.
+[SCRIPTING.md](SCRIPTING.md#popups) gives the limits and the layout.
+`afterglow ctl` checks the options and the command before it reads standard input or connects.
+A value that breaks a rule of [SCRIPTING.md](SCRIPTING.md#overlays) is a usage error, with exit status 2.
+Afterglow checks that the `--cwd` directory exists. When it does not, `afterglow ctl` exits with status 1.
 
 Without `-n`, standard input goes to the program when it is not a terminal.
 The input can be up to 4 MiB of UTF-8, the limit of an overlay.
@@ -290,15 +302,25 @@ The `cancel_overlay` action closes the overlay of the focused pane.
 `afterglow ctl overlay` then exits with status 1.
 
 While an overlay runs, `sendText` and `getText` act on the pane under it, not on the program of the overlay.
-Thus `afterglow ctl send-text` types into the pane that the overlay hides.
+Thus `afterglow ctl send-text` types into the pane under the overlay.
 
-The `overlay` call takes the pane (0 for the focused pane), the argv list and an object of options: `stdin`, `capture`, `cwd`, `env` and `title`.
+The `overlay` call takes the pane (0 for the focused pane), the argv list and an object of options.
+
+| Option | Type |
+| --- | --- |
+| `stdin`, `capture`, `cwd`, `title` | string |
+| `env` | object |
+| `width`, `height` | a JSON integer of cells, or a string such as `"80%"` |
+| `position` | string |
+| `border` | boolean |
+
 In place of `stdin`, the option `input` names standard input that came before the call in `overlayInput` calls.
 Give the parts in order, and `true` as the end with the last part.
 The name is 1 to 64 letters, digits, `_` and `-`, and belongs to the connection.
 The `overlay` call takes the input, also when it fails. An input that has not ended fails the call.
 Afterglow drops the inputs of a connection when it closes.
-It answers when the program exits: the reply comes later, and other calls on the connection get their replies meanwhile.
+
+The `overlay` call answers when the program exits: the reply comes later, and other calls on the connection get their replies meanwhile.
 An argv list or an option that breaks a rule fails the call with `CALL_FAILED`, and no program starts.
 An empty `cwd` starts the program in the home directory.
 Other failures have their own error codes:
@@ -622,6 +644,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `afterglow ctl overlay` standard input | 4 MiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |
 | One part of `overlayInput` from `afterglow ctl` | 512 KiB, written as a JSON string | `afterglow ctl` cuts the input there. JSON writes most C0 control characters, such as U+0001, as 6 bytes, and a part with them holds fewer bytes of input. |
 | Inputs of `overlayInput` that wait for `overlay` | 4 for each connection, 64 MiB for all connections | The `overlayInput` call fails. An input over 4 MiB fails, and Afterglow drops it. |
+| `afterglow ctl overlay --title` | 512 UTF-16 units | `afterglow ctl` exits with status 2 before it connects. |
 | `stdin` of the `overlay` call | The request line of 1 MiB | The socket closes the connection. |
 | `stdout` of an overlay's result | 1 MiB of UTF-8 | The text is cut, and `truncated` is true. |
 | `aglow run` reply time for `list` and `input` | 10 seconds | `aglow run` stops with exit status 1. The time to connect counts toward the time of `list`. It does not wait for the reply of `cancel` or `ack`. It waits for the end of a run without a limit. |
@@ -672,13 +695,16 @@ To send text that starts with `--`, put it after `--`: `afterglow ctl send-text 
 Only `send-text`, `set-title`, `notify`, `split`, `new-tab`, `new-window` and `overlay` read words after `--`.
 The other commands stop with a usage error when you give such words.
 
+The word after an option that takes a value, such as `--pane`, `--cwd` or `--title`, is that value.
+It is that value also when it starts with `-`, but not when it is `--`.
+
 ## Exit status of afterglow ctl
 
 | Exit status | Cause |
 | --- | --- |
 | 0 | The command succeeded. `afterglow ctl --help` also exits with status 0. |
 | 1 | An error, for example no Afterglow, a call that failed or no reply in 10 seconds. |
-| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 4 MiB or not UTF-8 text. `afterglow ctl` checks the text before it connects. |
+| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option that takes a value, given two times, is a usage error too. So is an `overlay` option or command that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 4 MiB or not UTF-8 text. `afterglow ctl` checks the text before it connects. |
 | 0 to 255 from `overlay` | `afterglow ctl overlay` exits with the exit status of its program. Thus a status of 1 or 2 can come from the program. A failed or cancelled overlay gives 1. So does an exit status outside 0 to 255. |
 
 `afterglow ctl watch` prints events until the connection or a subscription ends.

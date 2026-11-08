@@ -82,8 +82,8 @@ public:
         QObject::disconnect(m_overlayOutput);
     }
     Pane* pane() const { return qobject_cast<Pane*>(object()); }
-    /// The terminal that shows: an overlay's in place of the pane's, while
-    /// one runs over it.
+    /// The terminal that has the keyboard: an overlay's, in place of the
+    /// pane's or as a popup over it, while one runs over it.
     Pane* shown() const
     {
         Pane* p = pane();
@@ -105,7 +105,10 @@ public:
     QAccessibleInterface* child(int) const override { return nullptr; }
     int childCount() const override { return 0; }
     int indexOfChild(const QAccessibleInterface*) const override { return -1; }
-    QRect rect() const override { auto* w = owner(pane()); return w ? w->accessiblePaneRect(pane()) : QRect(); }
+    // Where its text is: a popup's grid while one runs over the pane. The
+    // pane is the popup's then, which has its keyboard, and the pane's own
+    // text around it is not read out until the popup ends.
+    QRect rect() const override { auto* w = owner(pane()); return w ? w->accessiblePaneRect(shown()) : QRect(); }
     QString text(QAccessible::Text kind) const override {
         if (kind == QAccessible::Name) {
             const QString title = !shown()->title().isEmpty() ? shown()->title() : pane()->title();

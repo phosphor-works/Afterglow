@@ -519,6 +519,17 @@ def cases(ctl_commands, paneless, actions, options, run, overlay):
     yield 'afterglow ctl overlay --no-stdin -', lacks('-n', '--no-stdin')
     yield 'afterglow ctl overlay --title ', set()
     yield 'afterglow ctl overlay --title x -', lambda got: {'--pane', '-n', '--capture'} <= got and '--title' not in got
+    # A size is any number or percentage: nothing completes it, and it is no positional word.
+    yield 'afterglow ctl overlay -w ', set()
+    yield 'afterglow ctl overlay -h ', set()
+    yield 'afterglow ctl overlay --width ', set()
+    yield 'afterglow ctl overlay --height ', set()
+    yield 'afterglow ctl overlay -h 5 -', lambda got: '--pane' in got and not {'-h', '--height'} & got
+    yield 'afterglow ctl overlay --position top -', lambda got: '--pane' in got and '--position' not in got
+    yield 'afterglow ctl overlay --position ', {'center', 'top', 'bottom', 'left', 'right', 'top-left', 'top-right',
+                                                'bottom-left', 'bottom-right'}
+    yield 'afterglow ctl overlay --no-border -', lacks('--border', '--no-border')
+    yield 'afterglow ctl overlay -w 80% -', lacks('--width')
     # The commands of aglow complete as they do for aglow.
     yield 'afterglow tr', {'transfer'}
     yield from command_cases('afterglow', options)

@@ -20,7 +20,7 @@ Run the CTest suite:
 ctest --test-dir build --output-on-failure -j4
 ```
 
-Without a Vulkan device, the renderer tests report Skipped.
+Without a Wayland display or a Vulkan device, the renderer tests and `PopupLook.*` report Skipped.
 On a computer with Vulkan, a device that a test cannot make fails the test, with the reason from the driver.
 The tests that draw with Vulkan take turns (the CTest `RESOURCE_LOCK` `gpu`), and the other tests run beside them.
 Each makes a Vulkan device of its own. Several at once ran out of device memory (`VK_ERROR_OUT_OF_DEVICE_MEMORY`) when other programs held most of it.

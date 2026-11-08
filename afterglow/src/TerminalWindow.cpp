@@ -829,17 +829,18 @@ void TerminalWindow::closePane(Pane* pane)
 {
     // Its overlay closes first: the program gets SIGHUP, and its result is
     // "cancelled". It goes with no fade, and the pane gets no focus back
-    // for a moment. When it shows, its last frame is the one that closes.
+    // for a moment. When it shows, its last frame is the one that closes;
+    // a popup's grid is only part of the pane, which closes on its own.
     std::shared_ptr<AfterglowRender::PaneSnapshot> shownFrame;
     if (const QPointer<PaneOverlay> overlay = pane->overlay()) {
-        if (overlayFade(pane).first >= 0.5)
+        if (!overlay->popup() && overlayFade(pane).first >= 0.5)
             shownFrame = std::make_shared<AfterglowRender::PaneSnapshot>(overlay->pane()->takeSnapshot());
         QObject::disconnect(overlay.data(), nullptr, this, nullptr);
         overlay->cancel(QStringLiteral("The pane under the overlay closed"));
         if (overlay) overlayEnded(pane, overlay, true);
     } else if (const auto fade = m_overlayFades.find(pane); fade != m_overlayFades.end()) {
         // An overlay that ended still fades out: from halfway it is what shows.
-        if (fade->second.last && overlayFade(pane).first >= 0.5) shownFrame = fade->second.last;
+        if (fade->second.last && !fade->second.lastPopup && overlayFade(pane).first >= 0.5) shownFrame = fade->second.last;
         m_overlayFades.erase(fade);
     }
     const int index = tabOf(pane);
@@ -1606,9 +1607,16 @@ QRect TerminalWindow::contentRect(const QRect& paneRect) const
 
 QRect TerminalWindow::contentRect(const Pane* pane, const QRect& paneRect) const
 {
-    // An overlay's grid is where its host's is, inside the host's docks.
+    // An overlay's grid is in its host's, inside the host's docks: all of
+    // it, or a popup's cells.
+    const PaneOverlay* overlay = pane && pane->overlayHost() ? pane->overlayHost()->overlay() : nullptr;
     if (pane && pane->overlayHost()) pane = pane->overlayHost();
-    return contentRect(pane ? paneDockArea(pane, paneRect) : paneRect);
+    const QRect content = contentRect(pane ? paneDockArea(pane, paneRect) : paneRect);
+    if (!overlay || !overlay->popup()) return content;
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const QRect grid = overlay->placement().grid;
+    return QRect(content.left() + grid.x() * m.cellWidth, content.top() + grid.y() * m.cellHeight, grid.width() * m.cellWidth,
+                 grid.height() * m.cellHeight);
 }
 
 void TerminalWindow::relayout()
@@ -1691,7 +1699,8 @@ void TerminalWindow::renderNow()
         // An overlay refreshes its snapshot here, before what reads it below.
         prepareOverlay(p, r, wp, holding, animating);
         // A settled overlay hides the pane's grid: only its blink counts then.
-        const bool gridShows = !wp.overlay || wp.overlay->progress < 1.0f;
+        // A popup shows the pane around it.
+        const bool gridShows = !wp.overlay || wp.overlay->popup || wp.overlay->progress < 1.0f;
         anyBlinkingText |= (gridShows && p->snapshot().hasBlinkingText) || (wp.overlay && wp.overlay->snapshot->hasBlinkingText)
             || std::any_of(wp.docks.begin(), wp.docks.end(), [](const auto& dock) { return dock.snapshot->hasBlinkingText; });
         if (p == m_focused) {
@@ -1747,11 +1756,14 @@ void TerminalWindow::renderNow()
             if (area.isEmpty()) return;
             // Below and beside the pane's docks.
             const QRect r = paneDockArea(p, panes[index++].params.rect);
+            // A popup has its title in its border: the label keeps the
+            // pane's own, which shows around it.
+            const bool popup = p->overlay() && p->overlay()->popup();
             titles.append(QVariantMap{{QStringLiteral("x"), r.x() / dpr},
                                       {QStringLiteral("y"), r.y() / dpr},
                                       {QStringLiteral("width"), r.width() / dpr},
                                       {QStringLiteral("height"), r.height() / dpr},
-                                      {QStringLiteral("title"), shownTitle(p)},
+                                      {QStringLiteral("title"), popup ? p->title() : shownTitle(p)},
                                       {QStringLiteral("focused"), p == m_focused},
                                       {QStringLiteral("status"), statusSummary(p)},
                                       {QStringLiteral("context"), p->contextLabel()},
@@ -1768,7 +1780,11 @@ void TerminalWindow::renderNow()
     if (focusedEntry != panes.end() && windowSettings.scrollbar != WindowSettings::Scrollbar::Never
         && !m_renderer->overviewShowing()) {
         history = inputPane(m_focused)->historyPosition();
-        const QRectF rect = QRectF(paneDockArea(m_focused, focusedEntry->params.rect));
+        // A popup's history is its own: the bar goes on its grid, where the
+        // pointer reaches it, and not on the pane around it.
+        const bool popup = m_focused->overlay() && m_focused->overlay()->popup() && focusedEntry->overlay
+            && focusedEntry->overlay->popup;
+        const QRectF rect = QRectF(popup ? focusedEntry->overlay->popup->rect : paneDockArea(m_focused, focusedEntry->params.rect));
         history.insert(QStringLiteral("x"), rect.right() / devicePixelRatio() - ScrollbarLogicalWidth);
         history.insert(QStringLiteral("y"), rect.top() / devicePixelRatio());
         history.insert(QStringLiteral("width"), ScrollbarLogicalWidth);
@@ -2097,7 +2113,7 @@ bool TerminalWindow::event(QEvent* e)
             return true;
         }
         // A dock is its script's: the pane under it takes no drop.
-        Pane* target = inputPane(paneUnder(drop->position()));
+        Pane* target = pointerTarget(paneUnder(drop->position()), drop->position());
         // The program's commands that wait decide whether the pane takes the
         // drag (t=a, t=A) before the event goes to the protocol or the paste.
         if (target) target->deliverProtocolCommands();
@@ -3223,7 +3239,7 @@ void TerminalWindow::applyPointerShape()
         setCursor(Qt::PointingHandCursor);
         return;
     }
-    Pane* pane = m_splits ? inputPane(m_splits->paneAt(px)) : nullptr;
+    Pane* pane = m_splits ? pointerTarget(m_splits->paneAt(px), m_pointer) : nullptr;
     const QString shape = pane ? motion(pane).pointerShape : QString();
     setCursor(protocolPointer(shape, devicePixelRatio()));
 }
@@ -3388,7 +3404,7 @@ void TerminalWindow::openPaneMenu(Pane* pane)
 void TerminalWindow::updateLinkHover()
 {
     // Not over a pane's dock, where the cell would clamp to the grid's edge.
-    Pane* pane = linkModifierHeld() ? inputPane(paneUnder(m_pointer)) : nullptr;
+    Pane* pane = linkModifierHeld() ? pointerTarget(paneUnder(m_pointer), m_pointer) : nullptr;
     const LinkHover found = linkAt(pane, m_pointer);
     const bool changed = found.pane != m_hover.pane || found.link != m_hover.link || found.row != m_hover.row
         || found.colStart != m_hover.colStart || found.colEnd != m_hover.colEnd;
@@ -4555,6 +4571,8 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
             return;
         }
     }
+    // Around a popup the pane only shows: the press reaches nothing.
+    if (!pointerTarget(m_focused, e->position())) return;
     const Qt::KeyboardModifiers linkModifier = m_settings.settings().links.modifier;
     if (e->button() == Qt::LeftButton && linkModifier != Qt::NoModifier && (e->modifiers() & linkModifier)
         && !m_hover.url.isEmpty()) {
@@ -4730,7 +4748,7 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
             m_selectionPane->clearSelection();
             // A click ends where it began: let go elsewhere (over the tab
             // bar), it opens no link and moves no cursor.
-            const bool inside = paneUnder(e->position()) == hostOf(m_selectionPane);
+            const bool inside = pointerTarget(paneUnder(e->position()), e->position()) == m_selectionPane;
             const bool plain = inside && !(e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier));
             if (m_clickCount == 1 && plain && m_settings.settings().links.modifier == Qt::NoModifier
                 && !m_hover.url.isEmpty()) {
@@ -4908,9 +4926,11 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         }
         return;
     }
-    // Hover reports only over the focused pane itself, not clamped from another.
+    // Hover reports only over the focused pane itself, not clamped from
+    // another, and over a popup's own cells.
     if (paneUnder(e->position()) == m_focused) {
-        sendMouse(inputPane(m_focused), e->position(), code, int(AfterglowVt::MouseAction::Motion), e->modifiers());
+        if (Pane* target = pointerTarget(m_focused, e->position()))
+            sendMouse(target, e->position(), code, int(AfterglowVt::MouseAction::Motion), e->modifiers());
     }
 }
 
@@ -4947,8 +4967,9 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
     if (!p) {
         p = m_focused;
     }
-    // An overlay's program, or its history, while one runs over the pane.
-    p = inputPane(p);
+    // An overlay's program, or its history, while one runs over the pane:
+    // nothing around a popup.
+    p = pointerTarget(p, e->position());
     if (!p) {
         return;
     }

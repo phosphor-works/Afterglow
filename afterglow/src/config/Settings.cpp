@@ -83,6 +83,8 @@ const Choice<AfterglowVt::BidiMode> BidiChoices[] = {{"off", AfterglowVt::BidiMo
                                                      {"auto", AfterglowVt::BidiMode::Auto},
                                                      {"ltr", AfterglowVt::BidiMode::LeftToRight},
                                                      {"rtl", AfterglowVt::BidiMode::RightToLeft}};
+const Choice<WindowSettings::PopupCorners> PopupCornerChoices[] = {{"rounded", WindowSettings::PopupCorners::Rounded},
+                                                                 {"square", WindowSettings::PopupCorners::Square}};
 const Choice<AfterglowVt::CursorShape> CursorShapeChoices[] = {{"block", AfterglowVt::CursorShape::Block},
                                                                {"underline", AfterglowVt::CursorShape::Underline},
                                                                {"bar", AfterglowVt::CursorShape::Bar}};
@@ -384,7 +386,8 @@ PhosphorConfig::Schema buildSchema()
                                  "and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use "
                                  "plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme "
                                  "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
-                                 "after the brightness of the color scheme. A theme replaces each color that it sets, and the divider color. Afterglow "
+                                 "after the brightness of the color scheme. A theme replaces each color that it sets, and the divider and popup "
+                                 "border colors. Afterglow "
                                  "reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with "
                                  "a slash is a file path. A relative path starts at the directory of the config file.")),
         colorKey(QStringLiteral("foreground"), hex(term.defaultForeground), QStringLiteral("Default text color.")),
@@ -396,10 +399,17 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("palette"), defaultPalette(), QMetaType::QVariantList,
          QStringLiteral("The 16 ANSI colors, from black to bright white.")},
         colorKey(QStringLiteral("divider"), hex(WindowSettings::DefaultDivider),
-                 QStringLiteral("Color of the dividers between panes. A theme replaces it. A theme without a divider color gets one between its "
-                                "background and text colors.")),
+                 QStringLiteral("Color of the dividers between panes. An empty value uses the default. A theme replaces it. A theme "
+                                "without a divider color gets one a fifth of the way from its background color to its text color.")),
+        colorKey(QStringLiteral("popupBorder"), {},
+                 QStringLiteral("Color of the border around a popup overlay. An empty value uses the color halfway from the "
+                                "background color to the text color. A theme replaces it. A theme without a popup border color "
+                                "gets the color halfway from its background color to its text color.")),
         doubleKey(QStringLiteral("unfocusedDim"), d.window.unfocusedDim, 0, 1,
                   QStringLiteral("Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off.")),
+        doubleKey(QStringLiteral("popupDim"), d.window.popupDim, 0, 1,
+                  QStringLiteral("Opacity of a black layer over the pane around a popup overlay. The popup and its border stay as "
+                                 "they are. A value of 0 turns the darkening off.")),
         {QStringLiteral("boldIsBright"), term.boldIsBright, QMetaType::Bool,
          QStringLiteral("Use bright colors 8–15 for bold text with colors 0–7.")},
         doubleKey(QStringLiteral("minimumContrast"), term.minimumContrast, 1.0, 21.0,
@@ -525,6 +535,9 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Blur content behind translucent backgrounds with KWin.")},
         {QStringLiteral("paneTitles"), d.window.paneTitles, QMetaType::Bool,
          QStringLiteral("Show pane titles in tabs with two or more panes.")},
+        enumKey(QStringLiteral("popupCorners"), PopupCornerChoices, d.window.popupCorners,
+                QStringLiteral("Corners of the border around a popup overlay. The rounded value curves each corner. The square "
+                               "value makes each corner a right angle.")),
         stringKey(QStringLiteral("workingDirectory"), d.window.workingDirectory,
                   QStringLiteral("Starting directory for new tabs, panes and windows. Use inherit, home or a path. The inherit "
                                  "value, or an empty value, uses the focused pane's directory or the launcher's directory. The "
@@ -1359,6 +1372,8 @@ Settings SettingsStore::read()
     t.selectionForeground = optionalColor("selectionForeground");
     t.selectionBackground = optionalColor("selectionBackground");
     AfterglowVt::Rgb divider = toRgb(st.read<QString>(Colors, QStringLiteral("divider")), WindowSettings::DefaultDivider);
+    // Unset: derived below from the background and the text in use.
+    std::optional<AfterglowVt::Rgb> popupBorder = optionalColor("popupBorder");
     auto& hl = s.colors;
     hl.searchMatch = toRgb(st.read<QString>(Colors, QStringLiteral("searchMatch")), hl.searchMatch);
     hl.searchCurrentMatch = toRgb(st.read<QString>(Colors, QStringLiteral("searchCurrentMatch")), hl.searchCurrentMatch);
@@ -1440,6 +1455,7 @@ Settings SettingsStore::read()
         over.cursorText = desktop->cursorText;
         // Derived from the desktop's background and text, not the theme's.
         over.divider.reset();
+        over.popupBorder.reset();
         theme = std::make_shared<const Theme>(over);
     }
     if (theme) {
@@ -1466,16 +1482,19 @@ Settings SettingsStore::read()
         hl.searchMatchText = theme->searchMatchText.value_or(hl.searchMatchText);
         hl.visualBell = theme->visualBell.value_or(hl.visualBell);
         hl.visualBellIntensity = theme->visualBellIntensity.value_or(hl.visualBellIntensity);
-        // Themes from other terminals have no divider: a fifth of the way
-        // from the background to the text suits light and dark alike. The
-        // config's divider is not used, since its default is a dark one.
-        auto mix = [](std::uint8_t a, std::uint8_t b) { return std::uint8_t(a + (b - a) / 5); };
-        const AfterglowVt::Rgb& bg = t.defaultBackground;
-        const AfterglowVt::Rgb& fg = t.defaultForeground;
-        divider = theme->divider.value_or(AfterglowVt::Rgb{mix(bg.r, fg.r), mix(bg.g, fg.g), mix(bg.b, fg.b)});
+        // A theme without a divider or a popup border (every theme of another
+        // terminal, most bundled ones, and every bundled one for the popup
+        // border) gets one derived from its background and text, which suits
+        // light and dark alike. The config's are not used: they need not suit the theme's
+        // background.
+        divider = theme->divider.value_or(Themes::derivedDivider(t.defaultBackground, t.defaultForeground));
+        popupBorder = theme->popupBorder;
     }
     s.window.dividerColor = AfterglowRender::packRgba(divider);
+    s.window.popupBorderColor =
+        AfterglowRender::packRgba(popupBorder.value_or(Themes::derivedPopupBorder(t.defaultBackground, t.defaultForeground)));
     s.window.unfocusedDim = st.read<double>(Colors, QStringLiteral("unfocusedDim"));
+    s.window.popupDim = st.read<double>(Colors, QStringLiteral("popupDim"));
     t.boldIsBright = st.read<bool>(Colors, QStringLiteral("boldIsBright"));
     t.minimumContrast = st.read<double>(Colors, QStringLiteral("minimumContrast"));
 
@@ -1548,6 +1567,7 @@ Settings SettingsStore::read()
     s.window.backgroundOpacity = st.read<double>(Window, QStringLiteral("backgroundOpacity"));
     s.window.blur = st.read<bool>(Window, QStringLiteral("blur"));
     s.window.paneTitles = st.read<bool>(Window, QStringLiteral("paneTitles"));
+    s.window.popupCorners = readEnum(st, Window, QStringLiteral("popupCorners"), PopupCornerChoices, s.window.popupCorners);
     s.window.workingDirectory = st.read<QString>(Window, QStringLiteral("workingDirectory")).trimmed();
     s.window.startMode = readEnum(st, Window, QStringLiteral("startMode"), StartModeChoices, s.window.startMode);
     s.window.decorations = st.read<bool>(Window, QStringLiteral("decorations"));

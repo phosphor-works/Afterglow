@@ -283,6 +283,18 @@ TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
     EXPECT_TRUE(noPane({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("cwd"), QStringLiteral("~")}}})
                     .contains(QLatin1Char('7')));
     EXPECT_EQ(noPane({0, QJsonArray{QStringLiteral("fzf")}, QJsonObject{}}), QStringLiteral("no focused pane"));
+    // A popup's shape, by the rules of the effect: cells as a JSON integer, a percentage as text.
+    const QJsonArray fzf{QStringLiteral("fzf")};
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("width"), 0}}}).startsWith(QStringLiteral("width must be")));
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("height"), QStringLiteral("150%")}}}).startsWith(QStringLiteral("height must be")));
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("width"), QStringLiteral("40")}}}).startsWith(QStringLiteral("width must be")));
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("position"), QStringLiteral("middle")}}})
+                    .startsWith(QStringLiteral("position must be")));
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("border"), QStringLiteral("no")}}}).startsWith(QStringLiteral("border must be")));
+    EXPECT_TRUE(noPane({7, fzf,
+                        QJsonObject{{QStringLiteral("width"), 60}, {QStringLiteral("height"), QStringLiteral("60%")},
+                                    {QStringLiteral("position"), QStringLiteral("top-right")}, {QStringLiteral("border"), false}}})
+                    .contains(QLatin1Char('7')));
 }
 
 TEST_F(ControlSocketTest, OverlayInputComesInPartsAndBelongsToItsConnection)

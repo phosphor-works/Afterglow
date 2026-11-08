@@ -295,8 +295,9 @@ void TerminalWindow::layoutPane(Pane* pane, const QRect& paneRect)
     const int cols = std::max(2, content.width() / m.cellWidth);
     const int rows = std::max(1, content.height() / m.cellHeight);
     pane->resize(cols, rows, m.cellWidth, m.cellHeight);
-    // An overlay has the pane's grid, and its program hears of each change.
-    if (PaneOverlay* overlay = pane->overlay()) overlay->pane()->resize(cols, rows, m.cellWidth, m.cellHeight);
+    // An overlay takes the pane's grid, or a popup's part of it, and its
+    // program hears of each change.
+    if (PaneOverlay* overlay = pane->overlay()) overlay->place(cols, rows, m.cellWidth, m.cellHeight);
 }
 
 void TerminalWindow::placeTabDocks(int tab)
