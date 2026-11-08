@@ -465,7 +465,7 @@ def aglow_cases(options, run):
 def cases(ctl_commands, paneless, actions, options, run, overlay):
     """(line, expected) pairs. A set is the exact result, a callable checks the result."""
     files = FILES
-    yield 'afterglow ', {'ctl', 'run', 'ssh', 'transfer', 'dnd', 'icat', 'clipboard'}
+    yield 'afterglow ', {'ctl', 'mux', 'run', 'ssh', 'transfer', 'dnd', 'icat', 'clipboard'}
     # The word at the cursor is the subcommand itself.
     yield 'afterglow ss', {'ssh'}
     # A subcommand only comes first.
@@ -481,6 +481,14 @@ def cases(ctl_commands, paneless, actions, options, run, overlay):
     yield 'afterglow -d ', {'adir'}
     yield 'afterglow --config ', files
     yield from run_cases('afterglow', run)
+    yield 'afterglow mux ', {'server', 'new', 'ls', 'kill'}
+    yield 'afterglow mux new -', {'--name', '--cwd', '--detach'}
+    yield 'afterglow mux new --detach -', {'--name', '--cwd'}
+    yield 'afterglow mux new --cwd ', {'adir'}
+    # As after the options of ctl, the options that are left.
+    yield 'afterglow mux new --name x ', {'--cwd', '--detach'}
+    yield 'afterglow mux kill -', {'--force'}
+    yield 'afterglow mux ls ', set()
     yield 'afterglow ctl ', set(ctl_commands)
     yield 'afterglow ctl -', {'-h', '--help'}
     yield 'afterglow ctl ls ', {'--json'}
@@ -540,7 +548,8 @@ FULL_CASES = (('afterglow -e ech', 'echo'), ('afterglow --title x -e ech', 'echo
               ('afterglow --title=x -e ech', 'echo'), ('afterglow -d adir -e ech', 'echo'),
               ('afterglow -o A.b=1 -e ech', 'echo'), ('afterglow ctl split -- ech', 'echo'),
               ('afterglow ctl new-window --cwd adir -- ech', 'echo'),
-              ('afterglow ctl overlay --capture none -- ech', 'echo'), ('afterglow -e ssh --help ', 'ssh-marker'),
+              ('afterglow ctl overlay --capture none -- ech', 'echo'), ('afterglow mux new --detach -- ech', 'echo'),
+              ('afterglow -e ssh --help ', 'ssh-marker'),
               ('afterglow ssh ', 'ssh-marker'))
 
 

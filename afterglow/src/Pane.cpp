@@ -7,6 +7,7 @@
 #include "desktop/Accessibility.h"
 #include "DockArea.h"
 #include "ImageDecode.h"
+#include "PaneLaunch.h"
 #include "PaneOverlay.h"
 #include "ShownText.h"
 
@@ -110,15 +111,6 @@ bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols,
         std::lock_guard lock(m_mutex);
         m_terminal.resize(cols, rows, cellWidth, cellHeight);
     }
-    // The configured and launch values win over afterglow's own, and a name
-    // they unset stays unset; each name appears once.
-    const auto named = [&opts](const std::string& name) {
-        return std::any_of(opts.environment.begin(), opts.environment.end(), [&](const auto& kv) { return kv.first == name; })
-            || std::find(opts.unsetEnvironment.begin(), opts.unsetEnvironment.end(), name) != opts.unsetEnvironment.end();
-    };
-    const auto offer = [&](const std::string& name, const std::string& value) {
-        if (!named(name)) opts.environment.emplace_back(name, value);
-    };
     // Lets `afterglow ctl` run in the pane act on that pane by default: always ours.
     std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_PANE_ID"; });
     std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_PANE_ID"));
@@ -143,26 +135,7 @@ bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols,
     opts.rows = rows;
     opts.pixelWidth = cols * cellWidth;
     opts.pixelHeight = rows * cellHeight;
-    offer("TERM", term.toStdString());
-    if (term == QLatin1String("afterglow")) {
-        // Our own entry: point ncurses at it, ahead of the system databases
-        // (the trailing ':' keeps the defaults).
-        QStringList dirs;
-        for (const char* d : {AFTERGLOW_BUILD_TERMINFO_DIR, AFTERGLOW_INSTALLED_TERMINFO_DIR}) {
-            // The build tree's entry is for the build's own binary.
-            if (d == std::string_view(AFTERGLOW_BUILD_TERMINFO_DIR) && !runningFromBuildTree()) continue;
-            if (QFile::exists(QString::fromUtf8(d) + QStringLiteral("/a/afterglow"))) {
-                dirs << QString::fromUtf8(d);
-            }
-        }
-        if (const QByteArray existing = qgetenv("TERMINFO_DIRS"); !existing.isEmpty()) {
-            dirs << QString::fromLocal8Bit(existing);
-        }
-        offer("TERMINFO_DIRS", (dirs.join(QLatin1Char(':')) + QLatin1Char(':')).toStdString());
-    }
-    offer("COLORTERM", "truecolor");
-    offer("TERM_PROGRAM", "afterglow");
-    offer("TERM_PROGRAM_VERSION", AFTERGLOW_VERSION);
+    offerTerminalEnvironment(opts, term);
     std::string err;
     opts.deferStart = true;
     if (m_pty) m_pty->stop();

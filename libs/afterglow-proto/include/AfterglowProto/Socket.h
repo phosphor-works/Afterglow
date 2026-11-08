@@ -61,4 +61,19 @@ struct SocketLookup
 /// MaxSocketPathBytes.
 SocketLookup findSocket(const EnvironmentLookup& env = systemEnvironment);
 
+/// The socket of the mux daemon, which does not depend on the display:
+/// $XDG_RUNTIME_DIR/afterglow-mux.sock, else
+/// $XDG_STATE_HOME/afterglow/mux.sock (by default under ~/.local/state).
+struct MuxSocket
+{
+    std::string path; ///< empty when there is none: error says why
+    /// The directory that the daemon creates with mode 0700 before it
+    /// listens, for the fallback under the state directory. Empty under
+    /// $XDG_RUNTIME_DIR, which exists already.
+    std::string directory;
+    std::string error;
+};
+
+MuxSocket muxSocket(const EnvironmentLookup& env = systemEnvironment);
+
 } // namespace AfterglowProto

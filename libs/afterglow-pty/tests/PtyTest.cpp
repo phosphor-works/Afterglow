@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -123,6 +124,29 @@ TEST(Pty, TheTerminalStaysTheControllingTerminalAndStandardError)
     EXPECT_NE(listener.terminal.find("err-tty"), std::string::npos) << listener.terminal;
     EXPECT_NE(listener.terminal.find("has-tty"), std::string::npos) << listener.terminal;
     EXPECT_TRUE(listener.output.empty());
+}
+
+TEST(Pty, WithoutInheritanceTheChildGetsOnlyTheGivenEnvironment)
+{
+    ::setenv("AFTERGLOW_PTY_TEST_PARENT", "1", 1);
+    for (const bool inherit : {true, false}) {
+        SpawnOptions options = shell("echo \"[$AFTERGLOW_PTY_TEST_PARENT][$GIVEN]\"; env | wc -l");
+        const char* path = std::getenv("PATH");
+        options.environment = {{"GIVEN", "yes"}, {"PATH", path ? path : "/usr/bin:/bin"}};
+        options.inheritEnvironment = inherit;
+        options.captureOutput = true;
+        Listener listener;
+        auto pty = Pty::spawn(options, listener);
+        ASSERT_TRUE(pty);
+        ASSERT_TRUE(listener.waitClosed());
+        std::lock_guard lock(listener.mutex);
+        EXPECT_EQ(listener.output.substr(0, listener.output.find('\n')), inherit ? "[1][yes]" : "[][yes]") << inherit;
+        if (!inherit) {
+            // GIVEN and PATH, and what sh sets itself (PWD, SHLVL, _).
+            EXPECT_LE(std::stoi(listener.output.substr(listener.output.find('\n') + 1)), 5) << listener.output;
+        }
+    }
+    ::unsetenv("AFTERGLOW_PTY_TEST_PARENT");
 }
 
 TEST(Pty, WithoutPipesTheStandardStreamsAreTheTerminal)

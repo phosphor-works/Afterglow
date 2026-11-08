@@ -117,3 +117,34 @@ TEST(Socket, APathTooLongForASocketIsAnError)
     EXPECT_TRUE(own.path.empty());
     EXPECT_FALSE(own.error.empty());
 }
+
+TEST(Socket, MuxSocketDoesNotDependOnTheDisplay)
+{
+    const auto runtime = environment({{"XDG_RUNTIME_DIR", "/run/user/1000/"}, {"WAYLAND_DISPLAY", "wayland-1"}});
+    EXPECT_EQ(muxSocket(runtime).path, "/run/user/1000/afterglow-mux.sock");
+    // The runtime directory exists: the daemon creates nothing.
+    EXPECT_EQ(muxSocket(runtime).directory, "");
+}
+
+TEST(Socket, MuxSocketFallsBackToTheStateDirectory)
+{
+    const auto state = environment({{"XDG_STATE_HOME", "/home/u/state/"}, {"HOME", "/home/u"}});
+    EXPECT_EQ(muxSocket(state).path, "/home/u/state/afterglow/mux.sock");
+    EXPECT_EQ(muxSocket(state).directory, "/home/u/state/afterglow");
+    // A relative value is not a base directory: the default under HOME.
+    for (const auto& env : {environment({{"HOME", "/home/u"}}),
+                            environment({{"XDG_RUNTIME_DIR", "run"}, {"XDG_STATE_HOME", "s"}, {"HOME", "/home/u"}})}) {
+        EXPECT_EQ(muxSocket(env).path, "/home/u/.local/state/afterglow/mux.sock");
+    }
+    const MuxSocket none = muxSocket(environment({{"HOME", "relative"}}));
+    EXPECT_EQ(none.path, "");
+    EXPECT_FALSE(none.error.empty());
+}
+
+TEST(Socket, MuxSocketRefusesAPathOverTheLimit)
+{
+    const std::string runtime = "/" + std::string(MaxSocketPathBytes, 'r');
+    const MuxSocket socket = muxSocket(environment({{"XDG_RUNTIME_DIR", runtime}}));
+    EXPECT_EQ(socket.path, "");
+    EXPECT_NE(socket.error.find(runtime), std::string::npos);
+}

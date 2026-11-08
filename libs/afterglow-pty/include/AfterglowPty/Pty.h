@@ -29,6 +29,10 @@ struct SpawnOptions
     /// value of a name wins.
     std::vector<std::pair<std::string, std::string>> environment;
     std::vector<std::string> unsetEnvironment;
+    /// False: the child gets only the variables of environment, none of the
+    /// parent's. The mux daemon runs a session's programs in the session's
+    /// environment, which the client sent, not in its own.
+    bool inheritEnvironment = true;
     /// Delay callbacks until the owner has published the returned object.
     bool deferStart = false;
     int cols = 80;

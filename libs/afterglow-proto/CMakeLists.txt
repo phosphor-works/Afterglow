@@ -78,6 +78,7 @@ add_library(AfterglowProto STATIC
     src/FdDelta.cpp
     src/Graphics.cpp
     src/Ipc.cpp
+    src/IpcServer.cpp
     src/Json.cpp
     src/Random.cpp
     src/Remote.cpp

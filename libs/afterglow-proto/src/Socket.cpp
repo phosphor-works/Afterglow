@@ -93,4 +93,32 @@ SocketLookup findSocket(const EnvironmentLookup& env)
     return {std::move(shared), false, 0, {}};
 }
 
+MuxSocket muxSocket(const EnvironmentLookup& env)
+{
+    MuxSocket socket;
+    if (const std::string_view runtime = runtimeDirectory(env); !runtime.empty()) {
+        socket.path = std::string(runtime) + (runtime.ends_with('/') ? "" : "/") + "afterglow-mux.sock";
+    } else {
+        std::string state(value(env, "XDG_STATE_HOME"));
+        // As the specification says, a relative value is ignored.
+        if (!state.starts_with('/')) {
+            const std::string_view home = value(env, "HOME");
+            if (!home.starts_with('/')) {
+                socket.error = "neither XDG_RUNTIME_DIR nor HOME is an absolute path";
+                return socket;
+            }
+            state = std::string(home) + "/.local/state";
+        }
+        if (state.ends_with('/')) state.pop_back();
+        socket.directory = state + "/afterglow";
+        socket.path = socket.directory + "/mux.sock";
+    }
+    if (socket.path.size() > MaxSocketPathBytes) {
+        socket.error = "the socket path is over " + std::to_string(MaxSocketPathBytes) + " bytes: " + socket.path;
+        socket.path.clear();
+        socket.directory.clear();
+    }
+    return socket;
+}
+
 } // namespace AfterglowProto

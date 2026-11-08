@@ -15,7 +15,7 @@
 #include <QDropEvent>
 #include <QDragEnterEvent>
 #include "audio/AudioController.h"
-#include "shell/ShellIntegration.h"
+#include "PaneLaunch.h"
 
 #include "app/NotificationCenter.h"
 #include "control/Control.h"
@@ -678,37 +678,12 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     bindPane(pane);
     applySearchColors(pane);
     pane->setLaunch(workingDirectory, command);
-    AfterglowPty::SpawnOptions opts;
-    // The child starts in its home directory rather than failing in one that is gone.
-    opts.workingDirectory = (!workingDirectory.isEmpty() && QFileInfo(workingDirectory).isDir() ? workingDirectory : QDir::homePath()).toStdString();
-    opts.environment = m_settings.settings().environment;
-    applyLaunchEnvironment(opts, environment);
+    AfterglowPty::SpawnOptions opts = prepareLaunch(m_settings.settings(), workingDirectory, command, environment);
     pane->setScrollPolicy(m_settings.settings().scrollOnOutput, m_settings.settings().scrollOnInput);
     // Before the program starts: a quick one may exit at once.
     pane->setHold(std::exchange(m_holdNextPane, false));
     pane->setHoldOnFailure(fallback);
-    if (!command.isEmpty()) {
-        pane->setLaunchedProgram(QFileInfo(command.first()).fileName());
-        for (const QString& arg : command) {
-            opts.argv.push_back(arg.toStdString());
-        }
-    } else if (const QString shell = m_settings.settings().shell; !shell.isEmpty()) {
-        opts.argv = {shell.toStdString()};
-    }
-    ShellIntegration::prepare(opts, m_settings.settings().shellIntegration);
-    // Integrated shells wrap ssh when the helper is named; a launch's own
-    // values win, including one that removes the variable.
-    const auto launchSets = [&](const char* name) {
-        return std::any_of(opts.environment.begin(), opts.environment.end(), [&](const auto& e) { return e.first == name; })
-            || std::find(opts.unsetEnvironment.begin(), opts.unsetEnvironment.end(), name) != opts.unsetEnvironment.end();
-    };
-    const auto offer = [&](const char* name, const QString& value) {
-        if (!launchSets(name)) opts.environment.emplace_back(name, value.toStdString());
-    };
-    if (m_settings.settings().sshIntegration) offer("AFTERGLOW_SSH_HELPER", QCoreApplication::applicationFilePath());
-    // Off: a helper inherited from the afterglow that started this one goes too.
-    else if (!launchSets("AFTERGLOW_SSH_HELPER")) opts.unsetEnvironment.emplace_back("AFTERGLOW_SSH_HELPER");
-    offer("AFTERGLOW_SSH_TERMINFO", m_settings.settings().sshTerminfo);
+    if (!command.isEmpty()) pane->setLaunchedProgram(QFileInfo(command.first()).fileName());
     const auto& m = m_renderer->fonts().fonts->metrics();
     const QRect content = contentRect(area);
     const int cols = std::max(2, content.width() / m.cellWidth);

@@ -417,6 +417,9 @@ ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest
 | `Proto.Remote.*` | `afterglow_proto_tests` | OSC 24569, the remote directory and `aglow remote-prune` |
 | `RemoteCommandsTest.*` | `afterglow_remote_tests` | The sockets of remote commands, the probe of `afterglow ssh` with a fake `ssh`, and an acceptance test with `sshd` |
 | `Proto.Ipc.*` | `afterglow_proto_tests` | The phosphor-ipc client of the protocol library |
+| `Proto.IpcServer.*` | `afterglow_proto_tests` | The server side of the phosphor-ipc wire format that `afterglow-mux` uses: requests, errors, the listener and long lines |
+| `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux` |
+| `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory of its own: sessions, the environment of a pane, the answers to queries and refusals while no client is attached, and when the daemon exits |
 | `Extensions.*RemoteSocket*` | `afterglow_vt_tests` | The answer of the pane to OSC 24569: the path or the reason, and the order of the answer before DA1 |
 | `aglow_run_pty` and `aglow_tmux_pty` | Python scripts | The OSC 24569 query of `aglow run` in a pseudo-terminal, also in a private tmux server. See [aglow tests](#aglow-tests) |
 
@@ -426,6 +429,7 @@ ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest
 In a build without `aglow`, the `RunBinaryTest.*` tests and `RemoteCommandsTest.OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThroughIt` report Skipped.
 In a build with `aglow`, `AfterglowRunWithoutAglowTest.SaysThatTheBuildHasNoAglow` reports Skipped.
 The tests give `aglow run` their own `XDG_RUNTIME_DIR` and socket. They never reach the Afterglow that runs them.
+The `Mux.MuxDaemon.*` tests do the same for `afterglow-mux`. Some of them need `python3`. Without it, they report Skipped.
 
 The acceptance test of remote commands starts two `sshd` as you, on free ports of 127.0.0.1.
 It makes host and client keys, `sshd_config` and an ssh client configuration in a temporary directory.

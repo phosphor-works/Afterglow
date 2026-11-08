@@ -12,7 +12,7 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 | Find a setting or default binding | [Configuration reference](CONFIGURATION.md) |
 | Use keybindings, selection, search or hints | [Input](INPUT.md) |
 | Move panes or save layouts | [Projects](PROJECTS.md) |
-| Read the design of detachable sessions (not implemented yet) | [The mux daemon](MUX.md) |
+| Keep sessions running without a window, and read the design of detachable sessions | [The mux daemon](MUX.md) |
 | Control a running instance | [Command line and control socket](CONTROL.md) |
 | Run the commands of scripts from a shell with `aglow run` | [Script commands](CONTROL.md#script-commands) |
 | Run script commands from a remote host in an `afterglow ssh` session | [Remote commands](CONTROL.md#remote-commands) |

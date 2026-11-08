@@ -102,6 +102,7 @@ if(AFTERGLOW_BUILD_FUZZERS AND AFTERGLOW_BUILD_AGLOW)
     message(STATUS "aglow: AFTERGLOW_BUILD_FUZZERS is on, so aglow is not built, and afterglow has no run, transfer, dnd, icat or clipboard command")
     set(AFTERGLOW_BUILD_AGLOW OFF)
 endif()
+add_subdirectory(mux)                   # afterglow-mux, the session daemon, and the protocol that afterglow shares with it (no Qt)
 add_subdirectory(afterglow)             # the application
 if(AFTERGLOW_BUILD_AGLOW)
     add_subdirectory(tools/aglow)       # after the application: it goes next to its executable

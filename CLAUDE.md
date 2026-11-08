@@ -57,7 +57,8 @@ wrong, and points to the skills that hold the procedures.
 ## Code
 
 - Namespaces: `Afterglow` (the application), `AfterglowVt`, `AfterglowProto`, `AfterglowRender`, `AfterglowPty`,
-  and `Aglow` (`tools/aglow`, with `Aglow::Cli`, `Aglow::Mime` and `Aglow::Stb`).
+  `AfterglowMux` (`mux/`: the daemon and the protocol that the application shares with it), and `Aglow`
+  (`tools/aglow`, with `Aglow::Cli`, `Aglow::Mime` and `Aglow::Stb`).
 - `libs/afterglow-vt`, `libs/afterglow-proto` and `libs/afterglow-pty` use no Qt. Keep them plain C++20.
 - `QT_NO_KEYWORDS` is on everywhere: `Q_EMIT`, `Q_SIGNALS`, `Q_SLOTS`. `QT_NO_CAST_FROM_ASCII` is on for the
   application and the renderer: `QStringLiteral` for constants, `QLatin1String` for comparisons and JSON keys.
@@ -116,6 +117,7 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 | Shader library | `afterglow/src/shaders/`: `ShaderLibrary.*` (the pack registry, with package packs), `ShaderControls.*`; packs in `data/shaders/`, the contract in `data/shaders/shared/` |
 | Scripting | `afterglow/src/scripting/`: `ScriptHost.*` (Luau VMs, events, effect validation), `ScriptControl.cpp` (effects applied to windows), `ScriptPackage.*`, `ScriptState.*`, `ScriptTasks.*`, `OverlaySpec.*` (the options of an overlay, for scripts and control), the prelude `afterglow.luau` and the declarations `afterglow.d.luau`; examples in `data/examples/scripts/` and `data/examples/packages/` |
 | Control | `afterglow/src/control/`: `Control.cpp`, `ControlSocket.cpp` (the `control` target of the phosphor-ipc socket), `CommandSocket.cpp` (the `commands` target: script commands for `aglow run`, and the `remote` target), `RemoteSockets.cpp` (the sockets that `afterglow ssh` forwards for remote commands), `ControlProject.cpp` (projects and directories), `IpcClient.cpp`, `Ctl.cpp` (`afterglow ctl`); the socket and the launch handoff in `afterglow/src/app/InstanceSocket.cpp` and `main.cpp` |
+| Mux | `mux/`: `afterglow-mux` (no Qt) with `Daemon.cpp` (the control socket and the lifetimes), `Session.cpp`, `MuxPane.cpp` (a PTY and its terminal, the answers while detached); `mux/protocol/MuxProtocol.*` (the calls and their values, linked by the application too); `IpcServer.cpp` in `libs/afterglow-proto` (the server side of the phosphor-ipc wire format); `afterglow/src/control/Mux.cpp` (`afterglow mux`); `afterglow/src/PaneLaunch.cpp` (the program and environment of a new pane, for windows and sessions); the design in `docs/MUX.md` |
 | Shell and desktop | `afterglow/src/shell/` (shell integration, `afterglow ssh`, and `Aglow.cpp`, which runs `aglow` for `afterglow run`, `transfer`, `dnd`, `icat` and `clipboard`), `data/shell-integration/`, `data/completions/` (the Bash, Zsh and Fish completions of `afterglow` and `aglow`), `afterglow/src/desktop/` (accessibility, drag and drop, file transfer), `afterglow/src/audio/` |
 | Tests | `libs/*/tests/`, `afterglow/tests/` (GTest, and the Python acceptance runners), `tools/aglow/tests/` (`aglow_tests` and the Python tests of `aglow`), `tools/conformance/`, `tools/fuzz/` |
 | Tools | `tools/render/` (`afterglow_renderpng`), `tools/bench/`, `tools/generate-reference.py`, `tools/gen_unicode_tables.py`; `tools/aglow/` (`aglow`, the static client of the Kitty protocols and of script commands: no Qt, no Phosphor, only `libs/afterglow-proto` and the vendored stb_image) |

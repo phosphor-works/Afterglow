@@ -224,7 +224,7 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
     std::reverse(overrides.begin(), overrides.end());
 
     std::vector<std::string> envStore;
-    for (char** e = environ; *e; ++e) {
+    for (char** e = environ; options.inheritEnvironment && *e; ++e) {
         const std::string_view entry(*e);
         const auto eq = entry.find('=');
         const std::string_view key = entry.substr(0, eq);

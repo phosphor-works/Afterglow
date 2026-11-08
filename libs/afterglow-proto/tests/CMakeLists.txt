@@ -12,6 +12,7 @@ add_executable(afterglow_proto_tests
     DndUriTest.cpp
     GraphicsTest.cpp
     HelpersTest.cpp
+    IpcServerTest.cpp
     IpcTest.cpp
     JsonTest.cpp
     RemoteTest.cpp

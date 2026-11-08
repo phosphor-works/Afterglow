@@ -3,7 +3,16 @@
 
 # The mux daemon
 
-This document describes a design. The mux is not implemented yet.
+This document describes a design. Only part of it works now:
+
+| Part | State |
+| --- | --- |
+| The daemon `afterglow-mux` and detached sessions with one pane | Works |
+| `afterglow mux server`, `new --detach`, `ls` and `kill` | Works |
+| A window that shows a session: `new` without `--detach`, `attach`, `detach` | Not available. The command stops with a message. |
+| Remote hosts (`--ssh`) | Not available. The command stops with a message. |
+| `afterglow ctl --session` | Not available |
+| PNG and other compressed images in a session (kitty graphics `f=100`, iTerm2 images) | Not decoded. The terminal refuses them. RGB and RGBA images work. |
 
 A mux keeps a terminal session running when its window closes.
 A session is one set of windows, tabs and panes with running processes.
@@ -50,7 +59,10 @@ On your desktop, systemd-oomd can stop the unit of the client. The sessions stay
 On a remote host without lingering, the user manager and its units stop at the last logout.
 A daemon started with `setsid` stays after that logout, unless logind sets `KillUserProcesses=yes`.
 
-The daemon exits when it has no sessions.
+The daemon exits when it has no sessions and no open connection.
+A daemon that gets no session in 10 seconds after it starts exits too.
+`afterglow mux ls` and `afterglow mux kill` do not start the daemon.
+Without a daemon, `afterglow mux ls` reports that there are no sessions.
 A mux session and a normal `afterglow` launch can run at the same time.
 
 ## Commands
@@ -67,7 +79,8 @@ A mux session and a normal `afterglow` launch can run at the same time.
 `--ssh DESTINATION` acts on the daemon of that host (see [remote hosts](#remote-hosts)).
 The user unit runs `afterglow-mux` directly. A remote host needs no `afterglow`.
 
-`afterglow mux new --detach` creates a session without opening a client.
+`afterglow mux new --detach` creates a session without opening a client. It prints the name of the session.
+A session that `afterglow mux new --detach` creates has the size of a new window: `Window.initialColumns` by `Window.initialRows` cells.
 `afterglow mux new` without `--name` gives the session the smallest free number as its name, from `1`.
 `afterglow mux attach` without a name opens the session that was attached last.
 When no session exists, it creates one.
@@ -106,6 +119,8 @@ To reach a session pane, use the daemon socket, as a session pane does through `
 The programs of a session run with the environment of the session, not of the daemon.
 `afterglow mux new` sends its own environment, and the session keeps it.
 A new pane in the session gets that environment.
+It does not get the environment of the daemon, such as `INVOCATION_ID` of its systemd unit.
+`afterglow mux new` prepares the program as a window prepares a new pane: the shell, shell integration, `TERM` and the `Terminal.environment` values.
 
 An attach from another display or computer makes some values wrong, such as `WAYLAND_DISPLAY` and `SSH_AUTH_SOCK`.
 Each attach copies the variables of `Mux.updateEnvironment` from the attach command into the session.
@@ -176,8 +191,8 @@ The processes do not pause.
 | Event while detached | Result |
 | --- | --- |
 | Title and working directory | The daemon keeps the last value. The next client shows it. |
-| Bell, notification, clipboard write | The daemon keeps a count of each for the next client, and drops the content |
-| Clipboard read, file transfer, drag and drop | Refused, as when the user denies the request |
+| Bell, notification, clipboard write | The daemon keeps a count of each for the next client, and drops the content. A write that asks for a status (OSC 5522) gets `EPERM`. |
+| Clipboard read, file transfer, drag and drop | Refused, as when the user denies the request. A program that asks which drag and drop types the terminal supports gets the answer of a window. |
 | Queries that the terminal answers itself (DA1, DSR, color queries) | Answered by the daemon |
 
 ## Where each part runs
