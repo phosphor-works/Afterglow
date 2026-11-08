@@ -439,12 +439,13 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `afterglow_aglow_not_executable` | Runs a copy of `afterglow` next to an `aglow` that it cannot execute, and checks the error and status 126 | None |
 | `aglow_run_usage`, `afterglow_runs_aglow_run` | Check the usage of `aglow run`, and of `afterglow run`, which runs it | None |
 | `Aglow.*` | The input parser and the command line of `aglow`, in `aglow_tests` | GTest |
-| `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service | Python 3 |
+| `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service, also with `--confirm-paths` answered with y and n | Python 3 |
 | `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |
 | `aglow_static` | Checks that `readelf -d` lists no shared library for `aglow` | `readelf`, and a static `aglow` |
 | `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) with `find_package(Qt6)` disabled and no Phosphor directory, builds it, installs it into the build directory, and checks that the installation holds only `bin/aglow`, its license notices and its completions. It uses the compilers, the build type and the flags of the build. It has the label `slow` | A full build, and the source archives of zlib-ng and xxHash or a network connection |
 | `aglow_clipboard_pty` | Plays a terminal for `aglow clipboard` in a pseudo-terminal | Python 3 |
-| `aglow_run_pty` | Plays a terminal and a terminal socket for the OSC 24569 query of `aglow run`, also in a private tmux server with `allow-passthrough` on and off | Python 3. Without tmux, it leaves out the tmux cases |
+| `aglow_run_pty` | Plays a terminal and a terminal socket for the OSC 24569 query of `aglow run` | Python 3 |
+| `aglow_tmux_pty` | Runs `aglow icat` and `aglow run` in a private tmux server (`tmux -L`, its own configuration and socket directory) in a pseudo-terminal, with `allow-passthrough` on and off | Python 3 and tmux. Without tmux, it reports Skipped |
 | `aglow_clipboard_cases` | Checks the arguments that `aglow clipboard` refuses, a new output file, and the timeout of an OSC 52 read | Python 3, and a kernel that shows a process that waits in `open()` |
 | `aglow_icat_decode` | Sends crafted images to `aglow icat` and checks the pixels that it sends, or its error | Python 3 |
 | `aglow_icat_render` | Draws the output of `aglow icat` with `afterglow_renderpng` | Python 3, `AFTERGLOW_BUILD_TOOLS`, a Wayland display and a Vulkan device |
@@ -457,7 +458,7 @@ Run the suite without it:
 ctest --test-dir build --output-on-failure -LE slow
 ```
 
-A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` tests and these tests of the table: `aglow_version`, `aglow_run_usage`, `Aglow.*`, `aglow_static`, `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`.
+A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` tests and these tests of the table: `aglow_version`, `aglow_run_usage`, `Aglow.*`, `aglow_static`, `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_tmux_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`.
 It has no test that runs `afterglow`.
 
 The Python test scripts need Python 3.9 or later.

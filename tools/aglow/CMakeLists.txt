@@ -252,6 +252,11 @@ if(BUILD_TESTING)
         add_test(NAME aglow_run_pty
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_pty.py $<TARGET_FILE:aglow>)
         set_tests_properties(aglow_run_pty PROPERTIES TIMEOUT 120)
+        # aglow icat and aglow run inside a private tmux server, with
+        # allow-passthrough on and off. It skips (77) without tmux.
+        add_test(NAME aglow_tmux_pty
+                 COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/tmux_pty.py $<TARGET_FILE:aglow>)
+        set_tests_properties(aglow_tmux_pty PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
         # Crafted images (GIF disposal and frame caps, BMP, TGA, PSD, HDR, PNM, PNG, JPEG).
         add_test(NAME aglow_icat_decode
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/icat_decode.py $<TARGET_FILE:aglow>)

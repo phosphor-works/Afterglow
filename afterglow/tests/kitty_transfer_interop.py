@@ -57,10 +57,11 @@ def read_pty(fd):
         raise
 
 
-def transfer(relay, arguments, client=("kitten", "transfer")):
+def transfer(relay, arguments, client=("kitten", "transfer"), confirm=None, status=0):
     """Runs CLIENT ARGUMENTS in a pseudo-terminal whose OSC 5113 packets go to the service in RELAY, and its
     replies back. Returns what the client wrote. Both directions are queued, and written only when the other side
-    can take them: a blocking write could wait for a client that waits for this script to read."""
+    can take them: a blocking write could wait for a client that waits for this script to read. CONFIRM is typed
+    once the client asks to confirm its paths (--confirm-paths). The client must exit with STATUS."""
     helper = subprocess.Popen([relay, "--protocol-relay"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     pid, master = pty.fork()
     if pid == 0:
@@ -79,6 +80,7 @@ def transfer(relay, arguments, client=("kitten", "transfer")):
     to_relay = bytearray()
     client_open = True
     reaped = False
+    confirmed = False
 
     def take_packets():
         nonlocal buffer
@@ -102,6 +104,9 @@ def transfer(relay, arguments, client=("kitten", "transfer")):
                     transcript += data
                     buffer += data
                     take_packets()
+                    if confirm is not None and not confirmed and b"to continue or" in transcript:
+                        to_client.extend(confirm)
+                        confirmed = True
             if helper.stdout in readable:
                 data = os.read(helper.stdout.fileno(), 65536)
                 if not data:
@@ -114,10 +119,11 @@ def transfer(relay, arguments, client=("kitten", "transfer")):
                         del queue[:os.write(fd, queue)]
                     except BlockingIOError:
                         pass
-            found, status = os.waitpid(pid, os.WNOHANG)
+            found, exited = os.waitpid(pid, os.WNOHANG)
             if found:
                 reaped = True
-                check(os.waitstatus_to_exitcode(status) == 0, transcript[-4000:].decode(errors="replace"))
+                check(os.waitstatus_to_exitcode(exited) == status, os.waitstatus_to_exitcode(exited),
+                      transcript[-4000:].decode(errors="replace"))
                 # The last packets (finish) can arrive after the last read. Read to EOF.
                 while client_open:
                     data = read_pty(master)
@@ -263,6 +269,29 @@ def run_checks(run, client_bugs=False, allow_empty_bug=False):
             print(direction + ": delta transfer passed", flush=True)
 
 
+def confirm_checks(relay, client):
+    """aglow transfer --confirm-paths: the list of transfers, then y goes on and n stops before any file moves."""
+    with tempfile.TemporaryDirectory(prefix="afterglow-confirm-") as temporary:
+        root = Path(temporary)
+        source = root / "source.txt"
+        source.write_bytes(b"confirmed\n")
+        for direction in ("send", "receive"):
+            for answer, status in ((b"y", 0), (b"n", 1)):
+                destination = root / f"{direction}-{answer.decode()}"
+                destination.mkdir()
+                written = transfer(relay, ["--direction=" + direction, "--confirm-paths", str(source), str(destination) + "/"],
+                                   client, confirm=answer, status=status)
+                check(b"The following file transfers will be performed" in written, written[-2000:])
+                # The list names where the file goes, on the side that gets it.
+                check(f"{source} \u2192 {destination}/source.txt".encode() in written, written[-2000:])
+                copied = destination / "source.txt"
+                if answer == b"y":
+                    check(copied.read_bytes() == b"confirmed\n")
+                else:
+                    check(not copied.exists() and not any(destination.iterdir()), list(destination.iterdir()))
+            print(direction + ": --confirm-paths passed", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--relay", help="afterglow_transfer_tests, the service as the terminal")
@@ -313,6 +342,7 @@ def main():
     if args.aglow:
         client = (str(Path(args.aglow).resolve()), "transfer")
         run_checks(lambda arguments: transfer(relay, arguments, client))
+        confirm_checks(relay, client)
     else:
         run_checks(lambda arguments: transfer(relay, arguments), client_bugs=True,
                    allow_empty_bug=args.allow_client_empty_file_bug)

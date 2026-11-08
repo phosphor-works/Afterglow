@@ -1409,6 +1409,68 @@ TEST_F(AglowOverwrite, APasteOrTypedTextIsNoAnswer)
     EXPECT_EQ(readFile(target), "new data");
 #endif
 }
+// A tree whose files replace files deep in the destination: the question
+// lists them as the program will write them, as many as the 30 rows hold,
+// and counts the rest. Esc leaves every old file.
+TEST_F(AglowOverwrite, TheQuestionListsTheReplacedFilesOfATreeAndCountsTheRest)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    constexpr int Files = 40;
+    const QString tree = directory.filePath(QStringLiteral("source/tree"));
+    for (int i = 0; i < Files; ++i) {
+        const QString name = QStringLiteral("deep/f%1").arg(i, 2, 10, QLatin1Char('0'));
+        ASSERT_TRUE(QDir().mkpath(tree + QStringLiteral("/deep")));
+        ASSERT_TRUE(writeFile(tree + QLatin1Char('/') + name, "new"));
+        ASSERT_TRUE(QDir().mkpath(destination + QStringLiteral("/tree/deep")));
+        ASSERT_TRUE(writeFile(destination + QStringLiteral("/tree/") + name, "old"));
+    }
+    // A file that replaces nothing is no reason to ask, and is not listed.
+    ASSERT_TRUE(writeFile(tree + QStringLiteral("/fresh"), "new"));
+    ASSERT_NO_FATAL_FAILURE(startProgram());
+    bool asked = false;
+    const auto from = output.size();
+    onOutput = [&] {
+        const qsizetype question = output.indexOf("will overwrite existing files", from);
+        if (asked || question < 0 || output.indexOf(" more)", question) < 0) return;
+        asked = true;
+        const QByteArray shown = output.mid(question);
+        // Each path ends its line (the terminal's output processing adds a CR to the CR LF).
+        EXPECT_TRUE(shown.contains("tree/deep/f00\r")) << shown.constData();
+        EXPECT_FALSE(shown.contains("tree/fresh"));
+        // The rows of the terminal hold some of the 40, and the count says the rest.
+        int listed = 0;
+        for (int i = 0; i < Files; ++i)
+            listed += shown.contains(QStringLiteral("tree/deep/f%1\r").arg(i, 2, 10, QLatin1Char('0')).toUtf8()) ? 1 : 0;
+        EXPECT_GT(listed, 10);
+        EXPECT_LT(listed, Files);
+        EXPECT_TRUE(shown.contains(QStringLiteral("(%1 more)").arg(Files - listed).toUtf8())) << shown.constData();
+        write("\x1b");
+    };
+    const auto action = drop({ QUrl::fromLocalFile(tree) });
+    onOutput = nullptr;
+    EXPECT_TRUE(asked);
+    EXPECT_EQ(action, Qt::IgnoreAction);
+    for (int i = 0; i < Files; ++i)
+        EXPECT_EQ(readFile(destination + QStringLiteral("/tree/deep/f%1").arg(i, 2, 10, QLatin1Char('0'))), "old");
+    EXPECT_FALSE(QFileInfo::exists(destination + QStringLiteral("/tree/fresh")));
+#endif
+}
+// With nothing to replace, the drop asks nothing.
+TEST_F(AglowOverwrite, ADropThatReplacesNothingAsksNothing)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    ASSERT_TRUE(QFile::remove(target));
+    ASSERT_NO_FATAL_FAILURE(startProgram());
+    const auto from = output.size();
+    EXPECT_EQ(drop({ QUrl::fromLocalFile(source) }), Qt::CopyAction);
+    EXPECT_TRUE(waitFor([&] { return readFile(target) == "new data"; }));
+    EXPECT_LT(output.indexOf("will overwrite existing files", from), 0);
+#endif
+}
 // Dropped text goes to standard output when it is not a terminal, once.
 TEST_F(AglowDrop, DroppedTextGoesToStandardOutput)
 {

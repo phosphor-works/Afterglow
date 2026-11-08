@@ -7,7 +7,8 @@ Usage: icat_decode.py AGLOW
 
 Each image is built here, byte by byte, to hit one decoder bug that aglow
 fixed: GIF disposal, background and graphic control extension semantics, the
-two_back read of GHSL-2023-145, the frame limit and its warning, LZW without
+two_back read of GHSL-2023-145, the frame limit and its warning, frames that do
+not all fit in the 320 MiB budget of an image and its warning, LZW without
 a leading clear code, a frame far larger than its canvas, interlaced frames,
 the least code size, 16-bit PNM, BMP gaps and top-down rows, invalid PNG
 depths, the EXIF orientation of a JPEG, a JPEG without Huffman tables (as
@@ -303,6 +304,16 @@ def main():
         check(code == 0 and len(sent) == 1 and sent[0]["keys"]["a"] == "T", err, len(sent))
         check("only its first frame shows" in err, err)
         print("GIF frame limit: passed", flush=True)
+
+        # Frames that do not all fit in the 320 MiB that aglow allows for an image: a canvas of 4096x2048
+        # holds 32 MiB, so ten frames fit and the eleventh does not. The file is a few hundred bytes, as
+        # each frame paints one pixel: the first frame only, and a warning.
+        frames = [{"rect": (0, 0, 1, 1), "indices": [i % 4], "gce": (1, 1, None)} for i in range(11)]
+        code, sent, err = show("budget.gif", gif(4096, 2048, 0, frames))
+        check(code == 0 and len(sent) == 1 and sent[0]["keys"]["a"] == "T", err, len(sent))
+        check(len(sent[0]["pixels"]) == 4096 * 2048 * 4, len(sent[0]["pixels"]))
+        check("do not all fit in the 320.0 MiB that aglow allows for it, so only its first frame shows" in err, err)
+        print("GIF over the image budget: passed", flush=True)
 
         # A frame of 65535 pixels a side on a canvas of one, with data that spells strings of 4090
         # pixels: decoding stops once no pixel can land, in far less than the CPU limit of the child.

@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""aglow inside tmux: the escape codes that must pass through tmux to the terminal.
+
+Usage: tmux_pty.py AGLOW
+
+Each case runs aglow in a private tmux server (tmux -L, a configuration of
+its own and a socket directory of its own), in a pseudo-terminal that this
+script makes and plays as the terminal. It never reaches a tmux of the
+session that runs the test. With allow-passthrough on and off, it checks:
+
+- aglow icat: the graphics commands reach the terminal. With the option off,
+  aglow turns it on for its pane itself.
+- aglow run: the query for the socket of an ssh session (OSC 24569) passes
+  through, with the status report that ends the wait, and the reply comes
+  back. With the option off, aglow names the option and does not wait.
+
+Exit status 77: tmux is not installed.
+"""
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import zlib
+
+# The harness of run_pty.py, next to this script: python -I leaves its directory out of the path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from run_pty import QUERY, FakeTerminalSocket, check, environment, play  # noqa: E402
+
+NAME = "aglow-tmux-test"
+
+
+def png(width, height, rgb):
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    raw = b"".join(b"\0" + bytes(rgb) * width for _ in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+class Tmux:
+    """A private tmux server, which the test ends."""
+
+    def __init__(self, tmux, scratch):
+        self.tmux = tmux
+        self.scratch = scratch
+        # tmux's socket path holds 108 bytes: a short directory of its own.
+        self.sockets = tempfile.mkdtemp(prefix="agt-", dir="/tmp")
+        self.env = environment(os.path.join(scratch, "run"), {"TMUX_TMPDIR": self.sockets})
+
+    def run(self, passthrough, command, answer):
+        """Runs COMMAND in a new session whose terminal is a pseudo-terminal, until it ends. Returns what tmux
+        wrote to the terminal, and the seconds that it took."""
+        config = os.path.join(self.scratch, f"tmux-{passthrough}.conf")
+        with open(config, "w") as f:
+            f.write(f"set -g allow-passthrough {passthrough}\nset -g escape-time 0\nset -g status off\n"
+                    "set -g default-shell /bin/sh\n")
+        code, written, took = play([self.tmux, "-L", NAME, "-f", config, "new-session", "-x", "80", "-y", "24", command],
+                                   self.env, answer)
+        self.kill()
+        check(code == 0, "tmux failed", code, written[-400:])
+        return written, took
+
+    def kill(self):
+        subprocess.run([self.tmux, "-L", NAME, "kill-server"], env=self.env, stderr=subprocess.DEVNULL)
+
+    def close(self):
+        self.kill()
+        shutil.rmtree(self.sockets, ignore_errors=True)
+
+
+def read(path):
+    return open(path).read() if os.path.exists(path) else None
+
+
+def icat_cases(aglow, scratch, tmux):
+    image = os.path.join(scratch, "red.png")
+    with open(image, "wb") as f:
+        f.write(png(4, 2, (255, 0, 0)))
+    for passthrough in ("on", "off"):
+        out = os.path.join(scratch, f"icat-{passthrough}")
+        command = (f"{aglow} icat --stdin=no --use-window-size=80,24,800,480 {image} > /dev/tty 2> {out}.err;"
+                   f" echo $? > {out}.status; tmux show -pv allow-passthrough > {out}.option")
+        written, _ = tmux.run(passthrough, command, lambda _: None)
+        check(read(f"{out}.status") == "0\n", passthrough, read(f"{out}.err"))
+        # tmux unwraps the passthrough: the terminal gets the graphics commands themselves. Inside tmux, aglow
+        # places the image with Unicode placeholders, which tmux keeps in its own screen.
+        check(b"\x1b_G" in written and b"U=1" in written, passthrough, written[-600:])
+        check(b"\x1bPtmux;" not in written, written[-600:])
+        # With the option off, aglow turned it on for its pane.
+        check(read(f"{out}.option") == "on\n", passthrough, read(f"{out}.option"))
+        print(f"icat in tmux with allow-passthrough {passthrough}: passed", flush=True)
+
+
+def run_cases(aglow, scratch, tmux):
+    os.mkdir(os.path.join(scratch, "run"), 0o700)
+    server = FakeTerminalSocket(os.path.join(scratch, "tmux-remote.sock"))
+    try:
+        for passthrough in ("on", "off"):
+            out = os.path.join(scratch, f"run-{passthrough}")
+            command = f"{aglow} run far there t > {out}.txt 2> {out}.err; echo $? > {out}.status"
+
+            def answer(written):
+                # The query and the status report reach the terminal in one passthrough.
+                reply = b"\x1b]24569;path=" + server.path.encode() + b"\x1b\\"
+                return reply + b"\x1b[0n" if b"\x1b[5n" in written else reply
+
+            written, took = tmux.run(passthrough, command, answer)
+            if passthrough == "on":
+                check(QUERY in written, "the query did not pass through tmux", written[-400:])
+                check(read(f"{out}.status") == "3\n", read(f"{out}.status"), read(f"{out}.err"))
+                check(read(f"{out}.txt") == "there t pane=0\n", read(f"{out}.txt"), read(f"{out}.err"))
+            else:
+                check(QUERY not in written, written[-400:])
+                check(read(f"{out}.status") == "1\n", read(f"{out}.err"))
+                check("allow-passthrough" in read(f"{out}.err"), read(f"{out}.err"))
+                # tmux said that the option is off: no wait for the guard.
+                check(took < 5, took)
+            print(f"run in tmux with allow-passthrough {passthrough}: passed", flush=True)
+    finally:
+        server.close()
+
+
+def main():
+    aglow = os.path.abspath(sys.argv[1])
+    tmux_program = shutil.which("tmux")
+    if not tmux_program:
+        print("Skipped: tmux is not installed.", flush=True)
+        sys.exit(77)
+    with tempfile.TemporaryDirectory(prefix="agx-", dir="/tmp") as scratch:
+        tmux = Tmux(tmux_program, scratch)
+        try:
+            icat_cases(aglow, scratch, tmux)
+            run_cases(aglow, scratch, tmux)
+        finally:
+            tmux.close()
+
+
+if __name__ == "__main__":
+    main()

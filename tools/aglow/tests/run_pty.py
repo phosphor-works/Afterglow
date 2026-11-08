@@ -8,17 +8,15 @@ Usage: run_pty.py AGLOW
 This script plays the terminal in a pseudo-terminal that it makes, and a
 terminal socket (the "remote" target) on a Unix socket of its own. It checks
 the DA1 guard with a terminal that is not Afterglow, a path that is not on
-this host, a reason in place of a path, a run through the socket, and the
-query inside a private tmux server with allow-passthrough on and off. aglow
-never sees an AFTERGLOW_SOCKET or a TMUX of the session that runs the test.
+this host, a reason in place of a path, and a run through the socket.
+tmux_pty.py checks the query inside tmux. aglow never sees an
+AFTERGLOW_SOCKET or a TMUX of the session that runs the test.
 """
 import json
 import os
 import pty
 import select
-import shutil
 import socket
-import subprocess
 import sys
 import tempfile
 import threading
@@ -187,59 +185,10 @@ def direct_cases(aglow, scratch):
         server.close()
 
 
-def tmux_cases(aglow, scratch):
-    tmux = shutil.which("tmux")
-    if not tmux:
-        print("tmux is not installed: the tmux cases are skipped")
-        return
-    # tmux's socket path holds 108 bytes: a short directory of its own.
-    sockets = tempfile.mkdtemp(prefix="agt-", dir="/tmp")
-    runtime = os.path.join(scratch, "run-tmux")
-    os.mkdir(runtime, 0o700)
-    server = FakeTerminalSocket(os.path.join(scratch, "tmux-remote.sock"))
-    name = "aglow-run-test"
-    try:
-        for passthrough in ("on", "off"):
-            config = os.path.join(scratch, f"tmux-{passthrough}.conf")
-            with open(config, "w") as f:
-                f.write(f"set -g allow-passthrough {passthrough}\nset -g escape-time 0\nset -g status off\n"
-                        "set -g default-shell /bin/sh\n")
-            out = os.path.join(scratch, f"out-{passthrough}")
-            command = f"{aglow} run far there t > {out}.txt 2> {out}.err; echo $? > {out}.status"
-            env = environment(runtime, {"TMUX_TMPDIR": sockets})
-
-            def answer(written):
-                # tmux unwraps the passthrough: the query and the status report reach the terminal.
-                reply = b"\x1b]24569;path=" + server.path.encode() + b"\x1b\\"
-                return reply + b"\x1b[0n" if b"\x1b[5n" in written else reply
-
-            code, written, took = play([tmux, "-L", name, "-f", config, "new-session", command], env, answer)
-            subprocess.run([tmux, "-L", name, "kill-server"], env=env, stderr=subprocess.DEVNULL)
-            status = open(f"{out}.status").read().strip() if os.path.exists(f"{out}.status") else None
-            stdout = open(f"{out}.txt").read() if os.path.exists(f"{out}.txt") else ""
-            stderr = open(f"{out}.err").read() if os.path.exists(f"{out}.err") else ""
-            if passthrough == "on":
-                check(QUERY in written, "the query did not pass through tmux", written[-400:])
-                check(status == "3", status, stdout, stderr)
-                check(stdout == "there t pane=0\n", stdout, stderr)
-            else:
-                check(QUERY not in written, written[-400:])
-                check(status == "1", status, stderr)
-                check("allow-passthrough" in stderr, stderr)
-                # tmux said that it is off: no wait for the guard.
-                check(took < 5, took)
-    finally:
-        subprocess.run([tmux, "-L", name, "kill-server"], env=environment(scratch, {"TMUX_TMPDIR": sockets}),
-                       stderr=subprocess.DEVNULL)
-        server.close()
-        shutil.rmtree(sockets, ignore_errors=True)
-
-
 def main():
     aglow = os.path.abspath(sys.argv[1])
     with tempfile.TemporaryDirectory(prefix="agr-", dir="/tmp") as scratch:
         direct_cases(aglow, scratch)
-        tmux_cases(aglow, scratch)
     print("aglow run: the terminal query works")
 
 
