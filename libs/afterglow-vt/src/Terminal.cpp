@@ -239,9 +239,7 @@ Terminal::Terminal(int cols, int rows, ITerminalHost& host, const TerminalOption
     }
     m_margins = Region{0, rows - 1, 0, cols - 1};
     m_tabStops.assign(std::size_t(cols), false);
-    for (int x = 0; x < cols; x += 8) {
-        m_tabStops[std::size_t(x)] = true;
-    }
+    resetTabStops();
 }
 
 Terminal::~Terminal() = default;
@@ -2038,6 +2036,13 @@ void Terminal::setSynchronizedOutput(bool on)
     m_modes.synchronizedOutput = on;
 }
 
+void Terminal::resetTabStops()
+{
+    for (std::size_t x = 0; x < m_tabStops.size(); ++x) {
+        m_tabStops[x] = (x % 8) == 0;
+    }
+}
+
 void Terminal::fullReset()
 {
     m_host.terminalProtocol(0, {});
@@ -2095,10 +2100,7 @@ void Terminal::fullReset()
     m_graphics[1].clear();
     m_cursorShape = m_options.cursorShape;
     m_margins = Region{0, rows() - 1, 0, cols() - 1};
-    std::fill(m_tabStops.begin(), m_tabStops.end(), false);
-    for (std::size_t x = 0; x < m_tabStops.size(); x += 8) {
-        m_tabStops[x] = true;
-    }
+    resetTabStops();
     std::fill(std::begin(m_charsets), std::end(m_charsets), Charset::Ascii);
     m_gl = 0;
     m_singleShift = 0;
@@ -2476,6 +2478,11 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
             return;
         case 'K':
             eraseLine(p.at(0), true);
+            return;
+        case 'W': // DECST8C
+            if (p.at(0) == 5) {
+                resetTabStops();
+            }
             return;
         default:
             return;

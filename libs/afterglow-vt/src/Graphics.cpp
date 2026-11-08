@@ -580,8 +580,9 @@ void GraphicsStore::respond(const Command& cmd, Context& ctx, std::string_view s
 void GraphicsStore::featureQuery(const Command& cmd, Context& ctx)
 {
     // The keys kitty's supported_keys_for_query() lists for each action,
-    // less what this store does not do: the indexed formats f=8 and f=16 and
-    // the usage hints of N=. Keys with their default value are left out.
+    // less what this store does not do: the indexed formats f=8 and f=16.
+    // Usage hints (N=) belong to the transmission, so frames do not report
+    // them. Keys with their default value are left out.
     if (!cmd.id || cmd.quiet >= 1) {
         return; // a query names its id; quiet leaves nothing to say about an OK
     }
@@ -625,6 +626,7 @@ void GraphicsStore::featureQuery(const Command& cmd, Context& ctx)
         if (cmd.v && cmd.v <= MaxDimension) add('v', cmd.v);
         if (cmd.size) add('S', cmd.size);
         if (cmd.offset) add('O', cmd.offset);
+        if (e != 'f' && cmd.hints == 1) add('N', 1);
         if (e == 'f') {
             if (cmd.ux) add('x', cmd.ux);
             if (cmd.uy) add('y', cmd.uy);
@@ -941,6 +943,7 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
     img.id = id;
     img.number = cmd.number;
     img.anonymous = cmdIn.id == 0 && cmdIn.number == 0;
+    img.transient = (cmd.hints & 1) != 0;
     img.width = frame.width;
     img.height = frame.height;
     img.frames.push_back(std::make_shared<const ImageFrame>(std::move(frame)));
@@ -2014,8 +2017,9 @@ void GraphicsStore::enforceQuota(std::uint32_t keep)
     if (total <= m_quota && m_images.size() <= MaxImages) {
         return;
     }
-    // One pass: rank every image once, unused before used and older before
-    // newer, and take victims from the front until the limits hold.
+    // One pass: rank every image once, unused before used, transient before
+    // the rest among the unused, older before newer, and take victims from
+    // the front until the limits hold.
     std::unordered_set<std::uint32_t> used;
     for (const Placement& p : m_placements) {
         used.insert(p.imageId);
@@ -2023,6 +2027,7 @@ void GraphicsStore::enforceQuota(std::uint32_t keep)
     struct Candidate
     {
         bool used;
+        bool transient;
         std::uint64_t sequence;
         std::uint32_t id;
         std::size_t bytes;
@@ -2030,10 +2035,12 @@ void GraphicsStore::enforceQuota(std::uint32_t keep)
     std::vector<Candidate> order;
     order.reserve(m_images.size());
     for (const auto& [id, img] : m_images) {
-        if (id != keep) order.push_back({used.contains(id), img.sequence, id, img.byteSize()});
+        if (id != keep) order.push_back({used.contains(id), img.transient, img.sequence, id, img.byteSize()});
     }
     std::sort(order.begin(), order.end(), [](const Candidate& a, const Candidate& b) {
-        return a.used != b.used ? !a.used : a.sequence < b.sequence;
+        if (a.used != b.used) return !a.used;
+        if (!a.used && a.transient != b.transient) return a.transient;
+        return a.sequence < b.sequence;
     });
     std::unordered_set<std::uint32_t> evicted;
     std::size_t count = m_images.size();
@@ -2061,7 +2068,11 @@ bool GraphicsStore::evictUnusedImage()
     }
     auto victim = m_images.end();
     for (auto it = m_images.begin(); it != m_images.end(); ++it) {
-        if (!used.contains(it->first) && (victim == m_images.end() || it->second.sequence < victim->second.sequence)) {
+        if (used.contains(it->first)) {
+            continue;
+        }
+        if (victim == m_images.end() || it->second.transient > victim->second.transient
+            || (it->second.transient == victim->second.transient && it->second.sequence < victim->second.sequence)) {
             victim = it;
         }
     }

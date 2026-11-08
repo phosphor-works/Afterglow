@@ -1267,6 +1267,46 @@ TEST(Graphics, QuotaEvictsOlderImagesNotTheOneBeingAdded)
     EXPECT_EQ(t.g().images().count(2), 1u);
 }
 
+TEST(Graphics, TransientImagesGoFirstWhenTheQuotaIsFull)
+{
+    TerminalOptions o;
+    o.graphicsQuota = 5000;
+    Term t(20, 10, o);
+    t.t.feed(apc("a=t,f=32,s=20,v=20,i=1,q=2", base64Encode(rgba(20, 20, 1, 1, 1)))); // 1,600 bytes each
+    t.t.feed(apc("a=t,f=32,s=20,v=20,i=2,N=1,q=2", base64Encode(rgba(20, 20, 2, 2, 2))));
+    t.t.feed(apc("a=T,f=32,s=20,v=20,i=3,N=1,C=1,q=2", base64Encode(rgba(20, 20, 3, 3, 3)))); // shown
+    ASSERT_EQ(t.g().images().size(), 3u);
+    EXPECT_FALSE(t.g().images().at(1).transient);
+    EXPECT_TRUE(t.g().images().at(2).transient);
+    // Room for a fourth: the transient image that nothing shows goes, not
+    // the older image without the hint, and not the shown transient one.
+    t.t.feed(apc("a=t,f=32,s=20,v=20,i=4,q=2", base64Encode(rgba(20, 20, 4, 4, 4))));
+    EXPECT_EQ(t.g().images().count(1), 1u);
+    EXPECT_EQ(t.g().images().count(2), 0u);
+    EXPECT_EQ(t.g().images().count(3), 1u);
+    EXPECT_EQ(t.g().images().count(4), 1u);
+    // A frame does not set the hint, and sending the image again without it
+    // clears it.
+    t.t.feed(apc("a=f,i=1,N=1,q=2", base64Encode(rgba(20, 20, 5, 5, 5))));
+    EXPECT_FALSE(t.g().images().at(1).transient);
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=3,q=2", base64Encode(rgba(1, 1, 6, 6, 6))));
+    EXPECT_FALSE(t.g().images().at(3).transient);
+}
+
+TEST(Graphics, TransientImagesGoFirstAtTheImageLimit)
+{
+    Term t(20, 10);
+    for (std::uint32_t id = 1; id <= GraphicsStore::MaxImages; ++id) {
+        const std::string hint = id == 7 ? ",N=1" : "";
+        t.t.feed(apc("a=t,f=32,s=1,v=1,q=2,i=" + std::to_string(id) + hint, base64Encode(rgba(1, 1, 0, 0, 0))));
+    }
+    ASSERT_EQ(t.g().images().size(), std::size_t(GraphicsStore::MaxImages));
+    t.t.feed(apc("a=t,f=32,s=1,v=1,q=2,i=99999", base64Encode(rgba(1, 1, 0, 0, 0))));
+    EXPECT_EQ(t.g().images().count(99999), 1u);
+    EXPECT_EQ(t.g().images().count(7), 0u);
+    EXPECT_EQ(t.g().images().count(1), 1u); // the oldest stays: it has no hint
+}
+
 TEST(Graphics, LowerQuotaEvictsAtOnce)
 {
     Term t(20, 10);
@@ -2175,6 +2215,12 @@ TEST(Graphics, FeatureQueryEchoesWhatIsSupported)
     t.host.written.clear();
     t.t.feed(apc("a=q,i=33,e=d,d=F"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=33,e=d,d=F;OK\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=q,i=35,e=t,N=1"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=35,e=t,N=1;OK\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=q,i=36,e=f,N=1")); // a hint belongs to the transmission, not to a frame
+    EXPECT_EQ(t.host.written, "\x1b_Gi=36,e=f;OK\x1b\\");
     t.host.written.clear();
     t.t.feed(apc("a=q,i=34,e=Z"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=34;OK\x1b\\"); // no such action: no e

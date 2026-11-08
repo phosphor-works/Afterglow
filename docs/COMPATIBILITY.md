@@ -96,7 +96,10 @@ While a read waits, for example on a network mount that does not answer, the pan
 To prevent this, set `Terminal.graphicsFileTransfer` to `"deny"`.
 
 A feature query (`a=q` with `e`) gets the keys of that action that Afterglow supports.
-Afterglow does not support the indexed formats `f=8` and `f=16`, or the `N` key.
+Afterglow does not support the indexed formats `f=8` and `f=16`.
+The transient usage hint (`N=1`) applies to a transmission (`a=t`, `a=T`). It does not apply to a frame (`a=f`).
+When Afterglow must delete an image to make room, it first deletes an image with the hint that has no placement.
+A feature query reports `N` for the transmit and query actions.
 The delete commands `d=f` and `d=F` delete one frame of an animation for each command.
 The `r` key selects the frame (the first frame is 1). Without `r`, the command deletes the first frame.
 On an image with one frame, `d=F` deletes the image, and `d=f` keeps it.
@@ -300,6 +303,7 @@ The permissions of the socket are the only boundary.
 The suite also checks these features:
 
 - Terminal parsing, grid behavior, scrollback and reflow.
+- Tab stops: HTS, TBC, CHT, CBT and DECST8C (`CSI ? 5 W`), which sets a stop at every 8th column again.
 - Sixel.
 - Kitty image transmission, placement, animation and Unicode placeholders.
 - iTerm2 inline images.
