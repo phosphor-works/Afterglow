@@ -46,8 +46,9 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     , m_scripts(scriptCallbacks(m_control))
     , m_commandSocket(m_control, m_scripts, m_settings, socket.router())
     , m_remoteSockets(m_control, m_scripts, m_settings,
-                      [this](quint32 pane, const AfterglowProto::Remote::Answer& answer) {
-                          return m_control.setRemoteSocket(pane, answer);
+                      [this](quint32 pane, const AfterglowProto::Remote::Answer& answer,
+                             const std::optional<AfterglowProto::Remote::Answer>& overlay) {
+                          return m_control.setRemoteSocket(pane, answer, overlay);
                       },
                       // One budget for every command socket: the limits hold for the process.
                       m_commandSocket.budget())

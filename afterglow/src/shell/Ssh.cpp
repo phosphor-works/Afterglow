@@ -663,7 +663,8 @@ RemoteResult forwardRemote(const QByteArrayList& args, const Arguments& parsed, 
     for (const QByteArray& word : control.mid(1)) words.emplace_back(word.toStdString());
     const auto opened = ipc.call("control", "openRemoteSocket",
                                  {std::int64_t(pane), std::int64_t(getpid()), host.toStdString(), found.directory.toStdString(),
-                                  std::int64_t(found.protocol), std::move(words), destination.toStdString()},
+                                  std::int64_t(found.protocol), std::move(words), destination.toStdString(),
+                                  qgetenv("AFTERGLOW_OVERLAY") == "1"},
                                  CallTimeoutMs, &error);
     if (!opened) return skip("Afterglow refused the socket");
     const std::string token = (*opened)["token"].toString();

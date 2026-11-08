@@ -529,7 +529,7 @@ The [fzf picker package](../data/examples/packages/fzf-picker/README.md) does no
 | --- | --- |
 | `stdin` | Text for the program's standard input, at most 4 MiB of UTF-8. Without it, the program reads the terminal. |
 | `capture` | Where `stdout` of the result comes from. `"stdout"` (the default) reads the program's standard output. `"file"` sets `AFTERGLOW_RESULT` to the path of a new file that only you can read, and reads that file. `"none"` returns an empty `stdout`. |
-| `cwd` | The program's directory: an absolute path, `~`, or a path that starts with `~/`. Another value refuses the effect. When the directory does not exist on this machine, for example a path that a remote shell reported, the program starts in `$HOME`. |
+| `cwd` | The program's directory: an absolute path, `~`, or a path that starts with `~/`. Another value refuses the effect. An empty value, or no `cwd`, starts the program in `$HOME`. When the directory does not exist on this machine, for example a path that a remote shell reported, the program starts in `$HOME`. |
 | `env` | Variables for the program, as for `exec`. `false` removes a variable. At most 256 variables and 64 KiB of names and values. |
 | `title` | Shows as the pane's title while the overlay runs, at most 512 UTF-16 units. It follows the character rules of command text (see [Commands](#commands)): no control character, line break or bidirectional control. A border shows it in its top edge. |
 | `width`, `height` | Make the overlay a popup. Give a whole number of cells, such as `60`, or a percentage of the pane's grid as a string, such as `"80%"`. The border is part of the size. A side that you do not give takes the whole grid. Without `width` and `height`, the overlay takes the whole pane. |
@@ -541,7 +541,7 @@ An option that is not in this table, or a value of the wrong type, refuses the e
 The terminal stays the program's controlling terminal and its standard error, so the program can draw on `/dev/tty`.
 With `stdin` and `capture = "stdout"`, a program like fzf reads its list from stdin, draws on `/dev/tty` and writes its choice to stdout.
 Standard output that is not captured goes to the terminal.
-The program gets the pane's `AFTERGLOW_PANE_ID`, so `afterglow ctl` in it acts on the pane.
+The program gets the pane's `AFTERGLOW_PANE_ID`, so `afterglow ctl` in it acts on the pane. It also gets `AFTERGLOW_OVERLAY=1`. An `afterglow ssh` in the overlay then gives `aglow run` on its host the socket of its own session, and the pane keeps that of its own.
 
 | Result field | Content |
 | --- | --- |

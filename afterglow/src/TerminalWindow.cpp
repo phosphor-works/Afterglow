@@ -642,7 +642,9 @@ void TerminalWindow::bindPane(Pane* pane)
         auto* dialog = new QMessageBox(QMessageBox::Question, tr("File transfer"), question.text, QMessageBox::Yes | QMessageBox::No);
         // This window closes. A pane that moved to another window still asks, over that one.
         connect(this, &QObject::destroyed, dialog, [this, dialog, pane] {
-            QObject* const holder = pane ? pane->parent() : nullptr;
+            // An overlay's program is a child of its overlay: its window is its host's.
+            Pane* const shown = pane && pane->overlayHost() ? pane->overlayHost() : pane.data();
+            QObject* const holder = shown ? shown->parent() : nullptr;
             if (auto* window = holder != this ? qobject_cast<QWindow*>(holder) : nullptr) dialog->windowHandle()->setTransientParent(window);
             else dialog->reject();
         });

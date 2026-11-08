@@ -220,7 +220,7 @@ bool ControlApi::remoteCommandsEnabled()
 }
 
 QVariantMap ControlApi::openRemoteSocket(double pane, double pid, const QString& host, const QString& directory,
-                                         double protocol, const QStringList& ssh, const QString& destination)
+                                         double protocol, const QStringList& ssh, const QString& destination, bool overlay)
 {
     const auto id = paneId(pane);
     if (!id) return {};
@@ -233,7 +233,7 @@ QVariantMap ControlApi::openRemoteSocket(double pane, double pid, const QString&
         return {};
     }
     RemoteSockets::Opened opened;
-    if (failed(m_remote->open({*id, qint64(std::clamp(pid, -1.0, 1e12)), host, directory, int(protocol), ssh, destination},
+    if (failed(m_remote->open({*id, qint64(std::clamp(pid, -1.0, 1e12)), host, directory, int(protocol), ssh, destination, overlay},
                               opened)))
         return {};
     QVariantMap result{{QStringLiteral("token"), opened.token}};

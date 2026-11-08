@@ -193,7 +193,7 @@ The differences are in [aglow interoperability](COMPATIBILITY.md#aglow-interoper
 | `aglow icat` | Shows images in the pane |
 | `aglow clipboard` | Reads and writes the clipboard. With OSC 5522, it can use any MIME type. With OSC 52, it uses plain text only. |
 | `aglow run` | Runs a command of a script in the Afterglow on the same computer, or in the Afterglow that `afterglow ssh` came from |
-| `aglow remote-prune DIR` | Removes the sockets of ended ssh sessions from `DIR`. The probe of `afterglow ssh` runs it on the remote host (see [remote commands](CONTROL.md#remote-commands)) |
+| `aglow remote-prune DIR` | Removes the sockets of ended ssh sessions from `DIR`. The probe of `afterglow ssh` runs it on the remote host (see [remote commands](CONTROL.md#remote-commands)). You do not need to run it yourself, and the command list and the completions do not show it. |
 
 `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` run the `aglow` next to `afterglow`.
 When they cannot run it, they exit with one of these statuses, as a shell does:

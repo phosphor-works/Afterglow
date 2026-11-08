@@ -80,9 +80,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Afterglow tells the source of a drag the action that the drop took (the `o` key of `t=e:x=4`). `aglow dnd` uses it to delete the files of a remote drag only when the drop was a move. A move to another application is reported as a copy, so the source keeps its files.
 - Received file transfers keep the read, write and execute bits of a mode. Afterglow drops the set-user-ID, set-group-ID and sticky bits.
 - Local file drops, quoted for the shell and sent as bracketed paste.
-- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. Its `transfer`, `dnd`, `icat` and `clipboard` commands take the options of `kitten`, with a few differences that the compatibility document lists. `aglow run` runs the commands of scripts in the Afterglow on the same computer, or from a remote host in an `afterglow ssh` session.
+- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. Its `transfer`, `dnd`, `icat` and `clipboard` commands take the options of `kitten`, with a few differences that the compatibility document lists.
 - `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard`, which run the `aglow` that is installed with Afterglow.
-- Shell completion of `aglow` for Bash, Zsh and Fish.
 - `AFTERGLOW_AGLOW_ONLY` builds `aglow` alone, for a remote host or a package of its own. This build needs no Qt and no Phosphor libraries, and it installs only `aglow`, its completions and its license notices.
 
 ### Windows, tabs and panes
@@ -130,7 +129,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 ### Scripting and control
 
 - Luau scripts in a sandbox with time and memory limits, which reload when they change.
-- A CPU budget for each script (`Scripts.cpuBudget`, 250 ms in each second by default). Past it, Afterglow drops the events and timer calls of the script, and delays its other calls. A script that uses its full budget in 5 seconds in a row is disabled.
+- A CPU budget for each script (`Scripts.cpuBudget`, 250 ms in each second by default). Past it, Afterglow drops the events of the script, and delays its results, timers, keys and command runs. A script that has to wait in 5 seconds, each less than 3 seconds after the one before, is disabled. Dropped events do not count.
 - Script packages with manifests, configuration, assets and saved state with migrations.
 - Script packages that ship their own shader packs, suggest shader settings and name pulse effects.
 - Script effects for panes, tabs, windows, shader parameters and presets, with results and tasks.
@@ -145,7 +144,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - External control through `afterglow ctl` and a control socket, with access settings and merged state events.
 - Script commands. A script or package declares each command with a summary. A usage text, a palette title and standard input are optional. A script can also change its commands at run time with `afterglow.set_commands`, which takes the same map of names as the package manifest.
 - Commands that a script marks `remote` also run from a remote host, with `aglow run` in an `afterglow ssh` session. They need `Terminal.sshRemoteCommands`, which is off by default, and `Control.enabled` and `Scripts.enabled`. `Terminal.sshIntegration` is not necessary, because you can also run `afterglow ssh` yourself.
-- `afterglow ssh` forwards a socket of Afterglow for each session over the shared ssh connection, and `aglow run` on the host finds it with OSC 24569. Before the session, `aglow remote-prune` removes the sockets of sessions that ended.
+- `afterglow ssh` forwards a socket of Afterglow for each session over the shared ssh connection, and `aglow run` on the host finds it with OSC 24569. Before the session, `aglow remote-prune` removes the sockets of sessions that ended. An `afterglow ssh` in an overlay has a socket of its own, and the pane keeps the socket of its session.
 - A `ControlPath none` or `ControlMaster no` in your SSH configuration stays as you set it. That session then gets no socket for remote commands.
 - A pane has at most 16 sessions with remote commands, and Afterglow at most 256. The socket of a session takes at most 64 connections at the same time.
 - The handler of a remote run gets `ev.source` `"remote"` and the host in `ev.remote.host`. It reads pane text only when `Control.allowRemoteReadText` is on too, which is off by default.
@@ -159,7 +158,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Popup overlays: the `width` and `height` options make an overlay a popup over a part of its pane. Each is a number of cells or a percentage of the pane. `position` puts the popup at one of nine positions, and `border` adds or removes its border. The pane stays visible and keeps running around the popup, darker by `Colors.popupDim`. A border in the popup border color shows the title in its top edge, in the text color. `Window.popupCorners` makes its corners rounded or square. The mouse acts in the popup only. A click on the pane around it gives that pane the focus and reaches no program.
 - `afterglow ctl overlay -- CMD` runs a program over a pane from a shell script. It uses the `overlay` call of the control socket. It sends standard input of up to 4 MiB to the program, in parts before the call. It prints the program's output and exits with its status. Without `Control.allowReadText`, a control client gets the exit status but not the output, and `afterglow ctl overlay` prints nothing on standard output. `-w`, `-h` or `--border` makes it a popup, at `--position`. `--no-border` removes the border of a popup.
 - The fzf picker example package picks a saved project or a file with fzf in a popup overlay, or with the select dialog when fzf is not installed.
-- Shell completion for Bash, Zsh and Fish, with the commands of the running scripts and the `aglow` commands of `afterglow`. The completion reads the commands from `aglow run`, which starts faster than `afterglow`. The Fish completion needs Fish 4 or later.
+- Shell completion of `afterglow` and `aglow` for Bash, Zsh and Fish, with the commands of the running scripts. The completion reads the commands from `aglow run`, which starts faster than `afterglow`. The Fish completion needs Fish 4 or later.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
 - A different build on the same display starts on its own and does not hand its window over.
 

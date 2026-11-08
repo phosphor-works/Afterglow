@@ -5491,13 +5491,15 @@ TEST_F(NativeWindow, AnOverlayStartsInItsDirectoryOrInHome) {
 
 TEST_F(NativeWindow, AnOverlayReadsItsStdinAndAnswersThroughItsResultFile) {
     Pane* pane = window->focusedPane();
-    // fzf's way: the list on stdin, the choice in a file, the host's ID.
+    // fzf's way: the list on stdin, the choice in a file, the host's ID,
+    // and the mark of an overlay's terminal.
     auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
                                             QStringLiteral("head -n1 > \"$AFTERGLOW_RESULT\"; echo \"$AFTERGLOW_PANE_ID\" >> \"$AFTERGLOW_RESULT\"; "
+                                                           "echo \"$AFTERGLOW_OVERLAY\" >> \"$AFTERGLOW_RESULT\"; "
                                                            "echo not-captured")},
                              {{QStringLiteral("stdin"), QStringLiteral("first\nsecond\n")}, {QStringLiteral("capture"), QStringLiteral("file")}});
     ASSERT_TRUE(waitFor([&] { return answer->done; }));
-    EXPECT_EQ(answer->result.value(QStringLiteral("stdout")).toString(), QStringLiteral("first\n%1\n").arg(pane->id()));
+    EXPECT_EQ(answer->result.value(QStringLiteral("stdout")).toString(), QStringLiteral("first\n%1\n1\n").arg(pane->id()));
     EXPECT_EQ(answer->result.value(QStringLiteral("exit_code")).toInt(), 0);
     // A program that fails to start is refused at once.
     QString refusal, code;
@@ -7128,9 +7130,53 @@ TEST_F(NativeWindow, TheKeyThatClosesAHeldPaneDoesNotRepeatIntoTheNextPane) {
     }));
 }
 
+TEST_F(NativeWindow, AnOverlaysTransferPromptMovesWithItsPaneWhenItsWindowCloses) {
+    // The prompt of an overlay's program waits over its window. The pane
+    // moves to another window, and its first window closes: the prompt
+    // moves too, and is not refused.
+    WindowOptions options; options.command = {QStringLiteral("/bin/cat")};
+    QPointer<TerminalWindow> source = application->newWindow(options); ASSERT_TRUE(source);
+    source->show();
+    auto* destination = application->newWindow(options); ASSERT_NE(destination, nullptr);
+    destination->show();
+    QPointer<Pane> host = source->focusedPane(); ASSERT_TRUE(host);
+    auto answer = runOverlay(source, host, {QStringLiteral("/bin/cat")}, {{QStringLiteral("capture"), QStringLiteral("none")}});
+    ASSERT_NE(host->overlay(), nullptr);
+    Pane* program = host->overlay()->pane();
+    const QString sent = directory.filePath(QStringLiteral("sent-from-overlay"));
+    program->fileTransfers()->handle("ac=send;id=overlay");
+    program->fileTransfers()->handle("ac=file;id=overlay;fid=f;ft=directory;n=" + sent.toUtf8().toBase64());
+    QPointer<QMessageBox> prompt;
+    const auto rejectAll = qScopeGuard([&prompt] {
+        if (prompt) prompt->reject();
+        drain(50);
+    });
+    ASSERT_TRUE(waitFor([&] {
+        for (auto* widget : QApplication::topLevelWidgets())
+            if (auto* box = qobject_cast<QMessageBox*>(widget); box && box->isVisible() && box->windowTitle() == QStringLiteral("File transfer")) prompt = box;
+        return !prompt.isNull();
+    }));
+    EXPECT_EQ(prompt->windowHandle()->transientParent(), source.data());
+    ASSERT_TRUE(source->movePaneTo(host, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
+    if (source) source->close();
+    ASSERT_TRUE(waitFor([&] {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        return source.isNull();
+    }));
+    drain(50);
+    ASSERT_TRUE(prompt) << "the prompt was refused";
+    EXPECT_TRUE(prompt->isVisible());
+    EXPECT_EQ(prompt->windowHandle()->transientParent(), destination);
+    EXPECT_FALSE(QFileInfo::exists(sent));
+    prompt->button(QMessageBox::Yes)->click();
+    EXPECT_TRUE(waitFor([&] { return QFileInfo(sent).isDir(); }));
+    ASSERT_TRUE(host);
+    if (host->overlay()) host->overlay()->pane()->sendInput("\x04");
+}
+
 TEST_F(NativeWindow, AnOverlaysProgramGetsTheRemoteSocketOfItsHost) {
-    // An overlay that runs afterglow ssh has its host's AFTERGLOW_PANE_ID:
-    // the session's answer is the host's, and aglow run asks in the overlay.
+    // An overlay's program has its host's AFTERGLOW_PANE_ID: it answers as
+    // the host, unless an ssh session runs in the overlay itself.
     Pane* pane = window->focusedPane();
     const AfterglowProto::Remote::Answer before{"/run/user/1000/afterglow/0123456789abcdef.sock", AfterglowProto::Remote::Error::Off};
     const AfterglowProto::Remote::Answer after{"/run/user/1000/afterglow/fedcba9876543210.sock", AfterglowProto::Remote::Error::Off};
@@ -7147,6 +7193,11 @@ TEST_F(NativeWindow, AnOverlaysProgramGetsTheRemoteSocketOfItsHost) {
     ASSERT_NE(pane->overlay(), nullptr);
     Pane* program = pane->overlay()->pane();
     EXPECT_TRUE(program->remoteSocketAnswer() == before);
+    // An ssh session in the overlay answers there, and the pane keeps its own.
+    const AfterglowProto::Remote::Answer own{"/run/user/1000/afterglow/1111111111111111.sock", AfterglowProto::Remote::Error::Off};
+    pane->setRemoteSocket(before, own);
+    EXPECT_TRUE(program->remoteSocketAnswer() == own);
+    EXPECT_TRUE(pane->remoteSocketAnswer() == before);
     pane->setRemoteSocket(after);
     // Sent before stty runs, the byte waits in the line discipline's queue:
     // raw mode then lets head read it.
