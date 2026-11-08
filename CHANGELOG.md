@@ -194,7 +194,7 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 - Settings in `~/.config/afterglow/config.json` that reload when the file changes, and `-o` overrides for one launch.
 - With no settings file, every setting has its default. The first change of a setting creates the file, which holds only the values that differ from the defaults. Only its owner can read the file.
 - Problems in the settings file show as a notice. Examples are an unknown key, a value of the wrong type and a value that is not a color.
-- A settings file that does not parse is never replaced. The current settings stay until it is correct. At start, Afterglow then uses the defaults, with `Scripts.enabled` and `Control.enabled` off until the file is correct. If the file becomes empty before that, they stay off until it is not empty. An `-o` override of either key with a boolean value still sets it.
+- A settings file that does not parse is never replaced. The current settings stay until it is correct. At start, Afterglow then uses the defaults, with `Scripts.enabled` and `Control.enabled` off until the file holds a JSON object. An empty file does not turn them on. An `-o` override of either key with a boolean value still sets it.
 - `--config FILE` reads another settings file. The `themes`, `shaders` and `scripts` directories beside it take the place of your own.
 - The desktop's fixed-width font and size by default, with the `calt` and `liga` features. `Font.sizeStep` sets the font size step.
 - A clean exit on `SIGTERM`, `SIGINT` and `SIGHUP` that closes the windows and the control socket. A signal that Afterglow inherited as ignored stays ignored.

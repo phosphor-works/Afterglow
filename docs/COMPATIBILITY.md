@@ -182,8 +182,10 @@ A new shell prompt is a prompt mark (OSC 133 `A` or `N`, or OSC 633 `A`) after a
 One new prompt does not end the file, because a job in the background can still send it.
 A second new prompt with no `FilePart` after the first ends it, because the program that sent it has stopped.
 A prompt mark with no `C` before it does not count, because a shell sends it each time it draws the same prompt again.
-A command end mark (`D`) does not make a new prompt, because the Bash and Zsh integration of Afterglow sends it before each prompt, also after Enter on an empty line.
-A shell that sends no `C` mark makes no new prompt. Its file ends only in the other ways.
+A command end mark (`D`) does not make a new prompt.
+The Bash and Zsh integration of Afterglow sends it after each command, also after Enter on an empty line.
+With a shell that sends no `C` mark, no prompt ends a file.
+A new `MultipartFile`, the size limit, a terminal reset or the end of the pane's program still ends it.
 OSC 1337 downloads are not resumable, and they do not upload files.
 Afterglow supports the Kitty file-transfer protocol separately. See [Kitty file transfer](DESKTOP.md#kitty-file-transfer).
 IME context does not permit arbitrary surrounding-text edits.

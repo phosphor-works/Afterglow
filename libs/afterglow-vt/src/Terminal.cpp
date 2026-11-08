@@ -4231,8 +4231,8 @@ void Terminal::semanticPrompt(std::string_view args)
         // Only a prompt after a command counts: shells send A again each
         // time they redraw the same prompt (a resize, Ctrl+L, an async
         // prompt segment, a continuation line), with no C between. A D
-        // alone is no command either: bash and zsh send one before each
-        // prompt, also after Enter on an empty line.
+        // alone is no command either: Afterglow's bash and zsh integration
+        // sends one after each command, also after Enter on an empty line.
         if (m_iterm2Receiving && m_commandSincePrompt) {
             if (m_iterm2PromptSincePart) {
                 endITerm2Multipart();

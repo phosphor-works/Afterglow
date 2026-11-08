@@ -595,7 +595,7 @@ A remote directory with `:` or `\`, or a local runtime directory with one, gets 
 
 The local socket closes when the `afterglow ssh` process ends, when its pane closes or when a setting turns remote commands off.
 Its runs end. Each client gets the reply to its run, an error that gives the reason, and then the connection closes.
-A client that does not read its whole reply in 5 seconds loses the connection before the reply ends.
+Afterglow gives each connection 5 seconds to take what waits for it. A client that does not read loses what does not fit in its socket, and the connection closes.
 Afterglow then runs `ssh -O cancel` with the same options and the same `-R` value.
 When the forward comes after the socket closed, `afterglow ssh` cancels it itself.
 When the shared connection has already gone, there is nothing to cancel.
