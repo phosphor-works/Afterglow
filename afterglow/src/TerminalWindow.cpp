@@ -188,6 +188,11 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     , m_id(s_nextWindowId++)
 {
     installTerminalAccessibility();
+    // A path under the pointer becomes a link once its check ends.
+    m_pathChecker = new PathLinks::Checker(this);
+    connect(m_pathChecker, &PathLinks::Checker::checked, this, [this] {
+        if (m_pointer.x() >= 0) updateLinkHover();
+    });
     // Only the window with the keyboard has the focus to tell of: an event
     // from another would take the focus state from the one that has it.
     // focusInEvent tells of the pane when the window gets the keyboard, and
@@ -330,9 +335,10 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         const QPointer<Pane> pane = std::exchange(m_menuPane, {});
         const bool paneAlive = pane && tabOf(pane) >= 0;
         if (id == MenuOpenLink) {
-            openLink(m_menuLink);
+            openHoveredLink(m_menuLink);
         } else if (id == MenuCopyLink) {
-            QGuiApplication::clipboard()->setText(m_menuLink);
+            // A path as the shell takes it, not as a URL.
+            QGuiApplication::clipboard()->setText(m_menuLink.file.path.isEmpty() ? m_menuLink.url : m_menuLink.file.path);
         } else if (id >= TabMenuRename) {
             runTabMenuItem(id);
         } else if (id >= MenuScriptBase) {
@@ -2960,6 +2966,11 @@ void TerminalWindow::openLink(const QString& url)
             qCWarning(lcWindow).noquote() << "could not run" << program << "to open" << target.toDisplayString();
         }
     };
+    confirmOpen(target, std::move(open));
+}
+
+void TerminalWindow::confirmOpen(const QUrl& target, std::function<void()> open)
+{
     if (m_settings.settings().links.schemes.contains(target.scheme().toLower())) {
         open();
         return;
@@ -2967,12 +2978,38 @@ void TerminalWindow::openLink(const QString& url)
     // Other schemes start other programs: the user sees the whole target
     // first. Not over another question, whose answer this would take.
     if (m_controller->confirmPromptOpen()) return;
-    m_pendingConfirm = open;
+    m_pendingConfirm = std::move(open);
     m_pendingConfirmPanes.clear();
     m_controller->askConfirm(QStringLiteral("Open this link?"),
                              QStringLiteral("The link opens with the handler for “%1:”. Its target is %2.")
                                  .arg(sanitizedText(target.scheme(), 40), sanitizedText(target.toDisplayString(), 400)),
                              QStringLiteral("Open"));
+}
+
+void TerminalWindow::openPath(const PathLinks::Location& file, bool directory, const QString& workingDirectory)
+{
+    const PathLinks::OpenAction action = PathLinks::openAction(m_settings.settings().links.openFilesWith, file, directory);
+    if (action.command.isEmpty()) {
+        openLink(action.url.toString());
+        return;
+    }
+    // The path is absolute: it cannot pass for an option of the program.
+    confirmOpen(QUrl::fromLocalFile(file.path), [command = action.command, workingDirectory] {
+        QStringList arguments = command;
+        const QString program = arguments.takeFirst();
+        if (!QProcess::startDetached(program, arguments, workingDirectory)) {
+            qCWarning(lcWindow).noquote() << "could not run" << program << "to open a file (Links.openFilesWith)";
+        }
+    });
+}
+
+void TerminalWindow::openHoveredLink(const LinkHover& link)
+{
+    if (!link.file.path.isEmpty()) {
+        openPath(link.file, link.directory, link.workingDirectory);
+    } else if (!link.url.isEmpty()) {
+        openLink(link.url);
+    }
 }
 
 bool TerminalWindow::linkModifierHeld() const
@@ -3268,7 +3305,60 @@ TerminalWindow::LinkHover TerminalWindow::linkAt(Pane* pane, const QPointF& pos)
             }
         }
     }
+    if (found.url.isEmpty()) {
+        // A path is a link only once a check off this thread found it.
+        if (std::optional<LinkHover> path = pathAt(pane, pos)) {
+            const PathLinks::Kind kind = m_pathChecker->lookup(path->file.path);
+            if (kind == PathLinks::Kind::File || kind == PathLinks::Kind::Directory) {
+                path->directory = kind == PathLinks::Kind::Directory;
+                return *path;
+            }
+        }
+    }
     return found;
+}
+
+std::optional<TerminalWindow::LinkHover> TerminalWindow::pathAt(Pane* pane, const QPointF& pos) const
+{
+    if (!pane || !m_settings.settings().links.detectPaths) return std::nullopt;
+    const QPoint cell = cellAt(pane, pos);
+    const AfterglowRender::PaneSnapshot& snap = pane->snapshot();
+    if (cell.x() >= snap.cols || cell.y() >= snap.rows) return std::nullopt;
+    // OSC 8 links and URLs keep their cells.
+    if (const std::uint32_t link = snap.logicalAt(cell.x(), cell.y()).link; link != 0 && link <= snap.links.size()) {
+        return std::nullopt;
+    }
+    const std::vector<PathSpan> paths = findPaths(snap, cell.y(), findUrls(snap, cell.y()));
+    const auto span = std::find_if(paths.begin(), paths.end(),
+                                   [&](const PathSpan& s) { return cell.x() >= s.colStart && cell.x() <= s.colEnd; });
+    if (span == paths.end()) return std::nullopt;
+    // Paths in a pane on another machine name its files, not ours.
+    const std::optional<QString> directory = pane->localPathDirectory(m_settings.settings().links.remoteCommands);
+    if (!directory) return std::nullopt;
+    LinkHover found;
+    found.file = span->location;
+    found.file.path = PathLinks::resolve(span->location.path, *directory, QDir::homePath());
+    if (found.file.path.isEmpty()) return std::nullopt;
+    found.pane = pane;
+    found.row = cell.y();
+    found.colStart = span->colStart;
+    found.colEnd = span->colEnd;
+    found.url = QUrl::fromLocalFile(found.file.path).toString();
+    found.workingDirectory = *directory;
+    return found;
+}
+
+bool TerminalWindow::openPathWhenFound(Pane* pane, const QPointF& pos)
+{
+    const std::optional<LinkHover> path = pathAt(pane, pos);
+    // One known to be missing is text: the click is the text's.
+    if (!path || m_pathChecker->lookup(path->file.path) == PathLinks::Kind::Missing) return false;
+    m_pathChecker->check(path->file.path, this, [this, link = *path](PathLinks::Kind kind) mutable {
+        if (kind != PathLinks::Kind::File && kind != PathLinks::Kind::Directory) return;
+        link.directory = kind == PathLinks::Kind::Directory;
+        openHoveredLink(link);
+    });
+    return true;
 }
 
 void TerminalWindow::openContextMenu(const QPointF& pos)
@@ -3297,8 +3387,8 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
     // Only a link under the pointer: not one at the focused pane's edge,
     // where a click on a divider would clamp to.
     Pane* under = paneUnder(pos);
-    m_menuLink = under == m_focused ? linkAt(inputPane(m_focused), pos).url : QString();
-    if (!m_menuLink.isEmpty()) {
+    m_menuLink = under == m_focused ? linkAt(inputPane(m_focused), pos) : LinkHover{};
+    if (!m_menuLink.url.isEmpty()) {
         items << entry(MenuOpenLink, QStringLiteral("Open Link"), "internet-web-browser")
               << entry(MenuCopyLink, QStringLiteral("Copy Link Address"), "insert-link") << separator;
     }
@@ -3400,8 +3490,14 @@ void TerminalWindow::openPaneMenu(Pane* pane)
 void TerminalWindow::updateLinkHover()
 {
     // Not over a pane's dock, where the cell would clamp to the grid's edge.
-    Pane* pane = linkModifierHeld() ? pointerTarget(paneUnder(m_pointer), m_pointer) : nullptr;
+    Pane* under = pointerTarget(paneUnder(m_pointer), m_pointer);
+    Pane* pane = linkModifierHeld() ? under : nullptr;
     const LinkHover found = linkAt(pane, m_pointer);
+    // A path under the pointer is checked before the modifier goes down, so
+    // that the menu and a click find it known.
+    if (!pane) {
+        if (const std::optional<LinkHover> path = pathAt(under, m_pointer)) m_pathChecker->lookup(path->file.path);
+    }
     const bool changed = found.pane != m_hover.pane || found.link != m_hover.link || found.row != m_hover.row
         || found.colStart != m_hover.colStart || found.colEnd != m_hover.colEnd;
     m_hover = found;
@@ -3409,6 +3505,44 @@ void TerminalWindow::updateLinkHover()
         applyPointerShape();
         scheduleRender();
     }
+}
+
+namespace {
+/// The text of @p row, and for each UTF-16 unit of it the column it is in.
+QString rowText(const AfterglowRender::PaneSnapshot& snap, int row, std::vector<int>& columns)
+{
+    QString text;
+    columns.clear();
+    for (int x = 0; x < snap.cols; ++x) {
+        const AfterglowRender::SnapshotCell& rc = snap.logicalAt(x, row);
+        if (rc.width == 0) {
+            continue;
+        }
+        const char32_t cp = rc.cp ? rc.cp : U' ';
+        text += QString::fromUcs4(&cp, 1);
+        while (columns.size() < std::size_t(text.size())) {
+            columns.push_back(x);
+        }
+    }
+    return text;
+}
+} // namespace
+
+std::vector<TerminalWindow::PathSpan> TerminalWindow::findPaths(const AfterglowRender::PaneSnapshot& snap, int row,
+                                                                const std::vector<UrlSpan>& urls)
+{
+    std::vector<PathSpan> spans;
+    std::vector<int> columns;
+    const QString text = rowText(snap, row, columns);
+    for (const PathLinks::Candidate& candidate : PathLinks::find(text)) {
+        const int first = columns[std::size_t(candidate.start)];
+        const int last = columns[std::size_t(candidate.start + candidate.length - 1)];
+        // A path in a URL or an OSC 8 link is part of that link.
+        const bool inLink = std::any_of(urls.begin(), urls.end(),
+                                        [&](const UrlSpan& s) { return first <= s.colEnd && last >= s.colStart; });
+        if (!inLink) spans.push_back({first, last, candidate.location});
+    }
+    return spans;
 }
 
 std::vector<TerminalWindow::UrlSpan> TerminalWindow::findUrls(const AfterglowRender::PaneSnapshot& snap, int row)
@@ -3429,19 +3563,8 @@ std::vector<TerminalWindow::UrlSpan> TerminalWindow::findUrls(const AfterglowRen
         x = end + 1;
     }
     // URLs in the text.
-    QString text;
     std::vector<int> columns;
-    for (int x = 0; x < snap.cols; ++x) {
-        const AfterglowRender::SnapshotCell& rc = snap.logicalAt(x, row);
-        if (rc.width == 0) {
-            continue;
-        }
-        const char32_t cp = rc.cp ? rc.cp : U' ';
-        text += QString::fromUcs4(&cp, 1);
-        while (columns.size() < std::size_t(text.size())) {
-            columns.push_back(x);
-        }
-    }
+    const QString text = rowText(snap, row, columns);
     static const QRegularExpression url(
         QStringLiteral(R"((?:https?|ftp|file)://[^\s<>"'`]+|mailto:[^\s<>"'`]+|www\.[^\s<>"'`]+\.[^\s<>"'`]+)"));
     for (auto it = url.globalMatch(text); it.hasNext();) {
@@ -3658,36 +3781,35 @@ void TerminalWindow::urlModeKey(QKeyEvent* e)
         const QStringList configuredCommand = exact->command;
         const bool copy = m_urlMode.copy;
         // The pane the hints were found in, not whichever has the focus now.
-        const QString directory = m_urlMode.pane ? m_urlMode.pane->workingDirectory() : QString();
+        const QPointer<Pane> pane = m_urlMode.pane;
         stopUrlMode();
-        if (action == QLatin1String("command") || action == QLatin1String("open")) {
-            QString path = url, line = QStringLiteral("1"), column = QStringLiteral("1");
-            static const QRegularExpression location(QStringLiteral(R"(^(.*?):(\d+)(?::(\d+))?$)"));
-            const auto match = location.match(path);
-            if (match.hasMatch()) { path = match.captured(1); line = match.captured(2); if (!match.captured(3).isEmpty()) column = match.captured(3); }
-            if (path.startsWith(QLatin1String("~/"))) path.replace(0, 1, QDir::homePath());
-            if (QFileInfo(path).isRelative()) path = QDir(directory).absoluteFilePath(path);
-            if (action == QLatin1String("open")) QDesktopServices::openUrl(QUrl::fromLocalFile(path));
-            else {
-                // One pass over each argument: text that a match brings in
-                // ("{line}" in a file name) is not a placeholder.
-                static const QRegularExpression placeholder(QStringLiteral(R"(\{(match|path|line|column)\})"));
-                QStringList args;
-                for (const QString& arg : configuredCommand) {
-                    QString out;
-                    qsizetype last = 0;
-                    for (auto it = placeholder.globalMatch(arg); it.hasNext();) {
-                        const auto m = it.next();
-                        out += arg.mid(last, m.capturedStart() - last);
-                        const QString name = m.captured(1);
-                        out += name == QLatin1String("match") ? url : name == QLatin1String("path") ? path
-                             : name == QLatin1String("line")  ? line : column;
-                        last = m.capturedEnd();
-                    }
-                    args << out + arg.mid(last);
-                }
-                if (!args.isEmpty()) { const QString program = args.takeFirst(); QProcess::startDetached(program, args, directory); }
+        if (action == QLatin1String("open")) {
+            // As a click on the path: a local pane's file that exists.
+            const std::optional<QString> directory =
+                pane ? pane->localPathDirectory(m_settings.settings().links.remoteCommands) : std::nullopt;
+            PathLinks::Location file = PathLinks::parseLocation(url);
+            file.path = directory ? PathLinks::resolve(file.path, *directory, QDir::homePath()) : QString();
+            if (file.path.isEmpty()) {
+                qCWarning(lcWindow).noquote() << "not opening" << url << "(not a path on this machine)";
+                return;
             }
+            m_pathChecker->check(file.path, this, [this, file, url, workingDirectory = *directory](PathLinks::Kind kind) {
+                if (kind == PathLinks::Kind::File || kind == PathLinks::Kind::Directory) {
+                    openPath(file, kind == PathLinks::Kind::Directory, workingDirectory);
+                } else {
+                    qCWarning(lcWindow).noquote() << "not opening" << url << "(no such file or directory)";
+                }
+            });
+        } else if (action == QLatin1String("command")) {
+            const QString directory = pane ? pane->workingDirectory() : QString();
+            const PathLinks::Location location = PathLinks::parseLocation(url);
+            const QString resolved = PathLinks::resolve(location.path, directory, QDir::homePath());
+            QStringList args = PathLinks::substitute(configuredCommand, {
+                {QStringLiteral("match"), url},
+                {QStringLiteral("path"), resolved.isEmpty() ? location.path : resolved},
+                {QStringLiteral("line"), QString::number(location.line > 0 ? location.line : 1)},
+                {QStringLiteral("column"), QString::number(location.column > 0 ? location.column : 1)}});
+            if (!args.isEmpty()) { const QString program = args.takeFirst(); QProcess::startDetached(program, args, directory); }
         } else if (copy || action == QLatin1String("copy")) {
             QGuiApplication::clipboard()->setText(url);
         } else {
@@ -3843,6 +3965,10 @@ void TerminalWindow::applySettings(const Settings& previous)
     m_blinkTimer.setInterval(now.cursorBlinkInterval);
     m_textBlinkTimer.setInterval(now.textBlinkInterval);
     m_autoScroll.setInterval(now.mouse.autoScrollInterval);
+    if (now.links != previous.links) {
+        // Links.detectPaths or detectUrls may take the link under the pointer away.
+        updateLinkHover();
+    }
     if (now.window.backgroundOpacity != previous.window.backgroundOpacity || now.window.blur != previous.window.blur) {
         applyWindowEffects();
     }
@@ -4570,10 +4696,17 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     // Around a popup the pane only shows: the press reaches nothing.
     if (!pointerTarget(m_focused, e->position())) return;
     const Qt::KeyboardModifiers linkModifier = m_settings.settings().links.modifier;
-    if (e->button() == Qt::LeftButton && linkModifier != Qt::NoModifier && (e->modifiers() & linkModifier)
-        && !m_hover.url.isEmpty()) {
-        openLink(m_hover.url);
-        return;
+    if (e->button() == Qt::LeftButton && linkModifier != Qt::NoModifier && (e->modifiers() & linkModifier)) {
+        // The press holds the modifier, even where the hover did not see it
+        // go down (no key event since the pointer came).
+        Pane* under = pointerTarget(paneUnder(e->position()), e->position());
+        const LinkHover link = m_hover.url.isEmpty() ? linkAt(under, e->position()) : m_hover;
+        if (!link.url.isEmpty()) {
+            openHoveredLink(link);
+            return;
+        }
+        // A path that has no check yet opens when the check finds it.
+        if (openPathWhenFound(under, e->position())) return;
     }
     // Buttons another pane's program still holds (an overlay opened over it
     // meanwhile): a press here would have its release go there. No press
@@ -4746,9 +4879,11 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
             // bar), it opens no link and moves no cursor.
             const bool inside = pointerTarget(paneUnder(e->position()), e->position()) == m_selectionPane;
             const bool plain = inside && !(e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier));
-            if (m_clickCount == 1 && plain && m_settings.settings().links.modifier == Qt::NoModifier
-                && !m_hover.url.isEmpty()) {
-                openLink(m_hover.url); // links open with a plain click
+            const bool linkClick = m_clickCount == 1 && plain && m_settings.settings().links.modifier == Qt::NoModifier;
+            if (linkClick && !m_hover.url.isEmpty()) {
+                openHoveredLink(m_hover); // links open with a plain click
+            } else if (linkClick && openPathWhenFound(m_selectionPane, e->position())) {
+                // A path that has no check yet opens when the check finds it.
             } else if (m_clickCount == 1 && plain) {
                 moveCursorToClick(m_selectionPane, e->position());
             }

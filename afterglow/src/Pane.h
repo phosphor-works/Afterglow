@@ -155,6 +155,14 @@ public:
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
     /// is local and exists, else the foreground job's directory from /proc.
     QString workingDirectory() const;
+    /// The directory that file paths in the pane's text start from, found
+    /// without a stat, so that a hung mount cannot block the caller: the
+    /// reported directory, else the foreground job's from /proc, else empty.
+    /// None while the pane's paths name another machine's files: its shell
+    /// runs on another host or in a container (OSC 3008, iTerm2 RemoteHost),
+    /// its last OSC 7 named another host, or its foreground job is one of
+    /// @p remoteCommands (Links.remoteCommands), as foregroundJob() names it.
+    std::optional<QString> localPathDirectory(const QStringList& remoteCommands) const;
     QString text(AfterglowVt::Terminal::TextScope scope);
     /// At most `limit` bytes of text. The caller bounds the limit: scripts
     /// to their max_bytes range, show_last_output to Terminal.lastOutputLimit.
@@ -401,6 +409,7 @@ private:
     QString m_contextLabel;
     QString m_contextKind;
     QString m_reportedDirectory; ///< local, absolute; guarded by m_mutex
+    bool m_directoryElsewhere = false; ///< the last OSC 7 named another host; guarded by m_mutex
     QHash<QString, QString> m_userVars;
     /// Changed user variables that wait for the GUI thread, guarded by m_mutex.
     std::vector<std::pair<QString, QString>> m_pendingUserVars;

@@ -106,6 +106,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Keyboard selection in character, line and rectangle modes.
 - Text hints that copy, open or run commands on regular-expression matches, and URL hints, labeled from `Hints.alphabet`.
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.
+- File paths in the text, such as `src/main.cpp:12`, are links when the file or directory exists in a local pane. `Links.openFilesWith` opens them in an editor at the line.
 - Keybindings with multi-key sequences, a leader key and named key tables.
 - Bindings that match Shift+Tab and shifted symbols, and that use the Latin layout for letters on other keyboard layouts.
 - A command palette for actions, projects and script commands.
