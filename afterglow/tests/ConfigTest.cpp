@@ -1174,6 +1174,15 @@ TEST_F(ConfigTest, DragAnswerWaitIsMillisecondsWithAClamp)
     EXPECT_EQ(high.settings().dragAnswerWait, 1000);
 }
 
+TEST_F(ConfigTest, RemoteCommandsOverSshAreOffByDefault)
+{
+    // On, a remote host can start local code: the user turns it on.
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_FALSE(defaults.settings().sshRemoteCommands);
+    SettingsStore on(write(QStringLiteral("on.json"), R"({"Terminal": {"sshRemoteCommands": true}})"));
+    EXPECT_TRUE(on.settings().sshRemoteCommands);
+}
+
 TEST_F(ConfigTest, DragTreeLifetimeIsMinutesWithAClamp)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));

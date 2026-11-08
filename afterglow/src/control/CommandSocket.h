@@ -82,6 +82,11 @@ private:
 /// Control.enabled and Scripts.enabled are on. It keeps each connection's
 /// stdin and runs, and cancels the runs of a connection that closes.
 ///
+/// For a socket that `afterglow ssh` forwards to a remote host
+/// (RemoteSockets), it is the "remote" target instead: the calls of a run,
+/// for the commands that declare remote, on the pane of the ssh session,
+/// with ev.source "remote". Terminal.sshRemoteCommands must be on too.
+///
 /// The output of the runs from run() goes out while the client has
 /// acknowledged all but AckWindow bytes of it, for all the runs of its
 /// connection together. The rest waits here, bounded by
@@ -132,14 +137,25 @@ public:
     /// the queue, its string and its callback.
     static constexpr qint64 OutputPartBytes = 128;
 
+    /// The ssh session of a forwarded socket.
+    struct RemoteSession
+    {
+        quint32 pane = 0; ///< the pane that runs the session: every run acts on it
+        QString host; ///< ev.remote.host
+    };
+
     CommandSocket(Control& control, ScriptHost& scripts, SettingsStore& settings, PhosphorIpc::IpcRouter& router,
-                  QObject* parent = nullptr);
+                  std::optional<RemoteSession> remote = std::nullopt, QObject* parent = nullptr);
     /// Fails the replies that wait. The runs stay with the scripts, which
     /// end them when they go, after this: without a client, and without a
     /// handler resumed in a process that quits.
     ~CommandSocket() override;
 
     bool enabled() const { return m_enabled; }
+    /// Ends every run, whose reply fails with @p message: the socket closes.
+    void cancelAll(const QString& message) { dropAll(message, true); }
+    /// The target's name: Target, or AfterglowProto::Remote::Target for a remote session.
+    QLatin1String target() const;
     /// Runs whose stdin waits for run(). A test hook.
     int waitingInputs() const;
     /// The bytes of stdin that wait for run(). A test hook.
@@ -229,13 +245,14 @@ private:
     static qint64 cost(const Output& output) { return OutputPartBytes + output.text.size() * qint64(sizeof(QChar)); }
     std::shared_ptr<Run> find(quint64 connection, const QString& id) const;
     /// The pane of a call: @p pane, or for 0 the focused pane, 0 when there
-    /// is none. Empty with @p error.
+    /// is none. Empty with @p error. For a remote session, its pane.
     std::optional<quint32> pane(double pane, QString& error) const;
 
     Control& m_control;
     ScriptHost& m_scripts;
     SettingsStore& m_settings;
     PhosphorIpc::IpcRouter& m_router;
+    std::optional<RemoteSession> m_remote;
     std::unique_ptr<CommandApi> m_api;
     bool m_enabled = false;
     QHash<quint64, Connection> m_connections;

@@ -3810,6 +3810,11 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
     case 5113:
         m_host.terminalProtocol(5113, rest.substr(0, AfterglowProto::TransferMaxCommand + 1));
         break;
+    case AfterglowProto::Remote::Osc:
+        if (AfterglowProto::Remote::isQuery(rest)) {
+            reply(AfterglowProto::Remote::reply(m_host.remoteSocket(), bel));
+        }
+        break;
     case 66:
         textSizing(rest);
         break;

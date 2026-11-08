@@ -7,6 +7,7 @@
 #include "../audio/AudioController.h"
 #include "../control/Control.h"
 #include "../control/CommandSocket.h"
+#include "../control/RemoteSockets.h"
 #include "../control/ControlSocket.h"
 #include "../config/Settings.h"
 #include "../scripting/ScriptHost.h"
@@ -104,6 +105,8 @@ private:
     // After the scripts: it goes first and fails the replies that wait, and
     // the scripts then end its runs without a client.
     CommandSocket m_commandSocket;
+    // After the scripts and the control target, which calls it.
+    RemoteSockets m_remoteSockets;
     AudioController m_audio;
     Services m_services;
 

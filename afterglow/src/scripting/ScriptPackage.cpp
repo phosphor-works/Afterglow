@@ -337,9 +337,9 @@ QString readCommand(const QString& name, const QVariantMap& fields, ScriptComman
     for (auto it = fields.begin(); it != fields.end(); ++it) {
         const QString& key = it.key();
         const QVariant& value = it.value();
-        if (key == QLatin1String("stdin")) {
-            if (value.typeId() != QMetaType::Bool) return QStringLiteral("Command %1: stdin must be a boolean").arg(name);
-            out.input = value.toBool();
+        if (key == QLatin1String("stdin") || key == QLatin1String("remote")) {
+            if (value.typeId() != QMetaType::Bool) return QStringLiteral("Command %1: %2 must be a boolean").arg(name, key);
+            (key == QLatin1String("stdin") ? out.input : out.remote) = value.toBool();
             continue;
         }
         QString* text = key == QLatin1String("summary") ? &out.summary

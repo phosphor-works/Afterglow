@@ -246,6 +246,12 @@ if(BUILD_TESTING)
         add_test(NAME aglow_clipboard_pty
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/clipboard_pty.py $<TARGET_FILE:aglow>)
         set_tests_properties(aglow_clipboard_pty PROPERTIES TIMEOUT 120)
+        # aglow run's query for the socket of an ssh session (OSC 24569), with a
+        # terminal and a terminal socket that the test plays, also inside a
+        # private tmux server.
+        add_test(NAME aglow_run_pty
+                 COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_pty.py $<TARGET_FILE:aglow>)
+        set_tests_properties(aglow_run_pty PROPERTIES TIMEOUT 120)
         # Crafted images (GIF disposal and frame caps, BMP, TGA, PSD, HDR, PNM, PNG, JPEG).
         add_test(NAME aglow_icat_decode
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/icat_decode.py $<TARGET_FILE:aglow>)

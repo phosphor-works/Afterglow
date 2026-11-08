@@ -431,6 +431,10 @@ PhosphorConfig::Schema buildSchema()
                 QStringLiteral("What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use "
                                "xterm-256color there instead. New panes use this value."),
                 {QStringLiteral("install"), QStringLiteral("fallback")}),
+        {QStringLiteral("sshRemoteCommands"), d.sshRemoteCommands, QMetaType::Bool,
+         QStringLiteral("Let aglow run on the hosts that afterglow ssh connects to run the script commands that are marked "
+                        "remote. Every process of the remote user, and the remote root user, can then run those commands. It "
+                        "needs Control.enabled and Scripts.enabled.")},
         stringKey(QStringLiteral("pager"), d.pager,
                   QStringLiteral("Command for viewing the last command output. Afterglow splits it into words and runs it "
                                  "without a shell. An empty value turns the pager off.")),
@@ -1485,6 +1489,7 @@ Settings SettingsStore::read()
     s.shellIntegration = st.read<bool>(Terminal, QStringLiteral("shellIntegration"));
     s.sshIntegration = st.read<bool>(Terminal, QStringLiteral("sshIntegration"));
     s.sshTerminfo = st.read<QString>(Terminal, QStringLiteral("sshTerminfo"));
+    s.sshRemoteCommands = st.read<bool>(Terminal, QStringLiteral("sshRemoteCommands"));
     s.shell = st.read<QString>(Terminal, QStringLiteral("shell")).trimmed();
     // s still holds the default term.
     if (const QString term = st.read<QString>(Terminal, QStringLiteral("term")).trimmed(); !term.isEmpty()) s.term = term;

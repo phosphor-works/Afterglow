@@ -317,6 +317,11 @@ If the host has no `tic`, or the local `infocmp` cannot read the entry, the sess
 `Terminal.term=afterglow` also needs the entry on the local system. The build installs it only when it finds `tic`.
 Set `Terminal.sshTerminfo` to `fallback` to always use `xterm-256color` on remote hosts and install nothing.
 
+With `Terminal.sshRemoteCommands` on, `afterglow ssh` also lets `aglow run` on the host run the script commands that are marked `remote`.
+Before the session starts, it runs a probe over the shared connection and forwards a socket of Afterglow to the host.
+With the setting on, every process of the remote user, and the remote root user, can run the commands that are marked `remote`.
+See [remote commands](CONTROL.md#remote-commands).
+
 `ssh -G`, `ssh -V`, `ssh -Q` and `ssh -O` reach `ssh` unchanged.
 Runs with `-N`, `-W`, `-f` or `-s` do not install the entry or change the pane label.
 The same applies when the SSH configuration sets `SessionType none`, `SessionType subsystem` or `ForkAfterAuthentication yes`.

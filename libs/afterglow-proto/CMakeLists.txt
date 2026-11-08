@@ -80,6 +80,7 @@ add_library(AfterglowProto STATIC
     src/Ipc.cpp
     src/Json.cpp
     src/Random.cpp
+    src/Remote.cpp
     src/Run.cpp
     src/Sha256.cpp
     src/Socket.cpp

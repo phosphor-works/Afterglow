@@ -19,6 +19,7 @@
 
 namespace Afterglow {
 
+class RemoteSockets;
 class SettingsStore;
 
 /// The calls of the control socket's "control" target. A call that fails
@@ -68,6 +69,21 @@ public:
     /// caller's connection closes.
     Q_INVOKABLE void overlay(double pane, const QStringList& argv, const QVariantMap& options);
 
+    /// For `afterglow ssh`: whether it can forward a socket for remote
+    /// commands (RemoteSockets::enabled), before it asks the remote host.
+    Q_INVOKABLE bool remoteCommandsEnabled();
+    /// Opens the socket of the ssh session of `afterglow ssh` process @p pid
+    /// in @p pane, for the remote directory @p directory. @p protocol is the
+    /// remote aglow's, @p ssh the options and @p destination the
+    /// destination that reach the shared connection, for the cancel of the
+    /// forward. Returns {token, socket, path}, or {token, error} with the
+    /// reason version or length.
+    Q_INVOKABLE QVariantMap openRemoteSocket(double pane, double pid, const QString& host, const QString& directory,
+                                             double protocol, const QStringList& ssh, const QString& destination);
+    /// `ssh -O forward` failed for @p token: @p reason is forward.
+    Q_INVOKABLE void remoteSocketFailed(const QString& token, const QString& reason);
+    void setRemoteSockets(RemoteSockets* sockets) { m_remote = sockets; }
+
     /// Whose overlays a connection's are, as Control knows them.
     static QString overlayOwner(quint64 connection) { return QStringLiteral("control:%1").arg(connection); }
     /// Cancels the overlays of every control client with @p message.
@@ -100,6 +116,7 @@ private:
 
     Control& m_control;
     SettingsStore& m_settings;
+    RemoteSockets* m_remote = nullptr;
     /// The open connections that have opened an overlay.
     QSet<quint64> m_overlayClients;
 };
@@ -122,6 +139,8 @@ public:
     /// The control target is on the router. For the tests: the router is
     /// what clients see.
     bool enabled() const { return m_enabled; }
+    /// The sockets of remote commands, for the calls of `afterglow ssh`.
+    void setRemoteSockets(RemoteSockets* sockets) { m_api.setRemoteSockets(sockets); }
 
 private:
     void applySettings();

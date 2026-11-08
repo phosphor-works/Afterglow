@@ -14,6 +14,8 @@
 #include <AfterglowVt/Unicode.h>
 #include <AfterglowVt/afterglowvt_export.h>
 
+#include <AfterglowProto/Remote.h>
+
 #include <array>
 #include <cstdint>
 #include <map>
@@ -159,6 +161,11 @@ public:
     /// What the host's OSC 99 support covers, as the query reply's key=value
     /// list ("a=focus,report:c=1:p=title,body..."); empty for no support.
     virtual std::string notificationCapabilities() { return {}; }
+    /// The answer to `aglow run`'s query for the socket of the ssh session
+    /// that runs in this terminal (OSC 24569): its path on the remote host,
+    /// else why there is none. Called on the reader thread: the reply goes
+    /// out before the replies to what follows the query, such as DA1.
+    virtual AfterglowProto::Remote::Answer remoteSocket() { return {}; }
     /// The pane's contexts changed (OSC 3008, iTerm2 RemoteHost); read them
     /// through Terminal::contexts().
     virtual void contextChanged() { }

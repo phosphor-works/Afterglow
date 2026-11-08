@@ -19,6 +19,8 @@ int runDnd(int argc, char** argv);
 int runIcat(int argc, char** argv);
 int runClipboard(int argc, char** argv);
 int runRun(int argc, char** argv);
+/// aglow remote-prune DIR: the probe of `afterglow ssh` runs it on a remote host.
+int runRemotePrune(int argc, char** argv);
 
 /// $HOME, or "/" without it. No passwd lookup: a static binary has no NSS.
 std::string homeDirectory();

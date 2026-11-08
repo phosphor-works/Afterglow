@@ -217,6 +217,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `shell` | `""` |  | Program that new panes run, as a name or a path. It gets no arguments. An empty value starts your login shell. |
 | `shellIntegration` | `true` |  | Integrate Bash, Zsh and Fish prompts in new panes automatically. |
 | `sshIntegration` | `true` |  | Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and the session offers COLORTERM and TERM_PROGRAM to the server. New panes use this value. |
+| `sshRemoteCommands` | `false` |  | Let aglow run on the hosts that afterglow ssh connects to run the script commands that are marked remote. Every process of the remote user, and the remote root user, can then run those commands. It needs Control.enabled and Scripts.enabled. |
 | `sshTerminfo` | `"install"` | `"install"`, `"fallback"` | What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use xterm-256color there instead. New panes use this value. |
 | `term` | `"xterm-256color"` |  | Value of TERM for the programs in the panes. An empty value uses the default. New panes use this value. |
 | `textBlinkInterval` | `500` | 100–5000 | Duration in milliseconds for each visible and hidden phase of blinking text (SGR 5). |

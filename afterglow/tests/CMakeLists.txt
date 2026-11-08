@@ -55,6 +55,19 @@ if(AFTERGLOW_BUILD_AGLOW)
 endif()
 gtest_discover_tests(afterglow_command_tests)
 
+# Remote commands: the forwarded sockets, the probe of `afterglow ssh` with a
+# fake ssh, and an acceptance test with sshd run as the user, which skips
+# without sshd. A pane runs in it, offscreen.
+qt_add_executable(afterglow_remote_tests RemoteCommandsTest.cpp)
+target_link_libraries(afterglow_remote_tests PRIVATE afterglow_app Afterglow::Proto GTest::gtest)
+target_compile_definitions(afterglow_remote_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>")
+add_dependencies(afterglow_remote_tests afterglow)
+if(AFTERGLOW_BUILD_AGLOW)
+    target_compile_definitions(afterglow_remote_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
+    add_dependencies(afterglow_remote_tests aglow)
+endif()
+gtest_discover_tests(afterglow_remote_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
 qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp)
 target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

@@ -172,7 +172,7 @@ protected:
         sink.output = writer(&Client::out);
         sink.error = writer(&Client::err);
         sink.finished = [c](int status) { c->status = status; };
-        return host->startCommand({script, command, args, cwd, pane, input, QStringLiteral("shell")},
+        return host->startCommand({script, command, args, cwd, pane, input, QStringLiteral("shell"), {}},
                                   std::move(sink), error, unknown);
     }
 
@@ -258,6 +258,7 @@ TEST_F(ScriptHostTest, ManifestCommandsAreChecked)
         {"{ go = { summary = 'x', palette = ' ' } }", "palette must not be blank"},
         {"{ go = { usage = 'X' } }", "needs a summary"},
         {"{ go = { summary = 'x', stdin = 'yes' } }", "stdin must be a boolean"},
+        {"{ go = { summary = 'x', remote = 1 } }", "remote must be a boolean"},
         {"{ go = { summary = 'x', title = 'y' } }", "unknown field title"},
         {"{ go = { summary = string.rep('x', 513) } }", "at most 512"},
         {"{ go = { summary = 'a\\nb' } }", "no control characters"},
@@ -3698,7 +3699,7 @@ TEST_F(ScriptHostTest, SetCommandsFollowsTheManifestRules)
     // The same shape as the manifest's commands: names to their fields.
     WRITE(user, "dynamic.luau", QStringLiteral(R"(
 local lists = {
-    {extra = {summary = "Extra", usage = "X", palette = "Extra", stdin = true}},
+    {extra = {summary = "Extra", usage = "X", palette = "Extra", stdin = true, remote = true}},
     {fixed = {summary = "Clash"}},
     {["-dash"] = {summary = "x"}},
     {["bad name"] = {summary = "x"}},
@@ -3732,7 +3733,7 @@ return {
     };
     ASSERT_EQ(tokens(), (QStringList{"dynamic.fixed", "dynamic.extra"}));
     const ScriptCommand extra = host->commands()[1];
-    EXPECT_TRUE(extra.runtime && extra.input);
+    EXPECT_TRUE(extra.runtime && extra.input && extra.remote);
     EXPECT_EQ(extra.usage, "X");
     EXPECT_EQ(extra.palette, "Extra");
     const std::pair<int, const char*> refused[] = {{2, "Command fixed is in the manifest already"}, {3, "must not start with -"},
@@ -3830,6 +3831,48 @@ return {
 
 } // namespace
 
+TEST_F(ScriptHostTest, ARemoteHostRunsOnlyTheCommandsThatDeclareRemote)
+{
+    WRITE(user, "far.luau", R"(
+return {
+    metadata = { commands = {
+        here = { summary = "Local only" },
+        there = { summary = "From remote hosts too", remote = true },
+    } },
+    run_command = function(command, ev)
+        return afterglow.output(ev, command .. " " .. ev.source .. " " .. tostring(ev.remote and ev.remote.host)
+            .. " " .. ev.cwd .. "\n")
+    end,
+}
+)");
+    host->setEnabled(true);
+    const auto commands = host->commands();
+    ASSERT_EQ(commands.size(), 2);
+    EXPECT_FALSE(commands[0].remote);
+    EXPECT_TRUE(commands[1].remote);
+
+    const auto run = [&](const QString& command, const QString& source, QString* error = nullptr, bool* unknown = nullptr) {
+        Client& client = newClient();
+        ScriptHost::CommandSink sink;
+        sink.output = [c = &client](const QString& text, std::function<void(bool)> sent) { c->out += text; sent(true); return true; };
+        sink.finished = [c = &client](int status) { c->status = status; };
+        ScriptHost::CommandRequest request{"far", command, {}, "/home/far/src", 7, std::nullopt, source, {}};
+        if (source == QLatin1String("remote")) request.remoteHost = QStringLiteral("box");
+        host->startCommand(request, std::move(sink), error, unknown);
+        return client.out;
+    };
+    // The cwd is the remote host's, as text.
+    EXPECT_EQ(run("there", "remote"), "there remote box /home/far/src\n");
+    EXPECT_EQ(run("there", "shell"), "there shell nil /home/far/src\n");
+    EXPECT_EQ(run("here", "shell"), "here shell nil /home/far/src\n");
+    // For a remote host, a command without remote does not exist.
+    QString error;
+    bool unknown = false;
+    EXPECT_EQ(run("here", "remote", &error, &unknown), "");
+    EXPECT_TRUE(unknown);
+    EXPECT_EQ(error, QStringLiteral("No command here in far"));
+}
+
 TEST_F(ScriptHostTest, CommandRunGetsItsEventAndWritesItsOutput)
 {
     WRITE(user, "cmds.luau", RunScript);
@@ -3871,8 +3914,8 @@ TEST_F(ScriptHostTest, CommandRunGetsItsEventAndWritesItsOutput)
     paneSink.finished = [c = &paneDir](int status) { c->status = status; };
     noSink.output = [c = &noDir](const QString& text, std::function<void(bool)> sent) { c->out += text; sent(true); return true; };
     noSink.finished = [c = &noDir](int status) { c->status = status; };
-    host->startCommand({"cmds", "greet", {}, {}, 7, std::nullopt, "shell"}, std::move(paneSink), nullptr);
-    host->startCommand({"cmds", "greet", {}, {}, 0, std::nullopt, "shell"}, std::move(noSink), nullptr);
+    host->startCommand({"cmds", "greet", {}, {}, 7, std::nullopt, "shell", {}}, std::move(paneSink), nullptr);
+    host->startCommand({"cmds", "greet", {}, {}, 0, std::nullopt, "shell", {}}, std::move(noSink), nullptr);
     EXPECT_EQ(paneDir.out, "hello world in /pane from shell on 7\n");
     EXPECT_EQ(noDir.out, "hello world in  from shell on nil\n");
 
@@ -3949,7 +3992,7 @@ TEST_F(ScriptHostTest, CommandRunWithNoClientShowsItsErrorsAsANotification)
     ASSERT_EQ(notices.size(), 1);
     EXPECT_TRUE(notices[0].body.contains("Scripts.commandOutputLimit")) << notices[0].body.toStdString();
     // A run that ends at its time limit says so. A sink with no finished function is a run with no client.
-    ASSERT_NE(host->startCommand({"cmds", "wait", {"400"}, {}, 7, std::nullopt, "palette"}, {}, nullptr), 0u);
+    ASSERT_NE(host->startCommand({"cmds", "wait", {"400"}, {}, 7, std::nullopt, "palette", {}}, {}, nullptr), 0u);
     ASSERT_TRUE(await([&] { return notices.size() == 2; }));
     EXPECT_TRUE(notices[1].body.contains("Scripts.commandTimeout")) << notices[1].body.toStdString();
 }
@@ -4083,7 +4126,7 @@ TEST_F(ScriptHostTest, AnAwaitedOutputWithNoClientCountsTowardTheResults)
     WRITE(user, "cmds.luau", RunScript);
     host->setEnabled(true);
     const QString lines = QString::number(ScriptHost::MaxResultsPerSecond * 3);
-    ASSERT_NE(host->startCommand({"cmds", "lines", {lines}, {}, 7, std::nullopt, "palette"}, {}, nullptr), 0u);
+    ASSERT_NE(host->startCommand({"cmds", "lines", {lines}, {}, 7, std::nullopt, "palette", {}}, {}, nullptr), 0u);
     ASSERT_TRUE(await([&] { return host->isDisabled("cmds"); }));
     ASSERT_FALSE(notices.isEmpty());
     EXPECT_TRUE(notices.last().body.contains("operation results")) << notices.last().body.toStdString();

@@ -190,6 +190,7 @@ A terminal reset clears both stacks and restores the default text pointer.
 
 `aglow` is a client of four Kitty protocols: file transfer, drag and drop, graphics and the clipboard. It does not need Kitty.
 `aglow run`, which runs the commands of scripts, uses no Kitty protocol and has no counterpart in `kitten`.
+On a remote host it uses [OSC 24569](#remote-commands-osc-24569), which is Afterglow's own.
 [The aglow client](DESKTOP.md#the-aglow-client) tells how to use it.
 Its message formats come from `libs/afterglow-proto`, the same code that the terminal uses.
 
@@ -198,6 +199,7 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 | `aglow transfer` | File transfer (OSC 5113): directories, links, permissions, times, zlib, deltas and the SHA-256 password form | Against the Afterglow service in process (`Client.*`) and through a pseudo-terminal, against Kitty 0.49.2 (`kitty_transfer_interop.py`), and against a hostile terminal (`Proto.Hostile.*`) |
 | `aglow dnd` | Drag and drop (OSC 72): MIME data, copy and move, remote directory trees in both directions | Against Afterglow in a nested KWin (`NativeWindow.Aglow*`), as the target or source of a remote drag (`AglowDrop.*`, `AglowDrag.*`), and with the question before a drop replaces a file (`AglowOverwrite.*`) |
 | `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels, GIF animation frames, Unicode placeholders, tmux passthrough | `aglow_icat_render` draws its output with the Afterglow renderer. `aglow_icat_decode` checks the pixels of crafted images. No test covers tmux passthrough. |
+| `aglow run` | The socket query of a remote host (OSC 24569), with the DA1 guard and tmux passthrough | Against a terminal and a socket that a test plays, also in a private tmux server (`aglow_run_pty`), and through sshd run as the user (`RemoteCommandsTest.*`) |
 | `aglow clipboard` | Clipboard (OSC 5522), and OSC 52 for plain text in a terminal without OSC 5522 | Against a terminal that a test plays (`aglow_clipboard_pty`, `aglow_clipboard_cases`), and the message formats in `libs/afterglow-proto/tests` |
 
 `aglow transfer`, `aglow dnd`, `aglow icat` and `aglow clipboard` take the options of the `kitten` command of the same name, with the differences below.
@@ -219,6 +221,43 @@ Run the tests of `aglow`:
 ```sh
 ctest --test-dir build --output-on-failure -R 'aglow|Aglow|^Client\.|^Proto\.(Client|Hostile)\.'
 ```
+
+## Remote commands (OSC 24569)
+
+OSC 24569 is Afterglow's own sequence. It tells `aglow run` on a remote host where the socket of its ssh session is.
+The number spells AGLOW on a phone keypad. No other terminal is known to use it.
+`libs/afterglow-proto` writes and reads the query and the replies, for the pane and for `aglow`.
+
+| Sequence | Form |
+| --- | --- |
+| Query, from `aglow run` | `OSC 24569 ; q=remote ST` |
+| Reply with a socket | `OSC 24569 ; path=PATH ST` |
+| Reply without a socket | `OSC 24569 ; error=REASON ST` |
+
+| Reason | Meaning |
+| --- | --- |
+| `off` | The pane has no forward. It runs no ssh session, or a requirement of [remote commands](CONTROL.md#remote-commands) is missing |
+| `forward` | The ssh server refused the forward |
+| `version` | The `aglow` on the remote host has another protocol |
+| `length` | The socket path on the remote host would be over 104 bytes |
+
+`PATH` is an absolute path of at most 104 bytes, with no control characters.
+A reply ends with BEL when the query ended with BEL, else with ST.
+The pane answers at once, before the replies to what follows the query.
+Afterglow ignores every other OSC 24569, such as a reply that a program echoes.
+
+`aglow run` sends DA1 (`CSI c`) after the query, and every terminal answers DA1.
+When the DA1 answer comes with no OSC 24569 reply, the terminal is not Afterglow.
+`aglow run` waits at most 2 seconds, as a last guard.
+Inside tmux, `aglow run` sends the query in tmux passthrough (`DCS tmux; ... ST`).
+tmux answers DA1 itself at once, and keeps the DA1 answer of the terminal.
+Thus inside tmux the guard is a status report (`CSI 5 n`) in the same passthrough. tmux passes its answer (`CSI 0 n`) to the pane.
+When `allow-passthrough` is off, tmux passes nothing, and `aglow run` asks tmux for that option first.
+`aglow run` asks the terminal only when standard input, output or error is a terminal.
+
+The reply is not a secret. Any remote program can send the query.
+When no program reads the reply, it goes to the shell as input.
+The permissions of the socket are the only boundary.
 
 ## Protocol definitions
 

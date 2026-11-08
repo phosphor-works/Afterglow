@@ -195,6 +195,7 @@ struct Settings
     bool shellIntegration = true;
     bool sshIntegration = true; ///< integrated shells run ssh through `afterglow ssh`
     QString sshTerminfo = QStringLiteral("install"); ///< TERM=afterglow on a host without its entry: install or fallback
+    bool sshRemoteCommands = false; ///< `afterglow ssh` forwards a socket for the commands marked remote
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
     /// Where a finished selection is copied: nowhere, the primary selection

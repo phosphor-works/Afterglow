@@ -186,6 +186,14 @@ public:
         m_scrollOnInput = onInput;
     }
 
+    /// What the pane answers to `aglow run`'s query for the socket of its
+    /// ssh session (OSC 24569). RemoteSockets sets it. GUI thread.
+    void setRemoteSocket(const AfterglowProto::Remote::Answer& answer)
+    {
+        std::lock_guard lock(m_mutex);
+        m_remoteSocket = answer;
+    }
+
     /// Where the pane's shell runs when that is not here as you (OSC 3008,
     /// iTerm2 RemoteHost): "root", "deploy@prod-1", a container's name.
     /// Empty for a local shell as the local user.
@@ -364,6 +372,7 @@ private:
                      std::vector<std::uint8_t>& rgba) override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
     std::string notificationCapabilities() override;
+    AfterglowProto::Remote::Answer remoteSocket() override { return m_remoteSocket; }
     bool clipboardRequest(const AfterglowVt::ClipboardRequest& request) override;
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override;
@@ -406,6 +415,7 @@ private:
     std::vector<std::pair<QString, QString>> m_pendingUserVars;
     Signals m_signals{};
     QString m_command; ///< guarded by m_mutex
+    AfterglowProto::Remote::Answer m_remoteSocket; ///< guarded by m_mutex
     std::chrono::steady_clock::time_point m_commandStart;
     AfterglowVt::Terminal m_terminal;
     QString m_title;

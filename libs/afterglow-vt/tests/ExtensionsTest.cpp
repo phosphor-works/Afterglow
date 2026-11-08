@@ -4,7 +4,7 @@
 // Extensions from other terminals and the shell world: OSC 133 extras, VS
 // Code's 633, iTerm2's 1337, systemd's 3008, OSC 52, ConEmu's 9, kitty's
 // multiple cursors and OSC 21 and 22, pixel reports, OSC 8 links, and the
-// OSC 72 and 5113 sessions handed to the host.
+// OSC 72 and 5113 sessions handed to the host, and aglow's OSC 24569.
 
 #include "TestUtil.h"
 #include "../src/ITerm2.h"
@@ -667,4 +667,45 @@ TEST(Extensions, SixelThroughTheTerminal)
     // Mode 1070 on: each image starts from the default palette.
     t.feed("\x1b[?1070h\x1bPq#5;2;100;0;0#5~\x1b\\\x1bPq#5~\x1b\\");
     EXPECT_EQ(pixel(0, 0), 0xFF000000u | defaultSixelPalette()[5]);
+}
+
+namespace {
+
+struct RemoteHost : RecordingHost
+{
+    AfterglowProto::Remote::Answer answer;
+    AfterglowProto::Remote::Answer remoteSocket() override { return answer; }
+};
+
+} // namespace
+
+TEST(Extensions, TheRemoteSocketQueryGetsThePathOrTheReason)
+{
+    using AfterglowProto::Remote::Error;
+    RemoteHost host;
+    Terminal t(20, 5, host);
+    // A pane with no ssh session: the host's default.
+    t.feed("\x1b]24569;q=remote\x1b\\");
+    EXPECT_EQ(host.written, "\x1b]24569;error=off\x1b\\");
+
+    host.written.clear();
+    host.answer = {"/run/user/1000/afterglow/0123456789abcdef.sock", Error::Off};
+    // DA1 after the query is answered after the reply, as aglow run expects.
+    t.feed("\x1b]24569;q=remote\x1b\\\x1b[c");
+    EXPECT_TRUE(host.written.starts_with("\x1b]24569;path=/run/user/1000/afterglow/0123456789abcdef.sock\x1b\\\x1b[?"))
+        << host.written;
+    EXPECT_TRUE(host.written.ends_with("c"));
+
+    for (const auto& [error, name] : {std::pair{Error::Forward, "forward"}, std::pair{Error::Version, "version"},
+                                      std::pair{Error::Length, "length"}}) {
+        host.written.clear();
+        host.answer = {{}, error};
+        t.feed("\x1b]24569;q=remote\x07");
+        EXPECT_EQ(host.written, std::string("\x1b]24569;error=") + name + "\x07");
+    }
+    // Anything else in OSC 24569 gets no reply: a reply that a program
+    // echoes is not a query.
+    host.written.clear();
+    t.feed("\x1b]24569;path=/x.sock\x1b\\\x1b]24569;q=other\x1b\\");
+    EXPECT_EQ(host.written, "");
 }

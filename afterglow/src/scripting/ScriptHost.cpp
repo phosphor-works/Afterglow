@@ -618,7 +618,7 @@ QStringList ScriptHost::performScan(const QStringList& directories)
                 for (auto p = package.pulses.cbegin(); p != package.pulses.cend(); ++p) pulses.insert(p.key(), p.value());
                 QVariantList commands;
                 for (const ScriptCommand& c : std::as_const(package.commands))
-                    commands.append(QVariantList{c.name, c.summary, c.usage, c.palette, c.input});
+                    commands.append(QVariantList{c.name, c.summary, c.usage, c.palette, c.input, c.remote});
                 const QVariantMap identity{{QStringLiteral("id"), package.id}, {QStringLiteral("version"), package.version},
                     {QStringLiteral("state_version"), package.stateVersion}, {QStringLiteral("assets"), package.assets},
                     {QStringLiteral("config"), package.config}, {QStringLiteral("shaders"), package.shaderDirectory},
@@ -999,7 +999,9 @@ quint64 ScriptHost::startCommand(const CommandRequest& request, CommandSink sink
     const auto command = script ? std::find_if(script->commands.cbegin(), script->commands.cend(),
                                                [&](const ScriptCommand& c) { return c.name == request.command; })
                                 : QList<ScriptCommand>::const_iterator();
-    if (!script || command == script->commands.cend())
+    // A remote host sees only the commands that declare remote: for it, the others do not exist.
+    const bool remote = request.source == QLatin1String("remote");
+    if (!script || command == script->commands.cend() || (remote && !command->remote))
         return refuse(QStringLiteral("No command %1 in %2").arg(request.command, request.script), true);
     if (int(script->runs.size()) >= m_limits.runs)
         return refuse(QStringLiteral("Script %1 runs %2 commands already, its limit (Scripts.commandRunLimit)")
@@ -1035,6 +1037,7 @@ quint64 ScriptHost::startCommand(const CommandRequest& request, CommandSink sink
         ev.insert(QStringLiteral("pane"), pane);
     }
     ev.insert(QStringLiteral("cwd"), request.cwd.isEmpty() ? pane.value(QStringLiteral("cwd")).toString() : request.cwd);
+    if (remote) ev.insert(QStringLiteral("remote"), QVariantMap{{QStringLiteral("host"), request.remoteHost}});
     // Whole: CommandSocket refuses a run with more than Scripts.commandStdinLimit.
     if (command->input && request.input) ev.insert(QStringLiteral("stdin"), *request.input);
     call(script, QStringLiteral("__command"), {id, request.command, ev}, CommandCallTimeoutMs, request.pane, handle);
@@ -1046,7 +1049,7 @@ QString ScriptHost::runCommand(const QString& token, quint32 pane, const QString
     const auto dot = token.indexOf(QLatin1Char('.'));
     if (dot < 0) return QStringLiteral("A script command is <script id>.<command>, not %1").arg(token);
     QString error;
-    startCommand({token.left(dot), token.mid(dot + 1), {}, {}, pane, std::nullopt, source}, {}, &error);
+    startCommand({token.left(dot), token.mid(dot + 1), {}, {}, pane, std::nullopt, source, {}}, {}, &error);
     return error;
 }
 
@@ -1646,7 +1649,8 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 checked.insert(command.name, QVariantMap{{QStringLiteral("summary"), command.summary},
                                                          {QStringLiteral("usage"), command.usage},
                                                          {QStringLiteral("palette"), command.palette},
-                                                         {QStringLiteral("stdin"), command.input}});
+                                                         {QStringLiteral("stdin"), command.input},
+                                                         {QStringLiteral("remote"), command.remote}});
             }
             effect.insert(QStringLiteral("commands"), checked);
         }
@@ -1802,7 +1806,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             for (auto it = runtime.cbegin(); it != runtime.cend(); ++it) {
                 const auto item = it.value().toMap();
                 commands.append({script->id, it.key(), str(item, "summary"), str(item, "usage"), str(item, "palette"),
-                                 item.value(QStringLiteral("stdin")).toBool(), true});
+                                 item.value(QStringLiteral("stdin")).toBool(), true, item.value(QStringLiteral("remote")).toBool()});
             }
             const QList<ScriptCommand> before = this->commands();
             script->commands = commands;

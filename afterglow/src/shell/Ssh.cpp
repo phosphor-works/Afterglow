@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Ssh.h"
+#include <AfterglowProto/Ipc.h>
+#include <AfterglowProto/Remote.h>
+#include <AfterglowProto/Version.h>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <cerrno>
 #include <csignal>
@@ -192,11 +196,11 @@ QString baseDirectory(const char* name)
     return value.startsWith(QLatin1Char('/')) ? value : QString();
 }
 
-QString stateFile()
+QString stateFile(const QString& name = QStringLiteral("ssh-terminfo"))
 {
     QString state = baseDirectory("XDG_STATE_HOME");
     if (state.isEmpty()) state = QDir::homePath() + QStringLiteral("/.local/state");
-    return state + QStringLiteral("/afterglow/ssh-terminfo");
+    return state + QStringLiteral("/afterglow/") + name;
 }
 
 // The hosts the helper has tried, oldest first: one hash for each, and
@@ -340,6 +344,132 @@ InstallResult installTerminfo(const QByteArrayList& args, const Arguments& parse
     remember(path, key, status == 0 ? key : key + QStringLiteral(" fallback"));
     return {status == 0 ? Install::Installed : Install::Unavailable};
 }
+
+// The words of ARGS for a run of the helper's own over the session's
+// connection: the options and their values, without -n. Without FORWARDS,
+// -L, -R and -D go too: a control command (-O) would add the session's
+// forwards to the shared connection again.
+QByteArrayList connectionOptions(const QByteArrayList& args, const Arguments& parsed, bool forwards)
+{
+    QByteArrayList out;
+    bool isValue = false;
+    bool dropValue = false;
+    for (const int i : parsed.options) {
+        if (isValue) {
+            if (!dropValue) out << args[i];
+            isValue = dropValue = false;
+            continue;
+        }
+        const QByteArray word = withoutNullInput(args[i], isValue);
+        if (word.isEmpty()) continue;
+        // The flag that takes a value, when the word has one, ends the word.
+        qsizetype flag = 1;
+        while (flag < word.size() && FlagsWithValue.find(word[flag]) == std::string_view::npos) ++flag;
+        if (!forwards && flag < word.size() && QByteArrayView("LRD").contains(word[flag])) {
+            if (flag > 1) out << word.left(flag);
+            dropValue = isValue;
+            continue;
+        }
+        out << word;
+    }
+    return out;
+}
+
+// How the remote step ends for the helper.
+struct RemoteResult {
+    std::optional<int> exit; ///< the helper ends with this status: the probe could not connect, or died
+};
+
+// Says once for each host and version that the remote aglow speaks another
+// protocol, on standard error.
+void reportVersion(const Config& config, const Probe& probe)
+{
+    const QString host = config.user + QLatin1Char('@') + config.hostname + QLatin1Char(':') + config.port;
+    const QString key = QString::fromLatin1(
+        QCryptographicHash::hash((host + QLatin1Char('\n') + probe.version).toUtf8(), QCryptographicHash::Sha256).toHex());
+    const QString path = stateFile(QStringLiteral("ssh-remote"));
+    const QStringList cached = readCache(path);
+    if (cached.contains(key)) {
+        if (key != cached.last()) remember(path, key, key);
+        return;
+    }
+    remember(path, key, key);
+    const QString name = config.host.isEmpty() ? config.hostname : config.host;
+    std::fprintf(stderr, "afterglow ssh: aglow on %s speaks protocol %d, and this Afterglow speaks protocol %d. "
+                         "aglow run there cannot reach this terminal until the two match.\n",
+                 clean(name).toLocal8Bit().constData(), probe.protocol, AfterglowProto::ProtocolVersion);
+}
+
+// Probes the host and forwards a socket of the terminal there, when the
+// terminal allows remote commands. Unless SHARED (the install connected and
+// added it), OPTIONS gains the connection sharing, which the session reuses.
+// Each failure leaves the session as it would be without remote commands,
+// with no message: the pane's answer to the query says why.
+RemoteResult forwardRemote(const QByteArrayList& args, const Arguments& parsed, const Config& config, const IgnoredSignals& signals,
+                           QByteArrayList& options, bool shared)
+{
+    namespace Json = AfterglowProto::Json;
+    const QByteArray socket = qgetenv("AFTERGLOW_SOCKET");
+    bool paneOk = false;
+    const uint pane = qEnvironmentVariable("AFTERGLOW_PANE_ID").toUInt(&paneOk);
+    if (socket.isEmpty() || !paneOk || pane == 0) return {};
+    constexpr int CallTimeoutMs = 2000;
+    AfterglowProto::IpcConnection ipc;
+    AfterglowProto::IpcConnection::Error error;
+    if (!ipc.connect(socket.toStdString(), &error, CallTimeoutMs)) return {};
+    const auto enabled = ipc.call("control", "remoteCommandsEnabled", {}, CallTimeoutMs, &error);
+    if (!enabled || !enabled->toBool()) return {};
+
+    // A shared connection: the helper's own, else the user's ControlPath.
+    const QByteArrayList shares = sharing(config);
+    if (!config.controlPath && shares.isEmpty()) return {};
+    const QByteArray destination = args[parsed.destination];
+    // As the install: the session's options, so that the probe opens the
+    // connection that the session then shares.
+    QByteArrayList probe{"ssh"};
+    probe << shares << connectionOptions(args, parsed, true);
+    if (config.remoteCommand) probe << "-o" << "RemoteCommand=none";
+    probe << "-T" << "--" << destination << probeScript();
+    const auto probed = capture(probe, signals);
+    if (!probed) return {};
+    if (WIFSIGNALED(probed->status)) return {finish(probed->status, signals)};
+    if (exitCode(probed->status) == SshFailed) return {SshFailed};
+    if (!shared) options << shares;
+    const Probe found = parseProbe(probed->output);
+    if (!found.aglow || found.directory.isEmpty()) return {};
+
+    // The master must be there for -O forward, and for the session to share it.
+    QByteArrayList control{"ssh"};
+    control << shares << connectionOptions(args, parsed, false);
+    const auto check = capture(control + QByteArrayList{"-O", "check", "--", destination}, signals, {}, true);
+    if (!check || check->status != 0) return {};
+
+    QStringList controlOptions;
+    for (const QByteArray& word : control.mid(1)) controlOptions << QString::fromLocal8Bit(word);
+    const QString host = config.host.isEmpty() ? config.hostname : config.host;
+    const auto opened = ipc.call("control", "openRemoteSocket",
+                                 {std::int64_t(pane), std::int64_t(getpid()), host.toStdString(), found.directory.toStdString(),
+                                  std::int64_t(found.protocol), [&] {
+                                      Json::Array words;
+                                      for (const QString& w : std::as_const(controlOptions)) words.emplace_back(w.toStdString());
+                                      return words;
+                                  }(),
+                                  destination.toStdString()},
+                                 CallTimeoutMs, &error);
+    if (!opened) return {};
+    const std::string& token = (*opened)["token"].toString();
+    if ((*opened)["error"].toString() == "version") {
+        reportVersion(config, found);
+        return {};
+    }
+    const std::string& local = (*opened)["socket"].toString();
+    const std::string& remote = (*opened)["path"].toString();
+    if (local.empty() || remote.empty()) return {};
+    const QByteArray spec = QByteArray::fromStdString(remote) + ':' + QByteArray::fromStdString(local);
+    const auto forward = capture(control + QByteArrayList{"-O", "forward", "-R", spec, "--", destination}, signals, {}, true);
+    if (!forward || forward->status != 0) ipc.call("control", "remoteSocketFailed", {token, "forward"}, CallTimeoutMs, &error);
+    return {};
+}
 } // namespace
 
 Arguments parseArguments(const QStringList& args)
@@ -418,6 +548,42 @@ QByteArray contextEnd(const QString& id)
     return "\x1b]3008;end=" + clean(id).toUtf8() + "\x1b\\";
 }
 
+QByteArray probeScript()
+{
+    // One line for sh -c: the remote login shell (sh, bash, zsh, fish) reads
+    // it first, so it holds no single quote and no backslash. The directory
+    // is made only where aglow is, and the prune clears the sockets of
+    // sessions that ended, which sshd leaves.
+    return "sh -c '"
+           "r=; case \"$XDG_RUNTIME_DIR\" in /*) r=$XDG_RUNTIME_DIR;; esac; "
+           "echo \"runtime=$r\"; echo \"home=$HOME\"; "
+           "if v=$(aglow --version 2>/dev/null); then echo \"aglow=$v\"; "
+           "if [ -n \"$r\" ]; then d=$r/afterglow; else d=$HOME/.local/state/afterglow/run; fi; "
+           "if (umask 077 && mkdir -p \"$d\") && chmod 700 \"$d\"; then echo \"dir=$d\"; "
+           "aglow remote-prune \"$d\" >/dev/null 2>&1; fi; fi'";
+}
+
+Probe parseProbe(const QByteArray& output)
+{
+    Probe probe;
+    for (const QByteArray& line : output.split('\n')) {
+        const qsizetype equals = line.indexOf('=');
+        if (equals <= 0) continue;
+        const QByteArray key = line.left(equals);
+        const QString value = QString::fromUtf8(line.mid(equals + 1));
+        if (key == "runtime") probe.runtime = value.startsWith(QLatin1Char('/')) ? value : QString();
+        else if (key == "home") probe.home = value;
+        else if (key == "dir") probe.directory = value;
+        else if (key == "aglow") {
+            probe.aglow = true;
+            probe.version = value;
+            static const QRegularExpression protocol(QStringLiteral("\\(protocol (\\d{1,9})\\)"));
+            if (const auto match = protocol.match(value); match.hasMatch()) probe.protocol = match.captured(1).toInt();
+        }
+    }
+    return probe;
+}
+
 int run(const QByteArrayList& args)
 {
     // A pane names its foreground job by the process name when it asks before
@@ -439,12 +605,19 @@ int run(const QByteArrayList& args)
     // The config can turn off the session as -N, -s or -f do.
     const bool noSession = parsed.noSession || (config && config->noSession);
     if (config) {
+        const qsizetype before = options.size();
         if (term == "afterglow" && !noSession) {
             const InstallResult install = qgetenv("AFTERGLOW_SSH_TERMINFO") == "fallback"
                 ? InstallResult{} : installTerminfo(args, parsed, *config, signals, options);
             if (install.result == Install::Ended) return finish(install.status, signals);
             if (install.result == Install::ConnectionFailed) return SshFailed;
             if (install.result == Install::Unavailable) term = "xterm-256color";
+        }
+        // The install connected: the session shares its connection.
+        const bool shared = options.size() > before;
+        if (!noSession) {
+            if (const RemoteResult remote = forwardRemote(args, parsed, *config, signals, options, shared); remote.exit)
+                return *remote.exit;
         }
         // Servers accept these only when their AcceptEnv allows it.
         QByteArrayList variables;

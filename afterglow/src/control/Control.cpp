@@ -151,6 +151,14 @@ void Control::attachPane(Pane* pane)
     Q_EMIT paneCreated(id);
 }
 
+bool Control::setRemoteSocket(quint32 pane, const AfterglowProto::Remote::Answer& answer)
+{
+    Pane* target = find(pane);
+    if (!target) return false;
+    target->setRemoteSocket(answer);
+    return true;
+}
+
 Pane* Control::find(quint32 id, TerminalWindow** window) const
 {
     for (const QPointer<TerminalWindow>& w : m_windows) {

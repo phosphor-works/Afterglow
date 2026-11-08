@@ -3,6 +3,7 @@
 
 #include "ControlSocket.h"
 
+#include "RemoteSockets.h"
 #include "../config/Settings.h"
 
 #include <QJsonObject>
@@ -210,6 +211,47 @@ QVariantMap ControlApi::openProject(const QString& name, bool newInstance)
 QVariantList ControlApi::scriptDiagnostics()
 {
     return m_control.scriptDiagnostics();
+}
+
+bool ControlApi::remoteCommandsEnabled()
+{
+    return m_remote && m_remote->enabled();
+}
+
+QVariantMap ControlApi::openRemoteSocket(double pane, double pid, const QString& host, const QString& directory,
+                                         double protocol, const QStringList& ssh, const QString& destination)
+{
+    const auto id = paneId(pane);
+    if (!id) return {};
+    if (!m_remote) {
+        failed(QStringLiteral("remote commands are off (Terminal.sshRemoteCommands)"));
+        return {};
+    }
+    if (!isWhole(pid) || !isWhole(protocol) || std::abs(protocol) > 1e9) {
+        failed(QStringLiteral("the process ID and the protocol are whole numbers"));
+        return {};
+    }
+    RemoteSockets::Opened opened;
+    if (failed(m_remote->open({*id, qint64(std::clamp(pid, -1.0, 1e12)), host, directory, int(protocol), ssh, destination},
+                              opened)))
+        return {};
+    QVariantMap result{{QStringLiteral("token"), opened.token}};
+    if (!opened.error.isEmpty()) {
+        result.insert(QStringLiteral("error"), opened.error);
+        return result;
+    }
+    result.insert(QStringLiteral("socket"), opened.socket);
+    result.insert(QStringLiteral("path"), opened.path);
+    return result;
+}
+
+void ControlApi::remoteSocketFailed(const QString& token, const QString& reason)
+{
+    if (!m_remote) {
+        failed(QStringLiteral("remote commands are off (Terminal.sshRemoteCommands)"));
+        return;
+    }
+    failed(m_remote->failed(token, reason));
 }
 
 void ControlApi::overlay(double pane, const QStringList& argv, const QVariantMap& options)

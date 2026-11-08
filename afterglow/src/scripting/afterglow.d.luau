@@ -83,14 +83,17 @@ export type HostEvent = { pane: Pane?, terminal: State } -- the targeted pane, i
 -- no arguments. It ends when the handler returns, also after it waited.
 export type CommandEvent = {
     args: { string }, -- at most 256, each at most 4096 UTF-16 units
-    cwd: string, -- the client's directory, else the pane's, else ""
+    -- The client's directory, else the pane's, else "". For source "remote", a directory on the
+    -- remote host, as text: not a local path.
+    cwd: string,
     pane: (Pane | { id: number })?, -- only the id when the pane closed before the run started
     -- All of the client's stdin, for a command with stdin = true run from the shell. nil for
     -- another source, and when aglow run reads none: with -n, or when stdin is a terminal.
     -- A run with more than Scripts.commandStdinLimit does not start, and aglow run refuses
     -- stdin that is not UTF-8 text (exit status 2).
     stdin: string?,
-    source: "shell" | "palette" | "key" | "menu" | "control",
+    source: "shell" | "palette" | "key" | "menu" | "control" | "remote",
+    remote: { host: string }?, -- for source "remote": the host of the ssh session, as afterglow ssh named it
     run: string, -- for afterglow.output, output_error and exit
     terminal: State,
 }
@@ -205,7 +208,8 @@ export type SignalValue = { channel: number, value: number }
 
 export type Effect = { kind: string, request_id: string? }
 -- A command's fields, in metadata.commands, package.json and set_commands.
-export type CommandSpec = { summary: string, usage: string?, palette: string?, stdin: boolean? }
+-- remote: aglow run on a remote host can run it, through afterglow ssh (Terminal.sshRemoteCommands).
+export type CommandSpec = { summary: string, usage: string?, palette: string?, stdin: boolean?, remote: boolean? }
 export type Effects = Effect | { Effect }
 
 -- Handlers a script may define, all optional:

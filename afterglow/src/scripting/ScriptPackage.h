@@ -18,6 +18,7 @@ struct ScriptCommand
     QString palette; ///< the palette and menu title, empty when it is in neither
     bool input = false; ///< gets the client's stdin
     bool runtime = false; ///< added by afterglow.set_commands, not the manifest
+    bool remote = false; ///< `aglow run` on a remote host can run it (Terminal.sshRemoteCommands)
     QString token() const { return script + QLatin1Char('.') + name; }
     /// The palette title, else "<script> <name>": the title of its notifications.
     QString title() const { return palette.isEmpty() ? script + QLatin1Char(' ') + name : palette; }
@@ -26,7 +27,7 @@ struct ScriptCommand
 /// The limits of the commands field (package.json, metadata) and of set_commands.
 inline constexpr int MaxScriptCommands = 64;
 inline constexpr int MaxCommandText = 512; ///< UTF-16 units of a summary, usage or palette title
-/// Checks one command's fields (summary, usage, palette, stdin) and fills
+/// Checks one command's fields (summary, usage, palette, stdin, remote) and fills
 /// @p out. Returns an error, or empty.
 QString readCommand(const QString& name, const QVariantMap& fields, ScriptCommand& out);
 /// Checks a commands table, name to fields. Returns an error, or empty.

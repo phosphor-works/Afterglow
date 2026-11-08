@@ -46,9 +46,27 @@ Config parseConfig(const QByteArray& resolved);
 QByteArray contextStart(const QString& id, const Config& config);
 QByteArray contextEnd(const QString& id);
 
+/// What the probe for remote commands found on the host.
+struct Probe {
+    QString runtime;   ///< $XDG_RUNTIME_DIR there, empty when it is not an absolute path
+    QString home;      ///< $HOME there
+    bool aglow = false; ///< `aglow --version` ran
+    QString version;   ///< its line
+    int protocol = -1; ///< the protocol in that line, -1 when it names none
+    QString directory; ///< the remote directory, made with mode 0700; empty when it could not be made
+};
+/// The probe: one sh script that reports the runtime directory, the home and
+/// `aglow --version`, and with aglow there makes the remote directory and
+/// runs `aglow remote-prune` in it.
+QByteArray probeScript();
+Probe parseProbe(const QByteArray& output);
+
 /// Runs ssh with ARGS, byte for byte, and returns its exit status. When ssh
 /// dies from an interrupt, the helper dies from it too. The environment
-/// controls it: AFTERGLOW_SSH_TERMINFO is "install" (the default) or "fallback".
+/// controls it: AFTERGLOW_SSH_TERMINFO is "install" (the default) or
+/// "fallback". In a pane (AFTERGLOW_SOCKET and AFTERGLOW_PANE_ID), when the
+/// terminal allows remote commands, it probes the host and forwards a socket
+/// of the terminal there for `aglow run` (RemoteSockets).
 int run(const QByteArrayList& args);
 
 } // namespace Afterglow::Ssh

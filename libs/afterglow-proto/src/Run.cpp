@@ -225,6 +225,7 @@ public:
     /// errors unless @p quiet.
     std::optional<std::vector<Command>> commands(bool quiet, int timeoutMs)
     {
+        if (!resolve(quiet, timeoutMs)) return std::nullopt;
         if (m_socket.path.empty()) {
             if (!quiet) fail(m_socket.error);
             return std::nullopt;
@@ -238,7 +239,7 @@ public:
         // What the connection left of the wait: a shell's completion waits
         // for both.
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-        auto list = m_ipc.call(Target, "list", {}, int(std::max<std::chrono::milliseconds::rep>(left.count(), 0)), &error);
+        auto list = m_ipc.call(m_target, "list", {}, int(std::max<std::chrono::milliseconds::rep>(left.count(), 0)), &error);
         if (!list) {
             if (!quiet) report(error, timeoutMs);
             return std::nullopt;
@@ -272,6 +273,9 @@ public:
     }
 
     IpcConnection& ipc() { return m_ipc; }
+    /// The target of the socket: Target, or Remote::Target on a remote host.
+    const std::string& target() const { return m_target; }
+    bool remote() const { return m_target == Remote::Target; }
     const Environment& env() const { return m_env; }
     /// The descriptors that the client writes standard output and error to:
     /// those of env(), or during a run descriptions of its own (OwnOutput).
@@ -287,6 +291,76 @@ public:
     std::int64_t pane() const { return m_socket.pane; }
 
 private:
+    /// The socket of $AFTERGLOW_SOCKET when it is on this host, else the one
+    /// that the terminal names for its ssh session, else the display's. False
+    /// after a message when there is none and the terminal said why.
+    bool resolve(bool quiet, int timeoutMs)
+    {
+        if (m_socket.own && isSocket(m_socket.path)) return true;
+        if (!m_env.askTerminal) return true;
+        const TerminalAnswer answer = m_env.askTerminal(std::min(timeoutMs, Remote::GuardTimeoutMs));
+        std::string reason;
+        switch (answer.kind) {
+        case TerminalAnswer::Kind::None:
+        case TerminalAnswer::Kind::Other:
+            return true;
+        case TerminalAnswer::Kind::Interrupted:
+            if (!quiet) fail("interrupted while it asked the terminal");
+            m_signal = SIGINT;
+            return false;
+        case TerminalAnswer::Kind::Passthrough:
+            reason = "inside tmux, aglow asks the terminal through tmux, which passes nothing on while allow-passthrough "
+                     "is off (tmux set -g allow-passthrough on)";
+            break;
+        case TerminalAnswer::Kind::Reply:
+            if (!answer.answer.path.empty()) {
+                if (isSocket(answer.answer.path)) {
+                    m_socket = {answer.answer.path, false, 0, {}};
+                    m_target = Remote::Target;
+                    return true;
+                }
+                // After a second ssh hop: the terminal's session is with the first host.
+                reason = "the socket of this ssh session, " + answer.answer.path
+                    + ", is on another host: run the command on the host that afterglow ssh connected to";
+                break;
+            }
+            switch (answer.answer.error) {
+            case Remote::Error::Off:
+                reason = "the Afterglow of this ssh session forwards no socket for its commands (it needs "
+                         "Terminal.sshRemoteCommands, afterglow ssh, and aglow on this host when it connected)";
+                break;
+            case Remote::Error::Forward:
+                reason = "the ssh server refuses to forward the socket of the commands (AllowStreamLocalForwarding in "
+                         "its sshd_config)";
+                break;
+            case Remote::Error::Version:
+                reason = "this aglow speaks another protocol than the Afterglow of this ssh session (aglow --version), "
+                         "which forwards no socket then";
+                break;
+            case Remote::Error::Length:
+                reason = "the path of the socket on this host would be over " + std::to_string(Remote::MaxPathBytes)
+                    + " bytes: a shorter XDG_RUNTIME_DIR or HOME here makes it fit";
+                break;
+            }
+            break;
+        }
+        // An Afterglow of this host runs the commands still, through the
+        // display's socket.
+        if (isSocket(m_socket.path)) return true;
+        // A pane of this host with no socket: the local lookup says why.
+        const bool off = answer.kind == TerminalAnswer::Kind::Reply && answer.answer.path.empty()
+            && answer.answer.error == Remote::Error::Off;
+        if (off && !m_socket.error.empty()) return true;
+        if (!quiet) fail(reason);
+        return false;
+    }
+
+    static bool isSocket(const std::string& path)
+    {
+        struct stat info{};
+        return !path.empty() && ::stat(path.c_str(), &info) == 0 && S_ISSOCK(info.st_mode);
+    }
+
     /// Says why the connection failed, by what the lookup found.
     void connectFailed(const IpcConnection::Error& error, int timeoutMs) const
     {
@@ -294,6 +368,9 @@ private:
         // and it does not take the connection.
         if (error.timedOut) {
             report(error, timeoutMs);
+        } else if (remote()) {
+            // The forward is there, and the shared ssh connection behind it is not.
+            fail("the socket of this ssh session does not answer (" + error.message + ")");
         } else if (error.noServer) {
             fail(std::string(!m_socket.own   ? "no running Afterglow on this display"
                              : m_socket.pane ? "the Afterglow that runs this pane has exited"
@@ -310,6 +387,7 @@ private:
 
     const Environment& m_env;
     SocketLookup m_socket;
+    std::string m_target = Target;
     IpcConnection m_ipc;
     int m_output = m_env.output;
     int m_error = m_env.error;
@@ -448,7 +526,7 @@ int sendInput(Client& client, const std::string& run)
         if (g_signal) return client.interrupted();
         const bool last = eof && size == buffer.size();
         IpcConnection::Error error;
-        const auto accepted = client.ipc().call(Target, "input", {run, buffer.substr(0, size), last}, ReplyTimeoutMs, &error, g_wake[0]);
+        const auto accepted = client.ipc().call(client.target(), "input", {run, buffer.substr(0, size), last}, ReplyTimeoutMs, &error, g_wake[0]);
         if (!accepted) {
             if (error.interrupted) return client.interrupted();
             // Over Scripts.commandStdinLimit: the run cannot start, as with a
@@ -489,7 +567,7 @@ int watched(Client& client, const Signals& signals, const std::string& run, Json
         if (const int status = sendInput(client, run)) return status;
     }
     IpcConnection::Error error;
-    const auto id = client.ipc().send(Target, "run", std::move(request), &error, g_wake[0]);
+    const auto id = client.ipc().send(client.target(), "run", std::move(request), &error, g_wake[0]);
     if (!id) {
         if (error.interrupted) return client.interrupted();
         client.report(error);
@@ -499,7 +577,7 @@ int watched(Client& client, const Signals& signals, const std::string& run, Json
     // block, and the connection that closes at the exit cancels the run too.
     auto cancel = [&] {
         IpcConnection::Error ignored;
-        client.ipc().send(Target, "cancel", {run}, &ignored, g_wake[0]);
+        client.ipc().send(client.target(), "cancel", {run}, &ignored, g_wake[0]);
     };
     // What this client wrote of the event lines of its connection's runs and
     // has not acknowledged: the terminal sends AckWindowBytes ahead at most,
@@ -536,7 +614,7 @@ int watched(Client& client, const Signals& signals, const std::string& run, Json
         const std::string& type = frame["type"].toString();
         const std::string& event = frame["signal"].toString();
         const Json::Array& eventArgs = frame["args"].toArray();
-        if (type != "event" || frame["target"].toString() != Target || eventArgs.size() != 2 || eventArgs[0].toString() != run)
+        if (type != "event" || frame["target"].toString() != client.target() || eventArgs.size() != 2 || eventArgs[0].toString() != run)
             continue;
         const bool out = event == "stdout";
         if (out || event == "stderr") {
@@ -561,7 +639,7 @@ int watched(Client& client, const Signals& signals, const std::string& run, Json
         if (written >= AckBytes) {
             // A failure shows at the next frame: a signal or a closed connection.
             IpcConnection::Error ignored;
-            client.ipc().send(Target, "ack", {run, std::int64_t(written)}, &ignored, g_wake[0]);
+            client.ipc().send(client.target(), "ack", {run, std::int64_t(written)}, &ignored, g_wake[0]);
             written = 0;
         }
     }
@@ -721,7 +799,10 @@ int start(Client& client, const std::vector<std::string>& args)
     }
 
     const auto commands = client.commands(false, ReplyTimeoutMs);
-    if (!commands) return 1;
+    if (!commands) return client.signal() ? client.signalled(client.signal()) : 1;
+    // A remote host has no pane IDs of the terminal's: the run acts on the
+    // pane of the ssh session, which --pane can name too.
+    if (running && client.remote() && !pane) request[5] = std::int64_t(0);
     if (at == args.size()) {
         const std::string out = listing(*commands, {});
         return client.print(out.empty() ? "No script has commands.\n" : out);

@@ -3,11 +3,13 @@
 
 #pragma once
 
+#include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Socket.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -57,6 +59,23 @@ inline constexpr int Interrupted = 130; ///< SIGINT
 inline constexpr int Terminated = 143; ///< SIGTERM
 inline constexpr int BrokenPipe = 141; ///< stdout closed (SIGPIPE)
 
+/// What the terminal answered to the query for the socket of an ssh session
+/// (OSC 24569, AfterglowProto/Remote.h).
+struct TerminalAnswer
+{
+    enum class Kind {
+        None, ///< no terminal to ask: no standard descriptor is a terminal
+        Other, ///< the guard came alone, or nothing in time: not an Afterglow pane
+        Reply, ///< answer holds the pane's reply
+        Passthrough, ///< inside tmux, which passes nothing on while allow-passthrough is off
+        Interrupted, ///< Ctrl+C while the client waited
+    };
+    Kind kind = Kind::None;
+    Remote::Answer answer;
+};
+/// Asks the terminal, for at most @p timeoutMs.
+using TerminalQuery = std::function<TerminalAnswer(int timeoutMs)>;
+
 /// What the client reads from its process. Tests give their own.
 struct Environment
 {
@@ -66,10 +85,16 @@ struct Environment
     int input = 0; ///< stdin goes to a command only when this is not a terminal
     int output = 1;
     int error = 2;
+    /// When $AFTERGLOW_SOCKET is not set, or names no socket on this host,
+    /// the client asks the terminal for the socket of its ssh session with
+    /// this. Empty: it asks nothing (`aglow` gives its own, for /dev/tty).
+    TerminalQuery askTerminal;
 };
 
 /// Runs `aglow run` with the arguments after "run". Returns the exit
-/// status. @p signal, when given, gets the signal that ended the run: SIGINT,
+/// status. On a remote host it finds the socket that `afterglow ssh`
+/// forwarded through Environment::askTerminal, and uses the target
+/// Remote::Target there. @p signal, when given, gets the signal that ended the run: SIGINT,
 /// SIGTERM, or SIGPIPE for a closed standard output, else 0. The caller then
 /// ends by that signal after its own cleanup, so that a shell sees it and a
 /// loop of runs stops at Ctrl+C. A SIGPIPE that came ignored is not reported.

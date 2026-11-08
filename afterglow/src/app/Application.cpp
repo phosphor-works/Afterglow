@@ -43,6 +43,10 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     , m_controlSocket(m_control, m_settings, socket.router())
     , m_scripts(scriptCallbacks(m_control))
     , m_commandSocket(m_control, m_scripts, m_settings, socket.router())
+    , m_remoteSockets(m_control, m_scripts, m_settings,
+                      [this](quint32 pane, const AfterglowProto::Remote::Answer& answer) {
+                          return m_control.setRemoteSocket(pane, answer);
+                      })
     , m_services{m_device, m_settings, m_chromeComponent, m_shaders, m_scripts, m_audio}
     , m_launch(*this)
 {
@@ -64,6 +68,9 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     // The chrome type, its imports and their plugins load on the QML loader
     // thread from now on, with the style chosen, for every window to come.
     m_chromeComponent.loadUrl(ChromeLayer::sceneUrl(), QQmlComponent::Asynchronous);
+
+    m_controlSocket.setRemoteSockets(&m_remoteSockets);
+    connect(&m_control, &Control::paneClosed, &m_remoteSockets, &RemoteSockets::paneClosed);
 
     connect(&m_audio, &AudioController::spectrumChanged, &m_device, [this](const QVector<float>& spectrum) {
         m_device.setAudioSpectrum(std::span<const float>(spectrum.constData(), std::size_t(spectrum.size())));
@@ -126,6 +133,7 @@ Application::~Application()
     m_control.endNotices();
     // No new windows while the others close.
     m_socket.router().unregisterTarget(QLatin1String(LaunchApi::Target), &m_launch);
+    m_controlSocket.setRemoteSockets(nullptr);
     // Windows render on the device and the chrome uses the QML engine.
     qDeleteAll(TerminalWindow::windows());
     // The scripts go before Control: its callbacks into them must not outlive them.

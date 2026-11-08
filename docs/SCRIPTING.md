@@ -209,7 +209,7 @@ The result of an `output` or `output_error` with text, to a run with a client, i
 An `output` with empty text writes nothing, so its result counts. A run with no client drops its stdout at once, so the result of its output counts too.
 A run from the palette, a key, the menu or `afterglow ctl action` has no client.
 Thus such a run that waits for each of more than 128 lines in a second disables its script.
-Wait for each line only when `ev.source` is `shell`.
+Wait for each line only when `ev.source` is `shell` or `remote`.
 Do not wait for each line when `ev.source` is `control`, because `afterglow ctl action` also starts runs with that source.
 `on_load`, `on_key`, `on_dock_click`, `on_dock_hover` and `on_dock_layout` calls do not count toward a handler call limit.
 `run_command` calls do not count either. The [command limits](#command-limits) bound them.
@@ -533,6 +533,7 @@ script.metadata = {
 | `usage` | Optional. The arguments, for help. At most 512 UTF-16 units |
 | `palette` | Optional palette title, not blank, at most 512 UTF-16 units. Commands that have it appear in the palette and the context menu |
 | `stdin` | Optional boolean, default `false`. Only a command with `stdin = true` gets the client's stdin |
+| `remote` | Optional boolean, default `false`. Only a command with `remote = true` can run from a remote host (see [remote commands](CONTROL.md#remote-commands)) |
 | Commands of a script | At most 64, with those of `set_commands` |
 
 `summary`, `usage` and `palette` must not contain control characters, such as a line break or a tab.
@@ -553,6 +554,7 @@ A script with commands must have a `run_command` function.
 | `menu` | The Scripts submenu of the context menu, for a command with `palette` |
 | `key` | `script:<id>.<command>` in `Keybinds.bindings`, in a key table or in a key sequence (see [input](INPUT.md)) |
 | `control` | `afterglow ctl action script:<id>.<command>`, or a `SCRIPT.COMMAND` call of the `commands` target |
+| `remote` | `aglow run <id> <command> [ARGS…]` on a remote host, in an `afterglow ssh` session, for a command with `remote` |
 
 The palette, a key, the menu and `afterglow ctl action` pass no arguments.
 The handler of a command with `palette` must work with `args` empty.
@@ -565,10 +567,11 @@ The handler of a command with `palette` must work with `args` empty.
 | `ev` field | Content |
 | --- | --- |
 | `args` | List of strings, at most 256, each at most 4,096 UTF-16 units |
-| `cwd` | The client's directory. Else the pane's directory. Else an empty string, for a run with neither |
-| `pane` | For a shell run: `--pane N`, else the pane that runs the shell, else the focused pane. For `control`, the pane that `afterglow ctl` names, else the focused pane. For other sources, the pane of the palette, key or menu. Only `{ id }` when the pane closed before the run started. `nil` when there is no pane |
-| `stdin` | All of the client's stdin as one string, for a command with `stdin = true` that runs from the shell. `nil` for another source. `nil` also when `aglow run` reads no stdin: with `-n`, or when stdin is a terminal. A run with more stdin than `Scripts.commandStdinLimit` does not start. `aglow run` refuses stdin that is not UTF-8 text and exits with status 2 |
-| `source` | `"shell"`, `"palette"`, `"key"`, `"menu"` or `"control"` |
+| `cwd` | The client's directory. Else the pane's directory. Else an empty string, for a run with neither. For a `remote` run, a directory on the remote host, as text. Do not use it as a local path. An overlay with this `cwd` starts in `$HOME` when the directory does not exist on this computer |
+| `pane` | For a shell run: `--pane N`, else the pane that runs the shell, else the focused pane. For `control`, the pane that `afterglow ctl` names, else the focused pane. For `remote`, the pane that runs the ssh session. For other sources, the pane of the palette, key or menu. Only `{ id }` when the pane closed before the run started. `nil` when there is no pane |
+| `stdin` | All of the client's stdin as one string, for a command with `stdin = true` that runs from the shell or a remote host. `nil` for another source. `nil` also when `aglow run` reads no stdin: with `-n`, or when stdin is a terminal. A run with more stdin than `Scripts.commandStdinLimit` does not start. `aglow run` refuses stdin that is not UTF-8 text and exits with status 2 |
+| `source` | `"shell"`, `"palette"`, `"key"`, `"menu"`, `"control"` or `"remote"` |
+| `remote` | For `remote`: `{ host }`, the host of the ssh session as `afterglow ssh` names it. `nil` for another source |
 | `run` | The run ID, for the output effects |
 | `terminal` | The terminal snapshot |
 

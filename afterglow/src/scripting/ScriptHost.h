@@ -111,7 +111,10 @@ public:
         /// The client's stdin, for a command with stdin. CommandSocket
         /// refuses more than Scripts.commandStdinLimit: this is never cut.
         std::optional<QString> input;
-        QString source; ///< shell, palette, key, menu or control
+        QString source; ///< shell, palette, key, menu, control or remote
+        /// For source "remote": the host of the ssh session, ev.remote.host.
+        /// Only a command that declares remote runs from there.
+        QString remoteHost;
     };
 
     /// Scripts.command*: see their descriptions in Settings.cpp. The

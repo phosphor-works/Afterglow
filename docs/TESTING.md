@@ -391,7 +391,7 @@ See [native test dependencies](#native-test-dependencies).
 Run the tests of the `commands` target and of `aglow run`:
 
 ```sh
-ctest --test-dir build --output-on-failure -R '^(CommandSocketTest|RunBinaryTest|AfterglowRunWithoutAglowTest|Proto\.RunClient|Proto\.RunInput|Proto\.Socket|Proto\.Ipc)\.'
+ctest --test-dir build --output-on-failure -R '^(CommandSocketTest|RunBinaryTest|AfterglowRunWithoutAglowTest|RemoteCommandsTest|Proto\.RunClient|Proto\.RunInput|Proto\.Socket|Proto\.Remote|Proto\.Ipc)\.|aglow_run_pty'
 ```
 
 | Tests | Binary | What they run |
@@ -401,12 +401,21 @@ ctest --test-dir build --output-on-failure -R '^(CommandSocketTest|RunBinaryTest
 | `AfterglowRunWithoutAglowTest.*` | `afterglow_command_tests` | `afterglow run` in a build without `aglow`. The test checks the error and exit status 127. |
 | `Proto.RunClient.*` and `Proto.RunInput.*` | `afterglow_proto_tests` | The client of `aglow run` against a server that the test plays, and the parts of standard input that it sends |
 | `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run` |
+| `Proto.Remote.*` | `afterglow_proto_tests` | OSC 24569, the remote directory and `aglow remote-prune` |
+| `RemoteCommandsTest.*` | `afterglow_remote_tests` | The sockets of remote commands, the probe of `afterglow ssh` with a fake `ssh`, and an acceptance test with `sshd` |
 | `Proto.Ipc.*` | `afterglow_proto_tests` | The phosphor-ipc client of the protocol library |
 
 `RunBinaryTest.AfterglowRunRunsAglowRun` runs `aglow run` through `afterglow run`.
 In a build without `aglow`, the `RunBinaryTest.*` tests report Skipped.
 In a build with `aglow`, `AfterglowRunWithoutAglowTest.SaysThatTheBuildHasNoAglow` reports Skipped.
 The tests give `aglow run` their own `XDG_RUNTIME_DIR` and socket. They never reach the Afterglow that runs them.
+
+The acceptance test of remote commands starts two `sshd` as you, on free ports of 127.0.0.1.
+It makes host and client keys, `sshd_config` and an ssh client configuration in a temporary directory.
+Every `ssh` of the test takes that configuration with `-F`, with no agent and its own known hosts.
+The "remote" side is this computer, with a `HOME` and `XDG_RUNTIME_DIR` of the test.
+The test checks the OpenSSH behavior that remote commands depend on, then runs `aglow run` in an `afterglow ssh` session of a pane.
+It stops the `sshd` and removes the directory at the end. Without `sshd`, `ssh` or `ssh-keygen`, it reports Skipped.
 
 ## Shell completion tests
 
@@ -435,6 +444,7 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `aglow_static` | Checks that `readelf -d` lists no shared library for `aglow` | `readelf`, and a static `aglow` |
 | `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) with `find_package(Qt6)` disabled and no Phosphor directory, builds it, installs it into the build directory, and checks that the installation holds only `bin/aglow`, its license notices and its completions. It uses the compilers, the build type and the flags of the build. It has the label `slow` | A full build, and the source archives of zlib-ng and xxHash or a network connection |
 | `aglow_clipboard_pty` | Plays a terminal for `aglow clipboard` in a pseudo-terminal | Python 3 |
+| `aglow_run_pty` | Plays a terminal and a terminal socket for the OSC 24569 query of `aglow run`, also in a private tmux server with `allow-passthrough` on and off | Python 3. Without tmux, it leaves out the tmux cases |
 | `aglow_clipboard_cases` | Checks the arguments that `aglow clipboard` refuses, a new output file, and the timeout of an OSC 52 read | Python 3, and a kernel that shows a process that waits in `open()` |
 | `aglow_icat_decode` | Sends crafted images to `aglow icat` and checks the pixels that it sends, or its error | Python 3 |
 | `aglow_icat_render` | Draws the output of `aglow icat` with `afterglow_renderpng` | Python 3, `AFTERGLOW_BUILD_TOOLS`, a Wayland display and a Vulkan device |
@@ -447,7 +457,7 @@ Run the suite without it:
 ctest --test-dir build --output-on-failure -LE slow
 ```
 
-A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` tests and these tests of the table: `aglow_version`, `aglow_run_usage`, `Aglow.*`, `aglow_static`, `aglow_clipboard_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`.
+A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` tests and these tests of the table: `aglow_version`, `aglow_run_usage`, `Aglow.*`, `aglow_static`, `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`.
 It has no test that runs `afterglow`.
 
 The Python test scripts need Python 3.9 or later.

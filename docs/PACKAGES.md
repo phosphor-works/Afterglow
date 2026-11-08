@@ -79,9 +79,14 @@ A package declares its commands only in `package.json`. `metadata.commands` in a
 "commands": {
   "open": {"summary": "Open a project directory", "usage": "DIR [LAYOUT]", "palette": "Open project…"},
   "list": {"summary": "Print the saved projects"},
-  "import": {"summary": "Add projects from a list on stdin", "stdin": true}
+  "import": {"summary": "Add projects from a list on stdin", "stdin": true},
+  "pick": {"summary": "Open a project from a remote host", "usage": "DIR", "remote": true}
 }
 ```
+
+A command with `"remote": true` can also run from a remote host, with `aglow run` in an `afterglow ssh` session.
+It needs `Terminal.sshRemoteCommands`. The handler gets `ev.source` `"remote"`.
+See [remote commands](CONTROL.md#remote-commands).
 
 The entry module must export `run_command(command, ev)`.
 `aglow run <id> --help` lists the package's commands. `aglow run <id> <command>` runs one.

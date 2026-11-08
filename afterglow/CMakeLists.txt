@@ -57,6 +57,8 @@ qt_add_library(afterglow_app STATIC
     src/control/CommandSocket.h
     src/control/ControlSocket.cpp
     src/control/ControlSocket.h
+    src/control/RemoteSockets.cpp
+    src/control/RemoteSockets.h
     # Here, not with Ctl: the socket tests drive it too.
     src/control/IpcClient.cpp
     src/control/IpcClient.h
@@ -117,7 +119,7 @@ target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Rende
 qt_add_library(afterglow_shell STATIC src/shell/ShellIntegration.cpp src/shell/ShellIntegration.h
     src/shell/Ssh.cpp src/shell/Ssh.h)
 target_include_directories(afterglow_shell PUBLIC src)
-target_link_libraries(afterglow_shell PUBLIC Afterglow::Pty Qt6::Core)
+target_link_libraries(afterglow_shell PUBLIC Afterglow::Pty Qt6::Core PRIVATE Afterglow::Proto)
 target_compile_definitions(afterglow_shell PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
     AFTERGLOW_SOURCE_SHELL_DIR="${PROJECT_SOURCE_DIR}/data/shell-integration"
