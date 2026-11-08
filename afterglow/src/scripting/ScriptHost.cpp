@@ -613,21 +613,6 @@ QStringList ScriptHost::performScan(const QStringList& directories)
             seen.insert(key);
             dirs.prepend(*it);
         }
-        // Where a symlink points: a watch of the link's path stays on the old
-        // target when the link is pointed elsewhere, and on nothing while it
-        // points to nothing. The target's own path follows the new target.
-        // The directory of a missing target sees it appear, when that
-        // directory exists. The directory of a target that exists is not
-        // watched: every change in it would rescan.
-        auto watchTarget = [&watched](const QFileInfo& f) {
-            if (!f.isSymLink()) return;
-            if (f.exists()) {
-                watched << f.canonicalFilePath();
-                return;
-            }
-            const QString parent = QFileInfo(f.symLinkTarget()).absolutePath();
-            if (!f.symLinkTarget().isEmpty() && QFileInfo(parent).isDir()) watched << parent;
-        };
         for (const QString& dir : std::as_const(dirs)) {
             // Unreadable files too: their load fails, which diagnostics show,
             // and the watch sees a change of their permissions. System lists
@@ -636,7 +621,6 @@ QStringList ScriptHost::performScan(const QStringList& directories)
             for (const QFileInfo& f : files) {
                 if (!f.fileName().endsWith(QLatin1String(".d.luau"))) {
                     watched << f.absoluteFilePath();
-                    watchTarget(f);
                     candidates << f.absoluteFilePath();
                 }
             }
@@ -646,7 +630,6 @@ QStringList ScriptHost::performScan(const QStringList& directories)
                 const bool dangling = folder.isSymLink() && !folder.exists();
                 if (!folder.isDir() && !(dangling && !folder.fileName().endsWith(QLatin1String(".luau")))) continue;
                 watched << folder.absoluteFilePath();
-                watchTarget(folder);
                 if (dangling) {
                     m_loadErrors[folder.absoluteFilePath()] =
                         QStringLiteral("The symbolic link points to %1, which does not exist").arg(folder.symLinkTarget());
