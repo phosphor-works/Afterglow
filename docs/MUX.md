@@ -14,6 +14,9 @@ The mux is opt-in. A normal launch does not use it.
 Local sessions come first.
 [Remote hosts](#remote-hosts) use the same daemon and the same protocol, over an SSH connection.
 
+In this document, to detach a session is to close its client and keep the session.
+This is not the `detach_tab` action, which moves a tab to a new window.
+
 ## Sessions and the daemon
 
 The mux has two parts.
@@ -29,52 +32,85 @@ Closing the client does not end a detached session.
 
 The daemon uses only `libs/afterglow-vt`, `libs/afterglow-pty`, `libs/afterglow-proto` and `phosphor-channel`.
 It needs no Qt, no display and no GPU.
-The build that builds `aglow` alone also builds `afterglow-mux`, so a remote host can install it from a package.
-That build then also needs the 32-bit PCRE2 library, because `afterglow-vt` uses it for search.
+The build that builds `aglow` alone can also build `afterglow-mux`, so a remote host can install it from a package.
+That target needs the 32-bit PCRE2 library, because `afterglow-vt` uses it for search.
+It also needs the phosphor-channel sources from a PlasmaZones checkout.
+`aglow` alone still needs neither.
 
 The first mux command starts the daemon when it does not run.
-The daemon runs in its own systemd user unit, `afterglow-mux.service`.
-It does not run in the unit of the client.
-The reason: when systemd-oomd stops the unit of the client, the sessions must stay.
-Without a systemd user manager, the daemon starts in a new session with `setsid`.
+How it starts depends on whether the systemd user manager outlives your logins.
+
+| Computer | Start |
+| --- | --- |
+| Your desktop, with a systemd user manager | In its own systemd user unit, `afterglow-mux.service`, not in the unit of the client |
+| A remote host where `loginctl show-user` reports `Linger=yes` | In the same user unit |
+| A remote host without lingering, or a computer without a systemd user manager | In a new session with `setsid` |
+
+On your desktop, systemd-oomd can stop the unit of the client. The sessions stay, because the daemon has its own unit.
+On a remote host without lingering, the user manager and its units stop at the last logout.
+A daemon started with `setsid` stays after that logout, unless logind sets `KillUserProcesses=yes`.
 
 The daemon exits when it has no sessions.
-It also stops when the systemd user manager stops, which is normally at the last logout.
 A mux session and a normal `afterglow` launch can run at the same time.
 
 ## Commands
 
 | Command | Function |
 | --- | --- |
-| `afterglow mux server` | Runs the daemon in the foreground. The user unit uses this command. |
-| `afterglow mux new` | Creates a session and opens it. Options: `--name`, `--cwd`, `--detach`, `--`. |
-| `afterglow mux attach [NAME]` | Opens a client on a session. Option: `--ssh DESTINATION` (see [remote hosts](#remote-hosts)). |
-| `afterglow mux detach [NAME]` | Detaches the client of a session and keeps the session. |
-| `afterglow mux ls` | Lists the sessions, with their state (attached or detached) and their windows. |
-| `afterglow mux kill NAME` | Ends a session and its processes. |
+| `afterglow mux server` | Runs `afterglow-mux` from the directory of `afterglow`, in the foreground |
+| `afterglow mux new` | Creates a session and opens it. Options: `--name`, `--cwd`, `--detach`, `--ssh DESTINATION`, `--`. |
+| `afterglow mux attach [NAME]` | Opens a client on a session. Options: `--ssh DESTINATION`, `--no-takeover`. |
+| `afterglow mux detach [NAME]` | Detaches the client of a session and keeps the session |
+| `afterglow mux ls` | Lists the sessions, with their state (attached or detached) and their windows. Option: `--ssh DESTINATION`. |
+| `afterglow mux kill NAME` | Ends a session and its processes. Options: `--force`, `--ssh DESTINATION`. |
+
+`--ssh DESTINATION` acts on the daemon of that host (see [remote hosts](#remote-hosts)).
+The user unit runs `afterglow-mux` directly. A remote host needs no `afterglow`.
 
 `afterglow mux new --detach` creates a session without opening a client.
 `afterglow mux new` without `--name` gives the session the smallest free number as its name, from `1`.
 `afterglow mux attach` without a name opens the session that was attached last.
 When no session exists, it creates one.
 In a pane of a session, `afterglow mux detach` without a name detaches that session.
-`afterglow mux kill` asks before it ends running programs, as `Terminal.confirmClose` does.
+
+When `Terminal.confirmClose` is on and a program runs in the session, `afterglow mux kill` asks first.
+It asks only when its standard input is a terminal.
+Without a terminal, it refuses and names `--force`.
+`--force` ends the session without a question.
 
 ## Which process and pane
 
 | Item | Value |
 | --- | --- |
 | Daemon socket | `$XDG_RUNTIME_DIR/afterglow-mux.sock`. It does not depend on the display. |
+| Daemon socket without `XDG_RUNTIME_DIR` | `$XDG_STATE_HOME/afterglow/mux.sock`, by default under `~/.local/state`. The daemon creates the directory with mode 0700. |
 | `AFTERGLOW_SOCKET` in a session pane | The daemon socket |
 | `AFTERGLOW_PANE_ID` in a session pane | The pane ID in the daemon. It stays the same when another client attaches. |
 | `AFTERGLOW_SESSION` in a session pane | The session name |
 
+A socket path has a limit of 107 bytes. When the path is longer, the daemon does not start and names the path.
 The daemon refuses a connection from a process of another user (`SO_PEERCRED`).
 Tests set their own `XDG_RUNTIME_DIR`, so a test daemon never reaches the daemon of the user.
 
 The client is the main process of the display (see [launches](CONTROL.md#launches)).
 `afterglow mux attach` hands the attach to that process, as a launch hands a new window.
 All windows on one display then share one GPU device.
+
+Session panes are not panes of the client process.
+The control socket of the client does not list them and does not act on them.
+A daemon pane ID and a pane ID of the client can have the same value.
+To reach a session pane, use the daemon socket, as a session pane does through `AFTERGLOW_SOCKET`.
+
+## Environment
+
+The programs of a session run with the environment of the session, not of the daemon.
+`afterglow mux new` sends its own environment, and the session keeps it.
+A new pane in the session gets that environment.
+
+An attach from another display or computer makes some values wrong, such as `WAYLAND_DISPLAY` and `SSH_AUTH_SOCK`.
+Each attach copies the variables of `Mux.updateEnvironment` from the attach command into the session.
+A variable that the attach command does not have is removed from the session.
+Panes that run already keep their environment. Only new panes get the new values.
 
 ## Control
 
@@ -90,7 +126,11 @@ The daemon serves the phosphor-ipc wire format without Qt.
 | --- | --- | --- |
 | Layout: new tab, split, close, move | The daemon changes the layout. The client shows the change. | The daemon changes the layout. |
 | Pane input and pane text | The daemon | The daemon |
-| Window and chrome: overview, palette, focus | The daemon passes the call to the client. | Refused with an error that says that no client is attached |
+| Window and chrome: overview, palette, focus | The daemon passes the call to a local client. | Refused with an error that says that no client is attached |
+
+The daemon applies `Control.enabled` and `Control.allowReadText` to `afterglow ctl` calls, with the values of its last client.
+The client and the `afterglow mux` commands reach the daemon also when `Control.enabled` is off.
+A client on another computer refuses window and chrome calls from the daemon (see [trust](#trust)).
 
 Scripts run in the client.
 While a session is detached, no script runs for it.
@@ -104,11 +144,12 @@ While a session is detached, no script runs for it.
 | The `detach_session` action | The client closes the windows of the session and keeps the session |
 | The client exits without a close: a crash, a signal, a compositor restart, a lost SSH connection | The session detaches and keeps running |
 | A pane or a tab closes | Its processes end, as in a normal window |
+| The last program of a session exits | The session ends |
+| `afterglow mux kill` | The session ends |
 
 The default of `Mux.closeOnLastWindow` is `kill`.
 This keeps the current behavior of the close button.
-Only a close that the user asks for can end a session.
-A client that disappears always detaches.
+A client that disappears never ends a session. It always detaches.
 
 ## One client at a time
 
@@ -118,8 +159,9 @@ The first client detaches and reports the takeover.
 `--no-takeover` makes the second attach refuse instead.
 Showing one session on two clients at once is not part of this design.
 
-The client measures each pane in cells with its own font, and sends the sizes to the daemon.
-The daemon then resizes the PTYs.
+The client measures each pane with its own font.
+It sends the size of each pane in cells and in pixels to the daemon.
+The daemon then resizes the PTYs and answers the size queries of programs with these values.
 After a takeover from a display with another font or scale, the panes reflow to the new sizes.
 A detached session keeps the sizes of its last client.
 
@@ -146,18 +188,30 @@ The client owns everything that the user sees and touches.
 | Part | Runs in | Notes |
 | --- | --- | --- |
 | Parser, screen, scrollback, reflow | Daemon | |
-| Answers to the program: DA1, DSR, color queries, OSC 24569 | Daemon | The client sends its theme colors when it attaches |
+| Answers to the program: DA1, DSR, color queries, size queries, OSC 24569 | Daemon | The client sends its theme colors and pane sizes when it attaches |
 | Key, mouse and paste encoding | Daemon | The client sends key and mouse events. The daemon encodes them with the modes of the pane. |
 | Search, and the text of a selection | Daemon | The client sends the query or the range and gets the result |
-| Image decoding and the image store | Daemon | It decodes with stb_image, as `aglow` does. The client gets each image once, by ID. |
+| Image decoding and the image store | Daemon | See the note after this table |
 | Clipboard, notifications, bell, title, OSC 133 marks, user variables | Daemon parses, client acts | Each one is an event on the output channel |
 | File transfer and drag and drop | Daemon parses, client acts | The client prompts and reads or writes the local files |
 | Rendering, fonts, shader packs, chrome, accessibility | Client | From the state that the daemon sends |
 | Scripts, packages, package commands | Client | |
 | Remote sockets of `afterglow ssh` | Daemon | See [package commands from remote hosts](#package-commands-from-remote-hosts) |
 
+The daemon decodes images with the stb_image wrapper of `aglow`, which limits the size of each side.
+The image budgets of the terminal apply as they do today.
+Any program in a pane can send an image, so the decoder treats each image as untrusted.
+The client gets each decoded image once, by ID.
+
 The daemon reads no configuration file.
-`afterglow mux new` and each attach send the values that the daemon needs: `Terminal.scrollback`, `Terminal.term`, the theme colors and the remote command settings.
+`afterglow mux new` and each attach send the values that the daemon needs:
+
+- `Terminal.scrollback` and `Terminal.term`
+- `Control.enabled` and `Control.allowReadText`
+- `Mux.eventQueue`
+- the theme colors
+- the settings of remote commands
+
 A session keeps the values of its last client.
 
 ## Projects and sessions
@@ -180,14 +234,14 @@ Two planes connect the daemon and the client.
 | Data | phosphor-channel | Byte frames | Terminal state and input |
 
 On one computer, the control plane is the daemon socket.
-It negotiates the data channels and passes a rendezvous path in `$XDG_RUNTIME_DIR`.
+It negotiates the data channels and passes a rendezvous path in the directory of the daemon socket.
 The data channels open their own Unix socket at that path and exchange file descriptors there.
 The rendezvous socket has mode 0600 and checks the peer with `SO_PEERCRED`.
 
 Over SSH, one byte stream carries both planes (see [remote hosts](#remote-hosts)).
 
-This division matters. Terminal state changes at a high rate.
-JSON is wrong for it. The data plane uses binary frames.
+Terminal state changes at a high rate, and JSON is too slow for it.
+So the data plane uses binary frames.
 
 ## Terminal state
 
@@ -196,16 +250,25 @@ The daemon parses the PTY output. The client never parses it.
 
 | Frame | Content |
 | --- | --- |
-| Snapshot | The full visible screen, the cursor, the modes that the client needs and the recent scrollback. Sent when a client attaches. |
+| Snapshot | The visible screen, the cursor and the modes that the client needs. Sent when a client attaches. |
 | Damage | The rows that changed since the last frame that the client acknowledged |
-| Scrollback page | Older lines, sent when the client asks for them (scrolling, search results) |
+| Scrollback page | Lines above the visible screen, sent when the client asks for them (scrolling, search results) |
 | Image | Decoded image data with its ID. Sent once for each image. |
 | Event | Title, working directory, bell, notification, clipboard, OSC 133 mark, transfer and drag and drop messages |
 
 A damage frame always describes the newest state.
 So the daemon can merge the damage of several frames into one.
 A slow client sees fewer frames, not a growing queue.
-Events are never merged or dropped while a client is attached.
+
+While a client is attached, events wait in a queue of `Mux.eventQueue` bytes for each session.
+While no client is attached, the rules of [detached sessions](#detached-sessions) apply.
+
+| Event | When the queue is full |
+| --- | --- |
+| Title, working directory, user variable | A new value replaces the waiting value of the same pane |
+| Bell | The waiting bells of a pane become one count |
+| Notification, clipboard write | The daemon drops the oldest one and counts it. The client reports the count. |
+| Transfer, drag and drop, clipboard read | The daemon refuses the new request, as when the user denies it |
 
 The codec tag of these frames is `afterglow.state.v1`.
 `libs/afterglow-proto` writes and reads it, so the daemon and the client use the same code.
@@ -228,7 +291,11 @@ The library stores the codec tag. It does not parse the payload.
 Backpressure is explicit.
 A write returns `would-block` when the channel is full.
 The writer then merges its frames. A blocking write is also available.
-The input channel uses the blocking write, because input is never dropped.
+
+Input is never merged or dropped, and the client never blocks on it.
+The client keeps the input that the channel refuses, and sends it when the channel has space.
+The daemon gives input to the PTY, which accepts up to 32 MiB that waits for the program.
+A paste that does not fit is refused as a whole, as in a normal window.
 
 ### What the daemon needs from phosphor-channel
 
@@ -276,7 +343,7 @@ Your scripts, shader packs, fonts and clipboard stay on your computer.
 
 - `afterglow-mux`, from a package or from the Qt-free build (see [build aglow alone](BUILD.md#build-aglow-alone)).
 - An SSH server that runs commands for you. Port forwarding is not necessary.
-- On a host that stops your processes at logout, lingering for your user (`loginctl enable-linger`). Without it, detached sessions end when your last login ends.
+- On a host where logind sets `KillUserProcesses=yes`, lingering for your user (`loginctl enable-linger`). Without it, detached sessions end at your last logout.
 
 Afterglow does not copy `afterglow-mux` to a remote host, for the same reasons as `aglow` (see [remote hosts](DESKTOP.md#remote-hosts)).
 
@@ -285,12 +352,16 @@ Afterglow does not copy `afterglow-mux` to a remote host, for the same reasons a
 `afterglow mux attach --ssh DESTINATION [NAME]` does these steps:
 
 1. It opens the shared connection of `afterglow ssh` to the destination, or uses the one that is open.
-2. It runs the probe of `afterglow ssh` over that connection. The probe also reports `afterglow-mux --version`.
+2. It runs one `sh` probe over that connection. The probe reports `afterglow-mux --version`.
 3. It runs `afterglow-mux proxy` on the remote host over the shared connection.
 4. The proxy starts the remote daemon when it does not run, and connects to the daemon socket.
 5. The proxy carries the stream on its standard input and output.
 
-You authenticate once, for the shared connection.
+`ls`, `new` and `kill` with `--ssh` use the same connection and the same probe.
+
+You authenticate once when the shared connection can be made.
+That needs a private `XDG_RUNTIME_DIR` or `ControlMaster auto` in your SSH configuration (see [SSH](INPUT.md#ssh)).
+Without it, the probe and the proxy each authenticate.
 The attach uses no `-L` or `-R` forward, so `AllowStreamLocalForwarding` on the server does not matter.
 
 | Probe result | Action |
@@ -311,6 +382,18 @@ On a slow link the client shows fewer frames, and the daemon never blocks on the
 
 A lost SSH connection detaches the session.
 `afterglow mux attach --ssh` again continues it.
+
+### Trust
+
+Every process of your user on the remote host can connect to the remote daemon.
+So a client attached to a remote daemon takes only these from it:
+
+- the frames of the session
+- calls of the `remote` target, under the rules of [package commands from remote hosts](#package-commands-from-remote-hosts)
+
+It refuses window and chrome calls from a remote daemon.
+A remote process cannot control your computer through the mux.
+The terminal protocols that ask for the clipboard or for files keep their usual prompts and settings.
 
 ### Terminfo on the remote host
 
@@ -360,15 +443,19 @@ Input has its own channel. A flood does not starve a keystroke.
 
 | Item | Value |
 | --- | --- |
-| Clients per session | 1 |
-| Ring capacity | `Mux.ringCapacity`. Default 8 MiB. |
+| Clients per session | 1. A second attach takes over or, with `--no-takeover`, is refused. |
+| Session name | 1 to 64 letters, digits, underscores or hyphens. Another name is refused. |
+| Socket path | 107 bytes. A longer path stops the daemon. |
+| Input that waits for a program | 32 MiB for each pane. A paste that does not fit is refused. |
 
 The `Terminal.scrollback` limit from the [configuration reference](CONFIGURATION.md) still applies.
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `Mux.closeOnLastWindow` | `kill` | `kill` ends the session. `detach` keeps it. |
-| `Mux.ringCapacity` | `8` | The size of the shared-memory ring for terminal state, in MiB |
+| Setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `Mux.closeOnLastWindow` | `kill` | `kill`, `detach` | `kill` ends the session. `detach` keeps it. |
+| `Mux.ringCapacity` | `8` | 1 to 256 | The size of the shared-memory ring for terminal state, in MiB |
+| `Mux.eventQueue` | `4` | 1 to 64 | The events that wait for a slow client, in MiB for each session |
+| `Mux.updateEnvironment` | `["WAYLAND_DISPLAY", "DISPLAY", "SSH_AUTH_SOCK"]` | Variable names | The variables that each attach copies into the session |
 
 ## Deferred
 
