@@ -4,8 +4,8 @@
 // The panes of the window, and the pane overview, for TERMINAL shaders.
 // Every pass can read the block; it serves window shaders, which see the
 // whole window but not where its panes are, the overview shader
-// (Shaders.overview), which runs only while the overview shows, and the tab
-// transition and pane effects shaders.
+// (Shaders.overview), which runs only while the overview shows, the tab
+// transition and pane effects shaders, and the overlay transition shader.
 //
 // Panes are cards in tab order, and in layout order within a tab: the order
 // of pane rotation and of the overview's arrow keys. While the overview is
@@ -16,7 +16,10 @@
 // Read a card's pixels with paneTexel(): the current tab's panes come from the
 // window shader's input, other tabs from images Afterglow renders while the
 // overview shows. The highlighted pane's tab is at full resolution; the others
-// are smaller. paneTexel() is for window and overview passes.
+// are smaller. paneTexel() is for the passes whose input is the window:
+// window, overview, tab transition and pane effects. In a layer, pane or
+// overlay transition pass the input is one pane, and paneTexel() reads the
+// wrong place.
 //
 // The overview opens with the pane_overview action. Afterglow eases its
 // motion with Animation.overviewCurve, so shaders read positions, not ages.
@@ -24,6 +27,10 @@
 // A tab switch runs the tab transition shader (Shaders.tabTransition) over
 // the new tab while uTabTransition.w is 1. The tab being left keeps running:
 // read it with previousTabTexel(). Animation.tabCurve eases the progress.
+//
+// An overlay fading in or out runs the overlay transition shader
+// (Shaders.overlayTransition) over its pane, not over the window: see
+// overlayTransitionActive().
 //
 // Splitting and closing panes run the pane effects shader (Shaders.paneEffects)
 // while a pane opens or closes. uPaneLife says how far each card has opened and
@@ -70,9 +77,12 @@ layout(std140, binding = 19) uniform TerminalPanes {
                            //              .w the pane's context before its last change (as uPaneLife.w)
 };                         // total 2656 bytes
 
-// Another tab at full resolution, laid out like the window: in the overview
-// the highlighted card's tab when it is not current, in a tab transition the
-// tab being left.
+// A window-sized image, laid out like the window. In the overview, the
+// highlighted card's tab when it is not current. In a tab transition, the tab
+// being left. While a pane closes, its last frame at its old place. In an
+// overlay transition, the panes under the fading overlays, at their places.
+// The overview, a tab switch and a closing pane take it first: while one of
+// them has it, the overlay transition does not run.
 layout(binding = 20) uniform sampler2D uTabImage;
 layout(binding = 21) uniform sampler2D uTabAtlas; // the overview's other tabs, smaller
 
@@ -117,7 +127,7 @@ int focusedPane() {
 }
 
 // -1 when no card is highlighted. While the overview closes, the card it
-// closes onto, which may be in another tab and not focused yet.
+// closes onto.
 int highlightedPane() {
     return uPaneState.z;
 }
@@ -149,6 +159,33 @@ float tabTransitionDirection() {
 // The tab being left, at a window uv.
 vec4 previousTabTexel(vec2 uv) {
     return texture(uTabImage, uv);
+}
+
+// An overlay transition (Shaders.overlayTransition) runs over each pane that
+// an overlay fades into or out of, after the pane shaders and before the
+// window shaders. The pass's input is the pane with the overlay. The pane
+// under it, with its own layer and pane shaders, is in uTabImage at its
+// place in the window. True in every pass of that pack, its buffer passes
+// too, and false in every other pass.
+bool overlayTransitionActive() {
+    return uOverlayTransition.w != 0.0;
+}
+
+// 0 the pane under the overlay, 1 the overlay.
+float overlayTransitionProgress() {
+    return uOverlayTransition.x;
+}
+
+// The pane under the overlay, at this pass's canvas uv.
+vec4 overlayHostTexel(vec2 uv) {
+    // Stay half a pixel inside the pane, as paneTexel() does: the sampler
+    // filters linearly, so a sample on the pane's edge or past it would take
+    // in a divider or the next pane. A pixel centre inside the pane is a texel
+    // centre of the image, so it reads exactly that texel.
+    vec2 inset = min(vec2(0.5), uTerminalRect.zw * 0.5);
+    vec2 at = clamp(uTerminalRect.xy + uv * uTerminalRect.zw, uTerminalRect.xy + inset,
+                    uTerminalRect.xy + uTerminalRect.zw - inset);
+    return texture(uTabImage, at / uWindowSize);
 }
 
 float paneOpening(int pane) {

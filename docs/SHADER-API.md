@@ -4,7 +4,8 @@
 # Shader pass API
 
 Afterglow uses Phosphor ShaderRegistry metadata, source containment, include resolution, parameter slots and presets.
-Terminal shaders are a Phosphor shader family, like Phosphor's overlay, animation, pointer and surface families.
+Terminal shaders are a Phosphor shader family, like Phosphor's animation, pointer and surface families and Phosphor's `overlay` shader family.
+In the rest of this document, an overlay is a program that runs over a pane. See [overlay transitions](#overlay-transitions).
 Afterglow's PostChain renders them in terminal QRhi composition passes.
 Afterglow reads its own metadata keys from pack metadata: `highDynamicRange`, `windowBackground`, `settleSeconds` and `geometryPasses`.
 
@@ -24,7 +25,7 @@ See [pack locations](SHADERS.md#pack-locations) for where packs and shared inclu
 | `terminal_audio.glsl` | `uAudioSpectrum` and the audio helpers. | Enables audio capture. |
 | `terminal_history.glsl` | `uPreviousText`. | Enables text history. |
 | `terminal_scene.glsl` | Object matrices and helpers for mesh passes with `objects`. | For object hierarchies. |
-| `terminal_panes.glsl` | The tab's pane rectangles, focus and the pane overview's state. | For window, overview, tab transition and pane effects shaders. |
+| `terminal_panes.glsl` | The tab's pane rectangles, focus, the pane overview's state and the overlay transition. | For window, overview, tab transition, pane effects and overlay transition shaders. |
 
 ### Entry points
 
@@ -71,6 +72,7 @@ The uniform block starts with Phosphor's `BaseUniforms` and continues with the t
 | `uSelectionBackgroundColor`, `uSelectionForegroundColor` | Theme selection colors. |
 | `uPalette` | The 256-color palette. |
 | `uSignal`, `uScrollback`, `uAudioLevels` | Script signals, history counts and audio levels. See [Shaders](SHADERS.md). |
+| `uOverlayTransition` | In every pass of the [overlay transition](#overlay-transitions) pack, its buffer passes too: `.x` the progress, `.w` 1. All zeros in other passes. |
 
 Helpers in `terminal_lib.glsl` include `cursorVisible()`, `paneFocused()`, `cursorCenter()`, `cursorAge()`, `focusAge()`, `signalValue()`, `signalAge()` and `paletteColor()`.
 
@@ -192,6 +194,7 @@ The final pass computes `uv` from the pixel position, not from the quad.
 A deformed quad changes which pixels run. It does not move the content.
 The pass does not run for pixels that a smaller quad leaves out.
 In a pane chain, those pixels show the undeformed pane, because pane passes draw over a copy of their input.
+The overlay transition also draws over a copy of its input, so those pixels show the overlay.
 In window, overview, tab transition and pane effects passes, they show the window's clear color.
 
 ## Mesh passes
@@ -339,6 +342,7 @@ Panes after the 32nd, in tab order, do not appear in the overview.
 | `highlightPosition()` | The highlight's position in cards. It is fractional while the highlight moves. It counts on past the last card when the highlight wraps around, so motion continues. Take it modulo `paneCount()`. |
 | `tabTransitionActive()`, `tabTransitionProgress()`, `tabTransitionDirection()` | The tab switch, while it runs. |
 | `previousTabTexel(uv)` | The tab being left, at a window uv, during a tab switch. |
+| `overlayTransitionActive()`, `overlayTransitionProgress()`, `overlayHostTexel(uv)` | An overlay that fades in or out: see [overlay transitions](#overlay-transitions). |
 | `paneOpening(i)`, `paneOpenEdge(i)` | How far a new pane has opened, and the edge it opened from. |
 | `paneContext(i)`, `paneContextChange(i)` | Where the pane's shell runs, and how far its last change has run. |
 | `panePreviousContext(i)` | Where the pane's shell ran before its last change. |
@@ -350,7 +354,8 @@ It reads other tabs from images that Afterglow renders while the overview shows.
 The highlighted card's tab is at full resolution. Other tabs share one window-sized atlas, so they are smaller.
 These images do not include layer, pane or window shaders.
 `previousTabTexel()` and `closingPaneTexel()` read the same kind of image.
-Use `paneTexel()` in window and overview passes. In other passes, its input is not the window.
+Use `paneTexel()` in window, overview, tab transition and pane effects passes.
+In layer, pane and overlay transition passes, the input is one pane and not the window, so `paneTexel()` reads the wrong place.
 `uOverview.z` and `uOverview.w` hold the seconds since the overview opened or closed and since the highlight moved.
 
 `Shaders.overview` names the pack that draws the pane overview.
@@ -397,6 +402,53 @@ Input does not reach the panes while the overview is open.
 The highlighted pane is the one the user chooses, so a pack needs no hit testing.
 While the overview shows, other tabs use two more window-sized textures. Afterglow releases them when it closes.
 [Pane Deck](../data/shaders/pane-deck/effect.frag) traces the panes as live cards on a carousel in one pass.
+
+### Overlay transitions
+
+An [overlay](SCRIPTING.md#overlays) runs a program over a pane, in the pane's place or as a popup over a part of it.
+`Shaders.overlayTransition` names the pack that blends the pane and the overlay while the overlay opens and closes.
+Afterglow runs it while the fade runs, over that pane alone, after the pane chain and before the window chain.
+The pass's input is the pane with the overlay. `overlayHostTexel(uv)` reads the pane under the overlay at the pass's canvas uv.
+For a [popup](SCRIPTING.md#popups), the input is the whole pane as it shows with the popup.
+That is the pane around the popup, darkened by `Colors.popupDim`, then the popup's border if it has one, then the popup.
+`overlayHostTexel()` stays half a pixel inside the pane, so it never reads a divider or another pane.
+Both images have the pane's layer and pane shaders. The window shaders then run over the result.
+The pane under the overlay keeps running. While the overlay fades in, its program also runs.
+While the overlay fades out, its program has ended, and the overlay shows the program's last frame.
+The pane under the overlay keeps a text history of its own. Its `uPreviousText` holds its own text from the last frame, never the overlay's.
+A fade that starts keeps the text history that the pane had.
+When a fade out starts after the overlay has shown whole, the pane under the overlay has no text history yet. Its `uPreviousText` is transparent in that frame.
+When a popup's fade out starts after the popup has shown whole, the pane under it also has no text history yet. The history of the pane with its popup is not the history of the pane under it.
+When a popup opens or closes without a fade, the text history of every pane starts again, as when a full-pane overlay opens or closes.
+A pane's own buffers step once a frame, also while a popup over it fades. The pane under the popup steps them, and the pane with the popup reads that step.
+When the overlay has faded out, the pane's text history goes on from what it drew under the overlay. If a fade on another pane runs in that frame, this history starts again.
+When a fade on another pane starts or ends, the text history of each pane whose fade goes on starts again.
+A [`windowBackground`](#pass-order-and-coordinates) pack's buffers step once a frame, for the panes that show.
+The pane under the overlay reads those buffers as the last frame left them.
+When the buffers do not exist yet, the pane under the overlay makes them. They then step once in that frame.
+`uScrollback` counts the history of the pane under the overlay, also in the overlay's passes. The overlay's own history does not count.
+The window shaders take the focused pane's inputs, such as its cursor and palette, from the pane under the overlay until the fade is halfway.
+After that, they take them from the overlay.
+While a popup runs, the cursor inputs of its pane (`uCursorRect`, `uPreviousCursorRect`, the cursor color, style and visibility) are the popup's cursor, in canvas pixels.
+The palette, the default colors, the theme's cursor colors and the text history stay the pane's.
+While a popup fades out, its program has ended: the cursor inputs are the pane's again.
+`overlayTransitionProgress()` runs from 0, the pane under the overlay, to 1, the overlay. It stays between 0 and 1.
+The fade stops the first time that it reaches its target. A curve that overshoots, such as a spring, does not bounce back.
+`Animation.overlayCurve` and `Animation.overlayDuration` time it. The fade out runs the same pack back to 0, from where the fade is.
+Draw the pane at progress 0 and the overlay at 1. The fade then starts and ends without a jump.
+`overlayTransitionActive()` is true in every pass of this pack and false in every other pass.
+The pack's buffer passes can use all three helpers.
+A full-pane overlay hides the pane under it: that pane is drawn only while a fade runs. It goes into the window-sized tab image. Its text history lives until the frame after the last fade.
+A popup does not hide its pane: the pane and the popup are drawn in every frame. While a popup fades, the pane as it shows without the popup also goes into the tab image.
+The overview, a tab switch and a closing pane also use that image.
+An overlay opens and closes without a fade while one of them shows.
+It also does so while the pane is not on screen or the window is hidden.
+A fade can already run when one of them starts.
+If the overview, the tab switch or the closing pane takes the tab image, the fade switches at its halfway point.
+An overview of one tab does not take the tab image, so a fade that runs in it still blends.
+A fade whose pane stops showing, for example behind a zoomed pane or in another tab, switches at once.
+Without `Shaders.overlayTransition`, or when its pack does not load, an overlay also opens and closes without a fade.
+[Overlay Fade](../data/shaders/overlay-fade/effect.frag) blends the two images.
 
 ## Images
 

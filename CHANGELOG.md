@@ -50,6 +50,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - 33 bundled themes: Afterglow, Ayu, Catppuccin, Dracula, Everforest, GitHub, Gruvbox, Kanagawa, Monokai, Nord, One, Rosé Pine, Solarized and Tokyo Night.
 - `light:NAME,dark:NAME` theme pairs that follow the desktop color scheme.
 - Search match and visual bell colors, set in `Colors` or by a theme.
+- A popup border color, set in `Colors` or by a theme. Without one, it is halfway from the background color to the text color. `Colors.popupDim` darkens the pane around a popup.
 - Colors as SVG names or in hex. A color in eight-digit hex is refused, because it does not say where the alpha is.
 
 ### Shell integration
@@ -97,7 +98,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Pane and tab moves between tabs and windows. A drag outside the tab bar detaches a tab into a new window.
 - Saved projects that store a window's tabs, splits, directories and launch arguments.
 - A quick terminal on a Wayland layer surface, toggled by a global shortcut. It slides from the top or bottom edge of a chosen screen.
-- Optional background blur on KWin, window transparency and an overlay history scrollbar that fades when idle.
+- Optional background blur on KWin, window transparency and a history scrollbar over the pane that fades when idle.
 
 ### Search, selection and input
 
@@ -122,7 +123,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - System audio input through CAVA, with its framerate, smoothing and frequency range in `Audio` settings.
 - Scrollback-driven inputs and parameter transitions with Phosphor curves.
 - Time helpers `timeAngle` and `timeCycle` that keep full precision however long the window runs, and `timeSeconds` for the full clock.
-- Bundled packs: Bloom, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Pane Deck, Pane Effects, Phosphor Depths and Tab Switch.
+- Bundled packs: Bloom, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Overlay Fade, Pane Deck, Pane Effects, Phosphor Depths and Tab Switch.
 - Pane rectangles, every tab's pane pixels and overview state for window shaders, through `terminal_panes.glsl`.
 - The Phosphor and Glasshouse example scenes.
 
@@ -147,6 +148,11 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - An interrupt or `SIGTERM` cancels the run, and `aglow run` then ends by that signal. So does a closed standard output, with `SIGPIPE`. A canceled run also stops the tasks and the sleeps that it waits for.
 - A script command that runs for a client, such as `aglow run`, reads pane text only when `Control.allowReadText` and `Scripts.allowReadText` are on.
 - A keybind action from `afterglow ctl action` or `afterglow.action` is refused while a prompt or a script dialog is open.
+- Overlays: `afterglow.overlay` runs a program, such as fzf, over a pane and returns its exit status and its output to the script. The program takes the input focus while it runs. It can read a list on standard input, draw on the terminal and answer on standard output or in the file that `AFTERGLOW_RESULT` names. The overlay fades in and out through the `Shaders.overlayTransition` pack, Overlay Fade by default. The pack blends the pane and the program, and both have the pane's layer and pane shaders. `Animation.overlayCurve` and `Animation.overlayDuration` time the fade.
+- An overlay closes before its program exits when its pane closes or its script stops. It also closes when the command run or the `afterglow ctl` client that waits for it ends. An overlay that a control client opened also closes when `Control.enabled` goes off. The `cancel_overlay` action, Ctrl+Shift+Alt+Escape by default, closes the overlay of the focused pane. In each case, the program gets `SIGHUP`.
+- Popup overlays: the `width` and `height` options make an overlay a popup over a part of its pane. Each is a number of cells or a percentage of the pane. `position` puts the popup at one of nine positions, and `border` adds or removes its border. The pane stays visible and keeps running around the popup, darker by `Colors.popupDim`. A border in the popup border color shows the title in its top edge, in the text color. `Window.popupCorners` makes its corners rounded or square. The mouse acts in the popup only. A click on the pane around it gives that pane the focus and reaches no program.
+- `afterglow ctl overlay -- CMD` runs a program over a pane from a shell script. It uses the `overlay` call of the control socket. It prints the program's output and exits with its status. Without `Control.allowReadText`, a control client gets the exit status but not the output, and `afterglow ctl overlay` prints nothing on standard output. `-w`, `-h` or `--border` makes it a popup, at `--position`. `--no-border` removes the border of a popup.
+- The fzf picker example package picks a saved project or a file with fzf in a popup overlay, or with the select dialog when fzf is not installed.
 - Shell completion for Bash, Zsh and Fish, with the commands of the running scripts and the `aglow` commands of `afterglow`. The completion reads the commands from `aglow run`, which starts faster than `afterglow`. The Fish completion needs Fish 4 or later.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
 - A different build on the same display starts on its own and does not hand its window over.

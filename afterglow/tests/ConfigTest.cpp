@@ -232,6 +232,27 @@ TEST(Themes, ReadsJsonThemes)
     EXPECT_TRUE(theme->palette[1] == Rgb(0xff, 0x00, 0x00));
 }
 
+TEST(Themes, ReadsAPopupBorderInJsonGhosttyAndKittyThemes)
+{
+    const auto json = Themes::parse(R"({"background": "#101010", "popupBorder": "#a0b0c0"})");
+    ASSERT_TRUE(json);
+    EXPECT_TRUE(json->popupBorder == Rgb(0xa0, 0xb0, 0xc0));
+    const auto ghostty = Themes::parse("background = #101010\npopup-border = #010203\n");
+    ASSERT_TRUE(ghostty);
+    EXPECT_TRUE(ghostty->popupBorder == Rgb(1, 2, 3));
+    const auto kitty = Themes::parse("background #101010\npopup_border #040506\n");
+    ASSERT_TRUE(kitty);
+    EXPECT_TRUE(kitty->popupBorder == Rgb(4, 5, 6));
+    // A theme without one leaves it unset, for the fallback.
+    const auto plain = Themes::parse("background = #101010\n");
+    ASSERT_TRUE(plain);
+    EXPECT_FALSE(plain->popupBorder);
+    // Halfway from the background to the text; the divider a fifth.
+    static_assert(Themes::derivedPopupBorder({0x1c, 0x1c, 0x1c}, {0xd8, 0xd8, 0xd8}) == Rgb(0x7a, 0x7a, 0x7a));
+    static_assert(Themes::derivedPopupBorder({0xf6, 0xf5, 0xf2}, {0x2b, 0x2b, 0x2f}) == Rgb(0x91, 0x90, 0x91));
+    static_assert(Themes::derivedDivider({0, 0, 0}, {0xff, 0xff, 0xff}) == Rgb(0x33, 0x33, 0x33));
+}
+
 TEST(Themes, EightDigitHexIsNotAColour)
 {
     // Qt reads eight digits as #AARRGGBB; these colours have no alpha.
@@ -303,6 +324,71 @@ TEST_F(ConfigTest, UserThemesComeFirstAndDeriveADivider)
     EXPECT_TRUE(same(s.terminal.defaultBackground, {0, 0, 0}));
     // A fifth of the way from the background to the text.
     EXPECT_EQ(s.window.dividerColor, AfterglowRender::packRgba(0x33, 0x33, 0x33));
+    // The popup border, halfway.
+    EXPECT_EQ(s.window.popupBorderColor, AfterglowRender::packRgba(0x7f, 0x7f, 0x7f));
+}
+
+TEST_F(ConfigTest, APopupBorderComesFromTheThemeOrItsColorsOrTheConfig)
+{
+    auto borderOf = [&](const QByteArray& json) {
+        SettingsStore store(write(QStringLiteral("config.json"), json));
+        EXPECT_TRUE(store.problems().isEmpty()) << json.toStdString() << ": " << store.problems().join(QLatin1Char('\n')).toStdString();
+        return store.settings().window.popupBorderColor;
+    };
+    // No theme: halfway from the background to the text in use, or the user's own.
+    EXPECT_EQ(borderOf("{}"), AfterglowRender::packRgba(0x7a, 0x7a, 0x7a));
+    EXPECT_EQ(borderOf(R"({"Colors": {"background": "#ffffff", "foreground": "#000000"}})"), AfterglowRender::packRgba(0x80, 0x80, 0x80));
+    EXPECT_EQ(borderOf(R"({"Colors": {"popupBorder": "#123456"}})"), AfterglowRender::packRgba(0x12, 0x34, 0x56));
+    // The bundled themes set none: halfway from their background to their
+    // text, not the config's.
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-dark", "popupBorder": "#ff00ff"}})"), AfterglowRender::packRgba(0x7a, 0x7a, 0x7a));
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-light"}})"), AfterglowRender::packRgba(0x91, 0x90, 0x91));
+    // A theme replaces the config's, as it does the divider.
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-light", "popupBorder": "#123456"}})"),
+              AfterglowRender::packRgba(0x91, 0x90, 0x91));
+    // A theme that sets one, and Ghostty and Kitty themes without one.
+    QDir().mkpath(m_home.filePath(QStringLiteral("afterglow/themes")));
+    QDir().mkpath(m_home.filePath(QStringLiteral("ghostty/themes")));
+    QDir().mkpath(m_home.filePath(QStringLiteral("kitty/themes")));
+    write(QStringLiteral("afterglow/themes/boxed.json"), R"({"background": "#000000", "foreground": "#ffffff", "popupBorder": "#ff8800"})");
+    write(QStringLiteral("ghostty/themes/Night"), "background = #000000\nforeground = #c8c8c8\n");
+    write(QStringLiteral("kitty/themes/Paper.conf"), "background #ffffff\nforeground #000000\n");
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "boxed"}})"), AfterglowRender::packRgba(0xff, 0x88, 0x00));
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "Night"}})"), AfterglowRender::packRgba(0x64, 0x64, 0x64));
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "Paper"}})"), AfterglowRender::packRgba(0x80, 0x80, 0x80));
+    // light: and dark: pick a theme, and get its fallback. With no desktop
+    // preference (no QGuiApplication here) the dark one counts.
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "light:afterglow-dark,dark:afterglow-light"}})"),
+              AfterglowRender::packRgba(0x91, 0x90, 0x91));
+}
+
+TEST_F(ConfigTest, PopupCornersAreRoundedOrSquare)
+{
+    auto cornersOf = [&](const QByteArray& json) {
+        SettingsStore store(write(QStringLiteral("config.json"), json));
+        return store.settings().window.popupCorners;
+    };
+    EXPECT_EQ(cornersOf("{}"), WindowSettings::PopupCorners::Rounded);
+    EXPECT_EQ(cornersOf(R"({"Window": {"popupCorners": "square"}})"), WindowSettings::PopupCorners::Square);
+    // A value that is not a choice keeps the default.
+    EXPECT_EQ(cornersOf(R"({"Window": {"popupCorners": "pointy"}})"), WindowSettings::PopupCorners::Rounded);
+}
+
+TEST_F(ConfigTest, AThemeWhosePopupBorderChangesAppliesOnReload)
+{
+    const QString theme = write(QStringLiteral("theme.json"), R"({"background": "#000000", "popupBorder": "#112233"})");
+    SettingsStore store(write(QStringLiteral("config.json"),
+                              QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}}}}).toJson()));
+    ASSERT_EQ(store.settings().window.popupBorderColor, AfterglowRender::packRgba(0x11, 0x22, 0x33));
+    int changes = 0;
+    QObject::connect(&store, &SettingsStore::changed, [&](const Settings& previous) {
+        ++changes;
+        EXPECT_EQ(previous.window.popupBorderColor, AfterglowRender::packRgba(0x11, 0x22, 0x33));
+    });
+    write(QStringLiteral("theme.json"), R"({"background": "#000000", "popupBorder": "#445566"})");
+    store.reload();
+    EXPECT_EQ(store.settings().window.popupBorderColor, AfterglowRender::packRgba(0x44, 0x55, 0x66));
+    EXPECT_EQ(changes, 1);
 }
 
 namespace {
@@ -374,11 +460,19 @@ TEST_F(ConfigTest, PlasmaThemeTakesTheDesktopColorsOverTheNamedTheme)
     const auto light = bundled("afterglow-light");
     ASSERT_TRUE(light && light->palette[1]);
     EXPECT_TRUE(same(s.terminal.basePalette[1], *light->palette[1]));
-    // The divider comes from the desktop's background and text.
+    // The divider and the popup border come from the desktop's background and text.
     auto mix = [](int a, int b) { return a + (b - a) / 5; };
     EXPECT_EQ(s.window.dividerColor, AfterglowRender::packRgba(mix(20, 230), mix(22, 231), mix(24, 232)));
+    auto half = [](int a, int b) { return a + (b - a) / 2; };
+    EXPECT_EQ(s.window.popupBorderColor, AfterglowRender::packRgba(half(20, 230), half(22, 231), half(24, 232)));
     EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
     EXPECT_TRUE(store.watchedPaths().contains(m_home.filePath(QStringLiteral("kdeglobals"))));
+    // Also over a theme that sets its own, picked for its own background.
+    QDir().mkpath(m_home.filePath(QStringLiteral("afterglow/themes")));
+    write(QStringLiteral("afterglow/themes/boxed.json"), R"({"background": "#ffffff", "divider": "#00ff00", "popupBorder": "#ff8800"})");
+    SettingsStore boxed(write(QStringLiteral("boxed.json"), R"({"Colors": {"theme": "plasma:boxed"}})"));
+    EXPECT_EQ(boxed.settings().window.dividerColor, AfterglowRender::packRgba(mix(20, 230), mix(22, 231), mix(24, 232)));
+    EXPECT_EQ(boxed.settings().window.popupBorderColor, AfterglowRender::packRgba(half(20, 230), half(22, 231), half(24, 232)));
 }
 
 TEST_F(ConfigTest, PlasmaColorsReadHexValuesTheViewSectionAndTheSystemFile)
@@ -822,6 +916,15 @@ TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
     const auto groups = Afterglow::SettingsStore::reference().value(QStringLiteral("groups")).toObject();
     const auto font = groups.value(QStringLiteral("Font")).toObject();
     EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("default")).toString(), QStringLiteral("grayscale"));
+    // The choices are the ones that the store reads, in their order. A key
+    // with a narrower set than its type (graphicsFileTransfer has no ask)
+    // lists only its own.
+    EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("choices")).toArray(),
+              (QJsonArray{QStringLiteral("grayscale"), QStringLiteral("none"), QStringLiteral("rgb"), QStringLiteral("bgr")}));
+    const auto transfer = groups.value(QStringLiteral("Terminal")).toObject().value(QStringLiteral("graphicsFileTransfer")).toObject();
+    EXPECT_EQ(transfer.value(QStringLiteral("choices")).toArray(), (QJsonArray{QStringLiteral("allow"), QStringLiteral("deny")}));
+    // A key without choices has no list.
+    EXPECT_FALSE(font.value(QStringLiteral("family")).toObject().contains(QStringLiteral("choices")));
     // 0 is the desktop's size; other sizes are clamped to 4–96, the limits
     // font_bigger keeps to. The range shows what the clamp keeps to, and the
     // description names 0.
@@ -832,6 +935,21 @@ TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
     EXPECT_TRUE(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("description")).toString().contains(QStringLiteral("clamps other values to 4–96")));
     EXPECT_TRUE(font.value(QStringLiteral("family")).toObject().value(QStringLiteral("default")).toString().isEmpty());
     EXPECT_TRUE(groups.value(QStringLiteral("Keybinds")).toObject().value(QStringLiteral("bindings")).toObject().value(QStringLiteral("default")).isObject());
+}
+
+// The reference says that an integer key drops the fraction. The JSON
+// backend truncates before the clamp sees the value, so 6.7 is 6, not 7 as
+// a rounding conversion would give. A fraction in a string is no whole
+// number: it is reported and uses the default.
+TEST_F(ConfigTest, AnIntegerKeyDropsTheFractionOfANumber)
+{
+    SettingsStore up(write(QStringLiteral("up.json"), R"({"Notifications": {"statusInterval": 6.7}})"));
+    EXPECT_EQ(up.settings().statusNotificationInterval, 6);
+    EXPECT_FALSE(mentions(up.problems(), QStringLiteral("Notifications.statusInterval")));
+
+    SettingsStore text(write(QStringLiteral("text.json"), R"({"Notifications": {"statusInterval": "6.7"}})"));
+    EXPECT_EQ(text.settings().statusNotificationInterval, Settings{}.statusNotificationInterval);
+    EXPECT_TRUE(mentions(text.problems(), QStringLiteral("Notifications.statusInterval must be a whole number")));
 }
 
 TEST(Keybinds, SupplementaryUnicodeSurvivesLiteralAndEscapedBindings)
@@ -1018,6 +1136,22 @@ TEST(Keybinds, EndScriptKeyModeHasADefaultChord)
     EXPECT_EQ(moved.match(&other), Action::EndScriptKeyMode);
 }
 
+TEST(Keybinds, CancelOverlayHasADefaultChord)
+{
+    const Keybinds kb = Keybinds::defaults();
+    EXPECT_EQ(Keybinds::token(Action::CancelOverlay), QStringLiteral("cancel_overlay"));
+    EXPECT_EQ(Keybinds::defaultMap().value(QStringLiteral("cancel_overlay")).toString(), QStringLiteral("Ctrl+Shift+Alt+Escape"));
+    const QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier);
+    EXPECT_EQ(kb.match(&press), Action::CancelOverlay);
+    // The chord without Alt still ends a script's key mode.
+    const QKeyEvent endMode(QEvent::KeyPress, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(kb.match(&endMode), Action::EndScriptKeyMode);
+    const Keybinds moved = Keybinds::fromMap({{QStringLiteral("cancel_overlay"), QStringLiteral("Ctrl+Alt+Q")}});
+    EXPECT_EQ(moved.match(&press), Action::None);
+    const QKeyEvent other(QEvent::KeyPress, Qt::Key_Q, Qt::ControlModifier | Qt::AltModifier);
+    EXPECT_EQ(moved.match(&other), Action::CancelOverlay);
+}
+
 TEST_F(ConfigTest, FontFollowsTheDesktopUntilSet)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
@@ -1092,6 +1226,49 @@ TEST_F(ConfigTest, AnimationCurvesAndTextBlinkDefaultAndOverride)
     EXPECT_EQ(c.quickTerminal.curve, QStringLiteral("spring:30,1"));
     EXPECT_EQ(c.quickTerminal.duration, 300);
     EXPECT_EQ(c.textBlinkInterval, 100); // clamped
+}
+
+TEST_F(ConfigTest, PopupDimDefaultsOverridesAndClamps)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_DOUBLE_EQ(defaults.settings().window.popupDim, 0.35);
+    SettingsStore off(write(QStringLiteral("off.json"), R"({"Colors": {"popupDim": 0}})"));
+    EXPECT_DOUBLE_EQ(off.settings().window.popupDim, 0.0);
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Colors": {"popupDim": 0.6}})"));
+    EXPECT_DOUBLE_EQ(custom.settings().window.popupDim, 0.6);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Colors": {"popupDim": 3}})"));
+    EXPECT_DOUBLE_EQ(high.settings().window.popupDim, 1.0);
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Colors": {"popupDim": -1}})"));
+    EXPECT_DOUBLE_EQ(low.settings().window.popupDim, 0.0);
+}
+
+TEST_F(ConfigTest, OverlayTransitionAndFadeDefaultsOverridesAndClamps)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().shaders.overlayTransition, QStringLiteral("overlay-fade"));
+    EXPECT_EQ(defaults.settings().animation.overlayCurve, QStringLiteral("0.4,0,0.2,1"));
+    EXPECT_EQ(defaults.settings().animation.overlayDuration, 180);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Animation": {"overlayCurve": " spring:20,1 ", "overlayDuration": 600}})"));
+    EXPECT_EQ(custom.settings().animation.overlayCurve, QStringLiteral("spring:20,1"));
+    EXPECT_EQ(custom.settings().animation.overlayDuration, 600);
+
+    // An invalid curve is the default, not a curve that the fade cannot run.
+    SettingsStore invalid(write(QStringLiteral("invalid.json"), R"({"Animation": {"overlayCurve": "not-a-curve"}})"));
+    EXPECT_EQ(invalid.settings().animation.overlayCurve, QStringLiteral("0.4,0,0.2,1"));
+    EXPECT_TRUE(mentions(invalid.problems(), QStringLiteral("Animation.overlayCurve is not a curve")));
+
+    // The setting keeps an empty reference and a package's <package>.<pack>
+    // as written (ShaderControlsTest resolves them into the chain).
+    SettingsStore none(write(QStringLiteral("none.json"), R"({"Shaders": {"overlayTransition": ""}})"));
+    EXPECT_TRUE(none.settings().shaders.overlayTransition.isEmpty());
+    SettingsStore packaged(write(QStringLiteral("packaged.json"), R"({"Shaders": {"overlayTransition": " my-kit.dissolve "}})"));
+    EXPECT_EQ(packaged.settings().shaders.overlayTransition, QStringLiteral("my-kit.dissolve"));
+
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Animation": {"overlayDuration": 1}})"));
+    EXPECT_EQ(low.settings().animation.overlayDuration, 16);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Animation": {"overlayDuration": 99999}})"));
+    EXPECT_EQ(high.settings().animation.overlayDuration, 5000);
 }
 
 TEST_F(ConfigTest, LastOutputLimitIsKibibytesWithAClamp)
@@ -1296,6 +1473,28 @@ TEST(Config, SchemaDefaultsHaveTheirDeclaredTypes)
             EXPECT_EQ(key.defaultValue.typeId(), int(key.expectedType)) << (group.key() + QLatin1Char('.') + key.key).toStdString();
         }
     }
+}
+
+// ShaderRefs.h names the Shaders keys for the package manifest, the script
+// API and the benchmark. A key added to the schema alone would be one that
+// they do not know.
+TEST(Config, ShaderKeysOfTheSchemaAreTheSharedLists)
+{
+    const PhosphorConfig::Schema schema = SettingsStore::schema();
+    ASSERT_TRUE(schema.groups.contains(QStringLiteral("Shaders")));
+    QStringList keys;
+    for (const auto& key : schema.groups.value(QStringLiteral("Shaders"))) {
+        keys << key.key;
+        if (ShaderChainKeys.contains(key.key)) {
+            EXPECT_EQ(key.expectedType, QMetaType::QVariantList) << key.key.toStdString();
+        } else if (ShaderEventKeys.contains(key.key)) {
+            EXPECT_EQ(key.expectedType, QMetaType::QString) << key.key.toStdString();
+        }
+    }
+    QStringList expected = ShaderChainKeys + ShaderEventKeys + QStringList{QStringLiteral("params")};
+    keys.sort();
+    expected.sort();
+    EXPECT_EQ(keys, expected);
 }
 
 TEST_F(ConfigTest, StructDefaultsAgreeWithTheSchema)
@@ -1700,8 +1899,10 @@ TEST_F(ConfigTest, EnvironmentValuesMustBeStrings)
 TEST_F(ConfigTest, FamiliesAndShaderReferencesAreTrimmed)
 {
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Font": {"family": "Iosevka", "boldFamily": " ", "italicFamily": " Mono "},
-                                                                 "Shaders": {"pane": [" bloom", ""]}})"));
+                                                                 "Shaders": {"pane": [" bloom", ""]},
+                                                                 "Audio": {"inputSource": " auto "}})"));
     const Settings& s = store.settings();
+    EXPECT_EQ(s.audio.inputSource, QStringLiteral("auto"));
     EXPECT_EQ(s.font.bold.family, "Iosevka");
     EXPECT_EQ(s.font.italic.family, "Mono");
     EXPECT_EQ(s.shaders.pane, QStringList{QStringLiteral("bloom")});

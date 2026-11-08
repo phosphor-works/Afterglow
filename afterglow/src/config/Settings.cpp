@@ -84,6 +84,8 @@ const Choice<AfterglowVt::BidiMode> BidiChoices[] = {{"off", AfterglowVt::BidiMo
                                                      {"auto", AfterglowVt::BidiMode::Auto},
                                                      {"ltr", AfterglowVt::BidiMode::LeftToRight},
                                                      {"rtl", AfterglowVt::BidiMode::RightToLeft}};
+const Choice<WindowSettings::PopupCorners> PopupCornerChoices[] = {{"rounded", WindowSettings::PopupCorners::Rounded},
+                                                                 {"square", WindowSettings::PopupCorners::Square}};
 const Choice<AfterglowVt::CursorShape> CursorShapeChoices[] = {{"block", AfterglowVt::CursorShape::Block},
                                                                {"underline", AfterglowVt::CursorShape::Underline},
                                                                {"bar", AfterglowVt::CursorShape::Bar}};
@@ -371,8 +373,8 @@ PhosphorConfig::Schema buildSchema()
                                "value aligns vertical positions only. The full value aligns both axes.")),
         enumKey(QStringLiteral("antialiasing"), AntialiasingChoices, font.antialiasing,
                 QStringLiteral("How Afterglow smooths glyph edges. The rgb and bgr values use grayscale while transparency or shaders "
-                               "are active. Pane effects count as shaders. They run while a pane shows a shell on another host, as "
-                               "another user or in a container.")),
+                               "are active. Pane effects and overlay fades count as shaders. Pane effects also run while a pane shows "
+                               "a shell on another host, as another user or in a container.")),
         doubleKey(QStringLiteral("gamma"), font.gamma, 0.5, 3.0,
                   QStringLiteral("Glyph coverage gamma. A value of 1 preserves coverage. Higher values increase edge coverage.")),
     };
@@ -385,7 +387,8 @@ PhosphorConfig::Schema buildSchema()
                                  "and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use "
                                  "plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme "
                                  "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
-                                 "after the brightness of the color scheme. A theme replaces each color that it sets, and the divider color. Afterglow "
+                                 "after the brightness of the color scheme. A theme replaces each color that it sets, and the divider and popup "
+                                 "border colors. Afterglow "
                                  "reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with "
                                  "a slash is a file path. A relative path starts at the directory of the config file.")),
         colorKey(QStringLiteral("foreground"), hex(term.defaultForeground), QStringLiteral("Default text color.")),
@@ -397,10 +400,17 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("palette"), defaultPalette(), QMetaType::QVariantList,
          QStringLiteral("The 16 ANSI colors, from black to bright white.")},
         colorKey(QStringLiteral("divider"), hex(WindowSettings::DefaultDivider),
-                 QStringLiteral("Color of the dividers between panes. A theme replaces it. A theme without a divider color gets one between its "
-                                "background and text colors.")),
+                 QStringLiteral("Color of the dividers between panes. An empty value uses the default. A theme replaces it. A theme "
+                                "without a divider color gets one a fifth of the way from its background color to its text color.")),
+        colorKey(QStringLiteral("popupBorder"), {},
+                 QStringLiteral("Color of the border around a popup overlay. An empty value uses the color halfway from the "
+                                "background color to the text color. A theme replaces it. A theme without a popup border color "
+                                "gets the color halfway from its background color to its text color.")),
         doubleKey(QStringLiteral("unfocusedDim"), d.window.unfocusedDim, 0, 1,
                   QStringLiteral("Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off.")),
+        doubleKey(QStringLiteral("popupDim"), d.window.popupDim, 0, 1,
+                  QStringLiteral("Opacity of a black layer over the pane around a popup overlay. The popup and its border stay as "
+                                 "they are. A value of 0 turns the darkening off.")),
         {QStringLiteral("boldIsBright"), term.boldIsBright, QMetaType::Bool,
          QStringLiteral("Use bright colors 8–15 for bold text with colors 0–7.")},
         doubleKey(QStringLiteral("minimumContrast"), term.minimumContrast, 1.0, 21.0,
@@ -522,6 +532,9 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Blur content behind translucent backgrounds with KWin.")},
         {QStringLiteral("paneTitles"), d.window.paneTitles, QMetaType::Bool,
          QStringLiteral("Show pane titles in tabs with two or more panes.")},
+        enumKey(QStringLiteral("popupCorners"), PopupCornerChoices, d.window.popupCorners,
+                QStringLiteral("Corners of the border around a popup overlay. The rounded value curves each corner. The square "
+                               "value makes each corner a right angle.")),
         stringKey(QStringLiteral("workingDirectory"), d.window.workingDirectory,
                   QStringLiteral("Starting directory for new tabs, panes and windows. Use inherit, home or a path. The inherit "
                                  "value, or an empty value, uses the focused pane's directory or the launcher's directory. The "
@@ -617,10 +630,10 @@ PhosphorConfig::Schema buildSchema()
                         "each XDG data directory. The aglow run command also needs Control.enabled.")},
         intKey(QStringLiteral("commandTimeout"), d.scriptCommandTimeout, 1000, 3600000,
                QStringLiteral("Longest time in milliseconds that one run of a script command can take. This includes runs "
-                              "from a key, a menu or the palette. The time that the run waits for a task, a dialog or a "
-                              "slow reader of its output counts. The wait for standard input before the run starts does "
-                              "not count. At the limit the run ends, and aglow run exits with status 124. A change "
-                              "applies to the runs that start after it.")),
+                              "from a key, a menu or the palette. The time that the run waits for a task, a dialog, an "
+                              "overlay or a slow reader of its output counts. The wait for standard input before the run "
+                              "starts does not count. At the limit the run ends, and aglow run exits with status 124. A "
+                              "change applies to the runs that start after it.")),
         // Kibibytes, as Terminal.lastOutputLimit: read() turns them into bytes.
         intKey(QStringLiteral("commandStdinLimit"), int(d.scriptCommandStdinLimit >> 10), 0, MaxScriptCommandStdinLimitKiB,
                QStringLiteral("Kibibytes of standard input that a script command can get from aglow run. A run with "
@@ -683,6 +696,13 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("paneEffectDuration"), anim.paneEffectDuration, 16, 5000,
                QStringLiteral("Milliseconds that a pane takes to open or close in Shaders.paneEffects. The portal of a pane "
                               "whose shell moves to another host, user or container takes the same time.")),
+        curveKey(QStringLiteral("overlayCurve"), anim.overlayCurve,
+                 QStringLiteral("Curve of the fade of an overlay over its pane (Shaders.overlayTransition), in the "
+                                "splitCurve format. The fade stops the first time that it reaches its target. A curve that "
+                                "overshoots does not bounce back.")),
+        intKey(QStringLiteral("overlayDuration"), anim.overlayDuration, 16, 5000,
+               QStringLiteral("Duration of the fade of an overlay (Shaders.overlayTransition) in milliseconds for curves "
+                              "other than springs.")),
         curveKey(QStringLiteral("cursorCurve"), anim.cursorCurve,
                  QStringLiteral("Curve of cursor motion between cells, in the splitCurve format.")),
         intKey(QStringLiteral("cursorDuration"), anim.cursorDuration, 16, 5000,
@@ -732,6 +752,9 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Shader that animates panes as they split open and close. It draws a portal when the shell "
                                  "of a pane moves to another host, user or container. While the shell stays there, it draws "
                                  "the away frame around the pane. An empty value turns it off.")),
+        stringKey(QStringLiteral("overlayTransition"), d.shaders.overlayTransition,
+                  QStringLiteral("Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. "
+                                 "An empty value, or a pack that does not load, switches at once.")),
         {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Parameter values for each shader reference, such as { \"bloom\": { \"strength\": 0.5 } }.")},
     };
@@ -1360,6 +1383,8 @@ Settings SettingsStore::read()
     t.selectionForeground = optionalColor("selectionForeground");
     t.selectionBackground = optionalColor("selectionBackground");
     AfterglowVt::Rgb divider = toRgb(st.read<QString>(Colors, QStringLiteral("divider")), WindowSettings::DefaultDivider);
+    // Unset: derived below from the background and the text in use.
+    std::optional<AfterglowVt::Rgb> popupBorder = optionalColor("popupBorder");
     auto& hl = s.colors;
     hl.searchMatch = toRgb(st.read<QString>(Colors, QStringLiteral("searchMatch")), hl.searchMatch);
     hl.searchCurrentMatch = toRgb(st.read<QString>(Colors, QStringLiteral("searchCurrentMatch")), hl.searchCurrentMatch);
@@ -1441,6 +1466,7 @@ Settings SettingsStore::read()
         over.cursorText = desktop->cursorText;
         // Derived from the desktop's background and text, not the theme's.
         over.divider.reset();
+        over.popupBorder.reset();
         theme = std::make_shared<const Theme>(over);
     }
     if (theme) {
@@ -1467,16 +1493,19 @@ Settings SettingsStore::read()
         hl.searchMatchText = theme->searchMatchText.value_or(hl.searchMatchText);
         hl.visualBell = theme->visualBell.value_or(hl.visualBell);
         hl.visualBellIntensity = theme->visualBellIntensity.value_or(hl.visualBellIntensity);
-        // Themes from other terminals have no divider: a fifth of the way
-        // from the background to the text suits light and dark alike. The
-        // config's divider is not used, since its default is a dark one.
-        auto mix = [](std::uint8_t a, std::uint8_t b) { return std::uint8_t(a + (b - a) / 5); };
-        const AfterglowVt::Rgb& bg = t.defaultBackground;
-        const AfterglowVt::Rgb& fg = t.defaultForeground;
-        divider = theme->divider.value_or(AfterglowVt::Rgb{mix(bg.r, fg.r), mix(bg.g, fg.g), mix(bg.b, fg.b)});
+        // A theme without a divider or a popup border (every theme of another
+        // terminal, most bundled ones, and every bundled one for the popup
+        // border) gets one derived from its background and text, which suits
+        // light and dark alike. The config's are not used: they need not suit the theme's
+        // background.
+        divider = theme->divider.value_or(Themes::derivedDivider(t.defaultBackground, t.defaultForeground));
+        popupBorder = theme->popupBorder;
     }
     s.window.dividerColor = AfterglowRender::packRgba(divider);
+    s.window.popupBorderColor =
+        AfterglowRender::packRgba(popupBorder.value_or(Themes::derivedPopupBorder(t.defaultBackground, t.defaultForeground)));
     s.window.unfocusedDim = st.read<double>(Colors, QStringLiteral("unfocusedDim"));
+    s.window.popupDim = st.read<double>(Colors, QStringLiteral("popupDim"));
     t.boldIsBright = st.read<bool>(Colors, QStringLiteral("boldIsBright"));
     t.minimumContrast = st.read<double>(Colors, QStringLiteral("minimumContrast"));
 
@@ -1548,6 +1577,7 @@ Settings SettingsStore::read()
     s.window.backgroundOpacity = st.read<double>(Window, QStringLiteral("backgroundOpacity"));
     s.window.blur = st.read<bool>(Window, QStringLiteral("blur"));
     s.window.paneTitles = st.read<bool>(Window, QStringLiteral("paneTitles"));
+    s.window.popupCorners = readEnum(st, Window, QStringLiteral("popupCorners"), PopupCornerChoices, s.window.popupCorners);
     s.window.workingDirectory = st.read<QString>(Window, QStringLiteral("workingDirectory")).trimmed();
     s.window.startMode = readEnum(st, Window, QStringLiteral("startMode"), StartModeChoices, s.window.startMode);
     s.window.decorations = st.read<bool>(Window, QStringLiteral("decorations"));
@@ -1620,7 +1650,7 @@ Settings SettingsStore::read()
 
     s.audio.enabled = st.read<bool>(AudioGroup, QStringLiteral("enabled"));
     s.audio.inputMethod = st.read<QString>(AudioGroup, QStringLiteral("inputMethod"));
-    s.audio.inputSource = st.read<QString>(AudioGroup, QStringLiteral("inputSource"));
+    s.audio.inputSource = st.read<QString>(AudioGroup, QStringLiteral("inputSource")).trimmed();
     s.audio.framerate = st.read<int>(AudioGroup, QStringLiteral("framerate"));
     s.audio.smoothing = st.read<int>(AudioGroup, QStringLiteral("smoothing"));
     s.audio.extraSmoothing = st.read<double>(AudioGroup, QStringLiteral("extraSmoothing"));
@@ -1638,6 +1668,8 @@ Settings SettingsStore::read()
     s.animation.tabCurve = st.read<QString>(Animation, QStringLiteral("tabCurve")).trimmed();
     s.animation.tabDuration = st.read<int>(Animation, QStringLiteral("tabDuration"));
     s.animation.paneEffectDuration = st.read<int>(Animation, QStringLiteral("paneEffectDuration"));
+    s.animation.overlayCurve = st.read<QString>(Animation, QStringLiteral("overlayCurve")).trimmed();
+    s.animation.overlayDuration = st.read<int>(Animation, QStringLiteral("overlayDuration"));
     s.animation.cursorCurve = st.read<QString>(Animation, QStringLiteral("cursorCurve")).trimmed();
     s.animation.cursorDuration = st.read<int>(Animation, QStringLiteral("cursorDuration"));
     s.animation.scrollCurve = st.read<QString>(Animation, QStringLiteral("scrollCurve")).trimmed();
@@ -1647,10 +1679,16 @@ Settings SettingsStore::read()
 
     // Shaders
     auto shaderList = [&strings](const char* key) { return strings(Shaders, QLatin1String(key)); };
-    s.shaders = {shaderList("background"), shaderList("text"), shaderList("cursor"), shaderList("pane"),
-                 shaderList("window"), st.read<QString>(Shaders, QStringLiteral("overview")).trimmed(),
-                 st.read<QString>(Shaders, QStringLiteral("tabTransition")).trimmed(),
-                 st.read<QString>(Shaders, QStringLiteral("paneEffects")).trimmed()};
+    auto shaderRef = [&st](const char* key) { return st.read<QString>(Shaders, QLatin1String(key)).trimmed(); };
+    s.shaders = {.background = shaderList("background"),
+                 .text = shaderList("text"),
+                 .cursor = shaderList("cursor"),
+                 .pane = shaderList("pane"),
+                 .window = shaderList("window"),
+                 .overview = shaderRef("overview"),
+                 .tabTransition = shaderRef("tabTransition"),
+                 .paneEffects = shaderRef("paneEffects"),
+                 .overlayTransition = shaderRef("overlayTransition")};
     s.shaderParams = mapValue(Shaders, QStringLiteral("params"));
 
     // Hints: checked once here, not on every show_hints, which uses only the

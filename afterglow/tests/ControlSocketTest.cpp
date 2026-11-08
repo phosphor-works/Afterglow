@@ -235,6 +235,68 @@ TEST_F(ControlSocketTest, CallsReplyWithResultsOrErrors)
     EXPECT_EQ(unknown.value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_FN"));
 }
 
+TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
+{
+    ASSERT_TRUE(start());
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    // The rules of the overlay effect, and a directory that exists: a
+    // refusal before anything runs.
+    const auto refused = [this, &client](const QJsonArray& args) {
+        const QJsonObject frame = call(client, QStringLiteral("overlay"), args);
+        EXPECT_EQ(frame.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+        EXPECT_EQ(frame.value(QStringLiteral("code")).toString(), QStringLiteral("CALL_FAILED"));
+        return frame.value(QStringLiteral("message")).toString();
+    };
+    EXPECT_TRUE(refused({7, QJsonArray{}, QJsonObject{}}).contains(QStringLiteral("argv")));
+    EXPECT_TRUE(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("capture"), QStringLiteral("stderr")}}})
+                    .startsWith(QStringLiteral("capture must be")));
+    EXPECT_TRUE(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("shell"), true}}})
+                    .contains(QStringLiteral("shell")));
+    const QString missingDirectory = m_dir.filePath(QStringLiteral("missing"));
+    EXPECT_EQ(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("cwd"), missingDirectory}}}),
+              QStringLiteral("cwd must name an existing absolute directory"));
+    // Qt takes a resource path for absolute, and its root for a directory:
+    // the spec refuses it before the directory check.
+    EXPECT_EQ(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("cwd"), QStringLiteral(":/")}}}),
+              QStringLiteral("cwd must be an absolute path, ~ or a path that starts with ~/"));
+    // A new tab reaches the directory check itself, before it looks for the
+    // pane.
+    const QJsonObject tab = call(client, QStringLiteral("newTab"), {7, QStringLiteral(":/"), QJsonArray{}});
+    EXPECT_EQ(tab.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+    EXPECT_EQ(tab.value(QStringLiteral("code")).toString(), QStringLiteral("CALL_FAILED"));
+    EXPECT_EQ(tab.value(QStringLiteral("message")).toString(), QStringLiteral("cwd must name an existing absolute directory"));
+    // So does a project directory.
+    const QJsonObject project = call(client, QStringLiteral("openDirectory"), {QStringLiteral(":/"), QString()});
+    EXPECT_EQ(project.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+    EXPECT_EQ(project.value(QStringLiteral("message")).toString(), QStringLiteral("project directory must be absolute or start with ~/"));
+    // Past the checks, a failure has its own code: here no pane, also for
+    // the focused pane when there is none. ~ is the home directory, which
+    // exists.
+    const auto noPane = [this, &client](const QJsonArray& args) {
+        const QJsonObject frame = call(client, QStringLiteral("overlay"), args);
+        EXPECT_EQ(frame.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+        EXPECT_EQ(frame.value(QStringLiteral("code")).toString(), QStringLiteral("no_pane"));
+        return frame.value(QStringLiteral("message")).toString();
+    };
+    EXPECT_TRUE(noPane({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{}}).contains(QLatin1Char('7')));
+    EXPECT_TRUE(noPane({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("cwd"), QStringLiteral("~")}}})
+                    .contains(QLatin1Char('7')));
+    EXPECT_EQ(noPane({0, QJsonArray{QStringLiteral("fzf")}, QJsonObject{}}), QStringLiteral("no focused pane"));
+    // A popup's shape, by the rules of the effect: cells as a JSON integer, a percentage as text.
+    const QJsonArray fzf{QStringLiteral("fzf")};
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("width"), 0}}}).startsWith(QStringLiteral("width must be")));
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("height"), QStringLiteral("150%")}}}).startsWith(QStringLiteral("height must be")));
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("width"), QStringLiteral("40")}}}).startsWith(QStringLiteral("width must be")));
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("position"), QStringLiteral("middle")}}})
+                    .startsWith(QStringLiteral("position must be")));
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("border"), QStringLiteral("no")}}}).startsWith(QStringLiteral("border must be")));
+    EXPECT_TRUE(noPane({7, fzf,
+                        QJsonObject{{QStringLiteral("width"), 60}, {QStringLiteral("height"), QStringLiteral("60%")},
+                                    {QStringLiteral("position"), QStringLiteral("top-right")}, {QStringLiteral("border"), false}}})
+                    .contains(QLatin1Char('7')));
+}
+
 /// Runs @p work on a thread of its own while this thread's event loop
 /// serves the socket: the client blocks.
 template<typename Work>

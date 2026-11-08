@@ -76,12 +76,24 @@ public:
     explicit AccessiblePane(Pane* p) : QAccessibleObject(p) {
         m_output = QObject::connect(p, &Pane::contentChanged, p, [this] { m_cached.reset(); });
     }
-    ~AccessiblePane() override { QObject::disconnect(m_output); }
+    ~AccessiblePane() override
+    {
+        QObject::disconnect(m_output);
+        QObject::disconnect(m_overlayOutput);
+    }
     Pane* pane() const { return qobject_cast<Pane*>(object()); }
+    /// The terminal that has the keyboard: an overlay's, in place of the
+    /// pane's or as a popup over it, while one runs over it.
+    Pane* shown() const
+    {
+        Pane* p = pane();
+        return p && p->overlay() ? p->overlay()->pane() : p;
+    }
     // A query loop asks for each character in turn. One capture serves it until the
     // content changes or the next frame refreshes it.
     TerminalText snapshot() const {
-        if (!m_cached) m_cached = pane()->accessibleText();
+        // An overlay coming or going changes the terminal that shows.
+        if (!m_cached || shown() != m_cachedFrom) capture();
         return *m_cached;
     }
     /// The pane left the tree (another tab shows, or zoom hides it). When it
@@ -93,9 +105,15 @@ public:
     QAccessibleInterface* child(int) const override { return nullptr; }
     int childCount() const override { return 0; }
     int indexOfChild(const QAccessibleInterface*) const override { return -1; }
-    QRect rect() const override { auto* w = owner(pane()); return w ? w->accessiblePaneRect(pane()) : QRect(); }
+    // Where its text is: a popup's grid while one runs over the pane. The
+    // pane is the popup's then, which has its keyboard, and the pane's own
+    // text around it is not read out until the popup ends.
+    QRect rect() const override { auto* w = owner(pane()); return w ? w->accessiblePaneRect(shown()) : QRect(); }
     QString text(QAccessible::Text kind) const override {
-        if (kind == QAccessible::Name) return pane()->title().isEmpty() ? QStringLiteral("Terminal") : pane()->title();
+        if (kind == QAccessible::Name) {
+            const QString title = !shown()->title().isEmpty() ? shown()->title() : pane()->title();
+            return title.isEmpty() ? QStringLiteral("Terminal") : title;
+        }
         if (kind == QAccessible::Value) return snapshot().text;
         if (kind == QAccessible::Description) return QStringLiteral("Terminal viewport. Scroll to read history.");
         return {};
@@ -156,24 +174,24 @@ public:
         const auto s = snapshot();
         if (index != 0 || start < 0 || end < start || end > s.cells.size()) return;
         if (start == end) { removeSelection(0); return; }
-        pane()->startSelection(s.cells[start], AfterglowVt::SelectionMode::Normal, true);
-        pane()->extendSelection(s.cells[end - 1]);
+        shown()->startSelection(s.cells[start], AfterglowVt::SelectionMode::Normal, true);
+        shown()->extendSelection(s.cells[end - 1]);
         selectionChanged();
     }
     void removeSelection(int index) override {
         if (index != 0 || snapshot().selectionStart < 0) return;
-        pane()->clearSelection();
+        shown()->clearSelection();
         selectionChanged();
     }
     QRect characterRect(int offset) const override {
         const auto s = snapshot();
         if (offset < 0 || offset >= s.cells.size()) return {};
         auto* w = owner(pane());
-        return w ? w->accessibleCellRect(pane(), s.cells[offset]) : QRect();
+        return w ? w->accessibleCellRect(shown(), s.cells[offset]) : QRect();
     }
     int offsetAtPoint(const QPoint& point) const override {
         auto* w = owner(pane());
-        const auto cell = w ? w->accessibleCellAt(pane(), point) : std::nullopt;
+        const auto cell = w ? w->accessibleCellAt(shown(), point) : std::nullopt;
         if (!cell) return -1;
         // The cells run in reading order, one for each UTF-16 unit: the
         // first unit of the last cell that starts at or before the point.
@@ -192,10 +210,14 @@ public:
     }
     void notify() {
         // Nothing an assistive technology reads changed: no text to rebuild.
-        const auto serial = pane()->accessibleSerial();
-        if (m_seeded && m_notified == serial) return;
+        // Serials of two terminals are not comparable: an overlay that comes
+        // or goes is a change, whatever they are.
+        const Pane* source = shown();
+        const auto serial = source->accessibleSerial();
+        if (m_seeded && m_notified == serial && m_notifiedFrom == source) return;
         m_notified = serial;
-        m_cached = pane()->accessibleText();
+        m_notifiedFrom = source;
+        capture();
         const auto next = *m_cached;
         // The first frame after the pane joined the tree: a client reads it
         // whole, and the screen it shows is no change.
@@ -226,12 +248,27 @@ public:
         m_previous = next;
     }
 private:
+    /// Takes the text of the terminal that shows. The pane's own text drops
+    /// the capture with its contentChanged, and an overlay's with its own
+    /// while it shows: a query never takes the terminal's lock to check.
+    void capture() const {
+        const Pane* source = shown();
+        if (source != m_cachedFrom) {
+            QObject::disconnect(m_overlayOutput);
+            if (source != pane()) m_overlayOutput = QObject::connect(source, &Pane::contentChanged, source, [this] { m_cached.reset(); });
+            m_cachedFrom = source;
+        }
+        m_cached = source->accessibleText();
+    }
     // The selection is drawn, and told of, at the next frame.
     void selectionChanged() {
         m_cached.reset();
         if (auto* w = owner(pane())) w->requestUpdate();
     }
     mutable std::optional<TerminalText> m_cached;
+    mutable QPointer<const Pane> m_cachedFrom; ///< the terminal m_cached came from
+    mutable QMetaObject::Connection m_overlayOutput; ///< drops m_cached when m_cachedFrom is an overlay's
+    QPointer<const Pane> m_notifiedFrom; ///< the terminal of m_notified
     TerminalText m_previous; ///< the text as last told of
     bool m_seeded = false; ///< m_previous holds the text the pane shows in the tree
     std::optional<std::pair<std::uint64_t, std::uint64_t>> m_notified;

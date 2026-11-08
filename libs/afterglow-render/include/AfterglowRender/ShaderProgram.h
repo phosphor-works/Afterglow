@@ -51,6 +51,7 @@ struct alignas(16) TerminalUniformsTail
     float uScrollback[4];
     float uSignal[8][4];
     float uPalette[256][4];
+    float uOverlayTransition[4]; ///< progress, unused, unused, 1 in every pass of the overlay transition pack, its buffer passes too
 };
 
 /// Uniform block of terminal shaders (std140, binding 0): Phosphor's base
@@ -69,7 +70,8 @@ static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTa
 static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTail, uAudioLevels) == 928);
 static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTail, uSignal) == 960);
 static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTail, uPalette) == 1088);
-static_assert(sizeof(TerminalUniforms) == 5184);
+static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTail, uOverlayTransition) == 5184);
+static_assert(sizeof(TerminalUniforms) == 5200);
 
 inline constexpr int MaxShaderBuffers = PhosphorShaders::kMaxBufferPasses;
 inline constexpr int MaxShaderImages = PhosphorShaders::kMaxImageSlots;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ScriptTasks.h"
 #include "ScriptFiles.h"
+#include "OverlaySpec.h"
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
@@ -29,7 +30,8 @@ Result failure(const char* code, const QString& text) { return {text, {}, QStrin
 // read_file and watch_file accept the same paths.
 bool validPath(const QString& path)
 {
-    return path.size() <= 4096 && !path.contains(QChar(0)) && QDir::isAbsolutePath(path);
+    // Not QDir::isAbsolutePath: it takes ":file" for a Qt resource.
+    return path.size() <= 4096 && !path.contains(QChar(0)) && path.startsWith(QLatin1Char('/'));
 }
 int bounded(const QVariantMap& effect, const char* key, int fallback, int low, int high)
 {
@@ -195,10 +197,15 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
     }
     if (kind != QLatin1String("exec")) return reject(QStringLiteral("Unknown task kind"));
     auto command = e.value(QStringLiteral("command")).toStringList();
-    if (command.isEmpty() || command.size() > 64) return reject(QStringLiteral("exec needs an argv list of 1 to 64 strings"));
-    for (const auto& arg : command) if (arg.size() > 4096 || arg.contains(QChar(0))) return reject(QStringLiteral("Invalid command argument"));
+    // The limits of an overlay's command, which is an exec's too.
+    if (command.isEmpty() || command.size() > OverlaySpec::MaxArguments)
+        return reject(QStringLiteral("exec needs an argv list of 1 to %1 strings").arg(OverlaySpec::MaxArguments));
+    for (const auto& arg : command) {
+        if (arg.size() > OverlaySpec::MaxArgument || arg.contains(QChar(0)))
+            return reject(QStringLiteral("A command argument is over %1 characters or has a NUL character").arg(OverlaySpec::MaxArgument));
+    }
     const QString cwd = e.value(QStringLiteral("cwd")).toString();
-    if (!cwd.isEmpty() && (cwd.contains(QChar(0)) || !QDir::isAbsolutePath(cwd)))
+    if (!cwd.isEmpty() && (cwd.contains(QChar(0)) || !cwd.startsWith(QLatin1Char('/'))))
         return reject(QStringLiteral("exec cwd must be an absolute path"));
     auto* process = new QProcess(task);
     task->process = process;

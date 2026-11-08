@@ -6,6 +6,7 @@
 #include "desktop/DragDrop.h"
 #include "desktop/Accessibility.h"
 #include "DockArea.h"
+#include "PaneOverlay.h"
 
 #include "app/InstanceSocket.h"
 #include "app/NotificationCenter.h"
@@ -75,6 +76,9 @@ Pane::Pane(const AfterglowVt::TerminalOptions& options, QObject* parent)
 
 Pane::~Pane()
 {
+    // Its overlay answers "cancelled" while this pane is whole, and its
+    // program gets SIGHUP.
+    delete m_overlay;
     if (m_searchJob) m_searchJob->cancelled = true;
     // Stop the pty thread before the terminal it feeds goes away.
     if (m_pty) m_pty->stop();
@@ -84,7 +88,18 @@ Pane::~Pane()
     for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
 }
 
-bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term, int cols, int rows, int cellWidth,
+void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantMap& environment)
+{
+    for (auto it = environment.cbegin(); it != environment.cend(); ++it) {
+        const std::string name = it.key().toStdString();
+        std::erase_if(options.environment, [&name](const auto& entry) { return entry.first == name; });
+        std::erase(options.unsetEnvironment, name);
+        if (it.value().metaType().id() == QMetaType::Bool) options.unsetEnvironment.push_back(name);
+        else options.environment.emplace_back(name, it.value().toString().toStdString());
+    }
+}
+
+bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols, int rows, int cellWidth,
                  int cellHeight, QString* error)
 {
     // Size the terminal before the shell starts: programs run from the shell's
@@ -94,7 +109,6 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
         std::lock_guard lock(m_mutex);
         m_terminal.resize(cols, rows, cellWidth, cellHeight);
     }
-    AfterglowPty::SpawnOptions opts = options;
     // The configured and launch values win over afterglow's own, and a name
     // they unset stays unset; each name appears once.
     const auto named = [&opts](const std::string& name) {
@@ -107,7 +121,8 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
     // Lets `afterglow ctl` run in the pane act on that pane by default: always ours.
     std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_PANE_ID"; });
     std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_PANE_ID"));
-    opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_id));
+    // An overlay's program acts on the pane it runs over.
+    opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_overlayHost ? m_overlayHost->id() : m_id));
     // The pane ID means something only to this process: `afterglow ctl` in a
     // second instance's pane must reach that instance, not the first.
     std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_SOCKET"; });
@@ -144,7 +159,7 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
     std::string err;
     opts.deferStart = true;
     if (m_pty) m_pty->stop();
-    m_pty = AfterglowPty::Pty::spawn(opts, *this, &err);
+    m_pty = AfterglowPty::Pty::spawn(std::move(opts), *this, &err);
     if (m_pty && !m_pty->start(&err)) {
         m_pty->stop();
         m_pty.reset();
@@ -265,6 +280,14 @@ bool Pane::refreshSnapshot(int extraRows)
         m_snapshotGeneration = m_terminal.generation();
     }
     return true;
+}
+
+AfterglowRender::PaneSnapshot Pane::takeSnapshot()
+{
+    std::lock_guard lock(m_mutex);
+    m_snapshotGeneration = ~0ull;
+    // The move keeps the identity; the snapshot left here takes a new one.
+    return std::exchange(m_snapshot, {});
 }
 
 AfterglowVt::SelectionPoint Pane::selectionPointAt(int col, int row) const
@@ -1300,8 +1323,27 @@ void Pane::ptyData(std::string_view bytes)
     }
 }
 
+void Pane::ptyOutput(std::string_view bytes)
+{
+    std::lock_guard lock(m_outputMutex);
+    const std::size_t room = m_outputLimit > m_output.size() ? m_outputLimit - m_output.size() : 0;
+    // Read on to the end, so the program never blocks on a full pipe.
+    if (bytes.size() > room) m_outputTruncated = true;
+    m_output.append(bytes.substr(0, room));
+}
+
+std::string Pane::takeOutput(bool* truncated)
+{
+    std::lock_guard lock(m_outputMutex);
+    if (truncated) *truncated = m_outputTruncated;
+    return std::exchange(m_output, {});
+}
+
 void Pane::ptyClosed(int status)
 {
+    // -1 when the status is unknown, which is no failure to hold for.
+    const int code = status == -1 ? -1 : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status);
+    m_exitCode.store(code);
     if (status == -1) {
         qCInfo(lcPane) << "shell exit status unknown";
     } else if (WIFSIGNALED(status)) {
@@ -1312,9 +1354,8 @@ void Pane::ptyClosed(int status)
     {
         std::lock_guard lock(m_mutex);
         m_terminal.programExited();
-        const int code = status == -1 ? 0 : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status);
-        if (m_hold.load() || (m_holdOnFailure.load() && code != 0)) {
-            const std::string note = "\r\n\x1b[0;2m[exited with status " + std::to_string(code)
+        if (m_hold.load() || (m_holdOnFailure.load() && code > 0)) {
+            const std::string note = "\r\n\x1b[0;2m[exited with status " + std::to_string(std::max(code, 0))
                 + ". Press any key to close]\x1b[0m\x1b[?25l";
             m_terminal.feed(note);
             m_held.store(true);
@@ -1383,8 +1424,10 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
         dialog->setFileMode(QFileDialog::AnyFile);
         dialog->setDirectory(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
         dialog->selectFile(clean);
-        // On Wayland a dialog with no transient parent is not attached to the window.
-        if (auto* window = qobject_cast<QWindow*>(parent())) {
+        // On Wayland a dialog with no transient parent is not attached to the
+        // window. An overlay's pane is its host's child, in the host's window.
+        const Pane* place = m_overlayHost ? m_overlayHost : this;
+        if (auto* window = qobject_cast<QWindow*>(place->parent())) {
             dialog->winId();
             dialog->windowHandle()->setTransientParent(window);
         }

@@ -188,7 +188,8 @@ std::optional<Captured> capture(const QByteArrayList& argv, const IgnoredSignals
 QString baseDirectory(const char* name)
 {
     const QString value = qEnvironmentVariable(name);
-    return QDir::isAbsolutePath(value) ? value : QString();
+    // Not QDir::isAbsolutePath: it takes ":dir" for a Qt resource.
+    return value.startsWith(QLatin1Char('/')) ? value : QString();
 }
 
 QString stateFile()

@@ -99,6 +99,7 @@ Subpixel modes use separate filtered coverage for each color channel.
 Active shaders or window transparency cause an automatic change to grayscale text.
 Pane effects are shaders. They run while a pane is remote (`afterglow ssh`) or in another context.
 Such a pane makes all text in its window grayscale.
+Overlay fades are also shaders. While an overlay fades in or out, all text in its window is grayscale.
 A transparent pane background also uses grayscale text.
 An opaque window without shaders can use subpixel text again.
 Grayscale can give better results when the compositor scales or rotates the output.
@@ -113,8 +114,10 @@ Qt Quick renders the controls separately from terminal cells.
 ## Themes
 
 `Colors.theme` selects a theme. A theme replaces each color that it sets.
-Colors that it leaves out keep their `Colors` values.
-A theme without a divider color gets one between its background and text colors.
+Colors that it leaves out keep their `Colors` values, except the divider and popup border colors.
+A theme without a divider color gets one a fifth of the way from its background color to its text color.
+A theme without a popup border color gets the color halfway from its background color to its text color.
+With a theme, `Colors.divider` and `Colors.popupBorder` are not used.
 
 Afterglow first searches `$XDG_CONFIG_HOME/afterglow/themes`.
 It then searches `afterglow/themes` in each XDG data directory, starting with `~/.local/share`.
@@ -154,8 +157,9 @@ Afterglow reads its `Foreground`, `Background`, `Color0` to `Color7` and `Color0
 The intense colors are palette entries 8 to 15.
 Afterglow has no counterpart for the faint and intense text colors, the wallpaper or the opacity of a Konsole color scheme.
 An Afterglow JSON theme is one object with color keys.
-The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeground`, `selectionBackground` and `divider`.
+The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeground`, `selectionBackground`, `divider` and `popupBorder`.
 `searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.
+A color key can have `-` or `_` between its words, in any mix of upper and lower case, such as `popup-border` in a Ghostty theme.
 Afterglow logs other keys in a JSON theme.
 A color in a theme or in `Colors` is a Qt color name, such as `#1e1e2e`, `#fff` or `red`.
 These colors have no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`.
@@ -183,6 +187,7 @@ Use `plasma:NAME` to take colors from the desktop color scheme:
 | Cursor | Focus decoration, the accent color (`[Colors:View] DecorationFocus`) |
 | Text under the cursor | View background |
 | Divider | Derived from the background and the text |
+| Popup border | Derived from the background and the text |
 | Palette entries 0 to 15 | Theme `NAME` |
 
 `plasma` without a name takes the palette from `afterglow-dark` for a dark color scheme, and from `afterglow-light` for a light one.
@@ -211,6 +216,22 @@ A theme file that does not parse keeps its last colors until it parses again.
 | `Animation.scroll` | `true` | Scrolling eases instead of jumping by rows |
 
 `Animation.cursorCurve` and `Animation.scrollCurve` take a Phosphor curve spec, as `Animation.splitCurve` does.
+
+An [overlay](SCRIPTING.md#overlays), a program that runs over a pane, fades in and out through `Shaders.overlayTransition`.
+`Animation.overlayCurve` and `Animation.overlayDuration` set the fade.
+The fade stops the first time that it reaches its target. A curve that overshoots, such as a spring, does not bounce back.
+
+## Popup overlays
+
+A [popup overlay](SCRIPTING.md#popups) takes a part of the pane, and the pane stays visible around it.
+
+| Setting | Default | Function |
+| --- | --- | --- |
+| `Colors.popupDim` | 0.35 | Opacity of a black layer over the pane around a popup, from 0 to 1. A value outside this range becomes 0 or 1. A value of 0 turns the darkening off. |
+| `Colors.popupBorder` | `""` | Color of the popup's border line. An empty value uses the color halfway from the background color to the text color. A theme replaces it, as described in [Themes](#themes). |
+| `Window.popupCorners` | `rounded` | Corners of the popup's border: `rounded` or `square`. |
+
+The title in the border uses the text color.
 
 See [shaders](SHADERS.md) for audio, history and visual effects.
 See [bidirectional text](BIDI.md) for text direction settings.

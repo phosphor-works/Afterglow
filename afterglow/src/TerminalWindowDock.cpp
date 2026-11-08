@@ -295,6 +295,9 @@ void TerminalWindow::layoutPane(Pane* pane, const QRect& paneRect)
     const int cols = std::max(2, content.width() / m.cellWidth);
     const int rows = std::max(1, content.height() / m.cellHeight);
     pane->resize(cols, rows, m.cellWidth, m.cellHeight);
+    // An overlay takes the pane's grid, or a popup's part of it, and its
+    // program hears of each change.
+    if (PaneOverlay* overlay = pane->overlay()) overlay->place(cols, rows, m.cellWidth, m.cellHeight);
 }
 
 void TerminalWindow::placeTabDocks(int tab)
@@ -649,9 +652,6 @@ void TerminalWindow::pressDockItem(const DockArea* dock, std::size_t index)
     if (!showsDock(dock) || index >= dock->items().size()) return;
     const QPointF centre = QRectF(dock->itemRect(index)).center() / devicePixelRatio();
     if (chromeVisible() && m_chrome->wantsPointer(centre)) return;
-    // As a click does: one while the overview closes onto a card lands
-    // there, with that card's pane in the event.
-    if (!m_overview.open) finishOverviewReveal();
     // A client can press as fast as it can call: the presses count toward
     // the script's callback limit, as a pointer's clicks need not.
     emitDockClick(*dock, dock->items()[index].id, QStringLiteral("left"), true, centre);
