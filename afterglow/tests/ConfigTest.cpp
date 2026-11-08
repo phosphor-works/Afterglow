@@ -2789,7 +2789,7 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     EXPECT_FALSE(unclearStore.settings().control.enabled);
     // It stays off, so the text must not say that it uses the default.
     EXPECT_TRUE(mentions(unclearStore.problems(),
-                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file holds a JSON object")))
+                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file holds a JSON object or is deleted")))
         << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
     EXPECT_FALSE(mentions(unclearStore.problems(), QStringLiteral("Scripts.enabled must be true or false. Using the default")));
     // An editor that saves in place empties the file first: its text may
@@ -2808,7 +2808,7 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     unclearStore.reload();
     EXPECT_FALSE(unclearStore.settings().scripts);
     EXPECT_TRUE(mentions(unclearStore.problems(),
-                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file holds a JSON object")))
+                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file holds a JSON object or is deleted")))
         << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
     // Text that parses but holds no object keeps them off.
     write(QStringLiteral("config.json"), "[]");

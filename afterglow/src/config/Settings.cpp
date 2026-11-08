@@ -947,7 +947,7 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
             if (def.expectedType == QMetaType::Bool && !isBoolValue(raw)) {
                 const bool heldOff = neverRead && def.key == QLatin1String("enabled")
                                      && (group.key() == ScriptsGroup || group.key() == ControlGroup);
-                out << (heldOff ? QStringLiteral("%1 must be true or false. It stays off until the file holds a JSON object")
+                out << (heldOff ? QStringLiteral("%1 must be true or false. It stays off until the file holds a JSON object or is deleted")
                                 : QStringLiteral("%1 must be true or false. Using the default"))
                            .arg(name);
             } else if (def.expectedType == QMetaType::Int && !isIntValue(raw)) {
@@ -1085,7 +1085,7 @@ bool SettingsStore::loadFile()
         // document in use stays instead.
         m_backend->replaceRoot(before);
         m_backend->clearDirty();
-        problem += m_neverRead ? NeverReadNote + QStringLiteral(", until it holds a JSON object. Delete it for the defaults") : QStringLiteral(". Keeping the current settings");
+        problem += m_neverRead ? NeverReadNote + QStringLiteral(", until it can be read and holds a JSON object. Delete it for the defaults") : QStringLiteral(". Keeping the current settings");
     } else if (m_backend->blankFile() && m_neverRead && !m_fileProblems.isEmpty()) {
         // An editor that saves in place over a file that could not be read
         // at the start: the text that comes may turn them off.
