@@ -15,6 +15,7 @@
 #include <QThreadPool>
 #include <QTimer>
 #include <QtConcurrentRun>
+#include <QMutex>
 #include <QSemaphore>
 #include <atomic>
 #include <cmath>
@@ -40,6 +41,13 @@ int bounded(const QVariantMap& effect, const char* key, int fallback, int low, i
 }
 constexpr int FileWorkers = 8;
 QSemaphore fileSlots(FileWorkers);
+/// The slots that one script can hold: a script that reads from a mount
+/// that does not answer must leave reads for the others. By script id, not
+/// instance: a read that blocks keeps its slot after a reload too.
+constexpr int FileWorkersPerScript = FileWorkers / 2;
+QMutex readersLock;
+QHash<QString, int> readers;
+QString scriptOf(const QString& owner) { return owner.left(owner.lastIndexOf(QLatin1Char('@'))); }
 // Reads that block in the kernel (a stalled network mount) keep their thread,
 // so they get their own pool and never starve the global one.
 QThreadPool* filePool()
@@ -60,7 +68,9 @@ struct ScriptTasks::Task : QObject {
     QProcess* process = nullptr;
     qint64 group = 0; ///< the process group of a started job, which outlives its leader
     QByteArray output, errors;
+    quint64 key = 0; ///< of a timer or a watcher
     bool done = false, truncated = false;
+    bool fired = false; ///< a one-shot timer whose call has not been claimed
     std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
     explicit Task(QObject* parent) : QObject(parent) {}
 };
@@ -76,6 +86,7 @@ void ScriptTasks::finish(Task* task, Result result, bool deliver)
     *task->cancelled = true;
     m_tasks[task->owner].remove(task->id);
     if (m_tasks[task->owner].isEmpty()) m_tasks.remove(task->owner);
+    if (task->key) m_keyed.remove(task->key);
     // Children the job left behind stay in its group after a normal exit.
     if (task->group > 0) ::kill(-pid_t(task->group), SIGKILL);
     if (auto* process = task->process; process && process->state() != QProcess::NotRunning) {
@@ -103,6 +114,13 @@ void ScriptTasks::cancel(const QString& owner, const QString& prefix)
     for (auto* task : tasks) {
         if (task->complete && task->request.startsWith(prefix)) finish(task, {}, false);
     }
+}
+bool ScriptTasks::claim(quint64 key)
+{
+    auto* task = m_keyed.value(key);
+    if (!task) return false;
+    if (task->fired) finish(task, {}, false);
+    return true;
 }
 Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion complete, Event event)
 {
@@ -132,12 +150,15 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
         if (delay < 0 || repeat < 0 || (repeat && repeat < 250)) return reject(QStringLiteral("Timers require delay_ms >= 1 and repeat_ms = 0 or >= 250"));
         auto* timer = new QTimer(task);
         timer->setSingleShot(true);
+        task->key = ++m_lastKey;
+        m_keyed.insert(task->key, task);
         connect(timer, &QTimer::timeout, task, [this, task, timer, repeat] {
             if (task->done) return;
+            // A copy: the call can end the task.
             const auto event = task->event;
-            const QVariantMap data{{QStringLiteral("name"), task->id}};
-            if (!repeat) finish(task, {}, false);
-            if (event) event(QStringLiteral("on_timer"), data);
+            if (!repeat) task->fired = true;
+            if (event) event(QStringLiteral("on_timer"), {{QStringLiteral("name"), task->id}}, task->key);
+            else if (!repeat) finish(task, {}, false);
             if (repeat && !task->done) timer->start(repeat);
         });
         timer->start(delay);
@@ -150,10 +171,12 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
         auto* watcher = new PhosphorFsLoader::WatchedFileSet(task);
         watcher->setDebounceInterval(250);
         watcher->setPaths({path});
+        task->key = ++m_lastKey;
+        m_keyed.insert(task->key, task);
         connect(watcher, &PhosphorFsLoader::WatchedFileSet::filesChanged, task, [task, path] {
             if (task->done) return;
             task->event(QStringLiteral("on_file_changed"), {{QStringLiteral("name"), task->id},
-                {QStringLiteral("path"), path}, {QStringLiteral("exists"), QFileInfo::exists(path)}});
+                {QStringLiteral("path"), path}, {QStringLiteral("exists"), QFileInfo::exists(path)}}, task->key);
         });
         return {};
     }
@@ -166,14 +189,28 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
         const QString path = e.value(QStringLiteral("path")).toString();
         if (!validPath(path))
             return reject(QStringLiteral("read_file needs an absolute path of at most 4096 characters"));
-        if (!fileSlots.tryAcquire()) {
-            finish(task, {}, false);
-            return failure("busy", QStringLiteral("Too many file reads in flight"));
+        const QString script = scriptOf(owner);
+        {
+            const QMutexLocker lock(&readersLock);
+            if (readers.value(script) >= FileWorkersPerScript || !fileSlots.tryAcquire()) {
+                finish(task, {}, false);
+                return failure("busy", QStringLiteral("Too many file reads in flight"));
+            }
+            ++readers[script];
         }
         auto* watcher = new QFutureWatcher<Result>(task);
         connect(watcher, &QFutureWatcherBase::finished, task, [this, task, watcher] { finish(task, watcher->result()); });
-        watcher->setFuture(QtConcurrent::run(filePool(), [path, maxBytes, cancelled = task->cancelled] {
-            struct Release { ~Release() { fileSlots.release(); } } release;
+        watcher->setFuture(QtConcurrent::run(filePool(), [path, maxBytes, script, cancelled = task->cancelled] {
+            struct Release
+            {
+                QString script;
+                ~Release()
+                {
+                    const QMutexLocker lock(&readersLock);
+                    if (--readers[script] == 0) readers.remove(script);
+                    fileSlots.release();
+                }
+            } release{script};
             if (*cancelled) return failure("cancelled", QStringLiteral("Operation canceled"));
             const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
             if (fd < 0) return failure("io_error", QStringLiteral("Cannot open file"));

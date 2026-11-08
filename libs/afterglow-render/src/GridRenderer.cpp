@@ -1897,9 +1897,13 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         if (!m_clockOverride) delta = std::clamp(delta, 0.0, 0.1);
         time = ShaderFrameTime{now, float(delta), m_shaderFrame};
         if (m_shaderFrame < INT_MAX) ++m_shaderFrame;
-        const QDateTime date = QDateTime::currentDateTime(); // once per frame, for every pass
-        time.date = {float(date.date().year()), float(date.date().month()), float(date.date().day()),
-                     float(date.time().msecsSinceStartOfDay()) / 1000.0f};
+        if (m_dateOverride) {
+            time.date = *m_dateOverride;
+        } else {
+            const QDateTime date = QDateTime::currentDateTime(); // once per frame, for every pass
+            time.date = {float(date.date().year()), float(date.date().month()), float(date.date().day()),
+                         float(date.time().msecsSinceStartOfDay()) / 1000.0f};
+        }
         m_lastFrameTime = now;
         const FontMetrics& m = res.fonts->metrics();
         double combinedLines = 0;

@@ -52,7 +52,8 @@ bool readCapped(const QString& path, qint64 limit, QByteArray& bytes)
 }
 
 // Mirror the resolver's include search, retaining missing candidates as well
-// as resolved paths so a broken shader can recover without a config change.
+// as found ones so a broken shader can recover without a config change. The
+// watch follows a candidate that is a link to its target.
 void collectIncludes(const QString& source, const QString& dir, const QStringList& includeDirs,
                      QStringList& watched, QSet<QString>& seen, int depth = 0)
 {
@@ -81,7 +82,6 @@ void collectIncludes(const QString& source, const QString& dir, const QStringLis
             const QFileInfo info(candidate);
             if (!info.exists() || !info.isFile()) continue;
             const auto resolved = info.canonicalFilePath();
-            watched << resolved;
             if (!seen.contains(resolved)) {
                 seen.insert(resolved);
                 // The resolver reports an oversized include; only watch it here.
@@ -323,8 +323,9 @@ QString cacheKey(const QString& ref, const QVariantMap& overrides)
     return ref + QLatin1Char('\x1f') + QString::fromUtf8(QJsonDocument::fromVariant(overrides).toJson(QJsonDocument::Compact));
 }
 
-/// What a cached program was built from: each dependency's size and times, or
-/// its absence. Two change signals for one edit then rebuild once.
+/// What a cached program was built from: each dependency's target, size and
+/// times, or its absence. Two change signals for one edit then rebuild once,
+/// and a link retargeted to a file of the same size and times still counts.
 QByteArray signature(const QStringList& paths)
 {
     QByteArray out;
@@ -335,7 +336,8 @@ QByteArray signature(const QStringList& paths)
         const QFileInfo info(path);
         out += path.toUtf8() + '\0';
         if (info.exists()) {
-            out += QByteArray::number(info.size()) + ':' + QByteArray::number(info.lastModified().toMSecsSinceEpoch()) + ':'
+            out += info.canonicalFilePath().toUtf8() + '\0' + QByteArray::number(info.size()) + ':'
+                + QByteArray::number(info.lastModified().toMSecsSinceEpoch()) + ':'
                 + QByteArray::number(info.metadataChangeTime().toMSecsSinceEpoch());
         }
         out += '\n';
@@ -412,7 +414,13 @@ struct ShaderLibrary::PackIndex
 };
 
 ShaderLibrary::ShaderLibrary(QObject* parent)
+    : ShaderLibrary(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/afterglow"), parent)
+{
+}
+
+ShaderLibrary::ShaderLibrary(const QString& configDirectory, QObject* parent)
     : QObject(parent)
+    , m_userDirectory(configDirectory + QStringLiteral("/shaders"))
     , m_registry(std::make_unique<PhosphorShaders::ShaderRegistry>())
     , m_presets(std::make_unique<PhosphorShaders::ShaderPresetStore>())
     , m_curves(std::make_unique<PhosphorAnimation::CurveRegistry>())
@@ -436,16 +444,13 @@ ShaderLibrary::ShaderLibrary(QObject* parent)
         dirs.removeAll(bundled);
         dirs << bundled;
     }
-    const QString user = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-        + QStringLiteral("/afterglow/shaders");
-    QDir().mkpath(user);
-    dirs << user;
+    QDir().mkpath(m_userDirectory);
+    dirs << m_userDirectory;
     dirs.removeDuplicates();
     for (const QString& d : dirs) {
         if (QDir(d).exists()) m_baseDirectories << d;
     }
-    m_presets->load(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-        + QStringLiteral("/afterglow/shader-presets"), {PhosphorShaders::ShaderFamily::Surface});
+    m_presets->load(configDirectory + QStringLiteral("/shader-presets"), {PhosphorShaders::ShaderFamily::Surface});
     buildRegistry();
     // The registry watches the packs too: whichever reports an edit first
     // rebuilds, and the other finds nothing left to drop.
@@ -740,9 +745,8 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
         m_paramsChecked = check;
         m_paramsProblems.clear();
         for (auto it = params.begin(); it != params.end(); ++it) {
-            if (it.value().typeId() != QMetaType::QVariantMap)
-                m_paramsProblems << QStringLiteral("Shaders.params.%1 must be an object of parameter values").arg(it.key());
-            else if (!named.contains(it.key()))
+            // SettingsStore::read() reports and drops an entry that is not an object.
+            if (!named.contains(it.key()))
                 m_paramsProblems << QStringLiteral("Shaders.params.%1 names no shader in any chain, so its values apply nowhere")
                                         .arg(it.key());
         }
@@ -952,7 +956,7 @@ ShaderLibrary::Compiled ShaderLibrary::compile(const QString& ref)
         // that names no pack is taken for a file.
         if (isFileReference(ref)) {
             return fail(QStringLiteral("shaders are packs, referenced by id: put the shader in a directory with a "
-                                       "metadata.json under ~/.config/afterglow/shaders"));
+                                       "metadata.json under %1").arg(m_userDirectory));
         }
         // The list goes to the log only: in a notice it would fill the body.
         qCInfo(lcShaders).noquote() << "available shader packs:" << packIds().join(QStringLiteral(", "));

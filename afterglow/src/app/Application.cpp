@@ -36,6 +36,8 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     : m_settings(configPath.isEmpty() ? SettingsStore::defaultPath() : configPath, overrides)
     , m_device(m_settings.settings().font)
     , m_chromeComponent(&m_engine)
+    // Packs and presets beside the config file, as its scripts and themes are.
+    , m_shaders(QFileInfo(m_settings.path()).absolutePath())
     , m_control(m_settings, [this](const QString& cwd, const QStringList& command, bool empty) {
         return newWindow({cwd, command, false, !cwd.isEmpty(), {}, false, empty});
     })
@@ -43,6 +45,12 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     , m_controlSocket(m_control, m_settings, socket.router())
     , m_scripts(scriptCallbacks(m_control))
     , m_commandSocket(m_control, m_scripts, m_settings, socket.router())
+    , m_remoteSockets(m_control, m_scripts, m_settings,
+                      [this](quint32 pane, const AfterglowProto::Remote::Answer& answer) {
+                          return m_control.setRemoteSocket(pane, answer);
+                      },
+                      // One budget for every command socket: the limits hold for the process.
+                      m_commandSocket.budget())
     , m_services{m_device, m_settings, m_chromeComponent, m_shaders, m_scripts, m_audio}
     , m_launch(*this)
 {
@@ -65,11 +73,15 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     // thread from now on, with the style chosen, for every window to come.
     m_chromeComponent.loadUrl(ChromeLayer::sceneUrl(), QQmlComponent::Asynchronous);
 
+    m_controlSocket.setRemoteSockets(&m_remoteSockets);
+    connect(&m_control, &Control::paneClosed, &m_remoteSockets, &RemoteSockets::paneClosed);
+
     connect(&m_audio, &AudioController::spectrumChanged, &m_device, [this](const QVector<float>& spectrum) {
         m_device.setAudioSpectrum(std::span<const float>(spectrum.constData(), std::size_t(spectrum.size())));
     });
     m_audio.configure(m_settings.settings().audio);
-    NotificationCenter::instance().setRateLimit(m_settings.settings().notificationRateLimit);
+    NotificationCenter::instance().setRateLimit(m_settings.settings().notificationRateLimit,
+                                                qint64(m_settings.settings().notificationRateWindow) * 1000);
     DragTrees::instance().setLifetime(std::chrono::minutes(m_settings.settings().dragTreeLifetime));
     QStringList iconPaths = QIcon::themeSearchPaths();
     for (const auto& path : QStandardPaths::locateAll(QStandardPaths::GenericDataLocation,
@@ -105,7 +117,8 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
         if (const AudioSettings& audio = m_settings.settings().audio; audio != previous.audio) {
             m_audio.configure(audio);
         }
-        NotificationCenter::instance().setRateLimit(m_settings.settings().notificationRateLimit);
+        NotificationCenter::instance().setRateLimit(m_settings.settings().notificationRateLimit,
+                                                    qint64(m_settings.settings().notificationRateWindow) * 1000);
         DragTrees::instance().setLifetime(std::chrono::minutes(m_settings.settings().dragTreeLifetime));
     });
 
@@ -126,6 +139,7 @@ Application::~Application()
     m_control.endNotices();
     // No new windows while the others close.
     m_socket.router().unregisterTarget(QLatin1String(LaunchApi::Target), &m_launch);
+    m_controlSocket.setRemoteSockets(nullptr);
     // Windows render on the device and the chrome uses the QML engine.
     qDeleteAll(TerminalWindow::windows());
     // The scripts go before Control: its callbacks into them must not outlive them.

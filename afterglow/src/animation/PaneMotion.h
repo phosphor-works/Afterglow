@@ -30,6 +30,10 @@ struct PaneMotion
     /// The viewport offset this pane last gave its terminal, to notice when
     /// the terminal moved it on its own (output pinning, input reset).
     std::size_t appliedOffset = 0;
+    /// How far up the last frame drew the rows, in pixels: the fraction of
+    /// a row that scrollValue is past appliedOffset. The pointer's cell is
+    /// the one drawn under it.
+    float scrollShift = 0;
     /// The pointer the program asked for (OSC 22); empty for the default.
     QString pointerShape;
 };

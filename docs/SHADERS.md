@@ -19,7 +19,7 @@ A pack in a later row replaces a pack with the same ID in an earlier row.
 | --- | --- |
 | `data/shaders/` in the source tree | Bundled packs, in a development build only. |
 | `afterglow/shaders/` in each XDG data directory, such as `/usr/share/afterglow/shaders/` | Installed packs. |
-| `~/.config/afterglow/shaders/` | Your own packs. Afterglow creates this directory. |
+| `~/.config/afterglow/shaders/` | Your own packs. Afterglow creates this directory. With `afterglow --config DIR/config.json`, this is `DIR/shaders/`. |
 
 A binary that runs from the build tree puts the checkout's `data/shaders/` after the XDG data directories in this table.
 Thus a pack in the checkout replaces an installed pack with the same ID, and you test the pack that you edit.
@@ -300,6 +300,7 @@ It reports when Bloom is absent.
 
 `@defaults` applies pack defaults. An empty `shader_parameters` table releases only the calling script's changes.
 Saved presets use Phosphor's schema and registry in `~/.config/afterglow/shader-presets/surface/`.
+With `afterglow --config DIR/config.json`, they are in `DIR/shader-presets/surface/`.
 This directory is separate from PlasmaZones.
 Pack presets are read-only. Saves create new named entries that survive restarts.
 Applied values are temporary. Apply the preset again after a restart.

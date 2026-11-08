@@ -3,6 +3,7 @@
 #include "scripting/ScriptPackage.h"
 #include "scripting/ScriptState.h"
 #include "scripting/ScriptFiles.h"
+#include "QStringPrinter.h"
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>

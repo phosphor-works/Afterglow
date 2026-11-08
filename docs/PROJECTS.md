@@ -56,6 +56,9 @@ afterglow ctl detach-tab --pane 12
 
 A move can cross tab and window boundaries.
 Use target `0` with the placement `new-tab` or `new-window`, as in `afterglow ctl move-pane 0 new-tab --pane 12`.
+Afterglow refuses a move to a new tab for a pane that is alone in its tab.
+The `move_pane_to_tab` action then shows a notice, and `afterglow ctl action` reports an error.
+A held key tries the move one time.
 Luau supplies matching `move_pane` and `detach_tab` effects.
 Their results contain the pane snapshot and destination IDs.
 `on_pane_moved` reports the new location. A move does not cause creation or closure events.
@@ -73,13 +76,13 @@ It focuses an open instance or starts the saved layout in a new window.
 Other windows remain open.
 The keybinding action names are `save_project` and `switch_project`.
 
-```sh
-afterglow ctl save-project development --pane 12
-afterglow ctl projects
-afterglow ctl open-project development          # focus existing, or launch
-afterglow ctl open-project development --new    # launch another instance
-afterglow ctl save-project development --pane 12 --overwrite
-```
+| Command | Result |
+| --- | --- |
+| `afterglow ctl save-project development --pane 12` | Saves the window of pane 12 as the project `development` |
+| `afterglow ctl projects` | Lists the saved projects |
+| `afterglow ctl open-project development` | Focuses the open instance, or starts the project |
+| `afterglow ctl open-project development --new` | Starts another instance of the project |
+| `afterglow ctl save-project development --pane 12 --overwrite` | Saves the window of pane 12 in place of the saved project `development` |
 
 ## Project files
 

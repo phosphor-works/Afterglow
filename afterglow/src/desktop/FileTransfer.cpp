@@ -3,6 +3,7 @@
 #include "FileTransfer.h"
 #include "ProtoBytes.h"
 #include <AfterglowProto/Delta.h>
+#include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Transfer.h>
 #include <AfterglowProto/Zlib.h>
 #include <QDir>
@@ -14,7 +15,6 @@
 #include <QMutex>
 #include <QScopeGuard>
 #include <QSet>
-#include <QTemporaryFile>
 #include <QThread>
 #include <QTimer>
 #include <QUuid>
@@ -23,6 +23,7 @@
 #include <deque>
 #include <fcntl.h>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <sys/resource.h>
@@ -47,7 +48,10 @@ namespace {
     constexpr std::size_t MaxActiveFiles = 128; // regular files and rsync reads in progress
     constexpr std::size_t MaxStreams = 128; // outgoing file streams
     constexpr int MaxDepth = 128;
-    constexpr qsizetype MaxRequestBytes = 4 * 1024 * 1024; // requested paths of all receive sessions
+    // The requested paths of all receive sessions, and the commands that
+    // send sessions hold for files that wait for the user. A sender names
+    // all of its files at the start: 16,384 of them fit with paths of 700 bytes.
+    constexpr qsizetype MaxRequestBytes = 16 * 1024 * 1024;
     constexpr qsizetype MaxRsyncBuffer = 16 * 1024 * 1024; // one signature or one literal
     // Bytes after which one pump() stops scanning a delta. A block hashed for
     // a weak match counts as its length, so this bounds the hashing too. A
@@ -57,8 +61,17 @@ namespace {
     constexpr qsizetype DeliveryWindow = 65536;
     constexpr std::size_t MaxInputBacklog = 1024 * 1024;
     constexpr qsizetype ListingHeadroom = 64 * 1024; // statuses queued behind a listing
+    // A No, or a dialog that the program took away, keeps the next dialog
+    // away this long, so that a program cannot ask again and again. The
+    // dialog lists at most MaxPromptPaths paths, which a user can read: a
+    // Yes approves those. Both bound what a program can do to the user, as
+    // the limits above bound what it can make the pane hold.
     constexpr int DenialCooldownMs = 10000;
     constexpr qsizetype MaxPromptPaths = 100;
+    // A delta upload tells the program the hashes of the blocks of the file
+    // that it replaces. A file this small gains nothing from a delta, and
+    // its hash could give away a short secret: it is replaced whole.
+    constexpr qint64 MinDeltaBasis = 4096;
     // A link's data: "path:" and a target of PATH_MAX - 1 bytes, which is
     // more than one packet holds.
     constexpr qsizetype MaxLinkData = 5 + 4095;
@@ -69,6 +82,14 @@ namespace {
     // pane do not bound a window of many panes, and the process shares
     // RLIMIT_NOFILE with its sockets, fonts and PTYs.
     std::atomic<std::size_t> g_descriptors { 0 };
+    // Until when no pane checks a transfer password, after a wrong one, on the monotonic clock.
+    std::atomic<qint64> g_passwordsBlockedUntil { 0 };
+    qint64 monotonicMs()
+    {
+        QElapsedTimer now;
+        now.start();
+        return now.msecsSinceReference();
+    }
     std::size_t descriptorLimit()
     {
         // Transfers take at most half of the limit.
@@ -152,22 +173,23 @@ namespace {
         return QDir::cleanPath(path);
     }
     std::string_view errorName() { return AfterglowProto::transferErrorName(errno); }
-    // The error of a call that may fail without errno (QDir::mkpath(), QTemporaryFile::open()).
-    std::string_view failureName() { return errno ? errorName() : std::string_view("EIO"); }
     // A path as the permission dialog shows it: a control character, a line
-    // separator or a bidirectional control in a name could hide what follows.
+    // separator, a bidirectional control or another invisible format
+    // character (a zero-width space, a tag) in a name could hide what follows.
     QString shown(const QString& path)
     {
         QString out;
         out.reserve(path.size());
-        for (const QChar c : path) {
-            const auto u = c.unicode();
-            const bool hidden = u < 0x20 || (u >= 0x7f && u < 0xa0) || u == 0x061c || u == 0x200e || u == 0x200f
-                || (u >= 0x2028 && u <= 0x202e) || (u >= 0x2066 && u <= 0x2069);
-            if (hidden || c == QLatin1Char('\\'))
+        for (const char32_t u : path.toUcs4()) {
+            const auto category = QChar::category(u);
+            const bool hidden = category == QChar::Other_Control || category == QChar::Other_Format
+                || category == QChar::Separator_Line || category == QChar::Separator_Paragraph;
+            if (u > 0xffff && hidden)
+                out += QStringLiteral("\\U%1").arg(uint(u), 8, 16, QLatin1Char('0'));
+            else if (hidden || u == U'\\')
                 out += QStringLiteral("\\u%1").arg(uint(u), 4, 16, QLatin1Char('0'));
             else
-                out += c;
+                out += QString::fromUcs4(&u, 1);
         }
         return out;
     }
@@ -198,22 +220,105 @@ namespace {
         QFile& m_file;
         bool m_end = false;
     };
-    // A file without a mode from the client gets the mode a new file would get.
-    mode_t creationMask()
+    // The umask, read without changing it. The process shares one umask, and
+    // code that sets one for a moment (a socket that binds with mode 0600)
+    // runs on the GUI thread: read it there, not on a worker.
+    mode_t currentUmask()
     {
-        static const mode_t mask = [] {
-            QFile status(QStringLiteral("/proc/self/status"));
-            if (status.open(QIODevice::ReadOnly))
-                for (const auto& line : status.readAll().split('\n'))
-                    if (line.startsWith("Umask:")) {
-                        bool ok = false;
-                        const auto value = line.mid(6).trimmed().toUInt(&ok, 8);
-                        if (ok)
-                            return mode_t(value & 0777);
-                    }
-            return mode_t(022);
-        }();
-        return mask;
+        QFile status(QStringLiteral("/proc/self/status"));
+        if (status.open(QIODevice::ReadOnly))
+            for (const auto& line : status.readAll().split('\n'))
+                if (line.startsWith("Umask:")) {
+                    bool ok = false;
+                    const auto value = line.mid(6).trimmed().toUInt(&ok, 8);
+                    if (ok)
+                        return mode_t(value & 0777);
+                }
+        return mode_t(022);
+    }
+    QString joined(const QString& directory, const QString& name)
+    {
+        return directory == QLatin1String("/") ? directory + name : directory + QLatin1Char('/') + name;
+    }
+    // Where the user approved a file to go or to come from: the real path,
+    // when the dialog showed, of the deepest directory above it that
+    // existed, and the levels below that one that did not exist yet. A link
+    // of the user's own (a ~/Downloads on another disk) is part of the real
+    // path, and the dialog shows where it leads. A missing level must become
+    // a directory that the transfer makes: a link there, which the same
+    // program could make after the dialog, could lead anywhere.
+    struct Place {
+        QString real;
+        QStringList missing;
+        QString path() const
+        {
+            QString out = real;
+            for (const auto& level : missing)
+                out = joined(out, level);
+            return out;
+        }
+    };
+    Place placeOf(const QString& directory)
+    {
+        Place place;
+        for (QString at = directory;;) {
+            place.real = QFileInfo(at).canonicalFilePath();
+            const QFileInfo info(at);
+            if (!place.real.isEmpty() || info.absolutePath() == at)
+                return place;
+            place.missing.prepend(info.fileName());
+            at = info.absolutePath();
+        }
+    }
+    // The path that /proc gives for an open descriptor. Empty when it gives none.
+    QByteArray descriptorPath(int fd)
+    {
+        char buffer[4096 + 64];
+        const auto n = ::readlink(("/proc/self/fd/" + QByteArray::number(fd)).constData(), buffer, sizeof buffer);
+        return n > 0 && std::size_t(n) < sizeof buffer ? QByteArray(buffer, n) : QByteArray();
+    }
+    // Opens @p real with @p flags, and checks that no link led elsewhere on
+    // the way: the descriptor is at that path. Sets errno and returns -1 when
+    // it fails, with EPERM for a path that leads elsewhere now.
+    int openChecked(const QString& real, int flags)
+    {
+        const auto path = QFile::encodeName(real);
+        const int fd = ::open(path.constData(), flags | O_NOFOLLOW | O_CLOEXEC);
+        if (fd < 0 || descriptorPath(fd) == path)
+            return fd;
+        ::close(fd);
+        errno = EPERM;
+        return -1;
+    }
+    // The directory of @p place, checked. Each missing level is opened
+    // without following a link, and made first when @p made is given: the
+    // paths of the directories made here go there, with the mode that a new
+    // directory gets under @p mask. Sets errno and returns -1 when it fails.
+    int openPlace(const Place& place, mode_t mask, std::vector<QString>* made)
+    {
+        if (place.real.isEmpty()) {
+            errno = ENOENT;
+            return -1;
+        }
+        AfterglowProto::UniqueFd fd(openChecked(place.real, O_RDONLY | O_DIRECTORY));
+        QString path = place.real;
+        for (const auto& level : place.missing) {
+            if (!fd.valid())
+                return -1;
+            const auto name = QFile::encodeName(level);
+            path = joined(path, level);
+            // 0700 until the mode below: the umask of the moment does not decide it.
+            const bool make = made && ::mkdirat(fd.get(), name.constData(), 0700) == 0;
+            if (made && !make && errno != EEXIST)
+                return -1;
+            fd.reset(::openat(fd.get(), name.constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+            if (make) {
+                made->push_back(path);
+                if (fd.valid() && ::fchmod(fd.get(), 0777 & ~mask))
+                    return -1;
+            }
+        }
+        return fd.release();
     }
     // The modification time of a client's fields. Times before 1970 are
     // negative. Only -1 means "not given".
@@ -234,15 +339,15 @@ namespace {
     // descriptor: nothing goes through a link. The permission bits only: a
     // program on another computer cannot make a set-user-ID, set-group-ID or
     // sticky file here. kitty keeps those bits. Without a mode from the
-    // client, @p umaskDefault gives the mode that a new file would get.
-    bool setMetadata(int fd, const Fields& f, bool umaskDefault)
+    // client, a file gets the mode that a new file would get under @p umask.
+    bool setMetadata(int fd, const Fields& f, std::optional<mode_t> umask)
     {
         bool ok = false;
         const auto mode = f.value("prm").toLongLong(&ok);
         if (ok && mode >= 0) {
             if (::fchmod(fd, mode_t(mode & 0777)))
                 return false;
-        } else if (umaskDefault && ::fchmod(fd, 0666 & ~creationMask()))
+        } else if (umask && ::fchmod(fd, 0666 & ~*umask))
             return false;
         if (const auto time = modificationOf(f)) {
             const timespec times[2] { { 0, UTIME_OMIT }, *time };
@@ -251,35 +356,48 @@ namespace {
         }
         return true;
     }
-    // A directory, opened without following a link at its own name.
-    bool setDirectoryMetadata(const QString& path, const Fields& f)
+    // A directory that the session made, at the real path where it made it:
+    // no link leads to another one.
+    bool setDirectoryMetadata(const QString& real, const Fields& f)
     {
-        const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-        if (fd < 0)
-            return false;
-        const bool ok = setMetadata(fd, f, false);
-        const int saved = errno;
-        ::close(fd);
-        errno = saved;
-        return ok;
+        const AfterglowProto::UniqueFd fd(openChecked(real, O_RDONLY | O_DIRECTORY));
+        return fd.valid() && setMetadata(fd.get(), f, std::nullopt);
     }
     // A symbolic link has no mode of its own on Linux: its time only.
-    bool setLinkTime(const QString& path, const Fields& f)
+    bool setLinkTime(int directory, const QByteArray& name, const Fields& f)
     {
         const auto time = modificationOf(f);
         if (!time)
             return true;
         const timespec times[2] { { 0, UTIME_OMIT }, *time };
-        return ::utimensat(AT_FDCWD, QFile::encodeName(path).constData(), times, AT_SYMLINK_NOFOLLOW) == 0;
+        return ::utimensat(directory, name.constData(), times, AT_SYMLINK_NOFOLLOW) == 0;
     }
     bool isLink(const Fields& meta) { return meta.value("ft") == "symlink" || meta.value("ft") == "link"; }
 } // namespace
 
 struct FileTransfer::Worker {
+    // A regular file's temporary file, in the checked directory of its
+    // destination. The descriptor of that directory stays open: the file
+    // replaces its destination there, wherever a link leads meanwhile.
+    struct Output {
+        AfterglowProto::UniqueFd directory;
+        QByteArray name;
+        QFile file;
+        bool keep = false;
+        ~Output()
+        {
+            file.close();
+            if (!keep && directory.valid())
+                ::unlinkat(directory.get(), name.constData(), 0);
+        }
+    };
     struct File {
         Fields meta;
         QString path;
-        std::unique_ptr<QTemporaryFile> output;
+        // The destination's directory, and its name there.
+        Place place;
+        QByteArray name;
+        std::unique_ptr<Output> output;
         std::unique_ptr<QFile> basis;
         QByteArray linkData;
         // A delta upload's operations that are not complete yet, or a delta read's signature.
@@ -290,21 +408,27 @@ struct FileTransfer::Worker {
         std::unique_ptr<AfterglowProto::ZlibStream> inflater;
         // Applies the operations of a delta upload, and checks the file hash.
         std::unique_ptr<AfterglowProto::DeltaApplier> applier;
-        // Descriptors this file holds against the limits: its output, and a delta basis.
+        // Descriptors this file holds against the limits: its output and its
+        // directory, and a delta basis.
         Descriptors* activeCount = nullptr;
-        std::size_t held = 1;
+        std::size_t held = 0;
         std::size_t* pendingTotal;
         quint32 blockSize = 0;
         // A directory that was there before the session: it keeps its mode and time.
         bool existed = false;
         File(Descriptors* count, std::size_t* pendingBytes)
-            : activeCount(count)
-            , pendingTotal(pendingBytes)
+            : pendingTotal(pendingBytes)
         {
-            if (activeCount)
-                activeCount->add(1);
+            if (count)
+                charge(count, 1);
         }
         ~File() { releaseIo(); }
+        void charge(Descriptors* count, std::size_t descriptors)
+        {
+            activeCount = count;
+            count->add(descriptors);
+            held += descriptors;
+        }
         bool addPending(std::string_view bytes)
         {
             if (*pendingTotal + bytes.size() > MaxPendingBytes) {
@@ -337,12 +461,15 @@ struct FileTransfer::Worker {
             if (activeCount) {
                 activeCount->remove(held);
                 activeCount = nullptr;
+                held = 0;
             }
         }
     };
     struct Request {
         QByteArray fid;
         QString path;
+        // The directory of the path, from the dialog that showed it.
+        std::optional<Place> place;
     };
     struct Session {
         QByteArray id;
@@ -359,10 +486,51 @@ struct FileTransfer::Worker {
         int requested = 0;
         std::vector<Request> requests;
         qsizetype requestBytes = 0;
+        // A send session without the password: the sender names the
+        // destinations only after the session starts. Each file waits, with
+        // the commands that name it, until the user approves its
+        // destination. The commands of other files go on. heldOrder keeps
+        // the waiting files in the order they came. The dialog that shows
+        // lists the first `asked` of them, and only those: a file that came
+        // later waits for a dialog of its own.
+        bool holding = false;
+        std::deque<QByteArray> heldOrder;
+        std::map<QByteArray, std::vector<Fields>> held;
+        // A finish that came while files waited. It runs when none waits.
+        std::optional<Fields> heldFinish;
+        // Where the destinations that a dialog showed are, by file.
+        std::map<QByteArray, Place> places;
+        // The files of the dialog that shows, or the requests that it lists.
+        std::size_t asked = 0;
+        // The session waits for a dialog, which opens when no other shows,
+        // once the fence askAfter has come back from the GUI thread.
+        bool waiting = false;
+        quint64 askAfter = 0;
+        // The user approved files of this session before: a later No
+        // refuses the files of its own dialog, and the others finish.
+        bool granted = false;
+        // A later No left files that came while its dialog showed. They did
+        // not ask again after the No: the next dialog of the session opens
+        // in the cooldown. Like any dialog, it lists the first files that
+        // wait, which include those that came after the No and before it
+        // opened. It is the last dialog for the files that wait: after its
+        // answer, Yes or No, the files that it did not list get EPERM, so a
+        // program cannot keep a dialog open. The answer can come after the
+        // cooldown ends, so the refusal does not depend on the cooldown.
+        bool afterNo = false;
+        // The dialog that shows opened in the cooldown, after a No.
+        bool askedAfterNo = false;
         std::map<QByteArray, std::unique_ptr<File>> files;
         // Links whose target file has not reached its final state, keyed by the target.
         std::multimap<QByteArray, QByteArray> waiters;
-        std::map<QString, Fields> listing;
+        // What a receive session lists, by the path that the client names.
+        // The file is read at its real path, which the dialog showed.
+        struct Listed {
+            Fields fields;
+            QString real;
+        };
+        std::map<QString, Listed> listing;
+        // The real paths of the directories that the session made.
         std::vector<QString> createdDirs;
         QSet<QString> created; // the same paths, for lookups
     };
@@ -392,7 +560,19 @@ struct FileTransfer::Worker {
         Delta(const Delta&) = delete;
         Delta& operator=(const Delta&) = delete;
     };
-    // Each stream holds one descriptor: its source, or its delta's basis.
+    // The signature of a delta upload's old file, made as pump() asks for
+    // data: one step hashes a bounded part of the file, so that a large one
+    // does not hold the worker. It reads at offsets, on a descriptor of its
+    // own, while the upload reads the same file for its copy operations.
+    struct Signature {
+        AfterglowProto::UniqueFd basis;
+        AfterglowProto::SignatureBuilder builder;
+        quint64 size, offset = 0;
+        bool started = false;
+        bool done() const { return started && offset >= size; }
+    };
+    // Each stream holds one descriptor: its source, its delta's basis, or
+    // the old file of its signature.
     struct Stream {
         Stream() { g_descriptors.fetch_add(1); }
         ~Stream() { g_descriptors.fetch_sub(1); }
@@ -401,7 +581,8 @@ struct FileTransfer::Worker {
         Fields fields;
         std::unique_ptr<QFile> source;
         std::unique_ptr<Delta> delta; // in place of the source
-        // Delta operations. The first generatedSent bytes went out already.
+        std::unique_ptr<Signature> signature; // in place of the source
+        // Delta operations or signature records. The first generatedSent bytes went out already.
         std::string generated;
         std::size_t generatedSent = 0;
         QByteArray input;
@@ -421,6 +602,9 @@ struct FileTransfer::Worker {
     QThread thread;
     QObject* context = new QObject;
     std::atomic<qsizetype> queuedBytes { 0 };
+    // The fences that the worker sent through the GUI thread, and the last
+    // one that came back.
+    quint64 fencesSent = 0, fencesPassed = 0;
     std::atomic<qsizetype> deliveryBytes { 0 };
     // Incremented on the GUI thread by reset() and abort().
     std::atomic<quint64> resetEpoch { 0 };
@@ -437,6 +621,8 @@ struct FileTransfer::Worker {
     QString password;
     qint64 deltaLimit = DefaultDeltaLimit;
     QElapsedTimer denied;
+    // Read on the GUI thread, which constructs the worker.
+    const mode_t creationMask = currentUmask();
     // Outgoing packets are paced. Keep at most a bounded amount queued.
     // Each keeps the fields that a cancel and a newer progress status look for.
     struct Packet {
@@ -642,32 +828,244 @@ struct FileTransfer::Worker {
     {
         return std::any_of(sessions.begin(), sessions.end(), [](const auto& item) { return item.second->asking; });
     }
-    // One permission dialog at a time, so a program cannot stack them over the window.
-    bool ask(Session& s)
+    bool coolingDown() const { return denied.isValid() && denied.elapsed() < DenialCooldownMs; }
+    // A reset or an overflow is on its way, or the pane closes: it ends the
+    // sessions, and nothing that they wait for may reach the disk.
+    bool interrupted() const
     {
-        // A receive session was created before its requests: a denial since
-        // then must still keep its dialog away.
-        if (denied.isValid() && denied.elapsed() < DenialCooldownMs) {
-            status(s, { }, "EPERM");
-            return false;
+        return overflow || resetEpoch.load() != clearedEpoch || thread.isInterruptionRequested();
+    }
+    // What a held command costs against MaxRequestBytes.
+    static qsizetype heldCost(const Fields& f)
+    {
+        return std::accumulate(f.begin(), f.end(), qsizetype(64),
+            [](qsizetype sum, const QByteArray& value) { return sum + value.size() + 16; });
+    }
+    // The session waits for a dialog, which lists what came before now. The
+    // pane's reader posts each command to the GUI thread, which hands it to
+    // handle(). A fence posted to the GUI thread now runs after every
+    // command that the reader had posted by then, and comes back to the
+    // worker after the commands that those handed over.
+    void wantDialog(Session& s)
+    {
+        s.waiting = true;
+        s.askAfter = ++fencesSent;
+        QMetaObject::invokeMethod(owner, [this, fence = s.askAfter] {
+            QMetaObject::invokeMethod(context, [this, fence] {
+                fencesPassed = std::max(fencesPassed, fence);
+                askWaiting();
+            });
+        });
+    }
+    // Opens the dialog of a session that waits for one, once its fence has
+    // come back: the dialog lists every file that the program had named
+    // when the session began to wait. One dialog at a time, so that a
+    // program cannot stack them over the window.
+    void askWaiting()
+    {
+        std::vector<QByteArray> ids;
+        for (const auto& [id, s] : sessions)
+            if (s->waiting && fencesPassed >= s->askAfter)
+                ids.push_back(id);
+        for (const auto& id : ids) {
+            if (prompting() || interrupted())
+                return;
+            if (const auto it = sessions.find(id); it != sessions.end() && it->second->waiting)
+                ask(*it->second);
         }
-        if (prompting()) {
-            status(s, { }, "EBUSY");
-            return false;
+    }
+    // A path as the dialog lists it: a slash after a directory, which is
+    // read whole, and a line under it with where links lead it, when that is
+    // elsewhere. A name cannot hold a line break (shown() escapes it), so a
+    // name cannot make such a line. A home directory whose path goes
+    // through a link (/home on another disk) is the same place for itself
+    // and every path under it: that link alone gets no line. @p realHome is
+    // where @p home leads.
+    static QString described(const QString& path, const QString& real, bool directory, const QString& home,
+        const QString& realHome)
+    {
+        const auto slash = [directory](const QString& p) { return directory && !p.endsWith(QLatin1Char('/')) ? p + QLatin1Char('/') : p; };
+        const bool inHome = (path == home || path.startsWith(home + QLatin1Char('/'))) && !realHome.isEmpty();
+        if (real == path || (inHome && real == realHome + path.mid(home.size())))
+            return slash(shown(path));
+        return slash(shown(path)) + QLatin1Char('\n') + FileTransfer::tr("  resolves to %1").arg(slash(shown(real)));
+    }
+    // The dialog of @p s. It lists what waits, at most MaxPromptPaths paths:
+    // the files that a receive session asks for, or the destinations of the
+    // files of a send session. A Yes approves the ones listed.
+    void ask(Session& s)
+    {
+        s.waiting = false;
+        const bool exempt = std::exchange(s.afterNo, false);
+        if (coolingDown() && !exempt) {
+            // A send session that the user approved before goes on with its files.
+            if (s.granted)
+                refuseHeld(s, s.heldOrder.size(), "EPERM");
+            else {
+                status(s, { }, "EPERM");
+                remove(QByteArray(s.id));
+            }
+            return;
         }
-        s.asking = true;
+        s.askedAfterNo = exempt && coolingDown();
         QStringList paths;
-        for (const auto& request : s.requests) {
-            if (paths.size() == MaxPromptPaths)
-                break;
-            paths.push_back(shown(request.path));
+        const QString home = QDir::homePath(), realHome = QFileInfo(home).canonicalFilePath();
+        if (s.holding) {
+            s.asked = std::min(s.heldOrder.size(), std::size_t(MaxPromptPaths));
+            for (std::size_t i = 0; i < s.asked; ++i) {
+                const auto& fid = s.heldOrder[i];
+                const QString path = pathOf(s.held.at(fid).front().value("n"));
+                const QFileInfo info(path);
+                Place place = placeOf(info.absolutePath());
+                paths.push_back(described(path, joined(place.path(), info.fileName()), false, home, realHome));
+                s.places[fid] = std::move(place);
+            }
+        } else {
+            s.asked = std::min(s.requests.size(), std::size_t(MaxPromptPaths));
+            for (std::size_t i = 0; i < s.asked; ++i) {
+                auto& request = s.requests[i];
+                const QFileInfo info(request.path);
+                request.place = placeOf(info.absolutePath());
+                const QString real = joined(request.place->path(), info.fileName());
+                struct stat st { };
+                const bool directory = ::lstat(QFile::encodeName(real).constData(), &st) == 0 && S_ISDIR(st.st_mode);
+                paths.push_back(described(request.path, real, directory, home, realHome));
+            }
         }
-        const auto token = s.token;
-        const bool writing = s.sending;
-        const int total = int(s.requests.size());
-        QMetaObject::invokeMethod(owner,
-            [o = owner, token, writing, paths, total] { Q_EMIT o->permissionRequested(token, writing, paths, total); });
-        return true;
+        const int total = int(s.holding ? s.heldOrder.size() : s.requests.size());
+        // A receive reads only the listed files. A send gets a dialog for the
+        // files that it did not list, except after the dialog in the cooldown.
+        const bool othersRefused = !s.sending || s.askedAfterNo;
+        s.asking = true;
+        QMetaObject::invokeMethod(owner, [o = owner, token = s.token, writing = s.sending, paths, total, othersRefused] {
+            Q_EMIT o->permissionRequested(token, writing, paths, total, othersRefused);
+        });
+    }
+    // Why a file command of a send session cannot be written, or nothing.
+    // A held file is checked as it comes: the dialog lists only files that
+    // the session can write.
+    static std::string_view refusal(const Session& s, const Fields& f)
+    {
+        const auto fid = f.value("fid");
+        if (!safe(fid) || pathOf(f.value("n")).isEmpty() || s.files.contains(fid) || s.held.contains(fid)
+            || s.files.size() + s.held.size() >= std::size_t(MaxFiles))
+            return "EINVAL";
+        const auto type = f.value("ft", "regular");
+        if (type != "regular" && type != "directory" && type != "symlink" && type != "link")
+            return "EINVAL";
+        const auto zip = f.value("zip", "none");
+        if (zip != "none" && zip != "zlib")
+            return "EINVAL";
+        return { };
+    }
+    // A command of a send session that names a file that waits for the user.
+    void hold(Session& s, const Fields& f)
+    {
+        const auto fid = f.value("fid");
+        const bool file = f.value("ac") == "file";
+        if (file) {
+            if (const auto error = refusal(s, f); !error.empty()) {
+                status(s, fid, error);
+                return;
+            }
+        }
+        const qsizetype cost = heldCost(f);
+        if (requestBytes + cost > MaxRequestBytes) {
+            // A file that does not fit is refused, and the others go on.
+            // Data for a file that waits ends the session: a client sends
+            // none before the file has STARTED.
+            if (file)
+                status(s, fid, "ENOMEM");
+            else {
+                status(s, { }, "ENOMEM");
+                remove(QByteArray(s.id));
+            }
+            return;
+        }
+        requestBytes += cost;
+        s.requestBytes += cost;
+        s.held[fid].push_back(f);
+        if (!file)
+            return;
+        s.heldOrder.push_back(fid);
+        if (!s.asking && !s.waiting)
+            wantDialog(s);
+    }
+    // Forgets the commands that wait with file @p fid.
+    void dropHeld(Session& s, const QByteArray& fid)
+    {
+        const auto it = s.held.find(fid);
+        if (it == s.held.end())
+            return;
+        for (const Fields& f : it->second) {
+            const qsizetype cost = heldCost(f);
+            requestBytes -= cost;
+            s.requestBytes -= cost;
+        }
+        s.held.erase(it);
+        s.places.erase(fid);
+    }
+    // After a dialog of a send session: the files that came while it showed
+    // get one of their own, and a finish that waited runs once none waits.
+    void afterHeld(Session& s)
+    {
+        if (!s.heldOrder.empty())
+            wantDialog(s);
+        else if (s.heldFinish) {
+            const Fields f = *s.heldFinish;
+            s.heldFinish.reset();
+            dispatch(s, f);
+        }
+    }
+    // Refuses the first @p count waiting files of @p s with @p error. The
+    // other files of the session go on.
+    void refuseHeld(Session& s, std::size_t count, std::string_view error)
+    {
+        for (std::size_t i = 0; i < count && !s.heldOrder.empty(); ++i) {
+            const QByteArray fid = s.heldOrder.front();
+            s.heldOrder.pop_front();
+            dropHeld(s, fid);
+            status(s, fid, error);
+        }
+        s.asked = 0;
+        afterHeld(s);
+    }
+    // A Yes for a send session: the files that the dialog listed run, each
+    // with the commands that waited for it. With @p last, the files that wait
+    // after them get EPERM, and no other dialog.
+    void grant(const QByteArray& id, bool last)
+    {
+        Session& s = *sessions.at(id);
+        s.granted = true;
+        const std::vector<QByteArray> approved(s.heldOrder.begin(), s.heldOrder.begin() + qsizetype(s.asked));
+        s.heldOrder.erase(s.heldOrder.begin(), s.heldOrder.begin() + qsizetype(s.asked));
+        s.asked = 0;
+        for (const auto& fid : approved) {
+            auto found = sessions.find(id);
+            if (found == sessions.end())
+                return;
+            auto commands = std::move(found->second->held.at(fid));
+            for (const Fields& f : commands) {
+                const qsizetype cost = heldCost(f);
+                requestBytes -= cost;
+                found->second->requestBytes -= cost;
+            }
+            found->second->held.erase(fid);
+            for (const Fields& f : commands) {
+                // A command can end the session.
+                found = sessions.find(id);
+                if (found == sessions.end() || interrupted())
+                    return;
+                dispatch(*found->second, f);
+            }
+        }
+        const auto found = sessions.find(id);
+        if (found == sessions.end())
+            return;
+        if (last)
+            refuseHeld(*found->second, found->second->heldOrder.size(), "EPERM");
+        else
+            afterHeld(*found->second);
     }
     // Takes the id by value: callers pass references to the key that this erases.
     void remove(const QByteArray id)
@@ -675,6 +1073,10 @@ struct FileTransfer::Worker {
         auto it = sessions.find(id);
         if (it == sessions.end())
             return;
+        // A program that ends its session while the dialog shows, and asks
+        // again, would keep a dialog in front of the user: as after a No.
+        if (it->second->asking)
+            denied.start();
         const auto createdDirs = std::move(it->second->createdDirs);
         std::erase_if(streams, [&](const auto& stream) { return stream->fields.value("id") == id; });
         const auto token = it->second->token;
@@ -686,22 +1088,44 @@ struct FileTransfer::Worker {
     }
     void authorize(const QString& token, bool allowed)
     {
-        for (auto& [id, ptr] : sessions)
-            if (ptr->token == token) {
-                auto& s = *ptr;
-                s.asking = false;
-                if (!allowed) {
-                    denied.start();
-                    status(s, { }, "EPERM");
-                    remove(id);
-                    return;
-                }
-                s.approved = true;
-                status(s, { }, Status::Ok);
-                if (!s.sending)
-                    list(s);
-                return;
+        if (interrupted())
+            return;
+        const auto it = std::find_if(
+            sessions.begin(), sessions.end(), [&](const auto& item) { return item.second->token == token; });
+        if (it == sessions.end() || !it->second->asking)
+            return;
+        const QByteArray id = it->first;
+        Session& s = *it->second;
+        s.asking = false;
+        if (!allowed) {
+            denied.start();
+            // A later No refuses the files of its own dialog. Those that the
+            // user approved before finish. Those that came while it showed
+            // get one more dialog in the cooldown, unless this dialog was
+            // that one: then they are refused too.
+            if (s.granted) {
+                s.afterNo = !s.askedAfterNo && s.heldOrder.size() > s.asked;
+                refuseHeld(s, s.askedAfterNo ? s.heldOrder.size() : s.asked, "EPERM");
             }
+            else {
+                status(s, { }, "EPERM");
+                remove(id);
+            }
+        } else if (s.holding)
+            grant(id, s.askedAfterNo);
+        else {
+            s.approved = true;
+            // The dialog listed the first requests. The program reads none of
+            // the others. A client takes nothing but the permission before
+            // it, so the refusals come after the OK, as the statuses of the
+            // listing do.
+            status(s, { }, Status::Ok);
+            for (std::size_t i = s.asked; i < s.requests.size(); ++i)
+                status(s, s.requests[i].fid, "EPERM");
+            s.requests.resize(s.asked);
+            list(s);
+        }
+        askWaiting();
     }
     void fail(Session& s, const QByteArray& fid, std::string_view error)
     {
@@ -709,9 +1133,13 @@ struct FileTransfer::Worker {
         status(s, fid, error);
     }
     void handle(const QByteArray& raw, const QByteArray& cancelled);
+    /// A command of an approved session.
+    void dispatch(Session& s, const Fields& f);
     void cancel(const QByteArray& id);
     void list(Session& s);
     void receiveFile(Session& s, const Fields& f);
+    std::string_view createOutput(File& file);
+    bool openOutput(Session& s, const QByteArray& fid, File& file);
     void data(Session& s, const Fields& f);
     void finish(Session& s);
     bool commitLink(Session& s, const QByteArray& fid);
@@ -719,7 +1147,7 @@ struct FileTransfer::Worker {
     void finishLinks(Session& s);
     void sendFile(Session& s, const Fields& f);
     bool stream(Session& s, const QByteArray& fid, std::unique_ptr<QFile> file, bool compress,
-        std::unique_ptr<Delta> delta = { });
+        std::unique_ptr<Delta> delta = { }, std::unique_ptr<Signature> signature = { });
     QByteArray read(Stream& item, bool& error, bool& atEnd);
     void pump();
     bool write(File& file, std::string_view bytes, Watch& stop);
@@ -770,12 +1198,13 @@ void FileTransfer::handle(const QByteArray& command)
         w->handle(command, cancelled);
         if (!cancelled.isEmpty())
             w->forgetCancel(cancelled);
+        // A dialog that ended with the command lets the next one open.
+        w->askWaiting();
     });
 }
 void FileTransfer::approve(const QString& token, bool allowed)
 {
-    QMetaObject::invokeMethod(
-        m_worker->context, [w = m_worker.get(), token, allowed] { w->authorize(token, allowed); });
+    QMetaObject::invokeMethod(m_worker->context, [w = m_worker.get(), token, allowed] { w->authorize(token, allowed); });
 }
 void FileTransfer::reset()
 {
@@ -894,16 +1323,33 @@ void FileTransfer::Worker::handle(const QByteArray& raw, const QByteArray& cance
             status(*s, { }, "EINVAL");
             return;
         }
-        const QByteArray expected = bytesOf(AfterglowProto::transferPasswordHash(view(id), password.toStdString()));
+        // A session that gives a password asks for no dialog: the password
+        // is right, or the session is refused. A wrong one stops every pane
+        // from checking a password for a while, so that a program cannot
+        // guess it, and the log says so.
         const auto supplied = f.value("pw");
-        unsigned difference = unsigned(supplied.size() != expected.size());
-        if (supplied.size() == expected.size())
-            for (qsizetype n = 0; n < expected.size(); ++n)
-                difference |= unsigned(quint8(supplied[n]) ^ quint8(expected[n]));
-        const bool bypass = !password.isEmpty() && difference == 0;
+        if (!supplied.isEmpty()) {
+            if (monotonicMs() < g_passwordsBlockedUntil.load()) {
+                status(*s, { }, "EPERM");
+                return;
+            }
+            const QByteArray expected = bytesOf(AfterglowProto::transferPasswordHash(view(id), password.toStdString()));
+            unsigned difference = unsigned(supplied.size() != expected.size());
+            if (supplied.size() == expected.size())
+                for (qsizetype n = 0; n < expected.size(); ++n)
+                    difference |= unsigned(quint8(supplied[n]) ^ quint8(expected[n]));
+            if (password.isEmpty() || difference != 0) {
+                g_passwordsBlockedUntil.store(monotonicMs() + DenialCooldownMs);
+                qCWarning(lcFileTransfer) << "File transfer: a program gave a wrong password. No password is checked for"
+                                          << DenialCooldownMs / 1000 << "seconds.";
+                status(*s, { }, "EPERM");
+                return;
+            }
+        }
+        const bool bypass = !supplied.isEmpty();
         if (!bypass) {
             // After a denial, and while a dialog is open, a program cannot ask again.
-            if (denied.isValid() && denied.elapsed() < DenialCooldownMs) {
+            if (coolingDown()) {
                 status(*s, { }, "EPERM");
                 return;
             }
@@ -915,10 +1361,11 @@ void FileTransfer::Worker::handle(const QByteArray& raw, const QByteArray& cance
         auto* added = s.get();
         sessions.emplace(id, std::move(s));
         if (added->sending) {
-            if (bypass)
-                authorize(added->token, true);
-            else if (!ask(*added))
-                remove(id);
+            // The prompt waits for the destinations, which come only after
+            // this answer: the files wait in the session until it is approved.
+            added->holding = !bypass;
+            added->approved = true;
+            status(*added, { }, Status::Ok);
         } else if (bypass)
             added->approved = true;
         return;
@@ -946,13 +1393,14 @@ void FileTransfer::Worker::handle(const QByteArray& raw, const QByteArray& cance
         }
         requestBytes += cost;
         s.requestBytes += cost;
-        s.requests.push_back({ f.value("fid"), path });
+        s.requests.push_back({ f.value("fid"), path, std::nullopt });
         if (++s.requested == s.expected) {
             if (s.approved) {
+                s.asked = s.requests.size();
                 status(s, { }, Status::Ok);
                 list(s);
-            } else if (!ask(s))
-                remove(id);
+            } else
+                wantDialog(s);
         }
         return;
     }
@@ -961,6 +1409,27 @@ void FileTransfer::Worker::handle(const QByteArray& raw, const QByteArray& cance
         remove(id);
         return;
     }
+    if (s.holding) {
+        // Nothing comes after a finish.
+        if (s.heldFinish)
+            return;
+        // A file waits for its dialog, with the data that names it. The
+        // commands of the other files go on.
+        if (action == "file" || ((action == "data" || action == "end_data") && s.held.contains(f.value("fid")))) {
+            hold(s, f);
+            return;
+        }
+        if (action == "finish" && !s.held.empty()) {
+            s.heldFinish = f;
+            return;
+        }
+    }
+    dispatch(s, f);
+}
+
+void FileTransfer::Worker::dispatch(Session& s, const Fields& f)
+{
+    const auto id = s.id, action = f.value("ac");
     if (action == "finish") {
         if (s.sending)
             finish(s);
@@ -982,117 +1451,111 @@ void FileTransfer::Worker::handle(const QByteArray& raw, const QByteArray& cance
 
 void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
 {
-    auto stop = watch(s.id);
     const auto fid = f.value("fid");
     const QString path = pathOf(f.value("n"));
-    if (!safe(fid) || path.isEmpty() || s.files.contains(fid) || s.files.size() >= MaxFiles) {
-        status(s, fid, "EINVAL");
+    if (const auto error = refusal(s, f); !error.empty()) {
+        status(s, fid, error);
         return;
     }
     const auto type = f.value("ft", "regular");
-    if (type != "regular" && type != "directory" && type != "symlink" && type != "link") {
-        status(s, fid, "EINVAL");
+    // Where the dialog showed the destination. A session with the password showed none.
+    const QFileInfo info(path);
+    Place place;
+    if (const auto shownPlace = s.places.find(fid); shownPlace != s.places.end()) {
+        place = std::move(shownPlace->second);
+        s.places.erase(shownPlace);
+    } else
+        place = placeOf(info.absolutePath());
+    const QByteArray name = QFile::encodeName(info.fileName());
+    // Validate before any directory is created: a rejected file leaves
+    // nothing behind. A directory that does not exist yet holds nothing.
+    AfterglowProto::UniqueFd directory(openPlace(place, creationMask, nullptr));
+    if (!directory.valid() && errno != ENOENT) {
+        status(s, fid, errorName());
         return;
     }
-    if (type == "regular" && activeFiles.full(1)) {
-        status(s, fid, "EBUSY");
-        return;
-    }
-    const auto zip = f.value("zip", "none");
-    if (zip != "none" && zip != "zlib") {
-        status(s, fid, "EINVAL");
-        return;
-    }
-    // Validate before any directory is created: a rejected file leaves nothing behind.
     struct stat existing { };
-    const bool exists = ::lstat(QFile::encodeName(path).constData(), &existing) == 0;
+    const bool exists
+        = directory.valid() && ::fstatat(directory.get(), name.constData(), &existing, AT_SYMLINK_NOFOLLOW) == 0;
     if (type == "regular" && exists && !S_ISREG(existing.st_mode)) {
         status(s, fid, "EINVAL");
         return;
     }
-    const bool rsync = f.value("tt") == "rsync" && type == "regular" && exists;
-    // A delta upload also holds its basis open, and its signature goes out
-    // from a temporary file.
-    if (rsync && activeFiles.full(2, 1)) {
+    const bool rsync = f.value("tt") == "rsync" && type == "regular" && exists && existing.st_size > MinDeltaBasis;
+    // A delta upload holds its old file and its output open, and its
+    // signature goes out as a stream. Refuse before STARTED when any has no room.
+    if (rsync && (activeFiles.full(3, 1) || streams.size() >= MaxStreams)) {
         status(s, fid, "EBUSY");
         return;
     }
-    // The signature goes out as a stream. Refuse before STARTED when none is free.
-    if (rsync && streams.size() >= MaxStreams) {
-        status(s, fid, "EBUSY");
-        return;
-    }
-    auto file = std::make_unique<File>(type == "regular" ? &activeFiles : nullptr, &pendingBytes);
-    file->meta = metadata(f);
-    file->path = path;
-    // Record new parents from the top down, so that removal in reverse goes deepest first.
-    std::vector<QString> parents;
-    for (QString parent = QFileInfo(path).absolutePath(); !QFileInfo::exists(parent);
-        parent = QFileInfo(parent).absolutePath()) {
-        parents.push_back(parent);
-        if (parent == QFileInfo(parent).absolutePath())
-            break;
-    }
-    s.createdDirs.insert(s.createdDirs.end(), parents.rbegin(), parents.rend());
-    for (const auto& parent : parents)
-        s.created.insert(parent);
-    errno = 0;
-    if (!QDir().mkpath(QFileInfo(path).absolutePath())) {
-        status(s, fid, failureName());
-        return;
-    }
-    if (type == "directory") {
-        errno = 0;
-        if (!QDir().mkpath(path)) {
-            status(s, fid, failureName());
+    if (!directory.valid()) {
+        // From the top down, so that removal in reverse goes deepest first.
+        std::vector<QString> made;
+        directory.reset(openPlace(place, creationMask, &made));
+        s.createdDirs.insert(s.createdDirs.end(), made.begin(), made.end());
+        for (const auto& real : made)
+            s.created.insert(real);
+        if (!directory.valid()) {
+            status(s, fid, errorName());
             return;
         }
-        // A directory that this session made as the parent of an earlier file is its own.
-        file->existed = exists && !s.created.contains(path);
-        if (!exists) {
-            s.createdDirs.push_back(path);
-            s.created.insert(path);
+    }
+    auto file = std::make_unique<File>(nullptr, &pendingBytes);
+    file->meta = metadata(f);
+    file->path = path;
+    file->place = std::move(place);
+    file->name = name;
+    if (type == "directory") {
+        const QString real = joined(file->place.path(), info.fileName());
+        const bool made = ::mkdirat(directory.get(), name.constData(), 0700) == 0;
+        if (!made && errno != EEXIST) {
+            status(s, fid, errorName());
+            return;
         }
+        // A link to a directory stays: nothing goes through it that the
+        // dialog did not show, and it is not this session's to change.
+        struct stat target { };
+        if (!made && (::fstatat(directory.get(), name.constData(), &target, 0) || !S_ISDIR(target.st_mode))) {
+            status(s, fid, "EEXIST");
+            return;
+        }
+        if (made) {
+            s.createdDirs.push_back(real);
+            s.created.insert(real);
+            const AfterglowProto::UniqueFd own(
+                ::openat(directory.get(), name.constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+            if (!own.valid() || ::fchmod(own.get(), 0777 & ~creationMask)) {
+                status(s, fid, errorName());
+                return;
+            }
+        }
+        // A directory that this session made as the parent of an earlier file is its own.
+        file->existed = !made && !s.created.contains(real);
         file->complete = true;
         s.files.emplace(fid, std::move(file));
         status(s, fid, Status::Ok);
         settle(s, fid);
         return;
     }
-    if (type == "regular") {
-        file->output = std::make_unique<QTemporaryFile>(
-            QFileInfo(path).absolutePath() + QStringLiteral("/.afterglow-transfer-XXXXXX"));
-        errno = 0;
-        if (!file->output->open()) {
-            status(s, fid, failureName());
-            return;
-        }
-    }
-    if (zip == "zlib" && type == "regular") {
-        file->inflater = std::make_unique<AfterglowProto::ZlibStream>(AfterglowProto::ZlibStream::Mode::Inflate);
-        if (!file->inflater->valid()) {
-            status(s, fid, "ENOMEM");
-            return;
-        }
-    }
-    std::unique_ptr<QTemporaryFile> signature;
+    std::unique_ptr<Signature> signature;
     if (rsync) {
         file->basis = std::make_unique<QFile>();
-        const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+        const int fd = ::openat(directory.get(), name.constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
         struct stat basisStat { };
         const bool regular = fd >= 0 && ::fstat(fd, &basisStat) == 0 && S_ISREG(basisStat.st_mode);
         const bool opened = regular && file->basis->open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle);
         if (!opened && fd >= 0)
             ::close(fd);
         if (opened) {
-            activeFiles.add(1);
-            ++file->held;
+            file->charge(&activeFiles, 1);
             // One size for the signature, the applier and the read below. A
             // basis that grows while it is read must not add records past the
-            // block count that the applier accepts, or keep the loop going.
+            // block count that the applier accepts, or keep the stream going.
             const auto basisSize = quint64(basisStat.st_size);
-            AfterglowProto::SignatureBuilder builder(basisSize);
-            file->blockSize = builder.blockSize();
+            signature = std::make_unique<Signature>(Signature {
+                AfterglowProto::UniqueFd(::fcntl(fd, F_DUPFD_CLOEXEC, 0)),
+                AfterglowProto::SignatureBuilder(basisSize), basisSize });
+            file->blockSize = signature->builder.blockSize();
             // Before the basis is read: a file that cannot be applied costs no signature.
             file->applier = std::make_unique<AfterglowProto::DeltaApplier>(
                 file->blockSize, basisSize, std::size_t(MaxRsyncBuffer));
@@ -1100,29 +1563,15 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
                 status(s, fid, "ENOMEM");
                 return;
             }
-            signature = std::make_unique<QTemporaryFile>();
-            const auto header = bytesOf(builder.header());
-            if (!signature->open() || signature->write(header) != header.size()) {
-                status(s, fid, "EIO");
+            if (!signature->basis.valid()) {
+                status(s, fid, errorName());
                 return;
             }
-            for (quint64 offset = 0; offset < basisSize; offset += file->blockSize) {
-                // A short read means the basis shrank, or it states more than
-                // it holds (sysfs): it no longer matches the signature.
-                const auto want = qint64(std::min<quint64>(file->blockSize, basisSize - offset));
-                const auto block = file->basis->read(want);
-                if (block.size() != want || stopped(stop)) {
-                    status(s, fid, "EIO");
-                    return;
-                }
-                const auto record = bytesOf(builder.record(view(block)));
-                if (signature->write(record) != record.size()) {
-                    status(s, fid, "EIO");
-                    return;
-                }
-            }
-            if (!signature->seek(0)) {
-                status(s, fid, "EIO");
+            // Its output too, before STARTED: a delta upload, which the
+            // client sends in groups, then fails at its data for nothing
+            // that another file took.
+            if (const auto error = createOutput(*file); !error.empty()) {
+                status(s, fid, error);
                 return;
             }
             file->rsync = true;
@@ -1134,11 +1583,56 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
     // The stream before STARTED: another pane can take the last descriptor
     // meanwhile, and a refusal must be the file's only status. Its data goes
     // out from the timer, after STARTED.
-    if (signature && !stream(s, fid, std::move(signature), false)) {
+    if (signature && !stream(s, fid, nullptr, false, { }, std::move(signature))) {
         s.files.erase(fid);
         return;
     }
     status(s, fid, Status::Started, -1, { { "tt", delta ? "rsync" : "simple" } });
+}
+
+// A regular file's temporary file in its checked directory, and the
+// inflater of its compressed data. A file of a sender that names all of its
+// files at the start holds neither until its data comes: both count against
+// the descriptors of the pane. The error, or nothing.
+std::string_view FileTransfer::Worker::createOutput(File& file)
+{
+    if (activeFiles.full(2))
+        return "EBUSY";
+    auto output = std::make_unique<Output>();
+    output->name = ".afterglow-transfer-" + QUuid::createUuid().toString(QUuid::Id128).toLatin1();
+    output->directory.reset(openPlace(file.place, creationMask, nullptr));
+    if (!output->directory.valid())
+        return errorName();
+    const int fd = ::openat(output->directory.get(), output->name.constData(),
+        O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0)
+        return errorName();
+    if (!output->file.open(fd, QIODevice::ReadWrite, QFileDevice::AutoCloseHandle)) {
+        ::close(fd);
+        return "EIO";
+    }
+    // kitten marks the links of a compressed transfer with zip=zlib too, and
+    // sends their targets plain, as kitty reads them: only a file's data is inflated.
+    if (file.meta.value("zip") == "zlib") {
+        file.inflater = std::make_unique<AfterglowProto::ZlibStream>(AfterglowProto::ZlibStream::Mode::Inflate);
+        if (!file.inflater->valid()) {
+            file.inflater.reset();
+            return "ENOMEM";
+        }
+    }
+    file.output = std::move(output);
+    file.charge(&activeFiles, 2);
+    return { };
+}
+bool FileTransfer::Worker::openOutput(Session& s, const QByteArray& fid, File& file)
+{
+    const auto error = createOutput(file);
+    if (error.empty())
+        return true;
+    fail(s, fid, error);
+    file.releaseIo();
+    settle(s, fid);
+    return false;
 }
 
 bool FileTransfer::Worker::rawWrite(File& file, std::string_view bytes)
@@ -1157,11 +1651,12 @@ bool FileTransfer::Worker::rawWrite(File& file, std::string_view bytes)
                 file.tooLarge = true;
                 return false;
             }
-        } else if (file.rsync && deltaLimit > 0 && file.written + size > deltaLimit) {
+        } else if ((file.rsync || file.inflater) && deltaLimit > 0 && file.written + size > deltaLimit) {
+            // A packet of compressed data can inflate to a thousand times its size.
             file.tooLarge = true;
             return false;
         }
-        if (file.output->write(bytes.data(), size) != size)
+        if (file.output->file.write(bytes.data(), size) != size)
             return false;
     } else {
         if (file.linkData.size() + size > MaxLinkData)
@@ -1201,6 +1696,8 @@ void FileTransfer::Worker::data(Session& s, const Fields& f)
         }
         return;
     }
+    if (s.sending && !file.output && !isLink(file.meta) && !openOutput(s, fid, file))
+        return;
     // One watch for the whole packet: a cancel or reset stops it between any two writes.
     auto stop = watch(s.id);
     bool ok = bytes.size() <= MaxPacketData;
@@ -1244,19 +1741,19 @@ void FileTransfer::Worker::data(Session& s, const Fields& f)
     }
     file.complete = end;
     if (end && file.output) {
-        // QTemporaryFile creates mode 0600. Without a mode from the client
+        // The temporary file has mode 0600. Without a mode from the client
         // (none, or prm=-1), follow the umask. The metadata goes on the
-        // descriptor: the temporary name could be a link by now.
-        const auto temporary = QFile::encodeName(file.output->fileName());
-        if (!file.output->flush() || !setMetadata(file.output->handle(), file.meta, true)
-            || ::rename(temporary.constData(), QFile::encodeName(file.path).constData())) {
+        // descriptor, and the rename stays in the checked directory.
+        auto& output = *file.output;
+        if (!output.file.flush() || !setMetadata(output.file.handle(), file.meta, creationMask)
+            || ::renameat(output.directory.get(), output.name.constData(), output.directory.get(), file.name.constData())) {
             file.failed = true;
             status(s, fid, errorName());
             file.releaseIo();
             settle(s, fid);
             return;
         }
-        file.output->setAutoRemove(false);
+        output.keep = true;
         file.committed = true;
     }
     if (!end || file.output)
@@ -1286,7 +1783,7 @@ void FileTransfer::Worker::finish(Session& s)
         return a.second->path.count(QLatin1Char('/')) > b.second->path.count(QLatin1Char('/'));
     });
     for (const auto& [fid, file] : directories)
-        if (!setDirectoryMetadata(file->path, file->meta))
+        if (!setDirectoryMetadata(joined(file->place.path(), QFile::decodeName(file->name)), file->meta))
             status(s, fid, errorName());
     s.createdDirs.clear();
     if (!s.finishFailures.empty()) {
@@ -1307,6 +1804,7 @@ bool FileTransfer::Worker::commitLink(Session& s, const QByteArray& fid)
         : file.linkData.startsWith("fid:")     ? file.linkData.mid(4)
                                                : QByteArray();
     QString target;
+    const File* source = nullptr;
     if (!targetId.isEmpty()) {
         // Link targets can name files that arrive later in the session.
         const auto found = s.files.find(targetId);
@@ -1325,7 +1823,8 @@ bool FileTransfer::Worker::commitLink(Session& s, const QByteArray& fid)
             fail(s, fid, "EINVAL");
             return true;
         }
-        target = found->second->path;
+        source = found->second.get();
+        target = source->path;
         if (!hard && file.linkData.startsWith("fid:"))
             target = QDir(QFileInfo(file.path).absolutePath()).relativeFilePath(target);
     } else if (!hard && file.linkData.startsWith("path:"))
@@ -1334,16 +1833,22 @@ bool FileTransfer::Worker::commitLink(Session& s, const QByteArray& fid)
         fail(s, fid, "EINVAL");
         return true;
     }
-    const QString temporary = QFileInfo(file.path).absolutePath() + QStringLiteral("/.afterglow-link-")
-        + QUuid::createUuid().toString(QUuid::Id128);
-    const auto source = QFile::encodeName(target), dest = QFile::encodeName(temporary);
-    const int result = hard ? ::link(source.constData(), dest.constData()) : ::symlink(source.constData(), dest.constData());
+    // In the checked directories of the link and of a hard link's file.
+    const QByteArray temporary = ".afterglow-link-" + QUuid::createUuid().toString(QUuid::Id128).toLatin1();
+    const AfterglowProto::UniqueFd directory(openPlace(file.place, creationMask, nullptr));
+    int result = -1;
+    if (directory.valid() && hard) {
+        const AfterglowProto::UniqueFd from(openPlace(source->place, creationMask, nullptr));
+        if (from.valid())
+            result = ::linkat(from.get(), source->name.constData(), directory.get(), temporary.constData(), 0);
+    } else if (directory.valid())
+        result = ::symlinkat(QFile::encodeName(target).constData(), directory.get(), temporary.constData());
     if (result)
         fail(s, fid, errorName());
-    else if (::rename(dest.constData(), QFile::encodeName(file.path).constData())) {
+    else if (::renameat(directory.get(), temporary.constData(), directory.get(), file.name.constData())) {
         fail(s, fid, errorName());
-        ::unlink(dest.constData());
-    } else if (!hard && !setLinkTime(file.path, file.meta))
+        ::unlinkat(directory.get(), temporary.constData(), 0);
+    } else if (!hard && !setLinkTime(directory.get(), file.name, file.meta))
         fail(s, fid, errorName());
     else {
         file.committed = true;
@@ -1405,14 +1910,36 @@ void FileTransfer::Worker::finishLinks(Session& s)
 void FileTransfer::Worker::list(Session& s)
 {
     auto stop = watch(s.id);
+    // An entry has the path that the client names, and the real path where
+    // it is read: links above a request lead where the dialog showed. A
+    // request's own status comes from the directory that was checked.
     struct Entry {
-        QString path;
+        QString path, real;
         QByteArray request, parent;
         int depth;
+        struct stat status;
     };
     std::deque<Entry> pending;
-    for (const auto& request : s.requests)
-        pending.push_back({ request.path, request.fid, { }, 0 });
+    for (const auto& request : s.requests) {
+        const QFileInfo info(request.path);
+        const Place place = request.place ? *request.place : placeOf(info.absolutePath());
+        // Before openPlace(): an allocation between it and errorName() could change errno.
+        const QByteArray name = QFile::encodeName(info.fileName());
+        const AfterglowProto::UniqueFd directory(openPlace(place, creationMask, nullptr));
+        struct stat st { };
+        // "/" has no name in its directory: it is the directory itself.
+        if (!directory.valid()
+            || ::fstatat(directory.get(), name.constData(), &st, name.isEmpty() ? AT_EMPTY_PATH : AT_SYMLINK_NOFOLLOW)) {
+            status(s, request.fid, errorName());
+            continue;
+        }
+        pending.push_back({ request.path, joined(place.path(), info.fileName()), request.fid, { }, 0, st });
+    }
+    // Other sessions share the output queue. A listing that does not fit is
+    // refused whole, as soon as it is known not to fit.
+    const qsizetype budget = std::min(MaxQueuedBytes / 2, MaxQueuedBytes - outgoingBytes - ListingHeadroom);
+    qsizetype listingBytes = 0;
+    std::map<QString, QByteArray> byReal;
     requestBytes -= s.requestBytes;
     s.requestBytes = 0;
     std::vector<Request>().swap(s.requests);
@@ -1435,21 +1962,17 @@ void FileTransfer::Worker::list(Session& s)
             return;
         const auto entry = pending.front();
         pending.pop_front();
-        struct stat st { };
-        const auto path = QFile::encodeName(entry.path);
-        // A status names the request, and a client fails the whole source on
-        // it. A child that went away since its directory was read is left out
-        // instead. A child whose name is not UTF-8 never gets here:
+        struct stat st = entry.status;
+        const auto path = QFile::encodeName(entry.real);
+        // A child that went away since its directory was read is left out:
+        // a status would name the request, and a client fails the whole
+        // source on it. A child whose name is not UTF-8 never gets here:
         // QDirIterator skips it without a word, so it is not counted either.
-        if (::lstat(path.constData(), &st)) {
-            if (entry.depth > 0) {
-                if (leftOut.count++ == 0) {
-                    leftOut.first = entry.path;
-                    leftOut.error = bytesOf(errorName());
-                }
-                continue;
+        if (entry.depth > 0 && ::lstat(path.constData(), &st)) {
+            if (leftOut.count++ == 0) {
+                leftOut.first = entry.path;
+                leftOut.error = bytesOf(errorName());
             }
-            status(s, entry.request, errorName());
             continue;
         }
         // Devices, sockets and pipes in a directory are left out, as kitten leaves them out when it sends.
@@ -1489,40 +2012,38 @@ void FileTransfer::Worker::list(Session& s)
                 status(s, entry.request, "EEXIST");
             continue;
         }
-        s.listing[entry.path] = f;
+        // A symbolic link can get the id of its target below: room for it.
+        listingBytes += encode(f).size() + (S_ISLNK(st.st_mode) ? 16 : 0);
+        if (listingBytes > budget) {
+            status(s, { }, "EFBIG");
+            return;
+        }
+        s.listing[entry.path] = { f, entry.real };
+        byReal[entry.real] = f["st"];
         if (S_ISDIR(st.st_mode)) {
-            QDirIterator children(entry.path, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+            QDirIterator children(entry.real, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
             while (children.hasNext()) {
                 if (pending.size() + s.listing.size() >= std::size_t(MaxFiles)) {
                     status(s, { }, "EFBIG");
                     return;
                 }
-                pending.push_back({ children.next(), entry.request, f["st"], entry.depth + 1 });
+                const QString child = children.next();
+                pending.push_back(
+                    { joined(entry.path, children.fileName()), child, entry.request, f["st"], entry.depth + 1, { } });
             }
         }
     }
-    // Other sessions share the output queue. A listing that does not fit is refused whole.
-    const qsizetype budget = std::min(MaxQueuedBytes / 2, MaxQueuedBytes - outgoingBytes - ListingHeadroom);
-    qsizetype listingBytes = 0;
-    for (auto& [path, f] : s.listing) {
-        if (f.value("ft") == "symlink") {
-            const QString target = QFileInfo(path).symLinkTarget();
-            if (auto it = s.listing.find(target); it != s.listing.end())
-                f["d"] = it->second.value("st");
-        }
-        listingBytes += encode(f).size();
-        if (listingBytes > budget) {
-            status(s, { }, "EFBIG");
-            return;
-        }
-    }
-    for (const auto& [path, f] : s.listing)
-        send(f);
+    for (auto& [path, listed] : s.listing)
+        if (listed.fields.value("ft") == "symlink")
+            if (const auto it = byReal.find(QFileInfo(listed.real).symLinkTarget()); it != byReal.end())
+                listed.fields["d"] = it->second;
+    for (const auto& [path, listed] : s.listing)
+        send(listed.fields);
     status(s, { }, Status::Ok, -1, { { "n", QDir::homePath().toUtf8() } });
 }
 
 bool FileTransfer::Worker::stream(Session& s, const QByteArray& fid, std::unique_ptr<QFile> source, bool compress,
-    std::unique_ptr<Delta> delta)
+    std::unique_ptr<Delta> delta, std::unique_ptr<Signature> signature)
 {
     if (streams.size() >= MaxStreams || g_descriptors.load() + 1 > descriptorLimit()) {
         status(s, fid, "EBUSY");
@@ -1532,6 +2053,7 @@ bool FileTransfer::Worker::stream(Session& s, const QByteArray& fid, std::unique
     item->fields = { { "id", s.id }, { "fid", fid } };
     item->source = std::move(source);
     item->delta = std::move(delta);
+    item->signature = std::move(signature);
     if (compress) {
         item->deflater = std::make_unique<AfterglowProto::ZlibStream>(AfterglowProto::ZlibStream::Mode::Deflate);
         if (!item->deflater->valid()) {
@@ -1547,6 +2069,35 @@ bool FileTransfer::Worker::stream(Session& s, const QByteArray& fid, std::unique
 
 QByteArray FileTransfer::Worker::read(Stream& item, bool& error, bool& atEnd)
 {
+    if (item.signature) {
+        auto& signature = *item.signature;
+        if (item.generated.size() - item.generatedSent < std::size_t(MaxPacketData) && !signature.done()) {
+            item.generated.erase(0, item.generatedSent);
+            item.generatedSent = 0;
+            if (!signature.started) {
+                item.generated += signature.builder.header();
+                signature.started = true;
+            }
+            std::string block;
+            for (qsizetype step = 0; signature.offset < signature.size && step < DeltaStep;) {
+                const auto want = std::min<quint64>(signature.builder.blockSize(), signature.size - signature.offset);
+                block.resize(std::size_t(want));
+                // A short read means the file shrank, or it states more than
+                // it holds (sysfs): it no longer matches the signature.
+                if (::pread(signature.basis.get(), block.data(), block.size(), off_t(signature.offset)) != ssize_t(want)) {
+                    error = true;
+                    return { };
+                }
+                item.generated += signature.builder.record(block);
+                signature.offset += want;
+                step += qsizetype(want);
+            }
+        }
+        QByteArray data = bytesOf(std::string_view(item.generated).substr(item.generatedSent, std::size_t(MaxPacketData)));
+        item.generatedSent += std::size_t(data.size());
+        atEnd = signature.done() && item.generatedSent == item.generated.size();
+        return data;
+    }
     if (!item.delta) {
         QByteArray data = item.source->read(MaxPacketData);
         error = item.source->error() != QFileDevice::NoError;
@@ -1602,9 +2153,20 @@ void FileTransfer::Worker::pump()
     auto f = item.fields;
     if (error) {
         streams.pop_front();
-        // Through status(), so that a quiet session stays quiet.
-        if (const auto session = sessions.find(f.value("id")); session != sessions.end())
-            status(*session->second, f.value("fid"), "EIO");
+        // Through status(), so that a quiet session stays quiet. The upload
+        // whose signature failed can take no data.
+        if (const auto session = sessions.find(f.value("id")); session != sessions.end()) {
+            auto& s = *session->second;
+            const auto fid = f.value("fid");
+            const auto file = s.files.find(fid);
+            if (s.sending && file != s.files.end()) {
+                file->second->failed = true;
+                file->second->releaseIo();
+            }
+            status(s, fid, "EIO");
+            if (s.sending && file != s.files.end())
+                settle(s, fid);
+        }
         return;
     }
     if (end || !data.isEmpty()) {
@@ -1624,7 +2186,8 @@ void FileTransfer::Worker::sendFile(Session& s, const Fields& f)
         status(s, fid, "EPERM");
         return;
     }
-    const auto type = s.listing.at(path).value("ft");
+    const auto& listed = s.listing.at(path);
+    const auto type = listed.fields.value("ft");
     const auto zip = f.value("zip", "none");
     if (zip != "none" && zip != "zlib") {
         status(s, fid, "EINVAL");
@@ -1634,9 +2197,17 @@ void FileTransfer::Worker::sendFile(Session& s, const Fields& f)
         status(s, fid, "EINVAL");
         return;
     }
+    // In the directory where the listing found the file, if links still lead there.
+    const QFileInfo real(listed.real);
+    const AfterglowProto::UniqueFd directory(openChecked(real.absolutePath(), O_RDONLY | O_DIRECTORY));
+    const QByteArray name = QFile::encodeName(real.fileName());
+    if (!directory.valid()) {
+        status(s, fid, errorName());
+        return;
+    }
     if (type == "symlink") {
         char target[4097];
-        const auto length = ::readlink(QFile::encodeName(path).constData(), target, sizeof target);
+        const auto length = ::readlinkat(directory.get(), name.constData(), target, sizeof target);
         if (length < 0) {
             status(s, fid, errorName());
             return;
@@ -1658,7 +2229,7 @@ void FileTransfer::Worker::sendFile(Session& s, const Fields& f)
             return;
         }
     }
-    const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    const int fd = ::openat(directory.get(), name.constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         status(s, fid, errorName());
         return;
@@ -1751,6 +2322,51 @@ void FileTransfer::Worker::delta(Session& s, const QByteArray& fid, File& file)
         return;
     }
     stream(s, fid, nullptr, file.meta.value("zip") == "zlib", std::move(generator));
+}
+
+void FileTransfer::endPasswordPause() { g_passwordsBlockedUntil.store(0); }
+
+FileTransfer::Question FileTransfer::question(bool writing, const QStringList& paths, int total, bool othersRefused,
+    const QString& asker)
+{
+    Question q;
+    // A remote program can name any file, and chooses where files go: the
+    // paths are part of the question.
+    const QString who = asker.isEmpty() ? tr("A terminal program") : asker;
+    q.text = writing ? tr("%1 wants to write these files on this computer. Existing files can be replaced. Allow it?").arg(who)
+                     : tr("%1 wants to read these files on this computer. Allow it?").arg(who);
+    // The question stays short however long a path is: each line of it, so
+    // that the line of where a path resolves stays a line of its own. The
+    // detail has each path whole.
+    const auto line = [](const QString& path) {
+        QStringList lines = path.split(QLatin1Char('\n'));
+        for (QString& part : lines)
+            if (part.size() > QuestionLength)
+                part = part.left(QuestionLength / 2) + QChar(0x2026) + part.right(QuestionLength / 2 - 1);
+        return lines.join(QLatin1Char('\n'));
+    };
+    for (qsizetype i = 0; i < std::min<qsizetype>(paths.size(), QuestionPaths); ++i)
+        q.text += QLatin1Char('\n') + line(paths[i]);
+    if (paths.size() > QuestionPaths)
+        q.text += QLatin1Char('\n') + tr("and %n more", nullptr, int(paths.size() - QuestionPaths));
+    // A Yes covers the listed paths only.
+    const int rest = total - int(paths.size());
+    if (writing && othersRefused) {
+        // The last dialog of the files that wait: the files that come while
+        // it shows are refused at the answer too, so it says so with no
+        // file left out.
+        q.text += QLatin1Char('\n')
+            + (rest > 0 ? tr("Files not in this list: %1. They are refused, and so are the files that come while this question shows.").arg(rest)
+                        : tr("Files not in this list, and files that come while this question shows, are refused."));
+    } else if (rest > 0) {
+        const QString others = writing ? tr("Files not in this list: %1. They get a question of their own.")
+                                       : tr("Requested files not in this list: %1. They are refused.");
+        q.text += QLatin1Char('\n') + others.arg(rest);
+    }
+    if (!writing && std::any_of(paths.begin(), paths.end(), [](const QString& p) { return p.endsWith(QLatin1Char('/')); }))
+        q.text += QLatin1Char('\n') + tr("A path that ends with a slash is a directory. The program can read all the files in it.");
+    q.detail = paths.join(QLatin1Char('\n'));
+    return q;
 }
 
 } // namespace Afterglow

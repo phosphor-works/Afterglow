@@ -12,8 +12,12 @@
 #include <QThread>
 #include <QSet>
 #include <gtest/gtest.h>
+#include <cstdio>
+#include <fcntl.h>
+#include <functional>
 #include <limits>
 #include <tuple>
+#include <sys/stat.h>
 using namespace Afterglow;
 using namespace AfterglowRender;
 
@@ -698,14 +702,69 @@ TEST(ShaderReload, MissingNestedIncludesRecoverAndStayWatchedAfterAtomicReplacem
     // Dropping references retires the include watches. (The pack's own stage
     // stays with the registry, which reports edits to any pack.) With nothing
     // cached no edit could emit changed(), so the watched set is the check.
-    // Both exist, so each is watched under its canonical path too.
-    const QString includePath = QFileInfo(include).canonicalFilePath();
-    const QString nestedPath = QFileInfo(nested).canonicalFilePath();
-    EXPECT_TRUE(library.watchedPaths().contains(includePath));
-    EXPECT_TRUE(library.watchedPaths().contains(nestedPath));
+    EXPECT_TRUE(library.watchedPaths().contains(include));
+    EXPECT_TRUE(library.watchedPaths().contains(nested));
     library.build({}, {});
-    EXPECT_FALSE(library.watchedPaths().contains(includePath));
-    EXPECT_FALSE(library.watchedPaths().contains(nestedPath));
+    EXPECT_FALSE(library.watchedPaths().contains(include));
+    EXPECT_FALSE(library.watchedPaths().contains(nested));
+    ASSERT_TRUE(QDir(dir).removeRecursively());
+}
+
+// The include is reached through links outside the pack, which the registry
+// does not watch: only the watch of the include follows them.
+TEST(ShaderReload, AnIncludeThroughALinkThatIsRetargetedRebuilds)
+{
+    const auto dir = writePack(QStringLiteral("reload-linked"), "#include \"lib/color.glsl\"\n" + ShaderBody);
+    ASSERT_FALSE(dir.isEmpty());
+    QTemporaryDir outside;
+    ASSERT_TRUE(outside.isValid());
+    for (const char* name : {"a", "b"}) ASSERT_TRUE(QDir().mkpath(outside.filePath(QString::fromLatin1(name))));
+    // The two targets have the same size, modification time and change
+    // time, in the milliseconds that the signature reads: only the target
+    // that the signature resolves tells them apart. No call sets a change
+    // time, so the times are set until the kernel gives both the same one.
+    const QString targetA = outside.filePath(QStringLiteral("a/color.glsl"));
+    const QString targetB = outside.filePath(QStringLiteral("b/color.glsl"));
+    ASSERT_TRUE(writeShaderFixture(targetA, "float shade(){return 0.25;}\n"));
+    ASSERT_TRUE(writeShaderFixture(targetB, "float shade(){return 0.50;}\n"));
+    const auto changeTime = [](const QString& path) { return QFileInfo(path).metadataChangeTime().toMSecsSinceEpoch(); };
+    const timespec times[2] = {{1'600'000'000, 0}, {1'600'000'000, 0}};
+    bool same = false;
+    for (int attempt = 0; attempt < 1000 && !same; ++attempt) {
+        ASSERT_EQ(::utimensat(AT_FDCWD, QFile::encodeName(targetA).constData(), times, 0), 0);
+        ASSERT_EQ(::utimensat(AT_FDCWD, QFile::encodeName(targetB).constData(), times, 0), 0);
+        same = changeTime(targetA) == changeTime(targetB);
+    }
+    ASSERT_TRUE(same);
+    ASSERT_EQ(QFileInfo(targetA).size(), QFileInfo(targetB).size());
+    ASSERT_EQ(QFileInfo(targetA).lastModified(), QFileInfo(targetB).lastModified());
+    // lib -> OUTSIDE/current -> OUTSIDE/a
+    const QString current = outside.filePath(QStringLiteral("current"));
+    ASSERT_TRUE(QFile::link(outside.filePath(QStringLiteral("a")), current));
+    ASSERT_TRUE(QFile::link(current, dir + QStringLiteral("/lib")));
+    ShaderLibrary library;
+    ShaderLibrary::Refs refs; refs.window = {QStringLiteral("reload-linked")};
+    int changes = 0;
+    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] { ++changes; });
+    auto first = library.build(refs, {});
+    ASSERT_EQ(first.window.size(), 1u);
+    const auto rebuilds = [&](const std::function<void()>& change) {
+        const int before = changes;
+        change();
+        ASSERT_TRUE(waitForShaderChange(changes, before));
+        auto rebuilt = library.build(refs, {});
+        ASSERT_EQ(rebuilt.window.size(), 1u);
+        EXPECT_NE(rebuilt.window.front(), first.window.front());
+        first = std::move(rebuilt);
+    };
+    // The link retargeted as dotfile managers do it: a new one renamed over the old.
+    rebuilds([&] {
+        const QString next = current + QStringLiteral(".next");
+        ASSERT_TRUE(QFile::link(outside.filePath(QStringLiteral("b")), next));
+        ASSERT_EQ(::rename(QFile::encodeName(next).constData(), QFile::encodeName(current).constData()), 0);
+    });
+    // An edit of the new target, through the link.
+    rebuilds([&] { ASSERT_TRUE(writeShaderFixture(targetB, "float shade(){return 1.0;}\n")); });
     ASSERT_TRUE(QDir(dir).removeRecursively());
 }
 
@@ -923,4 +982,35 @@ TEST(ShaderLibraryPackages, APackagePackWithAnotherIdIsLeftOut)
     library.setPackageShaders(packages);
     EXPECT_TRUE(library.packIds().contains(QStringLiteral("scripted-overview.wall")));
     EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 1u);
+}
+
+// The library takes the user's packs and presets from the directory that it
+// is given, which Application makes the directory of the config file.
+TEST(ShaderLibraryDirectories, PacksAndPresetsComeFromTheGivenDirectory)
+{
+    QTemporaryDir elsewhere;
+    ASSERT_TRUE(elsewhere.isValid());
+    const QString pack = elsewhere.filePath(QStringLiteral("shaders/elsewhere-only"));
+    ASSERT_TRUE(QDir().mkpath(pack));
+    const QByteArray metadata = R"({"id":"elsewhere-only","name":"Elsewhere","fragmentShader":"effect.frag"})";
+    const QByteArray source = "vec4 pTerminal(vec2 uv) { return vec4(1.0); }";
+    for (const auto& [name, bytes] : {std::pair{QStringLiteral("/metadata.json"), metadata}, std::pair{QStringLiteral("/effect.frag"), source}}) {
+        QFile file(pack + name);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        ASSERT_EQ(file.write(bytes), bytes.size());
+    }
+    ShaderLibrary usual;
+    EXPECT_FALSE(usual.packIds().contains(QStringLiteral("elsewhere-only")));
+    ShaderLibrary beside(elsewhere.path());
+    EXPECT_TRUE(beside.packIds().contains(QStringLiteral("elsewhere-only")));
+    ShaderLibrary::Refs refs;
+    refs.background = {QStringLiteral("elsewhere-only")};
+    EXPECT_EQ(beside.build(refs, {}).background.size(), 1u) << beside.problems().join(QLatin1Char('\n')).toStdString();
+    // A saved preset goes beside the packs, not into ~/.config/afterglow.
+    QVariantMap saved;
+    ASSERT_TRUE(beside.savePreset(QStringLiteral("elsewhere-only"), QStringLiteral("Mine"), {}, saved).isEmpty());
+    const QDir presets(elsewhere.filePath(QStringLiteral("shader-presets/surface")));
+    EXPECT_EQ(presets.entryList({QStringLiteral("*.json")}, QDir::Files).size(), 1);
+    const QDir userPresets(qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shader-presets/surface"));
+    EXPECT_FALSE(userPresets.exists(saved.value(QStringLiteral("id")).toString() + QStringLiteral(".json")));
 }

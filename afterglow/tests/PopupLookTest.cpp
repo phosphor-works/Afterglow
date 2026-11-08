@@ -5,6 +5,7 @@
 // color, the title color and the dim, rendered offscreen. The native suite
 // checks where a popup goes and what the pointer reaches.
 
+#include "GpuTestDevice.h"
 #include "TerminalWindow.h"
 #include "config/Settings.h"
 
@@ -20,14 +21,21 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <string>
+#include <utility>
 
 using namespace Afterglow;
 
 namespace {
 
 std::unique_ptr<AfterglowRender::GpuDevice> s_device;
+/// Why there is no device. A machine without Vulkan skips the test. On one
+/// with Vulkan, a device that cannot be made fails it.
+std::string s_noDevice;
+bool s_noVulkan = false;
 
 struct QuietHost : AfterglowVt::ITerminalHost {
     void writeToPty(std::string_view) override {}
@@ -50,7 +58,10 @@ bool showsColor(const QImage& image, const QRect& rect, QRgb color)
 
 TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
 {
-    if (!s_device) GTEST_SKIP() << "no Wayland display or no Vulkan device";
+    if (!s_device) {
+        if (s_noVulkan) GTEST_SKIP() << s_noDevice;
+        FAIL() << s_noDevice;
+    }
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
     auto write = [&](const QString& name, const QByteArray& data) -> QString {
@@ -59,7 +70,10 @@ TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
             ADD_FAILURE() << "cannot write " << name.toStdString();
             return {};
         }
-        file.write(data);
+        if (file.write(data) != data.size()) {
+            ADD_FAILURE() << "cannot write " << name.toStdString();
+            return {};
+        }
         return file.fileName();
     };
     const QString boxed = write(QStringLiteral("boxed.json"),
@@ -132,19 +146,12 @@ TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);
-    // Vulkan needs a real platform; the offscreen QPA has no Vulkan support.
-    if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) qputenv("QT_QPA_PLATFORM", "offscreen");
-    // Not the desktop's theme plugin, which reaches the desktop's services.
-    qputenv("QT_QPA_PLATFORMTHEME", "generic");
+    AfterglowRender::Testing::selectPlatform();
     QGuiApplication app(argc, argv);
-    if (QGuiApplication::platformName() == QLatin1String("wayland")) {
-        try {
-            s_device = std::make_unique<AfterglowRender::GpuDevice>(AfterglowRender::FontSpec{});
-            if (!s_device->rhi(nullptr)) s_device.reset();
-        } catch (const std::exception&) {
-            s_device.reset();
-        }
-    }
+    AfterglowRender::Testing::Device made = AfterglowRender::Testing::makeDevice();
+    s_device = std::move(made.device);
+    s_noDevice = std::move(made.reason);
+    s_noVulkan = made.skip;
     const int result = RUN_ALL_TESTS();
     s_device.reset();
     return result;

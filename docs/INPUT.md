@@ -117,7 +117,7 @@ Wide characters and combining sequences remain complete.
 A resize cancels the selection because its coordinates can change.
 The focused pane has a history scrollbar.
 By default it appears while the view scrolls or the pointer is over it, then fades out.
-`Window.scrollbar` selects `auto`, `always` or `never`. `Window.scrollbarHideDelay` sets the fade delay in milliseconds.
+`Window.scrollbar` selects `auto`, `always` or `never`. `Window.scrollbarHideDelay` sets the fade delay in milliseconds. A value of 0 starts the fade at once. `Window.scrollbarWidth` sets the width of the bar in logical pixels.
 
 ## Search
 
@@ -199,6 +199,10 @@ It needs two or more letters, and each letter can occur only one time. Other val
 A pane content change, a scroll of the pane or a change of the layout cancels the hints.
 The same is true for the URL labels of `show_urls_open` and `show_urls_copy`.
 In a pane with continuous output, the labels therefore close at the next output.
+A pane can hold its last frame while a program updates it (synchronized output, mode 2026).
+It also holds its last frame while the shell draws its prompt again after a change of the pane width.
+URL labels that open then are on the text of that frame.
+They stay until the hold ends, and close then.
 
 ## Links and URL hints
 
@@ -208,7 +212,7 @@ Afterglow opens OSC 8 links and plain-text URLs with a click while you hold the 
 | --- | --- | --- |
 | `Links.modifier` | `ctrl` | Key to hold for link highlighting and clicks. `none` opens links with a plain click. |
 | `Links.detectUrls` | `true` | Finds plain-text URLs in addition to OSC 8 links |
-| `Links.openWith` | empty | Command that receives the URL. Empty uses the desktop browser. |
+| `Links.openWith` | empty | Command that receives the URL as its last argument. Afterglow splits it into words and runs it without a shell. Empty uses the desktop browser. |
 | `Links.schemes` | `http`, `https`, `mailto`, `ftp`, `file` | Schemes that open without a prompt. Other schemes ask first. |
 | `Hints.alphabet` | `asdfjklghqweruiopzxcvbnmty` | Letters that label hints and URL hints |
 | `show_urls_open` | Ctrl+Shift+G | Labels the URLs on screen and opens the selected URL |
@@ -305,10 +309,13 @@ A `SetEnv` setting in your SSH configuration replaces this offer.
 The default `TERM` is `xterm-256color`, and every host knows that entry.
 If `Terminal.term` is `afterglow`, the first session to a host installs the `afterglow` terminfo entry in `~/.terminfo` on that host.
 The install and the session share one connection.
-You authenticate once when `XDG_RUNTIME_DIR` is private to you, or when your SSH configuration sets `ControlMaster auto`.
+You authenticate once when your SSH configuration sets `ControlMaster auto`, or else when `XDG_RUNTIME_DIR` is an absolute path of letters, digits, `/`, `.`, `_` and `-`.
+Afterglow puts its own control socket there, so keep that directory private to you, as systemd makes it.
 For this first connection, Afterglow's shared connection replaces a `ControlPath none` setting for that host.
 The reason is that `ssh -G` shows `none` and the default value in the same way.
 To keep `ControlPath none`, set `Terminal.sshTerminfo` to `fallback`.
+With `-M`, the session does not join a master that runs already, and the install does not become a master.
+Thus the session authenticates on its own. When no master runs, you authenticate two times: for the install and for the session.
 Afterglow records the host in `$XDG_STATE_HOME/afterglow/ssh-terminfo`, by default under `~/.local/state`.
 The file holds only hashes. A host without `tic` is recorded as a fallback host.
 Afterglow does not install the entry on that host again until the entry changes.
@@ -317,8 +324,16 @@ If the host has no `tic`, or the local `infocmp` cannot read the entry, the sess
 `Terminal.term=afterglow` also needs the entry on the local system. The build installs it only when it finds `tic`.
 Set `Terminal.sshTerminfo` to `fallback` to always use `xterm-256color` on remote hosts and install nothing.
 
+With `Terminal.sshRemoteCommands` on, `aglow run` on the host can run the script commands that are marked `remote`, through `afterglow ssh`.
+Before the session starts, `afterglow ssh` runs a probe over the shared connection and forwards a socket of Afterglow to the host.
+With the setting on, every process of the remote user, and the remote root user, can run the commands that are marked `remote`.
+Unlike the terminfo install, remote commands keep a `ControlPath none` or `ControlMaster no` of yours.
+Afterglow reads your configuration files again to tell them from the defaults, and then forwards no socket for that session.
+With `-v`, `afterglow ssh` tells why a session gets no socket.
+See [remote commands](CONTROL.md#remote-commands).
+
 `ssh -G`, `ssh -V`, `ssh -Q` and `ssh -O` reach `ssh` unchanged.
-Runs with `-N`, `-W`, `-f` or `-s` do not install the entry or change the pane label.
+Runs with `-N`, `-W`, `-f` or `-s` do not install the entry, change the pane label or forward a socket for remote commands.
 The same applies when the SSH configuration sets `SessionType none`, `SessionType subsystem` or `ForkAfterAuthentication yes`.
 An existing `ssh` function or alias takes precedence over the integration.
 Set `Terminal.sshIntegration=false` to run `ssh` directly.

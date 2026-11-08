@@ -242,6 +242,71 @@ TEST(Conformance, SaveAndRestoreModes)
     EXPECT_EQ(t.take(), "\x1b[?7;2$y");
 }
 
+TEST(Conformance, XtsaveOf1048SavesTheCursor)
+{
+    // 1048 is an action (xterm): XTSAVE saves the cursor and XTRESTORE
+    // restores that one, not one DECSC saved before.
+    Term t(20, 6);
+    t.feed("\x1b[4;4H\x1b" "7\x1b[2;3H\x1b[?1048s\x1b[5;9H\x1b[?1048r\x1b[6n");
+    EXPECT_EQ(t.take(), "\x1b[2;3R");
+}
+
+TEST(Conformance, ResetReports132ColumnsWhileThePageKeepsThem)
+{
+    // The host refuses to go back to 80 columns: DECRQM reports the width
+    // the page has, as after DECCOLM.
+    Term t(132, 4);
+    t.feed("\x1b[?40h\x1b[?3h\x1b[?3$p");
+    ASSERT_EQ(t.take(), "\x1b[?3;1$y");
+    t.feed("\x1b" "c\x1b[?3$p");
+    EXPECT_EQ(t.t.cols(), 132);
+    EXPECT_EQ(t.take(), "\x1b[?3;1$y");
+}
+
+TEST(Conformance, ThemeReportsKeepTheirPlaceInTheStream)
+{
+    // Light, a status report, dark again, in one read: each change is
+    // reported where it happened, not once at the end of the read.
+    Term t(10, 3);
+    t.feed("\x1b[?2031h");
+    t.feed("\x1b]11;#ffffff\x07\x1b[5n\x1b]11;#000000\x07");
+    EXPECT_EQ(t.take(), "\x1b[?997;2n\x1b[0n\x1b[?997;1n");
+    // XTPUSHCOLORS and XTPOPCOLORS change it too.
+    t.feed("\x1b[#P\x1b]11;#ffffff\x07\x1b[#Q");
+    EXPECT_EQ(t.take(), "\x1b[?997;2n\x1b[?997;1n");
+}
+
+TEST(Conformance, Osc4AnswersAreCappedButItsSetsGoOn)
+{
+    Term t(10, 3);
+    std::string sequence = "\x1b]4";
+    for (int i = 0; i < 300; ++i) {
+        sequence += ";1;?";
+    }
+    t.feed(sequence + ";2;#010203\x07");
+    std::size_t replies = 0;
+    for (std::size_t pos = 0; (pos = t.host.written.find("\x1b]4;1;", pos)) != std::string::npos; ++pos) {
+        ++replies;
+    }
+    EXPECT_EQ(replies, 256u);
+    t.take();
+    t.feed("\x1b]4;2;?\x07");
+    EXPECT_EQ(t.take(), "\x1b]4;2;rgb:0101/0202/0303\x07");
+}
+
+TEST(Conformance, ColourSpecsAreNamesOrBoundedFields)
+{
+    Term t(10, 3);
+    t.feed("\x1b]10;Light Goldenrod Yellow\x07\x1b]10;?\x07");
+    EXPECT_EQ(t.take(), "\x1b]10;rgb:fafa/fafa/d2d2\x07");
+    // A spec longer than any name is none, and an OSC 10 over its limit goes
+    // whole, with the query after the long field.
+    t.feed("\x1b]10;" + std::string(300, 'a') + "\x07\x1b]10;?\x07");
+    EXPECT_EQ(t.take(), "\x1b]10;rgb:fafa/fafa/d2d2\x07");
+    t.feed("\x1b]10;" + std::string(5000, 'a') + ";?\x07");
+    EXPECT_EQ(t.take(), "");
+}
+
 TEST(Conformance, ColumnModeNeedsPermissionAndClears)
 {
     Term<ResizingHost> t(80, 4);

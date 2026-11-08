@@ -14,6 +14,7 @@ add_executable(afterglow_proto_tests
     HelpersTest.cpp
     IpcTest.cpp
     JsonTest.cpp
+    RemoteTest.cpp
     RunTest.cpp
     SocketTest.cpp
     TextTest.cpp

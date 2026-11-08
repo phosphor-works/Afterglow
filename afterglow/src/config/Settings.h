@@ -35,8 +35,14 @@ struct WindowSettings
     int padding = 6; ///< logical pixels around each pane's grid
     int initialColumns = 100;
     int initialRows = 30;
-    static constexpr AfterglowVt::Rgb DefaultDivider{0x3a, 0x3a, 0x42};
-    std::uint32_t dividerColor = AfterglowRender::packRgba(DefaultDivider); ///< RGBA8 in memory order
+    /// Unset, a fifth of the way from the background to the text in use:
+    /// here the defaults, so that a light background without a theme does
+    /// not get a dark divider.
+    static inline const std::uint32_t DefaultDividerColor = [] {
+        const AfterglowVt::TerminalOptions defaults;
+        return AfterglowRender::packRgba(Themes::derivedDivider(defaults.defaultBackground, defaults.defaultForeground));
+    }();
+    std::uint32_t dividerColor = DefaultDividerColor; ///< RGBA8 in memory order
     /// Unset, halfway from the background to the text in use: here the
     /// defaults.
     static inline const std::uint32_t DefaultPopupBorderColor = [] {
@@ -61,10 +67,12 @@ struct WindowSettings
     /// The tab bar: shown while there are several tabs, always, or never.
     enum class TabBar { Auto, Always, Never };
     TabBar tabBar = TabBar::Auto;
+    int tabBarHeight = 30; ///< logical pixels
     /// The history scrollbar: shown while scrolling or hovered, always, or never.
     enum class Scrollbar { Auto, Always, Never };
     Scrollbar scrollbar = Scrollbar::Auto;
     int scrollbarHideDelay = 1200; ///< milliseconds before an auto scrollbar fades
+    int scrollbarWidth = 12; ///< the history scrollbar's width, logical pixels
     bool operator==(const WindowSettings&) const = default;
 };
 
@@ -112,9 +120,14 @@ struct QuickTerminalSettings
 struct ControlSettings
 {
     /// The "control" target on the process's socket (afterglow ctl) and,
-    /// with Scripts.enabled, the "commands" target (aglow run, afterglow run).
+    /// with Scripts.enabled, the "commands" target (aglow run, afterglow run)
+    /// and the remote sockets that afterglow ssh forwards
+    /// (Terminal.sshRemoteCommands).
     bool enabled = true;
     bool allowReadText = false; ///< let it read pane contents
+    /// Let a script command that runs from a remote host read pane text,
+    /// and let other handlers write to such a run.
+    bool allowRemoteReadText = false;
     int eventInterval = 100; ///< ms between two events of one kind for one pane, 0 sends every event
     bool operator==(const ControlSettings&) const = default;
 };
@@ -170,8 +183,6 @@ QVariantList defaultHintPatterns();
 /// The Hints.patterns entries that Afterglow uses, and the arguments of a command action.
 inline constexpr qsizetype MaxHintPatterns = 16;
 inline constexpr qsizetype MaxHintCommandArguments = 32;
-/// The time in which one pane can show Notifications.rateLimit notifications.
-inline constexpr qint64 NotificationRateWindowMs = 10000;
 /// The highest Scripts.commandStdinLimit, in KiB. CommandSocket sizes its
 /// cap on waiting stdin from it.
 inline constexpr int MaxScriptCommandStdinLimitKiB = 4096;
@@ -199,11 +210,13 @@ struct Settings
     int scriptCommandRunLimit = 16; ///< command runs of one script at once
     /// Bytes of UTF-8 standard output and standard error of one command run (the setting is in KiB).
     qint64 scriptCommandOutputLimit = qint64(16384) << 10;
+    int scriptCpuBudget = 250; ///< ms of handler time of one script in each second
     QString pager = QStringLiteral("less -R");
     std::size_t lastOutputLimit = std::size_t(1024) << 10; ///< bytes of the last output that show_last_output hands the pager
     bool shellIntegration = true;
     bool sshIntegration = true; ///< integrated shells run ssh through `afterglow ssh`
     QString sshTerminfo = QStringLiteral("install"); ///< TERM=afterglow on a host without its entry: install or fallback
+    bool sshRemoteCommands = false; ///< `afterglow ssh` forwards a socket for the commands marked remote
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
     /// Where a finished selection is copied: nowhere, the primary selection
@@ -212,11 +225,15 @@ struct Settings
     CopyOnSelect copyOnSelect = CopyOnSelect::Primary;
     enum class Bell { None, Attention, Visual, Both };
     Bell bell = Bell::Attention;
-    bool notifications = true; ///< OSC 9, 99 and 777 notifications, and OSC 7501 status notifications
-    /// Notifications one pane may show in NotificationRateWindowMs; 0 for no
-    /// limit. Afterglow's own notices do not count, except the notices of
-    /// script commands (NotificationCenter::showLimitedNotice).
+    /// OSC 9, 99 and 777 notifications, and OSC 7501 status notifications
+    /// (Notifications.enabled).
+    bool notifications = true;
+    /// Notifications one pane may show in notificationRateWindow; 0 for no
+    /// limit. Afterglow's own notices do not count (ctl notify and the notify
+    /// effect of scripts among them), except the notice at the end of a
+    /// script command run without a client (NotificationCenter::showLimitedNotice).
     int notificationRateLimit = 20;
+    int notificationRateWindow = 10; ///< seconds that notificationRateLimit counts over
     /// Milliseconds between two program status notifications of one pane.
     int statusNotificationInterval = 3000;
     bool confirmUnsafePaste = true; ///< ask before pasting lines a shell would run
@@ -234,8 +251,8 @@ struct Settings
     /// Variables added to the shell's environment.
     std::vector<std::pair<std::string, std::string>> environment;
     QString fileTransferPassword;
-    /// Bytes that a delta upload without a declared size can write (kitten
-    /// transfer declares none). 0 sets no limit.
+    /// Bytes that a delta or compressed upload without a declared size can
+    /// write (kitten transfer declares none). 0 sets no limit.
     qint64 fileTransferDeltaLimit = qint64(64) << 30;
     /// Milliseconds that a drag over a pane waits for the answer of a program
     /// that uses Kitty drag and drop, when the drag shows it new types.
@@ -251,20 +268,16 @@ struct Settings
     int pasteReadTimeout = 10;
     /// Programs writing the clipboard (OSC 52, OSC 5522).
     Permission clipboardWrite = Permission::Allow;
-    /// Kitty graphics read from a file, a temporary file or shared memory
-    /// (t=f, t=t, t=s): Allow or Deny.
-    Permission graphicsFileTransfer = Permission::Allow;
-    /// DECRQCRA checksum replies, which let any program read the screen back.
-    bool allowScreenReadback = false;
-    std::size_t graphicsQuota = AfterglowVt::GraphicsStore::DefaultQuota; ///< bytes of images (kitty, sixel, iTerm2) that each screen keeps
+    // Terminal.graphicsFileTransfer, Terminal.allowScreenReadback and
+    // Graphics.quota live in terminal, which enforces them.
     /// Each a map of pattern, action and command, checked when read.
     QVariantList hintPatterns = defaultHintPatterns();
     /// Keys that label hints and URL hints, home row first. Unique, at least two.
     QString hintAlphabet = QStringLiteral("asdfjklghqweruiopzxcvbnmty");
     KeyModes keyModes;
     Keybinds keybinds = Keybinds::defaults();
-    /// Shader references for each chain, applied in order: pack ids, or
-    /// "<package>.<pack>" for package packs.
+    /// Shader references for each chain, applied in order: a pack's directory
+    /// name (normally its id), or "<package>.<pack>" for package packs.
     ShaderRefs shaders{.overview = QStringLiteral("pane-deck"),
                        .tabTransition = QStringLiteral("tab-switch"),
                        .paneEffects = QStringLiteral("pane-effects"),
@@ -280,13 +293,19 @@ struct Settings
 /// does an empty one that held no settings (an empty file that held settings
 /// is a save in progress and keeps them), and
 /// the first write() or ensureFile() creates it, readable by the owner only.
+/// A file that cannot be read at the start gives every default, but with
+/// Scripts.enabled and Control.enabled off until it can be read: the file may
+/// have turned them off. An empty file that follows it keeps them off too, as
+/// it may be a save in progress. A -o override of either with a boolean
+/// still wins. A link whose target is gone counts as such a file:
+/// PhosphorConfig cannot open it.
 class SettingsStore : public QObject
 {
     Q_OBJECT
 
 public:
     explicit SettingsStore(QObject* parent = nullptr);
-    SettingsStore(const QString& path, QObject* parent = nullptr);
+    explicit SettingsStore(const QString& path, QObject* parent = nullptr);
     /// @p overrides ({ "Font": { "size": 14 } }) win over the file, which
     /// is still watched (afterglow -o Font.size=14).
     SettingsStore(const QString& path, const QJsonObject& overrides, QObject* parent = nullptr);
@@ -299,7 +318,8 @@ public:
     static QString defaultPath();
     /// Machine-readable reference generated from the runtime Phosphor schema.
     static QJsonObject reference();
-    /// Every group, key, default and validator.
+    /// Every group, key, default and validator. The store builds its own;
+    /// this one is for the tests that check the schema against the structs.
     static PhosphorConfig::Schema schema();
 
     const Settings& settings() const noexcept { return m_settings; }
@@ -309,16 +329,22 @@ public:
     bool ensureFile();
     /// The files whose change reloads: the config file, every place its
     /// theme could come from and, for a plasma theme, the kdeglobals files.
+    /// The set follows each that is a symbolic link itself, so a link target
+    /// is not in this list. Only the tests read it: the store watches them
+    /// itself.
     QStringList watchedPaths() const { return m_files.paths(); }
     /// What the last read could not use: a file that does not parse, unknown
     /// keys, bad values, missing themes. Each is logged when it appears.
     QStringList problems() const { return m_fileProblems + m_readProblems; }
 
     /// Re-reads the file. A file that cannot be read, does not parse or does
-    /// not hold a JSON object keeps the current settings; a deleted file, or
-    /// one that is empty or only white space and held no settings, means
-    /// every default. A file that held settings and is empty now keeps them,
-    /// as an editor that saves in place empties it first.
+    /// not hold a JSON object keeps the current settings, also after an
+    /// empty file kept them; a deleted file, or one that is empty or only
+    /// white space and held no settings, means every default. A file that
+    /// held settings and is empty now keeps them, as an editor that saves in
+    /// place empties it first. Until the file is read once, an empty file
+    /// keeps Scripts.enabled and Control.enabled off, as the unreadable
+    /// file did.
     void reload();
     /// Writes one key to the config file and reloads. A value equal to the
     /// default removes the key. Command-line overrides keep winning over the
@@ -330,7 +356,10 @@ public:
     /// command-line overrides. A write built on a current value (a shader
     /// chain that gains a pack) starts from this, so that an override never
     /// reaches the file, and an edit that is not reloaded yet is not lost.
-    /// An invalid QVariant for an undeclared key.
+    /// It reads the value as read() does: a value of another JSON type is
+    /// the default, and a number of an integer key loses its fraction. A
+    /// list keeps its entries as the file holds them; the caller skips those
+    /// that read() skips. An invalid QVariant for an undeclared key.
     QVariant persisted(const QString& group, const QString& key) const;
 
     /// "Group.key=value" as an override; the value is JSON when it parses
@@ -362,6 +391,8 @@ private:
     void publishProblems();
     /// The desktop prefers dark colours (for "light:a,dark:b" themes).
     bool darkScheme() const;
+    /// The directory of the config file, where its themes directory is.
+    QString configDirectory() const;
 
     QString m_path;
     QJsonObject m_overrides;
@@ -379,10 +410,16 @@ private:
     bool m_desktopFont = false;
     /// An apply() for the desktop events is posted and has not run yet.
     bool m_applyQueued = false;
+    /// No read of the file has worked since the start: read() keeps
+    /// Scripts.enabled and Control.enabled off, which the file may set,
+    /// unless an override sets them to true or false.
+    bool m_neverRead = true;
     QStringList m_fileProblems;
     QStringList m_readProblems;
     QStringList m_publishedProblems;
-    PhosphorFsLoader::WatchedFileSet m_files; ///< the config file, its theme and kdeglobals
+    /// The config file, every place its theme could come from, and
+    /// kdeglobals (watchedPaths()). It follows the links among them itself.
+    PhosphorFsLoader::WatchedFileSet m_files;
 };
 
 } // namespace Afterglow

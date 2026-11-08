@@ -237,10 +237,14 @@ QStringList dataDirs(const QString& sub)
 
 } // namespace
 
-QStringList searchDirs()
+QStringList searchDirs(const QString& configDirectory)
 {
-    QStringList dirs{QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-                     + QStringLiteral("/afterglow/themes")};
+    // Beside the config file, as its scripts are: afterglow --config
+    // DIR/config.json takes DIR/themes in place of the user's own.
+    QStringList dirs{(configDirectory.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
+                                                      + QStringLiteral("/afterglow")
+                                                : configDirectory)
+                     + QStringLiteral("/themes")};
     const QString bundled = bundledDirectory();
     // A build-tree binary puts the checkout above the data directories, so
     // that an installed copy does not shadow the themes that it is testing.

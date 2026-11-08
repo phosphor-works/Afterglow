@@ -4,8 +4,9 @@
 // aglow: a small afterglow, as one static binary. From the command line it
 // speaks kitty's file transfer, drag and drop, graphics and clipboard
 // protocols, which need neither kitty nor Afterglow on the computer where it
-// runs. It also runs the commands of the scripts of an Afterglow on the same
-// computer (aglow run).
+// runs. It also runs the commands of the scripts of an Afterglow (aglow
+// run): on the same computer, or on the computer that afterglow ssh came
+// from.
 
 #include "Cli.h"
 #include "Commands.h"
@@ -90,7 +91,8 @@ const char* usageText = "Usage: %1 COMMAND [options] [arguments]\n"
                         "\n"
                         "Kitty's terminal protocols from the command line. They work in Afterglow, kitty and the\n"
                         "other terminals that support them, also over SSH.\n"
-                        "The run command talks to an Afterglow on the same computer.\n"
+                        "The run command talks to an Afterglow on the same computer, or on the computer that\n"
+                        "afterglow ssh came from.\n"
                         "\n"
                         "Commands:\n"
                         "  transfer   Copy files to and from the computer of the terminal\n"
@@ -100,6 +102,8 @@ const char* usageText = "Usage: %1 COMMAND [options] [arguments]\n"
                         "  run        Run a command of a script in a running Afterglow\n"
                         "\n"
                         "Run %1 COMMAND --help or %1 help COMMAND for the options of a command.\n"
+                        "afterglow ssh runs %1 remote-prune DIR on remote hosts: it removes the sockets of ssh\n"
+                        "sessions that ended.\n"
                         "\n"
                         "Options:\n"
                         "  -h, --help     Show this help\n"
@@ -148,9 +152,11 @@ namespace {
 
 int run(int argc, char** argv)
 {
+    // No command and an unknown command are usage errors: status 2, as in
+    // the commands themselves.
     if (argc < 2) {
         std::fputs(usage().c_str(), stderr);
-        return 1;
+        return 2;
     }
     const std::string_view command = argv[1];
     if (command == "help" && argc > 2) {
@@ -182,9 +188,12 @@ int run(int argc, char** argv)
     if (command == "run") {
         return Aglow::runRun(argc - 2, argv + 2);
     }
+    if (command == "remote-prune") {
+        return Aglow::runRemotePrune(argc - 2, argv + 2);
+    }
     std::fprintf(stderr, "%s: unknown command: %s\n\n%s", Aglow::Cli::program().c_str(),
                  Aglow::printable(argv[1]).c_str(), usage().c_str());
-    return 1;
+    return 2;
 }
 
 } // namespace

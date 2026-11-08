@@ -114,18 +114,12 @@ void NotificationAssembler::erase(PendingMap::iterator it)
 
 NotificationAssembler::Result NotificationAssembler::feed(std::string_view payload, NotificationRequest& out)
 {
-    if (payload.size() > MaxMetadata + 1 + MaxChunkData) {
-        return Result::Ignored;
-    }
-    const auto semi = payload.find(';');
-    if (semi == std::string_view::npos || semi > MaxMetadata) {
+    const auto semi = payload.substr(0, MaxMetadata + 1).find(';');
+    if (semi == std::string_view::npos) {
         return Result::Ignored;
     }
     const std::string_view metadata = payload.substr(0, semi);
     const std::string_view data = payload.substr(semi + 1);
-    if (data.size() > MaxChunkData) {
-        return Result::Ignored;
-    }
 
     // First pass: the id, so the chunk joins the right pending notification.
     std::string id;
@@ -217,6 +211,11 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
         }
         return Result::Ignored;
     };
+    // A chunk too long to take ends its notification too: the rest of it
+    // must not show without the part that was dropped.
+    if (data.size() > MaxChunkData) {
+        return reject();
+    }
 
     // Check the chunk before it changes any state.
     const bool base64 = encoded || kind == Payload::Icon;

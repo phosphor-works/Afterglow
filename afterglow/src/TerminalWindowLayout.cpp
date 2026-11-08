@@ -132,6 +132,10 @@ QString TerminalWindow::movePaneTo(Pane* pane, TerminalWindow* destination, Pane
     const int index = tabOf(pane);
     if (index < 0 || !destination || (beside && destination->tabOf(beside) < 0) || pane == beside)
         return QStringLiteral("Invalid pane destination");
+    // A new tab in its own window for a pane alone in its tab would only
+    // replace the tab, with a new ID and without its title.
+    if (destination == this && !beside && m_tabs[std::size_t(index)]->splits->paneCount() == 1)
+        return QStringLiteral("The pane is alone in its tab already");
     if (m_focused && m_currentTab >= 0) m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
     if (destination != this && destination->m_focused && destination->m_currentTab >= 0)
         destination->m_tabs[std::size_t(destination->m_currentTab)]->focused = destination->m_focused;

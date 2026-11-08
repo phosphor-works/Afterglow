@@ -41,6 +41,21 @@ constexpr std::string_view Version = AFTERGLOW_VT_VERSION;
 /// may produce: each is a write to the program, and the list can be long.
 constexpr int MaxRepliesPerSequence = 256;
 
+/// iTerm2 files (OSC 1337): the base64 of an image sent in parts, the size
+/// of a download, and the arguments of a MultipartFile.
+constexpr std::size_t MaxITerm2Base64 = 96u * 1024 * 1024;
+constexpr std::size_t MaxITerm2Download = 8u * 1024 * 1024;
+constexpr std::size_t MaxITerm2Args = 4096;
+
+/// The base64 length of @p bytes bytes, padded.
+constexpr std::size_t base64Length(std::size_t bytes)
+{
+    return (bytes + 2) / 3 * 4;
+}
+
+/// Longest command line a shell can report (OSC 133 cmdline, cmdline_url).
+constexpr std::size_t MaxCommandLine = 65536;
+
 /// Longest working directory a program can report, in bytes (a percent-encoded
 /// OSC 7 URI of a path up to PATH_MAX fits).
 constexpr std::size_t MaxWorkingDirectory = 8192;
@@ -99,14 +114,45 @@ std::string percentDecode(std::string_view in)
     return out;
 }
 
-/// A command line a shell reported through an encoding (OSC 133 cmdline_url,
-/// OSC 633 E), which can carry any byte. Every other host string comes out of
-/// the parser free of C0 controls; these keep only line breaks and tabs, as
-/// a multi-line command typed at the prompt has them too.
-std::string withoutControls(std::string text)
+/// @p text as UTF-8 without the code points @p drop names. Each byte where
+/// no valid UTF-8 sequence starts becomes U+FFFD, so the result is valid
+/// UTF-8 whatever a program sent.
+template<typename Drop>
+std::string filterText(std::string_view text, Drop drop)
 {
-    std::erase_if(text, [](char c) { return ((unsigned char)c < 0x20 && c != '\n' && c != '\t') || c == 0x7F; });
-    return text;
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size();) {
+        const std::size_t start = i;
+        char32_t cp = 0;
+        if (!detail::nextUtf8(text, i, cp)) {
+            detail::appendUtf8(out, Unicode::ReplacementCharacter);
+            i = start + 1;
+        } else if (!drop(cp)) {
+            out.append(text.substr(start, i - start));
+        }
+    }
+    return out;
+}
+
+/// A command line a shell reported (OSC 133 cmdline and cmdline_url, OSC 633
+/// E). The parser keeps DEL and C1 controls in an OSC string, and the
+/// encodings can carry any byte: all controls go but line breaks and tabs, as
+/// a multi-line command typed at the prompt has them too.
+std::string withoutControls(std::string_view text)
+{
+    return filterText(text, [](char32_t cp) { return detail::isControl(cp) && cp != '\n' && cp != '\t'; });
+}
+
+/// A title a program set (OSC 0 and 2), which the window shows inside other
+/// text (a tab, a dialog caption). No controls, no line or paragraph
+/// separator to forge a second line, and no bidirectional control to reorder
+/// the text around it.
+std::string cleanTitle(std::string_view text)
+{
+    return filterText(text, [](char32_t cp) {
+        return detail::isControl(cp) || AfterglowProto::isBidiControl(cp) || cp == 0x2028 || cp == 0x2029;
+    });
 }
 
 /// A decimal number, the whole of @p s, read with a '.' whatever the locale
@@ -207,9 +253,6 @@ void Terminal::feed(std::string_view bytes)
     }
     m_parser.feed(bytes);
     touch();
-    if (m_modes.themeReports) {
-        reportTheme(false); // OSC 11 and friends may have changed the background
-    }
 }
 
 bool Terminal::backgroundIsDark() const noexcept
@@ -597,6 +640,11 @@ void Terminal::print(char32_t cp)
         case Charset::Ascii:
             break;
         }
+    } else if (cp <= 0x9F) {
+        // A C1 control sent as UTF-8 is no character: it would join the cell
+        // before it as a zero width mark and go out with a copy. As a C0
+        // control does, it leaves a single shift for the next character.
+        return;
     } else {
         m_singleShift = 0;
     }
@@ -665,7 +713,24 @@ void Terminal::print(char32_t cp)
             if (row.cells[std::size_t(baseX)].isTail() && baseX > 0) {
                 --baseX;
             }
-            scr.appendGrapheme(row, baseX, cp);
+            if (const Cell base = row.cells[std::size_t(baseX)]; base.isMulticell()) {
+                // kitty: a combining character joins the block it follows.
+                // Each row of a block keeps the block's text under its left
+                // column, so the mark goes to every row still on the screen.
+                const MulticellParams* params = scr.multicellParams(row, baseX);
+                const int left = baseX - base.multicellDx();
+                const int top = cur.y - base.multicellDy();
+                const int bottom = std::min(top + (params ? params->scale : 1), rows());
+                for (int y = std::max(top, 0); y < bottom; ++y) {
+                    Row& blockRow = scr.row(y);
+                    const Cell& c = blockRow.cells[std::size_t(left)];
+                    if (c.isMulticell() && c.multicellDx() == 0 && c.multicellDy() == y - top) {
+                        scr.appendGrapheme(blockRow, left, cp);
+                    }
+                }
+            } else {
+                scr.appendGrapheme(row, baseX, cp);
+            }
         }
         return;
     }
@@ -1429,6 +1494,9 @@ void Terminal::eraseDisplay(int mode, bool selective)
             eraseWholeRow(scr.row(y), fill, selective);
         }
         m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(scr, m_cellWidth, m_cellHeight);
+        if (!selective) {
+            outputScreenErased();
+        }
         break;
     case 3:
         // Only the saved lines go (xterm): images on the screen stay with its text.
@@ -1440,6 +1508,25 @@ void Terminal::eraseDisplay(int mode, bool selective)
     }
     releaseFill(fill);
     cur.pendingWrap = false;
+}
+
+void Terminal::outputScreenErased()
+{
+    if (m_modes.altScreen || !m_commandRunning) {
+        return;
+    }
+    // A running command cleared the screen (clear, ^L): its output goes on
+    // from the top. A start left on an erased row below the cursor would
+    // leave the output empty.
+    const Screen& scr = *m_primary;
+    const Mark top{scr.rowsDropped() + scr.historySize(), 0, true};
+    if (m_outputStart.valid && m_outputStart.row >= top.row) {
+        m_outputStart = top;
+    }
+    if (!m_semanticRegions.empty() && m_semanticRegions.back().open
+        && m_semanticRegions.back().kind == SemanticZoneKind::Output && m_semanticRegions.back().start.row >= top.row) {
+        m_semanticRegions.back().start = {top.row, 0};
+    }
 }
 
 void Terminal::eraseLine(int mode, bool selective)
@@ -1956,9 +2043,7 @@ void Terminal::fullReset()
     m_host.terminalProtocol(0, {});
     m_extraCursors.clear();
     m_extraCursorColor = m_extraCursorTextColor = {};
-    m_iterm2Receiving = false;
-    m_iterm2Args.clear();
-    std::string().swap(m_iterm2Data);
+    endITerm2Multipart();
     m_explicitCommand.reset();
     m_promptClickEvents = false;
     m_sixelPaletteReady = false;
@@ -1967,11 +2052,15 @@ void Terminal::fullReset()
     if (m_modes.altScreen) {
         setAltScreen(false, false, false);
     }
-    if (m_modes.columns132 && cols() != 80 && m_host.requestResize(80, rows())) {
+    const bool wide = m_modes.columns132;
+    if (wide && cols() != 80 && m_host.requestResize(80, rows())) {
         resize(80, rows(), m_cellWidth, m_cellHeight);
     }
     m_modes = Modes{};
     m_modes.cursorBlink = m_options.cursorBlink;
+    // DECRQM 3 reports the width the page has, as after DECCOLM: the host
+    // may refuse to go back to 80 columns.
+    m_modes.columns132 = wide && cols() == 132;
     m_conformance = 5;
     m_savedDecModes.clear();
     // A command still running stays so: the shell owns the OSC 133 cycle, and
@@ -2741,6 +2830,7 @@ void Terminal::setColumnMode(bool wide)
         }
         m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(*m_active, m_cellWidth, m_cellHeight);
         m_extraCursors.clear();
+        outputScreenErased();
     }
     setCursor(0, 0);
 }
@@ -2748,6 +2838,13 @@ void Terminal::setColumnMode(bool wide)
 void Terminal::saveDecModes(const Params& p)
 {
     for (int i = 0; i < p.count; ++i) {
+        if (p.values[i] == 1048) {
+            // An action, not a state (xterm): XTSAVE saves the cursor, and
+            // XTRESTORE restores it through the reset, as DECRST 1048 does.
+            saveCursor();
+            m_savedDecModes[1048] = false;
+            continue;
+        }
         const int state = decModeState(p.values[i]);
         if (state == 1 || state == 2) {
             m_savedDecModes[p.values[i]] = state == 1;
@@ -3546,6 +3643,7 @@ void Terminal::programExited()
     if (m_programStatus.endActivity()) {
         m_host.programStatusChanged();
     }
+    endITerm2Multipart(); // nothing will send its FileEnd now
 }
 
 void Terminal::reportDeviceAttributes()
@@ -3720,17 +3818,29 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
     }
 
     // Payloads that are text, or that build a reply per item, are kept
-    // small; images, clipboard data and other bulk payloads have their own limits.
+    // small; images, clipboard data and other bulk payloads have their own
+    // limits. OSC 133 has none: its mark must not go with a long command line
+    // (semanticPrompt() drops only that option).
     const std::size_t fieldLimit = num == 0 || num == 1 || num == 2 || num == 22 ? 4096
+        : num == 10 || num == 11 || num == 12 || num == 17 || num == 19 ? 4096
         : num == 7 || num == 8 ? 8192
-        : num == 4 || num == 9 || num == 21 || num == 133 || num == 633 || num == 777 || num == 3008 ? 65536
+        : num == 4 || num == 9 || num == 21 || num == 633 || num == 777 || num == 3008 ? 65536
         : 0;
-    if (fieldLimit && rest.size() > fieldLimit) return;
+    if (fieldLimit && rest.size() > fieldLimit) {
+        if (num == 8) {
+            // A link too long to keep still ends the one before it: the text
+            // after it is not part of that link.
+            Style pen = cursor().pen;
+            pen.link = 0;
+            m_active->setPen(pen);
+        }
+        return;
+    }
 
     switch (num) {
     case 0:
     case 2:
-        m_title.assign(rest);
+        m_title = cleanTitle(rest);
         m_host.titleChanged(m_title);
         break;
     case 4:
@@ -3809,6 +3919,11 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         break;
     case 5113:
         m_host.terminalProtocol(5113, rest.substr(0, AfterglowProto::TransferMaxCommand + 1));
+        break;
+    case AfterglowProto::Remote::Osc:
+        if (AfterglowProto::Remote::isQuery(rest)) {
+            if (const auto answer = m_host.remoteSocket()) reply(AfterglowProto::Remote::reply(*answer, bel));
+        }
         break;
     case 66:
         textSizing(rest);
@@ -4009,6 +4124,11 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
     default:
         break;
     }
+    // Mode 2031: the change is reported where it happens in the stream, so a
+    // reply or a later change in the same read keeps its order.
+    if (m_modes.themeReports) {
+        reportTheme(false);
+    }
 }
 
 void Terminal::closeSemanticRegion(std::optional<int> exitCode)
@@ -4067,6 +4187,7 @@ void Terminal::semanticPrompt(std::string_view args)
     // OSC 133 ; <kind> [; key=value ...]
     const char kind = args.empty() ? '\0' : args[0];
     bool clickEvents = false;
+    bool commandGiven = false;
     std::size_t pos = args.find(';');
     while (pos != std::string_view::npos) {
         const auto next = args.find(';', pos + 1);
@@ -4077,10 +4198,17 @@ void Terminal::semanticPrompt(std::string_view args)
             m_shellRedrawsPrompt = true;
         } else if (opt == "click_events=1") {
             clickEvents = true;
-        } else if (opt.starts_with("cmdline_url=")) {
-            m_explicitCommand = withoutControls(percentDecode(opt.substr(12)));
-        } else if (opt.starts_with("cmdline=")) {
-            m_explicitCommand = std::string(opt.substr(8));
+        } else if (opt.starts_with("cmdline_url=") || opt.starts_with("cmdline=")) {
+            // A command line too long to keep goes alone: the mark still
+            // counts, and C falls back to the text typed after B.
+            const bool encoded = opt[7] == '_';
+            const std::string_view value = opt.substr(encoded ? 12 : 8);
+            commandGiven = true;
+            if (value.size() > MaxCommandLine) {
+                m_explicitCommand.reset();
+            } else {
+                m_explicitCommand = withoutControls(encoded ? percentDecode(value) : std::string(value));
+            }
         }
         pos = next;
     }
@@ -4092,7 +4220,27 @@ void Terminal::semanticPrompt(std::string_view args)
             finishCommand(-1); // no D: the exit code is unknown
         }
         m_inputStart = {}; // a C without a B in this cycle has no typed command
+        if (!commandGiven) {
+            m_explicitCommand.reset(); // nor one a shell reported (OSC 633 E) in the last
+        }
         // Back at the shell: whatever a program reported in flight is over.
+        // An iTerm2 file in parts goes on over one prompt: a job in the
+        // background (imgcat &) still sends it while the shell shows its
+        // prompt. A second prompt with no part since the first means the
+        // sender is gone (an interrupted imgcat): its data is given back.
+        // Only a prompt after a command counts: shells send A again each
+        // time they redraw the same prompt (a resize, Ctrl+L, an async
+        // prompt segment, a continuation line), with no C between. A D
+        // alone is no command either: Afterglow's bash and zsh integration
+        // sends one after each command, also after Enter on an empty line.
+        if (m_iterm2Receiving && m_commandSincePrompt) {
+            if (m_iterm2PromptSincePart) {
+                endITerm2Multipart();
+            } else {
+                m_iterm2PromptSincePart = true;
+            }
+        }
+        m_commandSincePrompt = false;
         if (m_programStatus.endActivity()) {
             m_host.programStatusChanged();
         }
@@ -4120,6 +4268,7 @@ void Terminal::semanticPrompt(std::string_view args)
         m_semanticZone = SemanticZone::Output;
         m_promptClickEvents = false;
         m_promptRedrawPending = false;
+        m_commandSincePrompt = true;
         std::optional<std::string> reported = std::exchange(m_explicitCommand, std::nullopt);
         if (!m_modes.altScreen) {
             // The command line the shell reported, else what was typed
@@ -4226,36 +4375,49 @@ void Terminal::iterm2(std::string_view args, bool bel)
     const auto eq = args.find('=');
     const std::string_view key = args.substr(0, eq);
     const std::string_view value = eq == std::string_view::npos ? std::string_view{} : args.substr(eq + 1);
+    if (key == "MultipartFile") {
+        // A new file ends an earlier one that never ended, also when this
+        // one is refused. Arguments too long to be real are refused, not cut.
+        endITerm2Multipart();
+        if (value.size() > MaxITerm2Args) {
+            return;
+        }
+        detail::ITerm2File file;
+        detail::parseITerm2Args(value, file);
+        if (!file.inlineImage && file.size > MaxITerm2Download) {
+            return;
+        }
+        m_iterm2Receiving = true;
+        m_iterm2Args.assign(value);
+        // A download is refused at its end past 8 MiB: no use keeping more.
+        m_iterm2Limit = file.inlineImage ? MaxITerm2Base64 : base64Length(MaxITerm2Download);
+        return;
+    }
     if (key != "File" && key != "FilePart" && value.size() > 65536) return;
-    constexpr std::size_t MaxFileBase64 = 96u * 1024 * 1024;
     if (key == "File") {
         const auto colon = value.find(':');
         if (colon != std::string_view::npos) {
             iterm2File(value.substr(0, colon), value.substr(colon + 1));
         }
-    } else if (key == "MultipartFile") {
-        m_iterm2Receiving = true;
-        m_iterm2Args.assign(value.substr(0, 4096));
-        std::string().swap(m_iterm2Data); // an earlier file that never ended
     } else if (key == "FilePart") {
         if (m_iterm2Receiving) {
-            if (m_iterm2Data.size() + value.size() > MaxFileBase64) {
-                m_iterm2Receiving = false;
-                std::string().swap(m_iterm2Data); // up to 96 MiB: give it back
+            if (m_iterm2Data.size() + value.size() > m_iterm2Limit) {
+                endITerm2Multipart(); // up to 96 MiB: give it back
             } else {
                 m_iterm2Data.append(value);
+                m_iterm2PromptSincePart = false;
             }
         }
     } else if (key == "FileEnd") {
         if (m_iterm2Receiving) {
             m_iterm2Receiving = false;
             iterm2File(m_iterm2Args, m_iterm2Data);
-            std::string().swap(m_iterm2Data);
+            endITerm2Multipart();
         }
     } else if (key == "SetUserVar") {
         const auto eq2 = value.find('=');
         if (eq2 != std::string_view::npos && eq2 > 0 && eq2 <= 128) {
-            m_host.userVarChanged(value.substr(0, eq2), base64Decode(value.substr(eq2 + 1, 64 * 1024)));
+            m_host.userVarChanged(value.substr(0, eq2), base64Decode(value.substr(eq2 + 1)));
         }
     } else if (key == "CurrentDir") {
         setWorkingDirectory(value);
@@ -4291,16 +4453,24 @@ void Terminal::iterm2(std::string_view args, bool bel)
     // rest are not for afterglow to act on.
 }
 
+void Terminal::endITerm2Multipart()
+{
+    m_iterm2Receiving = false;
+    m_iterm2Args.clear();
+    std::string().swap(m_iterm2Data);
+    m_iterm2Limit = 0;
+    m_iterm2PromptSincePart = false;
+}
+
 void Terminal::iterm2File(std::string_view args, std::string_view base64)
 {
     detail::ITerm2File file;
     detail::parseITerm2Args(args, file);
     if (!file.inlineImage) {
-        constexpr std::size_t MaxDownload = 8u * 1024 * 1024;
-        if (base64.size() > ((MaxDownload + 2) / 3) * 4 || file.size > MaxDownload) return;
+        if (base64.size() > base64Length(MaxITerm2Download) || file.size > MaxITerm2Download) return;
         const auto data = base64Decode(base64, Base64Check::Strict);
         const auto name = base64Decode(file.name, Base64Check::Strict);
-        if (!data || !name || data->size() > MaxDownload || (file.size && file.size != data->size())) return;
+        if (!data || !name || data->size() > MaxITerm2Download || (file.size && file.size != data->size())) return;
         m_host.downloadFile(*name, *data);
         return;
     }
@@ -4395,6 +4565,9 @@ void Terminal::popColors(int slot)
     if (slot <= 0) {
         m_colorSlots[index].reset();
         --m_colorLevel;
+    }
+    if (m_modes.themeReports) {
+        reportTheme(false); // XTPOPCOLORS may bring back another background
     }
 }
 
@@ -4622,12 +4795,14 @@ void Terminal::oscPalette(std::string_view args, bool bel)
         if (std::from_chars(idxStr.data(), idxStr.data() + idxStr.size(), idx).ec == std::errc{} && idx >= 0
             && idx < 256) {
             if (spec == "?") {
-                if (answered++ == MaxRepliesPerSequence) {
-                    return; // one reply each, so the queries of one sequence are bounded
+                // One reply each, so the queries of one sequence are bounded.
+                // The sets after the last answered query still apply.
+                if (answered < MaxRepliesPerSequence) {
+                    ++answered;
+                    char prefix[16];
+                    const int n = std::snprintf(prefix, sizeof prefix, "4;%d;", idx);
+                    reply(formatColorReply(std::string_view(prefix, std::size_t(n)), m_palette[std::size_t(idx)], bel));
                 }
-                char prefix[16];
-                const int n = std::snprintf(prefix, sizeof prefix, "4;%d;", idx);
-                reply(formatColorReply(std::string_view(prefix, std::size_t(n)), m_palette[std::size_t(idx)], bel));
             } else if (Rgb c; parseColorSpec(spec, c)) {
                 m_palette[std::size_t(idx)] = c;
             }
@@ -4909,10 +5084,40 @@ void Terminal::setExtraCursors(const Params& p)
         return;
     }
     if (shape == 100) {
+        // As rectangles: each run of cells along a row, merged with the same
+        // run on the row above, so that a block of cursors answers in a few
+        // bytes, not a pair for each of up to MaxExtraCursors cells.
+        struct Run
+        {
+            int value, top, left, bottom, right;
+        };
+        std::vector<Run> runs;
+        std::map<std::tuple<int, int, int>, std::size_t> open; // (shape, left, right): the run that may grow down
+        for (auto it = m_extraCursors.begin(); it != m_extraCursors.end();) {
+            const auto [y, x] = it->first;
+            const int value = it->second;
+            int right = x;
+            for (++it; it != m_extraCursors.end() && it->first == std::pair(y, right + 1) && it->second == value; ++it) {
+                ++right;
+            }
+            const auto key = std::tuple(value, x, right);
+            if (const auto above = open.find(key); above != open.end() && runs[above->second].bottom == y - 1) {
+                runs[above->second].bottom = y;
+            } else {
+                open[key] = runs.size();
+                runs.push_back({value, y, x, y, right});
+            }
+        }
+        std::stable_sort(runs.begin(), runs.end(), [](const Run& a, const Run& b) { return a.value < b.value; });
         std::string response = "\x1b[>100";
-        for (const auto& [point, value] : m_extraCursors) {
-            response += ";" + std::to_string(value) + ":2:" + std::to_string(point.first + 1) + ":"
-                + std::to_string(point.second + 1);
+        for (const Run& r : runs) {
+            response += ";" + std::to_string(r.value);
+            if (r.top == r.bottom && r.left == r.right) {
+                response += ":2:" + std::to_string(r.top + 1) + ":" + std::to_string(r.left + 1);
+            } else {
+                response += ":4:" + std::to_string(r.top + 1) + ":" + std::to_string(r.left + 1) + ":"
+                    + std::to_string(r.bottom + 1) + ":" + std::to_string(r.right + 1);
+            }
         }
         reply(response + " q");
         return;

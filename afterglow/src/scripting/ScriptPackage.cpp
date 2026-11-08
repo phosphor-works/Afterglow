@@ -70,6 +70,10 @@ struct Builder
         // Watched also when it is refused: the fix loads the package again.
         out.watched << QFileInfo(absolute).absolutePath() << absolute;
         const auto canonical = QFileInfo(absolute).canonicalFilePath();
+        // And where a symlinked package points now: the watch of a path
+        // through the link stays on the old target when the link is pointed
+        // elsewhere, and its path does not change, so it is not set again.
+        if (!canonical.isEmpty() && canonical != absolute) out.watched << QFileInfo(canonical).absolutePath() << canonical;
         // Also reject symlinked parents escaping the complete package tree.
         if (!canonical.isEmpty() && !canonical.startsWith(root + QLatin1Char('/'))) {
             refuse(QStringLiteral("the path %1 escapes its root").arg(shown(relative))); return {};
@@ -80,9 +84,11 @@ struct Builder
     {
         if (!error.isEmpty()) return {};
         QByteArray contents;
+        QByteArray stamp;
         // It holds the file to its own limit.
-        error = readScriptFile(file, limit, contents, root);
+        error = readScriptFile(file, limit, contents, root, false, &stamp);
         if (!error.isEmpty()) return {};
+        out.stamps.append({file, stamp});
         bytes += contents.size();
         if (bytes > 1024 * 1024) error = QStringLiteral("Package exceeds its source limit (1 MiB)");
         return contents;
@@ -286,8 +292,12 @@ struct Builder
             const QByteArray header = "factories[" + aliases[it.key()] + "]=function(...)\nlocal require=resolver(" + mapping
                 + ") local factories, cache, loading, load, resolver\n";
             // Every name in it passed validName() or validScriptId(), and quoted() escapes
-            // any byte below 32 as well: no build can add a line to it.
-            Q_ASSERT(header.count('\n') == FactoryLines);
+            // any byte below 32 as well: no build can add a line to it. Checked in
+            // every build all the same: a line more would move every error position.
+            if (header.count('\n') != FactoryLines) {
+                error = QStringLiteral("The loader of module %1 has a line break of its own").arg(it.key());
+                return {};
+            }
             factories += header;
             lines += FactoryLines;
             // Counted in the module alone: counting the whole chunk again for
@@ -318,7 +328,9 @@ QString origin(const QList<ScriptPackage::Module>& modules, int line)
     }
     return {};
 }
-}
+
+/// Checks one command's fields (summary, usage, palette, stdin, remote) and fills
+/// @p out. Returns an error, or empty.
 QString readCommand(const QString& name, const QVariantMap& fields, ScriptCommand& out)
 {
     out = {};
@@ -329,9 +341,9 @@ QString readCommand(const QString& name, const QVariantMap& fields, ScriptComman
     for (auto it = fields.begin(); it != fields.end(); ++it) {
         const QString& key = it.key();
         const QVariant& value = it.value();
-        if (key == QLatin1String("stdin")) {
-            if (value.typeId() != QMetaType::Bool) return QStringLiteral("Command %1: stdin must be a boolean").arg(name);
-            out.input = value.toBool();
+        if (key == QLatin1String("stdin") || key == QLatin1String("remote")) {
+            if (value.typeId() != QMetaType::Bool) return QStringLiteral("Command %1: %2 must be a boolean").arg(name, key);
+            (key == QLatin1String("stdin") ? out.input : out.remote) = value.toBool();
             continue;
         }
         QString* text = key == QLatin1String("summary") ? &out.summary
@@ -351,6 +363,7 @@ QString readCommand(const QString& name, const QVariantMap& fields, ScriptComman
     if (!out.palette.isEmpty() && out.palette.trimmed().isEmpty())
         return QStringLiteral("Command %1: palette must not be blank").arg(name);
     return {};
+}
 }
 
 QString readCommands(const QVariant& table, QList<ScriptCommand>& out)
@@ -390,8 +403,14 @@ local function load(id)
     assert(not loading[id], "Module dependency cycle: " .. id)
     assert(factories[id], "Unknown module: " .. id)
     loading[id] = true
-    local ok, value = pcall(factories[id])
+    -- In a coroutine of its own, so a module's code cannot wait while it
+    -- loads: a lazy require in a handler that waited would leave loading[id]
+    -- set, and a second require would see a cycle, for good if the wait
+    -- never ended.
+    local co = coroutine.create(factories[id])
+    local ok, value = coroutine.resume(co)
     loading[id] = nil
+    if ok and coroutine.status(co) ~= "dead" then ok, value = false, "a module cannot wait while it loads" end
     if not ok then error(id .. ": " .. tostring(value), 0) end
     assert(type(value) == "table", "Module must return a table: " .. id)
     cache[id] = value
@@ -413,6 +432,14 @@ end
     result.watched.removeDuplicates();
     return {};
 }
+bool ScriptPackage::unchanged() const
+{
+    return std::all_of(stamps.cbegin(), stamps.cend(), [](const QPair<QString, QByteArray>& file) {
+        struct stat info {};
+        return ::stat(QFile::encodeName(file.first).constData(), &info) == 0 && fileStamp(info) == file.second;
+    });
+}
+
 QString ScriptPackage::locate(const QList<Module>& modules, const QString& message)
 {
     // The chunk is named after the manifest; name the module file instead.

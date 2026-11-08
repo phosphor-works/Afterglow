@@ -54,6 +54,18 @@ public:
     /// The socket of a process that runs on its own. Empty without
     /// XDG_RUNTIME_DIR.
     static QString ownPath();
+    /// Where the sockets are, as AfterglowProto::sharedSocketPath finds
+    /// them: an absolute XDG_RUNTIME_DIR, else empty (no socket, and none to
+    /// clean up).
+    static QString runtimeDirectory();
+    /// Takes the lock on @p socket's PATH.lock for another socket of this
+    /// process (the remote sessions' sockets): removeStaleSockets then
+    /// passes it by, as it does a listening InstanceSocket. The descriptor,
+    /// -1 while another process holds it, -2 when the file cannot be opened.
+    static int lock(const QString& socket);
+    /// Lets go of lock(): removes the lock file and closes @p fd. The
+    /// socket file goes first, so that no other process takes the path.
+    static void unlock(const QString& socket, int fd);
 
 private:
     std::unique_ptr<PhosphorIpc::IpcRouter> m_router;

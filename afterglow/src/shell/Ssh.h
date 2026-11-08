@@ -20,7 +20,7 @@ struct Arguments {
     int command = -1;         ///< index of the remote command's first word, -1 when there is none
     QList<int> options;       ///< indexes of the option words and their values, in order
     bool passThrough = false; ///< -G, -V, -Q or -O: ssh does not open a session
-    bool noSession = false;   ///< -N, -W or -f: no remote command runs in the foreground
+    bool noSession = false;   ///< -N, -W, -f or -s: no remote command runs in the foreground
 };
 Arguments parseArguments(const QStringList& args);
 
@@ -39,6 +39,7 @@ struct Config {
     bool remoteCommand = false;  ///< the config runs a command in place of one on the command line
     bool noSession = false;      ///< SessionType none or subsystem, or ForkAfterAuthentication: like -N, -s or -f
     bool stdinNull = false;      ///< StdinNull: like -n
+    QString requestTty;          ///< ssh -G's word for RequestTTY and -t, -T: auto, true, false or force
 };
 Config parseConfig(const QByteArray& resolved);
 
@@ -46,9 +47,30 @@ Config parseConfig(const QByteArray& resolved);
 QByteArray contextStart(const QString& id, const Config& config);
 QByteArray contextEnd(const QString& id);
 
+/// What the probe for remote commands found on the host.
+struct Probe {
+    bool ran = false;  ///< the script ran there: its first line came, whatever its exit status
+    bool aglow = false; ///< `aglow --version` ran
+    QString version;   ///< its line
+    int protocol = -1; ///< the protocol in that line, -1 when it names none
+    /// The remote directory, made with mode 0700: $XDG_RUNTIME_DIR/afterglow
+    /// when that is an absolute path, else ~/.local/state/afterglow/run/HOST
+    /// for an absolute $HOME (one for each host, as a home on NFS is shared).
+    /// Empty when there is none, or it is not UTF-8 text.
+    QString directory;
+};
+/// The probe: one sh script that reports that it ran and
+/// `aglow --version`, and with aglow there makes the remote directory and
+/// runs `aglow remote-prune` in it. It exits with 0 once it ran.
+QByteArray probeScript();
+Probe parseProbe(const QByteArray& output);
+
 /// Runs ssh with ARGS, byte for byte, and returns its exit status. When ssh
 /// dies from an interrupt, the helper dies from it too. The environment
-/// controls it: AFTERGLOW_SSH_TERMINFO is "install" (the default) or "fallback".
+/// controls it: AFTERGLOW_SSH_TERMINFO is "install" (the default) or
+/// "fallback". In a pane (AFTERGLOW_SOCKET and AFTERGLOW_PANE_ID), when the
+/// terminal allows remote commands, it probes the host and forwards a socket
+/// of the terminal there for `aglow run` (RemoteSockets).
 int run(const QByteArrayList& args);
 
 } // namespace Afterglow::Ssh

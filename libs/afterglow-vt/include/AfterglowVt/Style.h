@@ -98,11 +98,22 @@ class AFTERGLOWVT_EXPORT StyleTable
 public:
     static constexpr std::uint32_t DefaultId = 0;
     static constexpr std::uint32_t MaxId = (1u << 24) - 1;
-    /// The URI and id bytes that live links may hold together. A link
+    /// The bytes that live links may hold together (linkCost). A link
     /// without an id is a new entry every time, and a cell in scrollback
     /// keeps it alive, so without a budget a program could hold far more
     /// memory through links than through text.
     static constexpr std::size_t MaxLinkBytes = 16 * 1024 * 1024;
+    /// The fixed part of a link's cost: its entry and its lookup node. Links
+    /// with a one-byte URI then cost about as much as they hold, where
+    /// counting only the URI would let millions of them in.
+    static constexpr std::size_t LinkEntryBytes = 160;
+    /// What a link counts against MaxLinkBytes: the fixed part, its URI and
+    /// id, and the copy of both in the lookup key of a link with an id.
+    static constexpr std::size_t linkCost(std::string_view uri, std::string_view id) noexcept
+    {
+        const std::size_t text = uri.size() + id.size();
+        return LinkEntryBytes + text + (id.empty() ? 0 : text + 1);
+    }
 
     StyleTable();
 

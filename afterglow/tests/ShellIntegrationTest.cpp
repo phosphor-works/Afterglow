@@ -381,6 +381,11 @@ struct ScopedEnvironment {
         saved.emplace_back(name, qEnvironmentVariableIsSet(name) ? std::optional(qgetenv(name)) : std::nullopt);
         qputenv(name, value);
     }
+    void unset(const char* name)
+    {
+        saved.emplace_back(name, qEnvironmentVariableIsSet(name) ? std::optional(qgetenv(name)) : std::nullopt);
+        qunsetenv(name);
+    }
     ~ScopedEnvironment()
     {
         for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
@@ -416,6 +421,10 @@ struct FakeSsh {
         environment.set("TERM_PROGRAM_VERSION", "1.0");
         environment.set("TERM", "xterm-256color");
         environment.set("AFTERGLOW_SSH_TERMINFO", "install");
+        // The pane that runs the tests: its Afterglow must never get the
+        // calls of the remote commands probe.
+        environment.unset("AFTERGLOW_SOCKET");
+        environment.unset("AFTERGLOW_PANE_ID");
     }
     // The recorded runs, emptying the log.
     QStringList take()
@@ -455,6 +464,79 @@ TEST(Ssh, FindsTheDestinationPastOptionsAndTheirValues)
     EXPECT_FALSE(parseArguments({"-o", "G", "prod"}).passThrough);
     EXPECT_TRUE(parseArguments({"-fN", "prod"}).noSession);
     EXPECT_FALSE(parseArguments({"-t", "prod"}).noSession);
+}
+
+TEST(Ssh, ASubsystemRunsNoSession)
+{
+    using Afterglow::Ssh::parseArguments;
+    EXPECT_TRUE(parseArguments({"-s", "prod", "sftp"}).noSession);
+    EXPECT_TRUE(parseArguments({"-vs", "prod", "sftp"}).noSession);
+}
+
+TEST(Ssh, TheProbeRunsInAnyShellAndMakesAPrivateDirectoryForEachHost)
+{
+    using namespace Afterglow::Ssh;
+    const QByteArray script = probeScript();
+    ASSERT_TRUE(script.startsWith("sh -c '") && script.endsWith('\''));
+    // The remote login shell (fish too) reads it inside single quotes.
+    const QByteArray body = script.mid(7, script.size() - 8);
+    EXPECT_FALSE(body.contains('\''));
+    EXPECT_FALSE(body.contains('\\'));
+
+    QTemporaryDir dir(QStringLiteral("/tmp/agprobe-XXXXXX"));
+    ASSERT_TRUE(dir.isValid());
+    ASSERT_TRUE(QDir().mkpath(dir.filePath(QStringLiteral("bin"))));
+    ASSERT_TRUE(QDir().mkpath(dir.filePath(QStringLiteral("cwd"))));
+    QFile aglow(dir.filePath(QStringLiteral("bin/aglow")));
+    ASSERT_TRUE(aglow.open(QIODevice::WriteOnly));
+    // A prune that fails with 255: the probe still ran, and says so with 0.
+    aglow.write("#!/bin/sh\ncase \"$1\" in --version) echo 'aglow 1.0 (protocol 3)';; remote-prune) exit 255;; esac\n");
+    aglow.close();
+    aglow.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    QProcess uname;
+    uname.start(QStringLiteral("uname"), {QStringLiteral("-n")});
+    ASSERT_TRUE(uname.waitForFinished());
+    const QString host = QString::fromUtf8(uname.readAllStandardOutput()).trimmed();
+
+    const auto probe = [&](const QString& home, const QString& runtime, int* status = nullptr) {
+        QProcess sh;
+        QProcessEnvironment env;
+        env.insert(QStringLiteral("PATH"), dir.filePath(QStringLiteral("bin")) + QStringLiteral(":/usr/bin:/bin"));
+        env.insert(QStringLiteral("HOME"), home);
+        if (!runtime.isEmpty()) env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime);
+        sh.setProcessEnvironment(env);
+        // Of the test's own: a relative home or runtime directory must make nothing there.
+        sh.setWorkingDirectory(dir.filePath(QStringLiteral("cwd")));
+        sh.start(QStringLiteral("sh"), {QStringLiteral("-c"), QString::fromUtf8(script)});
+        EXPECT_TRUE(sh.waitForFinished());
+        if (status) *status = sh.exitCode();
+        return parseProbe(sh.readAllStandardOutput());
+    };
+    int status = -1;
+    const Probe inHome = probe(dir.filePath(QStringLiteral("home")), {}, &status);
+    EXPECT_EQ(status, 0);
+    EXPECT_TRUE(inHome.ran);
+    EXPECT_TRUE(inHome.aglow);
+    EXPECT_EQ(inHome.protocol, 3);
+    EXPECT_EQ(inHome.directory, dir.filePath(QStringLiteral("home/.local/state/afterglow/run/")) + host);
+    EXPECT_EQ(QFile::permissions(inHome.directory)
+                  & (QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup | QFileDevice::ReadOther
+                     | QFileDevice::WriteOther | QFileDevice::ExeOther),
+              QFileDevice::Permissions());
+    // The runtime directory comes first, and a relative one counts as none.
+    EXPECT_EQ(probe(dir.filePath(QStringLiteral("home")), dir.filePath(QStringLiteral("rt"))).directory,
+              dir.filePath(QStringLiteral("rt/afterglow")));
+    EXPECT_EQ(probe(dir.filePath(QStringLiteral("home")), QStringLiteral("rt")).directory, inHome.directory);
+    // Without an absolute home or runtime directory, there is none.
+    const Probe nowhere = probe(QStringLiteral("home"), {});
+    EXPECT_TRUE(nowhere.ran);
+    EXPECT_TRUE(nowhere.directory.isEmpty());
+    EXPECT_TRUE(QDir(dir.filePath(QStringLiteral("cwd"))).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden));
+
+    // A directory that is not text, or not absolute, is none.
+    EXPECT_TRUE(parseProbe("runtime=\ndir=/a\x1b" "b\n").directory.isEmpty());
+    EXPECT_TRUE(parseProbe("runtime=\ndir=a/b\n").directory.isEmpty());
+    EXPECT_FALSE(parseProbe("dir=/a\n").ran);
 }
 
 TEST(Ssh, ReadsOptionsAfterTheDestinationUpToTheCommand)
@@ -576,6 +658,22 @@ TEST(Ssh, InstallsTheTerminfoEntryOnceOrFallsBack)
     ssh.environment.set("AFTERGLOW_SSH_TERMINFO", "fallback");
     EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 7);
     EXPECT_EQ(ssh.take(), QStringList({"ARGS [prod]", "TERM=xterm-256color"}));
+}
+
+TEST(Ssh, ADashMInstallsAsNoMasterAndSharesNothing)
+{
+    // ssh -M joins no master: a master that the install made would only
+    // take the session's ControlPath.
+    FakeSsh ssh;
+    if (!ssh.compileTerminfo()) GTEST_SKIP() << "tic or infocmp not installed";
+    ssh.environment.set("TERM", "afterglow");
+    ssh.environment.set("FAKE_SETENV", "1");
+    EXPECT_EQ(Afterglow::Ssh::run({"-vM", "-p", "2222", "prod"}), 7);
+    const auto runs = ssh.take();
+    ASSERT_EQ(runs.size(), 4) << runs.join('\n').toStdString();
+    EXPECT_TRUE(runs[0].startsWith("ARGS [-o] [ControlMaster=no] [-v] [-p] [2222] [-T] [--] [prod] [sh -c ")) << runs[0].toStdString();
+    EXPECT_EQ(runs[2], "ARGS [-vM] [-p] [2222] [prod]");
+    EXPECT_EQ(runs[3], "TERM=afterglow");
 }
 
 TEST(Ssh, InstallsPastRemoteCommandWithLaterOptionsAndInput)

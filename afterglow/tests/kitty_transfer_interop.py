@@ -11,8 +11,12 @@
                              installed, or XDG_RUNTIME_DIR is not set.
 
 The relay modes check in what the client writes that the recursive transfers use zlib and the delta transfers
-rsync. In --kitty mode the bytes go between Kitty and aglow only, so that check is left out. Kitty, KWin and the
-private bus get a home and XDG directories of their own, so that they never read or write the user's.
+rsync. In --kitty mode the bytes go between Kitty and aglow only, so that check is left out.
+
+In the relay modes the client and the service get an environment of their own: a home, the XDG directories and
+XDG_RUNTIME_DIR under it, and only PATH and the locale from this script. In --kitty mode, Kitty, KWin and the
+private bus get a home and the XDG configuration, cache, data and state directories of their own. XDG_RUNTIME_DIR
+stays the user's, because KWin makes its socket there, under a name of its own.
 """
 import argparse
 import base64
@@ -37,6 +41,11 @@ from nested_desktop import KWINRC, exit_on_sigterm, run_on_private_bus  # noqa: 
 
 PACKET = re.compile(rb"\x1b\]5113;(.*?)(?:\x1b\\|\x07)", re.S)
 
+# What aglow transfer --confirm-paths writes when it waits for the answer. The question is local to the client: no
+# packet goes to the terminal for it, so only its text tells that the client takes an answer now. confirm_checks
+# also checks this text, so a changed text fails there and not as a timeout.
+CONFIRM_LIST = b"The following file transfers will be performed"
+
 
 def check(condition, *detail):
     """Raises AssertionError when condition is false. Not assert: python -O must
@@ -57,28 +66,37 @@ def read_pty(fd):
         raise
 
 
-def transfer(relay, arguments, client=("kitten", "transfer")):
+def clean_environment(home):
+    """The environment of the client and the service in the relay modes, with HOME, the XDG directories and
+    XDG_RUNTIME_DIR under HOME. Only PATH and the locale come from this script's environment: TMUX and the
+    AFTERGLOW_* variables lead to the user's terminal, and the user's configuration changes what kitten does."""
+    environment = {name: os.environ[name] for name in ("PATH", "LANG", "LC_ALL", "LC_CTYPE") if name in os.environ}
+    for name, sub in (("HOME", ""), ("XDG_CONFIG_HOME", ".config"), ("XDG_CACHE_HOME", ".cache"),
+                      ("XDG_DATA_HOME", ".local/share"), ("XDG_STATE_HOME", ".local/state"),
+                      ("XDG_RUNTIME_DIR", "runtime")):
+        path = Path(home) / sub
+        path.mkdir(parents=True, exist_ok=True)
+        environment[name] = str(path)
+    os.chmod(environment["XDG_RUNTIME_DIR"], 0o700)
+    return environment
+
+
+def transfer(relay, arguments, environment, client=("kitten", "transfer"), confirm=None, status=0):
     """Runs CLIENT ARGUMENTS in a pseudo-terminal whose OSC 5113 packets go to the service in RELAY, and its
-    replies back. Returns what the client wrote. Both directions are queued, and written only when the other side
-    can take them: a blocking write could wait for a client that waits for this script to read."""
-    helper = subprocess.Popen([relay, "--protocol-relay"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    pid, master = pty.fork()
-    if pid == 0:
-        # The child must never return into this script, even when exec fails.
-        try:
-            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 1200, 800))
-            os.environ["TERM"] = "xterm-kitty"
-            os.execvp(client[0], [*client, *arguments])
-        finally:
-            os._exit(127)
-    os.set_blocking(master, False)
-    os.set_blocking(helper.stdin.fileno(), False)
+    replies back, both in ENVIRONMENT. Returns what the client wrote. Both directions are queued, and written only
+    when the other side can take them: a blocking write could wait for a client that waits for this script to read.
+    CONFIRM is typed once the client asks to confirm its paths (--confirm-paths). The client must exit with STATUS."""
+    helper = subprocess.Popen([relay, "--protocol-relay"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              env=environment)
+    pid = None
+    master = None
+    reaped = False
     buffer = b""
     transcript = b""
     to_client = bytearray()
     to_relay = bytearray()
     client_open = True
-    reaped = False
+    confirmed = False
 
     def take_packets():
         nonlocal buffer
@@ -89,6 +107,16 @@ def transfer(relay, arguments, client=("kitten", "transfer")):
         buffer = buffer[end:]
 
     try:
+        pid, master = pty.fork()
+        if pid == 0:
+            # The child must never return into this script, even when exec fails.
+            try:
+                fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 1200, 800))
+                os.execvpe(client[0], [*client, *arguments], dict(environment, TERM="xterm-kitty"))
+            finally:
+                os._exit(127)
+        os.set_blocking(master, False)
+        os.set_blocking(helper.stdin.fileno(), False)
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             readers = [helper.stdout] + ([master] if client_open else [])
@@ -102,6 +130,9 @@ def transfer(relay, arguments, client=("kitten", "transfer")):
                     transcript += data
                     buffer += data
                     take_packets()
+                    if confirm is not None and not confirmed and CONFIRM_LIST in transcript:
+                        to_client.extend(confirm)
+                        confirmed = True
             if helper.stdout in readable:
                 data = os.read(helper.stdout.fileno(), 65536)
                 if not data:
@@ -114,10 +145,11 @@ def transfer(relay, arguments, client=("kitten", "transfer")):
                         del queue[:os.write(fd, queue)]
                     except BlockingIOError:
                         pass
-            found, status = os.waitpid(pid, os.WNOHANG)
+            found, exited = os.waitpid(pid, os.WNOHANG)
             if found:
                 reaped = True
-                check(os.waitstatus_to_exitcode(status) == 0, transcript[-4000:].decode(errors="replace"))
+                check(os.waitstatus_to_exitcode(exited) == status, os.waitstatus_to_exitcode(exited),
+                      transcript[-4000:].decode(errors="replace"))
                 # The last packets (finish) can arrive after the last read. Read to EOF.
                 while client_open:
                     data = read_pty(master)
@@ -133,13 +165,14 @@ def transfer(relay, arguments, client=("kitten", "transfer")):
                 return transcript
         raise AssertionError("The client timed out:\n" + transcript[-6000:].decode(errors="replace"))
     finally:
-        if not reaped:
+        if pid is not None and not reaped:
             try:
                 os.kill(pid, signal.SIGKILL)
                 os.waitpid(pid, 0)
             except ProcessLookupError:
                 pass
-        os.close(master)
+        if master is not None:
+            os.close(master)
         if helper.poll() is None:
             helper.kill()
             helper.wait(timeout=5)
@@ -263,6 +296,29 @@ def run_checks(run, client_bugs=False, allow_empty_bug=False):
             print(direction + ": delta transfer passed", flush=True)
 
 
+def confirm_checks(relay, client, environment):
+    """aglow transfer --confirm-paths: the list of transfers, then y goes on and n stops before any file moves."""
+    with tempfile.TemporaryDirectory(prefix="afterglow-confirm-") as temporary:
+        root = Path(temporary)
+        source = root / "source.txt"
+        source.write_bytes(b"confirmed\n")
+        for direction in ("send", "receive"):
+            for answer, status in ((b"y", 0), (b"n", 1)):
+                destination = root / f"{direction}-{answer.decode()}"
+                destination.mkdir()
+                written = transfer(relay, ["--direction=" + direction, "--confirm-paths", str(source), str(destination) + "/"],
+                                   environment, client, confirm=answer, status=status)
+                check(CONFIRM_LIST in written, written[-2000:])
+                # The list names where the file goes, on the side that gets it.
+                check(f"{source} \u2192 {destination}/source.txt".encode() in written, written[-2000:])
+                copied = destination / "source.txt"
+                if answer == b"y":
+                    check(copied.read_bytes() == b"confirmed\n")
+                else:
+                    check(not copied.exists() and not any(destination.iterdir()), list(destination.iterdir()))
+            print(direction + ": --confirm-paths passed", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--relay", help="afterglow_transfer_tests, the service as the terminal")
@@ -310,12 +366,15 @@ def main():
         print("Skipped: kitten is not installed.", flush=True)
         sys.exit(77)
     relay = str(Path(args.relay).resolve())
-    if args.aglow:
-        client = (str(Path(args.aglow).resolve()), "transfer")
-        run_checks(lambda arguments: transfer(relay, arguments, client))
-    else:
-        run_checks(lambda arguments: transfer(relay, arguments), client_bugs=True,
-                   allow_empty_bug=args.allow_client_empty_file_bug)
+    with tempfile.TemporaryDirectory(prefix="afterglow-relay-home-") as home:
+        environment = clean_environment(home)
+        if args.aglow:
+            client = (str(Path(args.aglow).resolve()), "transfer")
+            run_checks(lambda arguments: transfer(relay, arguments, environment, client))
+            confirm_checks(relay, client, environment)
+        else:
+            run_checks(lambda arguments: transfer(relay, arguments, environment), client_bugs=True,
+                       allow_empty_bug=args.allow_client_empty_file_bug)
 
 
 if __name__ == "__main__":

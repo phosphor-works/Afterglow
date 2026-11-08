@@ -48,8 +48,18 @@ constexpr std::size_t MaxWaiting = 64 * 1024 * 1024;
 constexpr std::size_t MaxSignature = 64 * 1024 * 1024;
 // One literal of a delta that the receiver buffers whole.
 constexpr std::size_t MaxLiteral = 16 * 1024 * 1024;
-// Afterglow refuses a regular file with EBUSY when 128 are open in one pane.
-// A client keeps well below it: files wait for their metadata or their request.
+// Afterglow opens the temporary file of a regular file, and its directory, at
+// the first data. A delta upload holds its old file, its temporary file and
+// that directory from the file command on: three descriptors, and its
+// signature goes out as a stream. Afterglow refuses a file with EBUSY when
+// 128 descriptors are open in one pane. A client names at most this many
+// delta uploads that have not finished: 96 descriptors, which leaves room for
+// the file whose data goes out. It names its other files at once, past a
+// delta upload that it holds back: a terminal that asks the user can list
+// those in one question. A delta upload that it names when another finishes
+// can get a question of its own. A receive has at most this many files
+// requested and not finished at a time: the terminal holds each one open
+// while it sends it, and this side its destination.
 constexpr std::size_t MaxOpenFiles = 32;
 constexpr std::size_t MaxListing = 1 << 20;
 // The memory of a listing: the names and ids, and what each entry costs here.
@@ -474,6 +484,12 @@ private:
     void finishItem(std::size_t index, std::string error);
     void releaseData(File& file);
     bool allAcked() const { return m_metadataSent == m_files.size() && m_acked == m_files.size(); }
+    // Every file that can be named now is named: the others are delta
+    // uploads that wait for room.
+    bool allNamed() const
+    {
+        return m_nextMetadata == m_files.size() && (m_heldDeltas.empty() || m_openDeltas >= MaxOpenFiles);
+    }
     bool pack(std::size_t index, std::string& out, std::size_t budget, std::size_t& work);
     std::size_t nextReady();
 
@@ -488,8 +504,14 @@ private:
     bool m_granted = false;
     bool m_transmitting = false;
     bool m_finishSent = false;
+    // Files whose metadata went out, or that need none.
     std::size_t m_metadataSent = 0;
-    std::size_t m_openRegular = 0;
+    // The next file, in order, that sendMetadata() has not looked at.
+    std::size_t m_nextMetadata = 0;
+    // Delta uploads that sendMetadata() passed while MaxOpenFiles were open, in order.
+    std::deque<std::size_t> m_heldDeltas;
+    // Delta uploads whose metadata went out and that the terminal has not finished.
+    std::size_t m_openDeltas = 0;
     std::size_t m_waiting = 0;
     std::size_t m_acked = 0;
     std::size_t m_signaturesHeld = 0;
@@ -665,8 +687,8 @@ void Sender::setPhase(std::size_t index, Phase phase)
     }
     if (phase == Phase::Acked) {
         ++m_acked;
-        if (file.metadataSent && m_items[index].type == Type::Regular) {
-            --m_openRegular;
+        if (file.metadataSent && file.deltaAsked) {
+            --m_openDeltas;
         }
     }
     file.phase = phase;
@@ -674,21 +696,31 @@ void Sender::setPhase(std::size_t index, Phase phase)
 
 void Sender::sendMetadata(std::string& out, std::size_t end)
 {
-    // Metadata goes out as the terminal finishes files, so that a large
-    // tree never holds more than MaxOpenFiles regular files open there.
-    while (m_metadataSent < m_files.size() && out.size() < end) {
-        const std::size_t i = m_metadataSent;
+    // The metadata of a delta upload goes out as the terminal finishes
+    // files, so that a large tree never holds more than MaxOpenFiles of
+    // them open there. The other files do not wait for it.
+    while (out.size() < end) {
+        std::size_t i = SIZE_MAX;
+        if (!m_heldDeltas.empty() && m_openDeltas < MaxOpenFiles) {
+            i = m_heldDeltas.front();
+            m_heldDeltas.pop_front();
+        } else if (m_nextMetadata < m_files.size()) {
+            i = m_nextMetadata++;
+        } else {
+            break;
+        }
         auto& file = m_files[i];
         const auto& item = m_items[i];
         if (file.phase == Phase::Acked) {
             ++m_metadataSent;
             continue;
         }
-        if (item.type == Type::Regular && m_openRegular >= MaxOpenFiles) {
-            break;
+        const bool rsync = m_options.deltas && file.rsyncCapable;
+        if (rsync && m_openDeltas >= MaxOpenFiles) {
+            m_heldDeltas.push_back(i);
+            continue;
         }
         ++m_metadataSent;
-        const bool rsync = m_options.deltas && file.rsyncCapable;
         const std::string mode = number(file.st.st_mode & 07777);
         const auto mtime = nanoseconds(file.st);
         const std::string modified = mtime ? number(*mtime) : std::string();
@@ -711,8 +743,8 @@ void Sender::sendMetadata(std::string& out, std::size_t end)
         file.deltaAsked = rsync;
         out += encodeTransfer(f);
         file.metadataSent = true;
-        if (item.type == Type::Regular) {
-            ++m_openRegular;
+        if (rsync) {
+            ++m_openDeltas;
         }
         setPhase(i, Phase::Waiting);
     }
@@ -998,8 +1030,8 @@ void Sender::produce(std::string& out, std::size_t budget)
     }
     if (m_options.confirmPaths && !m_transmitting) {
         // Ask once each file whose metadata went out has its answer: that is
-        // every file, or as many as the cap on open files lets out first.
-        if ((m_metadataSent == m_files.size() || m_openRegular >= MaxOpenFiles) && m_waiting == 0) {
+        // every file but the delta uploads past the cap.
+        if (allNamed() && m_waiting == 0) {
             m_state = State::Confirm;
         }
         return;

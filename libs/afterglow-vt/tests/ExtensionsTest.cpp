@@ -3,8 +3,8 @@
 
 // Extensions from other terminals and the shell world: OSC 133 extras, VS
 // Code's 633, iTerm2's 1337, systemd's 3008, OSC 52, ConEmu's 9, kitty's
-// multiple cursors and OSC 21 and 22, pixel reports, OSC 8 links, and the
-// OSC 72 and 5113 sessions handed to the host.
+// multiple cursors and OSC 21 and 22, pixel reports, OSC 8 links, the OSC 72
+// and 5113 sessions handed to the host, and aglow's OSC 24569.
 
 #include "TestUtil.h"
 #include "../src/ITerm2.h"
@@ -192,7 +192,7 @@ TEST(Extensions, LinkStringsHaveAMemoryBudget)
     StyleTable styles;
     const std::string uri(8000, 'u');
     std::vector<std::uint32_t> held;
-    for (std::size_t i = 0; i < StyleTable::MaxLinkBytes / uri.size(); ++i) {
+    for (std::size_t i = 0; i < StyleTable::MaxLinkBytes / StyleTable::linkCost(uri, {}); ++i) {
         const std::uint32_t link = styles.internLink(uri, {});
         ASSERT_NE(link, 0u);
         Style style;
@@ -203,6 +203,33 @@ TEST(Extensions, LinkStringsHaveAMemoryBudget)
     // Released links free their share.
     styles.release(held.back());
     EXPECT_NE(styles.internLink(uri, {}), 0u);
+}
+
+TEST(Extensions, TinyLinksCountTheirEntries)
+{
+    // A one-byte URI still costs an entry and a lookup node: the budget
+    // bounds how many links there are, not only their text.
+    StyleTable styles;
+    const std::size_t fits = StyleTable::MaxLinkBytes / StyleTable::linkCost("u", {});
+    std::vector<std::uint32_t> held;
+    held.reserve(fits);
+    for (std::size_t i = 0; i < fits; ++i) {
+        Style style;
+        style.link = styles.internLink("u", {});
+        ASSERT_NE(style.link, 0u);
+        held.push_back(styles.acquire(style));
+    }
+    EXPECT_EQ(styles.internLink("u", {}), 0u);
+    EXPECT_EQ(styles.liveLinks(), fits);
+    // An id link pays for its lookup key too, and gives all of it back.
+    styles.release(held.back());
+    const std::size_t before = styles.linkBytes();
+    Style style;
+    style.link = styles.internLink("u", "id");
+    ASSERT_NE(style.link, 0u);
+    EXPECT_EQ(styles.linkBytes() - before, StyleTable::linkCost("u", "id"));
+    styles.release(styles.acquire(style));
+    EXPECT_EQ(styles.linkBytes(), before);
 }
 
 TEST(Extensions, HostSessionsAreBoundedAndReset)
@@ -315,6 +342,63 @@ TEST(Extensions, ITerm2InterruptedMultipartFileLeavesNoImage)
     const Image& img = t.graphics().images().at(t.graphics().placements()[0].imageId);
     EXPECT_EQ(img.width, 4u);
     EXPECT_EQ(img.height, 2u);
+    // Cut off by a header too long to take: the earlier file ends all the same.
+    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdHVyZQ==\x07");
+    t.feed("\x1b]1337;MultipartFile=inline=1;x=" + std::string(70000, 'a') + "\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 1u);
+    // Arguments over 4096 bytes are refused, not cut to the part that fits.
+    t.feed("\x1b]1337;MultipartFile=inline=1;x=" + std::string(5000, 'a') + "\x07");
+    t.feed("\x1b]1337;FilePart=cGljdHVyZQ==\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 1u);
+    // Cut off by the end of the pane's program: nothing sends its FileEnd.
+    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdHVyZQ==\x07");
+    t.programExited();
+    t.feed("\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 1u);
+    // Not cut off by a new prompt: a job in the background (imgcat &) still
+    // sends it after its command line ends.
+    t.feed("\x1b]133;C\x07\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 2u);
+    // Over many new prompts, while parts come between them.
+    t.feed("\x1b]133;C\x07\x1b]1337;MultipartFile=inline=1\x07");
+    for (const char* part : {"cGl", "jdH", "VyZQ=="}) {
+        t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07\x1b]133;C\x07");
+        t.feed(std::string("\x1b]1337;FilePart=") + part + "\x07");
+    }
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 3u);
+    // Not cut off by the shell drawing its prompt again (a resize, Ctrl+L):
+    // after one new prompt, the prompt marks come with no command between them.
+    t.feed("\x1b]133;C\x07\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]133;A;redraw=1\x07$ \x1b]133;B\x07\x1b]633;A\x07$ \x1b]633;B\x07");
+    t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 4u);
+    // Not cut off by Enter on an empty line: bash and zsh send D before each
+    // prompt, but no C, as no command ran.
+    t.feed("\x1b]133;C\x07\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]633;D;0\x07\x1b]633;A\x07$ \x1b]633;B\x07");
+    t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 5u);
+    // Cut off by two new prompts, each after a command, with no part between:
+    // the sender was interrupted, so its data is given back and a late
+    // FileEnd does nothing.
+    t.feed("\x1b]133;C\x07\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    t.feed("\x1b]133;D;130\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 5u);
+    // A header with no part yet is cut off the same way, also by the marks of
+    // OSC 633 and by 133 N after a command.
+    t.feed("\x1b]633;C\x07\x1b]1337;MultipartFile=inline=1\x07");
+    t.feed("\x1b]633;D;1\x07\x1b]633;A\x07\x1b]633;C\x07\x1b]133;N\x07");
+    t.feed("\x1b]1337;FilePart=cGljdHVyZQ==\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 5u);
 }
 
 TEST(Extensions, ITerm2ImageSizes)
@@ -472,7 +556,7 @@ TEST(Extensions, MultipleCursorsQueryCoordinatesAndLifecycle)
     EXPECT_EQ(t.extraCursors().size(), 4u);
     host.written.clear();
     t.feed("\x1b[>100 q");
-    EXPECT_EQ(host.written, "\x1b[>100;2:2:4:9;2:2:4:10;2:2:5:9;2:2:5:10 q");
+    EXPECT_EQ(host.written, "\x1b[>100;2:4:4:9:5:10 q"); // one rectangle, not four cells
     t.feed("\x1b[5;1H\n\x1b[?25l");
     EXPECT_EQ(t.extraCursors().size(), 4u);
     // Screen coordinates: a scroll does not move them.
@@ -667,4 +751,70 @@ TEST(Extensions, SixelThroughTheTerminal)
     // Mode 1070 on: each image starts from the default palette.
     t.feed("\x1b[?1070h\x1bPq#5;2;100;0;0#5~\x1b\\\x1bPq#5~\x1b\\");
     EXPECT_EQ(pixel(0, 0), 0xFF000000u | defaultSixelPalette()[5]);
+}
+
+namespace {
+
+struct RemoteSocketHost : RecordingHost
+{
+    AfterglowProto::Remote::Answer answer;
+    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override { return answer; }
+};
+
+} // namespace
+
+TEST(Extensions, AHostWithoutRemoteCommandsDoesNotAnswerTheRemoteSocketQuery)
+{
+    RecordingHost host;
+    Terminal t(20, 5, host);
+    // Only the guard query that follows gets a reply.
+    t.feed("\x1b]24569;q=remote\x1b\\\x1b[c");
+    EXPECT_TRUE(host.written.starts_with("\x1b[?")) << host.written;
+    EXPECT_EQ(host.written.find("24569"), std::string::npos) << host.written;
+}
+
+TEST(Extensions, TheRemoteSocketQueryGetsThePathOrTheReason)
+{
+    using AfterglowProto::Remote::Error;
+    RemoteSocketHost host;
+    Terminal t(20, 5, host);
+    // A pane with no ssh session.
+    t.feed("\x1b]24569;q=remote\x1b\\");
+    EXPECT_EQ(host.written, "\x1b]24569;error=off\x1b\\");
+
+    host.written.clear();
+    host.answer = {"/run/user/1000/afterglow/0123456789abcdef.sock", Error::Off};
+    // DA1 after the query is answered after the reply, as aglow run expects.
+    t.feed("\x1b]24569;q=remote\x1b\\\x1b[c");
+    EXPECT_TRUE(host.written.starts_with("\x1b]24569;path=/run/user/1000/afterglow/0123456789abcdef.sock\x1b\\\x1b[?"))
+        << host.written;
+    EXPECT_TRUE(host.written.ends_with("c"));
+
+    for (const auto& [error, name] : {std::pair{Error::Forward, "forward"}, std::pair{Error::Version, "version"},
+                                      std::pair{Error::Length, "length"}}) {
+        host.written.clear();
+        host.answer = {{}, error};
+        t.feed("\x1b]24569;q=remote\x07");
+        EXPECT_EQ(host.written, std::string("\x1b]24569;error=") + name + "\x07");
+    }
+    // Anything else in OSC 24569 gets no reply: a reply that a program
+    // echoes is not a query.
+    host.written.clear();
+    t.feed("\x1b]24569;path=/x.sock\x1b\\\x1b]24569;q=other\x1b\\");
+    EXPECT_EQ(host.written, "");
+}
+
+TEST(Extensions, TheRemoteSocketReplyComesBeforeDa1WhenTheQueryArrivesAByteAtATime)
+{
+    // A pty read may end anywhere: the order of the replies must not depend
+    // on where.
+    RemoteSocketHost host;
+    host.answer = {"/run/user/1000/afterglow/0123456789abcdef.sock", AfterglowProto::Remote::Error::Off};
+    Terminal t(20, 5, host);
+    for (const char c : std::string_view("\x1b]24569;q=remote\x1b\\\x1b[c")) {
+        t.feed(std::string_view(&c, 1));
+    }
+    EXPECT_TRUE(host.written.starts_with("\x1b]24569;path=/run/user/1000/afterglow/0123456789abcdef.sock\x1b\\\x1b[?"))
+        << host.written;
+    EXPECT_TRUE(host.written.ends_with("c"));
 }

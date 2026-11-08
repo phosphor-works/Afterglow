@@ -67,20 +67,20 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 - Clipboard access through OSC 52 and the Kitty clipboard protocol (OSC 5522).
 - Clipboard reads ask first by default, and the prompt starts on Deny. `Terminal.clipboardWrite` allows, asks for or denies writes.
-- Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99).
-- A notification limit for each pane (`Notifications.rateLimit`, 20 in 10 seconds by default). Notices from Afterglow itself do not count. The notice at the end of a script command that has no client counts.
+- Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99), which `Notifications.enabled` turns on and off.
+- A notification limit for each pane (`Notifications.rateLimit` in `Notifications.rateWindow`, 20 in 10 seconds by default). Notices from Afterglow itself do not count, and neither do `afterglow ctl notify` and script notifications. The notice at the end of a script command that has no client counts.
 - Settings for the shortest time between two bell sounds (`Terminal.bellSoundInterval`) and between two status notifications of a pane (`Notifications.statusInterval`).
 - `Mouse.autoScrollInterval` sets the time between the rows of a selection drag that scrolls.
 - `Control.eventInterval` sets the shortest time between two control events of one kind for a pane.
 - `Terminal.pasteReadTimeout` sets how long a paste event lets a program read the clipboard.
-- Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates.
+- Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates. The approval lists the paths, and covers only the paths that it lists: the files that a program reads, or the destinations of the files that it sends. A file goes only where the approval showed, also when a link changes after it. A file that the approval did not list waits for an approval of its own, and the approved files continue meanwhile.
 - Kitty drag and drop, including remote directory data and thumbnails.
 - `Terminal.dragAnswerWait` sets how long a drag waits for the answer of a program that uses Kitty drag and drop.
 - `Terminal.dragTreeLifetime` sets how long Afterglow keeps the files of a drag from another computer after the drop.
 - Afterglow tells the source of a drag the action that the drop took (the `o` key of `t=e:x=4`). `aglow dnd` uses it to delete the files of a remote drag only when the drop was a move. A move to another application is reported as a copy, so the source keeps its files.
 - Received file transfers keep the read, write and execute bits of a mode. Afterglow drops the set-user-ID, set-group-ID and sticky bits.
 - Local file drops, quoted for the shell and sent as bracketed paste.
-- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. Its `transfer`, `dnd`, `icat` and `clipboard` commands take the options of `kitten`, with a few differences that the compatibility document lists. `aglow run` runs the commands of scripts in the Afterglow on the same computer.
+- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. Its `transfer`, `dnd`, `icat` and `clipboard` commands take the options of `kitten`, with a few differences that the compatibility document lists. `aglow run` runs the commands of scripts in the Afterglow on the same computer, or from a remote host in an `afterglow ssh` session.
 - `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard`, which run the `aglow` that is installed with Afterglow.
 - Shell completion of `aglow` for Bash, Zsh and Fish.
 - `AFTERGLOW_AGLOW_ONLY` builds `aglow` alone, for a remote host or a package of its own. This build needs no Qt and no Phosphor libraries, and it installs only `aglow`, its completions and its license notices.
@@ -99,6 +99,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Saved projects that store a window's tabs, splits, directories and launch arguments.
 - A quick terminal on a Wayland layer surface, toggled by a global shortcut. It slides from the top or bottom edge of a chosen screen.
 - Optional background blur on KWin, window transparency and a history scrollbar over the pane that fades when idle.
+- `Window.tabBarHeight` sets the height of the tab bar, and `Window.scrollbarWidth` sets the width of the scrollbar.
 
 ### Search, selection and input
 
@@ -129,6 +130,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 ### Scripting and control
 
 - Luau scripts in a sandbox with time and memory limits, which reload when they change.
+- A CPU budget for each script (`Scripts.cpuBudget`, 250 ms in each second by default). Past it, Afterglow drops the events and timer calls of the script, and delays its other calls. A script that uses its full budget in 5 seconds in a row is disabled.
 - Script packages with manifests, configuration, assets and saved state with migrations.
 - Script packages that ship their own shader packs, suggest shader settings and name pulse effects.
 - Script effects for panes, tabs, windows, shader parameters and presets, with results and tasks.
@@ -142,6 +144,11 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
 - External control through `afterglow ctl` and a control socket, with access settings and merged state events.
 - Script commands. A script or package declares each command with a summary. A usage text, a palette title and standard input are optional. A script can also change its commands at run time with `afterglow.set_commands`, which takes the same map of names as the package manifest.
+- Commands that a script marks `remote` also run from a remote host, with `aglow run` in an `afterglow ssh` session. They need `Terminal.sshRemoteCommands`, which is off by default, and `Control.enabled` and `Scripts.enabled`. `Terminal.sshIntegration` is not necessary, because you can also run `afterglow ssh` yourself.
+- `afterglow ssh` forwards a socket of Afterglow for each session over the shared ssh connection, and `aglow run` on the host finds it with OSC 24569. Before the session, `aglow remote-prune` removes the sockets of sessions that ended.
+- A `ControlPath none` or `ControlMaster no` in your SSH configuration stays as you set it. That session then gets no socket for remote commands.
+- A pane has at most 16 sessions with remote commands, and Afterglow at most 256. The socket of a session takes at most 64 connections at the same time.
+- The handler of a remote run gets `ev.source` `"remote"` and the host in `ev.remote.host`. It reads pane text only when `Control.allowRemoteReadText` is on too, which is off by default.
 - `aglow run ID COMMAND` runs a command from a shell with its arguments, output and exit status. A command that asks for standard input gets it when standard input is not a terminal. The palette, the context menu, keys and `afterglow ctl action` run commands too. The palette shows a command as `ID: TITLE`. A held key runs a command once.
 - `Scripts.commandTimeout` limits the time of a run. `Scripts.commandRunLimit` limits the runs of one script at a time, from 1 to 16. `Scripts.commandStdinLimit` and `Scripts.commandOutputLimit` limit their standard input and output, in KiB. Standard input over its limit is never cut. `aglow run` refuses the run with exit status 2, as it does for standard input that is not UTF-8 text.
 - An interrupt or `SIGTERM` cancels the run, and `aglow run` then ends by that signal. So does a closed standard output, with `SIGPIPE`. A canceled run also stops the tasks and the sleeps that it waits for.
@@ -150,7 +157,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Overlays: `afterglow.overlay` runs a program, such as fzf, over a pane and returns its exit status and its output to the script. The program takes the input focus while it runs. It can read a list on standard input, draw on the terminal and answer on standard output or in the file that `AFTERGLOW_RESULT` names. The overlay fades in and out through the `Shaders.overlayTransition` pack, Overlay Fade by default. The pack blends the pane and the program, and both have the pane's layer and pane shaders. `Animation.overlayCurve` and `Animation.overlayDuration` time the fade.
 - An overlay closes before its program exits when its pane closes or its script stops. It also closes when the command run or the `afterglow ctl` client that waits for it ends. An overlay that a control client opened also closes when `Control.enabled` goes off. The `cancel_overlay` action, Ctrl+Shift+Alt+Escape by default, closes the overlay of the focused pane. In each case, the program gets `SIGHUP`.
 - Popup overlays: the `width` and `height` options make an overlay a popup over a part of its pane. Each is a number of cells or a percentage of the pane. `position` puts the popup at one of nine positions, and `border` adds or removes its border. The pane stays visible and keeps running around the popup, darker by `Colors.popupDim`. A border in the popup border color shows the title in its top edge, in the text color. `Window.popupCorners` makes its corners rounded or square. The mouse acts in the popup only. A click on the pane around it gives that pane the focus and reaches no program.
-- `afterglow ctl overlay -- CMD` runs a program over a pane from a shell script. It uses the `overlay` call of the control socket. It prints the program's output and exits with its status. Without `Control.allowReadText`, a control client gets the exit status but not the output, and `afterglow ctl overlay` prints nothing on standard output. `-w`, `-h` or `--border` makes it a popup, at `--position`. `--no-border` removes the border of a popup.
+- `afterglow ctl overlay -- CMD` runs a program over a pane from a shell script. It uses the `overlay` call of the control socket. It sends standard input of up to 4 MiB to the program, in parts before the call. It prints the program's output and exits with its status. Without `Control.allowReadText`, a control client gets the exit status but not the output, and `afterglow ctl overlay` prints nothing on standard output. `-w`, `-h` or `--border` makes it a popup, at `--position`. `--no-border` removes the border of a popup.
 - The fzf picker example package picks a saved project or a file with fzf in a popup overlay, or with the select dialog when fzf is not installed.
 - Shell completion for Bash, Zsh and Fish, with the commands of the running scripts and the `aglow` commands of `afterglow`. The completion reads the commands from `aglow run`, which starts faster than `afterglow`. The Fish completion needs Fish 4 or later.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
@@ -187,7 +194,8 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 - Settings in `~/.config/afterglow/config.json` that reload when the file changes, and `-o` overrides for one launch.
 - With no settings file, every setting has its default. The first change of a setting creates the file, which holds only the values that differ from the defaults. Only its owner can read the file.
 - Problems in the settings file show as a notice. Examples are an unknown key, a value of the wrong type and a value that is not a color.
-- A settings file that does not parse is never replaced. The current settings stay until it is correct.
+- A settings file that does not parse is never replaced. The current settings stay until it is correct. At start, Afterglow then uses the defaults, with `Scripts.enabled` and `Control.enabled` off until the file holds a JSON object or is deleted. A file that becomes empty before that does not turn them on. An `-o` override of either key with a boolean value still sets it.
+- `--config FILE` reads another settings file. The `themes`, `shaders` and `scripts` directories beside it take the place of your own.
 - The desktop's fixed-width font and size by default, with the `calt` and `liga` features. `Font.sizeStep` sets the font size step.
 - A clean exit on `SIGTERM`, `SIGINT` and `SIGHUP` that closes the windows and the control socket. A signal that Afterglow inherited as ignored stays ignored.
 

@@ -25,6 +25,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -56,6 +57,10 @@ struct Options
     std::function<void()> prepare = {}; ///< runs in the child before Run::main
     std::string cwd = "/"; ///< Environment::cwd: empty for the working directory
     std::string program = "aglow run";
+    bool socket = true; ///< AFTERGLOW_SOCKET names the server
+    std::vector<std::pair<std::string, std::string>> variables = {}; ///< more of the environment
+    Run::TerminalQuery askTerminal = {};
+    int replyTimeoutMs = Run::ReplyTimeoutMs;
 };
 
 /// Run::main in a child process of its own, with pipes for its standard
@@ -81,11 +86,18 @@ public:
             }
             if (options.prepare) options.prepare();
             Run::Environment environment;
-            environment.env = [path](const char* name) -> const char* {
-                return std::string_view(name) == "AFTERGLOW_SOCKET" ? path.c_str() : nullptr;
+            std::vector<std::pair<std::string, std::string>> variables = options.variables;
+            if (options.socket) variables.emplace_back("AFTERGLOW_SOCKET", path);
+            environment.env = [variables](const char* name) -> const char* {
+                for (const auto& [key, value] : variables) {
+                    if (key == name) return value.c_str();
+                }
+                return nullptr;
             };
             environment.cwd = options.cwd;
             environment.program = options.program;
+            environment.askTerminal = options.askTerminal;
+            environment.replyTimeoutMs = options.replyTimeoutMs;
             int signal = 0;
             const int status = Run::main(args, environment, &signal);
             const int answer[2] = {status, signal};
@@ -206,6 +218,44 @@ std::optional<Json::Value> expect(FakeServer& server, std::string_view fn)
     auto call = server.call();
     if (!call || (*call)["fn"].toString() != fn) return std::nullopt;
     return call;
+}
+
+/// A directory of its own under /tmp, removed with its files at the end.
+class TempDir
+{
+public:
+    TempDir()
+    {
+        char pattern[] = "/tmp/aglow-run-XXXXXX";
+        if (::mkdtemp(pattern)) m_path = pattern;
+    }
+    ~TempDir()
+    {
+        std::error_code ignored;
+        if (!m_path.empty()) std::filesystem::remove_all(m_path, ignored);
+    }
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+    const std::string& path() const { return m_path; }
+
+private:
+    std::string m_path;
+};
+
+/// A terminal that answers the query with @p answer.
+Run::TerminalQuery answers(Run::TerminalAnswer answer)
+{
+    return [answer](int) { return answer; };
+}
+
+Run::TerminalAnswer reply(std::string path)
+{
+    return {Run::TerminalAnswer::Kind::Reply, {std::move(path), Remote::Error::Off}};
+}
+
+Run::TerminalAnswer replyError(Remote::Error error)
+{
+    return {Run::TerminalAnswer::Kind::Reply, {{}, error}};
 }
 
 std::string runId(const Json::Value& call)
@@ -807,4 +857,284 @@ TEST(RunClient, SaysWhyTheConnectionWasLost)
     const Outcome outcome = client.wait();
     EXPECT_EQ(outcome.status, 1);
     EXPECT_NE(outcome.err.find("lost Afterglow: the server sent a line that is not a JSON object"), std::string::npos) << outcome.err;
+}
+
+TEST(RunRemote, TheTerminalsOscPayloadIsWhatFollowsItsNumber)
+{
+    EXPECT_EQ(Remote::oscPayload("24569;path=/a.sock"), std::optional<std::string_view>("path=/a.sock"));
+    EXPECT_EQ(Remote::oscPayload("24569;"), std::optional<std::string_view>(""));
+    EXPECT_EQ(Remote::oscPayload("245690;q=remote"), std::nullopt);
+    EXPECT_EQ(Remote::oscPayload("52;c;eA=="), std::nullopt);
+}
+
+TEST(RunRemote, ASocketThatTheTerminalNamesTakesRemoteCommands)
+{
+    FakeServer server;
+    Client client(server, {}, {.socket = false, .askTerminal = answers(reply(server.path()))});
+    ASSERT_TRUE(server.accept());
+    const auto call = expect(server, "list");
+    ASSERT_TRUE(call);
+    EXPECT_EQ((*call)["target"].toString(), Remote::Target);
+    server.reply(*call, Json::Array{});
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 0);
+    // That socket lists only the commands that a script marks remote.
+    EXPECT_EQ(outcome.out, "No script has commands that run from a remote host (remote = true).\n");
+}
+
+TEST(RunRemote, ASocketWithoutTheRemoteTargetSaysSo)
+{
+    FakeServer server;
+    Client client(server, {}, {.socket = false, .askTerminal = answers(reply(server.path()))});
+    ASSERT_TRUE(server.accept());
+    const auto call = expect(server, "list");
+    ASSERT_TRUE(call);
+    server.error(*call, "NO_SUCH_TARGET", "no such target");
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.err, "aglow run: the socket " + server.path() + " has no target for remote commands: afterglow ssh did not forward it\n");
+}
+
+TEST(RunRemote, ANamedPathThatIsNoSocketOfTheUserSaysWhy)
+{
+    FakeServer server;
+    TempDir runtime;
+    ASSERT_FALSE(runtime.path().empty());
+    const std::string file = runtime.path() + "/file.sock";
+    std::ofstream(file) << "x";
+    const std::vector<std::pair<std::string, std::string>> variables{{"XDG_RUNTIME_DIR", runtime.path()}};
+    {
+        Client client(server, {}, {.socket = false, .variables = variables, .askTerminal = answers(reply(file))});
+        const Outcome outcome = client.wait();
+        EXPECT_EQ(outcome.status, 1);
+        EXPECT_EQ(outcome.err, "aglow run: cannot use the socket of this ssh session, " + file + ": it is not a socket\n");
+    }
+    {
+        // Only a path that is not there is on another host.
+        const std::string missing = runtime.path() + "/missing.sock";
+        Client client(server, {}, {.socket = false, .variables = variables, .askTerminal = answers(reply(missing))});
+        const Outcome outcome = client.wait();
+        EXPECT_EQ(outcome.status, 1);
+        EXPECT_NE(outcome.err.find(missing + ", is on another host"), std::string::npos) << outcome.err;
+    }
+}
+
+TEST(RunRemote, WithoutALocalAfterglowBothFindingsShow)
+{
+    // Neither a pane that runs no ssh session (error=off) nor tmux without
+    // passthrough tells whether this is the host of an ssh session.
+    FakeServer server;
+    TempDir runtime;
+    ASSERT_FALSE(runtime.path().empty());
+    {
+        Client client(server, {}, {.socket = false, .askTerminal = answers(replyError(Remote::Error::Off))});
+        const Outcome outcome = client.wait();
+        EXPECT_EQ(outcome.status, 1);
+        EXPECT_NE(outcome.err.find("aglow run: XDG_RUNTIME_DIR is not set, and the terminal names no socket of an ssh session"),
+                  std::string::npos)
+            << outcome.err;
+    }
+    {
+        Client client(server, {}, {.socket = false, .variables = {{"XDG_RUNTIME_DIR", runtime.path()}},
+                                   .askTerminal = answers({Run::TerminalAnswer::Kind::Passthrough, {}})});
+        const Outcome outcome = client.wait();
+        EXPECT_EQ(outcome.status, 1);
+        EXPECT_NE(outcome.err.find("aglow run: no running Afterglow on this display, and inside tmux"), std::string::npos)
+            << outcome.err;
+    }
+    {
+        // The pane's own Afterglow, which has no socket.
+        Client client(server, {}, {.socket = false, .variables = {{"AFTERGLOW_PANE_ID", "4"}},
+                                   .askTerminal = answers(replyError(Remote::Error::Off))});
+        const Outcome outcome = client.wait();
+        EXPECT_EQ(outcome.status, 1);
+        EXPECT_NE(outcome.err.find("aglow run: the Afterglow that runs this pane has no socket, and the terminal names no socket"),
+                  std::string::npos)
+            << outcome.err;
+    }
+    {
+        // A reason that only an ssh session has stands alone.
+        Client client(server, {}, {.socket = false, .variables = {{"XDG_RUNTIME_DIR", runtime.path()}},
+                                   .askTerminal = answers(replyError(Remote::Error::Forward))});
+        const Outcome outcome = client.wait();
+        EXPECT_EQ(outcome.status, 1);
+        EXPECT_EQ(outcome.err.find("aglow run: the socket of the commands has no forward"), 0u) << outcome.err;
+    }
+}
+
+TEST(RunRemote, ARunThatDidNotAskSaysHowToReachAnSshSession)
+{
+    FakeServer server;
+    TempDir runtime;
+    ASSERT_FALSE(runtime.path().empty());
+    Client client(server, {}, {.socket = false, .variables = {{"XDG_RUNTIME_DIR", runtime.path()}},
+                               .askTerminal = answers({Run::TerminalAnswer::Kind::None, {}})});
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.err.find("aglow run: no running Afterglow on this display ("), 0u) << outcome.err;
+    EXPECT_NE(outcome.err.find("only in the foreground, with standard output on the terminal. Else set AFTERGLOW_SOCKET to "
+                               "that socket\n"),
+              std::string::npos)
+        << outcome.err;
+}
+
+TEST(RunRemote, AForwardedSocketInAfterglowSocketTakesRemoteCommands)
+{
+    FakeServer server;
+    TempDir runtime;
+    ASSERT_FALSE(runtime.path().empty());
+    // TOKEN.sock, as afterglow ssh names the socket that it forwards.
+    const std::string forwarded = runtime.path() + "/0123456789abcdef.sock";
+    ASSERT_EQ(::symlink(server.path().c_str(), forwarded.c_str()), 0);
+    // The terminal is not asked: an answer would end the run.
+    Client client(server, {"far", "there"},
+                  {.socket = false, .variables = {{"AFTERGLOW_SOCKET", forwarded}, {"AFTERGLOW_PANE_ID", "12"}},
+                   .askTerminal = answers({Run::TerminalAnswer::Kind::Interrupted, {}})});
+    ASSERT_TRUE(server.accept());
+    const auto list = expect(server, "list");
+    ASSERT_TRUE(list);
+    EXPECT_EQ((*list)["target"].toString(), Remote::Target);
+    server.reply(*list, Json::Array{command("far", "there")});
+    const auto run = expect(server, "run");
+    ASSERT_TRUE(run);
+    EXPECT_EQ((*run)["target"].toString(), Remote::Target);
+    // The pane of the ssh session, not the pane ID of this host's shell.
+    EXPECT_EQ((*run)["args"].toArray()[5].toInteger(), 0);
+    server.reply(*run, Json::Object{{"exit", 3}});
+    EXPECT_EQ(client.wait().status, 3);
+}
+
+TEST(RunRemote, CompletionWaitsOnceForTheQueryTheConnectionAndTheList)
+{
+    FakeServer server;
+    const std::string path = server.path();
+    const int slow = Run::CompleteTimeoutMs * 9 / 10;
+    Client client(server, {"--complete"}, {.socket = false, .askTerminal = [path, slow](int) {
+                                               std::this_thread::sleep_for(std::chrono::milliseconds(slow));
+                                               return reply(path);
+                                           }});
+    ASSERT_TRUE(server.accept());
+    ASSERT_TRUE(expect(server, "list")); // and no answer
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_TRUE(outcome.out.empty());
+    // The list gets what the query left of the second.
+    EXPECT_LT(outcome.ms, Run::CompleteTimeoutMs * 3 / 2);
+}
+
+TEST(RunClient, ASocketWithoutTheCommandsTargetNamesBothCauses)
+{
+    // The Afterglow of $AFTERGLOW_SOCKET has commands off, or the socket is
+    // one that afterglow ssh forwarded, under a name that is not TOKEN.sock:
+    // s.sock is neither of these nor the name of an Afterglow's socket.
+    FakeServer server;
+    Client client(server, {});
+    ASSERT_TRUE(server.accept());
+    const auto call = expect(server, "list");
+    ASSERT_TRUE(call);
+    EXPECT_EQ((*call)["target"].toString(), Run::Target);
+    server.error(*call, "NO_SUCH_TARGET", "no such target");
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.err, "aglow run: the Afterglow at $AFTERGLOW_SOCKET takes no commands (Control.enabled or Scripts.enabled "
+                           "is off). A socket that afterglow ssh forwarded takes them only by its own name, DIRECTORY/TOKEN.sock\n");
+}
+
+TEST(RunClient, ThePaneSocketWithoutTheCommandsTargetHasCommandsOff)
+{
+    // The name that every pane sets: no hint on forwarded sockets.
+    FakeServer server;
+    TempDir runtime;
+    ASSERT_FALSE(runtime.path().empty());
+    const std::string pane = runtime.path() + "/afterglow-wayland-0.sock";
+    ASSERT_EQ(::symlink(server.path().c_str(), pane.c_str()), 0);
+    Client client(server, {}, {.socket = false, .variables = {{"AFTERGLOW_SOCKET", pane}}});
+    ASSERT_TRUE(server.accept());
+    const auto call = expect(server, "list");
+    ASSERT_TRUE(call);
+    server.error(*call, "NO_SUCH_TARGET", "no such target");
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.err,
+              "aglow run: the Afterglow at $AFTERGLOW_SOCKET takes no commands (Control.enabled or Scripts.enabled is off)\n");
+}
+
+TEST(RunClient, TheLocalSocketOfAnSshSessionSaysWhereItTakesCommands)
+{
+    // It holds only the target of remote runs: Control.enabled and
+    // Scripts.enabled are not the cause.
+    FakeServer server;
+    TempDir runtime;
+    ASSERT_FALSE(runtime.path().empty());
+    const std::string session = runtime.path() + "/afterglow-remote-0123456789abcdef.sock";
+    ASSERT_EQ(::symlink(server.path().c_str(), session.c_str()), 0);
+    Client client(server, {}, {.socket = false, .variables = {{"AFTERGLOW_SOCKET", session}}});
+    ASSERT_TRUE(server.accept());
+    const auto call = expect(server, "list");
+    ASSERT_TRUE(call);
+    EXPECT_EQ((*call)["target"].toString(), Run::Target);
+    server.error(*call, "NO_SUCH_TARGET", "no such target");
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.err, "aglow run: $AFTERGLOW_SOCKET is the socket of an ssh session on this computer. It takes commands "
+                           "only on the remote host, where afterglow ssh forwards it as DIRECTORY/TOKEN.sock\n");
+}
+
+TEST(RunClient, InputWaitsForASlowLinkWithoutATimeLimit)
+{
+    // A part that the socket cannot hold: its send waits for the terminal,
+    // which reads it, and then answers it, each after the wait for the
+    // commands would have ended. Over ssh, sshd takes the part at once and
+    // the terminal gets it late: only the answer is late then.
+    FakeServer server;
+    const int timeout = 300;
+    Client client(server, {"tools", "read"}, {.replyTimeoutMs = timeout});
+    ASSERT_TRUE(client.started());
+    ASSERT_TRUE(list(server, {command("tools", "read", true)}));
+    ASSERT_TRUE(client.write(std::string(Run::InputPartBytes - 16 * 1024, 'x')));
+    client.closeInput();
+    std::this_thread::sleep_for(std::chrono::milliseconds(timeout * 3));
+    const auto input = expect(server, "input");
+    ASSERT_TRUE(input);
+    std::this_thread::sleep_for(std::chrono::milliseconds(timeout * 3));
+    server.reply(*input, true);
+    const auto run = expect(server, "run");
+    ASSERT_TRUE(run);
+    server.reply(*run, Json::Object{{"exit", 0}});
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 0) << outcome.err;
+}
+
+TEST(RunRemote, ChecksTheSizeOfARunForTheTargetThatTheLookupFound)
+{
+    // A run call over the router's limit for the commands target and within
+    // it for the remote one, whose name is two bytes shorter.
+    std::vector<std::string> args{"far", "there"};
+    args.resize(2 + Run::MaxArgs - 1, std::string(Run::MaxArgLength, 'x'));
+    const auto request = [&args](const std::string& directory) {
+        Json::Array arguments(args.begin() + 2, args.end());
+        return Json::Array{std::string(32, '0'), args[0], args[1], std::move(arguments), directory, std::int64_t(0)};
+    };
+    std::size_t low = 0;
+    std::size_t high = 64 * 1024;
+    ASSERT_TRUE(IpcConnection::fits(Run::Target, "run", request("/")));
+    ASSERT_FALSE(IpcConnection::fits(Run::Target, "run", request("/" + std::string(high, 'd'))));
+    while (low + 1 < high) {
+        const std::size_t middle = (low + high) / 2;
+        (IpcConnection::fits(Run::Target, "run", request("/" + std::string(middle, 'd'))) ? low : high) = middle;
+    }
+    const std::string directory = "/" + std::string(high, 'd');
+    ASSERT_TRUE(IpcConnection::fits(Remote::Target, "run", request(directory)));
+
+    FakeServer server;
+    Client client(server, args, {.cwd = directory, .socket = false, .askTerminal = answers(reply(server.path()))});
+    ASSERT_TRUE(server.accept());
+    const auto list = expect(server, "list");
+    ASSERT_TRUE(list);
+    server.reply(*list, Json::Array{command("far", "there")});
+    const auto run = expect(server, "run");
+    ASSERT_TRUE(run);
+    server.reply(*run, Json::Object{{"exit", 0}});
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 0) << outcome.err;
 }

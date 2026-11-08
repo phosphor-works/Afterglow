@@ -7,6 +7,7 @@
 #include "Pane.h"
 #include "PaneOverlay.h"
 #include "SplitTree.h"
+#include "ShownText.h"
 #include "animation/FrameClock.h"
 #include "animation/PaneMotion.h"
 #include "app/Services.h"
@@ -62,13 +63,6 @@ class Pane;
 class ScriptHost;
 class ShaderLibrary;
 struct ScriptCommand;
-
-/// At most @p limit UTF-16 units of @p text, without splitting a surrogate pair.
-inline QString textPrefix(const QString& text, qsizetype limit)
-{
-    if (text.size() <= limit) return text;
-    return text.left(limit > 0 && text.at(limit).isLowSurrogate() ? limit - 1 : limit);
-}
 
 /// How a popup overlay looks with @p settings: the popup border colour for
 /// its border line (when @p border) with Window.popupCorners, the text
@@ -610,6 +604,15 @@ private:
     /// Scrolls a pane's view by @p rows (positive is back in history),
     /// eased when @p animate and scroll animation is on.
     void scrollPane(Pane* pane, double rows, bool animate = true);
+    /// Takes a move of @p pane's view by the terminal (output, typing) into
+    /// @p m: the easing follows it.
+    void followViewport(Pane* pane, PaneMotion& m);
+    /// Shows the rows of @p m's scroll position in @p pane, sets its pixel
+    /// shift and refreshes the snapshot. False while the pane holds its frame.
+    bool applyScroll(Pane* pane, PaneMotion& m);
+    /// Ends @p pane's scroll easing at its target now, with the snapshot of
+    /// that place, for a mode that reads the rows as drawn.
+    void settleScroll(Pane* pane);
     /// Advances a pane's motion and returns how to draw it; refreshes its
     /// snapshot. Sets @p animating when something is still moving.
     void preparePane(Pane* pane, const QRect& layoutRect, AfterglowRender::FrameBuilder::PaneParams& params,
@@ -690,7 +693,13 @@ private:
     /// The pane docks' rectangles of placePaneDocks and addPaneDocks, kept
     /// from frame to frame.
     std::vector<QRect> m_paneDockRects;
-    /// Cell under a window position, clamped to the pane's grid.
+    /// The scroll shift of @p pane's last frame (PaneMotion::scrollShift).
+    float drawnScrollShift(const Pane* pane) const;
+    /// Where window position @p pos (logical) is on @p pane's grid as the
+    /// last frame drew it, in pixels from the grid's top left corner.
+    QPointF gridPixel(Pane* pane, const QPointF& pos) const;
+    /// Cell under a window position, as the last frame drew the cells,
+    /// clamped to the pane's grid.
     QPoint cellAt(Pane* pane, const QPointF& pos) const;
     /// Cell row under @p pos without clamping; negative above, >= rows below.
     int rawRowAt(Pane* pane, const QPointF& pos) const;
@@ -770,6 +779,7 @@ private:
 
     QTimer m_blinkTimer;
     QTimer m_textBlinkTimer; ///< SGR 5 blinking, running only while some shows
+    QTimer m_holdRetry; ///< a frame again once a pane's held frame may have timed out
     bool m_textBlinkOn = true;
     /// Tells each pane whether it can be seen (mode 2033 reports).
     void updatePaneVisibility();
@@ -811,6 +821,9 @@ private:
         std::vector<UrlHint> hints;
         QString typed;
         std::uint64_t generation = 0;
+        /// Labels found on a held frame (DEC 2026, a prompt redraw), older
+        /// than the terminal: the next frame taken closes them.
+        bool held = false;
     } m_urlMode;
     std::shared_ptr<std::atomic<bool>> m_hintCancel;
     void startHints();
@@ -1000,7 +1013,13 @@ private:
         int colStart = 0;
         int colEnd = -1;
         QString url;
+        /// The version of the snapshot it was found in: output or a scroll
+        /// since moves the text under it (refreshLinkHover).
+        std::uint64_t version = 0;
     } m_hover;
+    /// Finds the link under the pointer again when @p pane's snapshot is
+    /// not the one m_hover was found in. After the pane's refreshSnapshot.
+    void refreshLinkHover(Pane* pane);
     /// The link (OSC 8 or a URL in the text) under @p pos in @p pane, if any.
     LinkHover linkAt(Pane* pane, const QPointF& pos) const;
     /// The right-click menu, at @p pos (logical pixels).
@@ -1038,6 +1057,9 @@ private:
 
     // Selection dragging.
     QPointer<Pane> m_selectionPane;
+    /// The selection's press moved to another cell: its release is no click,
+    /// even when output cleared the selection meanwhile.
+    bool m_selectionDragged = false;
     QPointF m_dragPos;
     QTimer m_autoScroll;
     int m_clickCount = 0;

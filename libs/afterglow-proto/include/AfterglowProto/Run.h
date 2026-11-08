@@ -3,11 +3,13 @@
 
 #pragma once
 
+#include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Socket.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,12 +24,15 @@ inline constexpr const char* Target = "commands";
 /// Stdin goes to the terminal in parts of at most this many bytes of JSON
 /// string, far below the router's 1 MiB request line.
 inline constexpr std::size_t InputPartBytes = 512 * 1024;
-/// The wait for an answer to list, the connection included, and to input.
-/// Cancel and ack get none that the client waits for. A run waits without
-/// end: the terminal limits it (Scripts.commandTimeout).
+/// The wait for the commands: the query to the terminal, the connection and
+/// the answer to list. Cancel and ack get no answer that the client waits
+/// for. The input and the run wait without end, as a slow ssh link can take
+/// long to carry them: the terminal limits the run (Scripts.commandTimeout),
+/// and a signal ends the wait.
 inline constexpr int ReplyTimeoutMs = 10000;
-/// The wait of --complete, for the connection and the list together: a
-/// shell's completion must not hang on an Afterglow that does not answer.
+/// The wait of --complete, for the query, the connection and the list
+/// together: a shell's completion must not hang on an Afterglow that does
+/// not answer.
 inline constexpr int CompleteTimeoutMs = 1000;
 
 /// The terminal sends the output of a connection's runs this many bytes ahead
@@ -57,6 +62,26 @@ inline constexpr int Interrupted = 130; ///< SIGINT
 inline constexpr int Terminated = 143; ///< SIGTERM
 inline constexpr int BrokenPipe = 141; ///< stdout closed (SIGPIPE)
 
+/// What the terminal answered to the query for the socket of an ssh session
+/// (OSC 24569, AfterglowProto/Remote.h).
+struct TerminalAnswer
+{
+    enum class Kind {
+        /// The terminal was not asked: standard output is not the controlling
+        /// terminal, or the client's process group is not in the foreground
+        /// there (a pipeline, a background job, no terminal at all)
+        None,
+        Other, ///< the guard came alone, or nothing in time: not an Afterglow pane
+        Reply, ///< answer holds the pane's reply
+        Passthrough, ///< inside tmux, which passes nothing on while allow-passthrough is off
+        Interrupted, ///< Ctrl+C while the client waited
+    };
+    Kind kind = Kind::None;
+    Remote::Answer answer;
+};
+/// Asks the terminal, for at most @p timeoutMs.
+using TerminalQuery = std::function<TerminalAnswer(int timeoutMs)>;
+
 /// What the client reads from its process. Tests give their own.
 struct Environment
 {
@@ -66,10 +91,19 @@ struct Environment
     int input = 0; ///< stdin goes to a command only when this is not a terminal
     int output = 1;
     int error = 2;
+    /// The wait for the commands (ReplyTimeoutMs).
+    int replyTimeoutMs = ReplyTimeoutMs;
+    /// When $AFTERGLOW_SOCKET is not set, or names no socket on this host,
+    /// the client asks the terminal for the socket of its ssh session with
+    /// this. Empty: it asks nothing (`aglow` gives its own, for /dev/tty).
+    TerminalQuery askTerminal;
 };
 
 /// Runs `aglow run` with the arguments after "run". Returns the exit
-/// status. @p signal, when given, gets the signal that ended the run: SIGINT,
+/// status. On a remote host it finds the socket that `afterglow ssh`
+/// forwarded through Environment::askTerminal, or in $AFTERGLOW_SOCKET when
+/// that names a socket of the form of Remote::socketPath(), and uses the target
+/// Remote::Target there. @p signal, when given, gets the signal that ended the run: SIGINT,
 /// SIGTERM, or SIGPIPE for a closed standard output, else 0. The caller then
 /// ends by that signal after its own cleanup, so that a shell sees it and a
 /// loop of runs stops at Ctrl+C. A SIGPIPE that came ignored is not reported.

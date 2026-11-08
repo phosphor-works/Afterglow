@@ -47,31 +47,32 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `background` | `"#1c1c1c"` |  | Default background color. |
+| `background` | `"#1c1c1c"` |  | Default background color. An empty value uses the default. |
 | `boldIsBright` | `false` |  | Use bright colors 8–15 for bold text with colors 0–7. |
 | `cursor` | `""` |  | Cursor color. An empty value uses the foreground. |
 | `cursorText` | `""` |  | Text color under a block cursor. An empty value uses the background. |
-| `divider` | `"#3a3a42"` |  | Color of the dividers between panes. An empty value uses the default. A theme replaces it. A theme without a divider color gets one a fifth of the way from its background color to its text color. |
-| `foreground` | `"#d8d8d8"` |  | Default text color. |
+| `divider` | `""` |  | Color of the dividers between panes. An empty value uses the color a fifth of the way from the background color to the text color. A theme replaces it. A theme without a divider color gets the color a fifth of the way from its background color to its text color. |
+| `foreground` | `"#d8d8d8"` |  | Default text color. An empty value uses the default. |
 | `minimumContrast` | `1` | 1–21 | Minimum contrast ratio between text and its background. Afterglow changes the color of text with less contrast. A value of 1 keeps every color. A value of 4.5 is the WCAG AA level for normal text. |
-| `palette` | `["#1c1c1c", "#cc5555", "#55cc55", "#cdcd55", "#5455cb", "#cc55cc", "#7acaca", "#cccccc", "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"]` |  | The 16 ANSI colors, from black to bright white. |
+| `palette` | `["#1c1c1c", "#cc5555", "#55cc55", "#cdcd55", "#5455cb", "#cc55cc", "#7acaca", "#cccccc", "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"]` |  | The 16 ANSI colors, from black to bright white. With fewer than 16, the others use the default. With more, Afterglow uses the first 16. An entry that is not a color uses the default. |
 | `popupBorder` | `""` |  | Color of the border around a popup overlay. An empty value uses the color halfway from the background color to the text color. A theme replaces it. A theme without a popup border color gets the color halfway from its background color to its text color. |
 | `popupDim` | `0.35` | 0–1 | Opacity of a black layer over the pane around a popup overlay. The popup and its border stay as they are. A value of 0 turns the darkening off. |
-| `searchCurrentMatch` | `"#ff8c42"` |  | Background color of the current search match. |
-| `searchMatch` | `"#e5c07b"` |  | Background color of search matches. |
-| `searchMatchText` | `"#101010"` |  | Text color of search matches. |
+| `searchCurrentMatch` | `"#ff8c42"` |  | Background color of the current search match. An empty value uses the default. |
+| `searchMatch` | `"#e5c07b"` |  | Background color of search matches. An empty value uses the default. |
+| `searchMatchText` | `"#101010"` |  | Text color of search matches. An empty value uses the default. |
 | `selectionBackground` | `""` |  | Selection background color. An empty value reverses the cell colors. |
 | `selectionForeground` | `""` |  | Selected text color. An empty value reverses the cell colors. |
-| `theme` | `""` |  | Theme name or file path. An empty value uses no theme. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A theme replaces each color that it sets, and the divider and popup border colors. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with a slash is a file path. A relative path starts at the directory of the config file. |
+| `theme` | `""` |  | Theme name or file path. An empty value uses no theme. Afterglow searches the themes directory beside the config file (~/.config/afterglow/themes), then afterglow/themes in each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A theme replaces each color that it sets, the divider and popup border colors and the visual bell intensity. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with a slash is a file path. A path can start with ~/ for the home directory. A relative path starts at the directory of the config file. |
 | `unfocusedDim` | `0.19` | 0–1 | Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off. |
-| `visualBell` | `"#ffffff"` |  | Color of the visual bell flash. A color that a program sets with OSC 21 replaces it. |
-| `visualBellIntensity` | `0.18` | 0–1 | Opacity of the visual bell flash when it starts. A value of 0 hides the flash. |
+| `visualBell` | `"#ffffff"` |  | Color of the visual bell flash. An empty value uses the default. A color that a program sets with OSC 21 replaces it. |
+| `visualBellIntensity` | `0.18` | 0–1 | Opacity of the visual bell flash when it starts. A value of 0 hides the flash. A theme that sets it replaces it. |
 
 ## Control
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `allowReadText` | `false` |  | Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands that run and the values of user variables. A script command that runs for a client, such as aglow run or afterglow run, reads pane text only when Scripts.allowReadText is on too. |
+| `allowRemoteReadText` | `false` |  | Allow a script command that runs from a remote host, with aglow run in an afterglow ssh session, to read pane text. Any process of the remote user, and the remote root user, can run such a command and read its output. Scripts.allowReadText and Control.allowReadText must be on too. While this is off, only the handler of the run writes to its output. |
 | `enabled` | `true` |  | Allow other programs, such as afterglow ctl and aglow run, to control Afterglow through its socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the socket also when this is off. |
 | `eventInterval` | `100` | 0–10000 | Shortest time in milliseconds between two events of one kind for one pane, for titles, status, context, bells and each user variable. A newer event replaces one that waits, and the bells in between become one. A value of 0 sends every event. |
 
@@ -119,7 +120,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `leader` | `""` |  | Key that Leader stands for in sequences. With an empty value, a binding that uses Leader is an error. |
 | `sequenceTimeout` | `1000` | 100–10000 | Milliseconds before Afterglow cancels an incomplete sequence. |
 | `tableTimeout` | `5000` | 100–60000 | Idle milliseconds before leaving a key table. |
-| `tables` | `{}` |  | Named action-to-key maps, activated with table:NAME. |
+| `tables` | `{}` |  | Named key tables, each a map of actions to keys as in bindings. A binding to table:NAME opens one. Its actions keep it open. The pop_key_table action leaves every open table, and so does Keybinds.tableTimeout. |
 
 ## Links
 
@@ -127,7 +128,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | --- | --- | --- | --- |
 | `detectUrls` | `true` |  | Detect plain-text URLs in addition to application-provided OSC 8 links. |
 | `modifier` | `"ctrl"` | `"ctrl"`, `"shift"`, `"alt"`, `"none"` | Modifier for link highlighting and activation. With none, a plain click opens the link. |
-| `openWith` | `""` |  | Command for opening links. Afterglow adds the URL as the last argument. An empty value uses the desktop browser. |
+| `openWith` | `""` |  | Command for opening links. Afterglow splits it into words, adds the URL as the last argument and runs it without a shell. Quotes keep spaces in one word. An empty value uses the desktop browser. |
 | `schemes` | `["http", "https", "mailto", "ftp", "file"]` |  | URL schemes that open without a prompt. Links with other schemes ask first. |
 
 ## Mouse
@@ -142,7 +143,9 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `rateLimit` | `20` | 0–1000 | Desktop notifications that the programs of one pane can show in 10 seconds. Afterglow drops the notifications over the limit. A value of 0 removes the limit. Updates of a shown notification do not count. The notifications of Afterglow itself do not count, except the notifications of script commands. |
+| `enabled` | `true` |  | Show desktop notifications that programs send with OSC 9, OSC 99 and OSC 777, and program status notifications (OSC 7501). Afterglow's own notifications show also when this is off. |
+| `rateLimit` | `20` | 0–1000 | Desktop notifications that the programs of one pane can show in Notifications.rateWindow seconds. Afterglow drops the notifications over the limit. A value of 0 removes the limit. Updates of a shown notification do not count. The notifications of Afterglow itself do not count, such as those of afterglow ctl notify and of the notify effect of scripts. The notification at the end of a script command run without a client counts against the limit of its pane. Such notifications of runs without a pane share one limit. |
+| `rateWindow` | `10` | 1–3600 | Seconds over which Notifications.rateLimit counts the notifications of one pane. |
 | `statusInterval` | `3000` | 0–600000 | Shortest time in milliseconds between two program status notifications (OSC 7501) of one pane. A value of 0 shows each one. |
 
 ## QuickTerminal
@@ -166,6 +169,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `commandRunLimit` | `16` | 1–16 | Runs of the commands of one script at the same time. A run over the limit fails, and aglow run exits with status 1. Each run that waits uses one of the 16 waiting handlers of its script. |
 | `commandStdinLimit` | `1024` | 0–4096 | Kibibytes of standard input that a script command can get from aglow run. A run with more input fails, and aglow run exits with status 2. A value of 0 refuses any input that is not empty. |
 | `commandTimeout` | `600000` | 1000–3600000 | Longest time in milliseconds that one run of a script command can take. This includes runs from a key, a menu or the palette. The time that the run waits for a task, a dialog, an overlay or a slow reader of its output counts. The wait for standard input before the run starts does not count. At the limit the run ends, and aglow run exits with status 124. A change applies to the runs that start after it. |
+| `cpuBudget` | `250` | 10–1000 | Milliseconds of handler time that one script can use in each second. Past it, Afterglow drops the script's events, and delays its results, timers, keys and command runs. Each second in which a call of the script waits counts. After 5 such seconds, each less than 3 seconds after the one before, Afterglow disables the script. Dropped events do not count. |
 | `enabled` | `true` |  | Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in each XDG data directory. The aglow run command also needs Control.enabled. |
 
 ## Shaders
@@ -177,8 +181,8 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `overlayTransition` | `"overlay-fade"` |  | Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. An empty value, or a pack that does not load, switches at once. |
 | `overview` | `"pane-deck"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off. |
 | `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as cursor-trail or bloom. Name a pack of a package as <package>.<pack>, such as my-extension.wall. |
-| `paneEffects` | `"pane-effects"` |  | Shader that animates panes as they split open and close. It draws a portal when the shell of a pane moves to another host, user or container. While the shell stays there, it draws the away frame around the pane. An empty value turns it off. |
-| `params` | `{}` |  | Parameter values for each shader reference, such as { "bloom": { "strength": 0.5 } }. |
+| `paneEffects` | `"pane-effects"` |  | Shader that animates panes as they split open and close. It draws a portal when the shell of a pane moves to another host, user or container. While the shell stays there, it draws the away frame around the pane. Animation.splits off turns these off too. An empty value turns it off. |
+| `params` | `{}` |  | Parameter values for each shader reference, such as { "bloom": { "strength": 0.5 } }. The value of each reference must be an object. |
 | `tabTransition` | `"tab-switch"` |  | Shader that animates switching tabs. An empty value switches at once. |
 | `text` | `[]` |  | Shaders run over each pane's text layer alone: glyphs, decorations and images over the text. |
 | `window` | `[]` |  | Shaders run over the whole window, across panes, after the pane shaders. |
@@ -202,14 +206,13 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `cursorBlinkInterval` | `530` | 100–5000 | Duration in milliseconds for each visible and hidden cursor phase. |
 | `cursorShape` | `"block"` | `"block"`, `"underline"`, `"bar"` | Shape of the cursor until a program sets another one with DECSCUSR. |
 | `dragAnswerWait` | `100` | 0–1000 | Milliseconds that Afterglow waits for the answer of a program that uses Kitty drag and drop. It waits when a drag over the pane shows the program new types. The window does not draw while it waits. A value of 0 does not wait. |
-| `dragTreeLifetime` | `10` | 1–1440 | Minutes that Afterglow keeps the files of a Kitty drag from another computer after the drop. A drop target such as a file manager can copy them after the drag ends. A change applies to the drops that come after it. |
-| `env` | `{}` |  | Variables added to the shell's environment, such as { "EDITOR": "nvim" }. Each value must be a string. New panes use this value. |
-| `fileTransferDeltaLimit` | `64` | 0–1048576 | Gibibytes that a Kitty delta file transfer can write when the program does not give the file size. A larger file fails with EFBIG. A value of 0 sets no limit. |
+| `dragTreeLifetime` | `10` | 1–1440 | Minutes that Afterglow keeps the files of a Kitty drag from another host after the drop. A drop target such as a file manager can copy them after the drag ends. A change applies to the drops that come after it. |
+| `env` | `{}` |  | Variables added to the shell's environment, such as { "EDITOR": "nvim" }. Each value must be a string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow ignores TERM, AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO here, which Terminal.term, Terminal.sshIntegration and Terminal.sshTerminfo set, and AFTERGLOW_PANE_ID and AFTERGLOW_SOCKET, which it always sets. New panes use this value. |
+| `fileTransferDeltaLimit` | `64` | 0–1048576 | Gibibytes that a Kitty delta or compressed file transfer can write when the program does not give the file size. A larger file fails with EFBIG. A value of 0 sets no limit. |
 | `fileTransferPassword` | `""` |  | Shared secret for Kitty file-transfer approval. An empty value always asks for approval. |
 | `graphicsFileTransfer` | `"allow"` | `"allow"`, `"deny"` | Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared memory. Images sent inline always work. |
 | `hideMouseWhileTyping` | `false` |  | Hide the pointer while typing. Pointer movement shows it again. |
 | `lastOutputLimit` | `1024` | 1–65536 | Kibibytes of the last command output that the pager gets. For longer output, the pager gets the start and a note. |
-| `notifications` | `true` |  | Show desktop notifications that programs send with OSC 9, OSC 99 and OSC 777, and program status notifications (OSC 7501). |
 | `pager` | `"less -R"` |  | Command for viewing the last command output. Afterglow splits it into words and runs it without a shell. An empty value turns the pager off. |
 | `pasteReadTimeout` | `10` | 1–600 | Seconds after a paste in which the program can read the clipboard with the password of the paste event (OSC 5522). |
 | `scrollLines` | `3` | 1–50 | Number of rows scrolled for each mouse-wheel notch. |
@@ -219,6 +222,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `shell` | `""` |  | Program that new panes run, as a name or a path. It gets no arguments. An empty value starts your login shell. |
 | `shellIntegration` | `true` |  | Integrate Bash, Zsh and Fish prompts in new panes automatically. |
 | `sshIntegration` | `true` |  | Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and the session offers COLORTERM and TERM_PROGRAM to the server. New panes use this value. |
+| `sshRemoteCommands` | `false` |  | Allow the script commands that are marked remote to run from aglow run on the hosts that afterglow ssh connects to. Every process of the remote user, and the remote root user, can then run those commands. It needs Control.enabled and Scripts.enabled. A change to on applies to the ssh sessions that start after it. A change to off closes the sockets of the running sessions. |
 | `sshTerminfo` | `"install"` | `"install"`, `"fallback"` | What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use xterm-256color there instead. New panes use this value. |
 | `term` | `"xterm-256color"` |  | Value of TERM for the programs in the panes. An empty value uses the default. New panes use this value. |
 | `textBlinkInterval` | `500` | 100–5000 | Duration in milliseconds for each visible and hidden phase of blinking text (SGR 5). |
@@ -238,10 +242,12 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `paneTitles` | `false` |  | Show pane titles in tabs with two or more panes. |
 | `popupCorners` | `"rounded"` | `"rounded"`, `"square"` | Corners of the border around a popup overlay. The rounded value curves each corner. The square value makes each corner a right angle. |
 | `scrollbar` | `"auto"` | `"auto"`, `"always"`, `"never"` | When the history scrollbar shows. The auto value shows the scrollbar while the view scrolls or the pointer is over it, then fades it out. |
-| `scrollbarHideDelay` | `1200` | 0–60000 | Milliseconds an auto scrollbar stays visible after the last scroll or after the pointer leaves. |
-| `startMode` | `"normal"` | `"normal"`, `"maximized"`, `"fullscreen"` | How new windows open. |
+| `scrollbarHideDelay` | `1200` | 0–60000 | Milliseconds an auto scrollbar stays visible after the last scroll or after the pointer leaves. A value of 0 starts the fade at once. |
+| `scrollbarWidth` | `12` | 4–48 | Width of the history scrollbar, in logical pixels. |
+| `startMode` | `"normal"` | `"normal"`, `"maximized"`, `"fullscreen"` | How new windows open. The normal value opens them at Window.initialColumns and Window.initialRows. The maximized value fills the screen beside the panels. The fullscreen value covers the whole screen. |
 | `tabBar` | `"auto"` | `"auto"`, `"always"`, `"never"` | When the tab bar shows. The auto value shows it while there are two or more tabs. |
-| `workingDirectory` | `"inherit"` |  | Starting directory for new tabs, panes and windows. Use inherit, home or a path. The inherit value, or an empty value, uses the focused pane's directory or the launcher's directory. The afterglow -d option overrides this setting. |
+| `tabBarHeight` | `30` | 20–64 | Height of the tab bar, in logical pixels. |
+| `workingDirectory` | `"inherit"` |  | Starting directory for new tabs, panes and windows. Use inherit, home or a path. The inherit value, or an empty value, uses the focused pane's directory or the launcher's directory. A path must be absolute or start with ~/. A path that is not a directory uses inherit. The afterglow -d option overrides this setting. |
 
 ## Default bindings
 

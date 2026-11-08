@@ -4,11 +4,11 @@
 #include "CommandSocket.h"
 
 #include "Control.h"
+#include "RemoteSockets.h"
 #include "../config/Settings.h"
 
 #include <AfterglowProto/Random.h>
-
-#include <PhosphorIpc/IpcProtocol.h>
+#include <AfterglowProto/Remote.h>
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -120,9 +120,12 @@ QVariantList CommandApi::list()
 {
     QVariantList out;
     for (const ScriptCommand& c : m_socket.m_scripts.commands()) {
+        // A remote host sees only the commands that declare remote.
+        if (m_socket.m_remote && !c.remote) continue;
         out.append(QVariantMap{{QStringLiteral("script"), c.script}, {QStringLiteral("command"), c.name},
                                {QStringLiteral("summary"), c.summary}, {QStringLiteral("usage"), c.usage},
-                               {QStringLiteral("palette"), c.palette}, {QStringLiteral("stdin"), c.input}});
+                               {QStringLiteral("palette"), c.palette}, {QStringLiteral("stdin"), c.input},
+                               {QStringLiteral("remote"), c.remote}});
     }
     return out;
 }
@@ -159,6 +162,11 @@ void CommandApi::run(const QString& run, const QString& script, const QString& c
     if (const auto entry = m_socket.find(connection, run); entry && entry->started) {
         sendErrorReply(QStringLiteral("run ID %1 is in use on this connection").arg(run));
         return;
+    } else if (entry && entry->hasInput && !entry->eof) {
+        // A part of the input would look whole to the command. The input
+        // stays: the client can send the rest and run again.
+        sendErrorReply(QStringLiteral("the input of run %1 has not ended").arg(run));
+        return;
     }
     QString error;
     const auto target = m_socket.pane(pane, error);
@@ -168,7 +176,8 @@ void CommandApi::run(const QString& run, const QString& script, const QString& c
     }
     // The client's own directory: a relative one would name a directory of
     // the terminal's. A '/' and not QDir::isAbsolutePath, which takes a Qt
-    // resource path (":/...") too.
+    // resource path (":/..."). On a remote host it is a directory there,
+    // which the handler gets as text.
     if (cwd.contains(QChar::Null) || (!cwd.isEmpty() && !cwd.startsWith(QLatin1Char('/')))) {
         sendErrorReply(QStringLiteral("cwd must be empty or an absolute path without NUL"));
         return;
@@ -180,8 +189,11 @@ void CommandApi::run(const QString& run, const QString& script, const QString& c
         if (!connection) sendErrorReply(QStringLiteral("a run needs a client connection"));
         return;
     }
-    m_socket.start(connection, run, {script, command, args, cwd, *target, std::nullopt, QStringLiteral("shell")}, std::move(reply),
-                   true);
+    const auto& remote = m_socket.m_remote;
+    m_socket.start(connection, run,
+                   {script, command, args, cwd, *target, std::nullopt,
+                    remote ? QStringLiteral("remote") : QStringLiteral("shell"), remote ? remote->host : QString()},
+                   std::move(reply), true);
 }
 
 void CommandApi::ack(const QString& run, double bytes)
@@ -211,24 +223,31 @@ void CommandApi::runEntry(const QString& token, const QStringList& args)
     const auto dot = token.indexOf(QLatin1Char('.'));
     // A client of the schema entry (phosphorctl) does not acknowledge.
     m_socket.start(connectionId(), QString::fromStdString(*id),
-                   {token.left(dot), token.mid(dot + 1), args, {}, *target, std::nullopt, QStringLiteral("control")},
+                   {token.left(dot), token.mid(dot + 1), args, {}, *target, std::nullopt, QStringLiteral("control"), {}},
                    std::move(reply), false);
 }
 
 CommandSocket::CommandSocket(Control& control, ScriptHost& scripts, SettingsStore& settings, PhosphorIpc::IpcRouter& router,
-                             QObject* parent)
+                             std::optional<RemoteSession> remote, std::shared_ptr<CommandBudget> budget, QObject* parent)
     : QObject(parent)
     , m_control(control)
     , m_scripts(scripts)
     , m_settings(settings)
     , m_router(router)
+    , m_remote(std::move(remote))
+    , m_budget(budget ? std::move(budget) : std::make_shared<CommandBudget>())
     , m_api(std::make_unique<CommandTarget>(*this))
 {
     auto* target = static_cast<CommandTarget*>(m_api.get());
-    target->setCommands(scripts.commands());
+    // The commands' own entries run with no client of their own. A remote
+    // host has the calls of a run (list, input, run, ack and cancel), and
+    // no SCRIPT.COMMAND entries.
+    target->setCommands(m_remote ? QList<ScriptCommand>{} : scripts.commands());
     // Queued: set_commands can change the list inside a call of this target.
-    connect(&scripts, &ScriptHost::commandsChanged, this, [this, target] { target->setCommands(m_scripts.commands()); },
-            Qt::QueuedConnection);
+    if (!m_remote) {
+        connect(&scripts, &ScriptHost::commandsChanged, this, [this, target] { target->setCommands(m_scripts.commands()); },
+                Qt::QueuedConnection);
+    }
     connect(&router, &PhosphorIpc::IpcRouter::connectionClosed, this, &CommandSocket::connectionClosed);
     connect(&settings, &SettingsStore::changed, this, &CommandSocket::applySettings);
     applySettings();
@@ -236,33 +255,38 @@ CommandSocket::CommandSocket(Control& control, ScriptHost& scripts, SettingsStor
 
 CommandSocket::~CommandSocket()
 {
-    m_router.unregisterTarget(QLatin1String(Target), m_api.get());
+    m_router.unregisterTarget(target(), m_api.get());
     dropAll(QStringLiteral("afterglow is quitting"), false);
 }
 
 void CommandSocket::applySettings()
 {
     const Settings& s = m_settings.settings();
-    const bool want = s.control.enabled && s.scripts;
+    const QString remoteOff = m_remote ? remoteCommandsOff(s) : QString();
+    const bool want = m_remote ? remoteOff.isEmpty() : s.control.enabled && s.scripts;
     if (want == m_enabled) return;
     if (want) {
-        m_enabled = m_router.registerTarget(QLatin1String(Target), m_api.get());
-        if (!m_enabled) qCWarning(lcCommands) << "another object holds the commands target";
+        m_enabled = m_router.registerTarget(target(), m_api.get());
+        if (!m_enabled) qCWarning(lcCommands) << "another object holds the" << target() << "target";
         return;
     }
-    m_router.unregisterTarget(QLatin1String(Target), m_api.get());
+    m_router.unregisterTarget(target(), m_api.get());
     m_enabled = false;
-    dropAll(QStringLiteral("commands are off in the running afterglow (Control.enabled or Scripts.enabled)"), true);
+    dropAll(m_remote ? remoteOff + QStringLiteral(" in the running afterglow")
+                     : QStringLiteral("commands are off in the running afterglow (Control.enabled or Scripts.enabled)"),
+            true);
 }
 
 void CommandSocket::dropAll(const QString& message, bool cancel)
 {
     const auto all = std::exchange(m_connections, {});
-    m_waitingInputBytes = 0;
-    m_waitingOutputBytes = 0;
     std::deque<Output> output;
     for (const Connection& connection : all) {
         for (const auto& run : connection.runs) {
+            // This socket's share of the budget, which other sockets keep using.
+            releaseInput(*run);
+            m_budget->outputBytes -= run->outputBytes;
+            run->outputBytes = 0;
             run->reply.fail(message);
             if (!cancel) continue;
             std::move(run->output.begin(), run->output.end(), std::back_inserter(output));
@@ -308,13 +332,13 @@ std::optional<CommandSocket::Refusal> CommandSocket::input(quint64 connection, c
         return Refusal{InputTooLarge, QStringLiteral("Standard input is over %1 KiB (Scripts.commandStdinLimit)").arg(limit >> 10)};
     }
     // The input that waited stays: a cancel or a closed connection gives the room back.
-    if (m_waitingInputBytes + bytes.size() > MaxWaitingInputBytes) {
+    if (m_budget->inputBytes + bytes.size() > MaxWaitingInputBytes) {
         return Refusal{nullptr, QStringLiteral("afterglow keeps at most %1 MiB of input for runs that have not started")
                                     .arg(MaxWaitingInputBytes >> 20)};
     }
     Run& run = entry ? *entry : *m_connections[connection].runs.insert(id, std::make_shared<Run>()).value();
     run.input += bytes;
-    m_waitingInputBytes += bytes.size();
+    m_budget->inputBytes += bytes.size();
     run.hasInput = true;
     run.eof = eof;
     return std::nullopt;
@@ -354,13 +378,13 @@ std::optional<CommandSocket::Refusal> CommandSocket::cancel(quint64 connection, 
 void CommandSocket::releaseInput(Run& run)
 {
     if (run.started) return;
-    m_waitingInputBytes -= run.input.size();
+    m_budget->inputBytes -= run.input.size();
     run.input.clear();
 }
 
 std::deque<CommandSocket::Output> CommandSocket::takeOutput(Run& run)
 {
-    m_waitingOutputBytes -= run.outputBytes;
+    m_budget->outputBytes -= run.outputBytes;
     run.outputBytes = 0;
     return std::exchange(run.output, {});
 }
@@ -392,7 +416,7 @@ void CommandSocket::start(quint64 connection, const QString& id, ScriptHost::Com
     if (!entry) entry = runs.insert(id, std::make_shared<Run>()).value();
     // Out of the books first, and converted once: the script gets it as it came.
     const QByteArray input = std::exchange(entry->input, {});
-    m_waitingInputBytes -= input.size();
+    m_budget->inputBytes -= input.size();
     if (entry->hasInput) request.input = QString::fromUtf8(input);
     entry->started = true;
     entry->credit = credit;
@@ -417,8 +441,11 @@ void CommandSocket::start(quint64 connection, const QString& id, ScriptHost::Com
         remove(connection, id);
         return;
     }
-    // The run can have ended inside startCommand.
+    // The run can have ended inside startCommand, and its handler can have
+    // closed the socket meanwhile (a setting that it turned off): dropAll
+    // then found no handle to cancel, and the run has no client any more.
     if (const auto run = find(connection, id)) run->handle = handle;
+    else if (!entry->exit) m_scripts.cancelCommand(handle, Cancelled);
 }
 
 bool CommandSocket::send(quint64 connection, const char* event, const QString& id, const QString& text,
@@ -448,14 +475,14 @@ bool CommandSocket::send(quint64 connection, const char* event, const QString& i
         at += size;
     }
     const qint64 bytes = qint64(parts.size()) * OutputPartBytes + text.size() * qint64(sizeof(QChar));
-    if (m_waitingOutputBytes + bytes > m_maxWaitingOutputBytes) {
+    if (m_budget->outputBytes + bytes > m_budget->maxOutputBytes) {
         // Before the reply, past the limit: the client learns why its run ends.
         const Output why{"stderr",
                          QStringLiteral("The output that waits for slow clients is over %1 MiB, afterglow's limit\n")
-                             .arg(m_maxWaitingOutputBytes >> 20),
+                             .arg(m_budget->maxOutputBytes >> 20),
                          {}};
         run->outputBytes += cost(why);
-        m_waitingOutputBytes += cost(why);
+        m_budget->outputBytes += cost(why);
         run->output.push_back(why);
         return false;
     }
@@ -465,7 +492,7 @@ bool CommandSocket::send(quint64 connection, const char* event, const QString& i
         at += size;
     }
     run->outputBytes += bytes;
-    m_waitingOutputBytes += bytes;
+    m_budget->outputBytes += bytes;
     run->output.back().sent = std::move(sent);
     // A client that has gone has its connectionClosed next, which ends the run.
     pump(connection, id);
@@ -481,21 +508,21 @@ bool CommandSocket::pump(quint64 connection, const QString& id)
         Output out = std::move(run->output.front());
         run->output.pop_front();
         run->outputBytes -= cost(out);
-        m_waitingOutputBytes -= cost(out);
+        m_budget->outputBytes -= cost(out);
         const QJsonArray args{id, out.text};
-        // The client counts the lines it reads: the same bytes.
-        if (run->credit) {
-            const qint64 line =
-                PhosphorIpc::writeLine(PhosphorIpc::buildEvent(QLatin1String(Target), QLatin1String(out.event), args)).size();
-            run->unacknowledged += line;
-            if (const auto books = m_connections.find(connection); books != m_connections.end()) books->unacknowledged += line;
-        }
+        qint64 line = 0;
         // False: the client has gone, or fell more than 16 MiB behind.
-        if (!m_router.sendEvent(connection, QLatin1String(Target), QLatin1String(out.event), args)) {
+        if (!m_router.sendEvent(connection, target(), QLatin1String(out.event), args, &line)) {
             std::deque<Output> rest = takeOutput(*run);
             if (out.sent) out.sent(false);
             dropped(rest);
             return false;
+        }
+        // The client counts the lines it reads: the same bytes. Before the
+        // callback, which can come back here and read the window.
+        if (run->credit) {
+            run->unacknowledged += line;
+            if (const auto books = m_connections.find(connection); books != m_connections.end()) books->unacknowledged += line;
         }
         if (out.sent) out.sent(true);
     }
@@ -531,6 +558,26 @@ void CommandSocket::finish(quint64 connection, const QString& id, int status)
     pump(connection, id);
 }
 
+QLatin1String CommandSocket::target() const
+{
+    return QLatin1String(m_remote ? AfterglowProto::Remote::Target : Target);
+}
+
+qint64 CommandSocket::waitingInputBytes() const
+{
+    return m_budget->inputBytes;
+}
+
+qint64 CommandSocket::waitingOutputBytes() const
+{
+    return m_budget->outputBytes;
+}
+
+void CommandSocket::setMaxWaitingOutputBytes(qint64 bytes)
+{
+    m_budget->maxOutputBytes = bytes;
+}
+
 int CommandSocket::waitingInputs() const
 {
     int count = 0;
@@ -549,6 +596,12 @@ std::optional<quint32> CommandSocket::pane(double pane, QString& error) const
 {
     if (!std::isfinite(pane) || pane != std::floor(pane) || pane < 0 || pane > double(std::numeric_limits<quint32>::max())) {
         error = QStringLiteral("a pane ID is a whole number from 0 to %1").arg(std::numeric_limits<quint32>::max());
+        return std::nullopt;
+    }
+    // A remote host reaches the pane of its ssh session only.
+    if (m_remote) {
+        if (pane == 0 || quint32(pane) == m_remote->pane) return m_remote->pane;
+        error = QStringLiteral("a run from a remote host acts on the pane of its ssh session, %1").arg(m_remote->pane);
         return std::nullopt;
     }
     if (pane == 0) return m_control.focusedPane().value_or(0);

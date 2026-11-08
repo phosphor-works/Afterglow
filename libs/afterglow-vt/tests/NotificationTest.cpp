@@ -193,6 +193,19 @@ TEST(Notification, FailedChunkDropsTheRestOfItsNotification)
     EXPECT_EQ(t.host.requests[0].title, "new");
 }
 
+TEST(Notification, AChunkOverTheLimitEndsItsNotification)
+{
+    // The rest must not show as if nothing was missing.
+    Term t;
+    t.feed("\x1b]99;i=x:d=0;start \x1b\\");
+    t.feed("\x1b]99;i=x:d=0:p=body;" + std::string(9000, 'b') + "\x1b\\");
+    t.feed("\x1b]99;i=x:p=body;tail\x1b\\");
+    EXPECT_TRUE(t.host.requests.empty());
+    t.feed("\x1b]99;i=x;new\x1b\\");
+    ASSERT_EQ(t.host.requests.size(), 1u);
+    EXPECT_EQ(t.host.requests[0].title, "new");
+}
+
 TEST(Notification, CompleteAndBadChunksDoNotEvictHalfSentOnes)
 {
     NotificationAssembler assembler;

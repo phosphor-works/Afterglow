@@ -89,12 +89,16 @@ They stop with a usage error when you give `--pane`.
 
 A terminal multiplexer such as tmux keeps the environment of the pane that started its server.
 Inside tmux, `AFTERGLOW_PANE_ID` can then name a different pane, or a pane that is closed.
-Use `--pane` inside a multiplexer, or let tmux update the variables when a client attaches:
+Use `--pane` inside a multiplexer, or let tmux update the variables when a client attaches.
+To do this, add these lines to `~/.tmux.conf`. They are tmux commands, not shell commands:
 
-```sh
+```text
 set -ga update-environment AFTERGLOW_PANE_ID
 set -ga update-environment AFTERGLOW_SOCKET
 ```
+
+tmux then gives the new values to the panes that start after the attach.
+The tmux panes that exist already keep the old values. Use `--pane` in them.
 
 ## Access settings
 
@@ -111,6 +115,7 @@ These settings are separate from [script text permissions](SCRIPTING.md#text-and
 | The value in `userVarChanged` | Empty, also for a value that waited while the setting changed. |
 | The result of an `overlay` call | Has no `stdout`, also when the setting changed while the program ran. `exit_code` and `truncated` are sent. `afterglow ctl overlay` writes nothing to standard output. |
 | Titles in `listPanes` and `titleChanged` | Sent. A shell can put the running command in the title. |
+| The `cwd` and `context` fields of `listPanes`, the text of `statusChanged` and the context of `contextChanged` | Sent. Programs set them with escape sequences, as they set titles. |
 | `read_text`, `read_region` and `semantic_regions` in a script command that `aglow run` or a `SCRIPT.COMMAND` call started | Fail with an error. The output of the command would take the text to the client. They also need `Scripts.allowReadText`. |
 
 These settings do not apply to accessibility clients.
@@ -120,6 +125,7 @@ See [terminal text](DESKTOP.md#terminal-text).
 Each subscriber then gets an `error` line with the subscription's `id` and the code `NO_SUCH_TARGET`.
 The `run` calls that wait fail.
 The overlays that control clients opened close, and their `overlay` calls fail with the code `cancelled`.
+The sockets of the ssh sessions for [remote commands](#remote-commands) close, and their runs fail.
 The socket stays open with the `launch` target, because later launches of Afterglow use it.
 Any program of the same user can call `launch.newWindow`, and that window can run a command.
 
@@ -242,6 +248,11 @@ Another number fails with `CALL_FAILED`.
 | `openProject` | name, new instance | An object: the window and its panes |
 | `scriptDiagnostics` | None | Script and package diagnostics |
 | `overlay` | pane, argv, options | An object: `exit_code`, `stdout` and `truncated`. See [overlays](#overlays). |
+| `overlayInput` | input name, text, end | `true`. Standard input for an `overlay` of the connection, in parts. See [overlays](#overlays). |
+| `remoteCommandsEnabled` | None | `true` when `afterglow ssh` can forward a socket for [remote commands](#remote-commands) |
+| `openRemoteSocket` | pane, process, host, directory, protocol, ssh options, destination | An object: `token`, `socket` and `path`, or `token` and `error`. See [remote commands](#remote-commands). |
+| `remoteSocketForwarded` | token | None. `ssh -O forward` added the forward. Fails when the socket has closed. See [remote commands](#remote-commands). |
+| `remoteSocketFailed` | token, reason | None. The reason is `forward`. |
 
 A command is an array of strings. An empty array runs the shell.
 A working directory must be absolute, `~`, or start with `~/`, and the directory must exist.
@@ -285,7 +296,8 @@ A value that breaks a rule of [SCRIPTING.md](SCRIPTING.md#overlays) is a usage e
 Afterglow checks that the `--cwd` directory exists. When it does not, `afterglow ctl` exits with status 1.
 
 Without `-n`, standard input goes to the program when it is not a terminal.
-The input goes in the request, so it is at most 768 KiB. For a longer list, use a script.
+The input can be up to 4 MiB of UTF-8, the limit of an overlay.
+`afterglow ctl` sends it in parts with `overlayInput`, before the `overlay` call.
 `afterglow ctl` reads standard input before it connects. It refuses input that is not UTF-8 text.
 When standard input is a terminal, the program reads the pane.
 
@@ -308,6 +320,12 @@ The `overlay` call takes the pane (0 for the focused pane), the argv list and an
 | `width`, `height` | a JSON integer of cells, or a string such as `"80%"` |
 | `position` | string |
 | `border` | boolean |
+
+In place of `stdin`, the option `input` names standard input that came before the call in `overlayInput` calls.
+Give the parts in order, and `true` as the end with the last part.
+The name is 1 to 64 letters, digits, `_` and `-`, and belongs to the connection.
+The `overlay` call takes the input, also when it fails, for example for a pane ID that is not a whole number. An input that has not ended fails the call.
+Afterglow drops the inputs of a connection when it closes, and all the inputs when `Control.enabled` goes off.
 
 The `overlay` call answers when the program exits: the reply comes later, and other calls on the connection get their replies meanwhile.
 An argv list or an option that breaks a rule fails the call with `CALL_FAILED`, and no program starts.
@@ -342,7 +360,7 @@ Other failures have their own error codes:
 | Event | Arguments |
 | --- | --- |
 | `paneCreated` | pane |
-| `paneMoved` | pane. Sent when the pane moves to another split, tab or window. Also sent for each pane of a tab that moves in its window. |
+| `paneMoved` | pane. Sent when the pane moves to another split, tab or window. Also sent for each pane of a tab that moves in its window, and of each tab that the move puts at another index. |
 | `paneClosed` | pane |
 | `titleChanged` | pane, title |
 | `bell` | pane |
@@ -377,14 +395,14 @@ See [commands](SCRIPTING.md#commands) for the script side.
 
 ### aglow run
 
-```sh
-aglow run                                             # list the commands
-aglow run --help                                      # the usage
-aglow run ID --help                                   # the commands of one script
-aglow run [-n] [--pane N] [--] ID COMMAND [ARGS...]   # run a command
-aglow run --complete [ID]                             # the names for shell completion
-aglow run --complete --all                            # all the commands for shell completion
-```
+| Command | Result |
+| --- | --- |
+| `aglow run` | Lists the commands |
+| `aglow run --help` | Shows the usage |
+| `aglow run ID --help` | Lists the commands of one script |
+| `aglow run [-n] [--pane N] [--] ID COMMAND [ARGS...]` | Runs a command |
+| `aglow run --complete [ID]` | Prints the names for shell completion |
+| `aglow run --complete --all` | Prints all the commands for shell completion |
 
 | Option | Effect |
 | --- | --- |
@@ -396,6 +414,10 @@ The words after `COMMAND` go to the command, options too.
 The command acts on the pane of `--pane N`, else on the pane in `AFTERGLOW_PANE_ID`, else on the focused pane.
 When no pane has the focus, the command runs with no pane.
 `aglow run` finds its Afterglow and uses `AFTERGLOW_PANE_ID` as `afterglow ctl` does (see [which process and pane](#which-process-and-pane)).
+When `AFTERGLOW_SOCKET` is not set, or names no socket of yours on this computer, `aglow run` first asks the terminal for the socket of an ssh session.
+It asks only when standard output is its terminal and it runs in the foreground of that terminal.
+It waits at most 2 seconds for the answer.
+See [remote commands](#remote-commands).
 
 `aglow run` reads standard input only for a command with `stdin`, and only when standard input is not a terminal.
 Thus a command that you type at a prompt does not wait for input.
@@ -406,11 +428,16 @@ Before it reads standard input, `aglow run` checks that the script and the comma
 It sends standard input before the run.
 Afterglow checks the pane and the directory only after the input ends.
 Thus a run with a wrong `--pane` reads all its standard input before it fails.
+`aglow run` waits for the answers to its standard input and for the run without a time limit, because a slow ssh link can take long to carry them.
+`Ctrl+C` ends the wait, and so does a connection that closes.
+Over ssh, a link that stops with no close ends the wait only when ssh finds the link dead.
+ssh finds it at its keepalives (`ServerAliveInterval` in `ssh_config`), or after the TCP keepalive time of the system.
+For a run that no person watches, set a time limit with `timeout(1)`, for example `timeout 60 aglow run tools build`.
 
 | Exit status | Cause |
 | --- | --- |
 | 0 to 255 | The exit status of the command. |
-| 1 | An error, for example no Afterglow, commands that are off or a pane that does not exist. A failed handler, a run over a limit and a working directory that is not UTF-8 also give status 1. |
+| 1 | An error, for example no Afterglow, commands that are off or a pane that does not exist. Also no list of commands in 10 seconds, for the query to the terminal, the connection and the list together. A failed handler, a run over a limit and a working directory that is not UTF-8 also give status 1. |
 | 2 | A usage error, or a script or command that does not exist. Arguments that do not fit in one request of 1 MiB also give status 2. So do more than 256 arguments, and an argument over 4096 UTF-16 units or not in UTF-8. Standard input that is not UTF-8 text or is over `Scripts.commandStdinLimit` also gives status 2. |
 | 124 | The run took longer than `Scripts.commandTimeout`. |
 | 126 | Only `afterglow run`: the `aglow` next to `afterglow` cannot run. |
@@ -435,8 +462,10 @@ When `aglow run` got `SIGPIPE` as ignored, a closed standard output ends it with
 The lines come in the order of the list of commands.
 The output leaves out a script or command whose name has a character other than a letter, a digit, `_` and `-`.
 A summary shows `?` in place of each control character, such as a C0, C1 or bidirectional control.
-`aglow run --complete` waits at most 1 second for Afterglow, for the connection and the list together.
+`aglow run --complete` waits at most 1 second for Afterglow, for the query to the terminal, the connection and the list together.
 It prints no error message.
+A shell's completion reads the output through a pipe, so `aglow run --complete` does not ask the terminal there.
+On a remote host, set `AFTERGLOW_SOCKET` to the socket of the ssh session to complete the remote commands.
 
 | Exit status | Cause |
 | --- | --- |
@@ -457,7 +486,7 @@ The Fish completions need Fish 4 or later.
 
 | Call | Arguments | Result |
 | --- | --- | --- |
-| `list` | None | The commands: objects with `script`, `command`, `summary`, `usage`, `palette` and `stdin`. |
+| `list` | None | The commands: objects with `script`, `command`, `summary`, `usage`, `palette`, `stdin` and `remote`. |
 | `input` | run, text, end | `true`. Send the standard input before `run`, in parts. Input over `Scripts.commandStdinLimit` fails with `INPUT_TOO_LARGE`. |
 | `run` | run, script, command, arguments, directory, pane | `{"exit": STATUS}` when the run ends and its output has gone. A pane of 0 is the focused pane. The directory is absolute, or empty for the pane's directory. |
 | `ack` | run, bytes | None. The client wrote these bytes of the run's event lines. Afterglow accepts no more than the run sent. See [flow control](#flow-control). |
@@ -484,6 +513,7 @@ A `run` with an ID that a running run of the connection uses fails.
 The standard input is complete before the handler starts, because the handler gets it as one string.
 Afterglow keeps the input of a run ID until `run` starts the run, `cancel` drops it, or the connection closes.
 A `run` that fails before the run starts keeps the input. Examples are a pane that does not exist and a directory that is not absolute.
+A `run` whose input has not ended also fails and keeps the input, because the command would take a part for all of it.
 The client can then send `run` again with the same run ID, or call `cancel`.
 A `run` that cannot start the command drops the input, for example for a command that does not exist or a script at its `Scripts.commandRunLimit`.
 Afterglow does not cut the input, because a command could not tell that it got only a part.
@@ -495,10 +525,158 @@ A command without `stdin` gets no input, also when the client sent some.
 
 Afterglow keeps the input as UTF-8.
 All the input that waits for `run`, of all connections together, has a limit of 64 MiB.
+The connections of the sockets of the ssh sessions count toward the same limit.
+Thus a remote host can fill it, and an `input` from this computer then fails until that input goes.
 An `input` over that limit fails, and the input that waits stays.
 
 When a connection closes, Afterglow cancels its runs and drops its input.
 `Control.enabled=false` or `Scripts.enabled=false` removes the target, and the `run` calls that wait fail.
+
+### Remote commands
+
+A command that a script marks `remote` can also run from a remote host.
+Run `aglow run` there, in a session of `afterglow ssh`.
+The run acts on the pane of the ssh session, and its `ev.source` is `remote`.
+The handler still gets all the panes in `ev.terminal`, and its effects can act on any pane, as for a local run.
+`Terminal.sshRemoteCommands` is off by default.
+With it on, every process of the remote user, and the remote root user, can run the commands that are marked `remote`.
+
+Remote commands need all of these:
+
+- `Terminal.sshRemoteCommands`, `Control.enabled` and `Scripts.enabled`. `Terminal.sshIntegration` does not count: you can also run `afterglow ssh` yourself.
+- `AFTERGLOW_SOCKET` and `AFTERGLOW_PANE_ID` in the environment of `afterglow ssh`, as a pane of Afterglow sets them. `afterglow ssh` calls that socket for the pane.
+- A terminal on the remote host: no remote command on the ssh command line, or `-t`.
+- A shared ssh connection. `afterglow ssh` makes one in `XDG_RUNTIME_DIR`, or uses the `ControlPath` of your SSH configuration. `XDG_RUNTIME_DIR` must be an absolute path of letters, digits, `/`, `.`, `_` and `-`, which ssh reads as a path and nothing more. Afterglow does not check that only you can enter it: keep it private, as systemd makes it.
+- No `ControlPath none` and no `ControlMaster no`, on the command line or in your SSH configuration. Afterglow keeps that choice and forwards no socket for the session.
+- With your own `ControlPath` and a `ControlMaster` other than `auto` or `autoask`: a master that runs already.
+- With `-M` on the command line: your own `ControlPath`, and a master that runs already on it. `-M` sets `ControlMaster yes`, and ssh with `-M` does not join a master. The forward goes on the master that runs, and the session authenticates on its own. A master that `afterglow ssh` made would hold the forward with no session, and end after its `ControlPersist`.
+- No tmux around `afterglow ssh` on this computer. In tmux, `AFTERGLOW_PANE_ID` can name another pane.
+- `aglow` on the remote host, with the protocol of this Afterglow. `aglow --version` shows the protocol.
+- `aglow` on the `PATH` that the login shell of the remote user gets without a terminal. The probe below runs there.
+- `AllowStreamLocalForwarding` on the ssh server. Its default is `yes`.
+
+When one of these is missing, `afterglow ssh` forwards no socket and prints nothing, with two exceptions.
+With `-v`, `afterglow ssh` prints why it forwards no socket. Without `AFTERGLOW_SOCKET` or `AFTERGLOW_PANE_ID`, it prints nothing, also with `-v`.
+When the remote `aglow` has another protocol, `afterglow ssh` prints one line on standard error.
+It prints that line once for each host and version, and records them in `$XDG_STATE_HOME/afterglow/ssh-remote`, by default under `~/.local/state`.
+The file holds only hashes, at most 512. To see the line again, delete the file.
+
+Before the session starts, `afterglow ssh` runs one probe over the shared connection:
+
+1. The probe reports that it runs on the remote host.
+2. The probe runs `aglow --version`.
+3. When `aglow` is there, the probe makes the remote directory with mode 0700.
+4. The probe runs `aglow remote-prune` in that directory.
+
+The probe runs in the login shell of the ssh server, so `aglow` must be on the `PATH` that the shell gets without a terminal.
+A probe that ran is not a failure of ssh, whatever the exit status of `aglow remote-prune`.
+
+`aglow remote-prune DIR` removes the sockets in `DIR` whose names end with `.sock`, that belong to you and that no process holds.
+The ssh server leaves the socket of a session that ended, and the next probe removes it.
+On Linux, a socket that `/proc/net/unix` lists stays, also one that the ssh server has bound and does not listen on yet.
+Elsewhere, and for a socket that the list does not name, only a refused connection tells that the socket is dead.
+Files that are not sockets, have another name or belong to another user stay.
+
+| Remote directory | When |
+| --- | --- |
+| `$XDG_RUNTIME_DIR/afterglow` | `XDG_RUNTIME_DIR` is an absolute path on the remote host |
+| `~/.local/state/afterglow/run/HOST` | Else, when `HOME` is an absolute path. `HOST` is the output of `uname -n`. Many hosts can share a home on NFS, and a socket is live only on its own host |
+| None | Else. Afterglow forwards no socket |
+
+The socket on the remote host is `DIRECTORY/TOKEN.sock`. The token is 16 hexadecimal characters.
+When this path is longer than 103 bytes, Afterglow adds no forward.
+On the BSDs and macOS, a socket path holds 104 bytes with the NUL at its end.
+Afterglow listens on `$XDG_RUNTIME_DIR/afterglow-remote-TOKEN.sock`, with mode 0600, and holds the lock file `afterglow-remote-TOKEN.sock.lock`.
+`afterglow ssh` then runs `ssh -F none -S CONTROLPATH -O forward -R REMOTE:LOCAL` on the shared connection.
+`CONTROLPATH` is the expanded `ControlPath`. Without your configuration and your command line, the command adds and cancels no other forward.
+The session itself never gets `-R`.
+The pane gives the path to `aglow run` only after the forward is there.
+A remote directory with `:` or `\`, or a local runtime directory with one, gets no socket, because ssh splits `-R` at `:`.
+
+The local socket closes when the `afterglow ssh` process ends, when its pane closes or when a setting turns remote commands off.
+Its runs end. Each client gets the reply to its run, an error that gives the reason, and then the connection closes.
+Afterglow gives each connection 5 seconds to take what waits for it. A client that does not read loses what does not fit in its socket, and the connection closes.
+Afterglow then runs `ssh -O cancel` with the same options and the same `-R` value.
+When the forward comes after the socket closed, `afterglow ssh` cancels it itself.
+When the shared connection has already gone, there is nothing to cancel.
+A pane has at most 16 sessions, and Afterglow at most 256.
+The socket of a session takes connections from every process of the remote user, at most 64 at the same time.
+Each `aglow run` uses one connection. Afterglow closes a connection over the limit before it reads a request, and logs a warning.
+`aglow run` then fails with a message that starts with `lost Afterglow`.
+
+The socket has one target, `remote`.
+It has the calls `list`, `input`, `run`, `ack` and `cancel` of [the commands target](#the-commands-target), and the same events.
+`list` and `run` know only the commands that are marked `remote`. A `run` of another command fails with `NO_SUCH_COMMAND`.
+A `run` acts on the pane of the ssh session. A pane of 0 is that pane, and another pane fails.
+The directory of a `run` is a directory on the remote host. The handler gets it as text.
+The socket has no `control` target and no `SCRIPT.COMMAND` calls.
+
+`aglow run` asks the terminal for the socket with [OSC 24569](COMPATIBILITY.md#remote-commands-osc-24569).
+It asks only when standard output is its terminal and its process group is in the foreground of that terminal.
+When its output goes into a pipeline, such as `aglow run ID COMMAND | less`, another program can read the terminal and take the answer.
+A background job would stop when it changes the modes of the terminal.
+In these cases, and without a terminal, `aglow run` asks nothing.
+A program that writes into `aglow run` through a pipe and reads the terminal can still take the answer.
+When it then finds no Afterglow, its message tells how to reach one.
+Set `AFTERGLOW_SOCKET` to the socket of the ssh session, `DIRECTORY/TOKEN.sock`.
+`aglow run` uses a socket with such a name as the socket of an ssh session, with the target `remote`.
+
+While `aglow run` waits for the answer, the terminal does not echo and does not edit lines.
+The wait ends at the answer to the guard query, or after 2 seconds.
+Inside tmux, `aglow run` first asks tmux for `allow-passthrough`, in the first half of the wait. When tmux answers later, `aglow run` does not ask the terminal.
+`aglow run` reads all the input up to the answer. Keys that you type before the answer are lost, also keys that you typed before `aglow run` started.
+Without the answer, `aglow run` also discards the input and output of the terminal that wait. Thus a late answer does not go to the shell.
+`Ctrl+C`, `Ctrl+Z`, `Ctrl+\` and other signals act after `aglow run` restores the modes of the terminal.
+`Ctrl+C` ends the wait at the answer to the guard query. Then `aglow run` ends by `SIGINT`.
+
+When the terminal gives a path of a socket of yours on this computer, `aglow run` uses that socket.
+Else it uses the socket of an Afterglow on this computer, when there is one.
+When there is none, `aglow run` exits with status 1.
+Its message on standard error starts with `aglow run: `, or `afterglow run: ` for `afterglow run`. One of these texts follows.
+`PATH` is the path that the terminal gave.
+
+| Text in the message | Cause |
+| --- | --- |
+| `the terminal names no socket of an ssh session` | A requirement above is missing, or the pane runs no ssh session. The text comes after the reason why there is no Afterglow on this computer |
+| `the socket of the commands has no forward` | The server has `AllowStreamLocalForwarding no`. Or Afterglow did not confirm the forward in 2 seconds, and `afterglow ssh` cancelled it. `afterglow ssh -v` tells which |
+| `this aglow speaks another protocol than the Afterglow of this ssh session` | The `aglow` on the remote host and Afterglow have different protocols |
+| `the path of the socket on this host would be over 103 bytes` | The remote directory is too long |
+| `the socket of this ssh session, PATH, is on another host` | `aglow run` runs on a host after a second ssh hop |
+| `cannot use the socket of this ssh session, PATH` | The path is not a socket, or the socket belongs to another user |
+| `inside tmux, aglow cannot ask the terminal for the socket of an ssh session` | `aglow run` runs in tmux, and `allow-passthrough` is off. Run `tmux set -g allow-passthrough on`. The text comes after the reason why there is no Afterglow on this computer |
+
+When `aglow run` has a socket of an ssh session and cannot use it, it also exits with status 1:
+
+| Text in the message | Cause |
+| --- | --- |
+| `the socket PATH has no target for remote commands` | The path is a socket, but not one that `afterglow ssh` forwarded |
+| `the socket of this ssh session does not answer` | The forward is there, but the shared ssh connection behind it has gone |
+
+On the socket of an ssh session, `aglow run` with no arguments lists only the commands that are marked `remote`.
+
+`afterglow ssh` uses these calls of the `control` target:
+
+| Call | Use |
+| --- | --- |
+| `remoteCommandsEnabled` | Before the probe: whether the settings allow remote commands |
+| `openRemoteSocket` | After the probe. The table below gives the arguments. The result has `token`, `socket` and `path`. With another protocol or a path over 103 bytes, it has `token` and `error` (`version` or `length`), and no socket. |
+| `remoteSocketForwarded` | `ssh -O forward` added the forward. The pane answers with the path. The call fails when the socket has closed, and `afterglow ssh` then cancels the forward |
+| `remoteSocketFailed` | `ssh -O forward` failed, or `afterglow ssh` cancelled the forward because `remoteSocketForwarded` got no answer in 2 seconds. Afterglow closes the socket, and the pane answers `error=forward` |
+
+These are the arguments of `openRemoteSocket`, in their order:
+
+| Argument | Value | The call fails when |
+| --- | --- | --- |
+| pane | The pane of the ssh session | The pane does not exist, or it has 16 sessions |
+| process | The process ID of `afterglow ssh`. The socket closes when this process ends | It is not a whole number from 1, or the process does not run |
+| host | The host name for `ev.remote.host` | It is empty, has more than 255 UTF-16 units or has a control character |
+| directory | The remote directory | It is not an absolute path, or it has `:`, `\` or a control character |
+| protocol | The protocol of the remote `aglow` | It is not a whole number, or it is larger than 10^9 or smaller than -10^9. Another protocol gives the `error` `version` |
+| ssh options | The options for `ssh -O cancel`: `-F none -S CONTROLPATH` | There are more than 256 |
+| destination | The ssh destination | It is empty, or it starts with `-` |
+
+The call also fails when Afterglow has 256 sessions, when `XDG_RUNTIME_DIR` is not set, or when the local socket path would be over 107 bytes.
+`afterglow ssh` then forwards no socket.
 
 ### Cancel
 
@@ -538,6 +716,7 @@ A slow client with many runs on one connection can still go past 16 MiB, and the
 An `ack` for a run that has ended fails, and the client can ignore that error.
 
 All the output that waits for clients, of all runs together, has a limit of 256 MiB in memory.
+The runs of the sockets of the ssh sessions count toward the same limit, so a slow remote client can fill it for the local runs too.
 A run whose output would go past it ends with exit status 1, and its standard error tells why.
 
 A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its client does not send `ack`.
@@ -547,6 +726,10 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Item | Limit | At the limit |
 | --- | --- | --- |
 | Socket path | 107 bytes | Afterglow cannot listen on a longer path. It logs a warning and runs with no socket, as without `XDG_RUNTIME_DIR`. `afterglow ctl` and `aglow run` stop with exit status 1. |
+| Socket path of an ssh session on the remote host, `DIRECTORY/TOKEN.sock` | 103 bytes | Afterglow forwards no socket for the session. The pane answers `error=length`. |
+| Socket path of an ssh session on this computer | 107 bytes. The name `/afterglow-remote-TOKEN.sock` adds 39 bytes, so `XDG_RUNTIME_DIR` can have at most 68 | `openRemoteSocket` fails, and `afterglow ssh` forwards no socket. |
+| Sessions of remote commands | 16 for each pane, 256 in Afterglow | `openRemoteSocket` fails, and `afterglow ssh` forwards no socket. |
+| Connections to the socket of one ssh session | 64 at the same time | Afterglow closes the new connection before it reads a request, and logs a warning once until a connection closes. `aglow run` fails with exit status 1. |
 | Request line | 1 MiB | The socket closes the connection. `afterglow ctl send-text` sends long text in parts. |
 | `afterglow ctl send-text` text | 32 MiB of UTF-8 | `afterglow ctl` exits with status 2 and sends nothing. It checks the text before it connects. |
 | Text that a program has not read | 32 MiB for each pane | `sendText` fails. Parts that `afterglow ctl send-text` sent before stay typed. |
@@ -554,13 +737,13 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Waiting output to one client | 16 MiB | The socket closes the connection to a client that does not read its events. |
 | Subscriptions on one connection | 256 | The subscription fails with `MALFORMED_REQUEST`. A second subscription to the same event also fails. |
 | `afterglow ctl` reply time | 10 seconds | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. `afterglow ctl overlay` waits for the program without a limit. |
-| `afterglow ctl overlay` standard input | 768 KiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |
-| `afterglow ctl overlay` command | 64 arguments of at most 4096 UTF-16 units each | `afterglow ctl` exits with status 2 before it connects. |
+| `afterglow ctl overlay` standard input | 4 MiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |
+| One part of `overlayInput` from `afterglow ctl` | 512 KiB, written as a JSON string | `afterglow ctl` cuts the input there. JSON writes most C0 control characters, such as U+0001, as 6 bytes, and a part with them holds fewer bytes of input. |
+| Inputs of `overlayInput` that wait for `overlay` | 4 for each connection, 64 MiB for all connections | The `overlayInput` call fails. At the limit of 64 MiB, the parts that came before stay and wait. They go when `overlay` takes them, the connection closes or `Control.enabled` goes off. An input over 4 MiB fails, and Afterglow drops it. |
 | `afterglow ctl overlay --title` | 512 UTF-16 units | `afterglow ctl` exits with status 2 before it connects. |
-| `afterglow ctl overlay` request | 1 MiB | `afterglow ctl` exits with status 1 and opens nothing. JSON writes most C0 control characters, such as U+0001, as 6 bytes. Thus input below 768 KiB with many control characters can make a request over 1 MiB. |
 | `stdin` of the `overlay` call | The request line of 1 MiB | The socket closes the connection. |
 | `stdout` of an overlay's result | 1 MiB of UTF-8 | The text is cut, and `truncated` is true. |
-| `aglow run` reply time for `list` and `input` | 10 seconds | `aglow run` stops with exit status 1. The time to connect counts toward the time of `list`. It does not wait for the reply of `cancel` or `ack`. It waits for the end of a run without a limit. |
+| `aglow run` time to get the list of commands | 10 seconds | `aglow run` stops with exit status 1. The query to the terminal, the connection and `list` share this time. `aglow run` waits for the replies of `input` and for the end of a run without a limit. It does not wait for the reply of `cancel` or `ack`. |
 | `input` part that `aglow run` sends | 512 KiB of JSON string | `aglow run` sends longer input in parts. |
 | Runs whose input waits for `run`, on one connection | 16 | `input` fails. |
 | Input that waits for `run`, in all connections | 64 MiB of UTF-8 | `input` fails. |
@@ -617,7 +800,7 @@ It is that value also when it starts with `-`, but not when it is `--`.
 | --- | --- |
 | 0 | The command succeeded. `afterglow ctl --help` also exits with status 0. |
 | 1 | An error, for example no Afterglow, a call that failed or no reply in 10 seconds. |
-| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option that takes a value, given two times, is a usage error too. So is an `overlay` option or command that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 768 KiB or not UTF-8 text. `afterglow ctl` checks the text before it connects. |
+| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option that takes a value, given two times, is a usage error too. So is an `overlay` option or command that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 4 MiB or not UTF-8 text. `afterglow ctl` checks the text before it connects. |
 | 0 to 255 from `overlay` | `afterglow ctl overlay` exits with the exit status of its program. Thus a status of 1 or 2 can come from the program. A failed or cancelled overlay gives 1. So does an exit status outside 0 to 255. |
 
 `afterglow ctl watch` prints events until the connection or a subscription ends.

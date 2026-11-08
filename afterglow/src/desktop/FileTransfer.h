@@ -19,7 +19,28 @@ public:
     explicit FileTransfer(QObject* parent = nullptr);
     ~FileTransfer() override;
     void handle(const QByteArray& command);
+    /// The answer to permissionRequested. A Yes approves the paths that it
+    /// gave, and no others.
     void approve(const QString& token, bool allowed);
+    /// The prompt of a permission request from @p asker: the question, with
+    /// the first paths, a count of the others and a count of the paths that
+    /// the answer does not cover, and the detail, with every path that
+    /// permissionRequested gives. @p othersRefused tells whether the paths
+    /// that the answer does not cover are refused or get a question of their
+    /// own. For a write, it also tells that the files that come while the
+    /// question shows are refused, also when it lists every file.
+    struct Question {
+        QString text;
+        QString detail;
+    };
+    static Question question(bool writing, const QStringList& paths, int total, bool othersRefused,
+        const QString& asker = { });
+    /// Ends the pause after a wrong password at once, in every pane. A test
+    /// calls it, so that its pause does not reach the tests after it.
+    static void endPasswordPause();
+    /// Paths that the question shows in its text, and the characters of each.
+    static constexpr int QuestionPaths = 10;
+    static constexpr int QuestionLength = 160;
     void reset();
     void abort();
     void setPassword(const QString& password);
@@ -39,10 +60,22 @@ Q_SIGNALS:
     /// cancel drops is not waited for.
     void answering();
     void answered();
-    /// @p paths holds at most the first 100 of the @p total requested paths,
-    /// for display: control characters, line separators, bidirectional
-    /// controls and backslashes in them are written as \uXXXX.
-    void permissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
+    /// @p paths holds at most the first 100 of the @p total paths that wait,
+    /// for display: control characters, line separators, invisible format
+    /// characters and backslashes in them are written as \uXXXX (\UXXXXXXXX
+    /// above U+FFFF). A path that links lead elsewhere has a second line
+    /// that names where. For a read, the files that the program asks for, a
+    /// directory with a slash: the program reads all of it. For a write, the
+    /// destinations of the files that the program named: a send session asks
+    /// once every command that reached the GUI thread before its first
+    /// waiting file has reached handle() and the worker. The files wait
+    /// until the answer. The paths stay as they are: what comes later waits
+    /// for a request of its own, unless @p othersRefused, and a Yes approves
+    /// only @p paths.
+    /// @p othersRefused: the answer refuses the files that @p paths does not
+    /// hold, with no other request for them. That is always so for a read,
+    /// and for a write in the request that opens in the cooldown after a No.
+    void permissionRequested(const QString& token, bool writing, const QStringList& paths, int total, bool othersRefused);
 
 private:
     struct Worker;

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "SavedEnvironment.h"
 #include "app/InstanceSocket.h"
 #include "config/Settings.h"
 #include "control/Control.h"
@@ -28,7 +29,10 @@
 #include <algorithm>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -40,27 +44,7 @@ using namespace Afterglow;
 
 namespace {
 
-/// An environment variable as it was, put back at the end.
-struct Saved
-{
-    explicit Saved(const char* name)
-        : name(name)
-        , wasSet(qEnvironmentVariableIsSet(name))
-        , value(qgetenv(name))
-    {
-    }
-    ~Saved()
-    {
-        if (wasSet) {
-            qputenv(name, value);
-        } else {
-            qunsetenv(name);
-        }
-    }
-    const char* name;
-    bool wasSet;
-    QByteArray value;
-};
+using Test::Saved;
 
 class ControlSocketTest : public ::testing::Test
 {
@@ -74,6 +58,9 @@ protected:
         m_runtime = m_dir.filePath(QStringLiteral("runtime"));
         ASSERT_TRUE(QDir().mkpath(m_runtime));
         qputenv("XDG_RUNTIME_DIR", m_runtime.toUtf8());
+        // The session that runs the tests may run in a pane of the user's Afterglow.
+        qunsetenv("AFTERGLOW_SOCKET");
+        qunsetenv("AFTERGLOW_PANE_ID");
     }
 
     void TearDown() override
@@ -100,6 +87,13 @@ protected:
     QString socketPath() const { return m_runtime + QStringLiteral("/afterglow-test.sock"); }
 
     QTimer* dueTimer() const { return m_socket->findChild<QTimer*>(QStringLiteral("eventIntervalTimer")); }
+    /// Whether the timer of the merged events runs. A failure when there is none.
+    bool dueTimerActive() const
+    {
+        const QTimer* timer = dueTimer();
+        EXPECT_NE(timer, nullptr) << "no eventIntervalTimer";
+        return timer && timer->isActive();
+    }
 
     /// The server runs on this thread: wait with its event loop running.
     static bool waitFor(const std::function<bool()>& done, int timeoutMs = 3000)
@@ -179,6 +173,8 @@ protected:
     Saved m_dataHome{"XDG_DATA_HOME"};
     Saved m_runtimeDir{"XDG_RUNTIME_DIR"};
     Saved m_display{"WAYLAND_DISPLAY"};
+    Saved m_socketVar{"AFTERGLOW_SOCKET"};
+    Saved m_paneVar{"AFTERGLOW_PANE_ID"};
     QTemporaryDir m_dir;
     QString m_runtime;
     std::unique_ptr<SettingsStore> m_settings;
@@ -295,6 +291,127 @@ TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
                         QJsonObject{{QStringLiteral("width"), 60}, {QStringLiteral("height"), QStringLiteral("60%")},
                                     {QStringLiteral("position"), QStringLiteral("top-right")}, {QStringLiteral("border"), false}}})
                     .contains(QLatin1Char('7')));
+}
+
+TEST_F(ControlSocketTest, OverlayInputComesInPartsAndBelongsToItsConnection)
+{
+    ASSERT_TRUE(start());
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    const auto error = [](const QJsonObject& frame) {
+        EXPECT_EQ(frame.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+        return frame.value(QStringLiteral("message")).toString();
+    };
+    const auto overlay = [&](const QString& input) {
+        return call(client, QStringLiteral("overlay"),
+                    {7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("input"), input}}});
+    };
+    // Parts in order, the last with the end: past the input, the call fails
+    // only for the pane, which does not exist here.
+    const QString part(512 * 1024, QLatin1Char('x'));
+    for (int i = 0; i < 4; ++i)
+        EXPECT_TRUE(call(client, QStringLiteral("overlayInput"), {QStringLiteral("list"), part, false})
+                        .value(QStringLiteral("result")).toBool());
+    EXPECT_TRUE(call(client, QStringLiteral("overlayInput"), {QStringLiteral("list"), part, true}).value(QStringLiteral("result")).toBool());
+    EXPECT_EQ(overlay(QStringLiteral("list")).value(QStringLiteral("code")).toString(), QStringLiteral("no_pane"));
+    // The call took it, whatever it decided.
+    EXPECT_EQ(error(overlay(QStringLiteral("list"))), QStringLiteral("no complete input list on this connection"));
+    const auto accepted = [&](QLocalSocket& on, const QString& name, const QString& chunk, bool eof) {
+        return call(on, QStringLiteral("overlayInput"), {name, chunk, eof}).value(QStringLiteral("result")) == QJsonValue(true);
+    };
+    // An input that has not ended is not complete, and goes with the call too.
+    ASSERT_TRUE(accepted(client, QStringLiteral("open"), QStringLiteral("a"), false));
+    EXPECT_EQ(error(overlay(QStringLiteral("open"))), QStringLiteral("no complete input open on this connection"));
+    // Nothing comes after the end.
+    ASSERT_TRUE(accepted(client, QStringLiteral("done"), QStringLiteral("a"), true));
+    EXPECT_EQ(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("done"), QStringLiteral("b"), true})),
+              QStringLiteral("the input done has ended"));
+    // stdin and input exclude each other.
+    EXPECT_EQ(error(call(client, QStringLiteral("overlay"),
+                         {7, QJsonArray{QStringLiteral("fzf")},
+                          QJsonObject{{QStringLiteral("input"), QStringLiteral("done")}, {QStringLiteral("stdin"), QStringLiteral("x")}}})),
+              QStringLiteral("the overlay options stdin and input exclude each other"));
+    // The overlay's limit, 4 MiB: one byte more drops the input.
+    const QString limit(int(OverlaySpec::MaxInput), QLatin1Char('y'));
+    for (qsizetype at = 0; at < limit.size(); at += part.size())
+        EXPECT_TRUE(call(client, QStringLiteral("overlayInput"), {QStringLiteral("big"), limit.mid(at, part.size()), false})
+                        .value(QStringLiteral("result")).toBool());
+    EXPECT_EQ(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("big"), QStringLiteral("z"), true})),
+              QStringLiteral("the overlay's stdin is over 4 MiB"));
+    EXPECT_EQ(error(overlay(QStringLiteral("big"))), QStringLiteral("no complete input big on this connection"));
+    // A bad name, and at most four inputs that wait on one connection.
+    EXPECT_FALSE(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("a b"), QString(), true})).isEmpty());
+    static_assert(ControlApi::MaxWaitingInputs == 4);
+    for (int i = 1; i <= ControlApi::MaxWaitingInputs; ++i) ASSERT_TRUE(accepted(client, QStringLiteral("w%1").arg(i), QStringLiteral("a"), true)) << i;
+    EXPECT_EQ(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("w5"), QStringLiteral("a"), true})),
+              QStringLiteral("4 inputs wait for their overlay already"));
+    // Another connection has inputs of its own: it does not see these.
+    QLocalSocket other;
+    ASSERT_TRUE(connect(other));
+    const QJsonObject elsewhere = call(other, QStringLiteral("overlay"),
+                                       {7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("input"), QStringLiteral("w1")}}});
+    EXPECT_EQ(error(elsewhere), QStringLiteral("no complete input w1 on this connection"));
+}
+
+TEST_F(ControlSocketTest, AnOverlayTakesItsInputForABadPaneAndControlOffDropsTheInputs)
+{
+    ASSERT_TRUE(start());
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    const auto input = [&](const QString& name) {
+        return call(client, QStringLiteral("overlayInput"), {name, QStringLiteral("a"), true}).value(QStringLiteral("result")).toBool();
+    };
+    const auto overlay = [&](double pane, const QString& name) {
+        return call(client, QStringLiteral("overlay"), {pane, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("input"), name}}})
+            .value(QStringLiteral("message"))
+            .toString();
+    };
+    ASSERT_TRUE(input(QStringLiteral("bad")));
+    EXPECT_TRUE(overlay(-1, QStringLiteral("bad")).startsWith(QLatin1String("a pane ID is"))) << qPrintable(overlay(-1, QStringLiteral("bad")));
+    EXPECT_EQ(overlay(7, QStringLiteral("bad")), QStringLiteral("no complete input bad on this connection"));
+
+    // No overlay call can take an input while control is off: it goes.
+    ASSERT_TRUE(input(QStringLiteral("off")));
+    m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), false);
+    m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true);
+    ASSERT_TRUE(m_socket->enabled());
+    EXPECT_EQ(overlay(7, QStringLiteral("off")), QStringLiteral("no complete input off on this connection"));
+}
+
+TEST_F(ControlSocketTest, WaitingOverlayInputHasACapForAllConnectionsThatAClosedConnectionGivesBack)
+{
+    ASSERT_TRUE(start());
+    // Full connections, each with the most inputs at the overlay's limit.
+    static_assert(ControlApi::MaxWaitingInputBytes == 4 * ControlApi::MaxWaitingInputs * OverlaySpec::MaxInput);
+    const QString part(512 * 1024, QLatin1Char('x'));
+    std::vector<std::unique_ptr<QLocalSocket>> full;
+    for (int c = 0; c < 4; ++c) {
+        full.push_back(std::make_unique<QLocalSocket>());
+        ASSERT_TRUE(connect(*full.back()));
+        for (int i = 0; i < ControlApi::MaxWaitingInputs; ++i) {
+            for (qsizetype at = 0; at < OverlaySpec::MaxInput; at += part.size()) {
+                const bool last = at + part.size() >= OverlaySpec::MaxInput;
+                ASSERT_EQ(call(*full.back(), QStringLiteral("overlayInput"), {QStringLiteral("i%1").arg(i), part, last})
+                              .value(QStringLiteral("result")),
+                          QJsonValue(true))
+                    << c << " " << i << " " << at;
+            }
+        }
+    }
+    // The cap holds for a connection with none of its own.
+    QLocalSocket late;
+    ASSERT_TRUE(connect(late));
+    const QJsonObject refused = call(late, QStringLiteral("overlayInput"), {QStringLiteral("one"), QStringLiteral("a"), true});
+    EXPECT_EQ(refused.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+    EXPECT_EQ(refused.value(QStringLiteral("message")).toString(),
+              QStringLiteral("afterglow keeps at most 64 MiB of input for overlays that have not started"));
+    // A connection that closes gives its bytes back.
+    full.front()->disconnectFromServer();
+    ASSERT_TRUE(waitFor([&] { return full.front()->state() == QLocalSocket::UnconnectedState; }));
+    EXPECT_TRUE(waitFor([&] {
+        return call(late, QStringLiteral("overlayInput"), {QStringLiteral("one"), QStringLiteral("a"), true}).value(QStringLiteral("result"))
+            == QJsonValue(true);
+    }));
 }
 
 /// Runs @p work on a thread of its own while this thread's event loop
@@ -421,9 +538,20 @@ TEST_F(ControlSocketTest, FollowsControlEnabled)
     EXPECT_EQ(off.value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_TARGET"));
 
     // Back on, the old subscription stays ended: no event without a new one.
-    m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true);
+    // An event of it would come before the reply to the next request, and
+    // the new subscription gets the next title alone.
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true));
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("eventInterval"), 0));
     Q_EMIT m_control->titleChanged(1, QStringLiteral("after"));
-    EXPECT_TRUE(events(client, 0, 100).isEmpty());
+    ASSERT_TRUE(subscribe(client, QStringLiteral("titleChanged")));
+    const qint64 renewed = m_id;
+    Q_EMIT m_control->titleChanged(1, QStringLiteral("again"));
+    const auto event = next(client);
+    ASSERT_TRUE(event.has_value());
+    EXPECT_EQ(event->value(QStringLiteral("subscriptionId")).toInteger(), renewed);
+    EXPECT_EQ(event->value(QStringLiteral("args")).toArray(), (QJsonArray{1, QStringLiteral("again")}));
+    // And the old one does not hear that title either.
+    EXPECT_EQ(call(client, QStringLiteral("listPanes")).value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
 }
 
 TEST_F(ControlSocketTest, OneProcessListensOnAPath)
@@ -481,14 +609,23 @@ TEST_F(ControlSocketTest, AHeldLockKeepsAStaleSocketFromTheNextLaunch)
     // file there still refuses connections: another launch must neither
     // take the path nor remove the file.
     ASSERT_TRUE(makeStaleSocket(socketPath()));
-    const int held = ::open(QFile::encodeName(socketPath() + QStringLiteral(".lock")).constData(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    ASSERT_GE(held, 0);
-    ASSERT_EQ(::flock(held, LOCK_EX | LOCK_NB), 0);
+    // Closed also when an assertion ends the test: the lock goes with it.
+    struct Lock
+    {
+        int fd = -1;
+        ~Lock() { release(); }
+        void release()
+        {
+            if (fd >= 0) ::close(std::exchange(fd, -1));
+        }
+    } held{::open(QFile::encodeName(socketPath() + QStringLiteral(".lock")).constData(), O_RDWR | O_CREAT | O_CLOEXEC, 0600)};
+    ASSERT_GE(held.fd, 0);
+    ASSERT_EQ(::flock(held.fd, LOCK_EX | LOCK_NB), 0);
     InstanceSocket second;
     EXPECT_EQ(second.listen(socketPath()), InstanceSocket::Listen::Held);
     InstanceSocket::removeStaleSockets();
     EXPECT_TRUE(QFileInfo::exists(socketPath()));
-    ::close(held);
+    held.release();
     // Its holder gone, the path is free.
     EXPECT_EQ(second.listen(socketPath()), InstanceSocket::Listen::Listening);
 }
@@ -606,7 +743,7 @@ TEST_F(ControlSocketTest, WhatWaitsGoesBeforeTheNextEventOfThePane)
     closing.removeLast();
     closing.sort();
     EXPECT_EQ(closing, (QStringList{QStringLiteral("titleChanged:3:next"), QStringLiteral("userVarChanged:3:a:")}));
-    EXPECT_FALSE(dueTimer()->isActive());
+    EXPECT_FALSE(dueTimerActive());
 }
 
 TEST_F(ControlSocketTest, ReadAccessCountsWhenTheValueGoesOut)
@@ -656,7 +793,7 @@ TEST_F(ControlSocketTest, IntervalTurnedToZeroSendsWhatWaitsFirst)
     EXPECT_EQ(events(client, 3), (QStringList{QStringLiteral("titleChanged:1:a"), QStringLiteral("titleChanged:1:old"),
                                              QStringLiteral("titleChanged:1:new")}));
     EXPECT_TRUE(events(client, 0, 100).isEmpty());
-    EXPECT_FALSE(dueTimer()->isActive());
+    EXPECT_FALSE(dueTimerActive());
 }
 
 } // namespace

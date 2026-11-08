@@ -30,7 +30,7 @@ target_compile_definitions(afterglow_scripting_tests PRIVATE
     AFTERGLOW_EXAMPLE_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/scripts"
     AFTERGLOW_PHOSPHOR_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/phosphor/scripts"
     AFTERGLOW_GLASSHOUSE_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/glasshouse/scripts")
-gtest_discover_tests(afterglow_scripting_tests)
+gtest_discover_tests(afterglow_scripting_tests PROPERTIES TIMEOUT 60)
 
 qt_add_executable(afterglow_config_tests ConfigTest.cpp DesktopTest.cpp)
 target_link_libraries(afterglow_config_tests PRIVATE afterglow_config GTest::gtest_main)
@@ -39,7 +39,7 @@ gtest_discover_tests(afterglow_config_tests)
 
 qt_add_executable(afterglow_control_tests ControlSocketTest.cpp)
 target_link_libraries(afterglow_control_tests PRIVATE afterglow_app GTest::gtest)
-gtest_discover_tests(afterglow_control_tests)
+gtest_discover_tests(afterglow_control_tests PROPERTIES TIMEOUT 60)
 
 qt_add_executable(afterglow_command_tests CommandSocketTest.cpp)
 target_link_libraries(afterglow_command_tests PRIVATE afterglow_app Afterglow::Proto GTest::gtest)
@@ -53,7 +53,20 @@ if(AFTERGLOW_BUILD_AGLOW)
     target_compile_definitions(afterglow_command_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
     add_dependencies(afterglow_command_tests aglow)
 endif()
-gtest_discover_tests(afterglow_command_tests)
+gtest_discover_tests(afterglow_command_tests PROPERTIES TIMEOUT 60)
+
+# Remote commands: the forwarded sockets, the probe of `afterglow ssh` with a
+# fake ssh, and an acceptance test with sshd run as the user, which skips
+# without sshd. A pane runs in it, offscreen.
+qt_add_executable(afterglow_remote_tests RemoteCommandsTest.cpp)
+target_link_libraries(afterglow_remote_tests PRIVATE afterglow_app Afterglow::Proto GTest::gtest)
+target_compile_definitions(afterglow_remote_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>")
+add_dependencies(afterglow_remote_tests afterglow)
+if(AFTERGLOW_BUILD_AGLOW)
+    target_compile_definitions(afterglow_remote_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
+    add_dependencies(afterglow_remote_tests aglow)
+endif()
+gtest_discover_tests(afterglow_remote_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
 qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp)
 target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)
@@ -61,8 +74,10 @@ gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFOR
 
 # A popup as the window's settings make it look, rendered offscreen.
 qt_add_executable(afterglow_popup_tests PopupLookTest.cpp)
+# The device of the renderer's tests (GpuTestDevice.h).
+target_include_directories(afterglow_popup_tests PRIVATE ${PROJECT_SOURCE_DIR}/libs/afterglow-render/tests)
 target_link_libraries(afterglow_popup_tests PRIVATE afterglow_app GTest::gtest)
-gtest_discover_tests(afterglow_popup_tests DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(afterglow_popup_tests DISCOVERY_MODE PRE_TEST PROPERTIES RESOURCE_LOCK gpu TIMEOUT 60)
 
 qt_add_executable(afterglow_signal_tests QuitSignalsTest.cpp)
 target_link_libraries(afterglow_signal_tests PRIVATE afterglow_app GTest::gtest)
@@ -111,15 +126,16 @@ option(AFTERGLOW_NATIVE_TESTS "Run integration tests in a nested KWin desktop (r
 if(AFTERGLOW_NATIVE_TESTS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME afterglow_native_window_acceptance
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native_window_acceptance.py
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native_window_acceptance.py
                 --binary $<TARGET_FILE:afterglow_native_tests>)
-    set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 420)
+    # The window and Kitty draw on the GPU: they take turns with the renderer's tests.
+    set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 420 RESOURCE_LOCK gpu)
     # aglow transfer against Kitty in a headless KWin (77: no kitty, kwin_wayland or dbus-run-session).
     if(AFTERGLOW_BUILD_AGLOW)
         add_test(NAME afterglow_transfer_kitty
             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/kitty_transfer_interop.py
                     --kitty --aglow $<TARGET_FILE:aglow>)
-        set_tests_properties(afterglow_transfer_kitty PROPERTIES LABELS native SKIP_RETURN_CODE 77 TIMEOUT 660)
+        set_tests_properties(afterglow_transfer_kitty PROPERTIES LABELS native SKIP_RETURN_CODE 77 TIMEOUT 660 RESOURCE_LOCK gpu)
     endif()
 endif()
 

@@ -178,7 +178,8 @@ std::uint32_t StyleTable::internLink(std::string_view uri, std::string_view id)
             return it->second;
         }
     }
-    if (uri.size() + id.size() > MaxLinkBytes - m_linkBytes) {
+    const std::size_t cost = linkCost(uri, id);
+    if (cost > MaxLinkBytes - m_linkBytes) {
         return 0;
     }
     std::uint32_t index;
@@ -190,7 +191,7 @@ std::uint32_t StyleTable::internLink(std::string_view uri, std::string_view id)
         m_links.emplace_back();
     }
     m_links[index] = Link{std::string(uri), std::string(id), 0};
-    m_linkBytes += uri.size() + id.size();
+    m_linkBytes += cost;
     if (key.empty()) {
         key = "\x1e" + std::to_string(index);
     }
@@ -216,7 +217,7 @@ void StyleTable::releaseLink(std::uint32_t link) noexcept
         return;
     }
     const Link& l = m_links[link];
-    m_linkBytes -= l.uri.size() + l.id.size();
+    m_linkBytes -= linkCost(l.uri, l.id);
     m_linkLookup.erase(l.id.empty() ? "\x1e" + std::to_string(link) : l.id + '\x1f' + l.uri);
     m_links[link] = Link{};
     m_freeLinks.push_back(link);

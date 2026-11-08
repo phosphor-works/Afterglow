@@ -126,9 +126,9 @@ def run(aglow, arguments, cwd, clipboard, modern=True, prompt=0.0, osc52_reply=N
                             out += f"\x1b]5522;type=read:status=DATA:mime={b64(mime)}:id={ident};{b64(clipboard[mime])}\x1b\\"
                     out += f"\x1b]5522;type=read:status=DONE:id={ident}\x1b\\"
                     os.write(master, out.encode())
-            code = wait_exit()
-            if code is not None:
-                return code
+            # No exit check here: aglow can write its last sequence and exit
+            # between this select and the next. The end of the terminal's
+            # output, after every byte has been read and parsed, gives the exit.
         raise AssertionError("aglow clipboard did not finish: " + repr(buffer[-500:]))
     finally:
         if not reaped:

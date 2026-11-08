@@ -51,6 +51,14 @@ public:
     explicit GpuDevice(const FontSpec& fontSpec, QObject* parent = nullptr);
     ~GpuDevice() override;
 
+    /// Whether the machine has Vulkan: an instance of the API version this
+    /// device asks for can be made, and it lists a physical device. The
+    /// device's own API version is not checked. A caller that could not make
+    /// a device uses it to tell a machine without Vulkan (a test skips) from
+    /// a device that failed (a test fails). Call it after QGuiApplication:
+    /// QVulkanInstance needs the platform plugin.
+    static bool vulkanAvailable();
+
     QVulkanInstance* vulkanInstance() noexcept { return &m_vulkan; }
     /// The shared device, created on first use. @p window picks a queue that
     /// can present to it.

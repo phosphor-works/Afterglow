@@ -185,7 +185,8 @@ Item {
         Behavior on opacity { NumberAnimation { duration: root.scrollbarFade; easing.type: Easing.OutCubic } }
         Timer {
             id: hideTimer
-            interval: root.controller.history.hideDelay === undefined ? 1200 : root.controller.history.hideDelay
+            // Window.scrollbarHideDelay. The map has no delay only while the bar is hidden.
+            interval: root.controller.history.hideDelay || 0
             onTriggered: historyScroll.revealed = false
         }
         function reveal(): void {

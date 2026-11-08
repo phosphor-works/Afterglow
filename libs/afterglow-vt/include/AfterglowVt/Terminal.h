@@ -14,6 +14,8 @@
 #include <AfterglowVt/Unicode.h>
 #include <AfterglowVt/afterglowvt_export.h>
 
+#include <AfterglowProto/RemoteOsc.h>
+
 #include <array>
 #include <cstdint>
 #include <map>
@@ -120,8 +122,8 @@ struct Modes
 
 /// Callbacks out of the terminal. Invoked synchronously, while the caller
 /// holds its terminal lock, from Terminal::feed() and also from reset(),
-/// clearScreenAndHistory(), programExited(), resize(), setOptions() and
-/// setVisible(): on whatever thread calls those. A host whose callbacks emit
+/// programExited(), resize(), setOptions() and setVisible(): on whatever
+/// thread calls those. A host whose callbacks emit
 /// signals must not let a receiver on the calling thread take that lock again.
 class ITerminalHost
 {
@@ -159,6 +161,13 @@ public:
     /// What the host's OSC 99 support covers, as the query reply's key=value
     /// list ("a=focus,report:c=1:p=title,body..."); empty for no support.
     virtual std::string notificationCapabilities() { return {}; }
+    /// The answer to `aglow run`'s query for the socket of the ssh session
+    /// that runs in this terminal (OSC 24569): its path on the remote host,
+    /// else why there is none. Called on the reader thread: the reply goes
+    /// out before the replies to what follows the query, such as DA1. No
+    /// answer, the default, sends no reply: a host without remote commands
+    /// does not speak the protocol, and the query's guard ends the wait.
+    virtual std::optional<AfterglowProto::Remote::Answer> remoteSocket() { return std::nullopt; }
     /// The pane's contexts changed (OSC 3008, iTerm2 RemoteHost); read them
     /// through Terminal::contexts().
     virtual void contextChanged() { }
@@ -175,11 +184,15 @@ public:
     /// arrives cut to limit + 1 bytes. The host must treat a payload over the
     /// limit as an oversized command and end it with the protocol's error.
     virtual void terminalProtocol(int code, std::string_view payload) {}
-    /// A scroll moved cells of the active screen to other rows (SU, SD, IL,
-    /// DL, a line feed at a scroll region's margin). The terminal has moved
-    /// its own images and shell marks; a host that keeps positions on that
-    /// screen by stable row id (a selection: Selection::followScroll) moves
-    /// them too.
+    /// A scroll moved cells of the active screen to other rows: SU, SD, IL
+    /// and DL; the cursor going down past the bottom margin (LF, VT, FF,
+    /// IND, NEL, an autowrap, a sixel, kitty or iTerm2 image that moves the
+    /// cursor); the cursor going up past the top margin (RI, VT52 ESC I); and
+    /// a text sizing block (OSC 66) that scrolls to fit. A scroll of the
+    /// whole screen into the history keeps every row's id and is not
+    /// reported. The terminal has moved its own images and shell marks; a
+    /// host that keeps positions on that screen by stable row id (a
+    /// selection: Selection::followScroll) moves them too.
     virtual void regionScrolled(const RegionScroll& scroll) {}
     /// A program asks for a new size in cells (DECCOLM, DECSCPP, DECSLPP,
     /// DECSNLS, XTWINOPS 4 and 8, and RIS after DECCOLM). Return true to let
@@ -351,7 +364,8 @@ public:
     /// What programs report doing (OSC 7501). Records belong to the terminal,
     /// not a screen.
     const ProgramStatus& programStatus() const noexcept { return m_programStatus; }
-    /// The program attached to the terminal exited: in-flight status ends.
+    /// The program attached to the terminal exited: in-flight status ends,
+    /// and so does an iTerm2 file sent in parts.
     void programExited();
     /// Whether the user can see the terminal (mode 2033 reports changes).
     void setVisible(bool visible);
@@ -432,6 +446,9 @@ private:
     void moveCursorRelative(int dx, int dy);
     /// @p selective: DECSED/DECSEL, which spare DEC-protected cells.
     void eraseDisplay(int mode, bool selective = false);
+    /// The whole active screen was erased (ED 2, DECCOLM): the output of a
+    /// running command goes on from its top.
+    void outputScreenErased();
     void eraseLine(int mode, bool selective = false);
     void eraseSpan(Row& row, int x0, int x1, std::uint32_t fill, bool selective);
     void eraseWholeRow(Row& row, std::uint32_t fill, bool selective);
@@ -614,10 +631,20 @@ private:
     /// The command line a shell reported (133 cmdline, 633 E) for the next C.
     std::optional<std::string> m_explicitCommand;
     ShellContexts m_contexts;
-    /// An iTerm2 MultipartFile under way: its arguments and data so far.
+    /// An iTerm2 MultipartFile under way: its arguments, its data so far,
+    /// and the base64 bytes it may reach (less for a download than an image).
     bool m_iterm2Receiving = false;
     std::string m_iterm2Args;
     std::string m_iterm2Data;
+    std::size_t m_iterm2Limit = 0;
+    /// A new prompt (133 A or N, 633 A, after a C) came with no FilePart
+    /// since: a second one ends the file.
+    bool m_iterm2PromptSincePart = false;
+    /// A command started (C) since the last prompt mark: the next one is a
+    /// new prompt, not the shell drawing the same one again. A D only closes
+    /// the command that a C opened, so it adds nothing.
+    bool m_commandSincePrompt = false;
+    void endITerm2Multipart();
     void semanticPrompt(std::string_view args);
     void vscodeShellIntegration(std::string_view args);
     void iterm2(std::string_view args, bool bel);
