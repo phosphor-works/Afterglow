@@ -6802,10 +6802,41 @@ TEST_F(ScriptHostTest, AScriptLinkPointedElsewhereReloadsOnEditsOfItsNewTarget)
     // The rescans of the new link are over: a late one would read the edit
     // below without a watch.
     await([] { return false; }, 500);
-    // A watch of the link's path stays on the old target: the new target's
-    // own watch sees the edit.
+    // A watch of the link's path would stay on the old target: the
+    // directory set follows the link to the new one.
     WRITE(files, "b.luau", "return {metadata={id='third'}}");
     EXPECT_TRUE(await([&] { return host->scriptIds() == QStringList{"third"}; }, 5000));
+}
+
+TEST_F(ScriptHostTest, APackageLinkPointedElsewhereReloadsOnEditsOfItsNewTarget)
+{
+    const QByteArray manifest = R"({"id":"linked","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})";
+    QDir().mkpath(files.filePath("a"));
+    QDir().mkpath(files.filePath("b"));
+    WRITE(files, "a/package.json", manifest);
+    WRITE(files, "a/init.luau", "return {on_bell = function() return afterglow.copy('a') end}");
+    WRITE(files, "b/package.json", manifest);
+    WRITE(files, "b/init.luau", "return {on_bell = function() return afterglow.copy('b') end}");
+    // The text that the package copies at a bell: which code runs.
+    auto copied = [&] {
+        rec.applied.clear();
+        host->dispatch("on_bell", 7);
+        pump();
+        return rec.applied.isEmpty() ? QString() : rec.applied.last().value(QStringLiteral("text")).toString();
+    };
+    ASSERT_TRUE(QFile::link(files.filePath("a"), user.filePath("linked")));
+    host->setEnabled(true);
+    EXPECT_EQ(copied(), QStringLiteral("a"));
+    ASSERT_TRUE(QFile::remove(user.filePath("linked")));
+    ASSERT_TRUE(QFile::link(files.filePath("b"), user.filePath("linked")));
+    ASSERT_TRUE(await([&] { return copied() == QLatin1String("b"); }, 5000));
+    // The rescans of the new link are over: a late one would read the edit
+    // below without a watch.
+    await([] { return false; }, 500);
+    // A watch of the link's path would stay on the old target: the
+    // directory set follows the link into the new one.
+    WRITE(files, "b/init.luau", "return {on_bell = function() return afterglow.copy('c') end}");
+    EXPECT_TRUE(await([&] { return copied() == QLatin1String("c"); }, 5000));
 }
 
 TEST_F(ScriptHostTest, ARemoteReadWithABadLimitStaysAnInvalidEffect)
