@@ -14,7 +14,7 @@
 #include <AfterglowVt/Unicode.h>
 #include <AfterglowVt/afterglowvt_export.h>
 
-#include <AfterglowProto/Remote.h>
+#include <AfterglowProto/RemoteOsc.h>
 
 #include <array>
 #include <cstdint>
@@ -122,8 +122,8 @@ struct Modes
 
 /// Callbacks out of the terminal. Invoked synchronously, while the caller
 /// holds its terminal lock, from Terminal::feed() and also from reset(),
-/// clearScreenAndHistory(), programExited(), resize(), setOptions() and
-/// setVisible(): on whatever thread calls those. A host whose callbacks emit
+/// programExited(), resize(), setOptions() and setVisible(): on whatever
+/// thread calls those. A host whose callbacks emit
 /// signals must not let a receiver on the calling thread take that lock again.
 class ITerminalHost
 {
@@ -164,8 +164,10 @@ public:
     /// The answer to `aglow run`'s query for the socket of the ssh session
     /// that runs in this terminal (OSC 24569): its path on the remote host,
     /// else why there is none. Called on the reader thread: the reply goes
-    /// out before the replies to what follows the query, such as DA1.
-    virtual AfterglowProto::Remote::Answer remoteSocket() { return {}; }
+    /// out before the replies to what follows the query, such as DA1. No
+    /// answer, the default, sends no reply: a host without remote commands
+    /// does not speak the protocol, and the query's guard ends the wait.
+    virtual std::optional<AfterglowProto::Remote::Answer> remoteSocket() { return std::nullopt; }
     /// The pane's contexts changed (OSC 3008, iTerm2 RemoteHost); read them
     /// through Terminal::contexts().
     virtual void contextChanged() { }
@@ -182,11 +184,13 @@ public:
     /// arrives cut to limit + 1 bytes. The host must treat a payload over the
     /// limit as an oversized command and end it with the protocol's error.
     virtual void terminalProtocol(int code, std::string_view payload) {}
-    /// A scroll moved cells of the active screen to other rows (SU, SD, IL,
-    /// DL, a line feed at a scroll region's margin). The terminal has moved
-    /// its own images and shell marks; a host that keeps positions on that
-    /// screen by stable row id (a selection: Selection::followScroll) moves
-    /// them too.
+    /// A scroll moved cells of the active screen to other rows: SU, SD, IL,
+    /// DL, a line feed or IND at the bottom margin, RI at the top margin, and
+    /// a text sizing block (OSC 66) that scrolls the screen to fit. A scroll
+    /// of the whole screen into the history keeps every row's id and is not
+    /// reported. The terminal has moved its own images and shell marks; a
+    /// host that keeps positions on that screen by stable row id (a
+    /// selection: Selection::followScroll) moves them too.
     virtual void regionScrolled(const RegionScroll& scroll) {}
     /// A program asks for a new size in cells (DECCOLM, DECSCPP, DECSLPP,
     /// DECSNLS, XTWINOPS 4 and 8, and RIS after DECCOLM). Return true to let
@@ -621,10 +625,13 @@ private:
     /// The command line a shell reported (133 cmdline, 633 E) for the next C.
     std::optional<std::string> m_explicitCommand;
     ShellContexts m_contexts;
-    /// An iTerm2 MultipartFile under way: its arguments and data so far.
+    /// An iTerm2 MultipartFile under way: its arguments, its data so far,
+    /// and the base64 bytes it may reach (less for a download than an image).
     bool m_iterm2Receiving = false;
     std::string m_iterm2Args;
     std::string m_iterm2Data;
+    std::size_t m_iterm2Limit = 0;
+    void endITerm2Multipart();
     void semanticPrompt(std::string_view args);
     void vscodeShellIntegration(std::string_view args);
     void iterm2(std::string_view args, bool bel);

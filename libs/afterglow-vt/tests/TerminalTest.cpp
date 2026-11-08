@@ -824,6 +824,86 @@ TEST(Terminal, EncodedCommandLinesLoseControlBytes)
     EXPECT_EQ(t.host.commandsStarted[1], "ab\\x-1");
 }
 
+TEST(Terminal, PlainCommandLinesLoseControlsToo)
+{
+    // The parser keeps DEL and C1 controls in an OSC string: C1 CSI as UTF-8
+    // goes, and a raw C1 byte, which is no UTF-8, becomes U+FFFD.
+    Term t(20, 4);
+    t.feed("\x1b]133;C;cmdline=a\xc2\x9b" "31mb\x7f\x9b" "c\x07");
+    ASSERT_EQ(t.host.commandsStarted.size(), 1u);
+    EXPECT_EQ(t.host.commandsStarted[0], "a31mb\xef\xbf\xbd" "c");
+}
+
+TEST(Terminal, ACommandLineOverTheLimitKeepsItsMark)
+{
+    // fish sends the command line with C. One too long to keep goes alone:
+    // the output still begins, and the command is the text typed after B.
+    Term t(20, 4);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n");
+    t.feed("\x1b]133;C;cmdline_url=" + std::string(70000, 'x') + "\x07out");
+    ASSERT_EQ(t.host.commandsStarted.size(), 1u);
+    EXPECT_EQ(t.host.commandsStarted[0], "ls");
+    ASSERT_FALSE(t.t.semanticRegions().empty());
+    EXPECT_EQ(t.t.semanticRegions().back().kind, SemanticZoneKind::Output);
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "out");
+    t.feed("\x1b]133;D;0\x07");
+    EXPECT_EQ(t.host.commandsFinished, std::vector<int>{0});
+}
+
+TEST(Terminal, AReportedCommandLineEndsWithItsCycle)
+{
+    // VS Code reports the line (633 E) before C. A cycle that never reached
+    // C (the line was cut off) leaves none for the next command.
+    Term t(20, 4);
+    t.feed("\x1b]633;A\x07$ \x1b]633;B\x07old\x1b]633;E;old\x07^C\r\n");
+    t.feed("\x1b]633;A\x07$ \x1b]633;B\x07ls\r\n\x1b]633;C\x07");
+    ASSERT_EQ(t.host.commandsStarted.size(), 1u);
+    EXPECT_EQ(t.host.commandsStarted[0], "ls");
+}
+
+TEST(Terminal, OutputThatItsCommandClearsGoesOnFromTheTop)
+{
+    // clear (ED 2 and the cursor home) with the output's start on a row
+    // below the cursor's new place: the output is what comes after.
+    Term t(20, 6);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07watch\r\n\x1b]133;C\x07\r\n\r\n\r\nold");
+    t.feed("\x1b[H\x1b[2Jnew");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "new");
+    ASSERT_FALSE(t.t.semanticRegions().empty());
+    EXPECT_EQ(t.t.semanticRegionText(t.t.semanticRegions().back().id), "new");
+}
+
+TEST(Terminal, AnOsc8LinkOverTheLimitEndsTheLinkBefore)
+{
+    Term t(20, 2);
+    t.feed("\x1b]8;;https://a.example\x07" "a\x1b]8;;https://" + std::string(9000, 'b') + "\x07" "b");
+    const Screen& s = t.t.screen();
+    const auto linkAt = [&](int x) { return s.styles().get(s.row(0).cells[std::size_t(x)].styleId()).link; };
+    EXPECT_NE(linkAt(0), 0u);
+    EXPECT_EQ(linkAt(1), 0u);
+}
+
+TEST(Terminal, TitlesLoseControlsSeparatorsAndBidiControls)
+{
+    // DEL, C1 NEL, a line separator and a right-to-left override go; a byte
+    // that is no UTF-8 becomes U+FFFD.
+    Term t(20, 2);
+    t.feed("\x1b]2;a\x7f" "b\xc2\x85" "c\xe2\x80\xa8" "d\xe2\x80\xae" "e\xff" "f\x07");
+    EXPECT_EQ(t.host.title, "abcde\xef\xbf\xbd" "f");
+    EXPECT_EQ(t.t.title(), t.host.title);
+}
+
+TEST(Terminal, C1ControlsSentAsUtf8AreNotPrinted)
+{
+    // Not a mark on the cell before: a copy of the text would carry them.
+    Term t(10, 2);
+    t.feed("a\xc2\x85" "b\xc2\x9b");
+    EXPECT_EQ(rowText(t.t, 0), "ab");
+    EXPECT_FALSE(t.t.screen().row(0).cells[0].hasGrapheme());
+    EXPECT_FALSE(t.t.screen().row(0).cells[1].hasGrapheme());
+    EXPECT_EQ(t.t.screen().cursor.x, 2);
+}
+
 TEST(Terminal, WorkingDirectoryReportsOnlyChanges)
 {
     Term t(20, 4);

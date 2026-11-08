@@ -18,6 +18,8 @@
 //   8 JSON for the phosphor-ipc client, written and read again, and the
 //     stdin parts of `aglow run`
 //   9 X11 colour specs (parseColorSpec), and the colour read written again
+//  10 OSC 24569 strings (oscPayload, isQuery, parseReply), and the answer
+//     read written again as the pane's reply
 
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/Clipboard.h>
@@ -26,6 +28,7 @@
 #include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Graphics.h>
 #include <AfterglowProto/Json.h>
+#include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Run.h>
 #include <AfterglowProto/Text.h>
 #include <AfterglowProto/Transfer.h>
@@ -415,6 +418,55 @@ void color(std::string_view input)
     }
 }
 
+/// The payload of the pane's reply @p sequence, as aglow reads it: without
+/// the introducer, the terminator and the OSC number.
+std::optional<std::string_view> replyPayload(std::string_view sequence, bool bel)
+{
+    const std::size_t terminator = bel ? 1 : 2;
+    if (!sequence.starts_with("\x1b]") || sequence.size() < 2 + terminator) {
+        return std::nullopt;
+    }
+    return AfterglowProto::Remote::oscPayload(sequence.substr(2, sequence.size() - 2 - terminator));
+}
+
+void remote(std::string_view input)
+{
+    namespace Remote = AfterglowProto::Remote;
+    for (const std::string_view message : messages(input)) {
+        const std::optional<std::string_view> payload = Remote::oscPayload(message);
+        if (payload) {
+            const std::optional<Remote::Answer> answer = Remote::parseReply(*payload);
+            // The query is never an answer, and an answer's path is one a
+            // reply may carry: aglow connects to it.
+            if (answer && (Remote::isQuery(*payload) || (!answer->path.empty() && !Remote::validPath(answer->path)))) {
+                __builtin_trap();
+            }
+            // An answer read gives a reply that reads back the same.
+            if (answer) {
+                for (const bool bel : {false, true}) {
+                    const std::string sequence = Remote::reply(*answer, bel);
+                    const auto again = replyPayload(sequence, bel);
+                    if (!again || Remote::parseReply(*again) != answer) {
+                        __builtin_trap();
+                    }
+                }
+            }
+        }
+        // Any string as the pane's path: the reply carries it when it is
+        // valid, else says error=off, and either reads back.
+        const Remote::Answer given{std::string(message), Remote::Error::Forward};
+        const std::string sequence = Remote::reply(given);
+        const auto sent = replyPayload(sequence, false);
+        const auto read = sent ? Remote::parseReply(*sent) : std::nullopt;
+        const Remote::Answer expected = Remote::validPath(given.path) ? Remote::Answer{given.path, Remote::Error::Off}
+            : given.path.empty()                                       ? Remote::Answer{{}, Remote::Error::Forward}
+                                                                       : Remote::Answer{{}, Remote::Error::Off};
+        if (read != expected) {
+            __builtin_trap();
+        }
+    }
+}
+
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
@@ -423,7 +475,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     }
     const std::string_view input(reinterpret_cast<const char*>(data + 1), size - 1);
-    switch (data[0] % 10) {
+    switch (data[0] % 11) {
     case 0:
         transfer(input);
         break;
@@ -453,6 +505,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         break;
     case 9:
         color(input);
+        break;
+    case 10:
+        remote(input);
         break;
     }
     return 0;

@@ -394,6 +394,9 @@ public:
     /// ages (signals, the overview, tab switches) still come from their
     /// steady_clock stamps.
     void setClockOverride(std::optional<double> seconds) { m_clockOverride = seconds; }
+    /// iDate (year, month, day, seconds since midnight) instead of the
+    /// wall clock's date, for reproducible renders; unset returns to it.
+    void setDateOverride(std::optional<std::array<float, 4>> date) { m_dateOverride = date; }
     /// Renders the panes into an image instead of the window, through the
     /// same passes and post-processing. For tests and visual checks.
     QImage renderToImage(const QSize& size, const std::vector<Pane>& panes,
@@ -505,6 +508,7 @@ private:
     std::unique_ptr<QRhiRenderPassDescriptor> m_offscreenPass;
     qreal m_devicePixelRatio = 1.0;
     std::optional<double> m_clockOverride;
+    std::optional<std::array<float, 4>> m_dateOverride;
     std::optional<std::uint64_t> m_scrollbackLinesOverride;
     double m_easedScrollbackLines = 0;
     bool m_scrollbackInitialized = false;

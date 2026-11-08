@@ -53,6 +53,9 @@ Its other fields, such as `commands`, `config`, `assets` and `shaders`, have no 
 Imports use local files. Afterglow does not download dependencies.
 Dependencies share the caller's sandbox and state namespace.
 Cycles and undeclared imports cause an error.
+When two packages of one tree include the same dependency, each gets its own copy.
+Its modules then load two times, and the two copies do not share module variables.
+A module cannot wait while it loads. A `require` in a handler loads the module in a coroutine of its own, so `afterglow.await` in the module's code causes an error.
 
 | Source limit | Value |
 | --- | --- |
@@ -80,13 +83,14 @@ A package declares its commands only in `package.json`. `metadata.commands` in a
   "open": {"summary": "Open a project directory", "usage": "DIR [LAYOUT]", "palette": "Open project…"},
   "list": {"summary": "Print the saved projects"},
   "import": {"summary": "Add projects from a list on stdin", "stdin": true},
-  "pick": {"summary": "Open a project from a remote host", "usage": "DIR", "remote": true}
+  "notice": {"summary": "Show a notification from a remote job", "usage": "MESSAGE", "remote": true}
 }
 ```
 
 A command with `"remote": true` can also run from a remote host, with `aglow run` in an `afterglow ssh` session.
-It needs `Terminal.sshRemoteCommands`. The handler gets `ev.source` `"remote"`.
-See [remote commands](CONTROL.md#remote-commands).
+Remote commands are off until you set `Terminal.sshRemoteCommands`. [Remote commands](CONTROL.md#remote-commands) gives the other requirements.
+The handler gets `ev.source` `"remote"`, and `ev.cwd` is a directory on the remote host.
+Any process of the remote user can run the command. Check its arguments and stdin before you use them (see [the handler](SCRIPTING.md#run-a-command)).
 
 The entry module must export `run_command(command, ev)`.
 `aglow run <id> --help` lists the package's commands. `aglow run <id> <command>` runs one.
@@ -114,6 +118,9 @@ Afterglow does not check the stages and includes that a shader pack reads.
 Afterglow monitors source files, dependency manifests and configuration together.
 A change replaces the complete instance. This includes a change to `shaders`, `pulses` or `commands`.
 Compilation, initialization or migration errors keep the previous working instance.
+When a file changes while Afterglow reads the package, Afterglow does not use what it read, and reads the package again.
+So a checkout that changes many files does not load, or migrate state with, a mix of old and new files.
+When the package directory is a symlink and you point it to another directory, Afterglow monitors the new directory.
 
 ## Saved state
 

@@ -291,6 +291,7 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
         // Its own cursor, scroll position and link hover, in the host's place.
         shown.cursorPosition = own.cursorPosition;
         shown.scrollShift = own.scrollShift;
+        refreshLinkHover(program);
         if (m_hover.pane == program) {
             shown.hoveredLink = m_hover.link;
             shown.hoverRow = m_hover.row;

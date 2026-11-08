@@ -28,14 +28,6 @@ namespace {
 
 QString g_processPath;
 
-// Where the sockets are, as AfterglowProto::sharedSocketPath finds them: no
-// directory without an absolute XDG_RUNTIME_DIR, and then no socket to clean up.
-// A leading '/' as there: QDir::isAbsolutePath takes a Qt resource path too.
-QString runtimeDirectory()
-{
-    const QString directory = qEnvironmentVariable("XDG_RUNTIME_DIR");
-    return directory.startsWith(QLatin1Char('/')) ? directory : QString();
-}
 
 QByteArray lockPath(const QString& socket)
 {
@@ -167,6 +159,24 @@ void InstanceSocket::removeStaleSockets()
         if (file == SocketFile::Ours && refusesConnections(path)) QFile::remove(path);
         unlockSocket(path, lock);
     }
+}
+
+QString InstanceSocket::runtimeDirectory()
+{
+    // A leading '/' as AfterglowProto::sharedSocketPath takes it:
+    // QDir::isAbsolutePath takes a Qt resource path too.
+    const QString directory = qEnvironmentVariable("XDG_RUNTIME_DIR");
+    return directory.startsWith(QLatin1Char('/')) ? directory : QString();
+}
+
+int InstanceSocket::lock(const QString& socket)
+{
+    return lockSocket(socket);
+}
+
+void InstanceSocket::unlock(const QString& socket, int fd)
+{
+    unlockSocket(socket, fd);
 }
 
 QString InstanceSocket::processPath()

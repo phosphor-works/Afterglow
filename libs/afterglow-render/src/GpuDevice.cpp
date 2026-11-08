@@ -4,6 +4,7 @@
 #include <AfterglowRender/GpuDevice.h>
 
 #include <QLoggingCategory>
+#include <QVulkanFunctions>
 #include <QVersionNumber>
 #include <QWindow>
 #include <rhi/qrhi.h>
@@ -18,11 +19,25 @@ Q_LOGGING_CATEGORY(lcGpu, "afterglow.gpu", QtInfoMsg)
 
 namespace AfterglowRender {
 
+namespace {
+const QVersionNumber VulkanApi(1, 2);
+}
+
+bool GpuDevice::vulkanAvailable()
+{
+    QVulkanInstance instance;
+    instance.setApiVersion(VulkanApi);
+    if (!instance.create()) return false;
+    std::uint32_t count = 0;
+    instance.functions()->vkEnumeratePhysicalDevices(instance.vkInstance(), &count, nullptr);
+    return count > 0;
+}
+
 GpuDevice::GpuDevice(const FontSpec& fontSpec, QObject* parent)
     : QObject(parent)
     , m_fontSpec(fontSpec)
 {
-    m_vulkan.setApiVersion(QVersionNumber(1, 2));
+    m_vulkan.setApiVersion(VulkanApi);
     // QRhi can select Wayland surface color spaces that require instance
     // extensions. QVulkanInstance filters out extensions the loader lacks.
     m_vulkan.setExtensions(QRhiVulkanInitParams::preferredInstanceExtensions());

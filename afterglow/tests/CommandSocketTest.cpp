@@ -24,6 +24,8 @@
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Run.h>
 
+#include <PhosphorIpc/IpcProtocol.h>
+
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
@@ -49,6 +51,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <fcntl.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 using namespace Afterglow;
@@ -170,8 +173,10 @@ void onClientThread(const std::function<void()>& work)
         done = true;
     });
     const bool finished = pumpUntil([&] { return done.load(); }, 15000);
+    // Before the join: for a client that hangs, the join never returns, and
+    // the failure must show before the test's timeout ends the binary.
+    EXPECT_TRUE(finished) << "the client did not end in 15 s";
     thread.join();
-    EXPECT_TRUE(finished);
 }
 
 class CommandSocketTest : public ::testing::Test
@@ -375,6 +380,9 @@ TEST_F(CommandSocketTest, ListsTheCommandsAndEachInTheSchema)
     EXPECT_EQ(greet.value(QStringLiteral("command")), QStringLiteral("greet"));
     EXPECT_EQ(greet.value(QStringLiteral("usage")), QStringLiteral("[NAME] [STATUS]"));
     EXPECT_EQ(greet.value(QStringLiteral("palette")), QStringLiteral("Greet"));
+    // No command here declares remote: each says so.
+    EXPECT_EQ(greet.value(QStringLiteral("remote")), QJsonValue(false));
+    EXPECT_FALSE(greet.value(QStringLiteral("stdin")).toBool());
     EXPECT_TRUE(entry("read").value(QStringLiteral("stdin")).toBool());
 
     const QStringList functions = schemaNames(client, "functions");
@@ -495,6 +503,57 @@ TEST_F(CommandSocketTest, StdinOverTheLimitIsRefusedNotCut)
     m_settings->write(QStringLiteral("Scripts"), QStringLiteral("commandStdinLimit"), 0);
     EXPECT_EQ(input(QStringLiteral("z"), QStringLiteral("x"), true).value(QStringLiteral("code")), QLatin1String(CommandSocket::InputTooLarge));
     EXPECT_TRUE(input(QStringLiteral("e"), QString(), true).value(QStringLiteral("result")).toBool());
+}
+
+TEST_F(CommandSocketTest, ARunWhoseInputHasNotEndedIsRefusedAndKeepsIt)
+{
+    ASSERT_TRUE(start());
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    EXPECT_TRUE(call(client, QStringLiteral("input"), {QStringLiteral("p"), QStringLiteral("abc"), false})
+                    .value(QStringLiteral("result"))
+                    .toBool());
+    // A part would look whole to the command.
+    const QJsonObject early = call(client, QStringLiteral("run"), {QStringLiteral("p"), QStringLiteral("cmds"), QStringLiteral("read"),
+                                                                    QJsonArray{}, QString(), 0});
+    EXPECT_EQ(early.value(QStringLiteral("type")), QStringLiteral("error"));
+    EXPECT_TRUE(early.value(QStringLiteral("message")).toString().contains(QLatin1String("has not ended")))
+        << qPrintable(early.value(QStringLiteral("message")).toString());
+    EXPECT_EQ(m_commands->waitingInputBytes(), 3);
+    // The rest, then the run.
+    EXPECT_TRUE(call(client, QStringLiteral("input"), {QStringLiteral("p"), QStringLiteral("de"), true})
+                    .value(QStringLiteral("result"))
+                    .toBool());
+    const auto frames = until(client, send(client, QStringLiteral("run"), {QStringLiteral("p"), QStringLiteral("cmds"),
+                                                                           QStringLiteral("read"), QJsonArray{}, QString(), 0}));
+    EXPECT_EQ(output(frames, "stdout"), QStringLiteral("abcde"));
+    EXPECT_EQ(m_commands->waitingInputBytes(), 0);
+}
+
+TEST(CommandSocketEventTest, TheLineBytesAreThoseOfTheRoutersLine)
+{
+    const QString id = QStringLiteral("run-1_A");
+    const auto line = [&](const QString& text) {
+        return qint64(PhosphorIpc::writeLine(PhosphorIpc::buildEvent(QStringLiteral("commands"), QStringLiteral("stdout"),
+                                                                     QJsonArray{id, text}))
+                          .size());
+    };
+    const auto bytes = [&](const QString& text) {
+        return CommandSocket::eventLineBytes(QLatin1String("commands"), "stdout", id, text);
+    };
+    EXPECT_EQ(bytes(QString()), line(QString()));
+    // Every UTF-16 unit alone, lone surrogates included, between two letters.
+    for (char32_t u = 0; u <= 0xffff; ++u) {
+        const QString text = QLatin1Char('a') + QChar(char16_t(u)) + QLatin1Char('b');
+        ASSERT_EQ(bytes(text), line(text)) << std::hex << unsigned(u);
+    }
+    // A surrogate at either end, pairs, and pairs out of order.
+    const QString pair = QString::fromUcs4(U"\U0001F600");
+    for (const QString& text : {QString(QChar(0xd83d)), QString(QChar(0xde00)), pair, pair + pair, pair.mid(1) + pair.mid(0, 1),
+                                QStringLiteral("\"\\\b\f\n\r\t\x01\x1f\x7f") + pair + QChar(0xe9) + QChar(0x20ac)})
+        EXPECT_EQ(bytes(text), line(text)) << text.toUtf8().toHex().constData();
+    const QString big = QString(300000, QChar(0x2028)) + QString(300000, QLatin1Char('"'));
+    EXPECT_TRUE(bytes(big) == line(big));
 }
 
 TEST_F(CommandSocketTest, ARunIdBelongsToItsConnection)
@@ -1029,7 +1088,8 @@ TEST_F(RunBinaryTest, ReadsStdinOnlyForACommandThatTakesIt)
     for (int i = 0; i < 100000; ++i) big += "line\x01\xc3\xa9\n";
     r = run({QStringLiteral("cmds"), QStringLiteral("read")}, big);
     EXPECT_EQ(r.status, 0);
-    EXPECT_EQ(r.out.toUtf8(), big);
+    // Not EXPECT_EQ: gtest's diff of 900 KB would fill the memory.
+    EXPECT_TRUE(r.out.toUtf8() == big) << r.out.size() << " of " << big.size() << " bytes";
     // -n passes none.
     r = run({QStringLiteral("-n"), QStringLiteral("cmds"), QStringLiteral("read")}, "abc");
     EXPECT_EQ(r.out, QStringLiteral("nil"));
@@ -1432,6 +1492,50 @@ TEST(CtlBinaryTest, UsageErrorsExitWithTwoBeforeAnyConnection)
     EXPECT_EQ(big.err, QStringLiteral("afterglow ctl: standard input over 4 MiB, the most that an overlay takes\n"));
 }
 
+TEST(CtlBinaryTest, ARepeatedFlagOrAChannelPastTheLastIsAUsageError)
+{
+    const QString ctl = QStringLiteral("ctl");
+    for (const auto& [args, message] :
+         {std::pair{QStringList{ctl, QStringLiteral("ls"), QStringLiteral("--json"), QStringLiteral("--json")},
+                    QStringLiteral("--json is given more than once")},
+          std::pair{QStringList{ctl, QStringLiteral("signal"), QStringLiteral("8"), QStringLiteral("1")},
+                    QStringLiteral("signal channels are 0 to 7")},
+          std::pair{QStringList{ctl, QStringLiteral("signal"), QStringLiteral("+1"), QStringLiteral("1")},
+                    QStringLiteral("signal needs a channel and a number")},
+          std::pair{QStringList{ctl, QStringLiteral("signal"), QStringLiteral("4294967296"), QStringLiteral("1")},
+                    QStringLiteral("signal needs a channel and a number")}}) {
+        const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
+        EXPECT_EQ(r.status, 2) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.err);
+        EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n").arg(message))) << qPrintable(r.err);
+    }
+}
+
+// With standard input closed, Qt's first descriptor would be number 0, and a
+// read of standard input would wait on it for ever.
+TEST(CtlBinaryTest, AClosedStandardInputReadsAsEmpty)
+{
+    QTemporaryDir runtime(QStringLiteral("/tmp/afterglow-ctl-XXXXXX"));
+    ASSERT_TRUE(runtime.isValid());
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime.path());
+    env.insert(QStringLiteral("AFTERGLOW_SOCKET"), runtime.filePath(QStringLiteral("none.sock")));
+    for (const QString& name : {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("DISPLAY")})
+        env.remove(name);
+    QProcess process;
+    process.setProcessEnvironment(env);
+    process.setChildProcessModifier([] { ::close(STDIN_FILENO); });
+    process.start(QStringLiteral(AFTERGLOW_BINARY), {QStringLiteral("ctl"), QStringLiteral("send-text"), QStringLiteral("--stdin")});
+    ASSERT_TRUE(process.waitForStarted());
+    const bool ended = process.waitForFinished(10000);
+    if (!ended) {
+        process.kill();
+        process.waitForFinished();
+    }
+    ASSERT_TRUE(ended) << "afterglow ctl waited on a closed standard input";
+    // Empty text, then no afterglow at the test's socket.
+    EXPECT_EQ(process.exitCode(), 1) << qPrintable(QString::fromUtf8(process.readAllStandardError()));
+}
+
 // A current directory that was removed has no path: a relative directory
 // cannot be made absolute, and ctl says so before it connects.
 TEST(CtlBinaryTest, ARelativeDirectoryNeedsACurrentDirectory)
@@ -1454,12 +1558,14 @@ TEST(CtlBinaryTest, ARelativeDirectoryNeedsACurrentDirectory)
         EXPECT_EQ(r.err, QStringLiteral("afterglow ctl: the current directory was removed, so give an absolute directory\n"))
             << qPrintable(command.join(QLatin1Char(' ')));
     }
-    // An absolute directory needs none.
+    // An absolute directory needs none: ctl goes on to the socket, where nothing listens.
     const Isolated absolute = isolate(QStringLiteral("/bin/sh"),
                                       {QStringLiteral("-c"), script, QStringLiteral("sh"), parent.path(),
                                        QStringLiteral(AFTERGLOW_BINARY), ctl, QStringLiteral("new-window"), QStringLiteral("--cwd"),
                                        QStringLiteral("/")});
     EXPECT_FALSE(absolute.err.contains(QLatin1String("current directory"))) << qPrintable(absolute.err);
+    EXPECT_EQ(absolute.status, 1) << qPrintable(absolute.err);
+    EXPECT_TRUE(absolute.err.startsWith(QStringLiteral("afterglow ctl: no Afterglow at $AFTERGLOW_SOCKET ("))) << qPrintable(absolute.err);
 }
 
 TEST(CtlBinaryTest, SaysThatNoAfterglowListens)
@@ -1478,13 +1584,17 @@ TEST(CtlBinaryTest, SaysThatNoAfterglowListens)
 /// which answers each call with @p reply and the call's id, and the calls
 /// it got. Afterglow's overlay needs a window: the client needs only the
 /// reply. @p input goes to standard input, else @p inputFd is it.
+/// @p started gets ctl's process ID once it runs.
 struct AgainstTarget
 {
     Isolated outcome;
     QList<QJsonObject> calls;
+    /// The longest request line, '\n' included, as ctl wrote it.
+    qsizetype longestLine = 0;
 };
 
-AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, const QByteArray& input = {}, int inputFd = -1)
+AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, const QByteArray& input = {}, int inputFd = -1,
+                         const std::function<void(qint64)>& started = {})
 {
     AgainstTarget done;
     // Under /tmp: TMPDIR can be too long for a socket path.
@@ -1503,7 +1613,9 @@ AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, cons
         QLocalSocket* peer = server.nextPendingConnection();
         QObject::connect(peer, &QLocalSocket::readyRead, peer, [peer, &done, reply] {
             while (peer->canReadLine()) {
-                const QJsonObject call = QJsonDocument::fromJson(peer->readLine()).object();
+                const QByteArray line = peer->readLine();
+                done.longestLine = std::max(done.longestLine, line.size());
+                const QJsonObject call = QJsonDocument::fromJson(line).object();
                 done.calls.append(call);
                 QJsonObject answer = reply;
                 answer.insert(QStringLiteral("id"), call.value(QStringLiteral("id")));
@@ -1526,6 +1638,7 @@ AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, cons
         ADD_FAILURE() << "cannot start afterglow ctl";
         return done;
     }
+    if (started) started(process.processId());
     process.write(input);
     process.closeWriteChannel();
     // The target answers on this thread.
@@ -1577,12 +1690,18 @@ std::optional<QString> overlayInput(const QList<QJsonObject>& calls)
     return input;
 }
 
-/// The longest request line of @p calls, as ctl wrote it.
-qsizetype longestCall(const QList<QJsonObject>& calls)
+/// Whether process @p pid waits in poll(2), as /proc says: the call that
+/// follows a read that found no data.
+bool waitsInPoll(qint64 pid)
 {
-    qsizetype longest = 0;
-    for (const QJsonObject& call : calls) longest = std::max(longest, QJsonDocument(call).toJson(QJsonDocument::Compact).size() + 1);
-    return longest;
+    QFile file(QStringLiteral("/proc/%1/syscall").arg(pid));
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    bool ok = false;
+    const long number = QByteArray(file.readAll()).split(' ').value(0).toLong(&ok);
+#ifdef SYS_poll
+    if (ok && number == SYS_poll) return true;
+#endif
+    return ok && number == SYS_ppoll;
 }
 
 TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)
@@ -1635,10 +1754,15 @@ TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)
         r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), status}, {QStringLiteral("stdout"), QString()}}), args);
         EXPECT_EQ(r.outcome.status, 1) << status;
     }
-    // A cancel is an error of the call.
+    // A cancel is an error of the call. Without input (-n) the overlay call
+    // is the only one, and it gets the error.
+    QStringList withoutInput = args;
+    withoutInput.insert(withoutInput.indexOf(QStringLiteral("--")), QStringLiteral("-n"));
     r = ctlAgainst({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("code"), QStringLiteral("cancelled")},
                     {QStringLiteral("message"), QStringLiteral("Control.enabled is off")}},
-                   args);
+                   withoutInput);
+    ASSERT_EQ(r.calls.size(), 1);
+    EXPECT_EQ(r.calls.first().value(QStringLiteral("fn")).toString(), QStringLiteral("overlay"));
     EXPECT_EQ(r.outcome.status, 1);
     EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: Control.enabled is off\n"));
     EXPECT_TRUE(r.outcome.out.isEmpty()) << qPrintable(r.outcome.out);
@@ -1716,21 +1840,28 @@ TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
     EXPECT_EQ(overlayInput(r.calls), std::nullopt);
     // A non-blocking pipe that is still empty when ctl reads it: ctl waits
-    // for the list instead of failing on EAGAIN.
+    // for the list instead of failing on EAGAIN. The list goes once ctl
+    // waits in poll(), which it reaches only after a read that found none.
     int ends[2] = {-1, -1};
     ASSERT_EQ(::pipe2(ends, O_CLOEXEC), 0);
     const AfterglowProto::UniqueFd readEnd(ends[0]);
     AfterglowProto::UniqueFd writeEnd(ends[1]);
     ASSERT_EQ(::fcntl(readEnd.get(), F_SETFL, ::fcntl(readEnd.get(), F_GETFL) | O_NONBLOCK), 0);
-    std::thread writer([fd = writeEnd.release()] {
-        // Late enough that ctl finds the pipe empty first.
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        const char list[] = "late\n";
-        [[maybe_unused]] const auto written = ::write(fd, list, sizeof(list) - 1);
-        ::close(fd);
-    });
-    r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, readEnd.get());
-    writer.join();
+    std::thread writer;
+    std::atomic<bool> polled = false;
+    r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, readEnd.get(),
+                   [&writer, &polled, fd = writeEnd.release()](qint64 pid) {
+                       writer = std::thread([&polled, fd, pid] {
+                           const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                           while (!(polled = waitsInPoll(pid)) && std::chrono::steady_clock::now() < deadline)
+                               std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                           const char list[] = "late\n";
+                           [[maybe_unused]] const auto written = ::write(fd, list, sizeof(list) - 1);
+                           ::close(fd);
+                       });
+                   });
+    if (writer.joinable()) writer.join();
+    EXPECT_TRUE(polled) << "ctl never waited for the pipe";
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
     EXPECT_EQ(overlayInput(r.calls), QStringLiteral("late\n"));
     // The overlay's limit itself goes, in parts that each fit in a request.
@@ -1741,7 +1872,7 @@ TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)
         EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
         EXPECT_TRUE(overlayInput(r.calls) == QString::fromLatin1(list)) << int(byte);
         EXPECT_GT(r.calls.size(), 2);
-        EXPECT_LE(longestCall(r.calls), 1024 * 1024);
+        EXPECT_LE(r.longestLine, 1024 * 1024);
     }
 }
 

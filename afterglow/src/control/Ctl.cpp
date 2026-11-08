@@ -5,6 +5,7 @@
 
 #include "ControlSocket.h"
 #include "IpcClient.h"
+#include "../Pane.h"
 #include "../config/Keybinds.h"
 #include "../scripting/OverlaySpec.h"
 
@@ -32,6 +33,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <fcntl.h>
 #include <poll.h>
 #include <unistd.h>
 
@@ -414,12 +416,27 @@ const QStringList Commands = {
 // parts before the call (overlayInput), each a string of at most half of a
 // request line (IpcClient::MaxLineBytes) once written as JSON.
 constexpr qsizetype CtlOverlayInput = OverlaySpec::MaxInput;
-constexpr std::size_t CtlInputPartBytes = 512 * 1024;
+// The part that aglow run sends: half of a request line.
+static_assert(AfterglowProto::Run::InputPartBytes * 2 <= std::size_t(IpcClient::MaxLineBytes));
+
+/// Opens /dev/null on a closed stdin, stdout or stderr, before Qt opens its
+/// first descriptor: else its event descriptor takes number 0, and a read of
+/// standard input waits on it for ever.
+void keepStandardDescriptors()
+{
+    for (int fd = 0; fd <= 2; ++fd) {
+        if (::fcntl(fd, F_GETFD) != -1 || errno != EBADF) continue;
+        // The lowest free number, which is this one: the ones below are open.
+        const int opened = ::open("/dev/null", O_RDWR | O_CLOEXEC);
+        if (opened > 2) ::close(opened);
+    }
+}
 
 } // namespace
 
 int runCtl(int argc, char** argv)
 {
+    keepStandardDescriptors();
     QCoreApplication app(argc, argv);
     QStringList args = app.arguments().mid(1);
     if (args.isEmpty() || args[0] == QLatin1String("-h") || args[0] == QLatin1String("--help")) {
@@ -464,13 +481,16 @@ int runCtl(int argc, char** argv)
         }
         return -1;
     };
-    auto takeFlag = [&args, &indexOfOption](const QString& flag) {
-        bool found = false;
+    // A flag given twice is a usage error too, as an option with a value is.
+    std::optional<QString> repeatedFlag;
+    auto takeFlag = [&args, &indexOfOption, &repeatedFlag](const QString& flag) {
+        int found = 0;
         for (qsizetype i = indexOfOption(flag); i >= 0; i = indexOfOption(flag)) {
             args.removeAt(i);
-            found = true;
+            ++found;
         }
-        return found;
+        if (found > 1 && !repeatedFlag) repeatedFlag = flag;
+        return found > 0;
     };
     // An option that needs a value and came last: a usage error of its own,
     // not an unknown option. So is one given twice, which shows as a word
@@ -495,8 +515,10 @@ int runCtl(int argc, char** argv)
     // Options left after a command took its own are typing errors. With
     // @p shortOptions the command has options such as -n: a word like -W is
     // one too, and not an argument.
-    auto extra = [&args, &missingValue, &takenValues](qsizetype positional, bool shortOptions = false) -> std::optional<QString> {
+    auto extra = [&args, &missingValue, &takenValues, &repeatedFlag](qsizetype positional,
+                                                                     bool shortOptions = false) -> std::optional<QString> {
         if (missingValue) return QStringLiteral("%1 needs a value").arg(*missingValue);
+        if (repeatedFlag) return QStringLiteral("%1 is given more than once").arg(*repeatedFlag);
         for (const QString& arg : std::as_const(args)) {
             if (takenValues.contains(arg)) return QStringLiteral("%1 is given more than once").arg(arg);
         }
@@ -728,15 +750,17 @@ int runCtl(int argc, char** argv)
         if (const auto error = extra(-1)) return usage(*error);
         act = [&, title = (args + trailing).join(QLatin1Char(' '))](qint64 pane) { return run(QStringLiteral("setTitle"), {pane, title}); };
     } else if (command == QLatin1String("signal")) {
-        bool okChannel = false;
         bool okValue = false;
-        const int channel = args.value(0).toInt(&okChannel);
+        // The channel as afterglow takes it: one that it would refuse is a usage error here.
+        const std::optional<quint32> channel = decimal(args.value(0));
         const double value = args.value(1).toDouble(&okValue);
         if (const auto error = extra(2)) return usage(*error);
-        if (!okChannel || !okValue || !std::isfinite(value)) {
+        if (!channel || !okValue || !std::isfinite(value)) {
             return usage(QStringLiteral("signal needs a channel and a number"));
         }
-        act = [&, channel, value](qint64 pane) { return run(QStringLiteral("signal"), {pane, channel, value}); };
+        if (*channel >= quint32(Pane::SignalCount))
+            return usage(QStringLiteral("signal channels are 0 to %1").arg(Pane::SignalCount - 1));
+        act = [&, channel = int(*channel), value](qint64 pane) { return run(QStringLiteral("signal"), {pane, channel, value}); };
     } else if (command == QLatin1String("notify")) {
         if (const auto error = extra(-1)) return usage(*error);
         const QStringList words = args + trailing;
@@ -804,7 +828,7 @@ int runCtl(int argc, char** argv)
                 const std::string_view bytes(overlayInput->constData(), std::size_t(overlayInput->size()));
                 std::size_t at = 0;
                 do {
-                    const std::size_t size = AfterglowProto::Run::inputPart(bytes.substr(at), true, CtlInputPartBytes);
+                    const std::size_t size = AfterglowProto::Run::inputPart(bytes.substr(at), true, AfterglowProto::Run::InputPartBytes);
                     const bool last = at + size == bytes.size();
                     const QString part = QString::fromUtf8(bytes.substr(at, size).data(), qsizetype(size));
                     if (!client.call(QStringLiteral("overlayInput"), {QString::fromStdString(*name), part, last})) return 1;

@@ -24,13 +24,16 @@ wrong, and points to the skills that hold the procedures.
 - **Never touch the user's running Afterglow.** This session usually runs inside one of its panes
   (`AFTERGLOW_PANE_ID` is set). `afterglow ctl`, `aglow run` and `afterglow run` (also `run --complete`) use the
   pane's `AFTERGLOW_SOCKET`, else the socket of the user's Wayland display, so they act on the user's own terminal.
+  `afterglow ssh` calls the pane's `AFTERGLOW_SOCKET` too, and runs `ssh -O` on the user's shared ssh connections.
   A private D-Bus does not change that, and neither does a pseudo-terminal. Run them only against an Afterglow of a
   test, with `AFTERGLOW_PANE_ID` cleared: the `XDG_RUNTIME_DIR` and `AFTERGLOW_SOCKET` of a test (`RunBinaryTest` in
-  `CommandSocketTest.cpp`), or a nested KWin with its own `WAYLAND_DISPLAY` (`nested_desktop.py`).
-  `pkill afterglow` closes their windows. Test in a nested KWin with its own display (`ag-verify-live`).
-  `aglow transfer`, `dnd`, `icat` and `clipboard`, and the `afterglow` commands of the same names, open `/dev/tty`,
-  which is the user's pane. Run them only in a pseudo-terminal that a test makes (`clipboard_pty.py`,
-  `DragDropTest.cpp`).
+  `CommandSocketTest.cpp`, `RemoteCommandsTest.cpp`), or a nested KWin with its own `WAYLAND_DISPLAY`
+  (`nested_desktop.py`). Test in a nested KWin with its own display (`ag-verify-live`). Never run `pkill afterglow`:
+  it closes the user's windows too.
+  `aglow transfer`, `dnd`, `icat`, `clipboard` and `run`, and the `afterglow` commands of the same names, open
+  `/dev/tty`, which is the user's pane. `aglow run` asks it for the socket of an ssh session (OSC 24569), and inside
+  tmux it runs `tmux display-message` on the user's tmux. Run them only in a pseudo-terminal that a test makes
+  (`clipboard_pty.py`, `run_pty.py`, `tmux_pty.py`, `DragDropTest.cpp`).
 - **A build is not a test.** Check a visible change with `afterglow_renderpng` or the native window tests, at the
   edge cases (one pane, two panes, progress 0 and 1, the wrap point of a loop). The commit message says what you ran.
   A green suite has missed a transparent shader, a flicker at a wrap seam and an animation that never stopped.
@@ -91,7 +94,7 @@ wrong, and points to the skills that hold the procedures.
 | Task | Command |
 | --- | --- |
 | Build | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build -j6` (zero warnings is the bar) |
-| Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j6` (about 1,450, all pass) |
+| Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j6` (about 1,630, all pass) |
 | Native window tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 .claude/skills/ag-verify-live/headless_native.py` |
 | Shader preview | `build/tools/render/afterglow_renderpng --shader PACK - out.png` |
 | Configuration reference | `python3 tools/generate-reference.py build/afterglow/afterglow` |
@@ -104,7 +107,7 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 | Area | Files |
 | --- | --- |
 | Terminal core | `libs/afterglow-vt/`: `Terminal.cpp` (parser and dispatch), `Screen.cpp` (grid, scrollback, reflow), `Input.cpp` (key and mouse encoding), `Graphics.cpp`, `Sixel.cpp`, `ITerm2.cpp` (images), `Notifications.cpp`, `ShellContext.cpp` (OSC 133 and host context), `Unicode.cpp` with the generated `UnicodeTables.inc` |
-| Protocol formats | `libs/afterglow-proto/` (no Qt; the terminal side of each format, and the client side that tests and clients of the library use): `Transfer.cpp` and `Delta.cpp` (OSC 5113 file transfer), `DragDrop.cpp` (OSC 72), `Graphics.cpp` (APC G keys and replies), `Clipboard.cpp` (OSC 5522 and OSC 52), `Color.h` (X11 color names and color specs), `Placeholder.h` (Unicode placeholders), `TransferClient.cpp`, `TransferPath.cpp`, `FdDelta.cpp` and `Fd.h` (the transfer client of `aglow transfer`), `DndTree.cpp` and `DndUri.cpp` (the drag-and-drop trees and URI lists of `aglow dnd`), `Version.h`, `Json.cpp` (JSON for the phosphor-ipc client), `Ipc.cpp` (the wire client), `Run.cpp` (`aglow run`), `Socket.cpp` (socket lookup), `Remote.cpp` (OSC 24569 and `aglow remote-prune`, for remote commands), `Base64.h`, `Hex.h`, `Text.h`, `Sha256.cpp`, `Random.cpp`, `Zlib.cpp`; zlib-ng and xxHash from the archives that `cmake/AfterglowDependencies.cmake` pins |
+| Protocol formats | `libs/afterglow-proto/` (no Qt; the terminal side of each format, and the client side that tests and clients of the library use): `Transfer.cpp` and `Delta.cpp` (OSC 5113 file transfer), `DragDrop.cpp` (OSC 72), `Graphics.cpp` (APC G keys and replies), `Clipboard.cpp` (OSC 5522 and OSC 52), `Color.h` (X11 color names and color specs), `Placeholder.h` (Unicode placeholders), `TransferClient.cpp`, `TransferPath.cpp`, `FdDelta.cpp` and `Fd.h` (the transfer client of `aglow transfer`), `DndTree.cpp` and `DndUri.cpp` (the drag-and-drop trees and URI lists of `aglow dnd`), `Version.h`, `Json.cpp` (JSON for the phosphor-ipc client), `Ipc.cpp` (the wire client), `Run.cpp` (`aglow run`), `Socket.cpp` (socket lookup), `Remote.cpp` (`aglow remote-prune` and the query of `aglow run`) and `RemoteOsc.h` (the OSC 24569 answer that the parser needs), for remote commands, `Base64.h`, `Hex.h`, `Text.h`, `Sha256.cpp`, `Random.cpp`, `Zlib.cpp`; zlib-ng and xxHash from the archives that `cmake/AfterglowDependencies.cmake` pins |
 | PTY | `libs/afterglow-pty/src/Pty.cpp`: spawn, the reader thread, bounded input queue, the pipes of overlays; tests in `libs/afterglow-pty/tests/` (`PtyLib.*`) |
 | Renderer | `libs/afterglow-render/`: `GridRenderer.cpp` (panes, window composition, the overview and other tabs), `PostChain.cpp` (shader chains, buffers, budgets, the pane and tab images), `ShaderProgram.*` (the uniform mirrors of the GLSL contract), `GlyphCache.cpp`, `FontSet.cpp`, `Bidi.cpp`, `GpuDevice.cpp` |
 | Window | `afterglow/src/TerminalWindow.cpp` (input routing, render loop, panes and tabs), `TerminalWindowLayout.cpp`, `TerminalWindowOverview.cpp` (overview, tab transitions, pane effects), `TerminalWindowProject.cpp`, `TerminalWindowScript.cpp`, `TerminalWindowDock.cpp` (script docks: layout and hits), `DockArea.cpp` (one dock's text and snapshot), `TerminalWindowOverlay.cpp` (overlays over panes: open, fade, end), `PaneOverlay.*` (an overlay's program and terminal), `Pane.cpp`, `SplitTree.cpp`, `KeyMapping.cpp`, `XkbKeyboard.cpp`, `animation/` |

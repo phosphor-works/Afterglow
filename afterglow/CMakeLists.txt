@@ -140,6 +140,13 @@ target_include_directories(afterglow_overlayspec PUBLIC src)
 target_compile_definitions(afterglow_overlayspec PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(afterglow_overlayspec PUBLIC Qt6::Core)
 
+# The bounded decoder of the images that programs send: the panes decode
+# with it, and afterglow_renderpng decodes as they do.
+qt_add_library(afterglow_imagedecode STATIC src/ImageDecode.cpp src/ImageDecode.h)
+target_include_directories(afterglow_imagedecode PUBLIC src)
+target_compile_definitions(afterglow_imagedecode PRIVATE QT_NO_CAST_FROM_ASCII)
+target_link_libraries(afterglow_imagedecode PUBLIC Qt6::Gui Afterglow::Vt Afterglow::Proto)
+
 # The script host, shared with its tests. The Control binding lives in the app.
 qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h
     src/scripting/ScriptTasks.cpp src/scripting/ScriptTasks.h
@@ -207,13 +214,14 @@ target_compile_definitions(afterglow_app PUBLIC QT_NO_CAST_FROM_ASCII AFTERGLOW_
 # The layer-shell QPA plugin is part of the phosphor build; make sure it exists.
 add_dependencies(afterglow phosphorwayland-qpa)
 target_include_directories(afterglow_app PUBLIC src)
-target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
+target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio afterglow_imagedecode Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::CorePrivate Qt6::GuiPrivate Qt6::QuickPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorIpc::PhosphorIpc PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland
     Qt6::DBus Qt6::Network KF6::WindowSystem
-    PRIVATE Afterglow::Proto)
+    # Control.h, CommandSocket.h and RemoteSockets.h include its headers.
+    Afterglow::Proto)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # Private libraries: afterglow's own and the phosphor ones it was built with.

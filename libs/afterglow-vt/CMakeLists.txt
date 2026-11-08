@@ -30,10 +30,12 @@ target_include_directories(AfterglowVt PUBLIC
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-32)
 # The wire formats of the protocols the terminal parses: images, clipboard,
-# base64, the text checks, and the command limits of drag and drop and file
-# transfer. PUBLIC, because the public headers include them: Terminal.h holds
-# a ClipboardAssembler from AfterglowProto/Clipboard.h, and Graphics.h keeps
-# the pending transmission's GraphicsCommand from AfterglowProto/Graphics.h.
+# base64, the text checks, the command limits of drag and drop and file
+# transfer, and the remote socket query of aglow. PUBLIC, because the public
+# headers include them: Terminal.h holds a ClipboardAssembler from
+# AfterglowProto/Clipboard.h and its host answers the OSC 24569 query with a
+# Remote::Answer from AfterglowProto/RemoteOsc.h, and Graphics.h keeps the
+# pending transmission's GraphicsCommand from AfterglowProto/Graphics.h.
 target_link_libraries(AfterglowVt PUBLIC Afterglow::Proto PRIVATE PkgConfig::PCRE2)
 # XTVERSION reports the project's version. A generated header, not a compile
 # definition, so tools/fuzz, which compiles these sources itself, has it too.

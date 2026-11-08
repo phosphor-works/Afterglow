@@ -24,13 +24,16 @@
 -- for an effect's result with afterglow.await. Commands run from the shell
 -- (`aglow run <id> <command>`), from the command palette and the context
 -- menu when they have a palette title, from a key as "script:<id>.<command>"
--- (Keybinds.bindings, a key table or a key sequence), and from
+-- (Keybinds.bindings, a key table or a key sequence), from
 -- `afterglow ctl action script:<id>.<command>` or a SCRIPT.COMMAND call of
--- the commands target.
+-- the commands target, and, for a command with remote = true, from
+-- `aglow run` on a remote host in an `afterglow ssh` session.
 -- A package declares its commands in package.json, not in metadata.
 --
 -- A helper that takes a pane targets the event's pane when the pane is nil.
--- In an event without a pane (on_load, on_config_changed) such an effect fails: pass ev.terminal.active_pane instead.
+-- In an event without a pane (on_load, on_unload, on_config_changed, a command run with no pane, and
+-- on_timer, on_file_changed and results of a handler that had none) such an effect fails: pass
+-- ev.terminal.active_pane instead.
 
 export type LaunchOptions = { cwd: string?, env: {[string]: string | false}?, size: number? }
 
@@ -84,11 +87,12 @@ export type HostEvent = { pane: Pane?, terminal: State } -- the targeted pane, i
 export type CommandEvent = {
     args: { string }, -- at most 256, each at most 4096 UTF-16 units
     -- The client's directory, else the pane's, else "". For source "remote", a directory on the
-    -- remote host, as text: not a local path.
+    -- remote host, as text: not a local path, and "" when the client gives none.
     cwd: string,
     pane: (Pane | { id: number })?, -- only the id when the pane closed before the run started
-    -- All of the client's stdin, for a command with stdin = true run from the shell. nil for
-    -- another source, and when aglow run reads none: with -n, or when stdin is a terminal.
+    -- All of the client's stdin, for a command with stdin = true run from the shell or from a
+    -- remote host. nil for another source, and when aglow run reads none: with -n, or when
+    -- stdin is a terminal.
     -- A run with more than Scripts.commandStdinLimit does not start, and aglow run refuses
     -- stdin that is not UTF-8 text (exit status 2).
     stdin: string?,
@@ -176,7 +180,7 @@ export type OverlayOptions = {
     -- At most 256 variables and 64 KiB of names and values.
     env: {[string]: string | false}?,
     -- Shows as the pane's title while the overlay runs, and in the top edge of a border (cut
-    -- to its width), at most 512 characters, with no control character, line break or
+    -- to its width), at most 512 UTF-16 units, with no control character, line break or
     -- bidirectional control.
     title: string?,
     -- A popup over the pane, which stays visible around it: a whole number of cells, 1-10000,
@@ -196,6 +200,8 @@ export type OperationData = {
     text: string?, truncated: boolean?, available: boolean?, name: string?,
     stdout: string?, stderr: string?, exit_code: number?, id: string?, title: string?,
     pane: Pane?, pane_id: number?, tab_id: number?, window_id: number?, panes: { number }?,
+    -- The values that a shader_preset applied.
+    values: {[string]: number | boolean | string}?,
     -- Overview results.
     open: boolean?, highlighted: number?, cards: { number }?,
     -- Durable state results; revision must be supplied to the next state_write.
@@ -241,7 +247,7 @@ export type Effects = Effect | { Effect }
 --   run_command(command: string, ev: CommandEvent)
 -- Packages receive on_load(ev: PackageLoadEvent); migrate(value, oldVersion, newVersion)
 -- returns a new state object. Migration/init failures retain the old instance.
---   on_load(ev: HostEvent)             on_unload(ev: HostEvent)
+--   on_load(ev: HostEvent)             on_unload(ev: HostEvent) -- returns state_write and log only
 --   on_config_changed(ev: HostEvent)
 --   on_timer(ev: HostEvent & { name: string })
 --   on_file_changed(ev: HostEvent & { name: string, path: string, exists: boolean })
@@ -262,6 +268,7 @@ declare afterglow: {
     panes: (state: State, scope: ("all" | "pane" | "tab" | "window")?, anchor: PaneRef?) -> { Pane },
     -- Applies the effect and waits in this handler: its data, or nil and the error,
     -- then the result event. Not in migrate, on_unload or code that runs at load time.
+    -- Only afterglow resumes a waiting handler: coroutine.resume refuses its coroutine.
     await: (effect: Effect) -> (any?, OperationError?, ResultEvent),
     -- Applies 0-16 effects in order and waits for all: their result events, in order.
     await_all: (effects: { Effect }) -> { ResultEvent },
@@ -273,7 +280,8 @@ declare afterglow: {
     -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.
     read_region: (pane: PaneRef, region: string, max_bytes: number?) -> Effect,
     read_text: (pane: PaneRef, scope: ("screen" | "scrollback" | "last-output" | "selection")?, max_bytes: number?) -> Effect,
-    -- Package-local JSON object; writes use the revision returned by state_read.
+    -- The script's own JSON object, of a package or of a single file by its id; writes use
+    -- the revision returned by state_read. The only effects of on_unload, with log.
     state_read: () -> Effect,
     state_write: (value: {[string]: any}, revision: number) -> Effect,
     open_directory: (cwd: string, layout: string?) -> Effect,
@@ -334,7 +342,7 @@ declare afterglow: {
     tab_menu: (pane: PaneRef) -> Effect,
     -- Moves the pane's tab to index (Tab.index, from 0) in its window, without showing it.
     move_tab: (pane: PaneRef, index: number) -> Effect,
-    -- Query active instances, metadata and effective values via on_result.
+    -- Query active instances, metadata and effective values: await them, or get them in on_result.
     shaders: (pane: PaneRef) -> Effect,
     scene_state: (pane: PaneRef) -> Effect,
     shader_presets: (pane: PaneRef, instance: string) -> Effect,
@@ -342,7 +350,7 @@ declare afterglow: {
     save_shader_preset: (pane: PaneRef, instance: string, name: string) -> Effect,
     -- Replaces this script's overrides; {} resets. Window effects require window scope.
     shader_parameters: (pane: PaneRef, instance: string, values: {[string]: number | boolean | string}, scope: ("pane" | "tab" | "window")?, transition: ShaderTransition?) -> Effect,
-    -- sets uSignal[channel] (0-7) on the pane's shaders: the value, and its age from now
+    -- sets uSignal[channel] (0-7) on the pane's shaders: the value (default 1), and its age from now
     signal: (pane: PaneRef, channel: number, value: number?) -> Effect,
     -- One effect, 1-8 unique channels, at most 128 panes. Defaults to anchor's tab.
     signals: (pane: PaneRef, values: { SignalValue }, scope: ("pane" | "tab" | "window")?) -> Effect,
@@ -353,6 +361,7 @@ declare afterglow: {
     -- Result data: the Overview.
     overview: (pane: PaneRef, operation: ("open" | "close" | "choose")?) -> Effect,
     overview_move: (pane: PaneRef, step: number?, target: PaneRef?) -> Effect,
-    -- Plays over the pane in Shaders.paneEffects. color is a palette index (default 4).
+    -- Plays over the pane in Shaders.paneEffects. duration_ms: 50-10000 (default 600). color is a
+    -- palette index (default 4).
     pulse: (pane: PaneRef, effect: ("portal" | "flash" | "shake" | string | number), options: { duration_ms: number?, color: number? }?) -> Effect,
 }

@@ -58,6 +58,9 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
     auto* pane = new Pane(launch.terminal, overlay.get());
     overlay->m_pane = pane;
     pane->setOverlayHost(&host);
+    // An ssh session that the program runs answers as the host's would
+    // (Pane::setRemoteSocket keeps it current).
+    pane->setRemoteSocket(host.remoteSocketAnswer());
     pane->setOutputLimit(std::size_t(OverlaySpec::MaxOutput) + 1);
     pane->setLaunch(QString::fromStdString(options.workingDirectory), spec.argv);
     if (!spec.argv.isEmpty()) pane->setLaunchedProgram(QFileInfo(spec.argv.first()).fileName());

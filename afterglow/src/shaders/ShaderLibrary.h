@@ -33,7 +33,8 @@ namespace Afterglow {
 
 /// Terminal shader packs by id: Phosphor shader packs (a directory with
 /// metadata.json and its stages) written against the terminal contract in
-/// data/shaders/shared. Packs come from ~/.config/afterglow/shaders, the system
+/// data/shaders/shared. Packs come from the user's directory (the shaders
+/// directory beside the config file, ~/.config/afterglow/shaders), the system
 /// data directories and the bundled packs, and from loaded script packages'
 /// shaders/ directories as "<package>.<pack>". When two packs answer to one
 /// name, the user's wins over the system's, and the system's over the bundled
@@ -52,7 +53,11 @@ public:
     /// one window, may hold at once.
     static constexpr qint64 MaxDecodedImageBytes = 256LL * 1024 * 1024;
 
+    /// The user's packs in ~/.config/afterglow/shaders.
     explicit ShaderLibrary(QObject* parent = nullptr);
+    /// The user's packs in @p userDirectory: afterglow --config DIR/config.json
+    /// takes them from DIR/shaders, as it takes its scripts and themes from DIR.
+    explicit ShaderLibrary(const QString& userDirectory, QObject* parent = nullptr);
     ~ShaderLibrary() override;
 
     using Refs = ShaderRefs;
@@ -124,6 +129,7 @@ private:
 
     void seedPresets();
     void refreshWatches();
+    QString m_userDirectory; ///< the user's own packs, the highest of m_baseDirectories
     std::unique_ptr<PhosphorShaders::ShaderRegistry> m_registry;
     /// Bundled, system and user packs, lowest priority first. A build-tree
     /// binary puts the checkout's packs above the system ones.

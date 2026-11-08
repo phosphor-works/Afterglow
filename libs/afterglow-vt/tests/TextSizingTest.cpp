@@ -146,6 +146,19 @@ TEST(TextSizing, ReflowFlattensBlocks)
     EXPECT_EQ(rowText(t.t, 0), "W");
 }
 
+TEST(TextSizing, ACombiningMarkJoinsTheBlockItFollows)
+{
+    // kitty: "If the text is a combining character it is added to the
+    // existing multicell character". Every row of the block keeps its text.
+    Term t(20, 5);
+    t.feed("\x1b]66;s=2;a\x07\xcc\x81"); // a 2x2 'a', then U+0301
+    for (int y = 0; y < 2; ++y) {
+        EXPECT_EQ(t.t.screen().graphemeExtra(t.t.screen().row(y), 0), std::u32string_view(U"\u0301")) << y;
+        EXPECT_FALSE(t.at(1, y).hasGrapheme()) << y;
+    }
+    EXPECT_EQ(t.t.screen().cursor.x, 2);
+}
+
 TEST(TextSizing, PlainSizeIsOrdinaryText)
 {
     Term t(10, 2);

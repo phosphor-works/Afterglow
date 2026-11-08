@@ -72,9 +72,13 @@ public:
     Q_INVOKABLE void overlay(double pane, const QStringList& argv, const QVariantMap& options);
     /// Standard input for an overlay of this connection, in parts, before
     /// overlay() names it with its input option: input that does not fit in
-    /// one request. Kept until that call takes it or the connection closes.
-    /// Returns true. More than OverlaySpec::MaxInput bytes of UTF-8 for one
-    /// input fails, and drops that input.
+    /// one request. Kept until that call takes it, the connection closes or
+    /// Control.enabled goes off. Returns true. It fails for a name that is
+    /// not 1 to 64 letters, digits, _ and -, for a call from no connection,
+    /// for a fifth input that waits on the connection, for an input that
+    /// has ended, and when all the inputs that wait would pass
+    /// MaxWaitingInputBytes. More than OverlaySpec::MaxInput bytes of UTF-8
+    /// for one input fails too, and drops that input.
     Q_INVOKABLE bool overlayInput(const QString& input, const QString& chunk, bool eof);
 
     /// Inputs that wait for overlay(), for one connection.
@@ -93,6 +97,10 @@ public:
     /// reason version or length.
     Q_INVOKABLE QVariantMap openRemoteSocket(double pane, double pid, const QString& host, const QString& directory,
                                              double protocol, const QStringList& ssh, const QString& destination);
+    /// `ssh -O forward` added the forward of @p token: the pane answers with
+    /// its path. It fails when the session has ended, and the client then
+    /// cancels the forward (RemoteSockets::forwarded).
+    Q_INVOKABLE void remoteSocketForwarded(const QString& token);
     /// `ssh -O forward` failed for @p token: @p reason is forward.
     Q_INVOKABLE void remoteSocketFailed(const QString& token, const QString& reason);
     void setRemoteSockets(RemoteSockets* sockets) { m_remote = sockets; }
@@ -101,6 +109,8 @@ public:
     static QString overlayOwner(quint64 connection) { return QStringLiteral("control:%1").arg(connection); }
     /// Cancels the overlays of every control client with @p message.
     void cancelOverlays(const QString& message);
+    /// Drops the inputs that wait for overlay(), of every connection.
+    void dropInputs();
     /// The client of @p connection has gone: its overlays go with it.
     void connectionClosed(quint64 connection);
 

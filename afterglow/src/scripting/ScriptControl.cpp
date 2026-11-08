@@ -15,6 +15,7 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         const auto info = control.paneInfo(pane);
         return info ? Control::paneMap(*info) : QVariantMap{};
     };
+    c.paneExists = [&control](quint32 pane) { return control.hasPane(pane); };
     c.state = [&control] { return control.state(); };
     c.structuralAction = &Control::isStructuralAction;
     c.apply = [&control](const QVariantMap& e) -> ScriptHost::EffectResult {

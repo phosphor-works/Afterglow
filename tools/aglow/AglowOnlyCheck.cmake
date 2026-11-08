@@ -4,6 +4,8 @@
 # cmake -DSOURCE=<dir> -DBINARY=<dir> -DGENERATOR=<name> [-DMAKE_PROGRAM=<path>]
 #       [-DBUILD_TYPE=<type>] [-DC_COMPILER=<path>] [-DCXX_COMPILER=<path>]
 #       [-DC_FLAGS=<flags>] [-DCXX_FLAGS=<flags>] [-DLINKER_FLAGS=<flags>]
+#       [-DCONFIGS=<TYPE>,...] [-DC_FLAGS_<TYPE>=<flags>] [-DCXX_FLAGS_<TYPE>=<flags>]
+#       [-DLINKER_FLAGS_<TYPE>=<flags>]
 #       [-DCPM_CACHE=<dir>] [-DDEPS_ARCHIVES=<dir>] [-DJOBS=<n>] -P AglowOnlyCheck.cmake
 #
 # Builds aglow alone (AFTERGLOW_AGLOW_ONLY) from SOURCE in BINARY, as a remote
@@ -21,7 +23,8 @@
 #
 # The tools, the build type and the flags are those of the build that runs the
 # test, so that aglow alone links as its aglow does: dynamically when the flags
-# hold -fsanitize. CPM_CACHE and DEPS_ARCHIVES are those of that build too, so
+# hold -fsanitize. CONFIGS names the build types in upper case, and the flags
+# of each type come as they are, also empty, as that build has them. CPM_CACHE and DEPS_ARCHIVES are those of that build too, so
 # that the pinned archives come from where that build took them.
 
 foreach(required SOURCE BINARY GENERATOR)
@@ -60,6 +63,18 @@ foreach(pair "CMAKE_MAKE_PROGRAM;MAKE_PROGRAM" "CMAKE_BUILD_TYPE;BUILD_TYPE" "CM
     if(${given})
         list(APPEND args "-D${name}=${${given}}")
     endif()
+endforeach()
+
+string(REPLACE "," ";" configs "${CONFIGS}")
+foreach(config IN LISTS configs)
+    foreach(pair "CMAKE_C_FLAGS_${config};C_FLAGS_${config}" "CMAKE_CXX_FLAGS_${config};CXX_FLAGS_${config}"
+                 "CMAKE_EXE_LINKER_FLAGS_${config};LINKER_FLAGS_${config}")
+        list(GET pair 0 name)
+        list(GET pair 1 given)
+        if(DEFINED ${given})
+            list(APPEND args "-D${name}=${${given}}")
+        endif()
+    endforeach()
 endforeach()
 
 aglow_only_run(configuration ${CMAKE_COMMAND} ${args})

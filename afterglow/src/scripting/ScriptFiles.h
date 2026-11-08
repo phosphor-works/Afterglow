@@ -28,10 +28,21 @@ inline QByteArray utf8Prefix(QByteArray bytes, qsizetype limit)
     return bytes;
 }
 
+/// What tells one revision of a file from the next: its inode, size and times.
+inline QByteArray fileStamp(const struct stat& info)
+{
+    return QByteArray::number(qulonglong(info.st_dev)) + ':' + QByteArray::number(qulonglong(info.st_ino)) + ':'
+        + QByteArray::number(qlonglong(info.st_size)) + ':' + QByteArray::number(qlonglong(info.st_mtim.tv_sec)) + '.'
+        + QByteArray::number(qlonglong(info.st_mtim.tv_nsec)) + ':' + QByteArray::number(qlonglong(info.st_ctim.tv_sec)) + '.'
+        + QByteArray::number(qlonglong(info.st_ctim.tv_nsec));
+}
+
 // Read the descriptor that was validated, with a byte bound even if the file
 // grows. O_NONBLOCK prevents a replaced path from hanging the GUI on a FIFO.
+// @p stamp gets the file's stamp from before the read: a write during the
+// read makes the stamp of the path differ later.
 inline QString readScriptFile(const QString& path, qint64 limit, QByteArray& bytes,
-                              const QString& root = {}, bool noFollow = false)
+                              const QString& root = {}, bool noFollow = false, QByteArray* stamp = nullptr)
 {
     const int fd = ::open(QFile::encodeName(path).constData(),
         O_RDONLY | O_CLOEXEC | O_NONBLOCK | (noFollow ? O_NOFOLLOW : 0));
@@ -45,6 +56,7 @@ inline QString readScriptFile(const QString& path, qint64 limit, QByteArray& byt
         if (!opened.startsWith(root + QLatin1Char('/')))
             return QStringLiteral("Package file escapes its root: %1").arg(path);
     }
+    if (stamp) *stamp = fileStamp(info);
     QFile file;
     if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::DontCloseHandle)) return file.errorString();
     auto contents = file.read(limit + 1);

@@ -4,6 +4,7 @@
 #include "CommandSocket.h"
 
 #include "Control.h"
+#include "RemoteSockets.h"
 #include "../config/Settings.h"
 
 #include <AfterglowProto/Random.h>
@@ -163,6 +164,11 @@ void CommandApi::run(const QString& run, const QString& script, const QString& c
     if (const auto entry = m_socket.find(connection, run); entry && entry->started) {
         sendErrorReply(QStringLiteral("run ID %1 is in use on this connection").arg(run));
         return;
+    } else if (entry && entry->hasInput && !entry->eof) {
+        // A part of the input would look whole to the command. The input
+        // stays: the client can send the rest and run again.
+        sendErrorReply(QStringLiteral("the input of run %1 has not ended").arg(run));
+        return;
     }
     QString error;
     const auto target = m_socket.pane(pane, error);
@@ -224,18 +230,20 @@ void CommandApi::runEntry(const QString& token, const QStringList& args)
 }
 
 CommandSocket::CommandSocket(Control& control, ScriptHost& scripts, SettingsStore& settings, PhosphorIpc::IpcRouter& router,
-                             std::optional<RemoteSession> remote, QObject* parent)
+                             std::optional<RemoteSession> remote, std::shared_ptr<CommandBudget> budget, QObject* parent)
     : QObject(parent)
     , m_control(control)
     , m_scripts(scripts)
     , m_settings(settings)
     , m_router(router)
     , m_remote(std::move(remote))
+    , m_budget(budget ? std::move(budget) : std::make_shared<CommandBudget>())
     , m_api(std::make_unique<CommandTarget>(*this))
 {
     auto* target = static_cast<CommandTarget*>(m_api.get());
     // The commands' own entries run with no client of their own. A remote
-    // host has list and run only.
+    // host has the calls of a run (list, input, run, ack and cancel), and
+    // no SCRIPT.COMMAND entries.
     target->setCommands(m_remote ? QList<ScriptCommand>{} : scripts.commands());
     // Queued: set_commands can change the list inside a call of this target.
     if (!m_remote) {
@@ -256,7 +264,8 @@ CommandSocket::~CommandSocket()
 void CommandSocket::applySettings()
 {
     const Settings& s = m_settings.settings();
-    const bool want = s.control.enabled && s.scripts && (!m_remote || (s.sshIntegration && s.sshRemoteCommands));
+    const QString remoteOff = m_remote ? remoteCommandsOff(s) : QString();
+    const bool want = m_remote ? remoteOff.isEmpty() : s.control.enabled && s.scripts;
     if (want == m_enabled) return;
     if (want) {
         m_enabled = m_router.registerTarget(target(), m_api.get());
@@ -265,7 +274,7 @@ void CommandSocket::applySettings()
     }
     m_router.unregisterTarget(target(), m_api.get());
     m_enabled = false;
-    dropAll(m_remote ? QStringLiteral("remote commands are off in the running afterglow (Terminal.sshRemoteCommands)")
+    dropAll(m_remote ? remoteOff + QStringLiteral(" in the running afterglow")
                      : QStringLiteral("commands are off in the running afterglow (Control.enabled or Scripts.enabled)"),
             true);
 }
@@ -273,11 +282,13 @@ void CommandSocket::applySettings()
 void CommandSocket::dropAll(const QString& message, bool cancel)
 {
     const auto all = std::exchange(m_connections, {});
-    m_waitingInputBytes = 0;
-    m_waitingOutputBytes = 0;
     std::deque<Output> output;
     for (const Connection& connection : all) {
         for (const auto& run : connection.runs) {
+            // This socket's share of the budget, which other sockets keep using.
+            releaseInput(*run);
+            m_budget->outputBytes -= run->outputBytes;
+            run->outputBytes = 0;
             run->reply.fail(message);
             if (!cancel) continue;
             std::move(run->output.begin(), run->output.end(), std::back_inserter(output));
@@ -323,13 +334,13 @@ std::optional<CommandSocket::Refusal> CommandSocket::input(quint64 connection, c
         return Refusal{InputTooLarge, QStringLiteral("Standard input is over %1 KiB (Scripts.commandStdinLimit)").arg(limit >> 10)};
     }
     // The input that waited stays: a cancel or a closed connection gives the room back.
-    if (m_waitingInputBytes + bytes.size() > MaxWaitingInputBytes) {
+    if (m_budget->inputBytes + bytes.size() > MaxWaitingInputBytes) {
         return Refusal{nullptr, QStringLiteral("afterglow keeps at most %1 MiB of input for runs that have not started")
                                     .arg(MaxWaitingInputBytes >> 20)};
     }
     Run& run = entry ? *entry : *m_connections[connection].runs.insert(id, std::make_shared<Run>()).value();
     run.input += bytes;
-    m_waitingInputBytes += bytes.size();
+    m_budget->inputBytes += bytes.size();
     run.hasInput = true;
     run.eof = eof;
     return std::nullopt;
@@ -369,13 +380,13 @@ std::optional<CommandSocket::Refusal> CommandSocket::cancel(quint64 connection, 
 void CommandSocket::releaseInput(Run& run)
 {
     if (run.started) return;
-    m_waitingInputBytes -= run.input.size();
+    m_budget->inputBytes -= run.input.size();
     run.input.clear();
 }
 
 std::deque<CommandSocket::Output> CommandSocket::takeOutput(Run& run)
 {
-    m_waitingOutputBytes -= run.outputBytes;
+    m_budget->outputBytes -= run.outputBytes;
     run.outputBytes = 0;
     return std::exchange(run.output, {});
 }
@@ -407,7 +418,7 @@ void CommandSocket::start(quint64 connection, const QString& id, ScriptHost::Com
     if (!entry) entry = runs.insert(id, std::make_shared<Run>()).value();
     // Out of the books first, and converted once: the script gets it as it came.
     const QByteArray input = std::exchange(entry->input, {});
-    m_waitingInputBytes -= input.size();
+    m_budget->inputBytes -= input.size();
     if (entry->hasInput) request.input = QString::fromUtf8(input);
     entry->started = true;
     entry->credit = credit;
@@ -463,14 +474,14 @@ bool CommandSocket::send(quint64 connection, const char* event, const QString& i
         at += size;
     }
     const qint64 bytes = qint64(parts.size()) * OutputPartBytes + text.size() * qint64(sizeof(QChar));
-    if (m_waitingOutputBytes + bytes > m_maxWaitingOutputBytes) {
+    if (m_budget->outputBytes + bytes > m_budget->maxOutputBytes) {
         // Before the reply, past the limit: the client learns why its run ends.
         const Output why{"stderr",
                          QStringLiteral("The output that waits for slow clients is over %1 MiB, afterglow's limit\n")
-                             .arg(m_maxWaitingOutputBytes >> 20),
+                             .arg(m_budget->maxOutputBytes >> 20),
                          {}};
         run->outputBytes += cost(why);
-        m_waitingOutputBytes += cost(why);
+        m_budget->outputBytes += cost(why);
         run->output.push_back(why);
         return false;
     }
@@ -480,7 +491,7 @@ bool CommandSocket::send(quint64 connection, const char* event, const QString& i
         at += size;
     }
     run->outputBytes += bytes;
-    m_waitingOutputBytes += bytes;
+    m_budget->outputBytes += bytes;
     run->output.back().sent = std::move(sent);
     // A client that has gone has its connectionClosed next, which ends the run.
     pump(connection, id);
@@ -496,12 +507,11 @@ bool CommandSocket::pump(quint64 connection, const QString& id)
         Output out = std::move(run->output.front());
         run->output.pop_front();
         run->outputBytes -= cost(out);
-        m_waitingOutputBytes -= cost(out);
+        m_budget->outputBytes -= cost(out);
         const QJsonArray args{id, out.text};
         // The client counts the lines it reads: the same bytes.
         if (run->credit) {
-            const qint64 line =
-                PhosphorIpc::writeLine(PhosphorIpc::buildEvent(target(), QLatin1String(out.event), args)).size();
+            const qint64 line = eventLineBytes(target(), out.event, id, out.text);
             run->unacknowledged += line;
             if (const auto books = m_connections.find(connection); books != m_connections.end()) books->unacknowledged += line;
         }
@@ -549,6 +559,46 @@ void CommandSocket::finish(quint64 connection, const QString& id, int status)
 QLatin1String CommandSocket::target() const
 {
     return QLatin1String(m_remote ? AfterglowProto::Remote::Target : Target);
+}
+
+qint64 CommandSocket::waitingInputBytes() const
+{
+    return m_budget->inputBytes;
+}
+
+qint64 CommandSocket::waitingOutputBytes() const
+{
+    return m_budget->outputBytes;
+}
+
+void CommandSocket::setMaxWaitingOutputBytes(qint64 bytes)
+{
+    m_budget->maxOutputBytes = bytes;
+}
+
+qint64 CommandSocket::eventLineBytes(QLatin1String target, const char* event, const QString& id, const QString& text)
+{
+    // The frame around an empty text, and then the text as Qt's JSON writer
+    // escapes it: \" \\ \b \f \n \r \t, \u00XX for the other C0 controls,
+    // UTF-8 for the rest, and \uXXXX for a surrogate without its pair.
+    // A test holds this to PhosphorIpc::writeLine for every UTF-16 unit.
+    qint64 bytes = PhosphorIpc::writeLine(PhosphorIpc::buildEvent(target, QLatin1String(event), QJsonArray{id, QString()})).size();
+    const qsizetype size = text.size();
+    for (qsizetype i = 0; i < size; ++i) {
+        const char16_t u = text[i].unicode();
+        if (u < 0x80) {
+            if (u == '"' || u == '\\' || u == '\b' || u == '\f' || u == '\n' || u == '\r' || u == '\t') bytes += 2;
+            else bytes += u < 0x20 ? 6 : 1;
+        } else if (u < 0x800) {
+            bytes += 2;
+        } else if (QChar::isHighSurrogate(u) && i + 1 < size && text[i + 1].isLowSurrogate()) {
+            bytes += 4;
+            ++i;
+        } else {
+            bytes += QChar::isSurrogate(u) ? 6 : 3;
+        }
+    }
+    return bytes;
 }
 
 int CommandSocket::waitingInputs() const

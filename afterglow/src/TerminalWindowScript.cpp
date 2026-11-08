@@ -304,7 +304,13 @@ bool TerminalWindow::usePackageShaders()
             QVariant value = ref;
             if (!ShaderEventKeys.contains(key)) {
                 // The chain the file holds: a command-line override must not reach it.
-                QStringList chain = m_settings.persisted(QStringLiteral("Shaders"), key).toStringList();
+                // Its entries as read() takes them: one that is not a string
+                // would come back as text the user did not write.
+                QStringList chain;
+                for (const QVariant& entry : m_settings.persisted(QStringLiteral("Shaders"), key).toList()) {
+                    const QString item = entry.typeId() == QMetaType::QString ? entry.toString().trimmed() : QString();
+                    if (!item.isEmpty()) chain.append(item);
+                }
                 if (!chain.contains(ref)) chain.append(ref);
                 // The schema keeps chains as lists of variants.
                 value = QVariant(QVariantList(chain.cbegin(), chain.cend()));

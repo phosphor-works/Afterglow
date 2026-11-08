@@ -6,9 +6,20 @@
 Usage: run_pty.py AGLOW
 
 This script plays the terminal in a pseudo-terminal that it makes, and a
-terminal socket (the "remote" target) on a Unix socket of its own. It checks
-the DA1 guard with a terminal that is not Afterglow, a path that is not on
-this host, a reason in place of a path, and a run through the socket.
+terminal socket (the "remote" target) on a Unix socket of its own. It checks:
+
+- the DA1 guard: a terminal that is not Afterglow, one that never answers,
+  and a reply that comes in parts;
+- the replies: a path that is not on this host, a reason in place of a
+  path, and a run through the socket, also with an AFTERGLOW_SOCKET that
+  names no socket here;
+- a pane's own socket on this host (AFTERGLOW_SOCKET), which needs no query;
+- no query without the terminal: standard output in a pipe, a background
+  process group, no controlling terminal;
+- the terminal's modes after a signal and after Ctrl+C, also with SIGINT
+  ignored, and no late reply in the shell's input;
+- aglow remote-prune.
+
 tmux_pty.py checks the query inside tmux. aglow never sees an
 AFTERGLOW_SOCKET or a TMUX of the session that runs the test.
 """
@@ -16,13 +27,26 @@ import json
 import os
 import pty
 import select
+import shlex
+import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 
 QUERY = b"\x1b]24569;q=remote\x1b\\"
+GUARD = b"\x1b[?62;22c"
+# What aglow says when it did not ask the terminal.
+NOT_ASKED = b"only in the foreground, with standard output on the terminal"
+# A process group of its own, out of the terminal's foreground: python -c HELPER AGLOW ARGS...
+BACKGROUND = ("import os, sys\n"
+              "pid = os.fork()\n"
+              "if pid == 0:\n"
+              "    os.setpgid(0, 0)\n"
+              "    os.execv(sys.argv[1], sys.argv[1:])\n"
+              "sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) & 0xff)\n")
 
 
 def check(condition, *detail):
@@ -34,8 +58,9 @@ def check(condition, *detail):
 class FakeTerminalSocket:
     """A phosphor-ipc server with the target "remote", as Afterglow forwards it."""
 
-    def __init__(self, path):
+    def __init__(self, path, target="remote"):
         self.path = path
+        self.target = target
         self.calls = []
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(path)
@@ -65,7 +90,7 @@ class FakeTerminalSocket:
 
     def answer(self, call):
         self.calls.append(call)
-        if call.get("target") != "remote":
+        if call.get("target") != self.target:
             return [{"type": "error", "id": call["id"], "code": "NO_SUCH_TARGET", "message": "no such target"}]
         if call["fn"] == "list":
             return [{"type": "reply", "id": call["id"], "result": [
@@ -94,7 +119,8 @@ def environment(runtime, extra=None):
 
 def play(argv, env, answer, timeout=20):
     """Runs ARGV in a pseudo-terminal. ANSWER(written) gives the bytes that the terminal sends for what the
-    program wrote so far, once for each query. Returns (exit code, everything written, seconds taken)."""
+    program wrote so far, once for each query: bytes, or a list of parts that come 0.2 seconds apart.
+    Returns (exit code, everything written, seconds taken)."""
     started = time.monotonic()
     pid, master = pty.fork()
     if pid == 0:
@@ -118,8 +144,11 @@ def play(argv, env, answer, timeout=20):
             while written.count(QUERY) > answered:
                 reply = answer(written)
                 answered += 1
-                if reply:
-                    os.write(master, reply)
+                for i, part in enumerate(reply if isinstance(reply, list) else [reply]):
+                    if i:
+                        time.sleep(0.2)
+                    if part:
+                        os.write(master, part)
             found, status = os.waitpid(pid, os.WNOHANG)
             if found:
                 code = os.waitstatus_to_exitcode(status)
@@ -141,39 +170,73 @@ def play(argv, env, answer, timeout=20):
     return code, written, time.monotonic() - started
 
 
+def sh(script):
+    """A shell in the pseudo-terminal that runs SCRIPT."""
+    return ["/bin/sh", "-c", script]
+
+
+def modes_back(written):
+    """Whether stty -a, after aglow, shows the terminal's modes of before: echo and line editing."""
+    modes = written[written.rfind(b"speed"):].replace(b";", b" ").split()
+    return all(mode in modes for mode in (b"icanon", b"echo", b"isig", b"iexten", b"-noflsh"))
+
+
 def direct_cases(aglow, scratch):
     runtime = os.path.join(scratch, "run")
     os.mkdir(runtime, 0o700)
     server = FakeTerminalSocket(os.path.join(scratch, "remote.sock"))
     argv = [aglow, "run", "far", "there", "a", "b"]
+    path_reply = b"\x1b]24569;path=" + server.path.encode() + b"\x1b\\"
     try:
         # A terminal that is not Afterglow answers DA1 alone: no wait for the guard's time.
-        code, written, took = play(argv, environment(runtime), lambda _: b"\x1b[?62;22c")
+        code, written, took = play(argv, environment(runtime), lambda _: GUARD)
         check(written.startswith(QUERY + b"\x1b[c"), written)
         check(code == 1, code, written)
         check(b"no running Afterglow on this display" in written, written)
-        check(took < 1.5, "aglow waited for the guard", took)
+        check(took < 1.9, "aglow waited for the guard", took)
+
+        # A terminal that never answers: the guard's time, then the local lookup, with the modes back.
+        code, written, took = play(sh(f"{shlex.quote(aglow)} run far there; echo status=$?; stty -a"),
+                                   environment(runtime), lambda _: None)
+        check(b"status=1" in written and b"no running Afterglow on this display" in written, written)
+        check(2.0 <= took < 6, took)
+        check(modes_back(written), written)
+
+        # A reply that comes in parts, and the guard after it.
+        code, written, _ = play(argv, environment(runtime), lambda _: [path_reply[:9], path_reply[9:] + GUARD[:3], GUARD[3:]])
+        check(code == 3 and b"there a b pane=0\r\n" in written, code, written)
 
         # The path of a session on another host: a second ssh hop.
         code, written, _ = play(argv, environment(runtime),
-                                lambda _: b"\x1b]24569;path=/nowhere/0123456789abcdef.sock\x1b\\\x1b[?62;22c")
+                                lambda _: b"\x1b]24569;path=/nowhere/0123456789abcdef.sock\x1b\\" + GUARD)
         check(code == 1, code, written)
         check(b"/nowhere/0123456789abcdef.sock, is on another host" in written, written)
 
         # Each reason in place of a path.
         for reason, text in ((b"forward", b"AllowStreamLocalForwarding"), (b"version", b"another protocol"),
-                             (b"length", b"over 104 bytes"), (b"off", b"Terminal.sshRemoteCommands")):
+                             (b"length", b"over 103 bytes"), (b"off", b"Terminal.sshRemoteCommands")):
             code, written, _ = play(argv, environment(runtime),
-                                    lambda _, r=reason: b"\x1b]24569;error=" + r + b"\x1b\\\x1b[?62;22c")
+                                    lambda _, r=reason: b"\x1b]24569;error=" + r + b"\x1b\\" + GUARD)
             check(code == 1, reason, code, written)
             check(text in written, reason, written)
 
-        # The socket of the session: the "remote" target, on the session's pane.
-        code, written, _ = play(argv, environment(runtime, {"AFTERGLOW_PANE_ID": "12"}),
-                                lambda _: b"\x1b]24569;path=" + server.path.encode() + b"\x1b\\\x1b[?62;22c")
+        # The socket of the session: the "remote" target, on the session's pane. The AFTERGLOW_SOCKET and
+        # AFTERGLOW_PANE_ID of a pane on another host name no socket here: aglow asks, and the pane ID goes.
+        code, written, _ = play(argv, environment(runtime, {"AFTERGLOW_SOCKET": os.path.join(scratch, "none.sock"),
+                                                            "AFTERGLOW_PANE_ID": "12"}),
+                                lambda _: path_reply + GUARD)
         check(code == 3, code, written)
         check(b"there a b pane=0\r\n" in written, written)
         check({call["target"] for call in server.calls} == {"remote"}, server.calls)
+
+        # A socket without the remote target.
+        other = FakeTerminalSocket(os.path.join(scratch, "other.sock"), target="commands")
+        try:
+            code, written, _ = play(argv, environment(runtime),
+                                    lambda _: b"\x1b]24569;path=" + other.path.encode() + b"\x1b\\" + GUARD)
+            check(code == 1 and b"has no target for remote commands" in written, code, written)
+        finally:
+            other.close()
 
         # A pane's own socket on this host needs no query.
         server.calls.clear()
@@ -185,11 +248,100 @@ def direct_cases(aglow, scratch):
         server.close()
 
 
+def unasked_cases(aglow, scratch):
+    """No query where another reader may take the answer, or where the terminal would stop aglow."""
+    runtime = os.path.join(scratch, "run")
+    # Standard output in a pipe, whose reader may read the terminal too (less).
+    code, written, _ = play(sh(f"{shlex.quote(aglow)} run far there | cat; echo status=$?"), environment(runtime),
+                            lambda _: GUARD)
+    check(QUERY not in written, written)
+    check(b"no running Afterglow on this display" in written and NOT_ASKED in written, written)
+    # A process group in the background, which SIGTTOU would stop with the terminal in its modes.
+    code, written, took = play([sys.executable, "-I", "-c", BACKGROUND, aglow, "run", "far", "there"],
+                               environment(runtime), lambda _: GUARD)
+    check(code == 1, code, written)
+    check(QUERY not in written and NOT_ASKED in written, written)
+    check(took < 1.9, took)
+    # No controlling terminal at all.
+    result = subprocess.run([aglow, "run", "far", "there"], env=environment(runtime), stdin=subprocess.DEVNULL,
+                            capture_output=True, start_new_session=True, timeout=20)
+    check(result.returncode == 1 and NOT_ASKED in result.stderr, result)
+    print("aglow run: no query without the foreground of the terminal", flush=True)
+
+
+def signal_cases(aglow, scratch):
+    """Signals and Ctrl+C while aglow waits for the answer: the terminal's modes come back."""
+    runtime = os.path.join(scratch, "run")
+    server = FakeTerminalSocket(os.path.join(scratch, "signal.sock"))
+    path_reply = b"\x1b]24569;path=" + server.path.encode() + b"\x1b\\"
+    pidfile = os.path.join(scratch, "aglow.pid")
+    try:
+        # SIGTERM while the terminal does not answer: aglow ends by it, after the modes are back. A job of sh
+        # is in the foreground's process group, as sh has no job control.
+        def terminate(_):
+            for _ in range(100):
+                if os.path.exists(pidfile) and open(pidfile).read().strip():
+                    break
+                time.sleep(0.02)
+            os.kill(int(open(pidfile).read()), signal.SIGTERM)
+
+        code, written, took = play(sh(f"{shlex.quote(aglow)} run far there & echo $! > {shlex.quote(pidfile)};"
+                                      " wait $!; echo status=$?; stty -a"), environment(runtime), terminate)
+        check(b"status=143" in written, written)
+        check(modes_back(written), written)
+        check(took < 6, took)
+
+        # Ctrl+C with SIGINT ignored, as in a background job of a script: the run goes on.
+        code, written, _ = play(sh(f"trap '' INT; {shlex.quote(aglow)} run far there x; echo status=$?; stty -a"),
+                                environment(runtime), lambda _: [b"\x03", path_reply + GUARD])
+        check(b"status=3" in written and b"there x pane=0" in written, written)
+        check(modes_back(written), written)
+
+        # Ctrl+C: aglow reads up to the guard, so that the reply does not reach the shell, and then ends by
+        # SIGINT. dd reads what the shell would get as input.
+        code, written, _ = play(sh(f"trap 'echo trapped' INT; {shlex.quote(aglow)} run far there; echo status=$?;"
+                                   " stty -a; stty -icanon min 0 time 5; echo left:;"
+                                   " dd bs=256 count=1 2>/dev/null | od -An -tx1; echo end"),
+                                environment(runtime), lambda _: [b"\x03", path_reply + GUARD])
+        check(b"status=130" in written and b"interrupted while it asked the terminal" in written, written)
+        left = written[written.rfind(b"left:"):written.rfind(b"end")]
+        check(b"1b" not in left, "a late reply reached the shell", left)
+        check(modes_back(written), written)
+    finally:
+        server.close()
+    print("aglow run: signals and Ctrl+C give the terminal its modes back", flush=True)
+
+
+def prune_cases(aglow, scratch):
+    """aglow remote-prune removes the sockets that nothing holds, and nothing else."""
+    directory = os.path.join(scratch, "prune")
+    os.mkdir(directory, 0o700)
+    dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    dead.bind(os.path.join(directory, "dead.sock"))
+    dead.close()
+    live = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    live.bind(os.path.join(directory, "live.sock"))
+    live.listen(1)
+    with open(os.path.join(directory, "file.sock"), "w") as f:
+        f.write("x")
+    try:
+        result = subprocess.run([aglow, "remote-prune", directory], stdin=subprocess.DEVNULL, capture_output=True,
+                                start_new_session=True, timeout=20)
+        check(result.returncode == 0, result)
+        check(sorted(os.listdir(directory)) == ["file.sock", "live.sock"], os.listdir(directory))
+    finally:
+        live.close()
+    print("aglow remote-prune: passed", flush=True)
+
+
 def main():
     aglow = os.path.abspath(sys.argv[1])
     with tempfile.TemporaryDirectory(prefix="agr-", dir="/tmp") as scratch:
         direct_cases(aglow, scratch)
-    print("aglow run: the terminal query works")
+        print("aglow run: the terminal query works", flush=True)
+        unasked_cases(aglow, scratch)
+        signal_cases(aglow, scratch)
+        prune_cases(aglow, scratch)
 
 
 if __name__ == "__main__":

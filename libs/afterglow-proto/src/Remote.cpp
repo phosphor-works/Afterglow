@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include <AfterglowProto/Remote.h>
+#include <AfterglowProto/Text.h>
 
 #include <cerrno>
 #include <cstring>
+#include <fstream>
 #include <iterator>
+#include <unordered_set>
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -24,6 +27,30 @@ constexpr std::string_view PathKey = "path=";
 constexpr std::string_view ErrorKey = "error=";
 
 constexpr std::string_view Names[] = {"off", "forward", "version", "length"};
+static_assert(std::size(Names) == std::size_t(Error::Length) + 1, "a name for each Error");
+
+/// The paths of the bound sockets that /proc/net/unix lists: on Linux, every
+/// socket of this network namespace that a process holds, also one that is
+/// bound and does not listen yet. Nothing where the file cannot be read.
+std::optional<std::unordered_set<std::string>> boundPaths()
+{
+    std::ifstream file("/proc/net/unix");
+    if (!file) return std::nullopt;
+    std::unordered_set<std::string> paths;
+    std::string line;
+    // Num RefCount Protocol Flags Type St Inode Path, the path only for a bound socket.
+    std::getline(file, line);
+    while (std::getline(file, line)) {
+        std::size_t at = 0;
+        for (int field = 0; field < 7 && at != std::string::npos; ++field) {
+            at = line.find_first_not_of(' ', at);
+            if (at != std::string::npos) at = line.find(' ', at);
+        }
+        if (at != std::string::npos && at + 1 < line.size()) paths.insert(line.substr(at + 1));
+    }
+    if (file.bad()) return std::nullopt;
+    return paths;
+}
 
 /// Whether connecting to @p path is refused: nothing listens there.
 bool refused(const std::string& path)
@@ -71,12 +98,7 @@ bool isQuery(std::string_view payload)
 
 bool validPath(std::string_view path)
 {
-    if (path.empty() || path.front() != '/' || path.size() > MaxPathBytes) return false;
-    for (const char c : path) {
-        const auto byte = static_cast<unsigned char>(c);
-        if (byte < 0x20 || byte == 0x7f) return false;
-    }
-    return true;
+    return !path.empty() && path.front() == '/' && path.size() <= MaxPathBytes && isCleanText(path);
 }
 
 std::string reply(const Answer& answer, bool bel)
@@ -108,6 +130,12 @@ std::optional<Answer> parseReply(std::string_view payload)
     return std::nullopt;
 }
 
+std::optional<std::string_view> oscPayload(std::string_view osc)
+{
+    if (!osc.starts_with(Prefix)) return std::nullopt;
+    return osc.substr(Prefix.size());
+}
+
 std::string tmuxPassthrough(std::string_view sequences)
 {
     std::string out = "\x1bPtmux;";
@@ -117,13 +145,6 @@ std::string tmuxPassthrough(std::string_view sequences)
     }
     out += "\x1b\\";
     return out;
-}
-
-std::string directory(std::string_view runtime, std::string_view home)
-{
-    if (runtime.starts_with('/')) return std::string(runtime) + (runtime.ends_with('/') ? "" : "/") + "afterglow";
-    if (home.starts_with('/')) return std::string(home) + (home.ends_with('/') ? "" : "/") + ".local/state/afterglow/run";
-    return {};
 }
 
 std::string socketPath(std::string_view directory, std::string_view token)
@@ -143,15 +164,29 @@ Pruned prune(const std::string& directory, uid_t owner)
     }
     const int fd = ::dirfd(dir);
     std::vector<std::string> names;
-    while (const dirent* entry = ::readdir(dir)) {
+    while (true) {
+        errno = 0;
+        const dirent* entry = ::readdir(dir);
+        if (!entry) break;
         const std::string_view name = entry->d_name;
         if (name.size() > 5 && name.ends_with(".sock")) names.emplace_back(name);
     }
+    if (errno != 0) {
+        // A part of the listing is no proof that the rest is gone: remove nothing.
+        result.error = directory + ": " + std::strerror(errno);
+        ::closedir(dir);
+        return result;
+    }
+    const auto bound = boundPaths();
     for (const std::string& name : names) {
         struct stat info{};
         if (::fstatat(fd, name.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0) continue;
         if (!S_ISSOCK(info.st_mode) || info.st_uid != owner) continue;
-        if (!refused(socketPath(directory, name.substr(0, name.size() - 5)))) continue;
+        const std::string path = socketPath(directory, name.substr(0, name.size() - 5));
+        // Listed: a process holds it, and a connection would only open a
+        // channel to a live session.
+        if (bound && bound->contains(path)) continue;
+        if (!refused(path)) continue;
         if (::unlinkat(fd, name.c_str(), 0) == 0) result.removed.push_back(name);
     }
     ::closedir(dir);

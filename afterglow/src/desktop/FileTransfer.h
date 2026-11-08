@@ -19,21 +19,21 @@ public:
     explicit FileTransfer(QObject* parent = nullptr);
     ~FileTransfer() override;
     void handle(const QByteArray& command);
-    /// The answer to permissionRequested. For a send session, @p files is
-    /// the number of destinations that the prompt showed, counted with the
-    /// total: the ones that came after it get a prompt of their own. -1 is
-    /// all of them.
-    void approve(const QString& token, bool allowed, int files = -1);
-    /// The prompt of a permission request: the question, with the first
-    /// paths and a count of the others, and the detail, with every path
-    /// that permissionRequested gives.
+    /// The answer to permissionRequested. A Yes approves the paths that it
+    /// gave, and no others.
+    void approve(const QString& token, bool allowed);
+    /// The prompt of a permission request from @p asker: the question, with
+    /// the first paths, a count of the others and a count of the paths that
+    /// the answer does not cover, and the detail, with every path that
+    /// permissionRequested gives.
     struct Question {
         QString text;
         QString detail;
     };
-    static Question question(bool writing, const QStringList& paths, int total);
-    /// Paths that the question shows in its text.
+    static Question question(bool writing, const QStringList& paths, int total, const QString& asker = { });
+    /// Paths that the question shows in its text, and the characters of each.
     static constexpr int QuestionPaths = 10;
+    static constexpr int QuestionLength = 160;
     void reset();
     void abort();
     void setPassword(const QString& password);
@@ -53,15 +53,17 @@ Q_SIGNALS:
     /// cancel drops is not waited for.
     void answering();
     void answered();
-    /// @p paths holds at most the first 100 of the @p total requested paths,
-    /// for display: control characters, line separators, bidirectional
-    /// controls and backslashes in them are written as \uXXXX. For a read,
-    /// the files that the program asks for. For a write, the destinations
-    /// that the program chose: a send session asks at its first file, and
-    /// the session waits until the answer.
+    /// @p paths holds at most the first 100 of the @p total paths that wait,
+    /// for display: control characters, line separators, invisible format
+    /// characters and backslashes in them are written as \uXXXX (\UXXXXXXXX
+    /// above U+FFFF). A path that links lead elsewhere names where. For a
+    /// read, the files that the program asks for, a directory with a slash:
+    /// the program reads all of it. For a write, the destinations of the
+    /// files that the program named: a send session asks once the worker has
+    /// handled what came with its first file. The files wait until the
+    /// answer. The paths stay as they are: what comes later waits for a
+    /// request of its own, and a Yes approves only @p paths.
     void permissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
-    /// More destinations of a send session came while its prompt shows.
-    void permissionPathsChanged(const QString& token, const QStringList& paths, int total);
 
 private:
     struct Worker;

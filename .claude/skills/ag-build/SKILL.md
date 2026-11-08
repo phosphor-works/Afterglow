@@ -38,13 +38,15 @@ install of `bin/aglow`, its completions and its notices in `share/licenses/aglow
 `libstdc++.a` (Fedora: `glibc-static` and `libstdc++-static`). Without them, the configuration stops with a message
 that names the packages. Do not install them: tell the user, or configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`. Then
 the `aglow` tests are left out. The `aglow dnd` tests of `afterglow_dnd_tests` and of the native suite skip, and so
-do the `RunBinaryTest.*` tests of `afterglow_command_tests`.
+do the `RunBinaryTest.*` tests of `afterglow_command_tests` and the `sshd` test of `afterglow_remote_tests`
+(`RemoteCommandsTest.OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThroughIt`).
 `aglow` builds next to `afterglow` (`build/afterglow/aglow`), and building `afterglow` builds it too.
 `tools/aglow/stb/stb_image.h` is pinned by its SHA-256 in `cmake/AfterglowDependencies.cmake`: after a change to the
 file, set the new hash there and list the patch at the top of `tools/aglow/StbImage.cpp`.
 
 `AFTERGLOW_BUILD_TOOLS=ON` builds `afterglow_renderpng`, `afterglow_headless`, `afterglow_vtbench` and
-`afterglow_native_bench`. The render tests and shader previews need it.
+`afterglow_native_bench`. Shader previews, `aglow_icat_render` and `afterglow_headless_runner` need it. The renderer
+tests (`Render.*`) do not: `BUILD_TESTING` builds them.
 
 ## The Phosphor libraries
 
@@ -93,7 +95,7 @@ systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
     ctest --test-dir build --output-on-failure -j6 2>&1 | tail -15
 ```
 
-The suite has about 1,450 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
+The suite has about 1,630 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
 before a commit.
 
 - `aglow_only_build` (label `slow`) configures, builds and installs `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) in
@@ -108,8 +110,13 @@ before a commit.
 - The native window tests (`afterglow_native_tests`, the `Shaders/` tests included) are not in CTest by default
   (`AFTERGLOW_NATIVE_TESTS=OFF`).
   They need a nested KWin. Use the `ag-verify-live` skill to run them.
-- The Python suites in `afterglow/tests/*.py` are separate. Run the ones that cover the area that you changed
-  (`docs/TESTING.md` lists them). CTest runs `tools/conformance/test_headless.py` as `afterglow_headless_runner`.
+- CTest runs some Python tests: `completion_test.py` (`afterglow_shell_completion`), the relays of
+  `kitty_transfer_interop.py`, `tools/generate-reference.py --check`, the scripts in `tools/aglow/tests` and
+  `tools/conformance/test_headless.py` (`afterglow_headless_runner`). With `AFTERGLOW_NATIVE_TESTS=ON` it also runs
+  `native_window_acceptance.py` and `kitty_transfer_interop.py --kitty`. The other Python suites in
+  `afterglow/tests/*.py` are separate: `desktop_acceptance.py`, `scene_acceptance.py`, `shader_parameters_smoke.py`,
+  `project_smoke.py` and the two navigator tests. Run the ones that cover the area that you changed
+  (`docs/TESTING.md` lists them).
 
 ## Generated files
 

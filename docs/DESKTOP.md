@@ -193,6 +193,7 @@ The differences are in [aglow interoperability](COMPATIBILITY.md#aglow-interoper
 | `aglow icat` | Shows images in the pane |
 | `aglow clipboard` | Reads and writes the clipboard. With OSC 5522, it can use any MIME type. With OSC 52, it uses plain text only. |
 | `aglow run` | Runs a command of a script in the Afterglow on the same computer, or in the Afterglow that `afterglow ssh` came from |
+| `aglow remote-prune DIR` | Removes the sockets of ended ssh sessions from `DIR`. The probe of `afterglow ssh` runs it on the remote host (see [remote commands](CONTROL.md#remote-commands)) |
 
 `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` run the `aglow` next to `afterglow`.
 When they cannot run it, they exit with one of these statuses, as a shell does:
@@ -204,15 +205,13 @@ When they cannot run it, they exit with one of these statuses, as a shell does:
 
 `aglow --version` shows its version and the version of its protocol.
 Run `aglow COMMAND --help` for the options of a command.
+`aglow` with no command, or with a command that it does not know, exits with status 2.
 
-```sh
-# Show an image. An animated GIF plays.
-aglow icat ./picture.png
-
-# Copy a file to the clipboard as an image, then write the image on the clipboard to another file.
-aglow clipboard ./picture.png
-aglow clipboard --get-clipboard --mime image/png ./copy.png
-```
+| Example | Result |
+| --- | --- |
+| `aglow icat ./picture.png` | Shows an image. An animated GIF plays. |
+| `aglow clipboard ./picture.png` | Copies a file to the clipboard as an image. |
+| `aglow clipboard --get-clipboard --mime image/png ./copy.png` | Writes the image on the clipboard to another file. |
 
 ### Remote hosts
 
@@ -220,9 +219,9 @@ Afterglow does not copy `aglow` to a remote host.
 Copy the static `aglow` of your build to a remote host whose kernel and processor it supports.
 You can also install `aglow` on the remote host from a package, or build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow alone](BUILD.md#build-aglow-alone)).
 That build does not need Qt or the Phosphor libraries.
-`kitten` also works over SSH for file transfer, drag and drop, images and the clipboard, because these are Kitty protocols.
-Only `aglow run` needs `aglow` on the remote host.
-It runs the script commands that are marked `remote` when `Terminal.sshRemoteCommands` is on.
+For file transfer, drag and drop, images and the clipboard, the remote host needs `aglow` or `kitten`, because these are Kitty protocols.
+For script commands, the remote host needs `aglow`, because `kitten` has no counterpart of `aglow run`.
+`aglow run` there runs the script commands that are marked `remote` when `Terminal.sshRemoteCommands` is on.
 See [remote commands](CONTROL.md#remote-commands).
 
 ### aglow icat
@@ -276,29 +275,44 @@ Afterglow accepts the [Kitty file-transfer protocol](https://sw.kovidgoyal.net/k
 A terminal program can send or receive files through its terminal connection, including an SSH connection.
 
 Afterglow asks for permission before a transfer accesses files.
-The dialog lists the paths: for a receive request the requested source paths, and for a send request the destination paths that the program chose.
-The question shows the first 10 paths and the number of other paths. Its details show the first 100 paths and the number of other paths.
-The dialog shows control characters, bidirectional marks and backslashes in a path as `\uXXXX`.
-For a send request, permission allows the program to create or replace the destination files that the dialog lists.
+The dialog names the program and its tab or split, and lists the paths: for a receive request the requested source paths, and for a send request the destination paths that the program chose.
+The dialog lists at most 100 paths. The question shows the first 10 of them and the number of the others. Its details show all of them.
+**Yes** approves only the paths that the dialog lists. The dialog does not change while it is open.
+The dialog shows control characters, line separators, invisible format characters (such as a zero-width space) and backslashes in a path as `\uXXXX`, or `\UXXXXXXXX` above U+FFFF.
+When a link above a path leads elsewhere, the dialog shows where the path resolves to.
+A requested directory ends with a slash: the program can read all the files in it.
+
+| Request | What the dialog lists | What happens to the other paths |
+| --- | --- | --- |
+| Receive | The first 100 requested paths | The other requests get `EPERM`. |
+| Send | The destinations of the files that wait, up to 100 | A file that came later, or that the dialog did not list, gets a dialog of its own. |
+
 A send session starts at once, because the program names its destinations only after the start.
-The dialog opens at the first destination, and adds the destinations that come while it is open.
-Nothing is written before you approve. A destination that came after you approved gets a dialog of its own.
-Approval applies to one transfer session.
+The dialog opens when Afterglow has read the commands that came with the first destination.
+A file waits, with its data, until you approve its destination. Nothing is written before that. The approved files of the session continue meanwhile.
+A finish waits until no file waits.
+If you deny the first dialog of a session, the session ends with `EPERM`.
+If you deny a later dialog, its files get `EPERM`. The files that you approved before continue.
+Afterglow writes an approved file only where the dialog showed:
+
+- A directory that existed when the dialog opened must still be at the path where links led it then.
+- A directory that did not exist must be a directory that the transfer makes, not a link. A link that a program made after the dialog opened leads nothing elsewhere.
+- Afterglow writes the temporary file, replaces the destination and makes links through the checked directory.
+- A receive reads the requested files at the path that the dialog showed.
+
+If one of these checks fails, the file gets an error status (`EPERM`, `ELOOP` or `ENOTDIR`).
 Each pane shows one permission dialog at a time. A new session gets `EBUSY` while a dialog is open.
-After you deny a session, new sessions in that pane get `EPERM` for 10 seconds.
+A session that started before the dialog opened waits for its own dialog until the open one closes.
+After you deny a dialog, or after a program ends its session while its dialog is open, new sessions in that pane get `EPERM` for 10 seconds.
+A file of a session that you approved before also gets `EPERM` in that time.
 
 Run these commands on the computer where the terminal program runs:
 
-```sh
-# Send a file to the computer that runs Afterglow.
-aglow transfer ./report.txt /absolute/destination/report.txt
-
-# Receive a file from the computer that runs Afterglow.
-aglow transfer --direction=receive /absolute/source/report.txt ./report.txt
-
-# Update an existing destination with a delta transfer.
-aglow transfer --transmit-deltas ./report.txt /absolute/destination/report.txt
-```
+| Command | Result |
+| --- | --- |
+| `aglow transfer ./report.txt /absolute/destination/report.txt` | Sends a file to the computer that runs Afterglow. |
+| `aglow transfer --direction=receive /absolute/source/report.txt ./report.txt` | Receives a file from the computer that runs Afterglow. |
+| `aglow transfer --transmit-deltas ./report.txt /absolute/destination/report.txt` | Updates an existing destination with a delta transfer. |
 
 With one source, a destination that ends with a slash is a directory, and the source goes into it.
 Without the slash, `aglow transfer` copies the source to the destination path itself.
@@ -308,7 +322,9 @@ Afterglow keeps the read, write and execute bits of a mode. It drops the set-use
 Kitty keeps them.
 The protocol also supports zlib compression, delta transfers, progress reports and cancellation.
 Afterglow writes each incoming regular file to a temporary file in its destination directory.
+It opens the temporary file at the first data of the file, so a program can name all of its files at the start.
 After validation, Afterglow replaces the destination and reports success.
+A file without a mode gets the mode that a new file gets under the umask that Afterglow had when the pane started its first transfer.
 Cancellation removes incomplete temporary files. Completed files remain in place.
 A directory that existed before the transfer keeps its mode and its modification time.
 When Afterglow sends a directory, it leaves out devices, sockets and pipes, and entries that it cannot read.
@@ -317,6 +333,8 @@ Afterglow writes a failure after the program finished the session to the `afterg
 Set `Terminal.fileTransferPassword` only when a shared secret must replace the permission dialog.
 Give the same secret to `aglow transfer --permissions-bypass`.
 An empty setting always requires permission.
+A session that gives a password gets no dialog. A wrong password, or a password when the setting is empty, gets `EPERM`.
+After a wrong password, no pane of Afterglow checks a password for 10 seconds, and the `afterglow.desktop` log has a warning.
 Other users can see a password on the command line in the list of processes.
 Give the option one of these values instead:
 
@@ -330,7 +348,7 @@ Give the option one of these values instead:
 | --- | --- | --- |
 | Sessions per pane | 8 | The new session gets `EBUSY`. |
 | Files per session | 16,384 | The file gets `EINVAL`. A receive listing gets `EFBIG`. |
-| Open files of regular and delta transfers per pane | 128 | The file gets `EBUSY` until another file completes. A delta upload holds two. |
+| Open files of regular and delta transfers per pane | 128 | The file gets `EBUSY` until another file completes. An upload holds two from its first data: its temporary file and its directory. A delta upload holds one more, its old file, from its start. |
 | Open files of the transfers of all panes | Half of the `RLIMIT_NOFILE` soft limit of Afterglow | The file gets `EBUSY`. A delta upload holds three: its output, its old file and the stream of its signature. |
 | Outgoing file streams per pane | 128 | The file gets `EBUSY`. |
 | Decoded data per packet | 4,096 bytes | The file fails with an error status. |
@@ -339,11 +357,11 @@ Give the option one of these values instead:
 | Path length, name length | 4,096 bytes, 255 bytes | The request is refused. |
 | Receive listing depth | 128 directory levels | The deeper entry gets `EFBIG`. |
 | Receive listing size | 8 MiB encoded, less when other output is queued | The session gets `EFBIG`. |
-| Requested paths, and the commands of send sessions, waiting for permission per pane | 4 MiB | The session gets `ENOMEM`. |
+| Requested paths, and the commands of send files, waiting for permission per pane | 16 MiB | A receive session gets `ENOMEM`. A send file gets `ENOMEM`, and data for a waiting file ends its session with `ENOMEM`. |
 | Delta buffers per pane | 64 MiB | The file gets `ENOMEM`. The signature of a delta that waits to be sent counts until it is sent. |
 | One delta signature or one literal block of a delta | 16 MiB | The file fails with an error status. |
 | Block size of a delta signature from the program | 1 MiB, as in Kitty | The file gets `EINVAL`. |
-| Bytes that a delta upload writes when the program gives no file size | `Terminal.fileTransferDeltaLimit`, 64 GiB | The file gets `EFBIG`. |
+| Bytes that a delta upload or a compressed upload writes when the program gives no file size | `Terminal.fileTransferDeltaLimit`, 64 GiB | The file gets `EFBIG`. |
 
 A limit never authorizes more filesystem access.
 File I/O, compression and delta calculation run outside the GUI thread.
@@ -358,6 +376,10 @@ To receive empty files from Afterglow, use `aglow transfer`.
 
 `--transmit-deltas` tells the terminal about the destination when `aglow transfer` receives.
 The terminal learns which destination files exist, their sizes and the hashes of their blocks.
+When a program sends a delta upload, Afterglow tells it the hashes of the blocks of the file that the upload replaces.
+Afterglow makes no delta against a file of 4,096 bytes or less, and replaces such a file whole.
+`aglow transfer` names all of its files at the start, but sends delta uploads in groups of 32.
+A later group can get a dialog of its own.
 
 `aglow transfer` does not trust the file list that a terminal sends when it receives files:
 
@@ -383,13 +405,10 @@ The protocol supports MIME selection, copy and move actions, chunked data, thumb
 
 Run a client, then drag data between its terminal pane and another program:
 
-```sh
-# Offer files and accept dropped files in the current directory.
-aglow dnd ./report.txt ./images/
-
-# Offer text and save dropped text.
-aglow dnd --drag text/plain:./source.txt --drop text/plain:./destination.txt
-```
+| Command | Result |
+| --- | --- |
+| `aglow dnd ./report.txt ./images/` | Offers files, and accepts dropped files in the current directory. |
+| `aglow dnd --drag text/plain:./source.txt --drop text/plain:./destination.txt` | Offers text, and saves dropped text. |
 
 `aglow dnd` refuses an empty argument.
 `aglow dnd --drop MIME:PATH` writes the dropped data to a temporary file next to `PATH`.
@@ -540,6 +559,11 @@ The suite also checks these behaviors:
 - Button key releases.
 - Notifications and script text permissions.
 - Kitty drag and drop with `aglow dnd`: a text drag between two panes, and a remote directory drag. The same tests run with `kitten dnd` when it is installed.
+- Overlays: standard input that a control client sends in parts, and the OSC 24569 answer to the program of an overlay.
+- Pane and tab ends: the panes of the last tab close before their window, and the end of a pane alone in its tab is announced once. A window can be deleted while it shows.
+- Terminal events that reach the GUI thread in their order, with a bound on the events that wait.
+- Focus and keys: the palette closes when the focus moves, and a held key that closes a pane does not repeat into the next pane.
+- A split whose shell does not start keeps the zoom, and the pointer row of a view that is scrolled by part of a row.
 
 Composition tests use Qt events through the window, renderer and PTY.
 They do not certify external IBus or Fcitx engines.

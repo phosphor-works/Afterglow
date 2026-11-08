@@ -412,7 +412,14 @@ struct ShaderLibrary::PackIndex
 };
 
 ShaderLibrary::ShaderLibrary(QObject* parent)
+    : ShaderLibrary(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/afterglow/shaders"),
+                    parent)
+{
+}
+
+ShaderLibrary::ShaderLibrary(const QString& userDirectory, QObject* parent)
     : QObject(parent)
+    , m_userDirectory(userDirectory)
     , m_registry(std::make_unique<PhosphorShaders::ShaderRegistry>())
     , m_presets(std::make_unique<PhosphorShaders::ShaderPresetStore>())
     , m_curves(std::make_unique<PhosphorAnimation::CurveRegistry>())
@@ -436,10 +443,8 @@ ShaderLibrary::ShaderLibrary(QObject* parent)
         dirs.removeAll(bundled);
         dirs << bundled;
     }
-    const QString user = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-        + QStringLiteral("/afterglow/shaders");
-    QDir().mkpath(user);
-    dirs << user;
+    QDir().mkpath(m_userDirectory);
+    dirs << m_userDirectory;
     dirs.removeDuplicates();
     for (const QString& d : dirs) {
         if (QDir(d).exists()) m_baseDirectories << d;
@@ -952,7 +957,7 @@ ShaderLibrary::Compiled ShaderLibrary::compile(const QString& ref)
         // that names no pack is taken for a file.
         if (isFileReference(ref)) {
             return fail(QStringLiteral("shaders are packs, referenced by id: put the shader in a directory with a "
-                                       "metadata.json under ~/.config/afterglow/shaders"));
+                                       "metadata.json under %1").arg(m_userDirectory));
         }
         // The list goes to the log only: in a notice it would fill the body.
         qCInfo(lcShaders).noquote() << "available shader packs:" << packIds().join(QStringLiteral(", "));

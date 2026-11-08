@@ -10,7 +10,10 @@ import subprocess
 import sys
 import tempfile
 import time
-from nested_desktop import NestedDesktop, wait_for
+
+# Under python3 -I, the directory of the script is not on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from nested_desktop import NestedDesktop, wait_for  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--binary", required=True)
@@ -22,7 +25,7 @@ args = parser.parse_args()
 binary = os.path.abspath(args.binary)
 if not args.private_bus:
     # The nested KWin must not join the user's session bus.
-    command = [sys.executable, __file__, "--binary", binary, "--timeout", str(args.timeout), "--private-bus"]
+    command = [sys.executable, "-I", __file__, "--binary", binary, "--timeout", str(args.timeout), "--private-bus"]
     if args.filter:
         command += ["--filter", args.filter]
     sys.exit(subprocess.call(["dbus-run-session", "--", *command]))

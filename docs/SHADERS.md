@@ -19,7 +19,7 @@ A pack in a later row replaces a pack with the same ID in an earlier row.
 | --- | --- |
 | `data/shaders/` in the source tree | Bundled packs, in a development build only. |
 | `afterglow/shaders/` in each XDG data directory, such as `/usr/share/afterglow/shaders/` | Installed packs. |
-| `~/.config/afterglow/shaders/` | Your own packs. Afterglow creates this directory. |
+| `~/.config/afterglow/shaders/` | Your own packs. Afterglow creates this directory. With `afterglow --config DIR/config.json`, this is `DIR/shaders/`. |
 
 A binary that runs from the build tree puts the checkout's `data/shaders/` after the XDG data directories in this table.
 Thus a pack in the checkout replaces an installed pack with the same ID, and you test the pack that you edit.

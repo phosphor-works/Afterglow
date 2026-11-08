@@ -187,12 +187,10 @@ public:
     }
 
     /// What the pane answers to `aglow run`'s query for the socket of its
-    /// ssh session (OSC 24569). RemoteSockets sets it. GUI thread.
-    void setRemoteSocket(const AfterglowProto::Remote::Answer& answer)
-    {
-        std::lock_guard lock(m_mutex);
-        m_remoteSocket = answer;
-    }
+    /// ssh session (OSC 24569). RemoteSockets sets it, and the pane passes
+    /// it on to its overlay's program. GUI thread.
+    void setRemoteSocket(const AfterglowProto::Remote::Answer& answer);
+    AfterglowProto::Remote::Answer remoteSocketAnswer() const;
 
     /// Where the pane's shell runs when that is not here as you (OSC 3008,
     /// iTerm2 RemoteHost): "root", "deploy@prod-1", a container's name.
@@ -268,12 +266,13 @@ Q_SIGNALS:
     void statusChanged();
     /// OSC 555: flash the pane.
     void flashRequested();
-    /// Shell integration (OSC 133).
+    /// Shell integration (OSC 133). Like the notifications and clipboard
+    /// requests below, emitted on the GUI thread (queueEvent).
     void commandBegan(const QString& command);
     void commandEnded(const QString& command, int exitCode, qint64 durationMs);
-    /// An OSC 99 desktop notification request (queued to the GUI thread).
+    /// An OSC 99 desktop notification request.
     void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request);
-    /// An OSC 5522 clipboard read or write (queued to the GUI thread).
+    /// An OSC 5522 or OSC 52 clipboard read, or an OSC 5522 write.
     void clipboardRequested(const AfterglowVt::ClipboardRequest& request);
     /// An OSC 72 or OSC 5113 command, or a terminal reset (code 0).
     void terminalProtocolRequested(int code, const QByteArray& payload);
@@ -281,18 +280,30 @@ Q_SIGNALS:
     /// handled. @p lost tells what the dropped commands held for drag and drop.
     /// @p reset: they held a terminal reset, which ended every file transfer.
     void terminalProtocolLost(DragDrop::Lost lost, bool reset);
-    /// @p paths holds at most the first 100 of @p total paths.
+    /// @p paths holds at most the first 100 of @p total paths: see FileTransfer::permissionRequested.
     void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
-    void fileTransferPermissionPathsChanged(const QString& token, const QStringList& paths, int total);
     void closed();
 
 private:
     // ITerminalHost (pty thread, m_mutex held)
     void writeToPty(std::string_view bytes) override;
     void reportInputFailure();
-    std::atomic_bool m_inputFailureQueued{false};
+    /// An inputRejected is queued or was emitted, and no input got through since.
+    std::atomic_bool m_inputFailureReported{false};
     /// Queues @p deliver to the GUI thread unless one is already queued.
     void queueOnce(std::atomic_bool& queued, std::function<void()> deliver);
+    /// pty thread, m_mutex held: queues @p event, which emits one signal, for
+    /// the GUI thread, where the pane emits it to the receivers it has then
+    /// (a moved pane's new window). False, and nothing queued, when
+    /// MaxQueuedEvents wait already: a program that writes them faster than
+    /// the window takes them loses the rest.
+    bool queueEvent(std::function<void()> event);
+    /// GUI thread: emits the queued events in order.
+    void deliverEvents();
+    static constexpr std::size_t MaxQueuedEvents = 256;
+    std::deque<std::function<void()>> m_events; ///< guarded by m_mutex
+    std::size_t m_droppedEvents = 0; ///< guarded by m_mutex
+    std::atomic_bool m_eventsQueued{false};
     /// GUI thread: titleUpdated when the title to show changed.
     void announceTitle();
     std::atomic_bool m_bellQueued{false};
@@ -373,7 +384,7 @@ private:
                      std::vector<std::uint8_t>& rgba) override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
     std::string notificationCapabilities() override;
-    AfterglowProto::Remote::Answer remoteSocket() override { return m_remoteSocket; }
+    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override { return m_remoteSocket; }
     bool clipboardRequest(const AfterglowVt::ClipboardRequest& request) override;
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override;
@@ -412,6 +423,8 @@ private:
     QString m_contextKind;
     QString m_reportedDirectory; ///< local, absolute; guarded by m_mutex
     QHash<QString, QString> m_userVars;
+    static constexpr qsizetype MaxUserVars = 256;
+    bool m_userVarsFull = false; ///< the warning about MaxUserVars was given; pty thread
     /// Changed user variables that wait for the GUI thread, guarded by m_mutex.
     std::vector<std::pair<QString, QString>> m_pendingUserVars;
     Signals m_signals{};
@@ -472,6 +485,7 @@ private:
     int m_snapshotExtraRows = 0;
     QElapsedTimer m_syncTimer;
     std::uint64_t m_syncSerial = 0; ///< the synchronized update m_syncTimer times
+    QElapsedTimer m_syncHoldTimer; ///< since synchronized updates began to hold the frames
     QElapsedTimer m_promptTimer;
 
     std::atomic<bool> m_notifyPending{false};

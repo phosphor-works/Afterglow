@@ -70,6 +70,11 @@ inline QString textPrefix(const QString& text, qsizetype limit)
     return text.left(limit > 0 && text.at(limit).isLowSurrogate() ? limit - 1 : limit);
 }
 
+/// Program-supplied text shown outside the grid: drop bidirectional
+/// overrides and invisible formatting, which could disguise it, and line
+/// separators. At most @p limit UTF-16 units, without splitting a surrogate pair.
+QString sanitizedText(const QString& s, qsizetype limit);
+
 /// How a popup overlay looks with @p settings: the popup border colour for
 /// its border line (when @p border) with Window.popupCorners, the text
 /// colour for @p title (UTF-8) in Terminal.bidi's order, and Colors.popupDim
@@ -690,7 +695,10 @@ private:
     /// The pane docks' rectangles of placePaneDocks and addPaneDocks, kept
     /// from frame to frame.
     std::vector<QRect> m_paneDockRects;
-    /// Cell under a window position, clamped to the pane's grid.
+    /// The scroll shift of @p pane's last frame (PaneMotion::scrollShift).
+    float drawnScrollShift(const Pane* pane) const;
+    /// Cell under a window position, as the last frame drew the cells,
+    /// clamped to the pane's grid.
     QPoint cellAt(Pane* pane, const QPointF& pos) const;
     /// Cell row under @p pos without clamping; negative above, >= rows below.
     int rawRowAt(Pane* pane, const QPointF& pos) const;
@@ -770,6 +778,7 @@ private:
 
     QTimer m_blinkTimer;
     QTimer m_textBlinkTimer; ///< SGR 5 blinking, running only while some shows
+    QTimer m_holdRetry; ///< a frame again once a pane's held frame may have timed out
     bool m_textBlinkOn = true;
     /// Tells each pane whether it can be seen (mode 2033 reports).
     void updatePaneVisibility();
@@ -1000,7 +1009,13 @@ private:
         int colStart = 0;
         int colEnd = -1;
         QString url;
+        /// The version of the snapshot it was found in: output or a scroll
+        /// since moves the text under it (refreshLinkHover).
+        std::uint64_t version = 0;
     } m_hover;
+    /// Finds the link under the pointer again when @p pane's snapshot is
+    /// not the one m_hover was found in. After the pane's refreshSnapshot.
+    void refreshLinkHover(Pane* pane);
     /// The link (OSC 8 or a URL in the text) under @p pos in @p pane, if any.
     LinkHover linkAt(Pane* pane, const QPointF& pos) const;
     /// The right-click menu, at @p pos (logical pixels).
@@ -1038,6 +1053,9 @@ private:
 
     // Selection dragging.
     QPointer<Pane> m_selectionPane;
+    /// The selection's press moved to another cell: its release is no click,
+    /// even when output cleared the selection meanwhile.
+    bool m_selectionDragged = false;
     QPointF m_dragPos;
     QTimer m_autoScroll;
     int m_clickCount = 0;

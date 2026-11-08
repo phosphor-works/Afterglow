@@ -5,6 +5,7 @@
 // color, the title color and the dim, rendered offscreen. The native suite
 // checks where a popup goes and what the pointer reaches.
 
+#include "GpuTestDevice.h"
 #include "TerminalWindow.h"
 #include "config/Settings.h"
 
@@ -17,8 +18,6 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QTemporaryDir>
-#include <QVulkanFunctions>
-#include <QVulkanInstance>
 
 #include <gtest/gtest.h>
 
@@ -26,6 +25,7 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <utility>
 
 using namespace Afterglow;
 
@@ -54,16 +54,6 @@ bool showsColor(const QImage& image, const QRect& rect, QRgb color)
     return false;
 }
 
-/// Whether the machine has Vulkan: a loader, a driver and a physical device.
-bool hasVulkanDevice()
-{
-    QVulkanInstance instance;
-    if (!instance.create()) return false;
-    std::uint32_t count = 0;
-    instance.functions()->vkEnumeratePhysicalDevices(instance.vkInstance(), &count, nullptr);
-    return count > 0;
-}
-
 } // namespace
 
 TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
@@ -80,7 +70,10 @@ TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
             ADD_FAILURE() << "cannot write " << name.toStdString();
             return {};
         }
-        file.write(data);
+        if (file.write(data) != data.size()) {
+            ADD_FAILURE() << "cannot write " << name.toStdString();
+            return {};
+        }
         return file.fileName();
     };
     const QString boxed = write(QStringLiteral("boxed.json"),
@@ -153,29 +146,12 @@ TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);
-    // Vulkan needs a real platform; the offscreen QPA has no Vulkan support.
-    if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) qputenv("QT_QPA_PLATFORM", "offscreen");
-    // Not the desktop's theme plugin, which reaches the desktop's services.
-    qputenv("QT_QPA_PLATFORMTHEME", "generic");
+    AfterglowRender::Testing::selectPlatform();
     QGuiApplication app(argc, argv);
-    if (QGuiApplication::platformName() != QLatin1String("wayland")) {
-        s_noVulkan = true;
-        s_noDevice = "no Wayland display";
-    } else if (!hasVulkanDevice()) {
-        s_noVulkan = true;
-        s_noDevice = "no Vulkan device";
-    } else {
-        try {
-            s_device = std::make_unique<AfterglowRender::GpuDevice>(AfterglowRender::FontSpec{});
-            if (!s_device->rhi(nullptr)) {
-                s_device.reset();
-                s_noDevice = "this machine has a Vulkan device, and the test could not make one";
-            }
-        } catch (const std::exception& error) {
-            s_device.reset();
-            s_noDevice = std::string("this machine has a Vulkan device, and the test could not make one: ") + error.what();
-        }
-    }
+    AfterglowRender::Testing::Device made = AfterglowRender::Testing::makeDevice();
+    s_device = std::move(made.device);
+    s_noDevice = std::move(made.reason);
+    s_noVulkan = made.skip;
     const int result = RUN_ALL_TESTS();
     s_device.reset();
     return result;

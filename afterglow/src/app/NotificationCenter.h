@@ -34,12 +34,17 @@ public:
     /// The OSC 99 capability list afterglow answers queries with.
     static std::string capabilities();
 
-    /// Notifications that programs in one pane may show in
-    /// NotificationRateWindowMs (config/Settings.h), 0 for no limit
+    /// Notifications that programs in one pane may show in @p windowMs
+    /// (Notifications.rateWindow), @p count 0 for no limit
     /// (Notifications.rateLimit). Updates of a notification that is already
-    /// shown do not count, nor do afterglow's own notices. The notices of
-    /// script commands (showLimitedNotice) count.
-    void setRateLimit(int count) { m_rateLimit = count; }
+    /// shown do not count, nor do afterglow's own notices (showNotice: ctl
+    /// and script notify among them). The notices of script command runs
+    /// without a client (showLimitedNotice) count.
+    void setRateLimit(int count, qint64 windowMs)
+    {
+        m_rateLimit = count;
+        m_rateWindowMs = windowMs;
+    }
 
     /// An OSC 99 request from @p pane. The window has already applied the
     /// request's occasion (always / unfocused / invisible).
@@ -117,6 +122,7 @@ private:
     QSet<const Pane*> m_tracked; ///< panes whose destruction clears their state
     QElapsedTimer m_clock; ///< monotonic: a clock step must not silence a pane
     int m_rateLimit = 20; ///< until Application sets it from Notifications.rateLimit
+    qint64 m_rateWindowMs = 10000; ///< until Application sets it from Notifications.rateWindow
     bool m_bodyMarkup = true; ///< the server reads markup in bodies (GetCapabilities)
     quint64 m_generation = 0;
     quint64 m_server = 0; ///< counts servers that went away: an id from an earlier one names nothing

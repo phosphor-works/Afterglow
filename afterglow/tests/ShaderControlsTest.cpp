@@ -924,3 +924,27 @@ TEST(ShaderLibraryPackages, APackagePackWithAnotherIdIsLeftOut)
     EXPECT_TRUE(library.packIds().contains(QStringLiteral("scripted-overview.wall")));
     EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 1u);
 }
+
+// afterglow --config DIR/config.json takes the user's packs from DIR/shaders.
+TEST(ShaderLibraryDirectories, TheUserDirectoryCanBeBesideAnotherConfigFile)
+{
+    QTemporaryDir elsewhere;
+    ASSERT_TRUE(elsewhere.isValid());
+    const QString pack = elsewhere.filePath(QStringLiteral("shaders/elsewhere-only"));
+    ASSERT_TRUE(QDir().mkpath(pack));
+    QFile metadata(pack + QStringLiteral("/metadata.json"));
+    ASSERT_TRUE(metadata.open(QIODevice::WriteOnly));
+    metadata.write(R"({"id":"elsewhere-only","name":"Elsewhere","fragmentShader":"effect.frag"})");
+    metadata.close();
+    QFile shader(pack + QStringLiteral("/effect.frag"));
+    ASSERT_TRUE(shader.open(QIODevice::WriteOnly));
+    shader.write("vec4 pTerminal(vec2 uv) { return vec4(1.0); }");
+    shader.close();
+    ShaderLibrary usual;
+    EXPECT_FALSE(usual.packIds().contains(QStringLiteral("elsewhere-only")));
+    ShaderLibrary beside(elsewhere.filePath(QStringLiteral("shaders")));
+    EXPECT_TRUE(beside.packIds().contains(QStringLiteral("elsewhere-only")));
+    ShaderLibrary::Refs refs;
+    refs.background = {QStringLiteral("elsewhere-only")};
+    EXPECT_EQ(beside.build(refs, {}).background.size(), 1u) << beside.problems().join(QLatin1Char('\n')).toStdString();
+}

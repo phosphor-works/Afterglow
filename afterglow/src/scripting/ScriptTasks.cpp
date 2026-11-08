@@ -15,6 +15,7 @@
 #include <QThreadPool>
 #include <QTimer>
 #include <QtConcurrentRun>
+#include <QMutex>
 #include <QSemaphore>
 #include <atomic>
 #include <cmath>
@@ -40,6 +41,13 @@ int bounded(const QVariantMap& effect, const char* key, int fallback, int low, i
 }
 constexpr int FileWorkers = 8;
 QSemaphore fileSlots(FileWorkers);
+/// The slots that one script can hold: a script that reads from a mount
+/// that does not answer must leave reads for the others. By script id, not
+/// instance: a read that blocks keeps its slot after a reload too.
+constexpr int FileWorkersPerScript = FileWorkers / 2;
+QMutex readersLock;
+QHash<QString, int> readers;
+QString scriptOf(const QString& owner) { return owner.left(owner.lastIndexOf(QLatin1Char('@'))); }
 // Reads that block in the kernel (a stalled network mount) keep their thread,
 // so they get their own pool and never starve the global one.
 QThreadPool* filePool()
@@ -166,14 +174,28 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
         const QString path = e.value(QStringLiteral("path")).toString();
         if (!validPath(path))
             return reject(QStringLiteral("read_file needs an absolute path of at most 4096 characters"));
-        if (!fileSlots.tryAcquire()) {
-            finish(task, {}, false);
-            return failure("busy", QStringLiteral("Too many file reads in flight"));
+        const QString script = scriptOf(owner);
+        {
+            const QMutexLocker lock(&readersLock);
+            if (readers.value(script) >= FileWorkersPerScript || !fileSlots.tryAcquire()) {
+                finish(task, {}, false);
+                return failure("busy", QStringLiteral("Too many file reads in flight"));
+            }
+            ++readers[script];
         }
         auto* watcher = new QFutureWatcher<Result>(task);
         connect(watcher, &QFutureWatcherBase::finished, task, [this, task, watcher] { finish(task, watcher->result()); });
-        watcher->setFuture(QtConcurrent::run(filePool(), [path, maxBytes, cancelled = task->cancelled] {
-            struct Release { ~Release() { fileSlots.release(); } } release;
+        watcher->setFuture(QtConcurrent::run(filePool(), [path, maxBytes, script, cancelled = task->cancelled] {
+            struct Release
+            {
+                QString script;
+                ~Release()
+                {
+                    const QMutexLocker lock(&readersLock);
+                    if (--readers[script] == 0) readers.remove(script);
+                    fileSlots.release();
+                }
+            } release{script};
             if (*cancelled) return failure("cancelled", QStringLiteral("Operation canceled"));
             const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
             if (fd < 0) return failure("io_error", QStringLiteral("Cannot open file"));

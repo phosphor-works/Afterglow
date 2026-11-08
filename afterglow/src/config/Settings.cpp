@@ -270,6 +270,20 @@ QString hintLetters(const QString& value)
     return letters.size() >= 2 ? letters : QString();
 }
 
+/// The Terminal.env names that Afterglow does not take, each with what to
+/// use instead: a setting gives the value, or Afterglow always sets it.
+const QHash<QString, QString>& reservedVariables()
+{
+    static const QHash<QString, QString> Names{
+        {QStringLiteral("TERM"), QStringLiteral("Use Terminal.term")},
+        {QStringLiteral("AFTERGLOW_SSH_HELPER"), QStringLiteral("Use Terminal.sshIntegration")},
+        {QStringLiteral("AFTERGLOW_SSH_TERMINFO"), QStringLiteral("Use Terminal.sshTerminfo")},
+        {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("Afterglow sets it for each pane")},
+        {QStringLiteral("AFTERGLOW_SOCKET"), QStringLiteral("Afterglow sets it for each pane")},
+    };
+    return Names;
+}
+
 QVariantList stringList(const QStringList& strings)
 {
     QVariantList out;
@@ -380,27 +394,32 @@ PhosphorConfig::Schema buildSchema()
     const HighlightColors& highlights = d.colors;
     schema.groups[Colors] = {
         stringKey(QStringLiteral("theme"), {},
-                  QStringLiteral("Theme name or file path. An empty value uses no theme. Afterglow searches "
-                                 "~/.config/afterglow/themes, then afterglow/themes in "
+                  QStringLiteral("Theme name or file path. An empty value uses no theme. Afterglow searches the themes "
+                                 "directory beside the config file (~/.config/afterglow/themes), then afterglow/themes in "
                                  "each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, "
                                  "and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use "
                                  "plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme "
                                  "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
-                                 "after the brightness of the color scheme. A theme replaces each color that it sets, and the divider and popup "
-                                 "border colors. Afterglow "
+                                 "after the brightness of the color scheme. A theme replaces each color that it sets, the divider and popup "
+                                 "border colors and the visual bell intensity. Afterglow "
                                  "reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with "
-                                 "a slash is a file path. A relative path starts at the directory of the config file.")),
-        colorKey(QStringLiteral("foreground"), hex(term.defaultForeground), QStringLiteral("Default text color.")),
-        colorKey(QStringLiteral("background"), hex(term.defaultBackground), QStringLiteral("Default background color.")),
+                                 "a slash is a file path. A path can start with ~/ for the home directory. A relative path starts "
+                                 "at the directory of the config file.")),
+        colorKey(QStringLiteral("foreground"), hex(term.defaultForeground),
+                 QStringLiteral("Default text color. An empty value uses the default.")),
+        colorKey(QStringLiteral("background"), hex(term.defaultBackground),
+                 QStringLiteral("Default background color. An empty value uses the default.")),
         colorKey(QStringLiteral("cursor"), {}, QStringLiteral("Cursor color. An empty value uses the foreground.")),
         colorKey(QStringLiteral("cursorText"), {}, QStringLiteral("Text color under a block cursor. An empty value uses the background.")),
         colorKey(QStringLiteral("selectionForeground"), {}, QStringLiteral("Selected text color. An empty value reverses the cell colors.")),
         colorKey(QStringLiteral("selectionBackground"), {}, QStringLiteral("Selection background color. An empty value reverses the cell colors.")),
         {QStringLiteral("palette"), defaultPalette(), QMetaType::QVariantList,
-         QStringLiteral("The 16 ANSI colors, from black to bright white.")},
-        colorKey(QStringLiteral("divider"), hex(WindowSettings::DefaultDivider),
-                 QStringLiteral("Color of the dividers between panes. An empty value uses the default. A theme replaces it. A theme "
-                                "without a divider color gets one a fifth of the way from its background color to its text color.")),
+         QStringLiteral("The 16 ANSI colors, from black to bright white. With fewer than 16, the others use the default. "
+                        "With more, Afterglow uses the first 16. An entry that is not a color uses the default.")},
+        colorKey(QStringLiteral("divider"), {},
+                 QStringLiteral("Color of the dividers between panes. An empty value uses the color a fifth of the way from the "
+                                "background color to the text color. A theme replaces it. A theme without a divider color gets "
+                                "the color a fifth of the way from its background color to its text color.")),
         colorKey(QStringLiteral("popupBorder"), {},
                  QStringLiteral("Color of the border around a popup overlay. An empty value uses the color halfway from the "
                                 "background color to the text color. A theme replaces it. A theme without a popup border color "
@@ -416,14 +435,18 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Minimum contrast ratio between text and its background. Afterglow changes the color of text "
                                  "with less contrast. A value of 1 keeps every color. A value of 4.5 is the WCAG AA level for "
                                  "normal text.")),
-        colorKey(QStringLiteral("searchMatch"), hex(highlights.searchMatch), QStringLiteral("Background color of search matches.")),
+        colorKey(QStringLiteral("searchMatch"), hex(highlights.searchMatch),
+                 QStringLiteral("Background color of search matches. An empty value uses the default.")),
         colorKey(QStringLiteral("searchCurrentMatch"), hex(highlights.searchCurrentMatch),
-                 QStringLiteral("Background color of the current search match.")),
-        colorKey(QStringLiteral("searchMatchText"), hex(highlights.searchMatchText), QStringLiteral("Text color of search matches.")),
+                 QStringLiteral("Background color of the current search match. An empty value uses the default.")),
+        colorKey(QStringLiteral("searchMatchText"), hex(highlights.searchMatchText),
+                 QStringLiteral("Text color of search matches. An empty value uses the default.")),
         colorKey(QStringLiteral("visualBell"), hex(highlights.visualBell),
-                 QStringLiteral("Color of the visual bell flash. A color that a program sets with OSC 21 replaces it.")),
+                 QStringLiteral("Color of the visual bell flash. An empty value uses the default. A color that a program sets "
+                                "with OSC 21 replaces it.")),
         doubleKey(QStringLiteral("visualBellIntensity"), highlights.visualBellIntensity, 0, 1,
-                  QStringLiteral("Opacity of the visual bell flash when it starts. A value of 0 hides the flash.")),
+                  QStringLiteral("Opacity of the visual bell flash when it starts. A value of 0 hides the flash. A theme that "
+                                 "sets it replaces it.")),
     };
     schema.groups[Terminal] = {
         enumKey(QStringLiteral("bidi"), BidiChoices, term.bidi,
@@ -442,9 +465,10 @@ PhosphorConfig::Schema buildSchema()
                                "xterm-256color there instead. New panes use this value."),
                 {QStringLiteral("install"), QStringLiteral("fallback")}),
         {QStringLiteral("sshRemoteCommands"), d.sshRemoteCommands, QMetaType::Bool,
-         QStringLiteral("Let aglow run on the hosts that afterglow ssh connects to run the script commands that are marked "
-                        "remote. Every process of the remote user, and the remote root user, can then run those commands. It "
-                        "needs Control.enabled and Scripts.enabled.")},
+         QStringLiteral("Allow the script commands that are marked remote to run from aglow run on the hosts that "
+                        "afterglow ssh connects to. Every process of the remote user, and the remote root user, can then run "
+                        "those commands. It needs Control.enabled and Scripts.enabled. A change to on applies to the ssh "
+                        "sessions that start after it. A change to off closes the sockets of the running sessions.")},
         stringKey(QStringLiteral("pager"), d.pager,
                   QStringLiteral("Command for viewing the last command output. Afterglow splits it into words and runs it "
                                  "without a shell. An empty value turns the pager off.")),
@@ -466,9 +490,6 @@ PhosphorConfig::Schema buildSchema()
         enumKey(QStringLiteral("bell"), BellChoices, d.bell,
                 QStringLiteral("Response to the bell. The none value does nothing. The attention value marks the window urgent. "
                                "The visual value flashes the pane. The both value does both.")),
-        {QStringLiteral("notifications"), d.notifications, QMetaType::Bool,
-         QStringLiteral("Show desktop notifications that programs send with OSC 9, OSC 99 and OSC 777, and program status "
-                        "notifications (OSC 7501).")},
         {QStringLiteral("confirmClose"), d.confirmClose, QMetaType::Bool,
          QStringLiteral("Ask before closing a pane, tab or window where a program is running.")},
         {QStringLiteral("hideMouseWhileTyping"), d.hideMouseWhileTyping, QMetaType::Bool,
@@ -495,21 +516,24 @@ PhosphorConfig::Schema buildSchema()
                                  "only spaces end a word.")),
         {QStringLiteral("env"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Variables added to the shell's environment, such as { \"EDITOR\": \"nvim\" }. Each value must be a "
-                        "string. New panes use this value.")},
+                        "string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow "
+                        "ignores TERM, AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO here, which Terminal.term, "
+                        "Terminal.sshIntegration and Terminal.sshTerminfo set, and AFTERGLOW_PANE_ID and AFTERGLOW_SOCKET, "
+                        "which it always sets. New panes use this value.")},
         {QStringLiteral("confirmUnsafePaste"), d.confirmUnsafePaste, QMetaType::Bool,
          QStringLiteral("Ask before pasting text that holds a line break, unless the program uses bracketed paste. A line "
                         "break could run a command.")},
         stringKey(QStringLiteral("fileTransferPassword"), {},
                   QStringLiteral("Shared secret for Kitty file-transfer approval. An empty value always asks for approval.")),
         intKey(QStringLiteral("fileTransferDeltaLimit"), int(d.fileTransferDeltaLimit >> 30), 0, 1048576,
-               QStringLiteral("Gibibytes that a Kitty delta file transfer can write when the program does not give the file "
-                              "size. A larger file fails with EFBIG. A value of 0 sets no limit.")),
+               QStringLiteral("Gibibytes that a Kitty delta or compressed file transfer can write when the program does not "
+                              "give the file size. A larger file fails with EFBIG. A value of 0 sets no limit.")),
         intKey(QStringLiteral("dragAnswerWait"), d.dragAnswerWait, 0, 1000,
                QStringLiteral("Milliseconds that Afterglow waits for the answer of a program that uses Kitty drag and drop. It "
                               "waits when a drag over the pane shows the program new types. The window does not draw while "
                               "it waits. A value of 0 does not wait.")),
         intKey(QStringLiteral("dragTreeLifetime"), d.dragTreeLifetime, 1, 1440,
-               QStringLiteral("Minutes that Afterglow keeps the files of a Kitty drag from another computer after the drop. "
+               QStringLiteral("Minutes that Afterglow keeps the files of a Kitty drag from another host after the drop. "
                               "A drop target such as a file manager can copy them after the drag ends. A change applies to "
                               "the drops that come after it.")),
         enumKey(QStringLiteral("clipboardRead"), PermissionChoices, d.clipboardRead,
@@ -519,10 +543,11 @@ PhosphorConfig::Schema buildSchema()
                               "event (OSC 5522).")),
         enumKey(QStringLiteral("clipboardWrite"), PermissionChoices, d.clipboardWrite,
                 QStringLiteral("Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write.")),
-        enumKey(QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices, d.graphicsFileTransfer,
+        enumKey(QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices,
+                term.graphicsFileTransfer ? Settings::Permission::Allow : Settings::Permission::Deny,
                 QStringLiteral("Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared "
                                "memory. Images sent inline always work.")),
-        {QStringLiteral("allowScreenReadback"), d.allowScreenReadback, QMetaType::Bool,
+        {QStringLiteral("allowScreenReadback"), term.allowScreenReadback, QMetaType::Bool,
          QStringLiteral("Answer DECRQCRA checksum requests. These let any program in the pane read the screen back.")},
     };
     schema.groups[Window] = {
@@ -540,9 +565,13 @@ PhosphorConfig::Schema buildSchema()
                                "value makes each corner a right angle.")),
         stringKey(QStringLiteral("workingDirectory"), d.window.workingDirectory,
                   QStringLiteral("Starting directory for new tabs, panes and windows. Use inherit, home or a path. The inherit "
-                                 "value, or an empty value, uses the focused pane's directory or the launcher's directory. The "
+                                 "value, or an empty value, uses the focused pane's directory or the launcher's directory. A "
+                                 "path must be absolute or start with ~/. A path that is not a directory uses inherit. The "
                                  "afterglow -d option overrides this setting.")),
-        enumKey(QStringLiteral("startMode"), StartModeChoices, d.window.startMode, QStringLiteral("How new windows open.")),
+        enumKey(QStringLiteral("startMode"), StartModeChoices, d.window.startMode,
+                QStringLiteral("How new windows open. The normal value opens them at Window.initialColumns and "
+                               "Window.initialRows. The maximized value fills the screen beside the panels. The fullscreen "
+                               "value covers the whole screen.")),
         {QStringLiteral("decorations"), d.window.decorations, QMetaType::Bool,
          QStringLiteral("Show the compositor's title bar and borders on new windows.")},
         {QStringLiteral("balancePadding"), d.window.balancePadding, QMetaType::Bool,
@@ -550,11 +579,16 @@ PhosphorConfig::Schema buildSchema()
                         "bottom.")},
         enumKey(QStringLiteral("tabBar"), TabBarChoices, d.window.tabBar,
                 QStringLiteral("When the tab bar shows. The auto value shows it while there are two or more tabs.")),
+        intKey(QStringLiteral("tabBarHeight"), d.window.tabBarHeight, 20, 64,
+               QStringLiteral("Height of the tab bar, in logical pixels.")),
         enumKey(QStringLiteral("scrollbar"), ScrollbarChoices, d.window.scrollbar,
                 QStringLiteral("When the history scrollbar shows. The auto value shows the scrollbar while the view scrolls or the "
                                "pointer is over it, then fades it out.")),
         intKey(QStringLiteral("scrollbarHideDelay"), d.window.scrollbarHideDelay, 0, 60000,
-               QStringLiteral("Milliseconds an auto scrollbar stays visible after the last scroll or after the pointer leaves.")),
+               QStringLiteral("Milliseconds an auto scrollbar stays visible after the last scroll or after the pointer leaves. "
+                              "A value of 0 starts the fade at once.")),
+        intKey(QStringLiteral("scrollbarWidth"), d.window.scrollbarWidth, 4, 48,
+               QStringLiteral("Width of the history scrollbar, in logical pixels.")),
     };
     schema.groups[MouseGroup] = {
         enumKey(QStringLiteral("rightClick"), RightClickChoices, d.mouse.rightClick,
@@ -571,7 +605,8 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,
          QStringLiteral("Detect plain-text URLs in addition to application-provided OSC 8 links.")},
         stringKey(QStringLiteral("openWith"), {},
-                  QStringLiteral("Command for opening links. Afterglow adds the URL as the last argument. An empty value uses the "
+                  QStringLiteral("Command for opening links. Afterglow splits it into words, adds the URL as the last "
+                                 "argument and runs it without a shell. Quotes keep spaces in one word. An empty value uses the "
                                  "desktop browser.")),
         enumKey(QStringLiteral("modifier"), ModifierChoices, d.links.modifier,
                 QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link.")),
@@ -604,6 +639,11 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands "
                         "that run and the values of user variables. A script command that runs for a client, such as aglow "
                         "run or afterglow run, reads pane text only when Scripts.allowReadText is on too.")},
+        {QStringLiteral("allowRemoteReadText"), d.control.allowRemoteReadText, QMetaType::Bool,
+         QStringLiteral("Allow a script command that runs from a remote host, with aglow run in an afterglow ssh session, to "
+                        "read pane text. Any process of the remote user, and the remote root user, can run such a "
+                        "command and read its output. Scripts.allowReadText and Control.allowReadText must be on too. "
+                        "While this is off, only the handler of the run writes to its output.")},
         intKey(QStringLiteral("eventInterval"), d.control.eventInterval, 0, 10000,
                QStringLiteral("Shortest time in milliseconds between two events of one kind for one pane, for titles, status, "
                               "context, bells and each user variable. A newer event replaces one that waits, and the bells in "
@@ -636,6 +676,10 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("Kibibytes of UTF-8 text that one run of a script command can write to standard output and "
                               "standard error together. A run that writes more ends, and aglow run exits with status "
                               "1. A run from a key, a menu or the palette counts only its standard error.")),
+        intKey(QStringLiteral("cpuBudget"), d.scriptCpuBudget, 10, 1000,
+               QStringLiteral("Milliseconds of handler time that one script can use in each second. Past it, Afterglow "
+                              "drops the script's events and timer calls, and delays its results, keys and command runs. "
+                              "A script that uses all of it in 5 seconds in a row is disabled.")),
     };
     const AudioSettings& audio = d.audio;
     schema.groups[AudioGroup] = {
@@ -706,17 +750,23 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("Duration of the visual bell fade in milliseconds for curves other than springs.")),
     };
     schema.groups[GraphicsGroup] = {
-        intKey(QStringLiteral("quota"), int(d.graphicsQuota >> 20), 16, 4096,
+        intKey(QStringLiteral("quota"), int(term.graphicsQuota >> 20), 16, 4096,
                QStringLiteral("Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps. A pane has "
                               "a main and an alternate screen. The oldest images go first when a screen is full.")),
     };
     schema.groups[NotificationsGroup] = {
+        {QStringLiteral("enabled"), d.notifications, QMetaType::Bool,
+         QStringLiteral("Show desktop notifications that programs send with OSC 9, OSC 99 and OSC 777, and program status "
+                        "notifications (OSC 7501). Afterglow's own notifications show also when this is off.")},
         intKey(QStringLiteral("rateLimit"), d.notificationRateLimit, 0, 1000,
-               QStringLiteral("Desktop notifications that the programs of one pane can show in %1 seconds. Afterglow drops "
-                              "the notifications over the limit. A value of 0 removes the limit. Updates of a shown "
-                              "notification do not count. The notifications of Afterglow itself do not count, except the "
-                              "notifications of script commands.")
-                   .arg(NotificationRateWindowMs / 1000)),
+               QStringLiteral("Desktop notifications that the programs of one pane can show in Notifications.rateWindow "
+                              "seconds. Afterglow drops the notifications over the limit. A value of 0 removes the limit. "
+                              "Updates of a shown notification do not count. The notifications of Afterglow itself do not "
+                              "count, such as those of afterglow ctl notify and of the notify effect of scripts. The "
+                              "notification at the end of a script command run without a client counts. Without a pane, "
+                              "these notifications share one limit.")),
+        intKey(QStringLiteral("rateWindow"), d.notificationRateWindow, 1, 3600,
+               QStringLiteral("Seconds over which Notifications.rateLimit counts the notifications of one pane.")),
         intKey(QStringLiteral("statusInterval"), d.statusNotificationInterval, 0, 600000,
                QStringLiteral("Shortest time in milliseconds between two program status notifications (OSC 7501) of one pane. "
                               "A value of 0 shows each one.")),
@@ -740,12 +790,14 @@ PhosphorConfig::Schema buildSchema()
         stringKey(QStringLiteral("paneEffects"), d.shaders.paneEffects,
                   QStringLiteral("Shader that animates panes as they split open and close. It draws a portal when the shell "
                                  "of a pane moves to another host, user or container. While the shell stays there, it draws "
-                                 "the away frame around the pane. An empty value turns it off.")),
+                                 "the away frame around the pane. Animation.splits off turns these off too. An empty value "
+                                 "turns it off.")),
         stringKey(QStringLiteral("overlayTransition"), d.shaders.overlayTransition,
                   QStringLiteral("Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. "
                                  "An empty value, or a pack that does not load, switches at once.")),
         {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
-         QStringLiteral("Parameter values for each shader reference, such as { \"bloom\": { \"strength\": 0.5 } }.")},
+         QStringLiteral("Parameter values for each shader reference, such as { \"bloom\": { \"strength\": 0.5 } }. The "
+                        "value of each reference must be an object.")},
     };
     schema.groups[HintsGroup] = {
         {QStringLiteral("patterns"), d.hintPatterns, QMetaType::QVariantList,
@@ -770,7 +822,9 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("Milliseconds before Afterglow cancels an incomplete sequence.")),
         intKey(QStringLiteral("tableTimeout"), KeyModes::DefaultTableTimeout, 100, 60000, QStringLiteral("Idle milliseconds before leaving a key table.")),
         {QStringLiteral("tables"), QVariantMap{}, QMetaType::QVariantMap,
-         QStringLiteral("Named action-to-key maps, activated with table:NAME.")},
+         QStringLiteral("Named key tables, each a map of actions to keys as in bindings. A binding to table:NAME opens one. "
+                        "Its actions keep it open. The pop_key_table action leaves every open table, and so does "
+                        "Keybinds.tableTimeout.")},
         {QStringLiteral("bindings"), Keybinds::defaultMap(), QMetaType::QVariantMap,
          QStringLiteral("Map each action to a key combination or a list of them. An empty string removes the binding. "
                         "Besides actions, the map can bind script:ID.COMMAND to run a script command, text:BYTES to send "
@@ -824,6 +878,23 @@ bool isNumberValue(const QJsonValue& raw)
     double value = raw.toDouble();
     if (raw.isString()) value = raw.toString().toDouble(&ok);
     return ok && std::isfinite(value);
+}
+
+/// Whether read() takes @p raw for a list, a map or a string key as it is:
+/// malformedValues() lays the default over another JSON type, which
+/// PhosphorConfig would read as text or as the JSON that its text holds.
+bool hasReadableType(const KeyDef& def, const QJsonValue& raw)
+{
+    switch (def.expectedType) {
+    case QMetaType::QVariantList:
+        return raw.isArray();
+    case QMetaType::QVariantMap:
+        return raw.isObject();
+    case QMetaType::QString:
+        return raw.isString();
+    default:
+        return true;
+    }
 }
 
 /// Values the validators replaced with a default, and keys the schema does
@@ -990,10 +1061,20 @@ bool SettingsStore::loadFile()
     // that an earlier unreadable file set, and the next save compares the
     // file against this read. A missing file is every default.
     const QJsonObject before = m_backend->jsonRootSnapshot();
+    // The version stamp that every save adds is no setting: a file that held
+    // only it held nothing to keep.
+    const bool heldSettings = !before.isEmpty() && !(before.size() == 1 && before.contains(m_store->schema().versionKey));
     QString problem = m_backend->reload();
     if (!problem.isEmpty()) {
-        problem += QStringLiteral(". Keeping the current settings");
-    } else if (m_backend->blankFile() && !before.isEmpty()) {
+        // The backend falls back to the last document it read from the file,
+        // which is {} after an empty file kept the settings below: the
+        // document in use stays instead.
+        m_backend->replaceRoot(before);
+        m_backend->clearDirty();
+        problem += m_neverRead
+            ? QStringLiteral(". Using the defaults, with Scripts.enabled and Control.enabled off, until it can be read")
+            : QStringLiteral(". Keeping the current settings");
+    } else if (m_backend->blankFile() && heldSettings) {
         // An editor that saves in place empties the file before it writes
         // it. A file that held settings and holds nothing now is such a
         // save: keep the settings until its text comes. An empty file that
@@ -1008,6 +1089,7 @@ bool SettingsStore::loadFile()
         m_fileProblems = {problem};
         return false;
     }
+    m_neverRead = false;
     m_fileProblems.clear();
     return true;
 }
@@ -1065,14 +1147,19 @@ bool SettingsStore::ensureFile()
     if (QFile::exists(m_path)) {
         return true;
     }
+    // A link whose target is gone (a dotfiles checkout not made yet): the
+    // file goes where the link points, as the saves through it do. Opened
+    // through the link, NewOnly would refuse, since the link exists.
+    QString target = m_path;
+    for (int depth = 0; depth < 16 && QFileInfo(target).isSymLink(); ++depth) target = QFileInfo(target).symLinkTarget();
     // Here, not only when the store starts: the directory can be gone since.
-    if (const QString directory = QFileInfo(m_path).absolutePath(); !QDir().mkpath(directory)) {
+    if (const QString directory = QFileInfo(target).absolutePath(); !QDir().mkpath(directory)) {
         qCWarning(lcConfig).noquote() << "cannot create" << directory;
         return false;
     }
     // The file can come to hold Terminal.fileTransferPassword. Create it
     // private before the first save, which keeps the mode it finds.
-    QFile file(m_path);
+    QFile file(target);
     if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly, QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
         // Another process may have made it in the meantime: it is there to open.
         if (QFile::exists(m_path)) {
@@ -1097,21 +1184,20 @@ QVariant SettingsStore::persisted(const QString& group, const QString& key) cons
     if (!def) return {};
     // The file as it is now, not as the last reload left it: a write built
     // on this value would otherwise undo an edit saved since. A file that
-    // does not hold a JSON object leaves the last good document, and
+    // cannot be read as a JSON object leaves the document in use, and
     // write() refuses to replace it anyway. An empty or white-space file
     // leaves it too: {} when the file held no settings, and the settings of a
     // save in progress when it did (see loadFile).
-    QJsonObject root = m_backend->jsonRootSnapshot();
-    if (QFile file(m_path); !file.exists()) {
-        root = {};
-    } else if (file.open(QIODevice::ReadOnly)) {
-        const QByteArray bytes = file.readAll();
-        const QJsonDocument doc = QJsonDocument::fromJson(bytes);
-        if (!bytes.trimmed().isEmpty() && doc.isObject()) root = doc.object();
-    }
-    const QJsonValue raw = root.value(group).toObject().value(key);
-    QVariant value = raw.isUndefined() ? def->defaultValue : raw.toVariant();
-    return def->validator ? def->validator(value) : value;
+    PhosphorConfig::JsonBackend file(m_path, PhosphorConfig::JsonBackend::Load::Deferred);
+    if (!file.reload().isEmpty() || file.blankFile()) file.replaceRoot(m_backend->jsonRootSnapshot());
+    // Never written: the destructor flushes a dirty document.
+    file.clearDirty();
+    const QJsonValue raw = file.jsonRootSnapshot().value(group).toObject().value(key);
+    // As read() takes it: the defaults that malformedValues() lays over a
+    // list, a map or a string of another JSON type, and PhosphorConfig's own
+    // reading of the rest (an integer key truncates 6.7 to 6).
+    if (!raw.isUndefined() && !hasReadableType(*def, raw)) return def->defaultValue;
+    return PhosphorConfig::Store(&file, m_store->schema()).readVariant(group, key);
 }
 
 bool SettingsStore::addOverride(QJsonObject& overrides, const QString& assignment)
@@ -1142,6 +1228,11 @@ bool SettingsStore::addOverride(QJsonObject& overrides, const QString& assignmen
     entries.insert(key, value);
     overrides.insert(group, entries);
     return true;
+}
+
+QString SettingsStore::configDirectory() const
+{
+    return QFileInfo(m_path).absolutePath();
 }
 
 bool SettingsStore::darkScheme() const
@@ -1193,7 +1284,17 @@ void SettingsStore::watch()
             app->removeEventFilter(this);
         }
     }
-    paths << Themes::candidates(m_themeName, Themes::searchDirs(), QFileInfo(m_path).absolutePath());
+    paths << Themes::candidates(m_themeName, Themes::searchDirs(configDirectory()), configDirectory());
+    // The watch of a link follows its target until the target goes, and
+    // then only the link's directory: a target made again elsewhere would
+    // never be seen. The target's own path is watched too.
+    for (qsizetype i = 0, count = paths.size(); i < count; ++i) {
+        QString link = paths[i];
+        for (int depth = 0; depth < 16 && QFileInfo(link).isSymLink(); ++depth) {
+            link = QFileInfo(link).symLinkTarget();
+            paths << link;
+        }
+    }
     m_files.setPaths(paths);
 }
 
@@ -1227,8 +1328,8 @@ void SettingsStore::queueApply()
 
 void SettingsStore::reload()
 {
-    // A file that does not parse leaves the last good document in the
-    // backend, so a theme edit or a deleted theme still applies over it.
+    // A file that does not parse leaves the document in use in the backend
+    // (loadFile), so a theme edit or a deleted theme still applies over it.
     loadFile();
     apply();
 }
@@ -1261,6 +1362,16 @@ Settings SettingsStore::read()
         const QJsonObject replaced = group.value().toObject();
         for (auto key = replaced.begin(); key != replaced.end(); ++key) keys.insert(key.key(), key.value());
         overlay.insert(group.key(), keys);
+    }
+    if (m_neverRead) {
+        // The file could not be read since the start and may turn them off.
+        // A command-line override still wins: it is the user's word.
+        for (const QString& group : {ScriptsGroup, ControlGroup}) {
+            if (m_overrides.value(group).toObject().contains(QLatin1String("enabled"))) continue;
+            QJsonObject keys = overlay.value(group).toObject();
+            keys.insert(QStringLiteral("enabled"), false);
+            overlay.insert(group, keys);
+        }
     }
     m_backend->setOverlay(overlay);
     // The backend merges the overlay into the file key by key at every
@@ -1371,8 +1482,8 @@ Settings SettingsStore::read()
     t.cursorTextColor = optionalColor("cursorText");
     t.selectionForeground = optionalColor("selectionForeground");
     t.selectionBackground = optionalColor("selectionBackground");
-    AfterglowVt::Rgb divider = toRgb(st.read<QString>(Colors, QStringLiteral("divider")), WindowSettings::DefaultDivider);
     // Unset: derived below from the background and the text in use.
+    std::optional<AfterglowVt::Rgb> divider = optionalColor("divider");
     std::optional<AfterglowVt::Rgb> popupBorder = optionalColor("popupBorder");
     auto& hl = s.colors;
     hl.searchMatch = toRgb(st.read<QString>(Colors, QStringLiteral("searchMatch")), hl.searchMatch);
@@ -1395,8 +1506,8 @@ Settings SettingsStore::read()
         }
         const QString name = baseTheme(picked, desktop);
         m_themeName = name;
-        const QStringList dirs = Themes::searchDirs();
-        const QString path = Themes::locate(name, dirs, QFileInfo(m_path).absolutePath());
+        const QStringList dirs = Themes::searchDirs(configDirectory());
+        const QString path = Themes::locate(name, dirs, configDirectory());
         if (name.isEmpty()) {
             problem(QStringLiteral("Colors.theme \"%1\" names no theme").arg(spec));
         } else if (path.isEmpty()) {
@@ -1487,10 +1598,11 @@ Settings SettingsStore::read()
         // border) gets one derived from its background and text, which suits
         // light and dark alike. The config's are not used: they need not suit the theme's
         // background.
-        divider = theme->divider.value_or(Themes::derivedDivider(t.defaultBackground, t.defaultForeground));
+        divider = theme->divider;
         popupBorder = theme->popupBorder;
     }
-    s.window.dividerColor = AfterglowRender::packRgba(divider);
+    s.window.dividerColor =
+        AfterglowRender::packRgba(divider.value_or(Themes::derivedDivider(t.defaultBackground, t.defaultForeground)));
     s.window.popupBorderColor =
         AfterglowRender::packRgba(popupBorder.value_or(Themes::derivedPopupBorder(t.defaultBackground, t.defaultForeground)));
     s.window.unfocusedDim = st.read<double>(Colors, QStringLiteral("unfocusedDim"));
@@ -1514,7 +1626,6 @@ Settings SettingsStore::read()
     if (const QString term = st.read<QString>(Terminal, QStringLiteral("term")).trimmed(); !term.isEmpty()) s.term = term;
     s.copyOnSelect = readEnum(st, Terminal, QStringLiteral("copyOnSelect"), CopyOnSelectChoices, s.copyOnSelect);
     s.bell = readEnum(st, Terminal, QStringLiteral("bell"), BellChoices, s.bell);
-    s.notifications = st.read<bool>(Terminal, QStringLiteral("notifications"));
     s.confirmUnsafePaste = st.read<bool>(Terminal, QStringLiteral("confirmUnsafePaste"));
     s.confirmClose = st.read<bool>(Terminal, QStringLiteral("confirmClose"));
     s.hideMouseWhileTyping = st.read<bool>(Terminal, QStringLiteral("hideMouseWhileTyping"));
@@ -1533,6 +1644,10 @@ Settings SettingsStore::read()
         // name or the value short.
         if (it.key().isEmpty() || it.key().contains(QLatin1Char('=')) || it.key().contains(QChar(u'\0'))) {
             problem(QStringLiteral("Terminal.env: \"%1\" is not a variable name").arg(it.key()));
+        } else if (const QString setting = reservedVariables().value(it.key()); !setting.isEmpty()) {
+            // It would win over the setting without a word, or lose to the
+            // value that Afterglow always sets.
+            problem(QStringLiteral("Terminal.env.%1 is not used. %2").arg(it.key(), setting));
         } else if (it.value().typeId() != QMetaType::QString) {
             // null, a number or a list would otherwise turn into text the user did not write.
             problem(QStringLiteral("Terminal.env.%1 must be a string").arg(it.key()));
@@ -1543,21 +1658,34 @@ Settings SettingsStore::read()
         }
     }
     s.fileTransferPassword = st.read<QString>(Terminal, QStringLiteral("fileTransferPassword"));
+    // ensureFile() makes the file private, but a file made by hand keeps
+    // the mode that it was made with.
+    const bool filePassword = !m_backend->jsonRootSnapshot()
+                                   .value(Terminal)
+                                   .toObject()
+                                   .value(QStringLiteral("fileTransferPassword"))
+                                   .toString()
+                                   .isEmpty();
+    if (filePassword && (QFile::permissions(m_path) & (QFileDevice::ReadGroup | QFileDevice::ReadOther))) {
+        problem(QStringLiteral("%1 holds Terminal.fileTransferPassword, and other users can read it. Make it readable by "
+                               "the owner only (chmod 600)")
+                    .arg(m_path));
+    }
     s.fileTransferDeltaLimit = qint64(st.read<int>(Terminal, QStringLiteral("fileTransferDeltaLimit"))) << 30;
     s.dragAnswerWait = st.read<int>(Terminal, QStringLiteral("dragAnswerWait"));
     s.dragTreeLifetime = st.read<int>(Terminal, QStringLiteral("dragTreeLifetime"));
     s.clipboardRead = readEnum(st, Terminal, QStringLiteral("clipboardRead"), PermissionChoices, s.clipboardRead);
     s.pasteReadTimeout = st.read<int>(Terminal, QStringLiteral("pasteReadTimeout"));
     s.clipboardWrite = readEnum(st, Terminal, QStringLiteral("clipboardWrite"), PermissionChoices, s.clipboardWrite);
-    s.graphicsFileTransfer =
-        readEnum(st, Terminal, QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices, s.graphicsFileTransfer);
-    s.allowScreenReadback = st.read<bool>(Terminal, QStringLiteral("allowScreenReadback"));
-    s.graphicsQuota = std::size_t(st.read<int>(GraphicsGroup, QStringLiteral("quota"))) << 20;
     // The terminal core enforces these three itself.
-    t.allowScreenReadback = s.allowScreenReadback;
-    t.graphicsQuota = s.graphicsQuota;
-    t.graphicsFileTransfer = s.graphicsFileTransfer != Settings::Permission::Deny;
+    t.graphicsFileTransfer = readEnum(st, Terminal, QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices,
+                                      Settings::Permission::Allow)
+        != Settings::Permission::Deny;
+    t.allowScreenReadback = st.read<bool>(Terminal, QStringLiteral("allowScreenReadback"));
+    t.graphicsQuota = std::size_t(st.read<int>(GraphicsGroup, QStringLiteral("quota"))) << 20;
+    s.notifications = st.read<bool>(NotificationsGroup, QStringLiteral("enabled"));
     s.notificationRateLimit = st.read<int>(NotificationsGroup, QStringLiteral("rateLimit"));
+    s.notificationRateWindow = st.read<int>(NotificationsGroup, QStringLiteral("rateWindow"));
     s.statusNotificationInterval = st.read<int>(NotificationsGroup, QStringLiteral("statusInterval"));
 
     // Window
@@ -1569,12 +1697,22 @@ Settings SettingsStore::read()
     s.window.paneTitles = st.read<bool>(Window, QStringLiteral("paneTitles"));
     s.window.popupCorners = readEnum(st, Window, QStringLiteral("popupCorners"), PopupCornerChoices, s.window.popupCorners);
     s.window.workingDirectory = st.read<QString>(Window, QStringLiteral("workingDirectory")).trimmed();
+    if (const QString& dir = s.window.workingDirectory; !dir.isEmpty() && dir != QLatin1String("inherit")
+        && dir != QLatin1String("home") && dir != QLatin1String("~") && !dir.startsWith(QLatin1String("~/"))
+        && QDir::isRelativePath(dir)) {
+        // A relative path would start wherever Afterglow was started.
+        problem(QStringLiteral("Window.workingDirectory \"%1\" must be an absolute path or start with ~/. Using inherit")
+                    .arg(dir));
+        s.window.workingDirectory = QStringLiteral("inherit");
+    }
     s.window.startMode = readEnum(st, Window, QStringLiteral("startMode"), StartModeChoices, s.window.startMode);
     s.window.decorations = st.read<bool>(Window, QStringLiteral("decorations"));
     s.window.balancePadding = st.read<bool>(Window, QStringLiteral("balancePadding"));
     s.window.tabBar = readEnum(st, Window, QStringLiteral("tabBar"), TabBarChoices, s.window.tabBar);
+    s.window.tabBarHeight = st.read<int>(Window, QStringLiteral("tabBarHeight"));
     s.window.scrollbar = readEnum(st, Window, QStringLiteral("scrollbar"), ScrollbarChoices, s.window.scrollbar);
     s.window.scrollbarHideDelay = st.read<int>(Window, QStringLiteral("scrollbarHideDelay"));
+    s.window.scrollbarWidth = st.read<int>(Window, QStringLiteral("scrollbarWidth"));
     s.mouse.rightClick = readEnum(st, MouseGroup, QStringLiteral("rightClick"), RightClickChoices, s.mouse.rightClick);
     s.mouse.middleClick = readEnum(st, MouseGroup, QStringLiteral("middleClick"), MiddleClickChoices, s.mouse.middleClick);
     s.mouse.autoScrollInterval = st.read<int>(MouseGroup, QStringLiteral("autoScrollInterval"));
@@ -1614,6 +1752,7 @@ Settings SettingsStore::read()
     s.quickTerminal.screen = st.read<QString>(Quick, QStringLiteral("screen")).trimmed();
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));
     s.control.allowReadText = st.read<bool>(ControlGroup, QStringLiteral("allowReadText"));
+    s.control.allowRemoteReadText = st.read<bool>(ControlGroup, QStringLiteral("allowRemoteReadText"));
     s.control.eventInterval = st.read<int>(ControlGroup, QStringLiteral("eventInterval"));
     s.scripts = st.read<bool>(ScriptsGroup, QStringLiteral("enabled"));
     s.scriptsAllowReadText = st.read<bool>(ScriptsGroup, QStringLiteral("allowReadText"));
@@ -1621,6 +1760,7 @@ Settings SettingsStore::read()
     s.scriptCommandStdinLimit = qint64(st.read<int>(ScriptsGroup, QStringLiteral("commandStdinLimit"))) << 10;
     s.scriptCommandRunLimit = st.read<int>(ScriptsGroup, QStringLiteral("commandRunLimit"));
     s.scriptCommandOutputLimit = qint64(st.read<int>(ScriptsGroup, QStringLiteral("commandOutputLimit"))) << 10;
+    s.scriptCpuBudget = st.read<int>(ScriptsGroup, QStringLiteral("cpuBudget"));
 
     s.audio.enabled = st.read<bool>(AudioGroup, QStringLiteral("enabled"));
     s.audio.inputMethod = st.read<QString>(AudioGroup, QStringLiteral("inputMethod"));
@@ -1664,6 +1804,15 @@ Settings SettingsStore::read()
                  .paneEffects = shaderRef("paneEffects"),
                  .overlayTransition = shaderRef("overlayTransition")};
     s.shaderParams = mapValue(Shaders, QStringLiteral("params"));
+    for (auto it = s.shaderParams.begin(); it != s.shaderParams.end();) {
+        if (it.value().typeId() == QMetaType::QVariantMap) {
+            ++it;
+            continue;
+        }
+        // A number or a list would otherwise set no parameter, without a word.
+        problem(QStringLiteral("Shaders.params.%1 must be an object of parameter values").arg(it.key()));
+        it = s.shaderParams.erase(it);
+    }
 
     // Hints: checked once here, not on every show_hints, which uses only the
     // entries that pass.

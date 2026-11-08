@@ -30,6 +30,8 @@
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
+#include <ImageDecode.h>
+#include <config/Settings.h>
 #include <config/Theme.h>
 #include <scripting/OverlaySpec.h>
 #include <shaders/ShaderLibrary.h>
@@ -38,20 +40,18 @@
 #include <QFile>
 #include <QDir>
 #include <QFileInfo>
+#include <QDateTime>
 #include <QGuiApplication>
 #include <QImage>
-#include <QImageReader>
-#include <QBuffer>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMargins>
-#include <QVulkanFunctions>
-#include <QVulkanInstance>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <deque>
 #include <exception>
 #include <memory>
@@ -63,7 +63,7 @@
 
 namespace {
 
-// The same limits as the application's decoder (Pane::decodeImage).
+// Images decode as in a pane, with its decoder and its limits.
 class Host : public AfterglowVt::ITerminalHost
 {
 public:
@@ -71,39 +71,13 @@ public:
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override
     {
-        return decode(png, "PNG", width, height, rgba);
+        return Afterglow::decodeBoundedImage(png, "PNG", width, height, rgba);
     }
-    // iTerm2 inline images: any format Qt reads, as in the application.
+    // iTerm2 inline images: the common formats by their content.
     bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
                      std::vector<std::uint8_t>& rgba) override
     {
-        return decode(data, "", width, height, rgba);
-    }
-
-private:
-    static bool decode(std::string_view data, const char* format, std::uint32_t& width, std::uint32_t& height,
-                       std::vector<std::uint8_t>& rgba)
-    {
-        if (data.size() > AfterglowVt::GraphicsStore::DefaultQuota) return false;
-        QByteArray bytes = QByteArray::fromRawData(data.data(), qsizetype(data.size()));
-        QBuffer buffer(&bytes);
-        buffer.open(QIODevice::ReadOnly);
-        QImageReader reader(&buffer, format);
-        const auto size = reader.size();
-        if (size.isEmpty() || std::uint32_t(size.width()) > AfterglowProto::GraphicsMaxSide
-            || std::uint32_t(size.height()) > AfterglowProto::GraphicsMaxSide
-            || quint64(size.width()) * size.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
-        QImage img = reader.read();
-        if (img.isNull() || img.size() != size) return false;
-        img.convertTo(QImage::Format_RGBA8888);
-        if (img.isNull()) return false;
-        width = std::uint32_t(img.width());
-        height = std::uint32_t(img.height());
-        rgba.resize(std::size_t(width) * height * 4);
-        for (int y = 0; y < img.height(); ++y) {
-            std::memcpy(rgba.data() + std::size_t(y) * width * 4, img.constScanLine(y), std::size_t(width) * 4);
-        }
-        return true;
+        return Afterglow::decodeBoundedImage(data, "", width, height, rgba);
     }
 };
 
@@ -241,14 +215,17 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("context"), QStringLiteral("The last pane's context: 0 here, 1 remote, 2 elevated, 3 container."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("context-progress"), QStringLiteral("How far its context change has run, 0 to 1 (default 1)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("previous-context"), QStringLiteral("Its context before that change, 0 to 3 (default 0)."), QStringLiteral("n")});
-    parser.addOption({QStringLiteral("pulse"), QStringLiteral("A pulse on the last pane: EFFECT:PROGRESS[:COLOR], effect 1 portal, 2 flash, 3 shake."), QStringLiteral("spec")});
+    parser.addOption({QStringLiteral("pulse"), QStringLiteral("A pulse on the last pane: EFFECT:PROGRESS[:COLOR], effect 1 portal, 2 flash, 3 shake, or 4 to 255 for a package's pulse."), QStringLiteral("spec")});
     parser.addOption({QStringLiteral("close-progress"), QStringLiteral("The last pane has closed, 0 to 1, leaving its frame on a blue background. Needs --split or --grid."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("overview-position"), QStringLiteral("The highlight's position, a fractional card index (default the highlighted card)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("tabs"), QStringLiteral("With --overview: N tabs with the same panes, the first current (default 1)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("current-tab"), QStringLiteral("With --tabs: the current tab (default 0)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("family"), QStringLiteral("Font family."), QStringLiteral("name")});
-    parser.addOption({QStringLiteral("weight"), QStringLiteral("Font weight (variable fonts)."), QStringLiteral("n")});
-    parser.addOption({QStringLiteral("feature"), QStringLiteral("OpenType feature, replacing the defaults (repeatable; \"none\" for none)."),
+    parser.addOption({QStringLiteral("weight"), QStringLiteral("Weight of regular and italic text, 100 to 900 (Font.weight)."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("bold-weight"), QStringLiteral("Weight of bold text, 100 to 900 (Font.boldWeight)."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("width"), QStringLiteral("Width axis of variable fonts, 50 to 200 (Font.width)."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("italic-slant"), QStringLiteral("Slant of italic text in degrees, -90 to 90 (Font.italicSlant)."), QStringLiteral("deg")});
+    parser.addOption({QStringLiteral("feature"), QStringLiteral("OpenType feature in HarfBuzz syntax, replacing the defaults (repeatable; \"none\" for none)."),
                       QStringLiteral("tag")});
     parser.addOption({QStringLiteral("signal"), QStringLiteral("Shader signal set AGE seconds ago (repeatable)."),
                       QStringLiteral("ch=value[@age]")});
@@ -257,6 +234,13 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("opacity"), QStringLiteral("Background opacity."), QStringLiteral("f"),
                       QStringLiteral("1")});
     parser.addOption({QStringLiteral("unfocused"), QStringLiteral("Render the pane unfocused.")});
+    // The window's defaults (afterglow/src/config/Settings.h).
+    const Afterglow::Settings defaults;
+    parser.addOption({QStringLiteral("unfocused-dim"), QStringLiteral("With --split or --grid: the opacity of the black layer over the unfocused panes (Window.unfocusedDim, default %1).")
+                          .arg(defaults.window.unfocusedDim),
+                      QStringLiteral("f"), QString::number(defaults.window.unfocusedDim)});
+    parser.addOption({QStringLiteral("date"), QStringLiteral("The date and time of iDate, as YYYY-MM-DDTHH:MM:SS (default 2026-01-01T00:00:00, so that previews do not change from run to run)."),
+                      QStringLiteral("time"), QStringLiteral("2026-01-01T00:00:00")});
     parser.addOption({QStringLiteral("overview-age"), QStringLiteral("Seconds since the overview opened (uOverview.z)."), QStringLiteral("s")});
     parser.addOption({QStringLiteral("highlight-age"), QStringLiteral("Seconds since the overview highlight moved (uOverview.w)."), QStringLiteral("s")});
     parser.addOption({QStringLiteral("transition-age"), QStringLiteral("Seconds since the tab switch started (uTabTransition.z)."), QStringLiteral("s")});
@@ -272,6 +256,7 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("search"), QStringLiteral("Highlight the matches of this text."), QStringLiteral("text")});
     parser.addOption({QStringLiteral("search-current"), QStringLiteral("With --search: the current match (default none)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("hover-link"), QStringLiteral("Underline columns C0 to C1 of row ROW as a hovered link."), QStringLiteral("row,c0-c1")});
+    parser.addOption({QStringLiteral("hover-link-id"), QStringLiteral("Underline the cells of OSC 8 link N as hovered, 1 for the first link on the screen."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("blink-off"), QStringLiteral("Draw the off phase of a blinking cursor and of blinking text.")});
     parser.addOption({QStringLiteral("pane-dock"), QStringLiteral("A script dock at an edge of every pane (repeatable), as --dock: drawn in the pane, under its chains, overview and pane effects. The pane grows by the dock and its grid keeps its size."),
                       QStringLiteral("EDGE:CELLS:TEXT")});
@@ -279,9 +264,7 @@ int run(QGuiApplication& app)
                       QStringLiteral("text")});
     parser.addOption({QStringLiteral("overlay-progress"), QStringLiteral("With --overlay: how far it has faded in, 0 the pane to 1 the overlay (default 1)."),
                       QStringLiteral("f")});
-    // The default of Shaders.overlayTransition (afterglow/src/config/Settings.h),
-    // which this tool cannot include: keep the two equal.
-    const QString overlayTransition = QStringLiteral("overlay-fade");
+    const QString overlayTransition = defaults.shaders.overlayTransition;
     parser.addOption({QStringLiteral("overlay-transition"),
                       QStringLiteral("With --overlay: the overlay transition shader (default %1, \"\" for none, which switches at once).")
                           .arg(overlayTransition),
@@ -300,9 +283,7 @@ int run(QGuiApplication& app)
                       QStringLiteral("style")});
     parser.addOption({QStringLiteral("popup-border"), QStringLiteral("With a popup: the color of its border (Colors.popupBorder). By default halfway from the configured background to the configured text, as the window derives it."),
                       QStringLiteral("color")});
-    // The default of Colors.popupDim (WindowSettings::popupDim in
-    // afterglow/src/config/Settings.h): keep the two equal.
-    const QString popupDim = QStringLiteral("0.35");
+    const QString popupDim = QString::number(defaults.window.popupDim);
     parser.addOption({QStringLiteral("popup-dim"), QStringLiteral("With a popup: the opacity of the black layer over the pane around it (Colors.popupDim, default %1).").arg(popupDim),
                       QStringLiteral("f"), popupDim});
     parser.addOption({QStringLiteral("dock"), QStringLiteral("A script dock (repeatable): EDGE top, bottom, left or right, CELLS 1..8 rows (top, bottom) or 1..80 columns (left, right) as scripts may use, TEXT the bytes it shows. The frame grows by the dock and the panes keep their size."),
@@ -321,16 +302,18 @@ int run(QGuiApplication& app)
         std::fprintf(stderr, "--frames must be 1..10000 and --fps must be 1..240\n");
         return 1;
     }
+    // An integer goes through toInt(), as the code that reads it: "2.0" is no integer.
     auto validNumber = [](const QString& text, double low, double high, bool integer = false) {
         bool ok = false;
-        const double value = text.toDouble(&ok);
-        return ok && std::isfinite(value) && value >= low && value <= high
-            && (!integer || value == std::floor(value));
+        const double value = integer ? double(text.toInt(&ok)) : text.toDouble(&ok);
+        return ok && std::isfinite(value) && value >= low && value <= high;
     };
     struct Range { const char* key; double low, high; bool integer; };
     for (const Range r : {Range{"cols", 1, 1000, true}, {"rows", 1, 500, true},
             {"dpr", .25, 8, false}, {"size", AfterglowRender::FontSpec::MinPoints, AfterglowRender::FontSpec::MaxPoints, false}, {"time", 0, 10000000, false},
-            {"wake-age", 0, 10000000, false}, {"opacity", 0, 1, false}, {"weight", 100, 900, false},
+            {"wake-age", 0, 10000000, false}, {"opacity", 0, 1, false}, {"weight", 100, 900, true},
+            {"bold-weight", 100, 900, true}, {"width", 50, 200, false}, {"italic-slant", -90, 90, false},
+            {"unfocused-dim", 0, 1, false}, {"hover-link-id", 1, 1000000, true},
             {"overview-amount", 0, 1, false}, {"overview-position", -1000, 1000, false},
             {"highlight", 0, AfterglowRender::MaxShaderPanes - 1, true}, {"tabs", 1, AfterglowRender::MaxShaderPanes, true},
             {"current-tab", 0, AfterglowRender::MaxShaderPanes - 1, true}, {"transition-progress", 0, 1, false},
@@ -347,11 +330,28 @@ int run(QGuiApplication& app)
             return 1;
         }
     }
-    // Integer options use the same strict conversion as their eventual consumers.
-    for (const auto& key : {QStringLiteral("cols"), QStringLiteral("rows")}) {
-        bool ok = false;
-        parser.value(key).toInt(&ok);
-        if (!ok) { std::fprintf(stderr, "--%s requires an integer\n", qPrintable(key)); return 1; }
+    if (parser.isSet(QStringLiteral("transition-direction")) && parser.value(QStringLiteral("transition-direction")).toInt() == 0) {
+        std::fprintf(stderr, "--transition-direction must be 1 or -1\n");
+        return 1;
+    }
+    // Options that set an input only another option draws.
+    struct Needs { const char* option; std::initializer_list<const char*> any; };
+    for (const Needs& rule : {Needs{"open-edge", {"open-progress"}}, Needs{"context-progress", {"context"}},
+            Needs{"previous-context", {"context"}}, Needs{"overview-amount", {"overview"}}, Needs{"highlight", {"overview"}},
+            Needs{"overview-closing", {"overview"}}, Needs{"overview-position", {"overview"}}, Needs{"tabs", {"overview"}},
+            Needs{"current-tab", {"overview"}}, Needs{"overview-age", {"overview"}}, Needs{"highlight-age", {"overview"}},
+            Needs{"transition-progress", {"tab-transition"}}, Needs{"transition-direction", {"tab-transition"}},
+            Needs{"transition-age", {"tab-transition"}}, Needs{"search-current", {"search"}}, Needs{"wake-age", {"wake-from"}},
+            Needs{"unfocused-dim", {"split", "grid"}},
+            Needs{"pane-effects", {"open-progress", "context", "pulse", "close-progress"}}}) {
+        if (!parser.isSet(QLatin1String(rule.option))) continue;
+        if (std::any_of(rule.any.begin(), rule.any.end(), [&](const char* other) { return parser.isSet(QLatin1String(other)); }))
+            continue;
+        QString needed;
+        for (const char* other : rule.any)
+            needed += (needed.isEmpty() ? QString() : QStringLiteral(" or ")) + QStringLiteral("--") + QLatin1String(other);
+        std::fprintf(stderr, "--%s needs %s\n", rule.option, qPrintable(needed));
+        return 1;
     }
     if (parser.isSet(QStringLiteral("timings")) && frames < 2) {
         std::fprintf(stderr, "--timings needs --frames 2 or more\n");
@@ -399,8 +399,20 @@ int run(QGuiApplication& app)
         spec.regular.family = parser.value(QStringLiteral("family")).toStdString();
         spec.bold.family = spec.italic.family = spec.boldItalic.family = spec.regular.family;
     }
+    // As the application fills the four styles from Font.weight,
+    // Font.boldWeight, Font.width and Font.italicSlant.
     if (parser.isSet(QStringLiteral("weight"))) {
-        spec.regular.weight = parser.value(QStringLiteral("weight")).toDouble();
+        spec.regular.weight = spec.italic.weight = float(parser.value(QStringLiteral("weight")).toInt());
+    }
+    if (parser.isSet(QStringLiteral("bold-weight"))) {
+        spec.bold.weight = spec.boldItalic.weight = float(parser.value(QStringLiteral("bold-weight")).toInt());
+    }
+    if (parser.isSet(QStringLiteral("width"))) {
+        spec.regular.width = spec.bold.width = spec.italic.width = spec.boldItalic.width =
+            float(parser.value(QStringLiteral("width")).toDouble());
+    }
+    if (parser.isSet(QStringLiteral("italic-slant"))) {
+        spec.italic.slant = spec.boldItalic.slant = float(parser.value(QStringLiteral("italic-slant")).toDouble());
     }
     if (parser.isSet(QStringLiteral("hinting"))) {
         const QString hinting = parser.value(QStringLiteral("hinting"));
@@ -424,9 +436,12 @@ int run(QGuiApplication& app)
     if (parser.isSet(QStringLiteral("feature"))) {
         spec.features.clear();
         for (const QString& f : parser.values(QStringLiteral("feature"))) {
-            if (f != QLatin1String("none")) {
-                spec.features.push_back(f.toStdString());
+            if (f == QLatin1String("none")) continue;
+            if (!AfterglowRender::FontSet::isFeature(f.toStdString())) {
+                std::fprintf(stderr, "--feature: \"%s\" is not an OpenType feature in HarfBuzz syntax\n", qPrintable(f));
+                return 1;
             }
+            spec.features.push_back(f.toStdString());
         }
     }
     AfterglowRender::GpuDevice device(spec);
@@ -520,7 +535,17 @@ int run(QGuiApplication& app)
         Afterglow::ShaderLibrary library;
         QMap<QString, QString> packages;
         for (const QString& dir : parser.values(QStringLiteral("package"))) {
-            packages.insert(QDir(dir).dirName(), QDir(dir).absoluteFilePath(QStringLiteral("shaders")));
+            // The application loads a package only when its id names its
+            // directory, and registers the packs under that id.
+            QFile manifest(QDir(dir).absoluteFilePath(QStringLiteral("package.json")));
+            const QString id = manifest.open(QIODevice::ReadOnly)
+                ? QJsonDocument::fromJson(manifest.readAll()).object().value(QLatin1String("id")).toString() : QString();
+            if (id != QDir(dir).dirName()) {
+                std::fprintf(stderr, "--package %s: package.json must give the id \"%s\", the name of its directory\n",
+                             qPrintable(dir), qPrintable(QDir(dir).dirName()));
+                return 1;
+            }
+            packages.insert(id, QDir(dir).absoluteFilePath(QStringLiteral("shaders")));
         }
         library.setPackageShaders(packages);
         AfterglowRender::ShaderChains chains = library.build(refs, params);
@@ -541,8 +566,8 @@ int run(QGuiApplication& app)
         double c0 = 0, r0 = 0, c1 = 0, r1 = 0;
         if (ends.size() != 2 || !parsePair(ends[0], QLatin1Char(','), 0, 100000, c0, r0)
             || !parsePair(ends[1], QLatin1Char(','), 0, 100000, c1, r1) || c0 >= cols || c1 >= cols || r0 >= rows
-            || r1 >= rows) {
-            std::fprintf(stderr, "--select requires c0,r0-c1,r1 within the grid\n");
+            || r1 >= rows || c0 != std::floor(c0) || r0 != std::floor(r0) || c1 != std::floor(c1) || r1 != std::floor(r1)) {
+            std::fprintf(stderr, "--select requires whole cells c0,r0-c1,r1 within the grid\n");
             return 1;
         }
         selection.anchor = {firstRow + std::uint64_t(r0), int(c0)};
@@ -559,16 +584,16 @@ int run(QGuiApplication& app)
             return 1;
         }
         matches = AfterglowVt::findAll(screen, needle);
-        // The defaults of Afterglow::HighlightColors (afterglow/src/config/Settings.h),
-        // which this tool cannot include: keep the two equal.
+        const Afterglow::HighlightColors& colors = defaults.colors;
         search = {&matches, parser.isSet(QStringLiteral("search-current")) ? parser.value(QStringLiteral("search-current")).toInt() : -1,
-                  AfterglowRender::packRgba(0xe5, 0xc0, 0x7b), AfterglowRender::packRgba(0xff, 0x8c, 0x42),
-                  AfterglowRender::packRgba(0x10, 0x10, 0x10)};
+                  AfterglowRender::packRgba(colors.searchMatch), AfterglowRender::packRgba(colors.searchCurrentMatch),
+                  AfterglowRender::packRgba(colors.searchMatchText)};
     }
     const float scrollShift = parser.isSet(QStringLiteral("scroll-shift")) ? parser.value(QStringLiteral("scroll-shift")).toFloat() : 0.0f;
     AfterglowRender::PaneSnapshot snapshot;
-    // A row below the viewport exists only while scrolled back.
-    snapshot.capture(terminal, selection.active ? &selection : nullptr, search, scrollShift > 0 ? 1 : 0);
+    // A row below the viewport exists only while scrolled back. The window
+    // captures it past half a pixel of shift, as here.
+    snapshot.capture(terminal, selection.active ? &selection : nullptr, search, scrollShift > 0.5f ? 1 : 0);
     QSize size(cols * metrics.cellWidth, rows * metrics.cellHeight);
     if (parser.isSet(QStringLiteral("pixels"))) {
         double w = 0, h = 0;
@@ -611,8 +636,10 @@ int run(QGuiApplication& app)
         return 1;
     }
     const QSize paneSize = size.grownBy(paneInset);
-    const qint64 fullWidth = split ? qint64(paneSize.width()) * 2 + 2 : qint64(paneSize.width() + 2) * gridCols - 2;
-    const qint64 fullHeight = qint64(paneSize.height() + 2) * gridRows - 2;
+    // The window's divider: a device pixel ratio of pixels, at least one.
+    const int divider = std::max(1, int(std::lround(parser.value(QStringLiteral("dpr")).toDouble())));
+    const qint64 fullWidth = split ? qint64(paneSize.width()) * 2 + divider : qint64(paneSize.width() + divider) * gridCols - divider;
+    const qint64 fullHeight = qint64(paneSize.height() + divider) * gridRows - divider;
     const qint64 windowWidth = fullWidth + dockInset.left() + dockInset.right();
     const qint64 windowHeight = fullHeight + dockInset.top() + dockInset.bottom();
     if (size.width() < 1 || size.height() < 1 || windowWidth > 8192 || windowHeight > 8192
@@ -656,6 +683,14 @@ int run(QGuiApplication& app)
         pane.params.hoverColStart = int(c0);
         pane.params.hoverColEnd = int(c1);
     }
+    if (parser.isSet(QStringLiteral("hover-link-id"))) {
+        const int link = parser.value(QStringLiteral("hover-link-id")).toInt();
+        if (std::size_t(link) > snapshot.links.size()) {
+            std::fprintf(stderr, "--hover-link-id must name one of the %zu OSC 8 links on the screen\n", snapshot.links.size());
+            return 1;
+        }
+        pane.params.hoveredLink = std::uint32_t(link);
+    }
     if (parser.isSet(QStringLiteral("mouse"))) {
         double x = 0, y = 0;
         if (!parsePair(parser.value(QStringLiteral("mouse")), QLatin1Char(','), -100000, 100000, x, y)) {
@@ -664,7 +699,7 @@ int run(QGuiApplication& app)
         }
         renderer.setMousePosition(QPointF(x, y));
     }
-    std::array<std::optional<float>, 8> signalAges;
+    std::array<std::optional<float>, std::tuple_size_v<decltype(pane.params.signals)>> signalAges;
     for (const QString& spec : parser.values(QStringLiteral("signal"))) {
         const QStringList kv = spec.split(QLatin1Char('='));
         const QStringList va = kv.value(1).split(QLatin1Char('@'));
@@ -690,7 +725,6 @@ int run(QGuiApplication& app)
     AfterglowRender::PaneSnapshot twin = snapshot;
     if (split) {
         // Two panes with a divider between, as a split window shows them.
-        const int divider = 2;
         frameSize = QSize(paneSize.width() * 2 + divider, paneSize.height());
         AfterglowRender::WindowRenderer::Pane right = pane;
         right.snapshot = &twin;
@@ -698,11 +732,9 @@ int run(QGuiApplication& app)
         right.params.contentOrigin = right.params.rect.topLeft() + gridOffset;
         right.params.focused = false;
         panes.push_back(right);
-        overlays.push_back({QRect(paneSize.width(), 0, divider, paneSize.height()), 0xFF0E0706u});
     }
     std::vector<AfterglowRender::PaneSnapshot> copies(std::size_t(gridCols * gridRows), snapshot);
     if (gridCols * gridRows > 1) {
-        const int divider = 2;
         frameSize = QSize(int(fullWidth), int(fullHeight));
         panes.clear();
         for (int row = 0; row < gridRows; ++row) {
@@ -717,6 +749,25 @@ int run(QGuiApplication& app)
             }
         }
     }
+    // The shading the window puts over several panes (addPaneShading): a
+    // black layer over each unfocused pane, which fades as the overview
+    // opens, and a divider in the theme's colour right of and below each
+    // pane that does not reach the window's edge.
+    if (panes.size() > 1) {
+        const double overviewAmount = parser.isSet(QStringLiteral("overview"))
+            ? (parser.isSet(QStringLiteral("overview-amount")) ? parser.value(QStringLiteral("overview-amount")).toDouble() : 1.0) : 0.0;
+        const auto dim = std::uint8_t(std::lround(parser.value(QStringLiteral("unfocused-dim")).toDouble() * (1.0 - overviewAmount) * 255));
+        const std::uint32_t dividerColor =
+            AfterglowRender::packRgba(Afterglow::Themes::derivedDivider(options.defaultBackground, options.defaultForeground));
+        for (const auto& region : panes) {
+            const QRect shown = region.params.rect;
+            if (!region.params.focused && dim > 0) overlays.emplace_back(shown, AfterglowRender::packRgba(0, 0, 0, dim));
+            if (shown.right() < frameSize.width() - 1)
+                overlays.emplace_back(QRect(shown.right() + 1, shown.top(), divider, shown.height()), dividerColor);
+            if (shown.bottom() < frameSize.height() - 1)
+                overlays.emplace_back(QRect(shown.left(), shown.bottom() + 1, shown.width(), divider), dividerColor);
+        }
+    }
     // Each dock is a terminal of its own that runs no program, without wrap,
     // cursor, scrollback or bidi, as the window makes it, sized to its
     // rectangle. The terminals stay while their snapshots are drawn.
@@ -725,7 +776,11 @@ int run(QGuiApplication& app)
     dockOptions.bidi = AfterglowVt::BidiMode::Off;
     std::vector<std::unique_ptr<AfterglowVt::Terminal>> dockTerminals;
     auto captureDock = [&](const DockSpec& spec, const QRect& rect, AfterglowRender::PaneSnapshot& out) {
-        const int dockCols = std::max(2, rect.width() / metrics.cellWidth);
+        // Text past the edge is cut, as a dock cuts it: the terminal has a
+        // column for each byte of the text beyond the ones that show, and
+        // the dock's rectangle clips them. Without wrap, a terminal of the
+        // dock's width would write all of it into its last cell.
+        const int dockCols = std::max(2, rect.width() / metrics.cellWidth) + int(std::min<qsizetype>(spec.text.size(), 1000));
         const int dockRows = std::max(1, rect.height() / metrics.cellHeight);
         auto& dockTerminal = dockTerminals.emplace_back(std::make_unique<AfterglowVt::Terminal>(dockCols, dockRows, host, dockOptions));
         dockTerminal->resize(dockCols, dockRows, metrics.cellWidth, metrics.cellHeight);
@@ -968,6 +1023,29 @@ int run(QGuiApplication& app)
         }
         if (highlight / perTab == currentTab) panes[std::size_t(highlight % perTab)].params.highlighted = true;
     }
+    // The tab being left: its own blue copies, apart from the overview's.
+    // Copied before the pane effects below set the last pane's opening,
+    // context and pulse, which are the current tab's.
+    std::vector<AfterglowRender::PaneSnapshot> leftSnapshots(panes.size(), snapshot);
+    std::optional<AfterglowRender::WindowRenderer::TabTransition> transition;
+    if (parser.isSet(QStringLiteral("tab-transition"))) {
+        for (auto& copy : leftSnapshots) copy.defaultBg = 0xFF5A2A10u;
+        transition.emplace();
+        transition->active = true;
+        transition->progress = parser.isSet(QStringLiteral("transition-progress")) ? parser.value(QStringLiteral("transition-progress")).toFloat() : 0.5f;
+        transition->direction = parser.value(QStringLiteral("transition-direction")).toInt() < 0 ? -1.0f : 1.0f;
+        // Another tab than the current one, tab 0.
+        transition->from.index = 1;
+        for (std::size_t i = 0; i < panes.size(); ++i) {
+            auto copy = panes[i];
+            copy.snapshot = &leftSnapshots[i];
+            copy.overlay.reset(); // the overlay is the current tab's
+            copy.params.focused = false;
+            addPaneDocks(copy);
+            transition->from.panes.push_back(copy);
+        }
+        transition->from.overlays = overlays;
+    }
     bool effects = ghost.has_value();
     if (parser.isSet(QStringLiteral("open-progress"))) {
         panes.back().params.openProgress = parser.value(QStringLiteral("open-progress")).toFloat();
@@ -984,9 +1062,9 @@ int run(QGuiApplication& app)
     if (parser.isSet(QStringLiteral("pulse"))) {
         const auto spec = parser.value(QStringLiteral("pulse")).split(QLatin1Char(':'));
         const QString progress = spec.value(1, QStringLiteral("0.5")), color = spec.value(2, QStringLiteral("4"));
-        if (spec.size() < 1 || spec.size() > 3 || !validNumber(spec.value(0), 1, 3, true) || !validNumber(progress, 0, 1)
+        if (spec.size() < 1 || spec.size() > 3 || !validNumber(spec.value(0), 1, 255, true) || !validNumber(progress, 0, 1)
             || !validNumber(color, 0, 255, true)) {
-            std::fprintf(stderr, "--pulse requires EFFECT:PROGRESS[:COLOR], effect 1..3, progress 0..1, colour 0..255\n");
+            std::fprintf(stderr, "--pulse requires EFFECT:PROGRESS[:COLOR], effect 1..255, progress 0..1, colour 0..255\n");
             return 1;
         }
         panes.back().params.pulseEffect = spec.value(0).toInt();
@@ -995,24 +1073,22 @@ int run(QGuiApplication& app)
         effects = true;
     }
     if (effects) renderer.setPaneEffects({true, true, ghost, closeProgress});
-    // The tab being left: its own blue copies, apart from the overview's.
-    std::vector<AfterglowRender::PaneSnapshot> leftSnapshots(panes.size(), snapshot);
-    std::optional<AfterglowRender::WindowRenderer::TabTransition> transition;
-    if (parser.isSet(QStringLiteral("tab-transition"))) {
-        for (auto& copy : leftSnapshots) copy.defaultBg = 0xFF5A2A10u;
-        transition.emplace();
-        transition->active = true;
-        transition->progress = parser.isSet(QStringLiteral("transition-progress")) ? parser.value(QStringLiteral("transition-progress")).toFloat() : 0.5f;
-        transition->direction = parser.value(QStringLiteral("transition-direction")).toInt() < 0 ? -1.0f : 1.0f;
-        for (std::size_t i = 0; i < panes.size(); ++i) {
-            auto copy = panes[i];
-            copy.snapshot = &leftSnapshots[i];
-            copy.overlay.reset(); // the overlay is the current tab's
-            copy.params.focused = false;
-            addPaneDocks(copy);
-            transition->from.panes.push_back(copy);
-        }
-        transition->from.overlays = overlays;
+    // The window turns translucent for an opacity below 1 or content with
+    // translucent cells (a pane, its overlay, a dock), and then draws no
+    // subpixel text anywhere.
+    const auto translucentDock = [](const AfterglowRender::WindowRenderer::Pane& dock) { return dock.snapshot->hasTransparentBackgrounds; };
+    const auto translucentPane = [&](const AfterglowRender::WindowRenderer::Pane& region) {
+        return region.params.backgroundAlpha < 255 || region.snapshot->hasTransparentBackgrounds
+            || (region.overlay && region.overlay->snapshot->hasTransparentBackgrounds)
+            || std::any_of(region.docks.begin(), region.docks.end(), [](const auto& d) { return d.snapshot->hasTransparentBackgrounds; });
+    };
+    renderer.setTranslucent(std::any_of(panes.begin(), panes.end(), translucentPane)
+                            || std::any_of(docks.begin(), docks.end(), translucentDock));
+    // iDate: the date given, advanced with the frames.
+    const QDateTime date = QDateTime::fromString(parser.value(QStringLiteral("date")), Qt::ISODate);
+    if (!date.isValid()) {
+        std::fprintf(stderr, "--date must be YYYY-MM-DDTHH:MM:SS\n");
+        return 1;
     }
     auto seconds = [](double s) {
         return std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(s));
@@ -1031,6 +1107,9 @@ int run(QGuiApplication& app)
     for (int frame = 0; frame < frames; ++frame) {
         const double elapsed = frame / fps;
         renderer.setClockOverride(time + elapsed);
+        const QDateTime at = date.addMSecs(qint64(std::llround(elapsed * 1000)));
+        renderer.setDateOverride(std::array<float, 4>{float(at.date().year()), float(at.date().month()), float(at.date().day()),
+                                                      float(at.time().msecsSinceStartOfDay()) / 1000.0f});
         // Ages follow the requested playback rate, not render speed: each is
         // stamped this frame as its starting age plus the frames' time.
         const auto wall = std::chrono::steady_clock::now();
@@ -1085,29 +1164,19 @@ int run(QGuiApplication& app)
     return 0;
 }
 
-/// Whether the machine has Vulkan: a loader, a driver and a physical device.
-bool hasVulkanDevice()
-{
-    QVulkanInstance instance;
-    if (!instance.create()) return false;
-    std::uint32_t count = 0;
-    instance.functions()->vkEnumeratePhysicalDevices(instance.vkInstance(), &count, nullptr);
-    return count > 0;
-}
-
 } // namespace
 
 int main(int argc, char** argv)
 {
     QGuiApplication app(argc, argv);
     // No Vulkan device, or an allocation that fails: a message, not an abort.
-    // "no Vulkan" starts the message only when the machine has none, so that
-    // a test can skip then and fail on a device that a machine with Vulkan
-    // could not make.
+    // On a machine without Vulkan as the device asks for it, every error is
+    // put down to that, and the message starts with "no Vulkan: ", so that a
+    // test skips there. On a machine with Vulkan an error fails the test.
     try {
         return run(app);
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "%s%s\n", hasVulkanDevice() ? "" : "no Vulkan: ", e.what());
+        std::fprintf(stderr, "%s%s\n", AfterglowRender::GpuDevice::vulkanAvailable() ? "" : "no Vulkan: ", e.what());
         return 1;
     }
 }

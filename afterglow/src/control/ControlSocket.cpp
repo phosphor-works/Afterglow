@@ -225,7 +225,7 @@ QVariantMap ControlApi::openRemoteSocket(double pane, double pid, const QString&
     const auto id = paneId(pane);
     if (!id) return {};
     if (!m_remote) {
-        failed(QStringLiteral("remote commands are off (Terminal.sshRemoteCommands)"));
+        failed(QStringLiteral("this afterglow has no remote sockets"));
         return {};
     }
     if (!isWhole(pid) || !isWhole(protocol) || std::abs(protocol) > 1e9) {
@@ -246,10 +246,19 @@ QVariantMap ControlApi::openRemoteSocket(double pane, double pid, const QString&
     return result;
 }
 
+void ControlApi::remoteSocketForwarded(const QString& token)
+{
+    if (!m_remote) {
+        failed(QStringLiteral("this afterglow has no remote sockets"));
+        return;
+    }
+    failed(m_remote->forwarded(token));
+}
+
 void ControlApi::remoteSocketFailed(const QString& token, const QString& reason)
 {
     if (!m_remote) {
-        failed(QStringLiteral("remote commands are off (Terminal.sshRemoteCommands)"));
+        failed(QStringLiteral("this afterglow has no remote sockets"));
         return;
     }
     failed(m_remote->failed(token, reason));
@@ -261,21 +270,25 @@ bool ControlApi::overlayInput(const QString& input, const QString& chunk, bool e
     if (!rule.match(input).hasMatch()) return !failed(QStringLiteral("an input name is 1 to 64 letters, digits, _ and -"));
     const quint64 connection = connectionId();
     if (!connection) return !failed(QStringLiteral("an input needs a client connection"));
-    auto& inputs = m_inputs[connection];
-    const auto known = inputs.find(input);
-    if (known == inputs.end() && inputs.size() >= MaxWaitingInputs)
+    // Looked up, not made: a refused first part leaves no books behind.
+    const auto books = m_inputs.constFind(connection);
+    const qsizetype waitingInputs = books == m_inputs.cend() ? 0 : books->size();
+    const auto known = books == m_inputs.cend() ? nullptr : &*books;
+    const auto entry = known ? known->constFind(input) : QHash<QString, WaitingInput>::const_iterator();
+    const bool exists = known && entry != known->cend();
+    if (!exists && waitingInputs >= MaxWaitingInputs)
         return !failed(QStringLiteral("%1 inputs wait for their overlay already").arg(MaxWaitingInputs));
-    if (known != inputs.end() && known->eof) return !failed(QStringLiteral("the input %1 has ended").arg(input));
+    if (exists && entry->eof) return !failed(QStringLiteral("the input %1 has ended").arg(input));
     const QByteArray bytes = chunk.toUtf8();
-    const qsizetype size = known == inputs.end() ? 0 : known->bytes.size();
+    const qsizetype size = exists ? entry->bytes.size() : 0;
     if (size + bytes.size() > OverlaySpec::MaxInput) {
         dropInput(connection, input);
-        return !failed(QStringLiteral("The overlay's stdin is over %1 MiB").arg(OverlaySpec::MaxInput >> 20));
+        return !failed(QStringLiteral("the overlay's stdin is over %1 MiB").arg(OverlaySpec::MaxInput >> 20));
     }
     if (m_inputBytes + bytes.size() > MaxWaitingInputBytes)
         return !failed(QStringLiteral("afterglow keeps at most %1 MiB of input for overlays that have not started")
                            .arg(MaxWaitingInputBytes >> 20));
-    WaitingInput& waiting = inputs[input];
+    WaitingInput& waiting = m_inputs[connection][input];
     waiting.bytes += bytes;
     waiting.eof = eof;
     m_inputBytes += bytes.size();
@@ -292,10 +305,9 @@ void ControlApi::dropInput(quint64 connection, const QString& name)
 
 void ControlApi::overlay(double pane, const QStringList& argv, const QVariantMap& given)
 {
-    const auto id = paneId(pane);
-    if (!id) return;
     QString error;
-    // Standard input that came in parts: the call takes it, whatever it decides.
+    // Standard input that came in parts: the call takes it, whatever it
+    // decides, also for a pane ID that it refuses.
     QVariantMap options = given;
     if (options.contains(QStringLiteral("input"))) {
         const QString name = options.take(QStringLiteral("input")).toString();
@@ -318,6 +330,8 @@ void ControlApi::overlay(double pane, const QStringList& argv, const QVariantMap
         }
         options.insert(QStringLiteral("stdin"), QString::fromUtf8(bytes));
     }
+    const auto id = paneId(pane);
+    if (!id) return;
     auto spec = OverlaySpec::read(argv, options, &error);
     // A client names a directory of this machine: one that is missing is
     // its mistake, where a script's remote path starts in $HOME.
@@ -366,6 +380,12 @@ void ControlApi::cancelOverlays(const QString& message)
 {
     const QSet<quint64> clients = std::exchange(m_overlayClients, {});
     for (const quint64 connection : clients) m_control.closeOverlays(overlayOwner(connection), message);
+}
+
+void ControlApi::dropInputs()
+{
+    m_inputs.clear();
+    m_inputBytes = 0;
 }
 
 void ControlApi::connectionClosed(quint64 connection)
@@ -444,6 +464,8 @@ void ControlSocket::applySettings()
             // Its waiting overlay calls would still answer, and the overlays
             // hold the keyboard for clients that control no longer serves.
             m_api.cancelOverlays(QStringLiteral("Control.enabled is off"));
+            // No overlay call can take them now: a client sends them again.
+            m_api.dropInputs();
         }
     }
     if (m_merged.isEmpty()) return;

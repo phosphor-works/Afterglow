@@ -118,8 +118,8 @@ void Control::attachPane(Pane* pane)
         m_context.insert(id, label);
         Q_EMIT contextChanged(id, label);
     });
-    // These come from the pty thread, queued: a pane that closed meanwhile
-    // has already sent paneClosed.
+    // The pane emits these on the GUI thread, when it delivers the terminal
+    // events that its reader thread queued.
     connect(pane, &Pane::commandBegan, this, [this, id, guard = QPointer<Pane>(pane)](const QString& c) {
         if (guard) Q_EMIT commandStarted(id, c);
     });
@@ -631,6 +631,11 @@ QString Control::runScriptAction(quint32 id, const QString& action)
     // ScriptHost refuses these when it checks the effect; this keeps a script
     // from starting a run that would count as one from afterglow ctl.
     if (action.startsWith(Keybinds::ScriptPrefix)) return QStringLiteral("scripts cannot run script commands");
+    // The user's ways out of what scripts and control clients hold: they end
+    // the key mode or the overlay of whoever owns it. A script ends its own
+    // with end_key_mode, and its overlay ends with its program.
+    if (action == Keybinds::token(Action::EndScriptKeyMode) || action == Keybinds::token(Action::CancelOverlay))
+        return QStringLiteral("action %1 is the user's, and scripts cannot run it").arg(action);
     if (!m_settings.settings().scriptsAllowReadText && readsPaneText(action))
         return QStringLiteral("action %1 reads pane text, which is off (Scripts.allowReadText)").arg(action);
     return runAction(id, action);

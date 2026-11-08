@@ -153,7 +153,7 @@ std::optional<OverlaySpec> OverlaySpec::read(const QStringList& argv, const QVar
         && !spec.cwd.startsWith(QLatin1String("~/")))
         return refuse(QStringLiteral("cwd must be an absolute path, ~ or a path that starts with ~/"));
     spec.title = option("title").toString();
-    if (spec.title.size() > MaxTitle) return refuse(QStringLiteral("The overlay title is over %1 characters").arg(MaxTitle));
+    if (spec.title.size() > MaxTitle) return refuse(QStringLiteral("The overlay title is over %1 UTF-16 units").arg(MaxTitle));
     if (std::any_of(spec.title.begin(), spec.title.end(), unprintable))
         return refuse(QStringLiteral("The overlay title has a control character, a line break or a bidirectional control"));
     if (const QString problem = EnvironmentOverrides::read(option("env"), spec.env); !problem.isEmpty()) return refuse(problem);

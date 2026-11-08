@@ -87,6 +87,7 @@ def read_png(path):
     data = Path(path).read_bytes()
     check(data.startswith(b"\x89PNG"), path)
     at, idat = 8, b""
+    width = height = colour = None
     while at < len(data):
         length, kind = struct.unpack(">I4s", data[at:at + 8])
         body = data[at + 8:at + 8 + length]
@@ -96,6 +97,7 @@ def read_png(path):
         elif kind == b"IDAT":
             idat += body
         at += 12 + length
+    check(width is not None, "no IHDR chunk", path)
     channels = 4 if colour == 6 else 3
     raw = zlib.decompress(idat)
     stride = width * channels

@@ -9,7 +9,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -54,6 +56,32 @@ bool exists(const std::string& path)
     return ::lstat(path.c_str(), &info) == 0;
 }
 
+/// A directory for sockets, removed with what is in it when the test ends,
+/// also after a failed assertion. Under /tmp, not TMPDIR: sun_path holds 108
+/// bytes.
+struct SocketDir
+{
+    SocketDir()
+    {
+        char pattern[] = "/tmp/aglow-prune-XXXXXX";
+        if (::mkdtemp(pattern)) path = pattern;
+    }
+    ~SocketDir()
+    {
+        if (path.empty()) return;
+        if (DIR* dir = ::opendir(path.c_str())) {
+            std::vector<std::string> names;
+            while (const dirent* entry = ::readdir(dir)) {
+                if (std::strcmp(entry->d_name, ".") != 0 && std::strcmp(entry->d_name, "..") != 0) names.emplace_back(entry->d_name);
+            }
+            ::closedir(dir);
+            for (const std::string& name : names) ::unlink((path + "/" + name).c_str());
+        }
+        ::rmdir(path.c_str());
+    }
+    std::string path;
+};
+
 } // namespace
 
 TEST(Remote, TheQueryAndEachReplyMakeTheRoundTrip)
@@ -79,7 +107,7 @@ TEST(Remote, TheQueryAndEachReplyMakeTheRoundTrip)
     }
 }
 
-TEST(Remote, ARepliedPathIsAbsolutePlainTextOfAtMost104Bytes)
+TEST(Remote, ARepliedPathIsAbsolutePlainTextOfAtMost103Bytes)
 {
     EXPECT_FALSE(Remote::parseReply("path=relative/a.sock"));
     EXPECT_FALSE(Remote::parseReply("path="));
@@ -87,8 +115,14 @@ TEST(Remote, ARepliedPathIsAbsolutePlainTextOfAtMost104Bytes)
     EXPECT_FALSE(Remote::parseReply("path=/a\nb"));
     EXPECT_FALSE(Remote::parseReply("error=busy"));
     EXPECT_FALSE(Remote::parseReply("q=remote"));
-    EXPECT_TRUE(Remote::parseReply("path=/" + std::string(103, 'a')));
-    EXPECT_FALSE(Remote::parseReply("path=/" + std::string(104, 'a')));
+    // sun_path holds 104 bytes on the BSDs and macOS, with its NUL.
+    EXPECT_TRUE(Remote::parseReply("path=/" + std::string(102, 'a')));
+    EXPECT_FALSE(Remote::parseReply("path=/" + std::string(103, 'a')));
+    // UTF-8 text only: no C1 control, no byte that is not UTF-8.
+    EXPECT_TRUE(Remote::parseReply("path=/h\xc3\xa9/a.sock"));
+    EXPECT_FALSE(Remote::parseReply("path=/a\xc2\x9b" "b"));
+    EXPECT_FALSE(Remote::parseReply("path=/a\xff" "b"));
+    EXPECT_FALSE(Remote::parseReply("path=/a\x7f" "b"));
     // The pane never writes what a reader would refuse.
     EXPECT_EQ(Remote::reply({"/a\x07" "b", Error::Forward}), "\x1b]24569;error=off\x1b\\");
 }
@@ -99,22 +133,17 @@ TEST(Remote, TmuxPassthroughDoublesEachEscape)
               "\x1bPtmux;\x1b\x1b]24569;q=remote\x1b\x1b\\\x1b\x1b[5n\x1b\\");
 }
 
-TEST(Remote, TheDirectoryIsInTheRuntimeDirectoryElseInTheHome)
+TEST(Remote, TheSocketPathIsTheTokenInTheDirectory)
 {
-    EXPECT_EQ(Remote::directory("/run/user/1000", "/home/u"), "/run/user/1000/afterglow");
-    EXPECT_EQ(Remote::directory("/run/user/1000/", "/home/u"), "/run/user/1000/afterglow");
-    EXPECT_EQ(Remote::directory("", "/home/u"), "/home/u/.local/state/afterglow/run");
-    // A relative runtime directory counts as none, as the XDG specification says.
-    EXPECT_EQ(Remote::directory("run", "/home/u"), "/home/u/.local/state/afterglow/run");
-    EXPECT_EQ(Remote::directory("", "home"), "");
     EXPECT_EQ(Remote::socketPath("/r/afterglow", "0123456789abcdef"), "/r/afterglow/0123456789abcdef.sock");
+    EXPECT_EQ(Remote::socketPath("/r/afterglow/", "0123456789abcdef"), "/r/afterglow/0123456789abcdef.sock");
 }
 
 TEST(Remote, PruneRemovesOnlyTheUsersSocketsThatRefuseConnections)
 {
-    char pattern[] = "/tmp/aglow-prune-XXXXXX";
-    ASSERT_NE(::mkdtemp(pattern), nullptr);
-    const std::string dir = pattern;
+    const SocketDir temp;
+    ASSERT_FALSE(temp.path.empty());
+    const std::string& dir = temp.path;
     const int live = bindSocket(dir + "/live.sock", true);
     bindSocket(dir + "/dead.sock", false);
     bindSocket(dir + "/dead.other", false);
@@ -138,6 +167,35 @@ TEST(Remote, PruneRemovesOnlyTheUsersSocketsThatRefuseConnections)
 
     EXPECT_FALSE(Remote::prune(dir + "/missing", ::getuid()).error.empty());
     ::close(live);
-    for (const char* name : {"/live.sock", "/file.sock", "/dead.other"}) ::unlink((dir + name).c_str());
-    ::rmdir(dir.c_str());
+}
+
+TEST(Remote, PruneKeepsASocketThatIsBoundButNotListeningAndASymlink)
+{
+    const SocketDir temp;
+    ASSERT_FALSE(temp.path.empty());
+    const std::string& dir = temp.path;
+    // sshd binds the socket of a forward, then listens on it: between the
+    // two a connection is refused, but the socket is live. /proc/net/unix
+    // lists it.
+    const int bound = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    ASSERT_GE(bound, 0);
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    const std::string boundPath = dir + "/bound.sock";
+    std::strncpy(address.sun_path, boundPath.c_str(), sizeof address.sun_path - 1);
+    ASSERT_EQ(::bind(bound, reinterpret_cast<const sockaddr*>(&address), sizeof address), 0);
+    // A link named as a socket, to a dead socket: not a socket itself.
+    bindSocket(dir + "/target", false);
+    ASSERT_EQ(::symlink((dir + "/target").c_str(), (dir + "/link.sock").c_str()), 0);
+    bindSocket(dir + "/dead.sock", false);
+
+    const Remote::Pruned pruned = Remote::prune(dir, ::getuid());
+    EXPECT_TRUE(pruned.error.empty()) << pruned.error;
+    EXPECT_EQ(pruned.removed, std::vector<std::string>{"dead.sock"});
+    if (::access("/proc/net/unix", R_OK) == 0) {
+        EXPECT_TRUE(exists(boundPath));
+    }
+    EXPECT_TRUE(exists(dir + "/link.sock"));
+    EXPECT_TRUE(exists(dir + "/target"));
+    ::close(bound);
 }

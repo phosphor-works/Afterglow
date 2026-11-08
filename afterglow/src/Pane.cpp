@@ -6,7 +6,9 @@
 #include "desktop/DragDrop.h"
 #include "desktop/Accessibility.h"
 #include "DockArea.h"
+#include "ImageDecode.h"
 #include "PaneOverlay.h"
+#include "TerminalWindow.h"
 
 #include "app/InstanceSocket.h"
 #include "app/NotificationCenter.h"
@@ -25,9 +27,6 @@
 #include <QDir>
 #include <QWindow>
 #include <QStringList>
-#include <QImage>
-#include <QImageReader>
-#include <QBuffer>
 #include <QTextBoundaryFinder>
 #include <QSysInfo>
 
@@ -35,7 +34,6 @@
 #include <chrono>
 #include <QLoggingCategory>
 
-#include <cstring>
 #include <utility>
 
 #include <pwd.h>
@@ -54,6 +52,9 @@ constexpr int InitialCols = 80;
 constexpr int InitialRows = 24;
 /// How long synchronized output may hold a frame before we draw anyway.
 constexpr qint64 SyncTimeoutMs = 1000;
+/// How long updates that follow each other may hold frames together: a
+/// program that is always inside one when a frame is due still shows.
+constexpr qint64 SyncHoldLimitMs = 2 * SyncTimeoutMs;
 /// How long to keep the last frame while the shell repaints a resized prompt.
 constexpr qint64 PromptRedrawTimeoutMs = 150;
 } // namespace
@@ -218,7 +219,8 @@ bool Pane::sendInput(std::string_view bytes, bool reportFailure)
         }
     }
     const bool accepted = m_pty->write(bytes);
-    if (!accepted && reportFailure) reportInputFailure();
+    if (accepted) m_inputFailureReported.store(false);
+    else if (reportFailure) reportInputFailure();
     return accepted;
 }
 
@@ -235,12 +237,17 @@ bool Pane::refreshSnapshot(int extraRows)
         if (!m_syncTimer.isValid()) {
             m_syncTimer.start();
         }
-        if (m_syncTimer.elapsed() < SyncTimeoutMs) {
+        if (!m_syncHoldTimer.isValid()) {
+            m_syncHoldTimer.start();
+        }
+        if (m_syncTimer.elapsed() < SyncTimeoutMs && m_syncHoldTimer.elapsed() < SyncHoldLimitMs) {
             return false;
         }
     } else {
         m_syncTimer.invalidate();
     }
+    // A frame is taken below: the next hold starts its own limit.
+    m_syncHoldTimer.invalidate();
     if (m_terminal.promptRedrawPending() && m_snapshotGeneration != ~0ull) {
         // The timer starts with the first resize of a drag and is not
         // restarted by later ones, so a continuous drag still updates.
@@ -481,6 +488,9 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
     }
     if (job->cancelled) {
         m_searchJob.reset();
+        // The screen can be back as it was by the next search: that one
+        // starts again rather than show the empty result of this one.
+        m_searchStale = true;
         Q_EMIT searchStatusChanged(tr("Layout changed. Search again"));
         return;
     }
@@ -628,6 +638,17 @@ void Pane::applyPreedit()
         caretCol = total;
     }
     const int start = std::max(0, std::min(s.cursorX, s.cols - std::min(total + 1, s.cols)));
+    const auto cellAt = [&s](int col) -> AfterglowRender::SnapshotCell& {
+        return s.cells[std::size_t(s.cursorY) * std::size_t(s.cols) + std::size_t(col)];
+    };
+    // A wide character that the composition covers half of goes blank: its
+    // other half would draw over the composition, or be a tail with no head.
+    const auto blank = [](AfterglowRender::SnapshotCell& c) {
+        c.cp = U' ';
+        c.width = 1;
+        c.grapheme = 0;
+    };
+    if (start > 0 && cellAt(start).width == 0) blank(cellAt(start - 1));
     int x = start;
     for (const auto& [cluster, w] : cells) {
         if (x + w > s.cols) {
@@ -656,6 +677,7 @@ void Pane::applyPreedit()
         }
         x += w;
     }
+    if (x > start && x < s.cols && cellAt(x).width == 0) blank(cellAt(x));
     s.cursorX = std::min(start + caretCol, s.cols - 1);
     s.cursorShape = AfterglowVt::CursorShape::Bar;
 }
@@ -676,8 +698,10 @@ bool Pane::jumpToPrompt(int direction)
     }
     for (std::size_t abs = top + 1; abs < scr.totalRows(); ++abs) {
         if (scr.absoluteRow(abs).promptStart) {
-            // Past the live screen's top is the live screen itself.
+            // Past the live screen's top is the live screen itself: from
+            // there, a prompt on the live screen is no place to move to.
             const long target = std::min<long>(long(abs), long(scr.historySize()));
+            if (target == long(top)) return false;
             m_terminal.scrollViewport(long(top) - target);
             return true;
         }
@@ -783,7 +807,7 @@ void Pane::commandStarted(std::string_view command)
     // pty thread, terminal locked
     m_command = QString::fromUtf8(command.data(), qsizetype(command.size()));
     m_commandStart = std::chrono::steady_clock::now();
-    Q_EMIT commandBegan(m_command);
+    queueEvent([this, command = m_command] { Q_EMIT commandBegan(command); });
 }
 
 void Pane::commandFinished(int exitCode)
@@ -791,7 +815,7 @@ void Pane::commandFinished(int exitCode)
     const auto elapsed = std::chrono::steady_clock::now() - m_commandStart;
     const qint64 ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
     const QString command = std::exchange(m_command, QString());
-    Q_EMIT commandEnded(command, exitCode, ms);
+    queueEvent([this, command, exitCode, ms] { Q_EMIT commandEnded(command, exitCode, ms); });
 }
 
 QString Pane::foregroundJob() const
@@ -819,11 +843,11 @@ QString Pane::workingDirectory() const
 
 void Pane::reportInputFailure()
 {
-    if (m_inputFailureQueued.exchange(true)) return;
-    QMetaObject::invokeMethod(this, [this] {
-        m_inputFailureQueued = false;
-        Q_EMIT inputRejected();
-    }, Qt::QueuedConnection);
+    // One notice for each run of rejected input, not one for each key typed
+    // at a program that stopped reading: the next comes only after some
+    // input got through.
+    if (m_inputFailureReported.exchange(true)) return;
+    QMetaObject::invokeMethod(this, [this] { Q_EMIT inputRejected(); }, Qt::QueuedConnection);
 }
 
 namespace {
@@ -877,7 +901,9 @@ void Pane::writeToPty(std::string_view bytes)
         m_openReports->append(bytes);
         return;
     }
-    if (m_pty && !m_pty->write(bytes)) reportInputFailure();
+    if (!m_pty) return;
+    if (m_pty->write(bytes)) m_inputFailureReported.store(false);
+    else reportInputFailure();
 }
 
 void Pane::writeReports(const std::string& reports)
@@ -941,6 +967,50 @@ void Pane::queueOnce(std::atomic_bool& queued, std::function<void()> deliver)
     }, Qt::QueuedConnection);
 }
 
+bool Pane::queueEvent(std::function<void()> event)
+{
+    // Each of these events matters on its own, so they are not coalesced as
+    // a title is: a bounded queue keeps a flood of them (a program that
+    // writes OSC 9 in a loop) from growing the GUI thread's event queue.
+    if (m_events.size() >= MaxQueuedEvents) {
+        ++m_droppedEvents;
+        return false;
+    }
+    m_events.push_back(std::move(event));
+    queueOnce(m_eventsQueued, [this] { deliverEvents(); });
+    return true;
+}
+
+void Pane::deliverEvents()
+{
+    std::deque<std::function<void()>> events;
+    std::size_t dropped = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        events.swap(m_events);
+        dropped = std::exchange(m_droppedEvents, 0);
+    }
+    if (dropped > 0) qCWarning(lcPane) << "dropped" << dropped << "notifications, clipboard requests or command events that came faster than the window took them";
+    for (const auto& event : events) event();
+}
+
+void Pane::setRemoteSocket(const AfterglowProto::Remote::Answer& answer)
+{
+    {
+        std::lock_guard lock(m_mutex);
+        m_remoteSocket = answer;
+    }
+    // The ssh session can run in the overlay, whose program has the pane's
+    // AFTERGLOW_PANE_ID: its terminal is where aglow run asks.
+    if (m_overlay) m_overlay->pane()->setRemoteSocket(answer);
+}
+
+AfterglowProto::Remote::Answer Pane::remoteSocketAnswer() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_remoteSocket;
+}
+
 void Pane::bell()
 {
     queueOnce(m_bellQueued, [this] { Q_EMIT bellRang(); });
@@ -974,54 +1044,15 @@ void Pane::clipboardWrite(std::string_view selection, std::string_view data)
 
 namespace {
 
-bool toRgba(QImage img, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
-{
-    if (img.isNull() || std::uint32_t(img.width()) > AfterglowProto::GraphicsMaxSide
-        || std::uint32_t(img.height()) > AfterglowProto::GraphicsMaxSide
-        || std::uint64_t(img.width()) * img.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
-    img.convertTo(QImage::Format_RGBA8888);
-    if (img.isNull()) return false;
-    width = std::uint32_t(img.width());
-    height = std::uint32_t(img.height());
-    rgba.resize(std::size_t(width) * height * 4);
-    for (int y = 0; y < img.height(); ++y) {
-        std::memcpy(rgba.data() + std::size_t(y) * width * 4, img.constScanLine(y), std::size_t(width) * 4);
-    }
-    return true;
-}
-
-/// The formats a program may send as an image. Other Qt image plugins (SVG,
-/// TIFF, PSD, RAW…) are large parsers that remote output should not reach.
-bool imageFormatAllowed(const QByteArray& format)
-{
-    static const QByteArrayList allowed{"png", "jpeg", "jpg", "gif", "bmp", "webp"};
-    return allowed.contains(format.toLower());
-}
-
-bool decodeBoundedImage(std::string_view data, const char* format, std::uint32_t& width,
-                        std::uint32_t& height, std::vector<std::uint8_t>& rgba)
-{
-    if (data.size() > AfterglowVt::GraphicsStore::DefaultQuota) return false;
-    QByteArray bytes = QByteArray::fromRawData(data.data(), qsizetype(data.size()));
-    QBuffer input(&bytes);
-    if (!input.open(QIODevice::ReadOnly)) return false;
-    QByteArray detected(format);
-    if (detected.isEmpty()) {
-        detected = QImageReader::imageFormat(&input);
-        if (!imageFormatAllowed(detected)) return false;
-    }
-    QImageReader reader(&input, detected);
-    const QSize size = reader.size();
-    if (!size.isValid() || size.isEmpty() || std::uint32_t(size.width()) > AfterglowProto::GraphicsMaxSide
-        || std::uint32_t(size.height()) > AfterglowProto::GraphicsMaxSide
-        || std::uint64_t(size.width()) * size.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
-    return toRgba(reader.read(), width, height, rgba);
-}
-
 QString localUser()
 {
-    const passwd* pw = getpwuid(getuid());
-    return pw ? QString::fromLocal8Bit(pw->pw_name) : QString();
+    // The reentrant lookup: this runs on a reader thread, and getpwuid's
+    // shared buffer is the GUI thread's too (Pty::defaultShell).
+    passwd entry{};
+    passwd* found = nullptr;
+    std::vector<char> buffer(16384);
+    if (getpwuid_r(getuid(), &entry, buffer.data(), buffer.size(), &found) != 0 || !found) return {};
+    return QString::fromLocal8Bit(found->pw_name);
 }
 
 } // namespace
@@ -1124,12 +1155,17 @@ void Pane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
         std::vector<AfterglowVt::SearchMatch> kept;
         kept.reserve(m_searchMatches.size());
         int newCurrent = -1;
+        // The last match before the current one that stays, in the new list.
+        int keptBefore = -1;
         for (std::size_t i = 0; i < m_searchMatches.size(); ++i) {
             AfterglowVt::SearchMatch match = m_searchMatches[i];
             if (scroll.contains(match.start) || scroll.contains(match.end)) {
                 const auto start = scroll.map(match.start);
                 const auto end = scroll.map(match.end);
-                if (!scroll.fullWidth || !start || !end || scroll.contains(match.start) != scroll.contains(match.end)) continue;
+                if (!scroll.fullWidth || !start || !end || scroll.contains(match.start) != scroll.contains(match.end)) {
+                    if (i == current) keptBefore = int(kept.size()) - 1;
+                    continue;
+                }
                 match = {*start, *end};
                 changed = true;
             }
@@ -1138,10 +1174,9 @@ void Pane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
         }
         if (kept.size() != m_searchMatches.size()) {
             changed = true;
-            // The current match went: the nearest one before it is current.
-            if (newCurrent < 0 && m_searchCurrent >= 0 && !kept.empty()) {
-                newCurrent = std::min(int(kept.size()) - 1, std::max(0, m_searchCurrent - 1));
-            }
+            // The current match went: the nearest one before it that stays
+            // is current, else the first one after it.
+            if (newCurrent < 0 && m_searchCurrent >= 0 && !kept.empty()) newCurrent = std::max(0, keptBefore);
         }
         m_searchMatches = std::move(kept);
         m_searchCurrent = newCurrent;
@@ -1156,8 +1191,12 @@ void Pane::userVarChanged(std::string_view name, std::string_view value)
     if (const auto it = m_userVars.constFind(n); it != m_userVars.constEnd() && *it == v) {
         return; // shells set the same values at every prompt
     }
-    if (m_userVars.size() >= 256 && !m_userVars.contains(n)) {
-        return; // enough
+    if (m_userVars.size() >= MaxUserVars && !m_userVars.contains(n)) {
+        // Enough: the pane keeps its variables for its whole life. Said once,
+        // so a program that wonders where its variable went can find out.
+        if (!std::exchange(m_userVarsFull, true))
+            qCWarning(lcPane) << "pane" << m_id << "has" << MaxUserVars << "user variables: new ones are ignored";
+        return;
     }
     m_userVars.insert(n, v);
     // Only the newest value of each name reaches the GUI thread, in the order
@@ -1215,8 +1254,8 @@ void Pane::tickAnimations()
 
 void Pane::notify(std::string_view title, std::string_view body)
 {
-    Q_EMIT notificationRequested(QString::fromUtf8(title.data(), qsizetype(title.size())),
-                                 QString::fromUtf8(body.data(), qsizetype(body.size())));
+    queueEvent([this, title = QString::fromUtf8(title.data(), qsizetype(title.size())),
+                body = QString::fromUtf8(body.data(), qsizetype(body.size()))] { Q_EMIT notificationRequested(title, body); });
 }
 
 void Pane::pointerShapeChanged(std::string_view shape)
@@ -1235,13 +1274,14 @@ void Pane::pointerShapeChanged(std::string_view shape)
 
 void Pane::desktopNotification(const AfterglowVt::NotificationRequest& request)
 {
-    Q_EMIT desktopNotificationRequested(request);
+    queueEvent([this, request] { Q_EMIT desktopNotificationRequested(request); });
 }
 
 bool Pane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
 {
-    Q_EMIT clipboardRequested(request);
-    return true;
+    // A request that finds the queue full gets the answer of a terminal
+    // with no clipboard support, as the program expects some answer.
+    return queueEvent([this, request] { Q_EMIT clipboardRequested(request); });
 }
 
 std::string Pane::notificationCapabilities()
@@ -1341,7 +1381,9 @@ void Pane::ptyClosed(int status)
         QMetaObject::invokeMethod(this, [this] { Q_EMIT contentChanged(); }, Qt::QueuedConnection);
         return;
     }
-    Q_EMIT closed();
+    // On the GUI thread, after the events queued before it, and to the
+    // window the pane is in by then.
+    QMetaObject::invokeMethod(this, [this] { Q_EMIT closed(); }, Qt::QueuedConnection);
 }
 
 void Pane::holdStartFailure()
@@ -1394,7 +1436,7 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
     if (clean.isEmpty() || clean == QLatin1String(".") || clean == QLatin1String("..")) clean = QStringLiteral("download.bin");
     clean = clean.left(180);
     QMetaObject::invokeMethod(this, [this, bytes, clean, lease] {
-        auto* dialog = new QFileDialog(nullptr, tr("Save file received from %1").arg(title().left(100)));
+        auto* dialog = new QFileDialog(nullptr, tr("Save file received from %1").arg(sanitizedText(title(), 100)));
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->setAcceptMode(QFileDialog::AcceptSave);
         dialog->setFileMode(QFileDialog::AnyFile);
@@ -1434,7 +1476,6 @@ FileTransfer* Pane::fileTransfers()
         // input queue fills and a refused reply ends it.
         m_fileTransfers->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
         connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
-        connect(m_fileTransfers.get(), &FileTransfer::permissionPathsChanged, this, &Pane::fileTransferPermissionPathsChanged);
         // The worker writes the replies of a command after its command
         // closure returned. Until then the reports after it wait.
         connect(m_fileTransfers.get(), &FileTransfer::answering, this, [this] {

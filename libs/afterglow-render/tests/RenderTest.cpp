@@ -3,6 +3,8 @@
 
 #include <AfterglowRender/RenderFrame.h>
 
+#include "GpuTestDevice.h"
+
 #include <AfterglowRender/GpuDevice.h>
 #include <AfterglowRender/GridRenderer.h>
 #include <AfterglowRender/Snapshot.h>
@@ -12,17 +14,24 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QImage>
-#include <QVulkanFunctions>
-#include <QVulkanInstance>
 
 #include <QMatrix4x4>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
-#include <memory>
+#include <cstdint>
+#include <cstdlib>
 #include <limits>
+#include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 using namespace AfterglowRender;
 
@@ -68,7 +77,10 @@ protected:
         terminal->resize(Cols, Rows, cw, ch);
     }
 
-    QImage render(const std::string& bytes, bool focused = true, std::uint8_t backgroundAlpha = 255)
+    /// The clear colour is the pane's background unless @p clearColor
+    /// differs, which shows where the grid drew nothing.
+    QImage render(const std::string& bytes, bool focused = true, std::uint8_t backgroundAlpha = 255,
+                  std::optional<std::uint32_t> clearColor = std::nullopt)
     {
         terminal->feed(bytes);
         snapshot.capture(*terminal);
@@ -78,7 +90,7 @@ protected:
         pane.params.rect = QRect(QPoint(0, 0), size);
         pane.params.focused = focused;
         pane.params.backgroundAlpha = backgroundAlpha;
-        const std::uint32_t clear = (snapshot.defaultBg & 0x00FFFFFFu) | (std::uint32_t(backgroundAlpha) << 24);
+        const std::uint32_t clear = clearColor.value_or((snapshot.defaultBg & 0x00FFFFFFu) | (std::uint32_t(backgroundAlpha) << 24));
         return renderer->renderToImage(size, {pane}, {}, clear);
     }
 
@@ -99,7 +111,7 @@ protected:
         const QRgb _got = (image).pixel(point);                                                                  \
         const QRgb _want = (expected);                                                                           \
         EXPECT_LE(std::abs(qRed(_got) - qRed(_want)) + std::abs(qGreen(_got) - qGreen(_want))                    \
-                      + std::abs(qBlue(_got) - qBlue(_want)),                                                    \
+                      + std::abs(qBlue(_got) - qBlue(_want)) + std::abs(qAlpha(_got) - qAlpha(_want)),           \
                   tolerance)                                                                                     \
             << "at " << (point).x() << "," << (point).y() << ": got " << std::hex << _got << " want " << _want; \
     } while (0)
@@ -371,15 +383,16 @@ TEST_F(FontRendering, ModesAndHintingProduceTheRequestedCoverage)
             mode(aa, 1.0f, hint);
             const QImage img = sample();
             ASSERT_FALSE(img.isNull());
-            int ink = 0, intermediate = 0;
+            int ink = 0, intermediate = 0, translucent = 0;
             for (int y = 0; y < img.height(); ++y) {
                 for (int x = 0; x < img.width(); ++x) {
                     const QRgb c = img.pixel(x, y);
-                    EXPECT_EQ(qAlpha(c), 255);
+                    translucent += qAlpha(c) != 255;
                     ink += qRed(c) > 0;
                     intermediate += qRed(c) > 0 && qRed(c) < 255;
                 }
             }
+            EXPECT_EQ(translucent, 0);
             EXPECT_GT(ink, 0);
             if (aa == Antialiasing::None) {
                 EXPECT_EQ(intermediate, 0);
@@ -403,14 +416,18 @@ TEST_F(FontRendering, BgrReversesRedAndBlueCoverage)
     const QImage bgr = sample();
     ASSERT_EQ(rgb.size(), bgr.size());
     EXPECT_GT(coloredEdges(rgb), 0);
+    // A count and the first pixel that differs, not a failure for each pixel.
+    int mismatches = 0;
+    QPoint first;
     for (int y = 0; y < rgb.height(); ++y) {
         for (int x = 0; x < rgb.width(); ++x) {
             const QRgb a = rgb.pixel(x, y), b = bgr.pixel(x, y);
-            EXPECT_EQ(qRed(a), qBlue(b));
-            EXPECT_EQ(qGreen(a), qGreen(b));
-            EXPECT_EQ(qBlue(a), qRed(b));
+            if (qRed(a) == qBlue(b) && qGreen(a) == qGreen(b) && qBlue(a) == qRed(b)) continue;
+            if (mismatches++ == 0) first = QPoint(x, y);
         }
     }
+    EXPECT_EQ(mismatches, 0) << "first at " << first.x() << "," << first.y() << ": rgb " << std::hex << rgb.pixel(first)
+                             << " bgr " << bgr.pixel(first);
 }
 
 TEST_F(FontRendering, SubpixelCompositesEachChannelOverColoredBackgrounds)
@@ -420,15 +437,23 @@ TEST_F(FontRendering, SubpixelCompositesEachChannelOverColoredBackgrounds)
             mode(aa, gamma);
             const QImage coverage = sample();
             const QImage colored = sample(" MWi Il -> fi", "220;90;40;48;2;30;120;200");
+            ASSERT_EQ(coverage.size(), colored.size());
+            // The text has ink, with channels that differ at its edges: a
+            // sample without text would match the background everywhere.
+            EXPECT_GT(coloredEdges(coverage), 0);
+            int mismatches = 0;
+            QPoint first;
             for (int y = 0; y < colored.height(); ++y) {
                 for (int x = 0; x < colored.width(); ++x) {
                     const QRgb c = coverage.pixel(x, y), actual = colored.pixel(x, y);
-                    EXPECT_NEAR(qRed(actual), 30 + (220 - 30) * qRed(c) / 255.0, 2);
-                    EXPECT_NEAR(qGreen(actual), 120 + (90 - 120) * qGreen(c) / 255.0, 2);
-                    EXPECT_NEAR(qBlue(actual), 200 + (40 - 200) * qBlue(c) / 255.0, 2);
-                    EXPECT_EQ(qAlpha(actual), 255);
+                    const bool near = std::abs(qRed(actual) - (30 + (220 - 30) * qRed(c) / 255.0)) <= 2
+                        && std::abs(qGreen(actual) - (120 + (90 - 120) * qGreen(c) / 255.0)) <= 2
+                        && std::abs(qBlue(actual) - (200 + (40 - 200) * qBlue(c) / 255.0)) <= 2 && qAlpha(actual) == 255;
+                    if (!near && mismatches++ == 0) first = QPoint(x, y);
                 }
             }
+            EXPECT_EQ(mismatches, 0) << "first at " << first.x() << "," << first.y() << ": coverage " << std::hex
+                                     << coverage.pixel(first) << " composited " << colored.pixel(first);
         }
     }
 }
@@ -639,6 +664,8 @@ TEST_F(FontRendering, ColorEmojiBypassAntialiasingAndGamma)
         GTEST_SKIP() << "no color emoji font";
     }
     const QImage original = sample(" 🙂 ");
+    // Colour ink, which the white on black sample has only from the emoji.
+    EXPECT_GT(coloredEdges(original), 0);
     for (const auto aa : {Antialiasing::None, Antialiasing::Grayscale, Antialiasing::Rgb, Antialiasing::Bgr}) {
         mode(aa, 2.0f);
         EXPECT_EQ(sample(" 🙂 "), original);
@@ -661,7 +688,8 @@ TEST_F(FontRendering, SubpixelCoverageWorksAtFractionalAndHighDpi)
 
 TEST_F(Render, EmptyScreenIsBackground)
 {
-    const QImage img = render("\x1b[?25l");
+    // A green clear: the background is the grid's.
+    const QImage img = render("\x1b[?25l", true, 255, 0xFF00FF00u);
     ASSERT_FALSE(img.isNull());
     EXPECT_EQ(img.size(), QSize(Cols * cw, Rows * ch));
     EXPECT_PIXEL(img, QPoint(0, 0), rgb(snapshot.defaultBg));
@@ -807,7 +835,12 @@ ShaderProgramPtr layerShader(const char* id, const char* body, bool hdr = false)
         + text + "\n    return fragColor;\n}\n";
     QString error;
     auto program = ShaderProgram::compile(src, &error);
-    EXPECT_TRUE(program) << error.toStdString();
+    // A failure, and a program that draws, so that the caller goes on to
+    // fail its checks instead of crashing on a null chain entry.
+    if (!program) {
+        ADD_FAILURE() << id << ": " << error.toStdString();
+        return ShaderProgram::passthrough();
+    }
     return program;
 }
 
@@ -820,7 +853,10 @@ ShaderProgramPtr panesShader(const char* id, const char* body)
     source.code = QByteArray("#include <terminal_panes.glsl>\nvec4 pTerminal(vec2 uv) {\n") + body + "\n}\n";
     QString error;
     auto program = ShaderProgram::compile(source, &error);
-    EXPECT_TRUE(program) << error.toStdString();
+    if (!program) {
+        ADD_FAILURE() << id << ": " << error.toStdString();
+        return ShaderProgram::passthrough();
+    }
     return program;
 }
 } // namespace
@@ -845,10 +881,11 @@ TEST_F(Render, LiveParameterOverridesReachLayerPaneAndWindowUniforms)
         if (layer == 2) chains.window = {program};
         renderer->setShaderChains(chains);
         pane.params.shaderParameters.insert(program->instanceId(), values);
-        auto image = renderer->renderToImage(size, {pane}, {}, 0xFF000000u);
+        // A grey clear: black is the shader's, not a pane that was not drawn.
+        auto image = renderer->renderToImage(size, {pane}, {}, 0xFF808080u);
         EXPECT_PIXEL(image, cellCenter(1, 1), qRgb(64, 191, 0));
         pane.params.shaderParameters.clear();
-        image = renderer->renderToImage(size, {pane}, {}, 0xFF000000u);
+        image = renderer->renderToImage(size, {pane}, {}, 0xFF808080u);
         EXPECT_PIXEL(image, cellCenter(1, 1), qRgb(0, 0, 0));
     }
 }
@@ -1252,24 +1289,32 @@ TEST_F(Render, PersistentBufferIsolatesPanesAndResetsIdentityAndTheme)
     right.params.contentOrigin=right.params.rect.topLeft();
     ShaderParameterValues values;values.paramMask=1;values.params[0]=.1f;
     left.params.shaderParameters.insert(program->instanceId(),values);
+    // The right pane adds its own step every frame, and none of the left
+    // pane's resets touch it: 13 a frame in its 8-bit buffer.
+    ShaderParameterValues own;own.paramMask=1;own.params[0]=.05f;
+    right.params.shaderParameters.insert(program->instanceId(),own);
+    const QPoint inRight=cellCenter(2,2)+QPoint(size.width(),0);
     renderer->renderToImage(frame,{left,right},{},0xFF000000u);
     auto image=renderer->renderToImage(frame,{left,right},{},0xFF000000u);
     EXPECT_PIXEL(image,cellCenter(2,2),qRgb(51,0,0));
-    EXPECT_PIXEL(image,cellCenter(2,2)+QPoint(size.width(),0),qRgb(0,0,0));
+    EXPECT_PIXEL(image,inRight,qRgb(26,0,0));
     left.params.shaderParameters.clear();
     left.params.rect.setWidth(size.width()-cw); // Geometry reset.
     image=renderer->renderToImage(frame,{left,right},{},0xFF000000u);
     EXPECT_PIXEL(image,cellCenter(2,2),qRgb(0,0,0));
+    EXPECT_PIXEL(image,inRight,qRgb(39,0,0));
     left.params.shaderParameters.insert(program->instanceId(),values);
     renderer->renderToImage(frame,{left,right},{},0xFF000000u);
     left.params.shaderParameters.clear(); PaneSnapshot newTab=snapshot;left.snapshot=&newTab;
     image=renderer->renderToImage(frame,{left,right},{},0xFF000000u);
     EXPECT_PIXEL(image,cellCenter(2,2),qRgb(0,0,0));
+    EXPECT_PIXEL(image,inRight,qRgb(65,0,0));
     left.params.shaderParameters.insert(program->instanceId(),values);
     renderer->renderToImage(frame,{left,right},{},0xFF000000u);
     left.params.shaderParameters.clear();newTab.defaultBg=0xFF102030u;
     image=renderer->renderToImage(frame,{left,right},{},0xFF000000u);
     EXPECT_PIXEL(image,cellCenter(2,2),qRgb(0,0,0));
+    EXPECT_PIXEL(image,inRight,qRgb(91,0,0));
 }
 
 TEST_F(Render, BufferFormatRetainsHdrAndNonfeedbackClears)
@@ -1277,15 +1322,18 @@ TEST_F(Render, BufferFormatRetainsHdrAndNonfeedbackClears)
     for (bool half : {false,true}) {
         ShaderProgramSource src;src.id=QStringLiteral("buffer-format");
         ShaderBufferSource buffer; buffer.halfFloat=half;
-        buffer.code="#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return vec4(texture(iChannel0,uv).r+4.,0,0,1);}";
+        // Red goes past 1, which only a half-float buffer keeps. Green stays
+        // below 1 in both: a buffer that kept its last frame would double it.
+        buffer.code="#include <terminal_multipass.glsl>\n"
+            "vec4 pTerminal(vec2 uv){vec4 t=texture(iChannel0,uv);return vec4(t.r+4.,t.g+.25,0,1);}";
         src.buffers={buffer};
-        src.code="#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return vec4(texture(iChannel0,uv).r/4.,0,0,1);}";
+        src.code="#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){vec4 t=texture(iChannel0,uv);return vec4(t.r/4.,t.g,0,1);}";
         QString error;auto program=ShaderProgram::compile(src,&error);ASSERT_TRUE(program);
         ShaderChains chains;chains.pane={program};renderer->setShaderChains(chains);
         auto image=render("\x1b[?25l");
-        EXPECT_PIXEL(image,cellCenter(2,2),qRgb(half ? 255 : 64,0,0));
+        EXPECT_PIXEL(image,cellCenter(2,2),qRgb(half ? 255 : 64,64,0));
         image=render(""); // No feedback: input remains clear on every pass.
-        EXPECT_PIXEL(image,cellCenter(2,2),qRgb(half ? 255 : 64,0,0));
+        EXPECT_PIXEL(image,cellCenter(2,2),qRgb(half ? 255 : 64,64,0));
     }
 }
 
@@ -1434,7 +1482,8 @@ vec4 pTerminal(vec2 uv) {
     left.params.rect = QRect(QPoint(0, 0), size);
     right.params.rect = QRect(QPoint(size.width(), 0), size);
     right.params.contentOrigin = right.params.rect.topLeft();
-    auto draw = [&] { return renderer->renderToImage(QSize(size.width()*2, size.height()), {left, right}, {}, 0xFF000000u); };
+    // A grey clear: black is the shader's, not a pane that was not drawn.
+    auto draw = [&] { return renderer->renderToImage(QSize(size.width()*2, size.height()), {left, right}, {}, 0xFF808080u); };
     std::array<float, GpuDevice::AudioBars> spectrum;
     std::fill(spectrum.begin(), spectrum.begin()+20, 0.25f);
     std::fill(spectrum.begin()+20, spectrum.begin()+48, 0.5f);
@@ -1791,7 +1840,15 @@ TEST_F(Render, TextHistoryDoesNotLeakAcrossPanesOrLayouts)
     left.snapshot = &newTab;
     img = renderer->renderToImage(frame, {left, right}, {}, 0xFF000000u);
     EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(0, 0, 0));
-    // Resize reallocates and clears the history texture.
+    // Resize reallocates and clears the history texture: a history that
+    // holds half a block shows none of it at the new size.
+    terminal->feed("\x1b[H█");
+    newTab.capture(*terminal);
+    renderer->renderToImage(frame, {left, right}, {}, 0xFF000000u);
+    terminal->feed("\x1b[2J");
+    newTab.capture(*terminal);
+    img = renderer->renderToImage(frame, {left, right}, {}, 0xFF000000u);
+    EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(128, 0, 0));
     img = renderer->renderToImage(frame + QSize(cw, ch), {left, right}, {}, 0xFF000000u);
     EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(0, 0, 0));
 }
@@ -1910,7 +1967,8 @@ TEST_F(Render, SpriteCachePreservesFullMulticellWidth)
 
 TEST_F(Render, NonNeutralBackgroundKeepsRedAndBlueChannels)
 {
-    const auto image = render("\x1b]11;#b03070\x07\x1b[?25l");
+    // A green clear: the background is the grid's.
+    const auto image = render("\x1b]11;#b03070\x07\x1b[?25l", true, 255, 0xFF00FF00u);
     EXPECT_PIXEL(image, cellCenter(10, 2), qRgb(0xb0, 0x30, 0x70));
     EXPECT_PIXEL(image, cellCenter(10, 2), rgb(snapshot.defaultBg));
 }
@@ -2000,7 +2058,7 @@ TEST_F(Render, ShaderUniformsUseResolvedCursorAndSelectionColors)
 TEST_F(Render, MultipleBuffersCarryDepthAndSamplerHelpers)
 {
     ShaderProgramSource source;
-    source.id = "multipass-depth";
+    source.id = QStringLiteral("multipass-depth");
     source.useDepthBuffer = true;
     ShaderBufferSource first;
     first.code = "vec4 pTerminal(vec2 uv){ depthBuffer=vec4(0.25,0.5,0.75,1); return vec4(1,0,0,1); }";
@@ -2023,26 +2081,38 @@ TEST_F(Render, MultipleBuffersCarryDepthAndSamplerHelpers)
 TEST_F(Render, VertexHookDeformsQuadUsingSharedParameters)
 {
     ShaderProgramSource source;
-    source.id = "vertex-hook";
+    source.id = QStringLiteral("vertex-hook");
     source.vertexCode = "vec4 pVertex(vec2 uv){vec4 p=terminalQuadPosition(uv); p.x *= customParams[0].x; return p;}";
     source.params[0] = .5f;
     source.code = "vec4 pTerminal(vec2 uv){return vec4(1,0,0,1);}";
     QString error;
     const auto program = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(program) << error.toStdString();
+    const auto instance = program->instance(QStringLiteral("vertex-hook"));
     ShaderChains chains;
-    chains.window = {program};
+    chains.window = {instance};
     renderer->setShaderChains(chains);
-    const auto image = render("\x1b[?25l");
+    // A green clear, apart from the pane's background.
+    const auto image = render("\x1b[?25l", true, 255, 0xFF00FF00u);
     EXPECT_PIXEL(image, cellCenter(10,2), qRgb(255,0,0));
     // Outside the shrunk quad: the window's clear colour.
-    EXPECT_PIXEL(image, cellCenter(1,2), rgb(snapshot.defaultBg));
+    EXPECT_PIXEL(image, cellCenter(1,2), qRgb(0,255,0));
+    // A live value of the same parameter reaches the vertex stage on the
+    // next frame: the quad covers the window.
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(QPoint(), size);
+    ShaderParameterValues values; values.paramMask = 1; values.params[0] = 1.0f;
+    pane.params.shaderParameters.insert(instance->instanceId(), values);
+    const auto full = renderer->renderToImage(size, {pane}, {}, 0xFF00FF00u);
+    EXPECT_PIXEL(full, cellCenter(1,2), qRgb(255,0,0));
+    EXPECT_PIXEL(full, cellCenter(10,2), qRgb(255,0,0));
 }
 
 TEST_F(Render, ImageOverridesAreLiveAndDefaultsReturnWithoutRecompile)
 {
     ShaderProgramSource source;
-    source.id = "image-live";
+    source.id = QStringLiteral("image-live");
     source.images[0] = QImage(2,2,QImage::Format_RGBA8888);
     source.images[0].fill(Qt::red);
     source.code = "vec4 readImage(sampler2D s,vec2 uv){return texture(s,uv);} vec4 pTerminal(vec2 uv){return readImage(uTexture0,vec2(.5));}";
@@ -2050,7 +2120,7 @@ TEST_F(Render, ImageOverridesAreLiveAndDefaultsReturnWithoutRecompile)
     auto program = ShaderProgram::compile(source,&error);
     ASSERT_TRUE(program) << error.toStdString();
     ShaderChains chains;
-    chains.pane = {program->instance("image")};
+    chains.pane = {program->instance(QStringLiteral("image"))};
     renderer->setShaderChains(chains);
     snapshot.capture(*terminal);
     const QSize size(Cols*cw,Rows*ch);
@@ -2062,7 +2132,7 @@ TEST_F(Render, ImageOverridesAreLiveAndDefaultsReturnWithoutRecompile)
     values.imageMask = 1;
     values.images[0] = source.images[0];
     values.images[0].fill(Qt::blue);
-    pane.params.shaderParameters.insert("image", values);
+    pane.params.shaderParameters.insert(QStringLiteral("image"), values);
     EXPECT_PIXEL(draw(),cellCenter(10,2),qRgb(0,0,255));
     pane.params.shaderParameters.clear();
     EXPECT_PIXEL(draw(),cellCenter(10,2),qRgb(255,0,0));
@@ -2072,11 +2142,13 @@ TEST_F(Render, BufferRepeatAndMirrorWorkThroughSamplerHelpers)
 {
     for (const auto wrap : {ShaderWrap::Repeat, ShaderWrap::Mirror}) {
         ShaderProgramSource source;
-        source.id = "wrap-helper";
+        source.id = QStringLiteral("wrap-helper");
         ShaderBufferSource buffer;
         buffer.wrap = wrap;
         buffer.nearest = true;
-        buffer.code = "vec4 pTerminal(vec2 uv){return uv.x<.5?vec4(1,0,0,1):vec4(0,1,0,1);}";
+        // The buffer holds its own x in red: at 1.25, Repeat reads 0.25,
+        // Mirror 0.75, and ClampToEdge, the default, about 1.
+        buffer.code = "vec4 pTerminal(vec2 uv){return vec4(uv.x,0,0,1);}";
         source.buffers = {buffer};
         source.code = "#include <terminal_multipass.glsl>\n"
             "vec4 readBuffer(sampler2D s,vec2 uv){return texture(s,uv);} vec4 pTerminal(vec2 uv){return readBuffer(iChannel0,vec2(1.25,.5));}";
@@ -2085,14 +2157,14 @@ TEST_F(Render, BufferRepeatAndMirrorWorkThroughSamplerHelpers)
         ASSERT_TRUE(program) << error.toStdString();
         ShaderChains chains; chains.pane = {program}; renderer->setShaderChains(chains);
         const auto image = render("\x1b[?25l");
-        EXPECT_PIXEL(image,cellCenter(10,2),wrap==ShaderWrap::Repeat?qRgb(255,0,0):qRgb(0,255,0));
+        EXPECT_PIXEL(image,cellCenter(10,2),wrap==ShaderWrap::Repeat?qRgb(64,0,0):qRgb(191,0,0));
     }
 }
 
 TEST_F(Render, IntermediateWindowVertexPassClearsUncoveredPixelsEveryFrame)
 {
     ShaderProgramSource source;
-    source.id = "vertex-intermediate";
+    source.id = QStringLiteral("vertex-intermediate");
     source.vertexCode = "vec4 pVertex(vec2 uv){vec4 p=terminalQuadPosition(uv); p.x *= iTime < 1.0 ? 1.0 : 0.5; return p;}";
     source.code = "vec4 pTerminal(vec2 uv){return vec4(1,0,0,1);}";
     QString error;
@@ -2126,7 +2198,7 @@ TEST_F(Render, KittyTransparentColorsReplaceThePaneFill)
 TEST_F(Render, MeshInstancesUseHardwareDepthAndClearBetweenFrames)
 {
     ShaderProgramSource source;
-    source.id = "mesh-depth";
+    source.id = QStringLiteral("mesh-depth");
     source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     ShaderBufferSource pass;
     pass.geometry.vertexCount = 3;
@@ -2146,14 +2218,14 @@ TEST_F(Render, MeshInstancesUseHardwareDepthAndClearBetweenFrames)
     QString error;
     auto program = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(program) << error.toStdString();
-    ShaderChains chains; chains.pane = {program->instance("mesh")};
+    ShaderChains chains; chains.pane = {program->instance(QStringLiteral("mesh"))};
     renderer->setShaderChains(chains);
     EXPECT_PIXEL(render("\x1b[?25l"), cellCenter(10,2), qRgb(0,255,0));
     const QSize size(Cols*cw,Rows*ch);
     WindowRenderer::Pane pane{&snapshot,{}};
     pane.params.rect = QRect(QPoint(), size);
     ShaderParameterValues values; values.paramMask = 1; values.params[0] = 1;
-    pane.params.shaderParameters.insert("mesh", values);
+    pane.params.shaderParameters.insert(QStringLiteral("mesh"), values);
     const auto image = renderer->renderToImage(size, {pane}, {}, snapshot.defaultBg);
     EXPECT_PIXEL(image, cellCenter(10,2), qRgb(255,0,0));
     // Recreate depth attachments at a different size.
@@ -2174,7 +2246,7 @@ TEST_F(Render, WindowBackgroundKeepsMeshHistoryAcrossSplitAnimationAndFocus)
     terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
     PaneSnapshot otherSnapshot = snapshot;
     ShaderProgramSource source;
-    source.id = "shared-background";
+    source.id = QStringLiteral("shared-background");
     source.windowBackground = true;
     source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     ShaderBufferSource pass;
@@ -2236,7 +2308,7 @@ TEST_F(Render, WindowMeshCameraRemainsContinuousAcrossScaledSplits)
     WindowRenderer::Pane first{&snapshot, {}}, second{&otherSnapshot, {}};
     for (float scale : {0.5f, 0.75f}) {
         ShaderProgramSource source;
-        source.id = "window-camera";
+        source.id = QStringLiteral("window-camera");
 
         source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
         ShaderBufferSource pass;
@@ -2259,7 +2331,7 @@ TEST_F(Render, WindowMeshCameraRemainsContinuousAcrossScaledSplits)
         auto program = ShaderProgram::compile(source, &error);
         ASSERT_TRUE(program) << error.toStdString();
         ASSERT_FLOAT_EQ(program->bufferSettings(0).scale, scale);
-        ShaderChains chains; chains.pane = {program->instance("mesh")};
+        ShaderChains chains; chains.pane = {program->instance(QStringLiteral("mesh"))};
         renderer->setShaderChains(chains);
         first.params.rect = QRect(QPoint(), size);
         const auto whole = renderer->renderToImage(size, {first}, {}, 0xff000000u);
@@ -2282,7 +2354,7 @@ TEST_F(Render, WindowMeshCameraRemainsContinuousAcrossScaledSplits)
 TEST_F(Render, ImportedMeshUsesVertexAttributesAndOcclusion)
 {
     ShaderProgramSource source;
-    source.id = "obj-depth";
+    source.id = QStringLiteral("obj-depth");
     source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     ShaderBufferSource pass;
     QString error;
@@ -2325,7 +2397,7 @@ TEST(ShaderGeometry, RejectsMalformedMeshesWithoutChangingPreviousGeometry)
 TEST_F(Render, SceneObjectsFollowTheirParentAndLiveParameters)
 {
     ShaderProgramSource source;
-    source.id = "scene-objects";
+    source.id = QStringLiteral("scene-objects");
     source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     ShaderBufferSource pass;
     QString error;
@@ -2343,20 +2415,21 @@ TEST_F(Render, SceneObjectsFollowTheirParentAndLiveParameters)
     auto program = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(program) << error.toStdString();
     EXPECT_FALSE(program->animated());
-    ShaderChains chains; chains.pane = {program->instance("scene")};
+    ShaderChains chains; chains.pane = {program->instance(QStringLiteral("scene"))};
     renderer->setShaderChains(chains);
     terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
     const QSize size(Cols*cw, Rows*ch);
     WindowRenderer::Pane pane{&snapshot, {}};
     pane.params.rect = QRect(QPoint(), size);
     auto image = renderer->renderToImage(size, {pane}, {}, 0xff000000u);
+    // Outside the mesh the buffer stays clear: transparent.
     EXPECT_PIXEL(image, QPoint(size.width()/4, size.height()/2), qRgb(255,0,0));
-    EXPECT_PIXEL(image, QPoint(size.width()*3/4, size.height()/2), qRgb(0,0,0));
+    EXPECT_PIXEL(image, QPoint(size.width()*3/4, size.height()/2), qRgba(0,0,0,0));
     // A live parameter moves the pivot, and the child with it, without recompiling.
     ShaderParameterValues values; values.paramMask = 1; values.params[0] = 1.0f;
-    pane.params.shaderParameters.insert("scene", values);
+    pane.params.shaderParameters.insert(QStringLiteral("scene"), values);
     image = renderer->renderToImage(size, {pane}, {}, 0xff000000u);
-    EXPECT_PIXEL(image, QPoint(size.width()/4, size.height()/2), qRgb(0,0,0));
+    EXPECT_PIXEL(image, QPoint(size.width()/4, size.height()/2), qRgba(0,0,0,0));
     EXPECT_PIXEL(image, QPoint(size.width()*3/4, size.height()/2), qRgb(255,0,0));
 }
 
@@ -2366,7 +2439,7 @@ TEST_F(Render, BufferOverBudgetRendersSmallerInsteadOfTransparent)
     // 2048x2048 pane asks for 320 MiB, more than the 256 MiB budget.
     if (!s_device->rhi()->supportedSampleCounts().contains(4)) GTEST_SKIP() << "no 4x multisampling";
     ShaderProgramSource source;
-    source.id = "over-budget";
+    source.id = QStringLiteral("over-budget");
     source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     ShaderBufferSource pass;
     pass.halfFloat = true;
@@ -2395,10 +2468,57 @@ TEST_F(Render, BufferOverBudgetRendersSmallerInsteadOfTransparent)
     EXPECT_PIXEL(image, QPoint(256, 256), qRgb(255,0,0));
 }
 
+TEST_F(Render, ABufferThatDidNotFitGrowsBackWhenTheBudgetHasRoom)
+{
+    // A half-float pass costs 16 bytes a pixel (two sides), so a 4096x4096
+    // pane fills the 256 MiB budget. A second pane then gets what is left:
+    // nothing (a transparent buffer), or a smaller buffer. Once the first
+    // pane is gone, its buffer expires and the second grows to full size.
+    ShaderProgramSource source;
+    source.id = QStringLiteral("grow-back");
+    ShaderBufferSource pass;
+    pass.halfFloat = true;
+    pass.code = "vec4 pTerminal(vec2 uv){return vec4(1,0,0,1);}";
+    source.buffers = {pass};
+    // Red from the buffer, green when the buffer is smaller than asked.
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return vec4(texture(iChannel0,uv).r,"
+                  "textureSize(iChannel0,0).x < int(iResolution.x) ? 1.0 : 0.0,0,1);}";
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    PaneSnapshot other = snapshot;
+    const QRgb full = qRgb(255, 0, 0), smaller = qRgb(255, 255, 0), blocked = qRgb(0, 255, 0);
+    // The first pane's width, and the second pane's side.
+    const struct { int firstWidth; int secondSide; QRgb before; } cases[] = {
+        {4096, 64, blocked},
+        {4000, 1024, smaller},
+    };
+    for (const auto& each : cases) {
+        SCOPED_TRACE(testing::Message() << "second pane " << each.secondSide);
+        // A renderer of its own, with an empty budget.
+        renderer = std::make_unique<WindowRenderer>(*s_device, nullptr);
+        ShaderChains chains; chains.pane = {program};
+        renderer->setShaderChains(chains);
+        WindowRenderer::Pane first{&snapshot, {}}, second{&other, {}};
+        first.params.rect = QRect(0, 0, each.firstWidth, 4096);
+        second.params.rect = QRect(each.firstWidth, 0, each.secondSide, each.secondSide);
+        second.params.contentOrigin = second.params.rect.topLeft();
+        const QSize frame(each.firstWidth + each.secondSide, 4096);
+        const QPoint inSecond = second.params.rect.center();
+        auto image = renderer->renderToImage(frame, {first, second}, {}, 0xff000000u);
+        EXPECT_PIXEL(image, QPoint(each.firstWidth / 2, 2048), full);
+        EXPECT_PIXEL(image, inSecond, each.before);
+        // The first pane's buffer goes once a frame has not used it.
+        for (int frames = 0; frames < 2; ++frames) image = renderer->renderToImage(frame, {second}, {}, 0xff000000u);
+        EXPECT_PIXEL(image, inSecond, full);
+    }
+}
+
 TEST_F(Render, PaneBlockDescribesPanesAndTheOverviewRunsOnlyWhileShown)
 {
     ShaderProgramSource source;
-    source.id = "overview";
+    source.id = QStringLiteral("overview");
     source.code = R"(#include <terminal_panes.glsl>
 vec4 pTerminal(vec2 uv) {
     vec2 p = terminalPixel(uv);
@@ -2445,7 +2565,7 @@ TEST_F(Render, OverviewCardsSampleEveryTabInTabOrder)
 {
     // One vertical stripe per card, filled with the middle of that card's pane.
     ShaderProgramSource source;
-    source.id = "stripes";
+    source.id = QStringLiteral("stripes");
     source.code = R"(#include <terminal_panes.glsl>
 vec4 pTerminal(vec2 uv) {
     int card = min(int(uv.x * float(paneCount())), paneCount() - 1);
@@ -2492,7 +2612,7 @@ TEST_F(Render, ClosingOverviewKeepsItsTargetInAnotherTabHighlighted)
     // The overview closes onto a card in tab 1 while tab 0, and its focus,
     // stay current until the close ends.
     ShaderProgramSource source;
-    source.id = "close-target";
+    source.id = QStringLiteral("close-target");
     source.code = R"(#include <terminal_panes.glsl>
 vec4 pTerminal(vec2 uv) {
     int lit = highlightedPane();
@@ -2526,7 +2646,7 @@ TEST_F(Render, TabTransitionSeesTheTabBeingLeftWhileItRuns)
 {
     // Left half: the tab being left; right half: the transition's state.
     ShaderProgramSource source;
-    source.id = "switch";
+    source.id = QStringLiteral("switch");
     source.code = R"(#include <terminal_panes.glsl>
 vec4 pTerminal(vec2 uv) {
     if (uv.x < 0.5) return vec4(previousTabTexel(uv).rgb, 1.0);
@@ -2555,9 +2675,12 @@ vec4 pTerminal(vec2 uv) {
     image = renderer->renderToImage(size, {current}, {}, 0xff000000u);
     EXPECT_PIXEL(image, inLeft, qRgb(0, 0, 0xC0));
     EXPECT_PIXEL(image, inRight, qRgb(128, 255, 255));
-    // The overview takes precedence over a switch.
+    // The overview takes precedence over a switch: the frame shows no switch.
     renderer->setOverview(overviewAt(true, 1.0f, 0.0f, Clock::now()));
     EXPECT_FALSE(renderer->transitionShowing());
+    image = renderer->renderToImage(size, {current}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, inLeft, rgb(snapshot.defaultBg));
+    EXPECT_PIXEL(image, inRight, rgb(snapshot.defaultBg));
     renderer->setOverview({});
     renderer->setTabTransition({});
     image = renderer->renderToImage(size, {current}, {}, 0xff000000u);
@@ -2568,7 +2691,7 @@ TEST_F(Render, PaneEffectsSeeOpeningPanesAndTheClosedPanesLastFrame)
 {
     // Left half: the closed pane's frame; right half: card 0's opening state.
     ShaderProgramSource source;
-    source.id = "life";
+    source.id = QStringLiteral("life");
     source.code = R"(#include <terminal_panes.glsl>
 vec4 pTerminal(vec2 uv) {
     if (uv.x < 0.5) return vec4(closingPaneActive() ? closingPaneTexel(uv).rgb : vec3(1.0), 1.0);
@@ -2596,9 +2719,13 @@ vec4 pTerminal(vec2 uv) {
     auto image = renderer->renderToImage(size, {open}, {}, 0xff000000u);
     EXPECT_PIXEL(image, inLeft, qRgb(0, 0, 0xC0));
     EXPECT_PIXEL(image, inRight, qRgb(128, 128, 64));
-    // A tab switch takes precedence; an inactive chain does not run.
+    // A tab switch takes precedence: the chain still runs first, under the
+    // switch, but the closed pane's frame is not drawn for it. An inactive
+    // chain does not run.
     renderer->setTabTransition(switchFrom(0.5f, 1.0f, tabOf(1, {open})));
     EXPECT_FALSE(renderer->paneEffectsShowing());
+    image = renderer->renderToImage(size, {open}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, inLeft, qRgb(255, 255, 255));
     renderer->setTabTransition({});
     renderer->setPaneEffects({});
     open.params.openProgress = 1.0f;
@@ -2609,7 +2736,7 @@ vec4 pTerminal(vec2 uv) {
 TEST_F(Render, PaneContextAndPreviousContextReachPaneEffects)
 {
     ShaderProgramSource source;
-    source.id = "context";
+    source.id = QStringLiteral("context");
     source.code = R"(#include <terminal_panes.glsl>
 vec4 pTerminal(vec2 uv) {
     return vec4(paneContextChange(0), float(paneContext(0)) / 4.0,
@@ -2748,7 +2875,7 @@ TEST(ShaderGeometry, ObjAcceptsOptionalComponentsAndGivesFlatFacesANormal)
 TEST_F(Render, MeshMultisamplingResolvesPartialEdgeCoverage)
 {
     ShaderProgramSource source;
-    source.id="mesh-antialiasing";
+    source.id=QStringLiteral("mesh-antialiasing");
     source.code="#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return vec4(texelFetch(iChannel0,ivec2(gl_FragCoord.xy),0).r,0,0,1);}";
     ShaderBufferSource pass;
     pass.geometry.vertexCount=3;
@@ -2800,6 +2927,51 @@ TEST_F(Render, ExceptionClosesActivePassAndAllowsNextFrame)
     }
 }
 
+TEST_F(Render, AFrameThatFailsSubmitsTheBatchItStaged)
+{
+    // The uploads of a staged batch are counted as done when they are
+    // staged: a frame that throws before its pass submits them anyway.
+    auto* rhi = s_device->rhi();
+    std::unique_ptr<QRhiTexture> texture(rhi->newTexture(QRhiTexture::RGBA8, QSize(4, 4), 1, QRhiTexture::UsedAsTransferSource));
+    ASSERT_TRUE(texture->create());
+    auto filled = [](QColor color) {
+        QImage image(4, 4, QImage::Format_RGBA8888);
+        image.fill(color);
+        return image;
+    };
+    auto readBack = [&] {
+        QRhiCommandBuffer* cb = nullptr;
+        EXPECT_EQ(rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+        QRhiReadbackResult result;
+        QRhiResourceUpdateBatch* updates = rhi->nextResourceUpdateBatch();
+        updates->readBackTexture({texture.get()}, &result);
+        cb->resourceUpdate(updates);
+        EXPECT_EQ(rhi->endOffscreenFrame(), QRhi::FrameOpSuccess);
+        return result.data.size() >= 4 ? qRgb(quint8(result.data[0]), quint8(result.data[1]), quint8(result.data[2])) : QRgb(0);
+    };
+    QRhiCommandBuffer* cb = nullptr;
+    ASSERT_EQ(rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+    QRhiResourceUpdateBatch* red = rhi->nextResourceUpdateBatch();
+    red->uploadTexture(texture.get(), filled(Qt::red));
+    cb->resourceUpdate(red);
+    ASSERT_EQ(rhi->endOffscreenFrame(), QRhi::FrameOpSuccess);
+    ASSERT_EQ(readBack(), qRgb(255, 0, 0));
+    ASSERT_EQ(rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+    EXPECT_THROW({
+        RenderFrame frame(cb, [&] { rhi->endOffscreenFrame(); });
+        QRhiResourceUpdateBatch* green = rhi->nextResourceUpdateBatch();
+        green->uploadTexture(texture.get(), filled(Qt::green));
+        // A second batch merges into the first, after it.
+        QRhiResourceUpdateBatch* blue = rhi->nextResourceUpdateBatch();
+        blue->uploadTexture(texture.get(), filled(Qt::blue));
+        EXPECT_EQ(frame.stage(green), green);
+        EXPECT_EQ(frame.stage(blue), green);
+        throw std::runtime_error("injected render failure");
+    }, std::runtime_error);
+    EXPECT_FALSE(rhi->isRecordingFrame());
+    EXPECT_EQ(readBack(), qRgb(0, 0, 255));
+}
+
 TEST_F(Render, ShaderRegionsClipAnimatedBoundsToSurface)
 {
     ShaderProgramSource source;
@@ -2810,17 +2982,23 @@ TEST_F(Render, ShaderRegionsClipAnimatedBoundsToSurface)
     ASSERT_TRUE(program) << error.toStdString();
     ShaderChains chains; chains.background = {program};
     renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l");
     snapshot.capture(*terminal);
     const QSize size(Cols * cw, Rows * ch);
     WindowRenderer::Pane pane;
     pane.snapshot = &snapshot;
-    // Both a spring overshoot and a pane that has moved entirely offscreen.
-    for (const QRect& bounds : {QRect(-cw, -ch, size.width() + 2*cw, size.height() + 2*ch),
-                               QRect(size.width() + cw, 0, cw, ch)}) {
-        pane.params.rect = bounds;
-        const auto image = renderer->renderToImage(size, {pane}, {}, 0xff000000u);
-        ASSERT_FALSE(image.isNull());
-    }
+    const QPoint corners[] = {QPoint(0, 0), QPoint(size.width() - 1, 0), QPoint(0, size.height() - 1),
+                              QPoint(size.width() - 1, size.height() - 1), QPoint(size.width() / 2, size.height() / 2)};
+    // A spring overshoot: the pane's red covers the whole surface.
+    pane.params.rect = QRect(-cw, -ch, size.width() + 2*cw, size.height() + 2*ch);
+    auto image = renderer->renderToImage(size, {pane}, {}, 0xff00ff00u);
+    ASSERT_FALSE(image.isNull());
+    for (const QPoint& at : corners) EXPECT_PIXEL(image, at, qRgb(255, 0, 0));
+    // A pane that has moved entirely offscreen: only the clear colour.
+    pane.params.rect = QRect(size.width() + cw, 0, cw, ch);
+    image = renderer->renderToImage(size, {pane}, {}, 0xff00ff00u);
+    ASSERT_FALSE(image.isNull());
+    for (const QPoint& at : corners) EXPECT_PIXEL(image, at, qRgb(0, 255, 0));
 }
 
 TEST_F(Render, ShaderCursorTracksStylesWithoutResettingItsAge)
@@ -3042,10 +3220,14 @@ TEST(GlyphCache, DirtyRegionsMergePerShelfAndAWholePageReplacesThem)
 
 TEST(GlyphCache, DashedLinesKeepEveryDashOrDrawSolid)
 {
+    // Four dashes and their gaps need 8 pixels: narrower cells draw solid.
+    // The sizes give both.
+    bool solid = false, dashed = false;
     for (float points : {4.0f, 6.0f, 8.0f, 11.0f, 14.0f}) {
         FontSpec spec;
         spec.sizePoints = points;
         FontSet fonts(spec, 1.0);
+        const int expected = fonts.metrics().cellWidth >= 8 ? 4 : 1;
         GlyphCache cache;
         const GlyphEntry* e = cache.sprite(fonts, U'\u2508'); // four light dashes
         ASSERT_FALSE(e->empty);
@@ -3058,8 +3240,10 @@ TEST(GlyphCache, DashedLinesKeepEveryDashOrDrawSolid)
             runs += ink && !inside;
             inside = ink;
         }
-        EXPECT_TRUE(runs == 4 || runs == 1) << points << " pt: " << runs << " runs";
+        EXPECT_EQ(runs, expected) << points << " pt, " << fonts.metrics().cellWidth << " pixels wide";
+        (expected == 4 ? dashed : solid) = true;
     }
+    EXPECT_TRUE(solid && dashed);
 }
 
 TEST_F(Render, OversizedImagesAreNotUploaded)
@@ -3118,7 +3302,7 @@ TEST_F(Render, OverviewSurvivesAChangeOfLayerChainsWhileShown)
     // The tab image outlives a rebuild of the post textures (new layers):
     // other tabs' cards still sample their own panes, not a stale target.
     ShaderProgramSource source;
-    source.id = "cards";
+    source.id = QStringLiteral("cards");
     source.code = R"(#include <terminal_panes.glsl>
 vec4 pTerminal(vec2 uv) {
     int card = min(int(uv.x * float(paneCount())), paneCount() - 1);
@@ -3355,7 +3539,8 @@ TEST_F(Render, TheTabImageOfAnOverlayFadeGoesAfterTheFade)
     // Always on, so the chains stay prepared between the frames.
     chains.pane = {layerShader("plain", "")};
     chains.overlayTransition = {fade};
-    chains.paneEffects = {panesShader("tab-image", "return texture(uTabImage, uv);")};
+    // Green marks that the pane effects ran: the overlay alone is blue too.
+    chains.paneEffects = {panesShader("tab-image", "vec4 t = texture(uTabImage, uv); return vec4(t.r, 1.0, t.b, 1.0);")};
     renderer->setShaderChains(chains);
     WindowRenderer::Pane drawn = pane;
     drawn.overlay = overlayOf(&overlay.snapshot, 0.5f);
@@ -3365,7 +3550,7 @@ TEST_F(Render, TheTabImageOfAnOverlayFadeGoesAfterTheFade)
     drawn = pane;
     drawn.snapshot = &overlay.snapshot;
     renderer->setPaneEffects({true, true, std::nullopt, 1.0f});
-    EXPECT_PIXEL(renderer->renderToImage(size, {drawn}, {}, snapshot.defaultBg), cellCenter(0, 0), qRgb(0, 0, 0xc0));
+    EXPECT_PIXEL(renderer->renderToImage(size, {drawn}, {}, snapshot.defaultBg), cellCenter(0, 0), qRgb(0, 255, 0xc0));
 }
 
 TEST_F(Render, AWindowBackgroundBufferStepsOncePerFrameDuringAnOverlayFade)
@@ -3602,16 +3787,6 @@ TEST_F(Render, WithoutAnOverlayTransitionAnOverlaySwitchesAtOnce)
     }
 }
 
-/// Whether the machine has Vulkan: a loader, a driver and a physical device.
-bool hasVulkanDevice()
-{
-    QVulkanInstance instance;
-    if (!instance.create()) return false;
-    std::uint32_t count = 0;
-    instance.functions()->vkEnumeratePhysicalDevices(instance.vkInstance(), &count, nullptr);
-    return count > 0;
-}
-
 class PopupRender : public Render
 {
 protected:
@@ -3621,7 +3796,7 @@ protected:
     void SetUp() override
     {
         Render::SetUp();
-        if (!s_device) return;
+        if (IsSkipped() || HasFatalFailure()) return;
         std::string fill = "\x1b[?25l\x1b[48;2;220;0;0m\x1b[38;2;255;255;255m";
         for (int row = 0; row < Rows; ++row) fill += "X   " + std::string(8, 'X') + std::string(Cols - 12, ' ');
         render(fill);
@@ -3805,8 +3980,11 @@ TEST_F(PopupRender, ThePanesCursorIsUnfocusedOnlyWhileItsPopupRuns)
     const QRgb red = qRgb(220, 0, 0);
     WindowRenderer::Pane running = withPopup(true);
     running.overlay->popup->dim = 0;
-    // A box: the cell's background shows in its middle.
-    EXPECT_PIXEL(frame(running), cellCenter(1, 1), red);
+    // A box: the cell's background shows in its middle, and its outline
+    // in the cell's edges.
+    const QImage box = frame(running);
+    EXPECT_PIXEL(box, cellCenter(1, 1), red);
+    EXPECT_FALSE(cellIs(box, cell(1, 1), red)) << "no cursor at all";
     // One that ended fades out: the pane has the keyboard again, and its
     // cursor is a focused block.
     WindowRenderer::Pane ended = running;
@@ -3903,34 +4081,12 @@ TEST_F(PopupRender, APopupPastItsPaneIsClippedToThePane)
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);
-    // Vulkan needs a real platform; the offscreen QPA has no Vulkan support.
-    if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
-    }
-    // Not the desktop's theme plugin, which reaches the desktop's services.
-    qputenv("QT_QPA_PLATFORMTHEME", "generic");
+    Testing::selectPlatform();
     QGuiApplication app(argc, argv);
-    if (QGuiApplication::platformName() != QLatin1String("wayland")) {
-        s_noVulkan = true;
-        s_noDevice = "no Wayland display";
-    } else if (!hasVulkanDevice()) {
-        s_noVulkan = true;
-        s_noDevice = "no Vulkan device";
-    } else {
-        // Qt's reason (a VkResult) comes as a warning: it goes into the failure.
-        static std::string s_warnings;
-        const QtMessageHandler previous = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext&, const QString& text) {
-            if (type != QtDebugMsg && type != QtInfoMsg) s_warnings += "\n" + text.toStdString();
-        });
-        try {
-            s_device = std::make_unique<GpuDevice>(FontSpec{});
-            s_device->rhi(nullptr);
-        } catch (const std::exception& error) {
-            s_device.reset();
-            s_noDevice = std::string("this machine has a Vulkan device, and the test could not make one: ") + error.what() + s_warnings;
-        }
-        qInstallMessageHandler(previous);
-    }
+    Testing::Device made = Testing::makeDevice();
+    s_device = std::move(made.device);
+    s_noDevice = std::move(made.reason);
+    s_noVulkan = made.skip;
     const int result = RUN_ALL_TESTS();
     s_device.reset();
     return result;

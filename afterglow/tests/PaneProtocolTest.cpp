@@ -424,9 +424,10 @@ TEST(PaneAnimation, AnImageScrolledBackIntoViewShowsItsCurrentFrameAtOnce)
 
 int main(int argc, char** argv)
 {
-    // Test discovery runs this binary too: it must never reach the user's session.
-    if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
-        qputenv("QT_QPA_PLATFORM", "offscreen");
+    // Test discovery runs this binary too: it must never reach the user's
+    // display or the platform theme of the session.
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    qputenv("QT_QPA_PLATFORMTHEME", "generic");
     QGuiApplication app(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

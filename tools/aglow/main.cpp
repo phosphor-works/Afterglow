@@ -4,8 +4,9 @@
 // aglow: a small afterglow, as one static binary. From the command line it
 // speaks kitty's file transfer, drag and drop, graphics and clipboard
 // protocols, which need neither kitty nor Afterglow on the computer where it
-// runs. It also runs the commands of the scripts of an Afterglow on the same
-// computer (aglow run).
+// runs. It also runs the commands of the scripts of an Afterglow (aglow
+// run): on the same computer, or on the computer that afterglow ssh came
+// from.
 
 #include "Cli.h"
 #include "Commands.h"
@@ -151,9 +152,11 @@ namespace {
 
 int run(int argc, char** argv)
 {
+    // No command and an unknown command are usage errors: status 2, as in
+    // the commands themselves.
     if (argc < 2) {
         std::fputs(usage().c_str(), stderr);
-        return 1;
+        return 2;
     }
     const std::string_view command = argv[1];
     if (command == "help" && argc > 2) {
@@ -190,7 +193,7 @@ int run(int argc, char** argv)
     }
     std::fprintf(stderr, "%s: unknown command: %s\n\n%s", Aglow::Cli::program().c_str(),
                  Aglow::printable(argv[1]).c_str(), usage().c_str());
-    return 1;
+    return 2;
 }
 
 } // namespace

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <string>
@@ -29,6 +30,15 @@ inline constexpr std::pair<std::string_view, ColorValue> ColorNames[] = {
 };
 static_assert(std::is_sorted(std::begin(ColorNames), std::end(ColorNames),
                              [](const auto& a, const auto& b) { return a.first < b.first; }));
+
+/// The longest colour name: a longer spec is no name, and is not copied to look it up.
+inline constexpr std::size_t MaxColorName = [] {
+    std::size_t longest = 0;
+    for (const auto& entry : ColorNames) {
+        longest = std::max(longest, entry.first.size());
+    }
+    return longest;
+}();
 
 inline int colorHexDigit(char c)
 {
@@ -113,7 +123,7 @@ inline bool parseColorSpec(std::string_view spec, std::uint8_t& r, std::uint8_t&
             ok = detail::parseColorHigh(spec.substr(0, n), cr) && detail::parseColorHigh(spec.substr(n, n), cg)
                 && detail::parseColorHigh(spec.substr(2 * n, n), cb);
         }
-    } else {
+    } else if (spec.size() <= detail::MaxColorName) {
         std::string lower(spec);
         std::transform(lower.begin(), lower.end(), lower.begin(),
                        [](unsigned char c) { return c >= 'A' && c <= 'Z' ? char(c + 32) : char(c); });

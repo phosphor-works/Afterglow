@@ -51,6 +51,12 @@ public:
     explicit GpuDevice(const FontSpec& fontSpec, QObject* parent = nullptr);
     ~GpuDevice() override;
 
+    /// Whether the machine has Vulkan as this device asks for it: a loader,
+    /// a driver of the API version and a physical device. A caller that could
+    /// not make a device uses it to tell a machine without Vulkan (a test
+    /// skips) from a device that failed (a test fails).
+    static bool vulkanAvailable();
+
     QVulkanInstance* vulkanInstance() noexcept { return &m_vulkan; }
     /// The shared device, created on first use. @p window picks a queue that
     /// can present to it.

@@ -133,6 +133,8 @@ All extra cursors share color settings. Each cell resolves those settings, inclu
 Reverse fill uses the cell foreground for fill and the cell background for text.
 It overrides the explicit text-color choice.
 Capability queries return `1;2;3;29;30;40;100;101`. Clients must inspect the response.
+Query 100 gives the cursors as rectangles (type 4). A run of cursors on one row is one rectangle.
+Equal runs on the rows below join it. A cursor alone is a point (type 2).
 
 CSI parsing permits 4,096 numeric parameters per sequence.
 An overflow rejects the complete command. Divide larger point sets across sequences.
@@ -156,13 +158,26 @@ OSC 9 and OSC 777 notification text gets the same check as OSC 99 text.
 The text must be valid UTF-8 with no C0, DEL or C1 control characters.
 Afterglow ignores a notification that fails the check.
 A base64 payload can be divided at any character between chunks.
-OSC 8 link text (URIs and ids) of each screen has a 16 MiB limit. Above it, new text prints without a link.
+OSC 8 links of each screen have a 16 MiB limit. Above it, new text prints without a link.
+Each link counts its URI, its id and 160 bytes for its entry. A link with an id counts its URI and id two times.
+An OSC 8 sequence longer than 8,192 bytes ends the open link. The text after it has no link.
+OSC 0 and OSC 2 titles lose C0, DEL and C1 controls, U+2028, U+2029 and the controls of bidirectional text.
+A byte that is not UTF-8 becomes U+FFFD.
+A C1 control sent as UTF-8 (U+0080 to U+009F) prints nothing.
+
+OSC 133 marks have no length limit. A `cmdline` or `cmdline_url` value over 65,536 bytes is ignored, and the mark still counts.
+The command line is then the text typed after the `B` mark.
+The command line keeps no control characters except line feeds and tabs. A byte that is not UTF-8 becomes U+FFFD.
+A command that erases the whole screen (ED 2) moves the start of its output to the top of the screen.
 OSC 3008 contexts form a stack. A `start` for a context that is open ends the contexts inside it.
 A terminal reset (RIS or the Reset command) keeps the context stack, as the [context specification](https://uapi-group.org/specifications/specs/osc_context/) requires.
 
 ## Downloads, input methods and bidirectional text
 
 Downloads permit 8 MiB of decoded data and one pending application request.
+A `MultipartFile` download stops when its data passes the 8 MiB limit. An inline image in parts can have 96 MiB of base64 data.
+`MultipartFile` arguments have a 4,096-byte limit. Longer arguments refuse the file.
+A new `MultipartFile`, a terminal reset or the next OSC 133 prompt ends a file that has no `FileEnd`.
 OSC 1337 downloads are not resumable, and they do not upload files.
 Afterglow supports the Kitty file-transfer protocol separately. See [Kitty file transfer](DESKTOP.md#kitty-file-transfer).
 IME context does not permit arbitrary surrounding-text edits.
@@ -190,16 +205,17 @@ A terminal reset clears both stacks and restores the default text pointer.
 
 `aglow` is a client of four Kitty protocols: file transfer, drag and drop, graphics and the clipboard. It does not need Kitty.
 `aglow run`, which runs the commands of scripts, uses no Kitty protocol and has no counterpart in `kitten`.
-On a remote host it uses [OSC 24569](#remote-commands-osc-24569), which is Afterglow's own.
+When `AFTERGLOW_SOCKET` names no socket on its own computer, `aglow run` asks the terminal for the socket of an ssh session.
+It asks with [OSC 24569](#remote-commands-osc-24569), which is Afterglow's own.
 [The aglow client](DESKTOP.md#the-aglow-client) tells how to use it.
 Its message formats come from `libs/afterglow-proto`, the same code that the terminal uses.
 
 | Command | Protocol | Interoperability checks |
 | --- | --- | --- |
-| `aglow transfer` | File transfer (OSC 5113): directories, links, permissions, times, zlib, deltas and the SHA-256 password form | Against the Afterglow service in process (`Client.*`) and through a pseudo-terminal, also with `--confirm-paths`, against Kitty 0.49.2 (`kitty_transfer_interop.py`), and against a hostile terminal (`Proto.Hostile.*`) |
-| `aglow dnd` | Drag and drop (OSC 72): MIME data, copy and move, remote directory trees in both directions | Against Afterglow in a nested KWin (`NativeWindow.Aglow*`), as the target or source of a remote drag (`AglowDrop.*`, `AglowDrag.*`), and with the question before a drop replaces files, which lists them (`AglowOverwrite.*`) |
+| `aglow transfer` | File transfer (OSC 5113): directories, links, permissions, times, zlib, deltas and the SHA-256 password form | Against the Afterglow service in process (`Client.*`). Through a pseudo-terminal, also with `--confirm-paths`. Against Kitty 0.49.2 (`kitty_transfer_interop.py`). Against a hostile terminal (`Proto.Hostile.*`) |
+| `aglow dnd` | Drag and drop (OSC 72): MIME data, copy and move, remote directory trees in both directions | Against Afterglow in a nested KWin (`NativeWindow.Aglow*`). As the target or source of a remote drag (`AglowDrop.*`, `AglowDrag.*`). With the question that lists the files before a drop replaces them (`AglowOverwrite.*`) |
 | `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels, GIF animation frames, Unicode placeholders, tmux passthrough | `aglow_icat_render` draws its output with the Afterglow renderer. `aglow_icat_decode` checks the pixels of crafted images, and the first frame of a GIF over the 320 MiB budget. `aglow_tmux_pty` runs it in a private tmux server, with `allow-passthrough` on and off. |
-| `aglow run` | The socket query of a remote host (OSC 24569), with the DA1 guard and tmux passthrough | Against a terminal and a socket that a test plays (`aglow_run_pty`), also in a private tmux server (`aglow_tmux_pty`), and through sshd run as the user (`RemoteCommandsTest.*`) |
+| `aglow run` | The socket query of a remote host (OSC 24569), with the DA1 guard and tmux passthrough | Against a terminal and a socket that a test plays (`aglow_run_pty`). Also in a private tmux server (`aglow_tmux_pty`). Through sshd run as the user (`RemoteCommandsTest.*`) |
 | `aglow clipboard` | Clipboard (OSC 5522), and OSC 52 for plain text in a terminal without OSC 5522 | Against a terminal that a test plays (`aglow_clipboard_pty`, `aglow_clipboard_cases`), and the message formats in `libs/afterglow-proto/tests` |
 
 `aglow transfer`, `aglow dnd`, `aglow icat` and `aglow clipboard` take the options of the `kitten` command of the same name, with the differences below.
@@ -219,7 +235,7 @@ A move to another application is reported as a copy, so that the source keeps it
 Run the tests of `aglow`:
 
 ```sh
-ctest --test-dir build --output-on-failure -R 'aglow|Aglow|^Client\.|^Proto\.(Client|Hostile)\.'
+ctest --test-dir build --output-on-failure -R 'aglow|Aglow|^(Client|RunBinaryTest|RemoteCommandsTest)\.|^Proto\.(Client|Hostile|RunClient|RunInput|RunRemote|Remote)\.'
 ```
 
 ## Remote commands (OSC 24569)
@@ -239,9 +255,9 @@ The number spells AGLOW on a phone keypad. No other terminal is known to use it.
 | `off` | The pane has no forward. It runs no ssh session, or a requirement of [remote commands](CONTROL.md#remote-commands) is missing |
 | `forward` | The ssh server refused the forward |
 | `version` | The `aglow` on the remote host has another protocol |
-| `length` | The socket path on the remote host would be over 104 bytes |
+| `length` | The socket path on the remote host would be over 103 bytes |
 
-`PATH` is an absolute path of at most 104 bytes, with no control characters.
+`PATH` is an absolute path of at most 103 bytes, with no control characters.
 A reply ends with BEL when the query ended with BEL, else with ST.
 The pane answers at once, before the replies to what follows the query.
 Afterglow ignores every other OSC 24569, such as a reply that a program echoes.
@@ -253,7 +269,10 @@ Inside tmux, `aglow run` sends the query in tmux passthrough (`DCS tmux; ... ST`
 tmux answers DA1 itself at once, and keeps the DA1 answer of the terminal.
 Thus inside tmux the guard is a status report (`CSI 5 n`) in the same passthrough. tmux passes its answer (`CSI 0 n`) to the pane.
 When `allow-passthrough` is off, tmux passes nothing, and `aglow run` asks tmux for that option first.
-`aglow run` asks the terminal only when standard input, output or error is a terminal.
+`aglow run` asks the terminal only when standard output is its terminal and its process group is in the foreground there.
+In a pipeline or a background job, another program could read the reply, so `aglow run` asks nothing.
+`aglow run` reads all the input of the terminal up to the guard's answer.
+Without that answer, it discards the input and output of the terminal that wait, so that a late reply does not go to the shell.
 
 The reply is not a secret. Any remote program can send the query.
 When no program reads the reply, it goes to the shell as input.

@@ -436,7 +436,9 @@ private:
         finishParams();
         m_dcsFinal = final;
         m_string.clear();
-        m_state = m_inter.overflow ? State::DcsIgnore : State::DcsPassthrough;
+        // A sequence that will not be dispatched collects nothing: its data
+        // could run to MaxStringPayload only to be dropped at the end.
+        m_state = m_inter.overflow || m_params.overflow ? State::DcsIgnore : State::DcsPassthrough;
     }
 
     /// Parses a CSI sequence from just after "ESC [" and dispatches it, as
@@ -536,7 +538,7 @@ private:
             }
             break;
         case State::DcsPassthrough:
-            if (!overflow && !m_params.overflow) {
+            if (!overflow) {
                 m_handler.dcsDispatch(m_params, m_inter, m_dcsFinal, m_string);
             }
             break;

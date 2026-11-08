@@ -26,6 +26,7 @@ namespace Afterglow {
 
 class CommandSocket;
 class Control;
+struct CommandBudget;
 
 /// The calls of the "commands" target: the client side is `aglow run`
 /// (AfterglowProto::Run). A run ID is the client's, and belongs to its
@@ -42,7 +43,7 @@ class CommandApi : public QObject, protected PhosphorIpc::IpcCallContext
 public:
     explicit CommandApi(CommandSocket& socket);
 
-    /// Each command: {script, command, summary, usage, palette, stdin}.
+    /// Each command: {script, command, summary, usage, palette, stdin, remote}.
     Q_INVOKABLE QVariantList list();
     /// Stdin for @p run, before run(), in parts. Kept whole until run(),
     /// cancel() or the close of the connection, and returns true. Input
@@ -112,9 +113,10 @@ public:
     /// Runs whose stdin waits for run(), per connection: a client that
     /// never calls run() holds no more.
     static constexpr int MaxWaitingInputs = 16;
-    /// Stdin that waits for run(), in all connections together, in UTF-8
-    /// bytes: MaxWaitingInputs runs at the highest Scripts.commandStdinLimit.
-    /// One client can fill it, and more clients cannot add to it.
+    /// Stdin that waits for run(), in all connections of the sockets that
+    /// share a CommandBudget together, in UTF-8 bytes: MaxWaitingInputs runs
+    /// at the highest Scripts.commandStdinLimit. One client can fill it, and
+    /// more clients, also of remote sessions, cannot add to it.
     static constexpr qint64 MaxWaitingInputBytes = MaxWaitingInputs * (qint64(MaxScriptCommandStdinLimitKiB) << 10);
     /// Event lines that can go to a connection before its client
     /// acknowledges them: a line goes while less than this waits, so at
@@ -127,8 +129,9 @@ public:
     /// stall its other runs, where now the router closes it. aglow run
     /// has one run on its connection.
     static constexpr qint64 AckWindow = qint64(AfterglowProto::Run::AckWindowBytes);
-    /// Output that waits for its clients, in all runs together: the UTF-16
-    /// text and OutputPartBytes for each part. Scripts.commandOutputLimit
+    /// Output that waits for its clients, in all runs of the sockets that
+    /// share a CommandBudget together: the UTF-16 text and OutputPartBytes
+    /// for each part. Scripts.commandOutputLimit
     /// bounds one run in UTF-8 bytes, but many runs, each of many small
     /// parts, could hold far more. A run whose output would pass it ends
     /// with status 1.
@@ -144,8 +147,11 @@ public:
         QString host; ///< ev.remote.host
     };
 
+    /// The socket's runs count toward @p budget, which other sockets can
+    /// share. Without one, the socket has one of its own.
     CommandSocket(Control& control, ScriptHost& scripts, SettingsStore& settings, PhosphorIpc::IpcRouter& router,
-                  std::optional<RemoteSession> remote = std::nullopt, QObject* parent = nullptr);
+                  std::optional<RemoteSession> remote = std::nullopt, std::shared_ptr<CommandBudget> budget = {},
+                  QObject* parent = nullptr);
     /// Fails the replies that wait. The runs stay with the scripts, which
     /// end them when they go, after this: without a client, and without a
     /// handler resumed in a process that quits.
@@ -156,14 +162,22 @@ public:
     void cancelAll(const QString& message) { dropAll(message, true); }
     /// The target's name: Target, or AfterglowProto::Remote::Target for a remote session.
     QLatin1String target() const;
-    /// Runs whose stdin waits for run(). A test hook.
+    /// The budget of the socket's runs, for the sockets that share it.
+    const std::shared_ptr<CommandBudget>& budget() const { return m_budget; }
+    /// Runs whose stdin waits for run(), on this socket. A test hook.
     int waitingInputs() const;
-    /// The bytes of stdin that wait for run(). A test hook.
-    qint64 waitingInputBytes() const { return m_waitingInputBytes; }
-    /// What the output that waits for clients costs (MaxWaitingOutputBytes). A test hook.
-    qint64 waitingOutputBytes() const { return m_waitingOutputBytes; }
-    /// Replaces MaxWaitingOutputBytes. A test hook: a test need not fill 256 MiB.
-    void setMaxWaitingOutputBytes(qint64 bytes) { m_maxWaitingOutputBytes = bytes; }
+    /// The bytes of stdin that wait for run(), in the sockets of the budget. A test hook.
+    qint64 waitingInputBytes() const;
+    /// What the output that waits for clients costs (MaxWaitingOutputBytes),
+    /// in the sockets of the budget. A test hook.
+    qint64 waitingOutputBytes() const;
+    /// Replaces MaxWaitingOutputBytes for the budget. A test hook: a test need not fill 256 MiB.
+    void setMaxWaitingOutputBytes(qint64 bytes);
+    /// The bytes of the line that the router writes for the event @p event
+    /// of @p target with the arguments (@p id, @p text), '\n' included: what
+    /// the client counts for its ack. Measured without a second encoding of
+    /// the text, which can be 1 MiB. Public for its test.
+    static qint64 eventLineBytes(QLatin1String target, const char* event, const QString& id, const QString& text);
 
 private:
     friend class CommandApi;
@@ -253,12 +267,23 @@ private:
     SettingsStore& m_settings;
     PhosphorIpc::IpcRouter& m_router;
     std::optional<RemoteSession> m_remote;
+    std::shared_ptr<CommandBudget> m_budget;
     std::unique_ptr<CommandApi> m_api;
     bool m_enabled = false;
     QHash<quint64, Connection> m_connections;
-    qint64 m_waitingInputBytes = 0;
-    qint64 m_waitingOutputBytes = 0;
-    qint64 m_maxWaitingOutputBytes = MaxWaitingOutputBytes;
+};
+
+/// What waits in the command sockets that share it, which their limits
+/// bound: the stdin of the runs that have not started
+/// (CommandSocket::MaxWaitingInputBytes), and the output for clients that
+/// read slowly (CommandSocket::MaxWaitingOutputBytes). The process's own
+/// socket and the sockets of every remote session share one (Application),
+/// so the limits hold for the whole process.
+struct CommandBudget
+{
+    qint64 inputBytes = 0;
+    qint64 outputBytes = 0;
+    qint64 maxOutputBytes = CommandSocket::MaxWaitingOutputBytes;
 };
 
 } // namespace Afterglow

@@ -27,9 +27,6 @@ struct ScriptCommand
 /// The limits of the commands field (package.json, metadata) and of set_commands.
 inline constexpr int MaxScriptCommands = 64;
 inline constexpr int MaxCommandText = 512; ///< UTF-16 units of a summary, usage or palette title
-/// Checks one command's fields (summary, usage, palette, stdin, remote) and fills
-/// @p out. Returns an error, or empty.
-QString readCommand(const QString& name, const QVariantMap& fields, ScriptCommand& out);
 /// Checks a commands table, name to fields. Returns an error, or empty.
 QString readCommands(const QVariant& table, QList<ScriptCommand>& out);
 
@@ -63,7 +60,13 @@ struct ScriptPackage
         qsizetype size;
     };
     QList<Module> modules;
+    /// The files that the read read, each with its stamp from before it read it.
+    QList<QPair<QString, QByteArray>> stamps;
     static QString read(const QString& manifest, ScriptPackage& result);
+    /// Whether every file that the read read is still the revision that it
+    /// read. A checkout that changes the files one by one, during the read,
+    /// would load a mix of two revisions.
+    bool unchanged() const;
     /// @p message with positions in the generated chunk named by module file and line.
     static QString locate(const QList<Module>& modules, const QString& message);
 };

@@ -67,15 +67,15 @@ constexpr AfterglowVt::Rgb derivedPopupBorder(AfterglowVt::Rgb background, After
 /// be a path). A spec without a light: or dark: part is one name or path.
 QString pick(const QString& spec, bool dark);
 
-/// Where themes live, most important first: the user's
-/// ~/.config/afterglow/themes, then the XDG data directories' (from
+/// Where themes live, most important first: themes in @p configDirectory,
+/// the directory of the config file (empty for ~/.config/afterglow), then the XDG data directories' (from
 /// ~/.local/share on), then the bundled ones, then other terminals' themes:
 /// Ghostty's (~/.config/ghostty/themes, then ghostty/themes in each XDG data
 /// directory), Kitty's (~/.config/kitty/themes) and Konsole's (konsole in
 /// each XDG data directory). A build-tree binary puts the checkout's themes
 /// before the XDG data directories. The data directories' entries are listed
 /// whether they exist or not, so that a watch of them sees a new one.
-QStringList searchDirs();
+QStringList searchDirs(const QString& configDirectory = {});
 
 /// Every file that could hold theme @p name, in search order: name.json,
 /// name.conf, name.colorscheme and name in each of @p dirs. A name with a

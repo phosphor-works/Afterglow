@@ -188,7 +188,7 @@ bool NotificationCenter::rateLimited(const Pane* pane)
 bool NotificationCenter::overLimit(QList<qint64>& recent)
 {
     const qint64 now = m_clock.elapsed();
-    recent.removeIf([now](qint64 t) { return now - t > NotificationRateWindowMs; });
+    recent.removeIf([now, window = m_rateWindowMs](qint64 t) { return now - t > window; });
     if (recent.size() >= m_rateLimit) {
         return true;
     }
