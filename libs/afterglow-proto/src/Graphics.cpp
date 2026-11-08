@@ -67,6 +67,7 @@ GraphicsCommand GraphicsCommand::parse(std::string_view keys)
         case 'Q': cmd.Q = u; break;
         case 'H': cmd.H = i; break;
         case 'V': cmd.V = i; break;
+        case 'N': cmd.hints = u; break;
         default: break;
         }
     }
@@ -135,6 +136,7 @@ std::string GraphicsCommand::keys() const
     if (Q) add('Q', Q);
     if (H) add('H', H);
     if (V) add('V', V);
+    if (hints) add('N', hints);
     return out;
 }
 

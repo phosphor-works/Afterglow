@@ -85,6 +85,13 @@ protected:
     {
         terminal->feed(bytes);
         snapshot.capture(*terminal);
+        return draw(focused, backgroundAlpha, clearColor);
+    }
+
+    /// Draws the snapshot again without a new capture, as a pane that holds
+    /// its frame during synchronized output does.
+    QImage draw(bool focused = true, std::uint8_t backgroundAlpha = 255, std::optional<std::uint32_t> clearColor = std::nullopt)
+    {
         const QSize size(Cols * cw, Rows * ch);
         WindowRenderer::Pane pane;
         pane.snapshot = &snapshot;
@@ -820,6 +827,22 @@ TEST_F(Render, KittyImageIsTopDown)
     EXPECT_PIXEL_NEAR(img, cellCenter(1, 2), qRgb(0, 0, 255), 40);
     EXPECT_PIXEL_NEAR(img, cellCenter(2, 2), qRgb(255, 255, 255), 40);
     EXPECT_PIXEL(img, cellCenter(0, 0), rgb(snapshot.defaultBg));
+}
+
+TEST_F(Render, AHeldFrameKeepsTheImageThatASynchronizedUpdateReplaces)
+{
+    // kitty 0.49.2: an image replaced during a synchronized update vanished
+    // for a frame. The pane draws its held snapshot until the update ends.
+    const std::string place = "\x1b[2;2H\x1b_Ga=T,f=24,s=1,v=1,i=1,c=2,r=1,q=2;";
+    QImage img = render("\x1b[?25l" + place + "/wAA\x1b\\"); // red
+    EXPECT_PIXEL_NEAR(img, cellCenter(1, 1), qRgb(255, 0, 0), 40);
+    terminal->feed("\x1b[?2026h" + place + "AAD/\x1b\\"); // blue, inside the update
+    img = draw();
+    EXPECT_PIXEL_NEAR(img, cellCenter(1, 1), qRgb(255, 0, 0), 40);
+    EXPECT_PIXEL_NEAR(img, cellCenter(2, 1), qRgb(255, 0, 0), 40);
+    img = render("\x1b[?2026l");
+    EXPECT_PIXEL_NEAR(img, cellCenter(1, 1), qRgb(0, 0, 255), 40);
+    EXPECT_PIXEL_NEAR(img, cellCenter(2, 1), qRgb(0, 0, 255), 40);
 }
 
 } // namespace

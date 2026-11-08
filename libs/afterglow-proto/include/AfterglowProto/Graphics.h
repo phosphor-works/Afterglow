@@ -63,6 +63,7 @@ struct GraphicsCommand
     std::uint32_t Q = 0;
     int H = 0;
     int V = 0;
+    std::uint32_t hints = 0; // N, usage hints: bit 1 is transient
     // Which keys the command carried, to tell a new command from a chunk.
     bool hasAction = false;
     bool hasId = false;

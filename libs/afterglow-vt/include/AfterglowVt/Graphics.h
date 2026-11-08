@@ -77,6 +77,9 @@ struct Image
     /// Sent with neither i= nor I=: no command can name it again, so it goes
     /// with its last placement, as internal images do.
     bool anonymous = false;
+    /// Sent with the transient usage hint (N=1): when room is needed, it goes
+    /// before the other images that nothing shows.
+    bool transient = false;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<FramePtr> frames;

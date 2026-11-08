@@ -109,6 +109,70 @@ TEST(TextSizing, EraseAndEditTakeWholeBlocks)
     EXPECT_FALSE(t.at(0, 1).isMulticell());
 }
 
+TEST(TextSizing, EraseCharactersAndDisplayTakeWholeBlocks)
+{
+    // kitty 0.50.0 fixed erasing multi-cell characters. Each erase that
+    // reaches one cell of a block, from any row or column, erases all of it.
+    Term t(20, 5);
+    auto blockAt = [&](int x) { return t.at(x, 0).isMulticell() || t.at(x, 1).isMulticell(); };
+    t.feed("\x1b]66;s=2;ab\x07"); // blocks at columns 0-1 and 2-3, rows 0-1
+    t.feed("\x1b[2;4H\x1b[X"); // ECH on the last cell of the lower row of b
+    EXPECT_TRUE(blockAt(0));
+    EXPECT_TRUE(blockAt(1));
+    for (int y = 0; y < 2; ++y) {
+        EXPECT_FALSE(t.at(2, y).isMulticell()) << y;
+        EXPECT_FALSE(t.at(3, y).isMulticell()) << y;
+    }
+    t.feed("\x1b[2;2H\x1b[1J"); // ED 1 ends in the lower row of a
+    for (int y = 0; y < 2; ++y) {
+        EXPECT_FALSE(t.at(0, y).isMulticell()) << y;
+        EXPECT_FALSE(t.at(1, y).isMulticell()) << y;
+    }
+    t.feed("\x1b[H\x1b]66;s=2;c\x07\x1b[2;2H\x1b[J"); // ED 0 starts in the lower row
+    for (int y = 0; y < 2; ++y) {
+        EXPECT_FALSE(t.at(0, y).isMulticell()) << y;
+        EXPECT_FALSE(t.at(1, y).isMulticell()) << y;
+    }
+    t.feed("\x1b[H\x1b]66;s=2;d\x07\x1b[1;2H\x1b[1K"); // EL 1 ends in the right column
+    for (int y = 0; y < 2; ++y) {
+        EXPECT_FALSE(t.at(0, y).isMulticell()) << y;
+        EXPECT_FALSE(t.at(1, y).isMulticell()) << y;
+    }
+}
+
+TEST(TextSizing, AVariationSelectorKeepsAnExplicitWidth)
+{
+    // kitty 0.49.0: U+FE0E after a cell with an explicit width does not
+    // narrow it, as it narrows an emoji of natural width.
+    Term t(20, 5);
+    t.feed("\x1b]66;w=2;\xe2\x9d\xa4\x07\xef\xb8\x8ex"); // a heart in two cells, U+FE0E, x
+    EXPECT_TRUE(t.at(0, 0).isMulticell());
+    EXPECT_TRUE(t.at(1, 0).isMulticell());
+    const MulticellParams* p = t.t.screen().multicellParams(t.t.screen().row(0), 0);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->columns(), 2);
+    EXPECT_EQ(t.at(2, 0).codepoint(), U'x');
+}
+
+TEST(TextSizing, ALongClusterOfNaturalWidthStaysWhole)
+{
+    // kitty 0.49.0 overflowed a buffer with natural-width clusters of more
+    // than four code points. A family emoji is seven.
+    const std::string family = "\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x91\xa7"
+                               "\xe2\x80\x8d\xf0\x9f\x91\xa6";
+    Term t(20, 5);
+    t.feed("\x1b]66;s=2;" + family + "\x07x");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen), family + "x");
+    EXPECT_EQ(t.t.screen().cursor.x, 5); // two columns at scale 2, then x
+    // Combining marks: one base and twelve marks.
+    std::string marks = "e";
+    for (int i = 0; i < 12; ++i) marks += "\xcc\x81";
+    t.t.reset();
+    t.feed("\x1b]66;s=2;" + marks + "\x07");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen), marks);
+    EXPECT_EQ(t.t.screen().cursor.x, 2);
+}
+
 TEST(TextSizing, WrapsAndScrollsToFit)
 {
     Term t(5, 3);
