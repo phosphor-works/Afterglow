@@ -283,6 +283,7 @@ Q_SIGNALS:
     void terminalProtocolLost(DragDrop::Lost lost, bool reset);
     /// @p paths holds at most the first 100 of @p total paths.
     void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
+    void fileTransferPermissionPathsChanged(const QString& token, const QStringList& paths, int total);
     void closed();
 
 private:

@@ -73,6 +73,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <memory>
 
 Q_LOGGING_CATEGORY(lcWindow, "afterglow.window", QtInfoMsg)
 
@@ -646,27 +647,30 @@ void TerminalWindow::bindPane(Pane* pane)
             [this, pane = QPointer<Pane>(pane)](const QString& token, bool writing, const QStringList& paths, int total) {
         // Asked by the transfer itself, so the worker exists already.
         const QPointer<FileTransfer> guard = pane ? pane->fileTransfers() : nullptr;
-        QString question = writing ? tr("Allow this terminal program to write files on this computer? Existing files can be replaced.")
-                                   : tr("Allow this terminal program to read the requested files on this computer?");
-        if (!writing && !paths.isEmpty()) {
-            // A remote program can name any file: the paths are part of the question.
-            constexpr qsizetype Shown = 5;
-            question += QLatin1Char('\n') + QStringList(paths.mid(0, Shown)).join(QLatin1Char('\n'));
-            if (total > Shown) question += QLatin1Char('\n') + tr("and %n more", nullptr, total - int(qMin(paths.size(), Shown)));
-        }
-        auto* dialog = new QMessageBox(QMessageBox::Question, tr("File transfer"), question, QMessageBox::Yes | QMessageBox::No);
+        const FileTransfer::Question question = FileTransfer::question(writing, paths, total);
+        auto* dialog = new QMessageBox(QMessageBox::Question, tr("File transfer"), question.text, QMessageBox::Yes | QMessageBox::No);
         connect(this, &QObject::destroyed, dialog, &QDialog::reject);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->setTextFormat(Qt::PlainText);
         dialog->setDefaultButton(QMessageBox::No);
-        if (!paths.isEmpty()) {
-            // The transfer sends at most 100 paths; the count says the rest.
-            QString detail = paths.join(QLatin1Char('\n'));
-            if (total > paths.size()) detail += QLatin1Char('\n') + tr("Paths not shown: %1").arg(total - paths.size());
-            dialog->setDetailedText(detail);
+        if (!question.detail.isEmpty()) dialog->setDetailedText(question.detail);
+        // The destinations of a send session that come while the prompt
+        // shows. A Yes approves the ones that it showed.
+        auto shown = std::make_shared<int>(total);
+        if (pane) {
+            connect(pane, &Pane::fileTransferPermissionPathsChanged, dialog,
+                    [dialog, token, writing, shown](const QString& changed, const QStringList& now, int count) {
+                        if (changed != token) return;
+                        const FileTransfer::Question update = FileTransfer::question(writing, now, count);
+                        dialog->setText(update.text);
+                        dialog->setDetailedText(update.detail);
+                        *shown = count;
+                    });
         }
         dialog->winId(); dialog->windowHandle()->setTransientParent(this);
-        connect(dialog, &QDialog::finished, dialog, [guard, token](int result) { if (guard) guard->approve(token, result == QMessageBox::Yes); });
+        connect(dialog, &QDialog::finished, dialog, [guard, token, shown](int result) {
+            if (guard) guard->approve(token, result == QMessageBox::Yes, *shown);
+        });
         if (guard) {
             connect(guard, &QObject::destroyed, dialog, &QDialog::reject);
             connect(guard, &FileTransfer::sessionClosed, dialog, [dialog, token](const QString& closed) { if (closed == token) dialog->reject(); });

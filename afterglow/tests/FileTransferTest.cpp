@@ -76,6 +76,8 @@ struct Transfer : testing::Test {
     int promptedTotal = 0;
     int prompts = 0;
     int closed = 0;
+    // A prompt is approved at once, with every destination that waits.
+    bool autoApprove = false;
     void SetUp() override
     {
         QObject::connect(&service, &FileTransfer::reply, &service, [this](const QByteArray& b) { replies.append(b); });
@@ -85,6 +87,13 @@ struct Transfer : testing::Test {
                 prompted = paths;
                 promptedTotal = total;
                 ++prompts;
+                if (autoApprove)
+                    service.approve(t, true);
+            });
+        QObject::connect(&service, &FileTransfer::permissionPathsChanged, &service,
+            [this](const QString&, const QStringList& paths, int total) {
+                prompted = paths;
+                promptedTotal = total;
             });
         QObject::connect(&service, &FileTransfer::sessionClosed, &service, [this] { ++closed; });
     }
@@ -108,12 +117,12 @@ struct Transfer : testing::Test {
             return std::any_of(replies.begin(), replies.end(), [&](auto b) { return b.contains("st=" + b64(value)); });
         });
     }
+    // A send session: it starts at once, and the prompt for each file's
+    // destination is approved.
     bool start()
     {
+        autoApprove = true;
         send("ac=send");
-        if (!waitFor([&] { return !token.isEmpty(); }))
-            return false;
-        service.approve(token, true);
         return status("OK");
     }
     bool fileStatus(const QByteArray& fid, const QByteArray& value)
@@ -158,12 +167,73 @@ struct Transfer : testing::Test {
 TEST_F(Transfer, PermissionDenialCannotCreateFiles)
 {
     send("ac=send");
+    send("ac=file;fid=f;n=" + path("denied"));
     ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
     service.approve(token, false);
     ASSERT_TRUE(status("EPERM"));
-    send("ac=file;fid=f;n=" + path("denied"));
+    send("ac=file;fid=g;n=" + path("denied"));
     ASSERT_TRUE(status("ENOENT"));
     EXPECT_FALSE(QFile::exists(dir.filePath("denied")));
+}
+TEST_F(Transfer, ASendPromptListsTheDestinationsBeforeAnyIsWritten)
+{
+    // The session starts at once: the sender names its files only after that.
+    send("ac=send");
+    ASSERT_TRUE(status("OK"));
+    EXPECT_EQ(prompts, 0);
+    send("ac=file;fid=a;n=" + path("a"));
+    send("ac=file;fid=b;n=" + path("sub/b"));
+    send("ac=data;fid=a;d=" + b64("early"));
+    ASSERT_TRUE(waitFor([&] { return promptedTotal == 2; }));
+    EXPECT_EQ(prompts, 1);
+    EXPECT_EQ(prompted, (QStringList { dir.filePath(QStringLiteral("a")), dir.filePath(QStringLiteral("sub/b")) }));
+    ASSERT_TRUE(barrier());
+    // Nothing reaches the disk, and no file starts, before the answer.
+    EXPECT_FALSE(QFileInfo::exists(dir.filePath(QStringLiteral("a"))));
+    EXPECT_FALSE(QFileInfo::exists(dir.filePath(QStringLiteral("sub"))));
+    EXPECT_FALSE(std::any_of(replies.begin(), replies.end(), [](const auto& b) { return b.contains(";fid=a;"); }));
+    service.approve(token, true, 2);
+    ASSERT_TRUE(fileStatus("a", "STARTED"));
+    ASSERT_TRUE(fileStatus("b", "STARTED"));
+    // The data that came early follows its file.
+    send("ac=end_data;fid=a;d=" + b64("!"));
+    ASSERT_TRUE(fileStatus("a", "OK"));
+    EXPECT_EQ(contents("a"), QByteArray("early!"));
+}
+TEST_F(Transfer, ADestinationThatThePromptDidNotShowGetsAPromptOfItsOwn)
+{
+    send("ac=send");
+    send("ac=file;fid=a;n=" + path("a"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 1; }));
+    const QString first = token;
+    send("ac=file;fid=b;n=" + path("b"));
+    ASSERT_TRUE(waitFor([&] { return promptedTotal == 2; }));
+    // The user saw one destination when the answer came.
+    service.approve(first, true, 1);
+    ASSERT_TRUE(fileStatus("a", "STARTED"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 2; }));
+    EXPECT_EQ(prompted, QStringList { dir.filePath(QStringLiteral("b")) });
+    EXPECT_EQ(promptedTotal, 1);
+    service.approve(token, false);
+    ASSERT_TRUE(status("EPERM"));
+    EXPECT_FALSE(QFileInfo::exists(dir.filePath(QStringLiteral("b"))));
+}
+TEST(TransferQuestion, ShowsTheFirstPathsAndCountsTheRest)
+{
+    QStringList paths;
+    for (int i = 0; i < 12; ++i)
+        paths << QStringLiteral("/home/u/f%1").arg(i);
+    const auto many = FileTransfer::question(true, paths, 150);
+    EXPECT_TRUE(many.text.contains(QLatin1String("write these files")));
+    EXPECT_TRUE(many.text.contains(QStringLiteral("/home/u/f9\n")));
+    EXPECT_FALSE(many.text.contains(QStringLiteral("/home/u/f10")));
+    EXPECT_TRUE(many.text.endsWith(QStringLiteral("and 140 more")));
+    EXPECT_TRUE(many.detail.startsWith(QStringLiteral("/home/u/f0\n")));
+    EXPECT_TRUE(many.detail.contains(QStringLiteral("/home/u/f11\n")));
+    EXPECT_TRUE(many.detail.endsWith(QStringLiteral("Paths not shown: 138")));
+    const auto few = FileTransfer::question(false, paths.mid(0, 3), 3);
+    EXPECT_EQ(few.text, QStringLiteral("Allow this terminal program to read these files on this computer?\n/home/u/f0\n/home/u/f1\n/home/u/f2"));
+    EXPECT_EQ(few.detail, QStringLiteral("/home/u/f0\n/home/u/f1\n/home/u/f2"));
 }
 TEST_F(Transfer, CompressedFileAndLinksCommit)
 {
@@ -452,6 +522,7 @@ TEST_F(Transfer, PendingRsyncReadsAreBoundedAndReleaseCapacity)
 TEST_F(Transfer, ResetClosesPendingPrompt)
 {
     send("ac=send");
+    send("ac=file;fid=w;n=" + path("waiting"));
     ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
     service.reset();
     ASSERT_TRUE(waitFor([&] { return closed == 1; }));
@@ -459,6 +530,7 @@ TEST_F(Transfer, ResetClosesPendingPrompt)
     send("ac=file;fid=f;n=" + path("file"));
     ASSERT_TRUE(status("ENOENT"));
     EXPECT_FALSE(QFile::exists(dir.filePath("file")));
+    EXPECT_FALSE(QFile::exists(dir.filePath("waiting")));
 }
 TEST_F(Transfer, CancelRemovesNewParentsOfEveryFile)
 {
@@ -537,6 +609,8 @@ TEST_F(Transfer, LinksThatNameEachOtherReportALoop)
     send("ac=file;fid=c;ft=symlink;n=" + path("c"));
     send("ac=end_data;fid=c;d=" + b64("fid:missing"));
     DesktopLog log;
+    // The approval of the destinations reaches the worker before the barrier.
+    ASSERT_TRUE(waitFor([&] { return prompts > 0; }));
     ASSERT_TRUE(barrier());
     const auto beforeFinish = replies.size();
     send("ac=finish");
@@ -660,8 +734,6 @@ TEST_F(Transfer, TildeAloneIsTheHomeDirectory)
 TEST_F(Transfer, AQuietSessionGetsNoAnswerForAnInvalidField)
 {
     send("ac=send;q=2");
-    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
-    service.approve(token, true);
     send("ac=file;fid=f;sz=many;n=" + path("f"));
     ASSERT_TRUE(barrier());
     EXPECT_FALSE(repliedFor("test"));
@@ -672,6 +744,7 @@ TEST_F(Transfer, ADenialKeepsAWaitingReceiveFromPrompting)
     send("ac=receive;sz=2");
     send("ac=file;fid=a;n=" + path("a"));
     service.handle("id=second;ac=send");
+    service.handle("id=second;ac=file;fid=s;n=" + path("s"));
     ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
     service.approve(token, false);
     ASSERT_TRUE(waitFor([&] {
@@ -967,6 +1040,7 @@ TEST_F(Transfer, DeltaUploadWithoutSizeStopsAtTheLimit)
 TEST_F(Transfer, OnePromptAtATimeAndDenialCoolsDown)
 {
     send("ac=send");
+    send("ac=file;fid=f;n=" + path("f"));
     ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
     service.handle("id=second;ac=send");
     ASSERT_TRUE(waitFor([&] {

@@ -276,9 +276,13 @@ Afterglow accepts the [Kitty file-transfer protocol](https://sw.kovidgoyal.net/k
 A terminal program can send or receive files through its terminal connection, including an SSH connection.
 
 Afterglow asks for permission before a transfer accesses files.
-For a receive request, the dialog lists the requested source paths. It shows the first 100 paths and the number of other paths.
+The dialog lists the paths: for a receive request the requested source paths, and for a send request the destination paths that the program chose.
+The question shows the first 10 paths and the number of other paths. Its details show the first 100 paths and the number of other paths.
 The dialog shows control characters, bidirectional marks and backslashes in a path as `\uXXXX`.
-For a send request, permission allows the program to create or replace destination files.
+For a send request, permission allows the program to create or replace the destination files that the dialog lists.
+A send session starts at once, because the program names its destinations only after the start.
+The dialog opens at the first destination, and adds the destinations that come while it is open.
+Nothing is written before you approve. A destination that came after you approved gets a dialog of its own.
 Approval applies to one transfer session.
 Each pane shows one permission dialog at a time. A new session gets `EBUSY` while a dialog is open.
 After you deny a session, new sessions in that pane get `EPERM` for 10 seconds.
@@ -335,7 +339,7 @@ Give the option one of these values instead:
 | Path length, name length | 4,096 bytes, 255 bytes | The request is refused. |
 | Receive listing depth | 128 directory levels | The deeper entry gets `EFBIG`. |
 | Receive listing size | 8 MiB encoded, less when other output is queued | The session gets `EFBIG`. |
-| Requested paths waiting for permission per pane | 4 MiB | The session gets `ENOMEM`. |
+| Requested paths, and the commands of send sessions, waiting for permission per pane | 4 MiB | The session gets `ENOMEM`. |
 | Delta buffers per pane | 64 MiB | The file gets `ENOMEM`. The signature of a delta that waits to be sent counts until it is sent. |
 | One delta signature or one literal block of a delta | 16 MiB | The file fails with an error status. |
 | Block size of a delta signature from the program | 1 MiB, as in Kitty | The file gets `EINVAL`. |

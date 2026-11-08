@@ -72,7 +72,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - `Mouse.autoScrollInterval` sets the time between the rows of a selection drag that scrolls.
 - `Control.eventInterval` sets the shortest time between two control events of one kind for a pane.
 - `Terminal.pasteReadTimeout` sets how long a paste event lets a program read the clipboard.
-- Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates.
+- Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates. The approval lists the paths: the files that a program reads, or the destinations of the files that it sends.
 - Kitty drag and drop, including remote directory data and thumbnails.
 - `Terminal.dragAnswerWait` sets how long a drag waits for the answer of a program that uses Kitty drag and drop.
 - `Terminal.dragTreeLifetime` sets how long Afterglow keeps the files of a drag from another computer after the drop.

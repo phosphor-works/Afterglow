@@ -23,6 +23,7 @@
 #include <deque>
 #include <fcntl.h>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <sys/resource.h>
@@ -359,6 +360,15 @@ struct FileTransfer::Worker {
         int requested = 0;
         std::vector<Request> requests;
         qsizetype requestBytes = 0;
+        // A send session without the password: the sender names the
+        // destinations only after the session starts, so its commands wait
+        // here, in order, until the user approves the destinations that the
+        // prompt shows. approvedFiles counts the file commands at the front
+        // that the user approved and that did not run yet.
+        bool holding = false;
+        std::deque<Fields> held;
+        int heldFiles = 0;
+        int approvedFiles = 0;
         std::map<QByteArray, std::unique_ptr<File>> files;
         // Links whose target file has not reached its final state, keyed by the target.
         std::multimap<QByteArray, QByteArray> waiters;
@@ -656,18 +666,98 @@ struct FileTransfer::Worker {
             return false;
         }
         s.asking = true;
+        const auto [paths, total] = promptPaths(s);
+        const auto token = s.token;
+        const bool writing = s.sending;
+        QMetaObject::invokeMethod(owner,
+            [o = owner, token, writing, paths, total] { Q_EMIT o->permissionRequested(token, writing, paths, total); });
+        return true;
+    }
+    // What the prompt lists: the files that a receive session asks for, or
+    // the destinations of a send session that wait for approval. At most
+    // MaxPromptPaths of them, and their total.
+    std::pair<QStringList, int> promptPaths(const Session& s)
+    {
         QStringList paths;
+        if (s.holding) {
+            for (const Fields& f : s.held) {
+                if (paths.size() == MaxPromptPaths)
+                    break;
+                if (f.value("ac") == "file")
+                    paths.push_back(shown(pathOf(f.value("n"))));
+            }
+            return { paths, s.heldFiles };
+        }
         for (const auto& request : s.requests) {
             if (paths.size() == MaxPromptPaths)
                 break;
             paths.push_back(shown(request.path));
         }
-        const auto token = s.token;
-        const bool writing = s.sending;
-        const int total = int(s.requests.size());
+        return { paths, int(s.requests.size()) };
+    }
+    // A command of a holding send session, after the ones that wait.
+    // Returns false when the session ended.
+    bool hold(Session& s, const Fields& f)
+    {
+        const bool file = f.value("ac") == "file";
+        if (file && (s.heldFiles + qsizetype(s.files.size()) >= MaxFiles || pathOf(f.value("n")).isEmpty())) {
+            status(s, f.value("fid"), "EINVAL");
+            return true;
+        }
+        // The waiting commands are bounded as the requests of receive sessions are.
+        const qsizetype cost = std::accumulate(f.begin(), f.end(), qsizetype(64),
+            [](qsizetype sum, const QByteArray& value) { return sum + value.size() + 16; });
+        if (requestBytes + cost > MaxRequestBytes) {
+            status(s, { }, "ENOMEM");
+            remove(QByteArray(s.id));
+            return false;
+        }
+        requestBytes += cost;
+        s.requestBytes += cost;
+        s.held.push_back(f);
+        if (!file)
+            return true;
+        ++s.heldFiles;
+        if (!s.asking) {
+            if (ask(s))
+                return true;
+            remove(QByteArray(s.id));
+            return false;
+        }
+        const auto [paths, total] = promptPaths(s);
         QMetaObject::invokeMethod(owner,
-            [o = owner, token, writing, paths, total] { Q_EMIT o->permissionRequested(token, writing, paths, total); });
+            [o = owner, token = s.token, paths, total] { Q_EMIT o->permissionPathsChanged(token, paths, total); });
         return true;
+    }
+    // Runs the waiting commands of @p id up to the first file command that
+    // the user has not approved, which then gets a prompt of its own.
+    void release(const QByteArray& id)
+    {
+        while (true) {
+            const auto it = sessions.find(id);
+            if (it == sessions.end())
+                return;
+            Session& s = *it->second;
+            if (s.held.empty())
+                return;
+            const bool file = s.held.front().value("ac") == "file";
+            if (file && s.approvedFiles == 0) {
+                if (!ask(s))
+                    remove(id);
+                return;
+            }
+            const Fields f = std::move(s.held.front());
+            s.held.pop_front();
+            const qsizetype cost = std::accumulate(f.begin(), f.end(), qsizetype(64),
+                [](qsizetype sum, const QByteArray& value) { return sum + value.size() + 16; });
+            requestBytes -= cost;
+            s.requestBytes -= cost;
+            if (file) {
+                --s.heldFiles;
+                --s.approvedFiles;
+            }
+            dispatch(s, f);
+        }
     }
     // Takes the id by value: callers pass references to the key that this erases.
     void remove(const QByteArray id)
@@ -684,16 +774,25 @@ struct FileTransfer::Worker {
             QDir().rmdir(*p);
         QMetaObject::invokeMethod(owner, [o = owner, token] { Q_EMIT o->sessionClosed(token); });
     }
-    void authorize(const QString& token, bool allowed)
+    void authorize(const QString& token, bool allowed, int files)
     {
         for (auto& [id, ptr] : sessions)
             if (ptr->token == token) {
                 auto& s = *ptr;
+                if (!s.asking)
+                    return;
                 s.asking = false;
                 if (!allowed) {
                     denied.start();
                     status(s, { }, "EPERM");
                     remove(id);
+                    return;
+                }
+                if (s.holding) {
+                    // Only the destinations that the prompt showed: the ones
+                    // that came after it get a prompt of their own.
+                    s.approvedFiles = files < 0 ? s.heldFiles : std::min(files, s.heldFiles);
+                    release(QByteArray(id));
                     return;
                 }
                 s.approved = true;
@@ -709,6 +808,8 @@ struct FileTransfer::Worker {
         status(s, fid, error);
     }
     void handle(const QByteArray& raw, const QByteArray& cancelled);
+    /// A command of an approved session.
+    void dispatch(Session& s, const Fields& f);
     void cancel(const QByteArray& id);
     void list(Session& s);
     void receiveFile(Session& s, const Fields& f);
@@ -772,10 +873,10 @@ void FileTransfer::handle(const QByteArray& command)
             w->forgetCancel(cancelled);
     });
 }
-void FileTransfer::approve(const QString& token, bool allowed)
+void FileTransfer::approve(const QString& token, bool allowed, int files)
 {
     QMetaObject::invokeMethod(
-        m_worker->context, [w = m_worker.get(), token, allowed] { w->authorize(token, allowed); });
+        m_worker->context, [w = m_worker.get(), token, allowed, files] { w->authorize(token, allowed, files); });
 }
 void FileTransfer::reset()
 {
@@ -915,10 +1016,11 @@ void FileTransfer::Worker::handle(const QByteArray& raw, const QByteArray& cance
         auto* added = s.get();
         sessions.emplace(id, std::move(s));
         if (added->sending) {
-            if (bypass)
-                authorize(added->token, true);
-            else if (!ask(*added))
-                remove(id);
+            // The prompt waits for the destinations, which come only after
+            // this answer: the files wait in the session until it is approved.
+            added->holding = !bypass;
+            added->approved = true;
+            status(*added, { }, Status::Ok);
         } else if (bypass)
             added->approved = true;
         return;
@@ -961,6 +1063,17 @@ void FileTransfer::Worker::handle(const QByteArray& raw, const QByteArray& cance
         remove(id);
         return;
     }
+    // A file of a holding session waits for its prompt, and what comes after it waits too.
+    if (s.holding && (action == "file" || !s.held.empty())) {
+        hold(s, f);
+        return;
+    }
+    dispatch(s, f);
+}
+
+void FileTransfer::Worker::dispatch(Session& s, const Fields& f)
+{
+    const auto id = s.id, action = f.value("ac");
     if (action == "finish") {
         if (s.sending)
             finish(s);
@@ -1751,6 +1864,26 @@ void FileTransfer::Worker::delta(Session& s, const QByteArray& fid, File& file)
         return;
     }
     stream(s, fid, nullptr, file.meta.value("zip") == "zlib", std::move(generator));
+}
+
+FileTransfer::Question FileTransfer::question(bool writing, const QStringList& paths, int total)
+{
+    Question q;
+    // A remote program can name any file, and chooses where files go: the
+    // paths are part of the question.
+    q.text = writing ? tr("Allow this terminal program to write these files on this computer? Existing files can be replaced.")
+                     : tr("Allow this terminal program to read these files on this computer?");
+    if (paths.isEmpty())
+        return q;
+    q.text += QLatin1Char('\n') + QStringList(paths.mid(0, QuestionPaths)).join(QLatin1Char('\n'));
+    const int shown = int(std::min<qsizetype>(paths.size(), QuestionPaths));
+    if (total > shown)
+        q.text += QLatin1Char('\n') + tr("and %n more", nullptr, total - shown);
+    // The transfer sends at most 100 paths; the count says the rest.
+    q.detail = paths.join(QLatin1Char('\n'));
+    if (total > paths.size())
+        q.detail += QLatin1Char('\n') + tr("Paths not shown: %1").arg(total - paths.size());
+    return q;
 }
 
 } // namespace Afterglow

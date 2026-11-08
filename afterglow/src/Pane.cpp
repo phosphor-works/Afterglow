@@ -1434,6 +1434,7 @@ FileTransfer* Pane::fileTransfers()
         // input queue fills and a refused reply ends it.
         m_fileTransfers->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
         connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
+        connect(m_fileTransfers.get(), &FileTransfer::permissionPathsChanged, this, &Pane::fileTransferPermissionPathsChanged);
         // The worker writes the replies of a command after its command
         // closure returned. Until then the reports after it wait.
         connect(m_fileTransfers.get(), &FileTransfer::answering, this, [this] {

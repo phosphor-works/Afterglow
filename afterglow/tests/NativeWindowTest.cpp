@@ -1752,7 +1752,10 @@ TEST_F(NativeWindow, FileTransferPermissionFollowsMovedPane) {
     auto* destination = application->newWindow(options); ASSERT_NE(destination, nullptr);
     destination->show();
     ASSERT_TRUE(window->movePaneTo(original, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
+    // A send asks at its first destination, which the prompt lists.
+    const QString destinationPath = directory.filePath(QStringLiteral("sent"));
     original->fileTransfers()->handle("ac=send;id=moved");
+    original->fileTransfers()->handle("ac=file;id=moved;fid=f;n=" + destinationPath.toUtf8().toBase64());
     QList<QPointer<QMessageBox>> prompts;
     const auto rejectAll = qScopeGuard([&prompts] {
         for (const auto& box : prompts)
@@ -1767,6 +1770,8 @@ TEST_F(NativeWindow, FileTransferPermissionFollowsMovedPane) {
     });
     ASSERT_EQ(prompts.size(), 1);
     EXPECT_EQ(prompts.front()->windowHandle()->transientParent(), destination);
+    EXPECT_TRUE(prompts.front()->text().contains(destinationPath)) << qPrintable(prompts.front()->text());
+    EXPECT_FALSE(QFileInfo::exists(destinationPath));
 }
 
 // The drag and drop tests of kitten dnd and their twins with aglow dnd, which
