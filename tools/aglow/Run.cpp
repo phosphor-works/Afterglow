@@ -37,13 +37,19 @@ namespace {
 namespace Remote = AfterglowProto::Remote;
 using AfterglowProto::Run::TerminalAnswer;
 
-/// tmux says that allow-passthrough is off for this pane. False when tmux
-/// cannot tell by @p deadline (nowMs()): the query then goes, and the guard
-/// ends the wait. tmux waits for its server, which may not answer.
-bool passthroughOff(long long deadline)
+/// What tmux says of allow-passthrough for this pane.
+enum class Passthrough {
+    Off,
+    Unknown, ///< on, or tmux cannot tell: the query goes, and the guard ends the wait
+    Late, ///< tmux did not answer by the deadline: no time is left for the query
+};
+
+/// Asks tmux by @p deadline (nowMs()). tmux waits for its server, which may
+/// not answer.
+Passthrough passthrough(long long deadline)
 {
     int out[2];
-    if (::pipe2(out, O_CLOEXEC | O_NONBLOCK) != 0) return false;
+    if (::pipe2(out, O_CLOEXEC | O_NONBLOCK) != 0) return Passthrough::Unknown;
     const char* argv[] = {"tmux", "display-message", "-p", "#{allow-passthrough}", nullptr};
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
@@ -72,33 +78,49 @@ bool passthroughOff(long long deadline)
         }
     }
     ::close(out[0]);
-    if (spawned != 0) return false;
+    if (spawned != 0) return Passthrough::Unknown;
     // A tmux that did not answer in time ends now, so that the wait for it
     // is short.
     if (!ended) ::kill(pid, SIGKILL);
     int status = 0;
     while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
     }
-    return ended && WIFEXITED(status) && WEXITSTATUS(status) == 0 && text == "off\n";
+    if (!ended) return Passthrough::Late;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 && text == "off\n" ? Passthrough::Off : Passthrough::Unknown;
 }
 
 /// Whether the client may ask its terminal: standard output is the
 /// controlling terminal, and the client's process group is in the
-/// foreground there. A run in the background, or in a pipeline whose other
-/// end can read the terminal too (less), asks nothing: another reader could
-/// take the answer, or the run would stop on SIGTTOU with the terminal in
-/// its modes.
+/// foreground there. A run that writes into a pipe or a file asks nothing:
+/// the reader of `aglow run ... | less` reads the terminal too, and could
+/// take the answer. A run in the background asks nothing: it would stop on
+/// SIGTTOU with the terminal in its modes. A pipeline that writes into
+/// aglow run, whose standard output stays the terminal, can still have a
+/// program that reads the terminal (vipe, fzf): that one can take the answer.
 bool mayAsk()
 {
     const pid_t session = ::tcgetsid(STDOUT_FILENO);
     return session != -1 && session == ::getsid(0) && ::tcgetpgrp(STDOUT_FILENO) == ::getpgrp();
 }
 
+/// The signals that QuerySignals catches, and a bit for each in g_caught.
+constexpr int Caught[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP};
+
+constexpr int caughtBit(int number)
+{
+    for (std::size_t i = 0; i < std::size(Caught); ++i) {
+        if (Caught[i] == number) return 1 << i;
+    }
+    return 0;
+}
+
 volatile std::sig_atomic_t g_caught = 0;
 
+/// Each handler runs with the others blocked (sa_mask), so that none of the
+/// bits is lost between the read and the write.
 extern "C" void onQuerySignal(int number)
 {
-    if (!g_caught) g_caught = number;
+    g_caught = g_caught | caughtBit(number);
 }
 
 /// While the query holds the terminal in its modes, the signals that end or
@@ -125,6 +147,7 @@ public:
         struct sigaction action{};
         action.sa_handler = onQuerySignal;
         sigemptyset(&action.sa_mask);
+        for (const int number : Caught) sigaddset(&action.sa_mask, number);
         for (std::size_t i = 0; i < std::size(Caught); ++i) {
             ::sigaction(Caught[i], nullptr, &m_old[i]);
             // A signal that came ignored stays ignored (SIGINT in a
@@ -132,14 +155,16 @@ public:
             if (m_old[i].sa_handler != SIG_IGN) ::sigaction(Caught[i], &action, nullptr);
         }
     }
-    /// After the modes are back: the caught signal, still blocked, is
+    /// After the modes are back: each caught signal, still blocked, is
     /// raised again, and acts as it would have once the mask comes back.
     ~QuerySignals()
     {
         for (std::size_t i = 0; i < std::size(Caught); ++i) ::sigaction(Caught[i], &m_old[i], nullptr);
-        const int number = g_caught;
+        const int caught = g_caught;
         g_caught = 0;
-        if (number) ::raise(number);
+        for (const int number : Caught) {
+            if (caught & caughtBit(number)) ::raise(number);
+        }
         ::sigprocmask(SIG_SETMASK, &m_mask, nullptr);
     }
     QuerySignals(const QuerySignals&) = delete;
@@ -156,13 +181,12 @@ public:
     /// client says why it ends before it ends by the signal.
     bool takeInterrupt()
     {
-        if (g_caught != SIGINT) return false;
-        g_caught = 0;
+        if (!(g_caught & caughtBit(SIGINT))) return false;
+        g_caught = g_caught & ~caughtBit(SIGINT);
         return true;
     }
 
 private:
-    static constexpr int Caught[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP};
     sigset_t m_mask{};
     sigset_t m_wait{};
     struct sigaction m_old[std::size(Caught)]{};
@@ -225,7 +249,18 @@ TerminalAnswer askTerminal(int timeoutMs)
     const char* tmuxVariable = std::getenv("TMUX");
     const bool tmux = tmuxVariable && *tmuxVariable;
     // Before the modes change: tmux gets the process's own signal mask.
-    if (tmux && passthroughOff(deadline)) return {TerminalAnswer::Kind::Passthrough, {}};
+    if (tmux) {
+        switch (passthrough(deadline)) {
+        case Passthrough::Off:
+            return {TerminalAnswer::Kind::Passthrough, {}};
+        case Passthrough::Late:
+            // A query without time to wait for its answer would leave the
+            // answer to the shell.
+            return {TerminalAnswer::Kind::Other, {}};
+        case Passthrough::Unknown:
+            break;
+        }
+    }
     const int fd = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) return {};
     QuerySignals signals;

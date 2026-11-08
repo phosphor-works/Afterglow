@@ -98,9 +98,10 @@ public:
     /// forward on an error: the session ended before the forward came, and
     /// its cancel found nothing to cancel.
     QString forwarded(const QString& token);
-    /// The forward of @p token's session failed: the socket closes, and the
+    /// The forward of @p token's session failed, or the client cancelled it
+    /// when forwarded() did not answer in time: the socket closes, and the
     /// pane answers with @p reason. Only "forward" comes from the client.
-    /// Returns an error, or empty.
+    /// Returns an error, or empty: also for a session with no socket.
     QString failed(const QString& token, const QString& reason);
     /// Ends the sessions of @p pane, which closed.
     void paneClosed(quint32 pane);

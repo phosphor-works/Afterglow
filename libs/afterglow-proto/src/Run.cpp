@@ -230,8 +230,9 @@ public:
     }
     int signal() const { return m_signal; }
 
-    /// Connects and reads the commands, both in @p timeoutMs. Reports its own
-    /// errors unless @p quiet.
+    /// Asks the terminal when the lookup needs it, connects and reads the
+    /// commands, all three in @p timeoutMs. Reports its own errors unless
+    /// @p quiet.
     std::optional<std::vector<Command>> commands(bool quiet, int timeoutMs)
     {
         // One wait for the query, the connection and the list: a shell's
@@ -268,8 +269,10 @@ public:
     void report(const IpcConnection::Error& error, int timeoutMs) const
     {
         if (error.code == "NO_SUCH_TARGET") {
-            fail(remote() ? "the socket " + m_socket.path + " has no target for remote commands: afterglow ssh did not forward it"
-                          : "the running Afterglow takes no commands (Control.enabled or Scripts.enabled is off)");
+            fail(remote()       ? "the socket " + m_socket.path + " has no target for remote commands: afterglow ssh did not forward it"
+                 : m_socket.own ? "the Afterglow at $AFTERGLOW_SOCKET takes no commands (Control.enabled or Scripts.enabled is off). "
+                                  "A socket that afterglow ssh forwarded takes them only by its own name, DIRECTORY/TOKEN.sock"
+                                : "the running Afterglow takes no commands (Control.enabled or Scripts.enabled is off)");
         } else if (error.timedOut) {
             fail("Afterglow did not answer in " + std::to_string(timeoutMs / 1000) + " seconds");
         } else if (error.code.empty()) {
@@ -557,20 +560,14 @@ private:
     bool m_installed = false;
 };
 
-/// The answer to call @p id in @p timeoutMs, else nothing with @p error set.
-/// Before its run, the terminal sends a client only answers: another frame is
-/// dropped.
-std::optional<Json::Value> answerTo(Client& client, std::int64_t id, int timeoutMs, IpcConnection::Error* error)
+/// The answer to call @p id, else nothing with @p error set. It waits as a
+/// run does: until a signal or the end of the connection. Before its run,
+/// the terminal sends a client only answers: another frame is dropped.
+std::optional<Json::Value> answerTo(Client& client, std::int64_t id, IpcConnection::Error* error)
 {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (true) {
-        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
         Json::Value frame;
-        const auto status = left.count() > 0 ? client.ipc().next(frame, int(left.count()), g_wake[0]) : IpcConnection::Read::Timeout;
-        if (status == IpcConnection::Read::Timeout) {
-            *error = {{}, "no reply in time", true, false, false};
-            return std::nullopt;
-        }
+        const auto status = client.ipc().next(frame, -1, g_wake[0]);
         if (status == IpcConnection::Read::Woken) {
             *error = {{}, "interrupted", false, true, false};
             return std::nullopt;
@@ -633,10 +630,13 @@ int sendInput(Client& client, const std::string& run)
         if (g_signal) return client.interrupted();
         const bool last = eof && size == buffer.size();
         IpcConnection::Error error;
-        // The wait for the answer starts once the part went out: a slow link
-        // takes its time to carry InputPartBytes, and a signal ends the send.
+        // No time limit for the part and its answer: a slow ssh link takes
+        // its time to carry InputPartBytes, and sshd takes the part long
+        // before the terminal has it, so no wait here can tell a slow link
+        // from a terminal that does not answer. A signal ends both waits,
+        // and a lost terminal closes the connection.
         const auto id = client.ipc().send(client.target(), "input", {run, buffer.substr(0, size), last}, &error, g_wake[0]);
-        const auto accepted = id ? answerTo(client, *id, client.env().replyTimeoutMs, &error) : std::nullopt;
+        const auto accepted = id ? answerTo(client, *id, &error) : std::nullopt;
         if (!accepted) {
             if (error.interrupted) return client.interrupted();
             // Over Scripts.commandStdinLimit: the run cannot start, as with a

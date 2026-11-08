@@ -56,7 +56,7 @@ afterglow ctl detach-tab --pane 12
 
 A move can cross tab and window boundaries.
 Use target `0` with the placement `new-tab` or `new-window`, as in `afterglow ctl move-pane 0 new-tab --pane 12`.
-A move to a new tab is refused for a pane that is alone in its tab.
+Afterglow refuses a move to a new tab for a pane that is alone in its tab.
 Luau supplies matching `move_pane` and `detach_tab` effects.
 Their results contain the pane snapshot and destination IDs.
 `on_pane_moved` reports the new location. A move does not cause creation or closure events.

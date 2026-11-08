@@ -117,10 +117,11 @@ def environment(runtime, extra=None):
     return env
 
 
-def play(argv, env, answer, timeout=20):
+def play(argv, env, answer, timeout=20, also=()):
     """Runs ARGV in a pseudo-terminal. ANSWER(written) gives the bytes that the terminal sends for what the
-    program wrote so far, once for each query: bytes, or a list of parts that come 0.2 seconds apart.
-    Returns (exit code, everything written, seconds taken)."""
+    program wrote so far, once for each query: bytes, or a list of parts that come 0.2 seconds apart. ALSO
+    holds (sequence, answer) pairs: each time the program writes the sequence, the terminal sends the answer,
+    whichever read the sequence came in. Returns (exit code, everything written, seconds taken)."""
     started = time.monotonic()
     pid, master = pty.fork()
     if pid == 0:
@@ -130,6 +131,7 @@ def play(argv, env, answer, timeout=20):
             os._exit(127)
     written = b""
     answered = 0
+    answered_also = [0] * len(also)
     deadline = started + timeout
     code = None
     try:
@@ -149,6 +151,10 @@ def play(argv, env, answer, timeout=20):
                         time.sleep(0.2)
                     if part:
                         os.write(master, part)
+            for i, (sequence, reply) in enumerate(also):
+                while written.count(sequence) > answered_also[i]:
+                    answered_also[i] += 1
+                    os.write(master, reply)
             found, status = os.waitpid(pid, os.WNOHANG)
             if found:
                 code = os.waitstatus_to_exitcode(status)
@@ -262,6 +268,19 @@ def unasked_cases(aglow, scratch):
     check(code == 1, code, written)
     check(QUERY not in written and NOT_ASKED in written, written)
     check(took < 1.9, took)
+    # A tmux that does not answer in time: the query would get no time to wait, and its answer would reach the
+    # shell. aglow asks nothing, and the wait ends at the guard's time.
+    fake = os.path.join(scratch, "fake-tmux")
+    os.makedirs(fake, exist_ok=True)
+    with open(os.path.join(fake, "tmux"), "w") as f:
+        f.write("#!/bin/sh\nexec sleep 10\n")
+    os.chmod(os.path.join(fake, "tmux"), 0o755)
+    env = environment(runtime, {"TMUX": os.path.join(scratch, "no-tmux-server") + ",0,0",
+                                "PATH": fake + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin")})
+    code, written, took = play([aglow, "run", "far", "there"], env, lambda _: GUARD)
+    check(code == 1 and b"no running Afterglow on this display" in written, code, written)
+    check(b"24569" not in written, "the query went after tmux took the whole wait", written)
+    check(took < 6, took)
     # No controlling terminal at all.
     result = subprocess.run([aglow, "run", "far", "there"], env=environment(runtime), stdin=subprocess.DEVNULL,
                             capture_output=True, start_new_session=True, timeout=20)
@@ -278,18 +297,26 @@ def signal_cases(aglow, scratch):
     try:
         # SIGTERM while the terminal does not answer: aglow ends by it, after the modes are back. A job of sh
         # is in the foreground's process group, as sh has no job control.
-        def terminate(_):
-            for _ in range(100):
-                if os.path.exists(pidfile) and open(pidfile).read().strip():
-                    break
-                time.sleep(0.02)
-            os.kill(int(open(pidfile).read()), signal.SIGTERM)
+        def sender(path, numbers):
+            def send(_):
+                for _ in range(100):
+                    if os.path.exists(path) and open(path).read().strip():
+                        break
+                    time.sleep(0.02)
+                for number in numbers:
+                    os.kill(int(open(path).read()), number)
+            return send
 
-        code, written, took = play(sh(f"{shlex.quote(aglow)} run far there & echo $! > {shlex.quote(pidfile)};"
-                                      " wait $!; echo status=$?; stty -a"), environment(runtime), terminate)
-        check(b"status=143" in written, written)
-        check(modes_back(written), written)
-        check(took < 6, took)
+        # SIGTSTP and then SIGTERM: both act once the modes are back, and SIGTERM ends aglow. With only the
+        # first signal kept, SIGTERM would be lost. The process group of sh here is orphaned, so the kernel
+        # drops SIGTSTP and aglow does not stop.
+        for name, numbers in (("term", [signal.SIGTERM]), ("stop-term", [signal.SIGTSTP, signal.SIGTERM])):
+            path = f"{pidfile}.{name}"
+            code, written, took = play(sh(f"{shlex.quote(aglow)} run far there & echo $! > {shlex.quote(path)};"
+                                          " wait $!; echo status=$?; stty -a"), environment(runtime), sender(path, numbers))
+            check(b"status=143" in written, name, written)
+            check(modes_back(written), name, written)
+            check(took < 6, name, took)
 
         # Ctrl+C with SIGINT ignored, as in a background job of a script: the run goes on.
         code, written, _ = play(sh(f"trap '' INT; {shlex.quote(aglow)} run far there x; echo status=$?; stty -a"),

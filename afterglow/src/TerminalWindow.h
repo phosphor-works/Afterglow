@@ -7,6 +7,7 @@
 #include "Pane.h"
 #include "PaneOverlay.h"
 #include "SplitTree.h"
+#include "ShownText.h"
 #include "animation/FrameClock.h"
 #include "animation/PaneMotion.h"
 #include "app/Services.h"
@@ -62,18 +63,6 @@ class Pane;
 class ScriptHost;
 class ShaderLibrary;
 struct ScriptCommand;
-
-/// At most @p limit UTF-16 units of @p text, without splitting a surrogate pair.
-inline QString textPrefix(const QString& text, qsizetype limit)
-{
-    if (text.size() <= limit) return text;
-    return text.left(limit > 0 && text.at(limit).isLowSurrogate() ? limit - 1 : limit);
-}
-
-/// Program-supplied text shown outside the grid: drop bidirectional
-/// overrides and invisible formatting, which could disguise it, and line
-/// separators. At most @p limit UTF-16 units, without splitting a surrogate pair.
-QString sanitizedText(const QString& s, qsizetype limit);
 
 /// How a popup overlay looks with @p settings: the popup border colour for
 /// its border line (when @p border) with Window.popupCorners, the text
@@ -697,6 +686,9 @@ private:
     std::vector<QRect> m_paneDockRects;
     /// The scroll shift of @p pane's last frame (PaneMotion::scrollShift).
     float drawnScrollShift(const Pane* pane) const;
+    /// Where window position @p pos (logical) is on @p pane's grid as the
+    /// last frame drew it, in pixels from the grid's top left corner.
+    QPointF gridPixel(Pane* pane, const QPointF& pos) const;
     /// Cell under a window position, as the last frame drew the cells,
     /// clamped to the pane's grid.
     QPoint cellAt(Pane* pane, const QPointF& pos) const;

@@ -184,10 +184,12 @@ public:
     /// arrives cut to limit + 1 bytes. The host must treat a payload over the
     /// limit as an oversized command and end it with the protocol's error.
     virtual void terminalProtocol(int code, std::string_view payload) {}
-    /// A scroll moved cells of the active screen to other rows: SU, SD, IL,
-    /// DL, a line feed or IND at the bottom margin, RI at the top margin, and
-    /// a text sizing block (OSC 66) that scrolls the screen to fit. A scroll
-    /// of the whole screen into the history keeps every row's id and is not
+    /// A scroll moved cells of the active screen to other rows: SU, SD, IL
+    /// and DL; the cursor going down past the bottom margin (LF, VT, FF,
+    /// IND, NEL, an autowrap, a sixel, kitty or iTerm2 image that moves the
+    /// cursor); the cursor going up past the top margin (RI, VT52 ESC I); and
+    /// a text sizing block (OSC 66) that scrolls to fit. A scroll of the
+    /// whole screen into the history keeps every row's id and is not
     /// reported. The terminal has moved its own images and shell marks; a
     /// host that keeps positions on that screen by stable row id (a
     /// selection: Selection::followScroll) moves them too.
@@ -362,7 +364,8 @@ public:
     /// What programs report doing (OSC 7501). Records belong to the terminal,
     /// not a screen.
     const ProgramStatus& programStatus() const noexcept { return m_programStatus; }
-    /// The program attached to the terminal exited: in-flight status ends.
+    /// The program attached to the terminal exited: in-flight status ends,
+    /// and so does an iTerm2 file sent in parts.
     void programExited();
     /// Whether the user can see the terminal (mode 2033 reports changes).
     void setVisible(bool visible);
@@ -443,6 +446,9 @@ private:
     void moveCursorRelative(int dx, int dy);
     /// @p selective: DECSED/DECSEL, which spare DEC-protected cells.
     void eraseDisplay(int mode, bool selective = false);
+    /// The whole active screen was erased (ED 2, DECCOLM): the output of a
+    /// running command goes on from its top.
+    void outputScreenErased();
     void eraseLine(int mode, bool selective = false);
     void eraseSpan(Row& row, int x0, int x1, std::uint32_t fill, bool selective);
     void eraseWholeRow(Row& row, std::uint32_t fill, bool selective);

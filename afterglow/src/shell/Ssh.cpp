@@ -363,7 +363,9 @@ InstallResult installTerminfo(const QByteArrayList& args, const Arguments& parse
 }
 
 // The words of ARGS for the probe, which opens the connection that the
-// session then shares: the options and their values, without -n.
+// session then shares: the options and their values, without -n and -M.
+// ssh takes -M as it comes, past an -o ControlMaster before it: the probe
+// would try to be a master of its own, and sign in again.
 QByteArrayList connectionOptions(const QByteArrayList& args, const Arguments& parsed)
 {
     QByteArrayList out;
@@ -372,9 +374,18 @@ QByteArrayList connectionOptions(const QByteArrayList& args, const Arguments& pa
         if (isValue) {
             out << args[i];
             isValue = false;
-        } else if (const QByteArray word = withoutNullInput(args[i], isValue); !word.isEmpty()) {
-            out << word;
+            continue;
         }
+        const QByteArray word = withoutNullInput(args[i], isValue);
+        QByteArray kept = "-";
+        for (qsizetype c = 1; c < word.size(); ++c) {
+            if (FlagsWithValue.find(word[c]) != std::string_view::npos) {
+                kept += word.mid(c);
+                break;
+            }
+            if (word[c] != 'M') kept += word[c];
+        }
+        if (kept.size() > 1) out << kept;
     }
     return out;
 }
@@ -671,7 +682,11 @@ RemoteResult forwardRemote(const QByteArrayList& args, const Arguments& parsed, 
     // forward came after. Then it goes now, or it would last as long as the master.
     if (!ipc.call("control", "remoteSocketForwarded", {token}, CallTimeoutMs, &error)) {
         capture(control + QByteArrayList{"-O", "cancel", "-R", spec, "--", destination}, signals, {}, true);
-        return skip("the socket closed before its forward came");
+        // A busy Afterglow can still take the call late, and answer with a
+        // path that no forward serves now. It takes this after it, in order.
+        const bool late = error.timedOut;
+        if (late) ipc.send("control", "remoteSocketFailed", {token, "forward"}, &error);
+        return skip(late ? "Afterglow did not answer, and the forward is cancelled" : "the socket closed before its forward came");
     }
     return {};
 }

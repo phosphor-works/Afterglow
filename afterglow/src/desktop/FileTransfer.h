@@ -31,6 +31,9 @@ public:
         QString detail;
     };
     static Question question(bool writing, const QStringList& paths, int total, const QString& asker = { });
+    /// Ends the pause after a wrong password at once, in every pane. A test
+    /// calls it, so that its pause does not reach the tests after it.
+    static void endPasswordPause();
     /// Paths that the question shows in its text, and the characters of each.
     static constexpr int QuestionPaths = 10;
     static constexpr int QuestionLength = 160;
@@ -56,13 +59,14 @@ Q_SIGNALS:
     /// @p paths holds at most the first 100 of the @p total paths that wait,
     /// for display: control characters, line separators, invisible format
     /// characters and backslashes in them are written as \uXXXX (\UXXXXXXXX
-    /// above U+FFFF). A path that links lead elsewhere names where. For a
-    /// read, the files that the program asks for, a directory with a slash:
-    /// the program reads all of it. For a write, the destinations of the
-    /// files that the program named: a send session asks once the worker has
-    /// handled what came with its first file. The files wait until the
-    /// answer. The paths stay as they are: what comes later waits for a
-    /// request of its own, and a Yes approves only @p paths.
+    /// above U+FFFF). A path that links lead elsewhere has a second line
+    /// that names where. For a read, the files that the program asks for, a
+    /// directory with a slash: the program reads all of it. For a write, the
+    /// destinations of the files that the program named: a send session asks
+    /// once every command that reached the GUI thread before its first
+    /// waiting file has reached handle() and the worker. The files wait
+    /// until the answer. The paths stay as they are: what comes later waits
+    /// for a request of its own, and a Yes approves only @p paths.
     void permissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
 
 private:

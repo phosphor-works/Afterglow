@@ -871,6 +871,10 @@ TEST(Terminal, OutputThatItsCommandClearsGoesOnFromTheTop)
     EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "new");
     ASSERT_FALSE(t.t.semanticRegions().empty());
     EXPECT_EQ(t.t.semanticRegionText(t.t.semanticRegions().back().id), "new");
+    // DECCOLM clears the page as ED 2 does, here at the width it has.
+    t.feed("\x1b]133;D;0\x07\r\n\x1b]133;A\x07$ \x1b]133;B\x07wide\r\n\x1b]133;C\x07\r\n\r\nold");
+    t.feed("\x1b[?40h\x1b[?3hcleared");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "cleared");
 }
 
 TEST(Terminal, AnOsc8LinkOverTheLimitEndsTheLinkBefore)

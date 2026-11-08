@@ -329,7 +329,7 @@ ctest --test-dir build --output-on-failure -R '^(Transfer|TransferQuestion|Trans
 ```
 
 `TransferQuestion.*` checks the paths that the permission dialog shows.
-`TransferUmask.*` checks that the mode of a received file comes from the umask of the GUI thread when the transfer began.
+`TransferUmask.*` checks that the mode of a received file comes from the umask that the GUI thread had when the transfer service was made, not from the umask at the time of the transfer.
 
 Run the tests of the protocol library, which has these formats and the other wire formats.
 The names of these tests start with `Proto.`.
@@ -431,7 +431,12 @@ It makes host and client keys, `sshd_config` and an ssh client configuration in 
 Every `ssh` of the test takes that configuration with `-F`, with no agent and its own known hosts.
 The "remote" side is this computer, with a `HOME` and `XDG_RUNTIME_DIR` of the test.
 The test checks the OpenSSH behavior that remote commands depend on, then runs `aglow run` in an `afterglow ssh` session of a pane.
-It stops the `sshd` and removes the directory at the end. Without `sshd`, `ssh` or `ssh-keygen`, it reports Skipped.
+It stops the `sshd` and removes the directory at the end.
+When the test binary dies first, the kernel stops the `sshd`.
+
+`RemoteCommandsTest.ARunWhoseHandlerTurnsTheSettingOffEndsWithItsSocket` turns the setting off inside the call of a run.
+A socket that went away inside its own call is a use of freed memory, which a normal build does not always show.
+Run the test in the `debug` preset, which has the sanitizers, to see it every time.
 
 ## Shell completion tests
 
@@ -454,16 +459,18 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `afterglow_without_aglow` | Runs a copy of `afterglow` that has no `aglow` next to it, and checks the error and status 127 | None |
 | `afterglow_aglow_not_executable` | Runs a copy of `afterglow` next to an `aglow` that it cannot execute, and checks the error and status 126 | None |
 | `aglow_run_usage`, `afterglow_runs_aglow_run` | Check the usage of `aglow run`, and of `afterglow run`, which runs it | None |
+| `aglow_no_command`, `aglow_unknown_command`, `aglow_help_unknown_command` | Run `aglow` with no command, an unknown command and `help` of an unknown command, and check the usage text and exit status 2 | None |
+| `aglow_remote_prune_help`, `aglow_remote_prune_usage`, `aglow_remote_prune_missing` | Check `aglow remote-prune --help` (status 0), `aglow remote-prune` with no directory (status 2) and a directory that does not exist (status 1) | None |
 | `Aglow.*` | The input parser and the command line of `aglow`, in `aglow_tests` | GTest |
 | `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service, also with `--confirm-paths` answered with y and n | Python 3 |
 | `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |
 | `aglow_static` | Checks that `readelf -d` lists no shared library for `aglow` | `readelf`, and a static `aglow` |
 | `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY`), with `find_package(Qt6)` disabled and no Phosphor directory. Builds it and installs it into the build directory. Checks that the installation holds only `bin/aglow`, its license notices and its completions. Uses the compilers, the build type and the flags of the build, also the flags of each build type. Has the label `slow` | A full build, and the source archives of zlib-ng and xxHash or a network connection |
 | `aglow_clipboard_pty` | Plays a terminal for `aglow clipboard` in a pseudo-terminal | Python 3 |
-| `aglow_run_pty` | Plays a terminal and a terminal socket for the OSC 24569 query of `aglow run` | Python 3 |
+| `aglow_run_pty` | Plays a terminal and a terminal socket for the OSC 24569 query of `aglow run`. Checks when `aglow run` does not ask, the modes of the terminal after signals and `Ctrl+C`, and what `aglow remote-prune` removes | Python 3 |
 | `aglow_tmux_pty` | Runs `aglow icat` and `aglow run` in a private tmux server (`tmux -L`, its own configuration and socket directory) in a pseudo-terminal, with `allow-passthrough` on and off | Python 3 and tmux. Without tmux, it reports Skipped |
 | `aglow_clipboard_cases` | Checks the arguments that `aglow clipboard` refuses, a new output file, and the timeout of an OSC 52 read | Python 3, and a kernel that shows a process that waits in `open()` |
-| `aglow_icat_decode` | Sends crafted images to `aglow icat` and checks the pixels that it sends, or its error | Python 3 |
+| `aglow_icat_decode` | Sends crafted images to `aglow icat` and checks the pixels that it sends, or its error | Python 3, and a user that cannot read a directory of mode 0 |
 | `aglow_icat_render` | Draws the output of `aglow icat` with `afterglow_renderpng` | Python 3, `AFTERGLOW_BUILD_TOOLS`, a Wayland display and a Vulkan device |
 
 Without `readelf`, the configuration prints a message and leaves out `aglow_static`.
@@ -474,16 +481,17 @@ Run the suite without it:
 ctest --test-dir build --output-on-failure -LE slow
 ```
 
-A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` tests and these tests of the table: `aglow_version`, `aglow_run_usage`, `Aglow.*`, `aglow_static`, `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_tmux_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`.
+A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` tests and these tests of the table: `aglow_version`, `aglow_run_usage`, `aglow_no_command`, `aglow_unknown_command`, `aglow_help_unknown_command`, the three `aglow_remote_prune_*` tests, `Aglow.*`, `aglow_static`, `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_tmux_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`.
 It has no test that runs `afterglow`.
 
 The Python test scripts need Python 3.9 or later.
 Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skipped.
 `aglow_clipboard_cases` reports Skipped when the kernel does not show a process that waits in `open()`. It runs its other cases first.
+`aglow_icat_decode` reports Skipped when its user can read a directory of mode 0, as root can. It runs its other cases first.
 `aglow_icat_decode` and `aglow_icat_render` run `aglow` without `TMUX`, so the tests do not change the settings of a tmux that runs them.
+`aglow_icat_render` also runs `afterglow_renderpng` without `TMUX`.
 `aglow_run_pty` and `aglow_tmux_pty` run `aglow` without `TMUX`, `TMUX_PANE`, `AFTERGLOW_SOCKET`, `AFTERGLOW_PANE_ID` and `WAYLAND_DISPLAY`, with an `XDG_RUNTIME_DIR` of their own.
 Thus they do not reach a tmux or an Afterglow that runs them. `aglow_tmux_pty` starts its own tmux server with `tmux -L` and its own `TMUX_TMPDIR`.
-`aglow_icat_render` also runs `afterglow_renderpng` without it.
 It runs `afterglow_renderpng` with `QT_QPA_PLATFORMTHEME=generic`, so the theme plugin of the desktop does not load.
 
 `aglow_icat_render` checks a PNG image, a mirrored image, an image placed with `--place`, Unicode placeholders and each frame of an animated GIF.

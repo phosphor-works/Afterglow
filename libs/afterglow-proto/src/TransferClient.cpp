@@ -52,7 +52,10 @@ constexpr std::size_t MaxLiteral = 16 * 1024 * 1024;
 // a delta upload, and its signature, from the file command on. It refuses a
 // file with EBUSY when 128 are open in one pane. A client keeps the delta
 // uploads that wait well below it, and names its other files at once: a
-// terminal that asks the user lists them in one question.
+// terminal that asks the user can list those in one question. A delta upload
+// that it names when another finishes can get a question of its own. A receive has at
+// most this many files requested and not finished at a time: the terminal
+// holds each one open while it sends it, and this side its destination.
 constexpr std::size_t MaxOpenFiles = 32;
 constexpr std::size_t MaxListing = 1 << 20;
 // The memory of a listing: the names and ids, and what each entry costs here.

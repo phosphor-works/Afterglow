@@ -191,9 +191,12 @@ TEST(Remote, PruneKeepsASocketThatIsBoundButNotListeningAndASymlink)
 
     const Remote::Pruned pruned = Remote::prune(dir, ::getuid());
     EXPECT_TRUE(pruned.error.empty()) << pruned.error;
-    EXPECT_EQ(pruned.removed, std::vector<std::string>{"dead.sock"});
+    // Without the list, a connection is refused: the bound socket goes too.
     if (::access("/proc/net/unix", R_OK) == 0) {
+        EXPECT_EQ(pruned.removed, std::vector<std::string>{"dead.sock"});
         EXPECT_TRUE(exists(boundPath));
+    } else {
+        EXPECT_TRUE(std::find(pruned.removed.begin(), pruned.removed.end(), "dead.sock") != pruned.removed.end());
     }
     EXPECT_TRUE(exists(dir + "/link.sock"));
     EXPECT_TRUE(exists(dir + "/target"));

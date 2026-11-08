@@ -24,8 +24,9 @@
 # The tools, the build type and the flags are those of the build that runs the
 # test, so that aglow alone links as its aglow does: dynamically when the flags
 # hold -fsanitize. CONFIGS names the build types in upper case, and the flags
-# of each type come as they are, also empty, as that build has them. CPM_CACHE and DEPS_ARCHIVES are those of that build too, so
-# that the pinned archives come from where that build took them.
+# of each type come as they are, also empty, as that build has them.
+# CPM_CACHE and DEPS_ARCHIVES are those of that build too, so that the pinned
+# archives come from where that build took them.
 
 foreach(required SOURCE BINARY GENERATOR)
     if(NOT ${required})

@@ -319,7 +319,7 @@ If the host has no `tic`, or the local `infocmp` cannot read the entry, the sess
 Set `Terminal.sshTerminfo` to `fallback` to always use `xterm-256color` on remote hosts and install nothing.
 
 With `Terminal.sshRemoteCommands` on, `aglow run` on the host can run the script commands that are marked `remote`, through `afterglow ssh`.
-Before the session starts, it runs a probe over the shared connection and forwards a socket of Afterglow to the host.
+Before the session starts, `afterglow ssh` runs a probe over the shared connection and forwards a socket of Afterglow to the host.
 With the setting on, every process of the remote user, and the remote root user, can run the commands that are marked `remote`.
 Unlike the terminfo install, remote commands keep a `ControlPath none` or `ControlMaster no` of yours.
 Afterglow reads your configuration files again to tell them from the defaults, and then forwards no socket for that session.

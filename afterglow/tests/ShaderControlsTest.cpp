@@ -925,26 +925,33 @@ TEST(ShaderLibraryPackages, APackagePackWithAnotherIdIsLeftOut)
     EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 1u);
 }
 
-// afterglow --config DIR/config.json takes the user's packs from DIR/shaders.
-TEST(ShaderLibraryDirectories, TheUserDirectoryCanBeBesideAnotherConfigFile)
+// The library takes the user's packs and presets from the directory that it
+// is given, which Application makes the directory of the config file.
+TEST(ShaderLibraryDirectories, PacksAndPresetsComeFromTheGivenDirectory)
 {
     QTemporaryDir elsewhere;
     ASSERT_TRUE(elsewhere.isValid());
     const QString pack = elsewhere.filePath(QStringLiteral("shaders/elsewhere-only"));
     ASSERT_TRUE(QDir().mkpath(pack));
-    QFile metadata(pack + QStringLiteral("/metadata.json"));
-    ASSERT_TRUE(metadata.open(QIODevice::WriteOnly));
-    metadata.write(R"({"id":"elsewhere-only","name":"Elsewhere","fragmentShader":"effect.frag"})");
-    metadata.close();
-    QFile shader(pack + QStringLiteral("/effect.frag"));
-    ASSERT_TRUE(shader.open(QIODevice::WriteOnly));
-    shader.write("vec4 pTerminal(vec2 uv) { return vec4(1.0); }");
-    shader.close();
+    const QByteArray metadata = R"({"id":"elsewhere-only","name":"Elsewhere","fragmentShader":"effect.frag"})";
+    const QByteArray source = "vec4 pTerminal(vec2 uv) { return vec4(1.0); }";
+    for (const auto& [name, bytes] : {std::pair{QStringLiteral("/metadata.json"), metadata}, std::pair{QStringLiteral("/effect.frag"), source}}) {
+        QFile file(pack + name);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        ASSERT_EQ(file.write(bytes), bytes.size());
+    }
     ShaderLibrary usual;
     EXPECT_FALSE(usual.packIds().contains(QStringLiteral("elsewhere-only")));
-    ShaderLibrary beside(elsewhere.filePath(QStringLiteral("shaders")));
+    ShaderLibrary beside(elsewhere.path());
     EXPECT_TRUE(beside.packIds().contains(QStringLiteral("elsewhere-only")));
     ShaderLibrary::Refs refs;
     refs.background = {QStringLiteral("elsewhere-only")};
     EXPECT_EQ(beside.build(refs, {}).background.size(), 1u) << beside.problems().join(QLatin1Char('\n')).toStdString();
+    // A saved preset goes beside the packs, not into ~/.config/afterglow.
+    QVariantMap saved;
+    ASSERT_TRUE(beside.savePreset(QStringLiteral("elsewhere-only"), QStringLiteral("Mine"), {}, saved).isEmpty());
+    const QDir presets(elsewhere.filePath(QStringLiteral("shader-presets/surface")));
+    EXPECT_EQ(presets.entryList({QStringLiteral("*.json")}, QDir::Files).size(), 1);
+    const QDir userPresets(qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shader-presets/surface"));
+    EXPECT_FALSE(userPresets.exists(saved.value(QStringLiteral("id")).toString() + QStringLiteral(".json")));
 }

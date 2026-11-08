@@ -412,14 +412,13 @@ struct ShaderLibrary::PackIndex
 };
 
 ShaderLibrary::ShaderLibrary(QObject* parent)
-    : ShaderLibrary(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/afterglow/shaders"),
-                    parent)
+    : ShaderLibrary(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/afterglow"), parent)
 {
 }
 
-ShaderLibrary::ShaderLibrary(const QString& userDirectory, QObject* parent)
+ShaderLibrary::ShaderLibrary(const QString& configDirectory, QObject* parent)
     : QObject(parent)
-    , m_userDirectory(userDirectory)
+    , m_userDirectory(configDirectory + QStringLiteral("/shaders"))
     , m_registry(std::make_unique<PhosphorShaders::ShaderRegistry>())
     , m_presets(std::make_unique<PhosphorShaders::ShaderPresetStore>())
     , m_curves(std::make_unique<PhosphorAnimation::CurveRegistry>())
@@ -449,8 +448,7 @@ ShaderLibrary::ShaderLibrary(const QString& userDirectory, QObject* parent)
     for (const QString& d : dirs) {
         if (QDir(d).exists()) m_baseDirectories << d;
     }
-    m_presets->load(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-        + QStringLiteral("/afterglow/shader-presets"), {PhosphorShaders::ShaderFamily::Surface});
+    m_presets->load(configDirectory + QStringLiteral("/shader-presets"), {PhosphorShaders::ShaderFamily::Surface});
     buildRegistry();
     // The registry watches the packs too: whichever reports an edit first
     // rebuilds, and the other finds nothing left to drop.
@@ -745,9 +743,8 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
         m_paramsChecked = check;
         m_paramsProblems.clear();
         for (auto it = params.begin(); it != params.end(); ++it) {
-            if (it.value().typeId() != QMetaType::QVariantMap)
-                m_paramsProblems << QStringLiteral("Shaders.params.%1 must be an object of parameter values").arg(it.key());
-            else if (!named.contains(it.key()))
+            // SettingsStore::read() reports and drops an entry that is not an object.
+            if (!named.contains(it.key()))
                 m_paramsProblems << QStringLiteral("Shaders.params.%1 names no shader in any chain, so its values apply nowhere")
                                         .arg(it.key());
         }

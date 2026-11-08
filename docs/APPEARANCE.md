@@ -11,6 +11,8 @@ Afterglow reloads this file when it changes.
 A file that cannot be read, does not parse or does not hold a JSON object keeps the current settings.
 At the start there are no current settings to keep. Afterglow then uses the defaults, but with `Scripts.enabled` and `Control.enabled` off, because the file can turn them off.
 They come on when the file can be read and does not turn them off. A `-o` option for them still applies.
+A file that becomes empty in the meantime keeps them off, because an editor that saves in place empties the file first.
+A configuration file that is a symbolic link to a file that does not exist counts as a file that cannot be read.
 A file that holds `Terminal.fileTransferPassword` and that other users can read gives a warning. Make it readable by you only (`chmod 600`).
 A deleted file gives every setting its default.
 An empty file gives the defaults too, when it held no settings before, for example after `touch`.
@@ -41,7 +43,7 @@ Group names and key names are case-sensitive.
 | Option | Function |
 | --- | --- |
 | `-o Group.key=value` | Changes one setting for this launch |
-| `--config` | Reads another configuration file. Its directory then holds the `themes`, `shaders` and `scripts` directories |
+| `--config` | Reads another configuration file. Its directory then holds the `themes`, `shaders`, `shader-presets` and `scripts` directories |
 | `--class` | Sets the Wayland application ID for window rules |
 | `--title` | Sets a fixed window title |
 | `--hold` | Keeps the window open after an `-e` program stops |
@@ -121,7 +123,7 @@ Colors that it leaves out keep their `Colors` values, except the divider and pop
 A theme without a divider color gets one a fifth of the way from its background color to its text color.
 A theme without a popup border color gets the color halfway from its background color to its text color.
 With a theme, `Colors.divider` and `Colors.popupBorder` are not used.
-Without a theme, an empty `Colors.divider` and `Colors.popupBorder` are derived in the same way from `Colors.background` and `Colors.foreground`.
+Without a theme, Afterglow derives an empty `Colors.divider` and `Colors.popupBorder` in the same way, from `Colors.background` and `Colors.foreground`.
 
 Afterglow first searches the `themes` directory beside the configuration file, normally `$XDG_CONFIG_HOME/afterglow/themes`.
 With `--config DIR/config.json`, it searches `DIR/themes` instead.

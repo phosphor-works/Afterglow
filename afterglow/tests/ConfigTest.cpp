@@ -1041,6 +1041,17 @@ TEST(Config, ScriptCommandLimitsOfTheHostMatchTheSettingDefaults)
     EXPECT_EQ(limits.inputBytes, settings.scriptCommandStdinLimit);
     EXPECT_EQ(limits.runs, settings.scriptCommandRunLimit);
     EXPECT_EQ(limits.outputBytes, settings.scriptCommandOutputLimit);
+    EXPECT_EQ(ScriptHost::DefaultCpuBudgetMs, settings.scriptCpuBudget);
+    // The description states the host's rule for disabling a script.
+    const QString cpu = SettingsStore::reference()
+                            .value(QStringLiteral("groups")).toObject()
+                            .value(QStringLiteral("Scripts")).toObject()
+                            .value(QStringLiteral("cpuBudget")).toObject()
+                            .value(QStringLiteral("description")).toString();
+    EXPECT_TRUE(cpu.contains(QStringLiteral("in %1 seconds, each less than %2 seconds after")
+                                 .arg(ScriptHost::MaxCpuOverruns)
+                                 .arg(ScriptHost::CpuOverrunGapMs / 1000)))
+        << cpu.toStdString();
 }
 
 TEST_F(ConfigTest, ExternalThemeWatchRecoversCreationReplacementAndDeletion)
@@ -2769,6 +2780,14 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     SettingsStore overridden(path, overrides);
     EXPECT_TRUE(overridden.settings().scripts);
     EXPECT_FALSE(overridden.settings().control.enabled);
+    // An editor that saves in place empties the file first: its text may
+    // still turn them off.
+    write(QStringLiteral("config.json"), "");
+    store.reload();
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_FALSE(store.settings().control.enabled);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("is empty. Using the defaults, with Scripts.enabled")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
     // Repaired: the file's own values.
     write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
     store.reload();
@@ -2860,11 +2879,17 @@ TEST_F(ConfigTest, TheDividerWithoutAThemeFollowsTheConfigColors)
 
 TEST_F(ConfigTest, AConfigLinkWhoseTargetIsGoneIsCreatedAtTheTarget)
 {
+    const OpenUmask umask;
     const QString target = m_home.filePath(QStringLiteral("dotfiles/afterglow.json"));
     const QString link = m_home.filePath(QStringLiteral("linked/config.json"));
     ASSERT_TRUE(QDir().mkpath(QFileInfo(link).absolutePath()));
     ASSERT_TRUE(QFile::link(target, link));
     SettingsStore store(link);
+    // PhosphorConfig cannot open the link, so it counts as a file that
+    // cannot be read: the target may turn scripts and control off.
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_FALSE(store.settings().control.enabled);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("cannot be read")));
     ASSERT_TRUE(store.ensureFile());
     EXPECT_TRUE(QFileInfo(link).isSymLink());
     EXPECT_TRUE(QFile::exists(target));
@@ -2873,6 +2898,8 @@ TEST_F(ConfigTest, AConfigLinkWhoseTargetIsGoneIsCreatedAtTheTarget)
     ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 11));
     // The save goes through the link: it stays a link.
     EXPECT_TRUE(QFileInfo(link).isSymLink());
+    EXPECT_TRUE(store.settings().scripts);
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
     EXPECT_EQ(QJsonDocument::fromJson(read(target)).object().value(QStringLiteral("Window")).toObject(),
               (QJsonObject{{QStringLiteral("padding"), 11}}));
 }

@@ -36,8 +36,8 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     : m_settings(configPath.isEmpty() ? SettingsStore::defaultPath() : configPath, overrides)
     , m_device(m_settings.settings().font)
     , m_chromeComponent(&m_engine)
-    // Beside the config file, as its scripts and themes are.
-    , m_shaders(QFileInfo(m_settings.path()).absolutePath() + QStringLiteral("/shaders"))
+    // Packs and presets beside the config file, as its scripts and themes are.
+    , m_shaders(QFileInfo(m_settings.path()).absolutePath())
     , m_control(m_settings, [this](const QString& cwd, const QStringList& command, bool empty) {
         return newWindow({cwd, command, false, !cwd.isEmpty(), {}, false, empty});
     })

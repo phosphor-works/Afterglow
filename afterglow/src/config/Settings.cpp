@@ -678,8 +678,9 @@ PhosphorConfig::Schema buildSchema()
                               "1. A run from a key, a menu or the palette counts only its standard error.")),
         intKey(QStringLiteral("cpuBudget"), d.scriptCpuBudget, 10, 1000,
                QStringLiteral("Milliseconds of handler time that one script can use in each second. Past it, Afterglow "
-                              "drops the script's events and timer calls, and delays its results, keys and command runs. "
-                              "A script that uses all of it in 5 seconds in a row is disabled.")),
+                              "drops the script's events, and delays its results, timers, keys and command runs. A script "
+                              "whose calls wait in 5 seconds, each less than 3 seconds after the one before, is disabled. "
+                              "Dropped events do not count toward that.")),
     };
     const AudioSettings& audio = d.audio;
     schema.groups[AudioGroup] = {
@@ -763,8 +764,8 @@ PhosphorConfig::Schema buildSchema()
                               "seconds. Afterglow drops the notifications over the limit. A value of 0 removes the limit. "
                               "Updates of a shown notification do not count. The notifications of Afterglow itself do not "
                               "count, such as those of afterglow ctl notify and of the notify effect of scripts. The "
-                              "notification at the end of a script command run without a client counts. Without a pane, "
-                              "these notifications share one limit.")),
+                              "notification at the end of a script command run without a client counts against the "
+                              "limit of its pane. Such notifications of runs without a pane share one limit.")),
         intKey(QStringLiteral("rateWindow"), d.notificationRateWindow, 1, 3600,
                QStringLiteral("Seconds over which Notifications.rateLimit counts the notifications of one pane.")),
         intKey(QStringLiteral("statusInterval"), d.statusNotificationInterval, 0, 600000,
@@ -1054,6 +1055,13 @@ SettingsStore::SettingsStore(const QString& path, const QJsonObject& overrides, 
 
 SettingsStore::~SettingsStore() = default;
 
+namespace {
+/// What a file that has not been read since the start leaves on. A -o
+/// override of either key still wins (read()).
+const QString NeverReadNote = QStringLiteral(
+    ". Using the defaults, with Scripts.enabled and Control.enabled off unless -o sets them, until it can be read");
+} // namespace
+
 bool SettingsStore::loadFile()
 {
     // One read and one parse: the document checked is the document used. The
@@ -1071,9 +1079,11 @@ bool SettingsStore::loadFile()
         // document in use stays instead.
         m_backend->replaceRoot(before);
         m_backend->clearDirty();
-        problem += m_neverRead
-            ? QStringLiteral(". Using the defaults, with Scripts.enabled and Control.enabled off, until it can be read")
-            : QStringLiteral(". Keeping the current settings");
+        problem += m_neverRead ? NeverReadNote : QStringLiteral(". Keeping the current settings");
+    } else if (m_backend->blankFile() && m_neverRead && !m_fileProblems.isEmpty()) {
+        // An editor that saves in place over a file that could not be read
+        // at the start: the text that comes may turn them off.
+        problem = m_path + QStringLiteral(" is empty") + NeverReadNote;
     } else if (m_backend->blankFile() && heldSettings) {
         // An editor that saves in place empties the file before it writes
         // it. A file that held settings and holds nothing now is such a
@@ -1678,8 +1688,9 @@ Settings SettingsStore::read()
     s.pasteReadTimeout = st.read<int>(Terminal, QStringLiteral("pasteReadTimeout"));
     s.clipboardWrite = readEnum(st, Terminal, QStringLiteral("clipboardWrite"), PermissionChoices, s.clipboardWrite);
     // The terminal core enforces these three itself.
+    // t holds the default here, the one the schema has.
     t.graphicsFileTransfer = readEnum(st, Terminal, QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices,
-                                      Settings::Permission::Allow)
+                                      t.graphicsFileTransfer ? Settings::Permission::Allow : Settings::Permission::Deny)
         != Settings::Permission::Deny;
     t.allowScreenReadback = st.read<bool>(Terminal, QStringLiteral("allowScreenReadback"));
     t.graphicsQuota = std::size_t(st.read<int>(GraphicsGroup, QStringLiteral("quota"))) << 20;

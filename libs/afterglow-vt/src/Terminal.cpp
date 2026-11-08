@@ -114,8 +114,9 @@ std::string percentDecode(std::string_view in)
     return out;
 }
 
-/// @p text as UTF-8 without the code points @p drop names. A byte that is
-/// not UTF-8 becomes U+FFFD, as it does on the screen.
+/// @p text as UTF-8 without the code points @p drop names. Each byte where
+/// no valid UTF-8 sequence starts becomes U+FFFD, so the result is valid
+/// UTF-8 whatever a program sent.
 template<typename Drop>
 std::string filterText(std::string_view text, Drop drop)
 {
@@ -641,7 +642,8 @@ void Terminal::print(char32_t cp)
         }
     } else if (cp <= 0x9F) {
         // A C1 control sent as UTF-8 is no character: it would join the cell
-        // before it as a zero width mark and go out with a copy.
+        // before it as a zero width mark and go out with a copy. As a C0
+        // control does, it leaves a single shift for the next character.
         return;
     } else {
         m_singleShift = 0;
@@ -1492,19 +1494,8 @@ void Terminal::eraseDisplay(int mode, bool selective)
             eraseWholeRow(scr.row(y), fill, selective);
         }
         m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(scr, m_cellWidth, m_cellHeight);
-        if (!selective && !m_modes.altScreen && m_commandRunning) {
-            // A running command cleared the screen (clear, ^L): its output
-            // goes on from the top. A start left on an erased row below the
-            // cursor would leave the output empty.
-            const Mark top{scr.rowsDropped() + scr.historySize(), 0, true};
-            if (m_outputStart.valid && m_outputStart.row >= top.row) {
-                m_outputStart = top;
-            }
-            if (!m_semanticRegions.empty() && m_semanticRegions.back().open
-                && m_semanticRegions.back().kind == SemanticZoneKind::Output
-                && m_semanticRegions.back().start.row >= top.row) {
-                m_semanticRegions.back().start = {top.row, 0};
-            }
+        if (!selective) {
+            outputScreenErased();
         }
         break;
     case 3:
@@ -1517,6 +1508,25 @@ void Terminal::eraseDisplay(int mode, bool selective)
     }
     releaseFill(fill);
     cur.pendingWrap = false;
+}
+
+void Terminal::outputScreenErased()
+{
+    if (m_modes.altScreen || !m_commandRunning) {
+        return;
+    }
+    // A running command cleared the screen (clear, ^L): its output goes on
+    // from the top. A start left on an erased row below the cursor would
+    // leave the output empty.
+    const Screen& scr = *m_primary;
+    const Mark top{scr.rowsDropped() + scr.historySize(), 0, true};
+    if (m_outputStart.valid && m_outputStart.row >= top.row) {
+        m_outputStart = top;
+    }
+    if (!m_semanticRegions.empty() && m_semanticRegions.back().open
+        && m_semanticRegions.back().kind == SemanticZoneKind::Output && m_semanticRegions.back().start.row >= top.row) {
+        m_semanticRegions.back().start = {top.row, 0};
+    }
 }
 
 void Terminal::eraseLine(int mode, bool selective)
@@ -2820,6 +2830,7 @@ void Terminal::setColumnMode(bool wide)
         }
         m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(*m_active, m_cellWidth, m_cellHeight);
         m_extraCursors.clear();
+        outputScreenErased();
     }
     setCursor(0, 0);
 }
@@ -3632,6 +3643,7 @@ void Terminal::programExited()
     if (m_programStatus.endActivity()) {
         m_host.programStatusChanged();
     }
+    endITerm2Multipart(); // nothing will send its FileEnd now
 }
 
 void Terminal::reportDeviceAttributes()
@@ -4211,12 +4223,12 @@ void Terminal::semanticPrompt(std::string_view args)
         if (!commandGiven) {
             m_explicitCommand.reset(); // nor one a shell reported (OSC 633 E) in the last
         }
-        // Back at the shell: whatever a program reported in flight is over,
-        // and an iTerm2 file it never ended will not end now.
+        // Back at the shell: whatever a program reported in flight is over.
+        // An iTerm2 file in parts goes on: a job in the background (imgcat
+        // &) still sends it while the shell shows its prompt.
         if (m_programStatus.endActivity()) {
             m_host.programStatusChanged();
         }
-        endITerm2Multipart();
         beginSemanticRegion(SemanticZoneKind::Prompt);
         m_semanticZone = SemanticZone::Prompt;
         m_promptClickEvents = clickEvents;

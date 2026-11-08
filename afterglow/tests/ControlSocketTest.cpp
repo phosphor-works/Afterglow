@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "SavedEnvironment.h"
 #include "app/InstanceSocket.h"
 #include "config/Settings.h"
 #include "control/Control.h"
@@ -43,27 +44,7 @@ using namespace Afterglow;
 
 namespace {
 
-/// An environment variable as it was, put back at the end.
-struct Saved
-{
-    explicit Saved(const char* name)
-        : name(name)
-        , wasSet(qEnvironmentVariableIsSet(name))
-        , value(qgetenv(name))
-    {
-    }
-    ~Saved()
-    {
-        if (wasSet) {
-            qputenv(name, value);
-        } else {
-            qunsetenv(name);
-        }
-    }
-    const char* name;
-    bool wasSet;
-    QByteArray value;
-};
+using Test::Saved;
 
 class ControlSocketTest : public ::testing::Test
 {

@@ -20,6 +20,7 @@ qt_add_library(afterglow_app STATIC
     src/PaneOverlay.h
     src/ProjectStore.cpp
     src/ProjectStore.h
+    src/ShownText.h
     src/SplitTree.cpp
     src/SplitTree.h
     src/TerminalWindowProject.cpp
@@ -70,7 +71,7 @@ qt_add_library(afterglow_app STATIC
 )
 
 qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h src/shell/Aglow.cpp src/shell/Aglow.h)
-target_link_libraries(afterglow PRIVATE afterglow_app Afterglow::Proto)
+target_link_libraries(afterglow PRIVATE afterglow_app)
 # Without aglow, afterglow run, transfer, dnd, icat and clipboard say that it is not built.
 if(AFTERGLOW_BUILD_AGLOW)
     target_compile_definitions(afterglow PRIVATE AFTERGLOW_HAS_AGLOW)
@@ -145,7 +146,8 @@ target_link_libraries(afterglow_overlayspec PUBLIC Qt6::Core)
 qt_add_library(afterglow_imagedecode STATIC src/ImageDecode.cpp src/ImageDecode.h)
 target_include_directories(afterglow_imagedecode PUBLIC src)
 target_compile_definitions(afterglow_imagedecode PRIVATE QT_NO_CAST_FROM_ASCII)
-target_link_libraries(afterglow_imagedecode PUBLIC Qt6::Gui Afterglow::Vt Afterglow::Proto)
+# Its header holds only standard types: the libraries it decodes with stay inside.
+target_link_libraries(afterglow_imagedecode PUBLIC Qt6::Gui PRIVATE Afterglow::Vt Afterglow::Proto)
 
 # The script host, shared with its tests. The Control binding lives in the app.
 qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h

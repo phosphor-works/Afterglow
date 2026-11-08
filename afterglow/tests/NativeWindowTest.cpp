@@ -55,6 +55,8 @@
 #include <QQuickItem>
 #include <QKeyEvent>
 #include <QTemporaryDir>
+#include <AfterglowProto/Clipboard.h>
+#include <limits>
 #include <QThread>
 #include <QThreadPool>
 #include <QImageReader>
@@ -6958,7 +6960,7 @@ TEST_F(NativeWindow, APointerOverAViewScrolledByPartOfARowIsOnTheRowDrawnUnderIt
     Pane* pane = window->focusedPane();
     pane->withTerminal([](AfterglowVt::Terminal& t) {
         std::string text;
-        for (int i = 0; i < 200; ++i) text += "row " + std::to_string(i) + "\r\n";
+        for (int i = 0; i < 200; ++i) text += "row " + std::to_string(i) + " https://example.com/" + std::to_string(i) + "\r\n";
         t.feed(text);
     });
     expectIdle(window);
@@ -6980,6 +6982,17 @@ TEST_F(NativeWindow, APointerOverAViewScrolledByPartOfARowIsOnTheRowDrawnUnderIt
     const auto cell = window->accessibleCellAt(pane, top.topLeft() + QPoint(1, int(row * 0.75)));
     ASSERT_TRUE(cell.has_value());
     EXPECT_TRUE(*cell == pane->selectionPointAt(0, 1)) << cell->row << " " << pane->selectionPointAt(0, 1).row;
+    // The hint labels sit on the rows as drawn: the first row's is above
+    // the top of the grid by the shift.
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(window->runAction(pane, Action::UrlsOpen));
+    ASSERT_TRUE(waitFor([&] { return !chrome->urlHints().isEmpty(); }));
+    double highest = std::numeric_limits<double>::max();
+    for (const QVariant& hint : chrome->urlHints()) highest = std::min(highest, hint.toMap().value(QStringLiteral("y")).toDouble());
+    const double gridTop = window->mapFromGlobal(top.topLeft()).y();
+    EXPECT_LT(highest, gridTop - row * 0.3) << highest << " " << gridTop;
+    EXPECT_GT(highest, gridTop - row * 0.7) << highest << " " << gridTop;
 }
 
 TEST_F(NativeWindow, ASplitWhoseShellDoesNotStartKeepsTheZoom) {
@@ -7043,15 +7056,81 @@ TEST_F(NativeWindow, AnOverlaysProgramGetsTheRemoteSocketOfItsHost) {
     ASSERT_NE(reply.find("path="), std::string::npos) << reply;
     pane->setRemoteSocket(before);
     const QString file = directory.filePath(QStringLiteral("remote-reply"));
-    // The program asks after the answer changed, and keeps the reply.
+    // The program asks once it gets a byte, which the test sends after the
+    // answer changed, and keeps the reply.
     auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
-        QStringLiteral("stty raw -echo; sleep 1; printf '\\033]24569;q=remote\\033\\\\'; head -c %1 > '%2'").arg(reply.size()).arg(file)},
+        QStringLiteral("stty raw -echo; head -c 1 > /dev/null; printf '\\033]24569;q=remote\\033\\\\'; head -c %1 > '%2'")
+            .arg(reply.size()).arg(file)},
         {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(pane->overlay(), nullptr);
-    EXPECT_TRUE(pane->overlay()->pane()->remoteSocketAnswer() == before);
+    Pane* program = pane->overlay()->pane();
+    EXPECT_TRUE(program->remoteSocketAnswer() == before);
     pane->setRemoteSocket(after);
+    // Sent before stty runs, the byte waits in the line discipline's queue:
+    // raw mode then lets head read it.
+    ASSERT_TRUE(program->sendInput("g"));
     ASSERT_TRUE(waitFor([&] { return answer->done; }, 5000));
     EXPECT_EQ(fileContent(file).toStdString(), reply);
+}
+
+TEST_F(NativeWindow, ARefusedMoveToANewTabKeepsItsKeyAndSaysWhy) {
+    RegisteredNotificationServer notices;
+    ASSERT_TRUE(notices.registered);
+    Pane* lone = window->focusedPane();
+    const quint32 tab = window->tabIdOf(lone);
+    // A pane alone in its tab: the move would only replace the tab.
+    EXPECT_TRUE(window->runAction(lone, Action::MovePaneToTab));
+    EXPECT_EQ(window->tabIdOf(lone), tab);
+    EXPECT_EQ(window->tabs().size(), 1);
+    ASSERT_TRUE(waitFor([&] { return notices.server.count >= 1; }));
+    EXPECT_EQ(notices.server.bodies, QStringList{QStringLiteral("The pane is alone in its tab already")});
+}
+
+TEST_F(NativeWindow, TerminalEventsReachTheGuiThreadInTheOrderTheyHappened) {
+    Pane* pane = window->focusedPane();
+    QStringList order;
+    QObject listener;
+    QObject::connect(pane, &Pane::commandBegan, &listener, [&](const QString&) { order << QStringLiteral("began"); });
+    QObject::connect(pane, &Pane::userVarUpdated, &listener, [&](const QString& name, const QString&) { order << name; });
+    QObject::connect(pane, &Pane::commandEnded, &listener, [&](const QString&, int, qint64) { order << QStringLiteral("ended"); });
+    // A command that sets a user variable while it runs, all in one read.
+    feedFromReader(pane, "\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\echo test\x1b]133;C\x1b\\"
+                         "\x1b]1337;SetUserVar=during=dg==\x07"
+                         "result\x1b]133;D;0\x1b\\");
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(order, (QStringList{QStringLiteral("began"), QStringLiteral("during"), QStringLiteral("ended")}));
+}
+
+TEST_F(NativeWindow, QueuedClipboardWritesAreBoundedByTheirSize) {
+    // A program that reads nothing: the terminal's replies do not come back
+    // as output.
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sleep"), QStringLiteral("30")};
+    Pane* pane = window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(pane, nullptr);
+    // The window would put 65 MiB on the desktop's clipboard: only the
+    // pane's queue is under test.
+    QObject::disconnect(pane, &Pane::clipboardRequested, window, nullptr);
+    int writes = 0;
+    QObject listener;
+    QObject::connect(pane, &Pane::clipboardRequested, &listener, [&](const AfterglowVt::ClipboardRequest&) { ++writes; });
+    AfterglowVt::ClipboardRequest write;
+    write.kind = AfterglowVt::ClipboardRequest::Kind::Write;
+    write.data = {{"text/plain", std::string(65u * 1024 * 1024, 'a')}};
+    // Two writes in one read hold more than the queue takes: the second
+    // gets the answer of a terminal with no clipboard support.
+    std::string sequence = AfterglowProto::clipboardWriteRequest(write);
+    write.data.clear();
+    sequence += sequence;
+    feedFromReader(pane, sequence);
+    sequence.clear();
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(writes, 1);
+    // Once the window took it, another write goes through.
+    write.data = {{"text/plain", std::string("small")}};
+    feedFromReader(pane, AfterglowProto::clipboardWriteRequest(write));
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(writes, 2);
 }
 
 } // namespace

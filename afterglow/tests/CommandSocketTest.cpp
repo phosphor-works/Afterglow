@@ -10,6 +10,7 @@
 // listens: the session that runs the tests may run inside an afterglow pane,
 // whose AFTERGLOW_SOCKET these tests must never reach.
 
+#include "SavedEnvironment.h"
 #include "app/InstanceSocket.h"
 #include "app/ScriptSettings.h"
 #include "config/Settings.h"
@@ -60,23 +61,7 @@ namespace Json = AfterglowProto::Json;
 
 namespace {
 
-struct Saved
-{
-    explicit Saved(const char* name)
-        : name(name)
-        , wasSet(qEnvironmentVariableIsSet(name))
-        , value(qgetenv(name))
-    {
-    }
-    ~Saved()
-    {
-        if (wasSet) qputenv(name, value);
-        else qunsetenv(name);
-    }
-    const char* name;
-    bool wasSet;
-    QByteArray value;
-};
+using Test::Saved;
 
 /// The parts of 1 MiB that the flood and spew commands write.
 constexpr qint64 Part = 1048576;
@@ -1691,13 +1676,16 @@ std::optional<QString> overlayInput(const QList<QJsonObject>& calls)
 }
 
 /// Whether process @p pid waits in poll(2), as /proc says: the call that
-/// follows a read that found no data.
-bool waitsInPoll(qint64 pid)
+/// follows a read that found no data. Empty when /proc does not say.
+std::optional<bool> waitsInPoll(qint64 pid)
 {
     QFile file(QStringLiteral("/proc/%1/syscall").arg(pid));
-    if (!file.open(QIODevice::ReadOnly)) return false;
+    if (!file.open(QIODevice::ReadOnly)) return std::nullopt;
+    // The open succeeds without the right to trace: the read is refused.
+    const QByteArray text = file.readAll();
+    if (text.isEmpty()) return std::nullopt;
     bool ok = false;
-    const long number = QByteArray(file.readAll()).split(' ').value(0).toLong(&ok);
+    const long number = text.split(' ').value(0).toLong(&ok);
 #ifdef SYS_poll
     if (ok && number == SYS_poll) return true;
 #endif
@@ -1839,31 +1827,6 @@ TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)
     AgainstTarget r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, terminal.get());
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
     EXPECT_EQ(overlayInput(r.calls), std::nullopt);
-    // A non-blocking pipe that is still empty when ctl reads it: ctl waits
-    // for the list instead of failing on EAGAIN. The list goes once ctl
-    // waits in poll(), which it reaches only after a read that found none.
-    int ends[2] = {-1, -1};
-    ASSERT_EQ(::pipe2(ends, O_CLOEXEC), 0);
-    const AfterglowProto::UniqueFd readEnd(ends[0]);
-    AfterglowProto::UniqueFd writeEnd(ends[1]);
-    ASSERT_EQ(::fcntl(readEnd.get(), F_SETFL, ::fcntl(readEnd.get(), F_GETFL) | O_NONBLOCK), 0);
-    std::thread writer;
-    std::atomic<bool> polled = false;
-    r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, readEnd.get(),
-                   [&writer, &polled, fd = writeEnd.release()](qint64 pid) {
-                       writer = std::thread([&polled, fd, pid] {
-                           const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-                           while (!(polled = waitsInPoll(pid)) && std::chrono::steady_clock::now() < deadline)
-                               std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                           const char list[] = "late\n";
-                           [[maybe_unused]] const auto written = ::write(fd, list, sizeof(list) - 1);
-                           ::close(fd);
-                       });
-                   });
-    if (writer.joinable()) writer.join();
-    EXPECT_TRUE(polled) << "ctl never waited for the pipe";
-    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
-    EXPECT_EQ(overlayInput(r.calls), QStringLiteral("late\n"));
     // The overlay's limit itself goes, in parts that each fit in a request.
     // So does a list of control characters, which JSON writes as 6 bytes each.
     for (const char byte : {'x', '\x01'}) {
@@ -1874,6 +1837,46 @@ TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)
         EXPECT_GT(r.calls.size(), 2);
         EXPECT_LE(r.longestLine, 1024 * 1024);
     }
+    // A non-blocking pipe that is still empty when ctl reads it: ctl waits
+    // for the list instead of failing on EAGAIN. The list goes once ctl
+    // waits in poll(), which it reaches only after a read that found none.
+    int ends[2] = {-1, -1};
+    ASSERT_EQ(::pipe2(ends, O_CLOEXEC), 0);
+    const AfterglowProto::UniqueFd readEnd(ends[0]);
+    AfterglowProto::UniqueFd writeEnd(ends[1]);
+    ASSERT_EQ(::fcntl(readEnd.get(), F_SETFL, ::fcntl(readEnd.get(), F_GETFL) | O_NONBLOCK), 0);
+    std::thread writer;
+    std::atomic<bool> polled = false;
+    std::atomic<bool> unreadable = false;
+    r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, readEnd.get(),
+                   [&](qint64 pid) {
+                       // The thread takes the write end: it closes it, the end of the list.
+                       writer = std::thread([&polled, &unreadable, fd = writeEnd.release(), pid] {
+                           const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                           while (std::chrono::steady_clock::now() < deadline) {
+                               const std::optional<bool> waits = waitsInPoll(pid);
+                               if (!waits) {
+                                   unreadable = true;
+                                   break;
+                               }
+                               if (*waits) {
+                                   polled = true;
+                                   break;
+                               }
+                               std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                           }
+                           const char list[] = "late\n";
+                           [[maybe_unused]] const auto written = ::write(fd, list, sizeof(list) - 1);
+                           ::close(fd);
+                       });
+                   });
+    if (writer.joinable()) writer.join();
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(overlayInput(r.calls), QStringLiteral("late\n"));
+    // Last, as it can skip: reading another process's system call takes the
+    // right to trace it, which kernel.yama.ptrace_scope 2 and 3 refuse.
+    if (unreadable) GTEST_SKIP() << "/proc/PID/syscall of ctl cannot be read here, so the wait in poll() is not shown";
+    EXPECT_TRUE(polled) << "ctl never waited for the pipe";
 }
 
 // The help and the version need no desktop: afterglow prints them before it

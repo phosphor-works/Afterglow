@@ -285,10 +285,11 @@ private:
     bool cpuRoom(Script& script) const { return cpuUsed(script) < qint64(m_cpuBudgetMs) * 1000000; }
     /// Runs @p work now, or once the script is within its CPU budget again,
     /// after the calls that wait before it.
-    void defer(const ScriptPtr& script, std::function<void()> work);
+    /// @p work learns whether it waited: its event's snapshot is old then.
+    void defer(const ScriptPtr& script, std::function<void(bool waited)> work);
     void drainDelayed(const ScriptPtr& script);
-    /// After a call: counts a second that used the whole CPU budget, and
-    /// disables a script that does so too many seconds in a row.
+    /// When a call waits for CPU time: counts a second that used the whole
+    /// budget, and disables a script that does so too many seconds in a row.
     void noteCpu(const ScriptPtr& script);
     /// Whether the pane exists, cheaply when the window can tell.
     bool paneExists(quint32 pane) const;

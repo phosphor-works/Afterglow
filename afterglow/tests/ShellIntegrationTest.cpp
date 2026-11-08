@@ -477,6 +477,7 @@ TEST(Ssh, TheProbeRunsInAnyShellAndMakesAPrivateDirectoryForEachHost)
     QTemporaryDir dir(QStringLiteral("/tmp/agprobe-XXXXXX"));
     ASSERT_TRUE(dir.isValid());
     ASSERT_TRUE(QDir().mkpath(dir.filePath(QStringLiteral("bin"))));
+    ASSERT_TRUE(QDir().mkpath(dir.filePath(QStringLiteral("cwd"))));
     QFile aglow(dir.filePath(QStringLiteral("bin/aglow")));
     ASSERT_TRUE(aglow.open(QIODevice::WriteOnly));
     // A prune that fails with 255: the probe still ran, and says so with 0.
@@ -495,6 +496,8 @@ TEST(Ssh, TheProbeRunsInAnyShellAndMakesAPrivateDirectoryForEachHost)
         env.insert(QStringLiteral("HOME"), home);
         if (!runtime.isEmpty()) env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime);
         sh.setProcessEnvironment(env);
+        // Of the test's own: a relative home or runtime directory must make nothing there.
+        sh.setWorkingDirectory(dir.filePath(QStringLiteral("cwd")));
         sh.start(QStringLiteral("sh"), {QStringLiteral("-c"), QString::fromUtf8(script)});
         EXPECT_TRUE(sh.waitForFinished());
         if (status) *status = sh.exitCode();
@@ -519,6 +522,7 @@ TEST(Ssh, TheProbeRunsInAnyShellAndMakesAPrivateDirectoryForEachHost)
     const Probe nowhere = probe(QStringLiteral("home"), {});
     EXPECT_TRUE(nowhere.ran);
     EXPECT_TRUE(nowhere.directory.isEmpty());
+    EXPECT_TRUE(QDir(dir.filePath(QStringLiteral("cwd"))).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden));
 
     // A directory that is not text, or not absolute, is none.
     EXPECT_TRUE(parseProbe("runtime=\ndir=/a\x1b" "b\n").directory.isEmpty());

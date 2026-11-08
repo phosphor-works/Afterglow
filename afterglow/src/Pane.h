@@ -290,20 +290,32 @@ private:
     void reportInputFailure();
     /// An inputRejected is queued or was emitted, and no input got through since.
     std::atomic_bool m_inputFailureReported{false};
-    /// Queues @p deliver to the GUI thread unless one is already queued.
+    /// pty thread, m_mutex held: queues @p deliver for the GUI thread unless
+    /// one of its kind (@p queued) waits already. It waits in the queue of
+    /// queueEvent, so the GUI thread hears of everything in the order it
+    /// first happened: a user variable set before a command ended comes
+    /// before the command's end.
     void queueOnce(std::atomic_bool& queued, std::function<void()> deliver);
     /// pty thread, m_mutex held: queues @p event, which emits one signal, for
     /// the GUI thread, where the pane emits it to the receivers it has then
-    /// (a moved pane's new window). False, and nothing queued, when
-    /// MaxQueuedEvents wait already: a program that writes them faster than
-    /// the window takes them loses the rest.
-    bool queueEvent(std::function<void()> event);
+    /// (a moved pane's new window). @p bytes is what the event holds. False,
+    /// and nothing queued, when MaxQueuedEvents wait already, or when the
+    /// waiting ones would hold more than MaxQueuedEventBytes with it: a
+    /// program that writes them faster than the window takes them loses the
+    /// rest. One event alone is never refused for its size.
+    bool queueEvent(std::function<void()> event, std::size_t bytes = 0);
+    /// Posts one deliverEvents() unless one is posted already.
+    void postEvents();
     /// GUI thread: emits the queued events in order.
     void deliverEvents();
     static constexpr std::size_t MaxQueuedEvents = 256;
+    /// As much as one clipboard write may carry (ClipboardAssembler::MaxWrite).
+    static constexpr std::size_t MaxQueuedEventBytes = 128u * 1024 * 1024;
     std::deque<std::function<void()>> m_events; ///< guarded by m_mutex
+    std::size_t m_queuedEvents = 0; ///< the queueEvent ones in m_events, guarded by m_mutex
+    std::size_t m_queuedEventBytes = 0; ///< guarded by m_mutex
     std::size_t m_droppedEvents = 0; ///< guarded by m_mutex
-    std::atomic_bool m_eventsQueued{false};
+    std::atomic_bool m_eventsPosted{false};
     /// GUI thread: titleUpdated when the title to show changed.
     void announceTitle();
     std::atomic_bool m_bellQueued{false};

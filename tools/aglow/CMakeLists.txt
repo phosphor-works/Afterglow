@@ -202,6 +202,7 @@ if(BUILD_TESTING)
     # No command and an unknown command are usage errors.
     aglow_add_run_test(aglow_no_command 2 "^Usage: aglow COMMAND " $<TARGET_FILE:aglow>)
     aglow_add_run_test(aglow_unknown_command 2 "^aglow: unknown command: nothing" $<TARGET_FILE:aglow> nothing)
+    aglow_add_run_test(aglow_help_unknown_command 2 "^aglow: unknown command: nothing" $<TARGET_FILE:aglow> help nothing)
     # The command that the probe of afterglow ssh runs on a remote host:
     # its help, its usage error and a directory that is not there.
     # run_pty.py checks what it removes.

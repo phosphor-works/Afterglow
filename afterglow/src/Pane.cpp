@@ -8,7 +8,7 @@
 #include "DockArea.h"
 #include "ImageDecode.h"
 #include "PaneOverlay.h"
-#include "TerminalWindow.h"
+#include "ShownText.h"
 
 #include "app/InstanceSocket.h"
 #include "app/NotificationCenter.h"
@@ -807,7 +807,7 @@ void Pane::commandStarted(std::string_view command)
     // pty thread, terminal locked
     m_command = QString::fromUtf8(command.data(), qsizetype(command.size()));
     m_commandStart = std::chrono::steady_clock::now();
-    queueEvent([this, command = m_command] { Q_EMIT commandBegan(command); });
+    queueEvent([this, command = m_command] { Q_EMIT commandBegan(command); }, std::size_t(m_command.size()) * sizeof(QChar));
 }
 
 void Pane::commandFinished(int exitCode)
@@ -815,7 +815,7 @@ void Pane::commandFinished(int exitCode)
     const auto elapsed = std::chrono::steady_clock::now() - m_commandStart;
     const qint64 ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
     const QString command = std::exchange(m_command, QString());
-    queueEvent([this, command, exitCode, ms] { Q_EMIT commandEnded(command, exitCode, ms); });
+    queueEvent([this, command, exitCode, ms] { Q_EMIT commandEnded(command, exitCode, ms); }, std::size_t(command.size()) * sizeof(QChar));
 }
 
 QString Pane::foregroundJob() const
@@ -958,27 +958,37 @@ void Pane::workingDirectoryChanged(std::string_view directory)
 
 void Pane::queueOnce(std::atomic_bool& queued, std::function<void()> deliver)
 {
-    // pty thread: one queued delivery at a time, so a burst of output (a
-    // binary file full of BEL bytes) cannot flood the GUI thread.
+    // One delivery of each kind at a time, so a burst of output (a binary
+    // file full of BEL bytes) cannot flood the GUI thread. These are few
+    // (one for each kind), so the limits of queueEvent leave them alone.
     if (queued.exchange(true)) return;
-    QMetaObject::invokeMethod(this, [&queued, deliver = std::move(deliver)] {
+    m_events.push_back([&queued, deliver = std::move(deliver)] {
         queued = false;
         deliver();
-    }, Qt::QueuedConnection);
+    });
+    postEvents();
 }
 
-bool Pane::queueEvent(std::function<void()> event)
+bool Pane::queueEvent(std::function<void()> event, std::size_t bytes)
 {
     // Each of these events matters on its own, so they are not coalesced as
-    // a title is: a bounded queue keeps a flood of them (a program that
-    // writes OSC 9 in a loop) from growing the GUI thread's event queue.
-    if (m_events.size() >= MaxQueuedEvents) {
+    // a title is: bounds keep a flood of them (a program that writes OSC 9
+    // in a loop, or clipboard writes of 128 MiB each) from growing without end.
+    if (m_queuedEvents >= MaxQueuedEvents || (m_queuedEventBytes > 0 && m_queuedEventBytes + bytes > MaxQueuedEventBytes)) {
         ++m_droppedEvents;
         return false;
     }
+    ++m_queuedEvents;
+    m_queuedEventBytes += bytes;
     m_events.push_back(std::move(event));
-    queueOnce(m_eventsQueued, [this] { deliverEvents(); });
+    postEvents();
     return true;
+}
+
+void Pane::postEvents()
+{
+    if (m_eventsPosted.exchange(true)) return;
+    QMetaObject::invokeMethod(this, [this] { deliverEvents(); }, Qt::QueuedConnection);
 }
 
 void Pane::deliverEvents()
@@ -987,7 +997,12 @@ void Pane::deliverEvents()
     std::size_t dropped = 0;
     {
         std::lock_guard lock(m_mutex);
+        // Cleared under the lock: an event queued after the swap posts
+        // another delivery.
+        m_eventsPosted = false;
         events.swap(m_events);
+        m_queuedEvents = 0;
+        m_queuedEventBytes = 0;
         dropped = std::exchange(m_droppedEvents, 0);
     }
     if (dropped > 0) qCWarning(lcPane) << "dropped" << dropped << "notifications, clipboard requests or command events that came faster than the window took them";
@@ -1255,7 +1270,8 @@ void Pane::tickAnimations()
 void Pane::notify(std::string_view title, std::string_view body)
 {
     queueEvent([this, title = QString::fromUtf8(title.data(), qsizetype(title.size())),
-                body = QString::fromUtf8(body.data(), qsizetype(body.size()))] { Q_EMIT notificationRequested(title, body); });
+                body = QString::fromUtf8(body.data(), qsizetype(body.size()))] { Q_EMIT notificationRequested(title, body); },
+               title.size() + body.size());
 }
 
 void Pane::pointerShapeChanged(std::string_view shape)
@@ -1274,14 +1290,18 @@ void Pane::pointerShapeChanged(std::string_view shape)
 
 void Pane::desktopNotification(const AfterglowVt::NotificationRequest& request)
 {
-    queueEvent([this, request] { Q_EMIT desktopNotificationRequested(request); });
+    // The icon data is what can be large.
+    queueEvent([this, request] { Q_EMIT desktopNotificationRequested(request); },
+               request.title.size() + request.body.size() + request.iconData.size());
 }
 
 bool Pane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
 {
     // A request that finds the queue full gets the answer of a terminal
     // with no clipboard support, as the program expects some answer.
-    return queueEvent([this, request] { Q_EMIT clipboardRequested(request); });
+    std::size_t bytes = 0;
+    for (const auto& [mime, data] : request.data) bytes += mime.size() + data.size();
+    return queueEvent([this, request] { Q_EMIT clipboardRequested(request); }, bytes);
 }
 
 std::string Pane::notificationCapabilities()

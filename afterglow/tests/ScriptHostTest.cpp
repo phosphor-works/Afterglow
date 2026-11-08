@@ -33,14 +33,7 @@
 
 #include <gtest/gtest.h>
 
-// A failed check shows a QString as its text, not as its bytes. Found by
-// argument-dependent lookup, so in the namespace of QString.
-QT_BEGIN_NAMESPACE
-inline void PrintTo(const QString& text, std::ostream* out)
-{
-    *out << '"' << text.toStdString() << '"';
-}
-QT_END_NAMESPACE
+#include "QStringPrinter.h"
 
 using namespace Afterglow;
 
@@ -2282,7 +2275,8 @@ TEST_F(ScriptHostTest, TabLineDrawsATabLineAndPersistsToggle)
     EXPECT_EQ(rec.applied.last().value("kind"),"undock");
     EXPECT_EQ(rec.applied.last().value("id"),"tabline");
     // Cleared before the restart: on_load draws a line that is on at once.
-    // The new instance draws nothing, so no dock names it: the broadcast reaches it.
+    // The new instance applies no owned effect, so the test cannot learn its
+    // owner: dispatch calls on_timer in every script that has it, here this one.
     host->setEnabled(false);rec.applied.clear();host->setEnabled(true);pump();
     host->dispatch("on_timer",0,{{"name","refresh"}});pump();
     EXPECT_TRUE(rec.applied.isEmpty()) << rec.applied.value(0).value("kind").toString().toStdString();
@@ -2606,7 +2600,7 @@ TEST_F(ScriptHostTest, TabLinePacesTheLinesThatThePointerDraws)
     wait(1000,hoveredLast);
     EXPECT_TRUE(hoveredLast());
     // The next refresh second draws at once again.
-    host->dispatch("on_timer",0,{{"name","refresh"}});pump();
+    host->dispatchTo(owner,"on_timer",0,{{"name","refresh"}});pump();
     rec.applied.clear();
     host->dispatchTo(owner,"on_dock_hover",7,{{"dock","tabline"},{"window",1},{"item","tab:11"}});pump();
     EXPECT_EQ(rec.applied.size(),1);
@@ -2825,7 +2819,9 @@ TEST_F(ScriptHostTest, TabLineLeavesAOneTabWindowWithSingleTabOff)
     paneState[7]["cwd"]="/tmp/repository";
     windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7}}};
     tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","fish"},{"active",true},{"active_pane",7}}};
-    // No dock names the instance yet: the broadcast reaches the one script.
+    // The instance applies no owned effect before the first tick, so the test
+    // cannot learn its owner: dispatch calls on_timer in every script that has
+    // it, here this one.
     auto tick=[&]{host->dispatch("on_timer",0,{{"name","refresh"}});pump();};
     host->setEnabled(true);pump();
     EXPECT_TRUE(rec.applied.isEmpty());
@@ -5296,7 +5292,7 @@ TEST_F(ScriptHostTest, NavigatorMigratesSchemaOneHistory)
     EXPECT_EQ(recent[0].toMap()["value"], "/b");
 }
 
-TEST_F(ScriptHostTest, UnloadEffectsAreIgnored)
+TEST_F(ScriptHostTest, UnloadEffectsOtherThanStateAndLogAreRefused)
 {
     WRITE(user, "unload.luau", "return {on_unload = function() return afterglow.copy('ignored') end}");
     host->setEnabled(true);
@@ -6411,17 +6407,19 @@ return {
     host->setEnabled(true);
     // Events past the budget are dropped.
     for (int i = 0; i < 6; ++i) host->dispatch("on_bell", 7);
-    auto stats = host->diagnostics().first().toMap();
+    auto stats = firstDiagnostic();
     EXPECT_GE(stats["dropped_callbacks"].toULongLong(), 1u);
     EXPECT_GE(stats["cpu_ms"].toDouble(), 40.0);
     EXPECT_LT(stats["calls"].toULongLong(), 6u);
 
     Client& client = newClient();
     ASSERT_NE(start(QStringLiteral("hog"), QStringLiteral("spin"), client), 0u);
+    // The bells spent the budget, so the start itself can wait: count from here.
+    const quint64 delayedAtStart = firstDiagnostic()["delayed_callbacks"].toULongLong();
     ASSERT_TRUE(await([&] { return host->isDisabled(QStringLiteral("hog")); }, 15000));
-    stats = host->diagnostics().first().toMap();
+    stats = firstDiagnostic();
     // Its resumes waited for CPU time, rather than run back to back.
-    EXPECT_GE(stats["delayed_callbacks"].toULongLong(), 1u);
+    EXPECT_GT(stats["delayed_callbacks"].toULongLong(), delayedAtStart);
     EXPECT_TRUE(stats["error"].toString().contains(QLatin1String("Scripts.cpuBudget"))) << stats["error"].toString().toStdString();
     // Its run ended with the disable, and said why.
     EXPECT_EQ(client.status, 1);
@@ -6525,16 +6523,22 @@ TEST_F(ScriptHostTest, OnUnloadWritesStateAndLogsButNothingElse)
     EXPECT_TRUE(std::any_of(rec.results.cbegin(), rec.results.cend(), [](const auto& r) {
         return r.first["kind"] == "copy" && r.second.contains(QLatin1String("on_unload"));
     }));
+    // The log applied: no refusal.
+    EXPECT_TRUE(std::any_of(rec.results.cbegin(), rec.results.cend(), [](const auto& r) {
+        return r.first["kind"] == "log" && r.first["message"] == "bye" && r.second.isEmpty();
+    }));
 }
 
 TEST_F(ScriptHostTest, ALooseScriptCannotCloseTheAwaitWrapper)
 {
     // The source ends the wrapper's function and returns a table of its own,
-    // whose __index the host's lookups would run.
+    // whose __index the host's lookups would run. That __index gives a
+    // handler, not an error: an error there, outside a protected call,
+    // would abort the test binary instead of failing this test.
     WRITE(user, "escape.luau",
-          R"(end)(...)) and nil or setmetatable({ on_bell = function() return afterglow.copy("raw") end }, { __index = function() error("raw lookup") end }), ((function(...))");
+          R"(end)(...)) and nil or setmetatable({ on_bell = function() return afterglow.copy("raw") end }, { __index = function() return function() return afterglow.copy("raw lookup") end end }), ((function(...))");
     host->setEnabled(true);
-    EXPECT_FALSE(host->scriptIds().contains(QStringLiteral("escape")));
+    ASSERT_FALSE(host->scriptIds().contains(QStringLiteral("escape")));
     bool failed = false;
     for (const QVariant& d : host->diagnostics())
         failed = failed || (d.toMap()["path"].toString().endsWith(QLatin1String("escape.luau")) && d.toMap()["status"] == "failed");
@@ -6629,8 +6633,8 @@ end })");
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
     ASSERT_EQ(rec.results.size(), 2);
-    EXPECT_FALSE(rec.results[0].second.isEmpty());
-    EXPECT_FALSE(rec.results[1].second.isEmpty());
+    EXPECT_EQ(rec.results[0].second, QStringLiteral("Overrides must be a table of names to values"));
+    EXPECT_EQ(rec.results[1].second, QStringLiteral("task name must contain 1 to 64 characters"));
     EXPECT_TRUE(rec.applied.isEmpty());
 }
 
@@ -6643,21 +6647,115 @@ TEST_F(ScriptHostTest, ACancelledDialogIsNoEffectErrorAndADisableKeepsItsReason)
         afterglow.await(afterglow.prompt(ev.pane, "Name"))
         return nil
     end,
+    -- A dialog of no run: the end of a run does not close it.
+    on_bell = function(ev) return afterglow.request("later", afterglow.prompt(ev.pane, "Later")) end,
 })");
     host->setEnabled(true);
     ASSERT_TRUE(run("ask.ask", 7));
     ASSERT_TRUE(pendingReply);
     std::exchange(pendingReply, {})({QStringLiteral("Dialog canceled"), {}, QStringLiteral("cancelled")});
     pump();
-    EXPECT_EQ(host->diagnostics().first().toMap()["effect_errors"].toULongLong(), 0u);
-    // A dialog that the disable closes reports after the disable: the reason stays.
-    ASSERT_TRUE(run("ask.ask", 7));
+    EXPECT_EQ(firstDiagnostic()["effect_errors"].toULongLong(), 0u);
+    // A dialog that fails after the disable: the disable and the last error
+    // stay those of the failures.
+    host->dispatch("on_bell", 7);
     ASSERT_TRUE(pendingReply);
     for (int i = 0; i < ScriptHost::MaxFailures && !host->isDisabled("ask"); ++i) ASSERT_TRUE(run("ask.fail", 7));
     ASSERT_TRUE(host->isDisabled("ask"));
-    if (pendingReply) std::exchange(pendingReply, {})({QStringLiteral("Dialog failed"), {}, QStringLiteral("operation_failed")});
+    // Still open: the disable closes the dialogs of runs only.
+    ASSERT_TRUE(pendingReply);
+    std::exchange(pendingReply, {})({QStringLiteral("Dialog failed"), {}, QStringLiteral("operation_failed")});
     pump();
-    EXPECT_TRUE(host->diagnostics().first().toMap()["error"].toString().contains(QLatin1String("failures in a row")));
+    const auto stats = firstDiagnostic();
+    EXPECT_TRUE(stats["error"].toString().contains(QLatin1String("failures in a row"))) << stats["error"].toString().toStdString();
+    EXPECT_TRUE(stats["last_error"].toString().contains(QLatin1String("boom"))) << stats["last_error"].toString().toStdString();
+    EXPECT_EQ(stats["effect_errors"].toULongLong(), 1u); // the failed dialog still counts
+}
+
+TEST_F(ScriptHostTest, AnEventStormThatTheBudgetDropsDoesNotDisableTheScript)
+{
+    // Each on_title uses the budget quickly, as a program that sets its
+    // title in a loop makes it. Dropping the extra calls holds the script to
+    // its budget: that is no reason to disable it.
+    WRITE(user, "titles.luau", R"(return { on_title = function()
+    local t = os.clock() while os.clock() - t < 0.015 do end
+    return nil
+end })");
+    host->setCpuBudget(40);
+    host->setEnabled(true);
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < 6500) {
+        host->dispatch("on_title", 7, {{QStringLiteral("title"), QStringLiteral("t")}});
+        QCoreApplication::processEvents();
+        QThread::msleep(5);
+    }
+    EXPECT_FALSE(host->isDisabled(QStringLiteral("titles")));
+    EXPECT_GT(firstDiagnostic()["dropped_callbacks"].toULongLong(), 0u);
+}
+
+TEST_F(ScriptHostTest, AOneShotTimerPastTheBudgetWaitsInsteadOfBeingDropped)
+{
+    WRITE(user, "late.luau", R"(return {
+    on_bell = function()
+        local t = os.clock() while os.clock() - t < 0.015 do end
+        return afterglow.timer("once", 1)
+    end,
+    on_timer = function(ev) return afterglow.copy(ev.name) end,
+})");
+    host->setCpuBudget(10);
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_TRUE(await([&] { return !rec.applied.isEmpty(); }, 4000));
+    EXPECT_EQ(rec.applied.first().value("text"), "once");
+    EXPECT_GE(firstDiagnostic()["delayed_callbacks"].toULongLong(), 1u);
+}
+
+TEST_F(ScriptHostTest, ACommandRunThatWaitedForCpuTimeGetsTheStateOfItsStart)
+{
+    WRITE(user, "late.luau", R"(return {
+    metadata = { commands = { title = { summary = "Title" } } },
+    on_bell = function() local t = os.clock() while os.clock() - t < 0.015 do end return nil end,
+    run_command = function(command, ev) return afterglow.output(ev, ev.pane.title .. "\n") end,
+})");
+    host->setCpuBudget(10);
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    Client& client = newClient();
+    ASSERT_NE(start(QStringLiteral("late"), QStringLiteral("title"), client), 0u);
+    EXPECT_FALSE(client.status.has_value()); // it waits for CPU time
+    paneState[7]["title"] = QStringLiteral("later");
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }, 4000));
+    EXPECT_EQ(client.out, QStringLiteral("later\n"));
+}
+
+TEST_F(ScriptHostTest, OutputToAClientThatLeftIsNoEffectError)
+{
+    WRITE(user, "gone.luau", R"(return {
+    metadata = { commands = { say = { summary = "Say" } } },
+    run_command = function(command, ev) afterglow.await(afterglow.output(ev, "x")) return nil end,
+})");
+    host->setEnabled(true);
+    Client& client = newClient();
+    client.gone = true;
+    start(QStringLiteral("gone"), QStringLiteral("say"), client);
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }));
+    pump();
+    EXPECT_EQ(firstDiagnostic()["effect_errors"].toULongLong(), 0u);
+}
+
+TEST_F(ScriptHostTest, ADisabledScriptShowsTheLoadErrorOfANewerEdit)
+{
+    WRITE(user, "flaky.luau", R"(return { metadata = { commands = { go = { summary = "Go" } } }, run_command = function() error("boom") end })");
+    host->setEnabled(true);
+    for (int i = 0; i < ScriptHost::MaxFailures && !host->isDisabled("flaky"); ++i) ASSERT_TRUE(run("flaky.go", 7));
+    ASSERT_TRUE(host->isDisabled("flaky"));
+    WRITE(user, "flaky.luau", "return {");
+    host->reload();
+    const auto d = firstDiagnostic();
+    EXPECT_EQ(d["status"], "disabled");
+    EXPECT_TRUE(d["error"].toString().contains(QLatin1String("flaky.luau"))) << d["error"].toString().toStdString();
+    EXPECT_TRUE(d["disabled_reason"].toString().contains(QLatin1String("failures in a row")));
 }
 
 int main(int argc, char** argv)

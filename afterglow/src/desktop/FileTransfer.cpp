@@ -503,12 +503,15 @@ struct FileTransfer::Worker {
         // The files of the dialog that shows, or the requests that it lists.
         std::size_t asked = 0;
         // The session waits for a dialog, which opens when no other shows,
-        // after the commands that the pane had posted before askAfter.
+        // once the fence askAfter has come back from the GUI thread.
         bool waiting = false;
         quint64 askAfter = 0;
         // The user approved files of this session before: a later No
         // refuses the files of its own dialog, and the others finish.
         bool granted = false;
+        // A later No left files that came while its dialog showed. They get
+        // a dialog of their own: they did not ask again after the No.
+        bool afterNo = false;
         std::map<QByteArray, std::unique_ptr<File>> files;
         // Links whose target file has not reached its final state, keyed by the target.
         std::multimap<QByteArray, QByteArray> waiters;
@@ -591,9 +594,9 @@ struct FileTransfer::Worker {
     QThread thread;
     QObject* context = new QObject;
     std::atomic<qsizetype> queuedBytes { 0 };
-    // Commands that handle() posted to the worker, and those that it handled.
-    std::atomic<quint64> postedCommands { 0 };
-    quint64 handledCommands = 0;
+    // The fences that the worker sent through the GUI thread, and the last
+    // one that came back.
+    quint64 fencesSent = 0, fencesPassed = 0;
     std::atomic<qsizetype> deliveryBytes { 0 };
     // Incremented on the GUI thread by reset() and abort().
     std::atomic<quint64> resetEpoch { 0 };
@@ -830,21 +833,31 @@ struct FileTransfer::Worker {
         return std::accumulate(f.begin(), f.end(), qsizetype(64),
             [](qsizetype sum, const QByteArray& value) { return sum + value.size() + 16; });
     }
-    // The session waits for a dialog, which lists what came before now.
+    // The session waits for a dialog, which lists what came before now. The
+    // pane's reader posts each command to the GUI thread, which hands it to
+    // handle(). A fence posted to the GUI thread now runs after every
+    // command that the reader had posted by then, and comes back to the
+    // worker after the commands that those handed over.
     void wantDialog(Session& s)
     {
         s.waiting = true;
-        s.askAfter = postedCommands.load();
+        s.askAfter = ++fencesSent;
+        QMetaObject::invokeMethod(owner, [this, fence = s.askAfter] {
+            QMetaObject::invokeMethod(context, [this, fence] {
+                fencesPassed = std::max(fencesPassed, fence);
+                askWaiting();
+            });
+        });
     }
-    // Opens the dialog of a session that waits for one, once the worker has
-    // handled the commands that came before the session began to wait: the
-    // dialog lists every file that the program named by then. One dialog at
-    // a time, so that a program cannot stack them over the window.
+    // Opens the dialog of a session that waits for one, once its fence has
+    // come back: the dialog lists every file that the program had named
+    // when the session began to wait. One dialog at a time, so that a
+    // program cannot stack them over the window.
     void askWaiting()
     {
         std::vector<QByteArray> ids;
         for (const auto& [id, s] : sessions)
-            if (s->waiting && handledCommands >= s->askAfter)
+            if (s->waiting && fencesPassed >= s->askAfter)
                 ids.push_back(id);
         for (const auto& id : ids) {
             if (prompting() || interrupted())
@@ -853,14 +866,20 @@ struct FileTransfer::Worker {
                 ask(*it->second);
         }
     }
-    // A path as the dialog lists it: where links lead it, when that is
-    // elsewhere, and a slash after a directory, which is read whole.
+    // A path as the dialog lists it: a slash after a directory, which is
+    // read whole, and a line under it with where links lead it, when that is
+    // elsewhere. A name cannot hold a line break (shown() escapes it), so a
+    // name cannot make such a line. A home directory that is a link (/home
+    // on another disk) is the same place for every path under it: that
+    // link alone gets no line.
     static QString described(const QString& path, const QString& real, bool directory)
     {
         const auto slash = [directory](const QString& p) { return directory && !p.endsWith(QLatin1Char('/')) ? p + QLatin1Char('/') : p; };
-        if (real == path)
+        const QString home = QDir::homePath(), realHome = QFileInfo(home).canonicalFilePath();
+        const bool underHome = path.startsWith(home + QLatin1Char('/')) && !realHome.isEmpty();
+        if (real == path || (underHome && real == realHome + path.mid(home.size())))
             return slash(shown(path));
-        return FileTransfer::tr("%1 (resolves to %2)").arg(slash(shown(path)), slash(shown(real)));
+        return slash(shown(path)) + QLatin1Char('\n') + FileTransfer::tr("  resolves to %1").arg(slash(shown(real)));
     }
     // The dialog of @p s. It lists what waits, at most MaxPromptPaths paths:
     // the files that a receive session asks for, or the destinations of the
@@ -868,7 +887,8 @@ struct FileTransfer::Worker {
     void ask(Session& s)
     {
         s.waiting = false;
-        if (coolingDown()) {
+        const bool exempt = std::exchange(s.afterNo, false);
+        if (coolingDown() && !exempt) {
             // A send session that the user approved before goes on with its files.
             if (s.granted)
                 refuseHeld(s, s.heldOrder.size(), "EPERM");
@@ -1060,9 +1080,12 @@ struct FileTransfer::Worker {
         if (!allowed) {
             denied.start();
             // A later No refuses the files of its own dialog. Those that the
-            // user approved before finish.
-            if (s.granted)
+            // user approved before finish, and those that came while it
+            // showed get a dialog of their own.
+            if (s.granted) {
+                s.afterNo = s.heldOrder.size() > s.asked;
                 refuseHeld(s, s.asked, "EPERM");
+            }
             else {
                 status(s, { }, "EPERM");
                 remove(id);
@@ -1071,11 +1094,14 @@ struct FileTransfer::Worker {
             grant(id);
         else {
             s.approved = true;
-            // The dialog listed the first requests. The program reads none of the others.
+            // The dialog listed the first requests. The program reads none of
+            // the others. A client takes nothing but the permission before
+            // it, so the refusals come after the OK, as the statuses of the
+            // listing do.
+            status(s, { }, Status::Ok);
             for (std::size_t i = s.asked; i < s.requests.size(); ++i)
                 status(s, s.requests[i].fid, "EPERM");
             s.requests.resize(s.asked);
-            status(s, { }, Status::Ok);
             list(s);
         }
         askWaiting();
@@ -1091,6 +1117,7 @@ struct FileTransfer::Worker {
     void cancel(const QByteArray& id);
     void list(Session& s);
     void receiveFile(Session& s, const Fields& f);
+    std::string_view createOutput(File& file);
     bool openOutput(Session& s, const QByteArray& fid, File& file);
     void data(Session& s, const Fields& f);
     void finish(Session& s);
@@ -1145,13 +1172,12 @@ void FileTransfer::handle(const QByteArray& command)
         ++m_worker->cancelRequests[cancelled];
         m_worker->cancelEpoch.fetch_add(1);
     }
-    m_worker->postedCommands.fetch_add(1);
     QMetaObject::invokeMethod(m_worker->context, [w = m_worker.get(), command, cancelled] {
         w->queuedBytes.fetch_sub(command.size());
         w->handle(command, cancelled);
         if (!cancelled.isEmpty())
             w->forgetCancel(cancelled);
-        ++w->handledCommands;
+        // A dialog that ended with the command lets the next one open.
         w->askWaiting();
     });
 }
@@ -1302,7 +1328,7 @@ void FileTransfer::Worker::handle(const QByteArray& raw, const QByteArray& cance
         const bool bypass = !supplied.isEmpty();
         if (!bypass) {
             // After a denial, and while a dialog is open, a program cannot ask again.
-            if (denied.isValid() && denied.elapsed() < DenialCooldownMs) {
+            if (coolingDown()) {
                 status(*s, { }, "EPERM");
                 return;
             }
@@ -1411,7 +1437,6 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
         return;
     }
     const auto type = f.value("ft", "regular");
-    const auto zip = f.value("zip", "none");
     // Where the dialog showed the destination. A session with the password showed none.
     const QFileInfo info(path);
     Place place;
@@ -1436,9 +1461,9 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
         return;
     }
     const bool rsync = f.value("tt") == "rsync" && type == "regular" && exists && existing.st_size > MinDeltaBasis;
-    // A delta upload holds its old file open, and its signature goes out
-    // as a stream. Refuse before STARTED when either has no room.
-    if (rsync && (activeFiles.full(1, 1) || streams.size() >= MaxStreams)) {
+    // A delta upload holds its old file and its output open, and its
+    // signature goes out as a stream. Refuse before STARTED when any has no room.
+    if (rsync && (activeFiles.full(3, 1) || streams.size() >= MaxStreams)) {
         status(s, fid, "EBUSY");
         return;
     }
@@ -1491,15 +1516,6 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
         settle(s, fid);
         return;
     }
-    // kitten marks the links of a compressed transfer with zip=zlib too, and
-    // sends their targets plain, as kitty reads them: only a file's data is inflated.
-    if (zip == "zlib" && type == "regular") {
-        file->inflater = std::make_unique<AfterglowProto::ZlibStream>(AfterglowProto::ZlibStream::Mode::Inflate);
-        if (!file->inflater->valid()) {
-            status(s, fid, "ENOMEM");
-            return;
-        }
-    }
     std::unique_ptr<Signature> signature;
     if (rsync) {
         file->basis = std::make_unique<QFile>();
@@ -1530,6 +1546,13 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
                 status(s, fid, errorName());
                 return;
             }
+            // Its output too, before STARTED: a delta upload, which the
+            // client sends in groups, then fails at its data for nothing
+            // that another file took.
+            if (const auto error = createOutput(*file); !error.empty()) {
+                status(s, fid, error);
+                return;
+            }
             file->rsync = true;
         } else
             file->basis.reset();
@@ -1546,29 +1569,45 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
     status(s, fid, Status::Started, -1, { { "tt", delta ? "rsync" : "simple" } });
 }
 
-// At the first data, not at the file command: a sender can name all of its
-// files at the start, and a file holds no descriptor until its data comes.
+// A regular file's temporary file in its checked directory, and the
+// inflater of its compressed data. A file of a sender that names all of its
+// files at the start holds neither until its data comes: both count against
+// the descriptors of the pane. The error, or nothing.
+std::string_view FileTransfer::Worker::createOutput(File& file)
+{
+    if (activeFiles.full(2))
+        return "EBUSY";
+    auto output = std::make_unique<Output>();
+    output->name = ".afterglow-transfer-" + QUuid::createUuid().toString(QUuid::Id128).toLatin1();
+    output->directory.reset(openPlace(file.place, creationMask, nullptr));
+    if (!output->directory.valid())
+        return errorName();
+    const int fd = ::openat(output->directory.get(), output->name.constData(),
+        O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0)
+        return errorName();
+    if (!output->file.open(fd, QIODevice::ReadWrite, QFileDevice::AutoCloseHandle)) {
+        ::close(fd);
+        return "EIO";
+    }
+    // kitten marks the links of a compressed transfer with zip=zlib too, and
+    // sends their targets plain, as kitty reads them: only a file's data is inflated.
+    if (file.meta.value("zip") == "zlib") {
+        file.inflater = std::make_unique<AfterglowProto::ZlibStream>(AfterglowProto::ZlibStream::Mode::Inflate);
+        if (!file.inflater->valid()) {
+            file.inflater.reset();
+            return "ENOMEM";
+        }
+    }
+    file.output = std::move(output);
+    file.charge(&activeFiles, 2);
+    return { };
+}
 bool FileTransfer::Worker::openOutput(Session& s, const QByteArray& fid, File& file)
 {
-    std::string_view error;
-    if (activeFiles.full(2))
-        error = "EBUSY";
-    else {
-        auto output = std::make_unique<Output>();
-        output->directory.reset(openPlace(file.place, creationMask, nullptr));
-        output->name = ".afterglow-transfer-" + QUuid::createUuid().toString(QUuid::Id128).toLatin1();
-        const int fd = output->directory.valid() ? ::openat(output->directory.get(), output->name.constData(),
-                                                       O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)
-                                                 : -1;
-        if (fd >= 0 && output->file.open(fd, QIODevice::ReadWrite, QFileDevice::AutoCloseHandle)) {
-            file.output = std::move(output);
-            file.charge(&activeFiles, 2);
-            return true;
-        }
-        error = fd >= 0 ? "EIO" : errorName();
-        if (fd >= 0)
-            ::close(fd);
-    }
+    const auto error = createOutput(file);
+    if (error.empty())
+        return true;
     fail(s, fid, error);
     file.releaseIo();
     settle(s, fid);
@@ -1851,22 +1890,28 @@ void FileTransfer::Worker::list(Session& s)
 {
     auto stop = watch(s.id);
     // An entry has the path that the client names, and the real path where
-    // it is read: links above a request lead where the dialog showed.
+    // it is read: links above a request lead where the dialog showed. A
+    // request's own status comes from the directory that was checked.
     struct Entry {
         QString path, real;
         QByteArray request, parent;
         int depth;
+        struct stat status;
     };
     std::deque<Entry> pending;
     for (const auto& request : s.requests) {
         const QFileInfo info(request.path);
         const Place place = request.place ? *request.place : placeOf(info.absolutePath());
         const AfterglowProto::UniqueFd directory(openPlace(place, creationMask, nullptr));
-        if (!directory.valid()) {
+        const QByteArray name = QFile::encodeName(info.fileName());
+        struct stat st { };
+        // "/" has no name in its directory: it is the directory itself.
+        if (!directory.valid()
+            || ::fstatat(directory.get(), name.constData(), &st, name.isEmpty() ? AT_EMPTY_PATH : AT_SYMLINK_NOFOLLOW)) {
             status(s, request.fid, errorName());
             continue;
         }
-        pending.push_back({ request.path, joined(place.real, info.fileName()), request.fid, { }, 0 });
+        pending.push_back({ request.path, joined(place.path(), info.fileName()), request.fid, { }, 0, st });
     }
     // Other sessions share the output queue. A listing that does not fit is
     // refused whole, as soon as it is known not to fit.
@@ -1895,21 +1940,17 @@ void FileTransfer::Worker::list(Session& s)
             return;
         const auto entry = pending.front();
         pending.pop_front();
-        struct stat st { };
+        struct stat st = entry.status;
         const auto path = QFile::encodeName(entry.real);
-        // A status names the request, and a client fails the whole source on
-        // it. A child that went away since its directory was read is left out
-        // instead. A child whose name is not UTF-8 never gets here:
+        // A child that went away since its directory was read is left out:
+        // a status would name the request, and a client fails the whole
+        // source on it. A child whose name is not UTF-8 never gets here:
         // QDirIterator skips it without a word, so it is not counted either.
-        if (::lstat(path.constData(), &st)) {
-            if (entry.depth > 0) {
-                if (leftOut.count++ == 0) {
-                    leftOut.first = entry.path;
-                    leftOut.error = bytesOf(errorName());
-                }
-                continue;
+        if (entry.depth > 0 && ::lstat(path.constData(), &st)) {
+            if (leftOut.count++ == 0) {
+                leftOut.first = entry.path;
+                leftOut.error = bytesOf(errorName());
             }
-            status(s, entry.request, errorName());
             continue;
         }
         // Devices, sockets and pipes in a directory are left out, as kitten leaves them out when it sends.
@@ -1966,7 +2007,7 @@ void FileTransfer::Worker::list(Session& s)
                 }
                 const QString child = children.next();
                 pending.push_back(
-                    { joined(entry.path, children.fileName()), child, entry.request, f["st"], entry.depth + 1 });
+                    { joined(entry.path, children.fileName()), child, entry.request, f["st"], entry.depth + 1, { } });
             }
         }
     }
@@ -2261,6 +2302,8 @@ void FileTransfer::Worker::delta(Session& s, const QByteArray& fid, File& file)
     stream(s, fid, nullptr, file.meta.value("zip") == "zlib", std::move(generator));
 }
 
+void FileTransfer::endPasswordPause() { g_passwordsBlockedUntil.store(0); }
+
 FileTransfer::Question FileTransfer::question(bool writing, const QStringList& paths, int total, const QString& asker)
 {
     Question q;
@@ -2269,11 +2312,15 @@ FileTransfer::Question FileTransfer::question(bool writing, const QStringList& p
     const QString who = asker.isEmpty() ? tr("A terminal program") : asker;
     q.text = writing ? tr("%1 wants to write these files on this computer. Existing files can be replaced. Allow it?").arg(who)
                      : tr("%1 wants to read these files on this computer. Allow it?").arg(who);
-    // The question stays short however long a path is. The detail has each path whole.
+    // The question stays short however long a path is: each line of it, so
+    // that the line of where a path resolves stays a line of its own. The
+    // detail has each path whole.
     const auto line = [](const QString& path) {
-        if (path.size() <= QuestionLength)
-            return path;
-        return path.left(QuestionLength / 2) + QChar(0x2026) + path.right(QuestionLength / 2 - 1);
+        QStringList lines = path.split(QLatin1Char('\n'));
+        for (QString& part : lines)
+            if (part.size() > QuestionLength)
+                part = part.left(QuestionLength / 2) + QChar(0x2026) + part.right(QuestionLength / 2 - 1);
+        return lines.join(QLatin1Char('\n'));
     };
     for (qsizetype i = 0; i < std::min<qsizetype>(paths.size(), QuestionPaths); ++i)
         q.text += QLatin1Char('\n') + line(paths[i]);

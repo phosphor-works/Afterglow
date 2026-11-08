@@ -220,7 +220,7 @@ TEST(Extensions, TinyLinksCountTheirEntries)
         held.push_back(styles.acquire(style));
     }
     EXPECT_EQ(styles.internLink("u", {}), 0u);
-    EXPECT_LT(styles.liveLinks(), StyleTable::MaxLinkBytes / StyleTable::LinkEntryBytes);
+    EXPECT_EQ(styles.liveLinks(), fits);
     // An id link pays for its lookup key too, and gives all of it back.
     styles.release(held.back());
     const std::size_t before = styles.linkBytes();
@@ -350,10 +350,16 @@ TEST(Extensions, ITerm2InterruptedMultipartFileLeavesNoImage)
     t.feed("\x1b]1337;MultipartFile=inline=1;x=" + std::string(5000, 'a') + "\x07");
     t.feed("\x1b]1337;FilePart=cGljdHVyZQ==\x07\x1b]1337;FileEnd\x07");
     EXPECT_EQ(t.graphics().placements().size(), 1u);
-    // Cut off by the next prompt: the program that sent it is gone.
+    // Cut off by the end of the pane's program: nothing sends its FileEnd.
     t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdHVyZQ==\x07");
-    t.feed("\x1b]133;A\x07\x1b]1337;FileEnd\x07");
+    t.programExited();
+    t.feed("\x1b]1337;FileEnd\x07");
     EXPECT_EQ(t.graphics().placements().size(), 1u);
+    // Not cut off by a prompt: a job in the background still sends it.
+    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 2u);
 }
 
 TEST(Extensions, ITerm2ImageSizes)

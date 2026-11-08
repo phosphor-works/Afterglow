@@ -300,6 +300,7 @@ It reports when Bloom is absent.
 
 `@defaults` applies pack defaults. An empty `shader_parameters` table releases only the calling script's changes.
 Saved presets use Phosphor's schema and registry in `~/.config/afterglow/shader-presets/surface/`.
+With `afterglow --config DIR/config.json`, they are in `DIR/shader-presets/surface/`.
 This directory is separate from PlasmaZones.
 Pack presets are read-only. Saves create new named entries that survive restarts.
 Applied values are temporary. Apply the preset again after a restart.

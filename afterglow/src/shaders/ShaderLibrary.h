@@ -53,11 +53,13 @@ public:
     /// one window, may hold at once.
     static constexpr qint64 MaxDecodedImageBytes = 256LL * 1024 * 1024;
 
-    /// The user's packs in ~/.config/afterglow/shaders.
+    /// The user's packs and presets in ~/.config/afterglow.
     explicit ShaderLibrary(QObject* parent = nullptr);
-    /// The user's packs in @p userDirectory: afterglow --config DIR/config.json
-    /// takes them from DIR/shaders, as it takes its scripts and themes from DIR.
-    explicit ShaderLibrary(const QString& userDirectory, QObject* parent = nullptr);
+    /// The user's packs in @p configDirectory/shaders and the saved presets in
+    /// @p configDirectory/shader-presets, beside the config file:
+    /// afterglow --config DIR/config.json takes them from DIR, as it takes its
+    /// scripts and themes.
+    explicit ShaderLibrary(const QString& configDirectory, QObject* parent = nullptr);
     ~ShaderLibrary() override;
 
     using Refs = ShaderRefs;
@@ -129,7 +131,7 @@ private:
 
     void seedPresets();
     void refreshWatches();
-    QString m_userDirectory; ///< the user's own packs, the highest of m_baseDirectories
+    QString m_userDirectory; ///< the user's own packs beside the config file, the last of m_baseDirectories
     std::unique_ptr<PhosphorShaders::ShaderRegistry> m_registry;
     /// Bundled, system and user packs, lowest priority first. A build-tree
     /// binary puts the checkout's packs above the system ones.

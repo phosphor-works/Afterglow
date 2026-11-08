@@ -275,11 +275,13 @@ Afterglow accepts the [Kitty file-transfer protocol](https://sw.kovidgoyal.net/k
 A terminal program can send or receive files through its terminal connection, including an SSH connection.
 
 Afterglow asks for permission before a transfer accesses files.
-The dialog names the program and its tab or split, and lists the paths: for a receive request the requested source paths, and for a send request the destination paths that the program chose.
+The dialog names the program and its tab or split, and lists the paths.
+For a receive request, it lists the requested source paths. For a send request, it lists the destination paths that the program chose.
 The dialog lists at most 100 paths. The question shows the first 10 of them and the number of the others. Its details show all of them.
 **Yes** approves only the paths that the dialog lists. The dialog does not change while it is open.
-The dialog shows control characters, line separators, invisible format characters (such as a zero-width space) and backslashes in a path as `\uXXXX`, or `\UXXXXXXXX` above U+FFFF.
-When a link above a path leads elsewhere, the dialog shows where the path resolves to.
+The dialog shows some characters of a path as `\uXXXX`, or as `\UXXXXXXXX` above U+FFFF.
+These are control characters, line separators, invisible format characters (such as a zero-width space) and backslashes.
+When a link above a path leads elsewhere, a second line under the path shows where it resolves to. A home directory that is a link gets no such line for the paths under it.
 A requested directory ends with a slash: the program can read all the files in it.
 
 | Request | What the dialog lists | What happens to the other paths |
@@ -288,11 +290,12 @@ A requested directory ends with a slash: the program can read all the files in i
 | Send | The destinations of the files that wait, up to 100 | A file that came later, or that the dialog did not list, gets a dialog of its own. |
 
 A send session starts at once, because the program names its destinations only after the start.
-The dialog opens when Afterglow has read the commands that came with the first destination.
+The dialog opens when Afterglow has handled every command that the program wrote before Afterglow held the first destination.
+A program that names many files can get more than one dialog, if some of its files come after that.
 A file waits, with its data, until you approve its destination. Nothing is written before that. The approved files of the session continue meanwhile.
 A finish waits until no file waits.
 If you deny the first dialog of a session, the session ends with `EPERM`.
-If you deny a later dialog, its files get `EPERM`. The files that you approved before continue.
+If you deny a later dialog, its files get `EPERM`. The files that you approved before continue. The files that came while the dialog was open get a dialog of their own.
 Afterglow writes an approved file only where the dialog showed:
 
 - A directory that existed when the dialog opened must still be at the path where links led it then.
@@ -304,7 +307,7 @@ If one of these checks fails, the file gets an error status (`EPERM`, `ELOOP` or
 Each pane shows one permission dialog at a time. A new session gets `EBUSY` while a dialog is open.
 A session that started before the dialog opened waits for its own dialog until the open one closes.
 After you deny a dialog, or after a program ends its session while its dialog is open, new sessions in that pane get `EPERM` for 10 seconds.
-A file of a session that you approved before also gets `EPERM` in that time.
+A file of a session that you approved before, and that came after the dialog that you denied, also gets `EPERM` in that time.
 
 Run these commands on the computer where the terminal program runs:
 
@@ -348,7 +351,7 @@ Give the option one of these values instead:
 | --- | --- | --- |
 | Sessions per pane | 8 | The new session gets `EBUSY`. |
 | Files per session | 16,384 | The file gets `EINVAL`. A receive listing gets `EFBIG`. |
-| Open files of regular and delta transfers per pane | 128 | The file gets `EBUSY` until another file completes. An upload holds two from its first data: its temporary file and its directory. A delta upload holds one more, its old file, from its start. |
+| Open files of regular and delta transfers per pane | 128 | The file gets `EBUSY` until another file completes. An upload holds two from its first data: its temporary file and its directory. A delta upload holds these and its old file from its start. |
 | Open files of the transfers of all panes | Half of the `RLIMIT_NOFILE` soft limit of Afterglow | The file gets `EBUSY`. A delta upload holds three: its output, its old file and the stream of its signature. |
 | Outgoing file streams per pane | 128 | The file gets `EBUSY`. |
 | Decoded data per packet | 4,096 bytes | The file fails with an error status. |
@@ -378,8 +381,8 @@ To receive empty files from Afterglow, use `aglow transfer`.
 The terminal learns which destination files exist, their sizes and the hashes of their blocks.
 When a program sends a delta upload, Afterglow tells it the hashes of the blocks of the file that the upload replaces.
 Afterglow makes no delta against a file of 4,096 bytes or less, and replaces such a file whole.
-`aglow transfer` names all of its files at the start, but sends delta uploads in groups of 32.
-A later group can get a dialog of its own.
+`aglow transfer` names all of its other files at the start. It names at most 32 delta uploads that are not finished, and names the next delta upload when one finishes.
+A delta upload that it names later can get a dialog of its own.
 
 `aglow transfer` does not trust the file list that a terminal sends when it receives files:
 

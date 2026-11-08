@@ -80,8 +80,10 @@ struct RemoteSockets::Session
     std::unique_ptr<PhosphorIpc::IpcRouter> router;
     std::unique_ptr<CommandSocket> commands;
 
-    /// Closes the local socket. The runs from it fail with @p reason, as
-    /// when their client goes. The router and the target are destroyed from
+    /// Closes the local socket. The runs from it end, as when their client
+    /// goes. Their replies fail with @p reason, but IpcRouter::stop() aborts
+    /// the connections and drops what waits to be written: the clients see
+    /// only the close until phosphor-ipc can flush on stop. The router and the target are destroyed from
     /// the event loop of @p context, or now without one: this can run
     /// inside a call of that router (a remote run's handler that turns the
     /// setting off or closes the pane), and the router must not be destroyed
@@ -235,9 +237,10 @@ QString RemoteSockets::failed(const QString& token, const QString& reason)
     const std::shared_ptr<Session> session = m_sessions.value(token);
     if (!session) return QStringLiteral("no remote socket %1").arg(token);
     if (reason != QLatin1String("forward")) return QStringLiteral("the reason of a failed forward is forward");
-    if (session->socket.isEmpty() || session->answering)
-        return QStringLiteral("remote socket %1 has no forward that waits").arg(token);
-    // Nothing to cancel: the forward was never added.
+    if (session->socket.isEmpty()) return QStringLiteral("remote socket %1 has no forward").arg(token);
+    // Nothing to cancel: the forward was never added, or the client
+    // cancelled it after its remoteSocketForwarded got no answer in time,
+    // which can come before this.
     session->closeSocket(QStringLiteral("the ssh server refused the forward of the socket"), this);
     session->answer = {{}, Remote::Error::Forward};
     session->answering = true;

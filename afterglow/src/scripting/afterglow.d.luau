@@ -274,7 +274,7 @@ declare afterglow: {
     await_all: (effects: { Effect }) -> { ResultEvent },
     -- Waits 0-600000 ms. Each sleep is a result: see the result limits.
     sleep: (ms: number) -> (any?, OperationError?, ResultEvent),
-    -- id: 1-64 characters. Results are queued to the originating script instance.
+    -- id: 1-64 UTF-16 units. Results are queued to the originating script instance.
     request: (id: string, effect: Effect) -> Effect,
     semantic_regions: (pane: PaneRef) -> Effect,
     -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.

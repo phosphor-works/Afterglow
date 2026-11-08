@@ -268,8 +268,9 @@ local function runCommand(module, run, name, ev)
     return drive(co, name, ev)
 end
 
--- Handlers that must return at once: a migration returns state, and effects
--- returned while unloading are ignored.
+-- Handlers that must return at once: a migration returns state, and
+-- on_unload returns its last state writes and logs, after which nothing of
+-- the instance waits.
 local direct = { migrate = true, on_unload = true }
 
 -- Afterglow loads every script through this, once: the module's functions run

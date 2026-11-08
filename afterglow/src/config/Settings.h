@@ -251,8 +251,8 @@ struct Settings
     /// Variables added to the shell's environment.
     std::vector<std::pair<std::string, std::string>> environment;
     QString fileTransferPassword;
-    /// Bytes that a delta upload without a declared size can write (kitten
-    /// transfer declares none). 0 sets no limit.
+    /// Bytes that a delta or compressed upload without a declared size can
+    /// write (kitten transfer declares none). 0 sets no limit.
     qint64 fileTransferDeltaLimit = qint64(64) << 30;
     /// Milliseconds that a drag over a pane waits for the answer of a program
     /// that uses Kitty drag and drop, when the drag shows it new types.
@@ -295,7 +295,8 @@ struct Settings
 /// the first write() or ensureFile() creates it, readable by the owner only.
 /// A file that cannot be read at the start gives every default, but with
 /// Scripts.enabled and Control.enabled off until it can be read: the file may
-/// have turned them off.
+/// have turned them off. A -o override of either still wins. A link whose
+/// target is gone counts as such a file: PhosphorConfig cannot open it.
 class SettingsStore : public QObject
 {
     Q_OBJECT
@@ -405,12 +406,15 @@ private:
     /// An apply() for the desktop events is posted and has not run yet.
     bool m_applyQueued = false;
     /// No read of the file has worked since the start: read() keeps
-    /// Scripts.enabled and Control.enabled off, which the file may set.
+    /// Scripts.enabled and Control.enabled off, which the file may set,
+    /// unless an override sets them.
     bool m_neverRead = true;
     QStringList m_fileProblems;
     QStringList m_readProblems;
     QStringList m_publishedProblems;
-    PhosphorFsLoader::WatchedFileSet m_files; ///< the config file, its theme and kdeglobals
+    /// The config file, its theme, the targets of those that are links, and
+    /// kdeglobals (watchedPaths()).
+    PhosphorFsLoader::WatchedFileSet m_files;
 };
 
 } // namespace Afterglow

@@ -11,6 +11,7 @@
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Terminal.h>
 
+#include <QDate>
 #include <QFile>
 #include <QGuiApplication>
 #include <QImage>
@@ -94,7 +95,8 @@ protected:
         return renderer->renderToImage(size, {pane}, {}, clear);
     }
 
-    // Packed 0xAABBGGRR as the snapshot stores colours, alpha ignored.
+    // Packed 0xAABBGGRR as the snapshot stores colours, as an opaque QRgb:
+    // EXPECT_PIXEL compares alpha too.
     static QRgb rgb(std::uint32_t c) { return qRgb(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF); }
     QPoint cellCenter(int x, int y) const { return {x * cw + cw / 2, y * ch + ch / 2}; }
 
@@ -2970,6 +2972,21 @@ TEST_F(Render, AFrameThatFailsSubmitsTheBatchItStaged)
     }, std::runtime_error);
     EXPECT_FALSE(rhi->isRecordingFrame());
     EXPECT_EQ(readBack(), qRgb(0, 0, 255));
+}
+
+TEST_F(Render, ADateOverrideReplacesTheWallClocksDate)
+{
+    ShaderChains chains;
+    chains.pane = {layerShader("date", "fragColor = vec4(iDate.y / 12.0, iDate.z / 31.0, iDate.w / 86400.0, 1.0);")};
+    renderer->setShaderChains(chains);
+    // June 31 does not exist: the fields go to the shader as given.
+    renderer->setDateOverride(std::array<float, 4>{2026.0f, 6.0f, 31.0f, 21600.0f});
+    EXPECT_PIXEL(render("\x1b[?25l"), cellCenter(2, 2), qRgb(128, 255, 64));
+    // Unset: the wall clock's month again.
+    renderer->setDateOverride(std::nullopt);
+    const QImage image = render("");
+    const int month = QDate::currentDate().month();
+    EXPECT_NEAR(qRed(image.pixel(cellCenter(2, 2))), month / 12.0 * 255, 3);
 }
 
 TEST_F(Render, ShaderRegionsClipAnimatedBoundsToSurface)

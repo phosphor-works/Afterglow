@@ -101,26 +101,6 @@ using AfterglowRender::packRgba;
 using AfterglowVt::Terminal;
 
 namespace {
-/// Bidirectional overrides and invisible formatting, which can disguise
-/// text, and the line and paragraph separators, which Qt breaks lines at.
-bool disguisesText(char16_t u)
-{
-    return (u >= 0x200B && u <= 0x200F) || (u >= 0x202A && u <= 0x202E) || (u >= 0x2060 && u <= 0x2069) || u == 0xFEFF
-        || u == 0x061C || u == 0x00AD || u == 0x2028 || u == 0x2029;
-}
-} // namespace
-
-QString sanitizedText(const QString& s, qsizetype limit)
-{
-    QString out;
-    out.reserve(std::min(s.size(), limit));
-    for (const QChar c : s) {
-        if (!disguisesText(c.unicode())) out.append(c);
-    }
-    return textPrefix(out, limit);
-}
-
-namespace {
 QList<TerminalWindow*> s_windows;
 
 /// Labels for at most this many distinct matches (show_hints).
@@ -2160,7 +2140,7 @@ bool TerminalWindow::event(QEvent* e)
         // asked for drag and drop accepts and offers nothing.
         for (auto* pane : terminalPanes()) if (pane != target && pane->hasDragDrop()) pane->dragDrop()->leave();
         if (target && target->hasDragDrop() && !target->isHeld() && !m_controller->wantsKeyboard() && target->dragDrop()->acceptsDrops()) {
-            const QPoint pixel = (drop->position() * devicePixelRatio()).toPoint() - contentRect(target, m_splits->rectOf(hostOf(target))).topLeft();
+            const QPoint pixel = gridPixel(target, drop->position()).toPoint();
             target->dragDrop()->drop(drop, e->type() == QEvent::Drop, cellAt(target, drop->position()), pixel);
             return true;
         }
@@ -2447,8 +2427,14 @@ bool TerminalWindow::performAction(Action action)
     case Action::RotatePanesCounterclockwise: return rotatePanes(false);
     case Action::PaneOverview: return openOverview();
     case Action::UsePackageShaders: return usePackageShaders();
-    case Action::MovePaneToTab:
-        return m_focused && movePaneTo(m_focused, this, nullptr, SplitTree::Direction::Right).isEmpty();
+    case Action::MovePaneToTab: {
+        if (!m_focused) return false;
+        // A refused move keeps its key, as a refused split does: the chord
+        // would reach the shell as a control byte. The user hears why.
+        if (const QString error = movePaneTo(m_focused, this, nullptr, SplitTree::Direction::Right); !error.isEmpty())
+            NotificationCenter::instance().showNotice(m_focused, tr("Could not move the pane"), error);
+        return true;
+    }
     case Action::MovePaneToWindow:
     case Action::DetachTab: {
         if (!m_focused) return false;
@@ -3662,8 +3648,9 @@ void TerminalWindow::showUrlHints()
         if (!h.label.startsWith(m_urlMode.typed)) {
             continue;
         }
+        // On the rows as drawn: up by the scroll shift.
         list.append(QVariantMap{{QStringLiteral("x"), (origin.x() + m_urlMode.pane->snapshot().visualColumn(h.col, h.row) * m.cellWidth) / dpr},
-                                {QStringLiteral("y"), (origin.y() + h.row * m.cellHeight) / dpr},
+                                {QStringLiteral("y"), (origin.y() + h.row * m.cellHeight - drawnScrollShift(m_urlMode.pane)) / dpr},
                                 {QStringLiteral("label"), h.label},
                                 {QStringLiteral("typed"), int(m_urlMode.typed.size())}});
     }
@@ -4471,12 +4458,17 @@ float TerminalWindow::drawnScrollShift(const Pane* pane) const
     return found == m_motion.end() ? 0.0f : found->second->scrollShift;
 }
 
+QPointF TerminalWindow::gridPixel(Pane* pane, const QPointF& pos) const
+{
+    const QPoint origin = contentRect(pane, m_splits->rectOf(hostOf(pane))).topLeft();
+    // The rows were drawn higher by the scroll shift.
+    return pos * devicePixelRatio() - QPointF(origin) + QPointF(0, drawnScrollShift(pane));
+}
+
 QPoint TerminalWindow::cellAt(Pane* pane, const QPointF& pos) const
 {
     const auto& m = m_renderer->fonts().fonts->metrics();
-    const QPoint origin = contentRect(pane, m_splits->rectOf(hostOf(pane))).topLeft();
-    // The rows were drawn higher by the scroll shift.
-    const QPointF px = pos * devicePixelRatio() - QPointF(origin) + QPointF(0, drawnScrollShift(pane));
+    const QPointF px = gridPixel(pane, pos);
     const int col = std::clamp(int(std::floor(px.x() / m.cellWidth)), 0, std::max(0, pane->cols() - 1));
     const int row = std::clamp(int(std::floor(px.y() / m.cellHeight)), 0, std::max(0, pane->rows() - 1));
     // On a double-size line each cell is drawn twice as wide.
@@ -4516,8 +4508,7 @@ bool TerminalWindow::sendMouse(Pane* pane, const QPointF& pos, int button, int a
     ev.col = cell.x();
     ev.row = cell.y();
     const auto& metrics = m_renderer->fonts().fonts->metrics();
-    const QPointF px = shown ? pos * devicePixelRatio() - QPointF(contentRect(pane, m_splits->rectOf(hostOf(pane))).topLeft())
-                             : QPointF(cell.x() * metrics.cellWidth, cell.y() * metrics.cellHeight);
+    const QPointF px = shown ? gridPixel(pane, pos) : QPointF(cell.x() * metrics.cellWidth, cell.y() * metrics.cellHeight);
     ev.pixelX = std::max(0, int(px.x()));
     ev.pixelY = std::max(0, int(px.y()));
     ev.buttonHeld = m_reportedButtons != Qt::NoButton;
@@ -4958,7 +4949,7 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     // After the chrome has seen the pointer leave, which may reset the cursor.
     applyPointerShape();
     if (Pane* target = inputPane(m_focused); target && (e->buttons() & Qt::LeftButton)) {
-        const QPoint pixel = px - contentRect(target, m_splits->rectOf(hostOf(target))).topLeft();
+        const QPoint pixel = gridPixel(target, e->position()).toPoint();
         if (target->hasDragDrop() && target->dragDrop()->move(this, e->position().toPoint(), cellAt(target, e->position()), pixel)) {
             m_autoScroll.stop();
             if (m_selectionPane) m_selectionPane->clearSelection();

@@ -63,17 +63,23 @@ inline Device makeDevice()
     }
     // Qt's reason (a VkResult) comes as a warning: it goes into the failure,
     // and on to the handler that was there before. Qt may warn from its own
-    // threads.
+    // threads: the warnings and the previous handler are read under the
+    // lock, which the install holds until the previous handler is known.
     static std::mutex s_lock;
     static std::string s_warnings;
     static QtMessageHandler s_previous = nullptr;
-    s_previous = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext& context, const QString& text) {
-        if (type != QtDebugMsg && type != QtInfoMsg) {
-            const std::lock_guard lock(s_lock);
-            s_warnings += "\n" + text.toStdString();
-        }
-        if (s_previous) s_previous(type, context, text);
-    });
+    {
+        const std::lock_guard lock(s_lock);
+        s_previous = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext& context, const QString& text) {
+            QtMessageHandler previous = nullptr;
+            {
+                const std::lock_guard lock(s_lock);
+                if (type != QtDebugMsg && type != QtInfoMsg) s_warnings += "\n" + text.toStdString();
+                previous = s_previous;
+            }
+            if (previous) previous(type, context, text);
+        });
+    }
     try {
         made.device = std::make_unique<GpuDevice>(FontSpec{});
         made.device->rhi(nullptr);
@@ -82,6 +88,7 @@ inline Device makeDevice()
         const std::lock_guard lock(s_lock);
         made.reason = std::string("this machine has a Vulkan device, and the test could not make one: ") + error.what() + s_warnings;
     }
+    const std::lock_guard lock(s_lock);
     qInstallMessageHandler(s_previous);
     return made;
 }

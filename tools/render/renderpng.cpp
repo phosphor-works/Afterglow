@@ -23,7 +23,6 @@
 // scroll shift, hovered link, blink phase, bidi, contrast, hinting, cell
 // scale); --help lists them all.
 
-#include <AfterglowProto/Graphics.h>
 #include <AfterglowRender/GpuDevice.h>
 #include <AfterglowRender/GridRenderer.h>
 #include <AfterglowRender/Snapshot.h>
@@ -54,6 +53,7 @@
 #include <cstdio>
 #include <deque>
 #include <exception>
+#include <initializer_list>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -537,15 +537,17 @@ int run(QGuiApplication& app)
         for (const QString& dir : parser.values(QStringLiteral("package"))) {
             // The application loads a package only when its id names its
             // directory, and registers the packs under that id.
-            QFile manifest(QDir(dir).absoluteFilePath(QStringLiteral("package.json")));
+            // By the absolute path: "." and "pkg/" name their directory too.
+            const QDir package(QDir(dir).absolutePath());
+            QFile manifest(package.absoluteFilePath(QStringLiteral("package.json")));
             const QString id = manifest.open(QIODevice::ReadOnly)
                 ? QJsonDocument::fromJson(manifest.readAll()).object().value(QLatin1String("id")).toString() : QString();
-            if (id != QDir(dir).dirName()) {
+            if (id != package.dirName()) {
                 std::fprintf(stderr, "--package %s: package.json must give the id \"%s\", the name of its directory\n",
-                             qPrintable(dir), qPrintable(QDir(dir).dirName()));
+                             qPrintable(dir), qPrintable(package.dirName()));
                 return 1;
             }
-            packages.insert(id, QDir(dir).absoluteFilePath(QStringLiteral("shaders")));
+            packages.insert(id, package.absoluteFilePath(QStringLiteral("shaders")));
         }
         library.setPackageShaders(packages);
         AfterglowRender::ShaderChains chains = library.build(refs, params);
@@ -719,6 +721,17 @@ int run(QGuiApplication& app)
     }
     const std::uint32_t clear = (snapshot.defaultBg & 0x00FFFFFFu) | (std::uint32_t(alpha) << 24);
     const double time = parser.value(QStringLiteral("time")).toDouble();
+    // iDate: the date given, moved by the same seconds as iTime from --time.
+    const QDateTime date = QDateTime::fromString(parser.value(QStringLiteral("date")), Qt::ISODate);
+    if (!date.isValid()) {
+        std::fprintf(stderr, "--date must be YYYY-MM-DDTHH:MM:SS\n");
+        return 1;
+    }
+    auto setDate = [&](double elapsed) {
+        const QDateTime at = date.addMSecs(qint64(std::llround(elapsed * 1000)));
+        renderer.setDateOverride(std::array<float, 4>{float(at.date().year()), float(at.date().month()), float(at.date().day()),
+                                                      float(at.time().msecsSinceStartOfDay()) / 1000.0f});
+    };
     std::vector<AfterglowRender::WindowRenderer::Pane> panes{pane};
     std::vector<std::pair<QRect, std::uint32_t>> overlays;
     QSize frameSize = paneSize;
@@ -752,16 +765,20 @@ int run(QGuiApplication& app)
     // The shading the window puts over several panes (addPaneShading): a
     // black layer over each unfocused pane, which fades as the overview
     // opens, and a divider in the theme's colour right of and below each
-    // pane that does not reach the window's edge.
+    // pane that does not reach the window's edge. The pane that
+    // --close-progress closes (the last) has none: the window shades the
+    // panes that stay, and dims them only while there are several.
+    const std::size_t staying = panes.size() - (parser.isSet(QStringLiteral("close-progress")) && panes.size() > 1 ? 1 : 0);
     if (panes.size() > 1) {
         const double overviewAmount = parser.isSet(QStringLiteral("overview"))
             ? (parser.isSet(QStringLiteral("overview-amount")) ? parser.value(QStringLiteral("overview-amount")).toDouble() : 1.0) : 0.0;
-        const auto dim = std::uint8_t(std::lround(parser.value(QStringLiteral("unfocused-dim")).toDouble() * (1.0 - overviewAmount) * 255));
-        const std::uint32_t dividerColor =
-            AfterglowRender::packRgba(Afterglow::Themes::derivedDivider(options.defaultBackground, options.defaultForeground));
-        for (const auto& region : panes) {
-            const QRect shown = region.params.rect;
-            if (!region.params.focused && dim > 0) overlays.emplace_back(shown, AfterglowRender::packRgba(0, 0, 0, dim));
+        const auto dim = staying > 1
+            ? std::uint8_t(std::lround(parser.value(QStringLiteral("unfocused-dim")).toDouble() * (1.0 - overviewAmount) * 255))
+            : std::uint8_t(0);
+        const std::uint32_t dividerColor = defaults.window.dividerColor;
+        for (std::size_t i = 0; i < staying; ++i) {
+            const QRect shown = panes[i].params.rect;
+            if (!panes[i].params.focused && dim > 0) overlays.emplace_back(shown, AfterglowRender::packRgba(0, 0, 0, dim));
             if (shown.right() < frameSize.width() - 1)
                 overlays.emplace_back(QRect(shown.right() + 1, shown.top(), divider, shown.height()), dividerColor);
             if (shown.bottom() < frameSize.height() - 1)
@@ -776,10 +793,13 @@ int run(QGuiApplication& app)
     dockOptions.bidi = AfterglowVt::BidiMode::Off;
     std::vector<std::unique_ptr<AfterglowVt::Terminal>> dockTerminals;
     auto captureDock = [&](const DockSpec& spec, const QRect& rect, AfterglowRender::PaneSnapshot& out) {
-        // Text past the edge is cut, as a dock cuts it: the terminal has a
-        // column for each byte of the text beyond the ones that show, and
-        // the dock's rectangle clips them. Without wrap, a terminal of the
-        // dock's width would write all of it into its last cell.
+        // Text past the edge goes into columns that do not show, which the
+        // dock's rectangle clips: one for each byte of the text, at most
+        // 1000. Without wrap, a terminal of the dock's width would write it
+        // all into its last cell. Two differences from a script's dock
+        // remain: a wide character across the edge shows its left half,
+        // where a dock writes a space, and text past the 1000 hidden
+        // columns lands in the last of them, which does not show either.
         const int dockCols = std::max(2, rect.width() / metrics.cellWidth) + int(std::min<qsizetype>(spec.text.size(), 1000));
         const int dockRows = std::max(1, rect.height() / metrics.cellHeight);
         auto& dockTerminal = dockTerminals.emplace_back(std::make_unique<AfterglowVt::Terminal>(dockCols, dockRows, host, dockOptions));
@@ -960,6 +980,7 @@ int run(QGuiApplication& app)
             jumped->cursorY = previousY;
         }
         renderer.setClockOverride(time - parser.value(QStringLiteral("wake-age")).toDouble());
+        setDate(-parser.value(QStringLiteral("wake-age")).toDouble());
         renderer.renderToImage(frameSize, panes, overlays, clear);
         for (std::size_t i = 0; i < moved.size(); ++i) {
             std::tie(moved[i]->cursorX, moved[i]->cursorY) = cells[i];
@@ -1085,11 +1106,6 @@ int run(QGuiApplication& app)
     renderer.setTranslucent(std::any_of(panes.begin(), panes.end(), translucentPane)
                             || std::any_of(docks.begin(), docks.end(), translucentDock));
     // iDate: the date given, advanced with the frames.
-    const QDateTime date = QDateTime::fromString(parser.value(QStringLiteral("date")), Qt::ISODate);
-    if (!date.isValid()) {
-        std::fprintf(stderr, "--date must be YYYY-MM-DDTHH:MM:SS\n");
-        return 1;
-    }
     auto seconds = [](double s) {
         return std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(s));
     };
@@ -1107,9 +1123,7 @@ int run(QGuiApplication& app)
     for (int frame = 0; frame < frames; ++frame) {
         const double elapsed = frame / fps;
         renderer.setClockOverride(time + elapsed);
-        const QDateTime at = date.addMSecs(qint64(std::llround(elapsed * 1000)));
-        renderer.setDateOverride(std::array<float, 4>{float(at.date().year()), float(at.date().month()), float(at.date().day()),
-                                                      float(at.time().msecsSinceStartOfDay()) / 1000.0f});
+        setDate(elapsed);
         // Ages follow the requested playback rate, not render speed: each is
         // stamped this frame as its starting age plus the frames' time.
         const auto wall = std::chrono::steady_clock::now();

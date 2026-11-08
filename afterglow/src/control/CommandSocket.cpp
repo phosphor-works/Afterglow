@@ -443,8 +443,11 @@ void CommandSocket::start(quint64 connection, const QString& id, ScriptHost::Com
         remove(connection, id);
         return;
     }
-    // The run can have ended inside startCommand.
+    // The run can have ended inside startCommand, and its handler can have
+    // closed the socket meanwhile (a setting that it turned off): dropAll
+    // then found no handle to cancel, and the run has no client any more.
     if (const auto run = find(connection, id)) run->handle = handle;
+    else if (!entry->exit) m_scripts.cancelCommand(handle, Cancelled);
 }
 
 bool CommandSocket::send(quint64 connection, const char* event, const QString& id, const QString& text,

@@ -1022,10 +1022,29 @@ TEST(RunRemote, CompletionWaitsOnceForTheQueryTheConnectionAndTheList)
     EXPECT_LT(outcome.ms, Run::CompleteTimeoutMs * 3 / 2);
 }
 
-TEST(RunClient, TheWaitForAnAnswerToInputStartsAfterTheSend)
+TEST(RunClient, ASocketWithoutTheCommandsTargetNamesBothCauses)
+{
+    // The Afterglow of $AFTERGLOW_SOCKET has commands off, or the socket is
+    // one that afterglow ssh forwarded, under a name that is not TOKEN.sock.
+    FakeServer server;
+    Client client(server, {});
+    ASSERT_TRUE(server.accept());
+    const auto call = expect(server, "list");
+    ASSERT_TRUE(call);
+    EXPECT_EQ((*call)["target"].toString(), Run::Target);
+    server.error(*call, "NO_SUCH_TARGET", "no such target");
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.err, "aglow run: the Afterglow at $AFTERGLOW_SOCKET takes no commands (Control.enabled or Scripts.enabled "
+                           "is off). A socket that afterglow ssh forwarded takes them only by its own name, DIRECTORY/TOKEN.sock\n");
+}
+
+TEST(RunClient, InputWaitsForASlowLinkWithoutATimeLimit)
 {
     // A part that the socket cannot hold: its send waits for the terminal,
-    // which reads it only after the wait for an answer would have ended.
+    // which reads it, and then answers it, each after the wait for the
+    // commands would have ended. Over ssh, sshd takes the part at once and
+    // the terminal gets it late: only the answer is late then.
     FakeServer server;
     const int timeout = 300;
     Client client(server, {"tools", "read"}, {.replyTimeoutMs = timeout});
@@ -1036,6 +1055,7 @@ TEST(RunClient, TheWaitForAnAnswerToInputStartsAfterTheSend)
     std::this_thread::sleep_for(std::chrono::milliseconds(timeout * 3));
     const auto input = expect(server, "input");
     ASSERT_TRUE(input);
+    std::this_thread::sleep_for(std::chrono::milliseconds(timeout * 3));
     server.reply(*input, true);
     const auto run = expect(server, "run");
     ASSERT_TRUE(run);

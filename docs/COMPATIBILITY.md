@@ -177,7 +177,8 @@ A terminal reset (RIS or the Reset command) keeps the context stack, as the [con
 Downloads permit 8 MiB of decoded data and one pending application request.
 A `MultipartFile` download stops when its data passes the 8 MiB limit. An inline image in parts can have 96 MiB of base64 data.
 `MultipartFile` arguments have a 4,096-byte limit. Longer arguments refuse the file.
-A new `MultipartFile`, a terminal reset or the next OSC 133 prompt ends a file that has no `FileEnd`.
+A new `MultipartFile`, a terminal reset or the end of the pane's program ends a file that has no `FileEnd`.
+A shell prompt does not end it, because a job in the background can still send it.
 OSC 1337 downloads are not resumable, and they do not upload files.
 Afterglow supports the Kitty file-transfer protocol separately. See [Kitty file transfer](DESKTOP.md#kitty-file-transfer).
 IME context does not permit arbitrary surrounding-text edits.
@@ -270,7 +271,9 @@ tmux answers DA1 itself at once, and keeps the DA1 answer of the terminal.
 Thus inside tmux the guard is a status report (`CSI 5 n`) in the same passthrough. tmux passes its answer (`CSI 0 n`) to the pane.
 When `allow-passthrough` is off, tmux passes nothing, and `aglow run` asks tmux for that option first.
 `aglow run` asks the terminal only when standard output is its terminal and its process group is in the foreground there.
-In a pipeline or a background job, another program could read the reply, so `aglow run` asks nothing.
+When its output goes into a pipeline, the program at the end of the pipeline can read the terminal and take the reply. Then `aglow run` asks nothing.
+A background job asks nothing, because a change of the terminal modes would stop it (`SIGTTOU`).
+A program that writes into `aglow run` through a pipe and reads the terminal can still take the reply.
 `aglow run` reads all the input of the terminal up to the guard's answer.
 Without that answer, it discards the input and output of the terminal that wait, so that a late reply does not go to the shell.
 

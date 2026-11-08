@@ -59,7 +59,7 @@ class Tmux:
         self.sockets = tempfile.mkdtemp(prefix="agt-", dir="/tmp")
         self.env = environment(os.path.join(scratch, "run"), {"TMUX_TMPDIR": self.sockets})
 
-    def run(self, passthrough, command, answer):
+    def run(self, passthrough, command, answer, also=()):
         """Runs COMMAND in a new session whose terminal is a pseudo-terminal, until it ends. Returns what tmux
         wrote to the terminal, and the seconds that it took."""
         config = os.path.join(self.scratch, f"tmux-{passthrough}.conf")
@@ -67,7 +67,7 @@ class Tmux:
             f.write(f"set -g allow-passthrough {passthrough}\nset -g escape-time 0\nset -g status off\n"
                     "set -g default-shell /bin/sh\n")
         code, written, took = play([self.tmux, "-L", NAME, "-f", config, "new-session", "-x", "80", "-y", "24", command],
-                                   self.env, answer)
+                                   self.env, answer, also=also)
         self.kill()
         check(code == 0, "tmux failed", code, written[-400:])
         return written, took
@@ -116,12 +116,10 @@ def run_cases(aglow, scratch, tmux):
             command = (f"s=$(date +%s%N); {q(aglow)} run far there t 2> {q(out + '.err')}; echo $? > {q(out + '.status')};"
                        f" e=$(date +%s%N); echo $(( (e - s) / 1000000 )) > {q(out + '.ms')}")
 
-            def answer(written, replies=replies):
-                # The query and the status report reach the terminal in one passthrough.
-                reply = b"\x1b]24569;path=" + server.path.encode() + b"\x1b\\" if replies else b""
-                return reply + b"\x1b[0n" if b"\x1b[5n" in written else reply
-
-            written, _ = tmux.run(passthrough, command, answer)
+            reply = b"\x1b]24569;path=" + server.path.encode() + b"\x1b\\" if replies else b""
+            # The query and the status report reach the terminal in one passthrough, which can come in two
+            # reads: each status report gets its answer on its own, after the reply that the query got.
+            written, _ = tmux.run(passthrough, command, lambda _, reply=reply: reply, also=[(b"\x1b[5n", b"\x1b[0n")])
             took = int(read(f"{out}.ms") or "999999")
             if passthrough == "on":
                 check(QUERY in written, "the query did not pass through tmux", written[-400:])
@@ -151,7 +149,7 @@ def main():
     if not tmux_program:
         print("Skipped: tmux is not installed.", flush=True)
         sys.exit(77)
-    # allow-passthrough came with tmux 3.3. A version that does not parse (next-3.4, master) is new.
+    # allow-passthrough came with tmux 3.3. A version without a number (master) counts as new enough.
     version = subprocess.run([tmux_program, "-V"], capture_output=True, text=True, timeout=20).stdout
     match = re.search(r"(\d+)\.(\d+)", version)
     if match and (int(match.group(1)), int(match.group(2))) < (3, 3):

@@ -22,7 +22,8 @@ A script file can have at most 1 MiB. Afterglow does not load a larger file.
 Files that end in `.d.luau` are type declarations. Afterglow does not load them.
 Afterglow parses each script file alone before it loads it, so a syntax error names the line of the file.
 A symbolic link that points to nothing shows as `failed` in `afterglow ctl scripts`.
-When its target appears, the script loads.
+When its target appears in a directory that exists, the script loads.
+When the directory of the target does not exist yet, the script loads at the next change in the scripts directory.
 
 The script ID is `metadata.id`, or the file name without `.luau`.
 It has 1 to 64 letters, digits, `_` and `-`, and must not start with `-`.
@@ -271,13 +272,23 @@ Afterglow adds the time of each part of each call in the last second.
 This includes events, results, the parts after each wait, `on_unload`, and the cleanup of a run that ended.
 When a script has used its budget, these steps occur:
 
-1. Afterglow drops the calls that count toward a handler call limit: events, and timer and watcher calls. `dropped_callbacks` counts them.
-2. The other calls wait until the script has time again, in the order that they came. These are results, `on_key`, dock clicks, hovers and layouts, and the start of a command run. `delayed_callbacks` counts them.
+1. Afterglow drops the events that count toward a handler call limit, such as `on_title`, `on_focus`, `on_dock_wheel` and the `move` calls of `on_dock_drag`. `dropped_callbacks` counts them.
+2. The other calls wait until the script has time again, in the order that they came. `delayed_callbacks` counts them.
 3. When 256 calls wait, Afterglow disables the script.
 
+These calls wait:
+
+- Results, also the results that resume a handler after `afterglow.await` or `afterglow.sleep`.
+- `on_timer` and `on_file_changed`. A one-shot timer and a file change do not come again, so Afterglow does not drop them.
+- `on_key`, and the clicks, hovers, layouts and the `start`, `end` and `cancel` calls of dock events.
+- The start of a command run, and the cleanup of a run that ended.
+- An event that comes while other calls wait. It runs after them, with a new snapshot.
+
 A command run that waits to start is live. `Scripts.commandTimeout` counts the wait.
-Each second in which a script uses its complete budget counts.
+Each second in which a call had to wait counts.
 After 5 such seconds, each less than 3 seconds after the one before, Afterglow disables the script.
+A dropped event does not count. So a program that changes its title very fast does not disable a script whose `on_title` uses the budget: Afterglow drops the extra `on_title` calls.
+But when such a script also has a call that waits, for example a key in a key mode, that second counts.
 `cpu_ms` in the [diagnostics](#diagnostics) is the handler time of the last second.
 
 An effect can cause an event: `set_title` causes `on_title`, `focus` causes `on_focus`, and a `split` causes `on_pane_created`.
@@ -375,6 +386,8 @@ Successful replacement, removal, disable or five handler failures in a row cance
 Other effects from `on_unload` fail with `invalid_effect`, and no effect of `on_unload` gets a result.
 When a package changes, the new instance loads before the old instance's `on_unload` runs.
 A `state_write` from that `on_unload` then gives the new instance a revision conflict at its next write. Read the state again after a conflict.
+When the new instance migrates the state, Afterglow writes the migrated state before the old instance's `on_unload` runs.
+The `state_write` of that `on_unload` then fails with a revision conflict, and its value is lost. Write the state when it changes, not only in `on_unload`.
 A handler that continues after `afterglow.await` keeps the limit of its handler type.
 
 ## Tasks
@@ -764,7 +777,7 @@ An error in this part is not a handler failure. It ends the script's key mode, a
 
 A run also ends when its script stops: a change, a removal, `Scripts.enabled=false` or a disable.
 The run then ends with exit status 1, and stderr tells why.
-A script is disabled after 5 handler failures in a row, or after too many results (see [execution limits](#execution-limits)).
+A script is disabled after 5 handler failures in a row, after too many results (see [execution limits](#execution-limits)), or when it keeps its CPU budget used (see [CPU time](#cpu-time)).
 The handlers of a stopped script do not resume.
 
 ### Commands at runtime
@@ -1159,6 +1172,7 @@ Other handlers do not need `Control.allowReadText`.
 
 The client of a `remote` run is any process of the remote user, or the remote root user.
 In the handler of a `remote` run, these queries also need `Control.allowRemoteReadText`. It is off by default.
+While it is off, these queries fail with `operation_failed`.
 While it is off, only the handler of a `remote` run can write to the run with `afterglow.output` and `afterglow.output_error`.
 The output of another handler fails with `operation_failed`.
 These gates cover the queries and the direct output of other handlers. They do not cover other paths.
@@ -1174,6 +1188,7 @@ The [creation example](../data/examples/scripts/create-and-title.luau) uses laun
 
 `afterglow ctl scripts` reports `id`, `name`, `path`, `version`, `status`, `error`, `calls`, `handler_errors`, `effect_errors` and `last_error`.
 `error` is the load error of a `failed` or `last-good` script, why a script is `superseded`, or why a script is `disabled`. Else it is empty.
+For a `disabled` script whose file changed and does not load, `error` is the load error. `disabled_reason` always tells why a script was disabled.
 `version` is the package version. A single-file script has none.
 `status` is `active`, `disabled`, `last-good`, `failed` or `superseded`.
 An error in a package module names the module file and its line.

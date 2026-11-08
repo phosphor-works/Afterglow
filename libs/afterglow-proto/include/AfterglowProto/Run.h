@@ -24,13 +24,15 @@ inline constexpr const char* Target = "commands";
 /// Stdin goes to the terminal in parts of at most this many bytes of JSON
 /// string, far below the router's 1 MiB request line.
 inline constexpr std::size_t InputPartBytes = 512 * 1024;
-/// The wait for an answer to list, the connection included, and to input,
-/// after the input went out.
-/// Cancel and ack get none that the client waits for. A run waits without
-/// end: the terminal limits it (Scripts.commandTimeout).
+/// The wait for the commands: the query to the terminal, the connection and
+/// the answer to list. Cancel and ack get no answer that the client waits
+/// for. The input and the run wait without end, as a slow ssh link can take
+/// long to carry them: the terminal limits the run (Scripts.commandTimeout),
+/// and a signal ends the wait.
 inline constexpr int ReplyTimeoutMs = 10000;
-/// The wait of --complete, for the connection and the list together: a
-/// shell's completion must not hang on an Afterglow that does not answer.
+/// The wait of --complete, for the query, the connection and the list
+/// together: a shell's completion must not hang on an Afterglow that does
+/// not answer.
 inline constexpr int CompleteTimeoutMs = 1000;
 
 /// The terminal sends the output of a connection's runs this many bytes ahead
@@ -89,8 +91,7 @@ struct Environment
     int input = 0; ///< stdin goes to a command only when this is not a terminal
     int output = 1;
     int error = 2;
-    /// The wait for the answers to list and to input (ReplyTimeoutMs). The
-    /// wait for an answer to input starts once the input went out.
+    /// The wait for the commands (ReplyTimeoutMs).
     int replyTimeoutMs = ReplyTimeoutMs;
     /// When $AFTERGLOW_SOCKET is not set, or names no socket on this host,
     /// the client asks the terminal for the socket of its ssh session with

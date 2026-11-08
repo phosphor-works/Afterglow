@@ -395,6 +395,12 @@ TEST(TransferQuestion, ShowsTheFirstPathsAndCountsTheRest)
     EXPECT_EQ(line.size(), FileTransfer::QuestionLength);
     EXPECT_TRUE(line.endsWith(QStringLiteral("/end")));
     EXPECT_EQ(named.detail, longPath);
+    // Where a long path resolves stays a line of its own, cut on its own.
+    const QString resolved = longPath + QStringLiteral("\n  resolves to ") + longPath;
+    const auto both = FileTransfer::question(true, { resolved }, 1);
+    EXPECT_EQ(both.text.section(QLatin1Char('\n'), 1, 1).size(), FileTransfer::QuestionLength);
+    EXPECT_TRUE(both.text.section(QLatin1Char('\n'), 2, 2).startsWith(QStringLiteral("  resolves to ")));
+    EXPECT_EQ(both.detail, resolved);
     // A directory that a program reads is read whole.
     const auto directory = FileTransfer::question(false, { QStringLiteral("/home/u/dir/") }, 1);
     EXPECT_TRUE(directory.text.contains(QStringLiteral("ends with a slash")));
@@ -905,7 +911,7 @@ TEST_F(Transfer, APromptNamesWhereALinkLeads)
     send("ac=send");
     send("ac=file;fid=f;n=" + path("downloads/f"));
     ASSERT_TRUE(waitFor([&] { return prompts == 1; }));
-    EXPECT_EQ(prompted, QStringList { file("downloads/f") + QStringLiteral(" (resolves to ") + real + QStringLiteral("/f)") });
+    EXPECT_EQ(prompted, QStringList { file("downloads/f") + QStringLiteral("\n  resolves to ") + real + QStringLiteral("/f") });
     service.approve(token, true);
     send("ac=end_data;fid=f;d=" + b64("x"));
     ASSERT_TRUE(fileStatus("f", "OK"));
@@ -917,7 +923,7 @@ TEST_F(Transfer, APromptNamesWhereALinkLeads)
     ASSERT_TRUE(QDir().mkpath(real + QStringLiteral("/sub")));
     service.handle("id=read;ac=file;fid=r;n=" + path("downloads/sub"));
     ASSERT_TRUE(waitFor([&] { return prompts == 2; }));
-    EXPECT_EQ(prompted, QStringList { file("downloads/sub") + QStringLiteral("/ (resolves to ") + real + QStringLiteral("/sub/)") });
+    EXPECT_EQ(prompted, QStringList { file("downloads/sub") + QStringLiteral("/\n  resolves to ") + real + QStringLiteral("/sub/") });
 }
 // A read goes where the prompt showed. A directory that became a link since
 // leads the read nowhere else.
@@ -1423,6 +1429,8 @@ TEST_F(Transfer, OnePromptAtATimeAndDenialCoolsDown)
 // a program cannot guess one, nor tell a wrong one from a dialog.
 TEST_F(Transfer, AWrongPasswordIsRefusedAndStopsPasswordChecks)
 {
+    // The pause is the process's: the tests after this one in the same process check passwords.
+    const auto endPause = qScopeGuard([] { FileTransfer::endPasswordPause(); });
     service.setPassword(QStringLiteral("secret"));
     DesktopLog log;
     const auto pw = [](const QByteArray& id, const char* password) {
@@ -1458,12 +1466,83 @@ TEST_F(Transfer, PromptListsAtMostOneHundredPaths)
     ASSERT_EQ(prompted.size(), 100);
     EXPECT_EQ(prompted.last(), dir.filePath(QStringLiteral("99")));
     EXPECT_EQ(promptedTotal, 150);
-    // A Yes covers the listed requests. The others are refused.
+    // A Yes covers the listed requests. The others are refused, after the
+    // permission: a client takes nothing before it.
     service.approve(token, true);
     ASSERT_TRUE(fileStatus("r120", "EPERM"));
     ASSERT_TRUE(fileStatus("r5", "ENOENT"));
     EXPECT_FALSE(std::any_of(replies.begin(), replies.end(),
         [](const auto& b) { return b.contains(";fid=r5;") && b.contains("st=" + b64("EPERM")); }));
+    const auto first = std::find_if(replies.begin(), replies.end(), [](const auto& b) { return b.contains("id=test;"); });
+    ASSERT_NE(first, replies.end());
+    EXPECT_FALSE(first->contains("fid="));
+    EXPECT_TRUE(first->contains("st=" + b64("OK")));
+}
+// The pane's reader posts each command to the GUI thread on its own. The
+// prompt waits for those that it had posted before the first file waited.
+TEST_F(Transfer, APromptWaitsForTheCommandsThatThePaneHadPosted)
+{
+    send("ac=send");
+    ASSERT_TRUE(status("OK"));
+    for (int i = 0; i < 50; ++i) {
+        const QByteArray command = "id=test;ac=file;fid=f" + QByteArray::number(i) + ";n=" + b64(file("x").toUtf8() + QByteArray::number(i));
+        QMetaObject::invokeMethod(&service, [this, command] { service.handle(command); }, Qt::QueuedConnection);
+    }
+    ASSERT_TRUE(waitFor([&] { return prompts == 1; }));
+    EXPECT_EQ(prompted.size(), 50);
+    EXPECT_EQ(promptedTotal, 50);
+}
+// A later No refuses the files of its own prompt. Those that came while it
+// showed did not ask again: they get a prompt of their own, in the cooldown too.
+TEST_F(Transfer, FilesThatCameDuringADeniedPromptGetAPromptOfTheirOwn)
+{
+    send("ac=send");
+    send("ac=file;fid=a;n=" + path("a"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 1; }));
+    service.approve(token, true);
+    ASSERT_TRUE(fileStatus("a", "STARTED"));
+    send("ac=file;fid=b;n=" + path("b"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 2; }));
+    send("ac=file;fid=c;n=" + path("c"));
+    ASSERT_TRUE(barrier());
+    service.approve(token, false);
+    ASSERT_TRUE(fileStatus("b", "EPERM"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 3; }));
+    EXPECT_EQ(prompted, QStringList { file("c") });
+    EXPECT_FALSE(std::any_of(replies.begin(), replies.end(), [](const auto& b) { return b.contains(";fid=c;"); }));
+    // A file that comes after the No, in the cooldown, is refused.
+    service.approve(token, true);
+    ASSERT_TRUE(fileStatus("c", "STARTED"));
+    send("ac=file;fid=d;n=" + path("d"));
+    ASSERT_TRUE(fileStatus("d", "EPERM"));
+    EXPECT_EQ(prompts, 3);
+}
+// A level that did not exist when the prompt showed, and that exists now as
+// a directory, is part of the path that is read: not the file of the same
+// name above it.
+TEST_F(Transfer, AReadKeepsTheLevelsThatDidNotExistWhenThePromptShowed)
+{
+    {
+        QFile other(file("f"));
+        ASSERT_TRUE(other.open(QIODevice::WriteOnly));
+        other.write("other");
+    }
+    send("ac=receive;sz=1");
+    send("ac=file;fid=r;n=" + path("a/b/f"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 1; }));
+    ASSERT_TRUE(QDir().mkpath(file("a/b")));
+    {
+        QFile shown(file("a/b/f"));
+        ASSERT_TRUE(shown.open(QIODevice::WriteOnly));
+        shown.write("shown");
+    }
+    service.approve(token, true);
+    ASSERT_TRUE(waitFor([&] {
+        return std::any_of(replies.begin(), replies.end(), [](const auto& b) { return b.contains("ac=file;"); });
+    }));
+    send("ac=file;fid=data;n=" + path("a/b/f"));
+    ASSERT_TRUE(ended("data"));
+    EXPECT_EQ(received("data"), "shown");
 }
 // answered() follows every handled command once, also when the packets
 // that it waits for are dropped. The pane holds the terminal's reports until
@@ -1682,7 +1761,8 @@ TEST_F(TransferLimits, ADeltaUploadWithNoDescriptorForItsSignatureIsRefusedBefor
     basis.close();
     ASSERT_TRUE(start());
     // Each upload with data holds two: its temporary file and its directory.
-    const qsizetype open = qsizetype(limit) / 2;
+    // Room is left for the basis and the signature, not for the output.
+    const qsizetype open = (qsizetype(limit) - 2) / 2;
     for (qsizetype i = 0; i < open; ++i) {
         send("ac=file;fid=" + QByteArray::number(i) + ";n=" + b64(dir.filePath(QString::number(i)).toUtf8()));
         send("ac=data;fid=" + QByteArray::number(i) + ";d=" + b64("x"));
@@ -1902,6 +1982,29 @@ TEST_F(Client, CancelEndsTheSessionOnBothSides)
     ASSERT_TRUE(run(*again));
     EXPECT_EQ(again->state(), AfterglowProto::TransferClient::State::Done) << again->error();
     EXPECT_TRUE(read(dir.filePath(QStringLiteral("out"))) == noise(2000000, 4));
+}
+// A receive of more files than the prompt lists: the client learns which
+// sources were refused, after the permission, and stops before any file moves.
+TEST_F(Client, AReceiveOfMoreSourcesThanThePromptListsNamesTheRefusedOnes)
+{
+    std::vector<std::string> arguments;
+    for (int i = 0; i < 101; ++i) {
+        const QString source = dir.filePath(QStringLiteral("remote/f%1").arg(i));
+        write(source, "x");
+        arguments.push_back(source.toStdString());
+    }
+    const QString local = dir.filePath(QStringLiteral("local"));
+    ASSERT_TRUE(QDir().mkpath(local));
+    arguments.push_back(local.toStdString() + "/");
+    std::string error;
+    auto client = AfterglowProto::makeTransferReceiver(options(), arguments, error);
+    ASSERT_TRUE(client) << error;
+    ASSERT_TRUE(run(*client));
+    EXPECT_EQ(prompts, 1);
+    EXPECT_NE(client->state(), AfterglowProto::TransferClient::State::Done);
+    EXPECT_EQ(client->error().find("Unexpected"), std::string::npos) << client->error();
+    EXPECT_NE(client->error().find("f100"), std::string::npos) << client->error();
+    EXPECT_TRUE(QDir(local).isEmpty());
 }
 // aglow names its plain files at once: one prompt, or two when the worker
 // asked before the last names came, covers them all.

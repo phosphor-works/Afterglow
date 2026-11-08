@@ -8,7 +8,8 @@
 // (odd cell sizes and very large grids too), scroll the viewport, copy a
 // selection, search the text as the search bar does, advance animations,
 // reset, clear, read text, reload options, end the program, change
-// visibility, encode a paste, and read the images as the renderer does.
+// visibility, encode a paste, and read the images as the renderer does. The
+// host that supports everything answers aglow's remote socket query too.
 //
 //   clang++ -std=c++20 -g -O1 -fsanitize=fuzzer,address,undefined ...
 
@@ -20,6 +21,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,7 +34,20 @@ struct Host : AfterglowVt::ITerminalHost
 {
     bool permissive = false;
 
-    void writeToPty(std::string_view) override { }
+    /// A remote socket reply reads back as an answer, with a path a reply
+    /// may carry: the one with a control byte must have become error=off.
+    void writeToPty(std::string_view bytes) override
+    {
+        constexpr std::string_view Introducer = "\x1b]24569;";
+        if (!bytes.starts_with(Introducer)) {
+            return;
+        }
+        const std::size_t end = bytes.ends_with('\x07') ? bytes.size() - 1 : bytes.size() - 2;
+        const auto answer = AfterglowProto::Remote::parseReply(bytes.substr(Introducer.size(), end - Introducer.size()));
+        if (!answer || (!answer->path.empty() && !AfterglowProto::Remote::validPath(answer->path))) {
+            __builtin_trap();
+        }
+    }
     bool requestResize(int, int) override { return permissive; }
     bool screenSize(int& width, int& height) override
     {
@@ -41,6 +56,24 @@ struct Host : AfterglowVt::ITerminalHost
         return permissive;
     }
     bool clipboardRequest(const AfterglowVt::ClipboardRequest&) override { return permissive; }
+    /// The answers of a pane with remote commands, in turn: a socket path, a
+    /// reason for none, and a path the reply must refuse (a control byte).
+    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override
+    {
+        using AfterglowProto::Remote::Error;
+        if (!permissive) {
+            return std::nullopt;
+        }
+        switch (remoteAnswers++ % 3) {
+        case 0:
+            return AfterglowProto::Remote::Answer{"/run/user/1000/afterglow/0123456789abcdef.sock", Error::Off};
+        case 1:
+            return AfterglowProto::Remote::Answer{{}, Error::Forward};
+        default:
+            return AfterglowProto::Remote::Answer{"/tmp/a\x1b]2;x\x07.sock", Error::Off};
+        }
+    }
+    unsigned remoteAnswers = 0;
     std::string notificationCapabilities() override { return permissive ? "a=focus,report:o=always:p=title,body" : ""; }
     bool decodeImage(std::string_view, std::uint32_t& width, std::uint32_t& height,
                      std::vector<std::uint8_t>& rgba) override
