@@ -13,7 +13,8 @@ decode), and an animated GIF whose frames are shown one at a time.
 
 afterglow_renderpng draws with Vulkan, which needs a Wayland display: Qt's
 offscreen platform has no Vulkan. Without a display or a Vulkan device the
-test exits with 77, which CTest reports as skipped. aglow runs with
+test exits with 77, which CTest reports as skipped. On a machine with Vulkan,
+a device that afterglow_renderpng cannot make fails the test. aglow runs with
 --passthrough=none and without TMUX, so that it never changes the settings
 of a tmux that runs the test. afterglow_renderpng runs on the wayland
 platform with the generic platform theme, so that the desktop's theme plugin
@@ -152,7 +153,8 @@ def main():
         probe = subprocess.run([renderer, "--cols", str(COLUMNS), "--rows", str(ROWS), "-", str(root / "probe.png")],
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                env=render_environment, timeout=120)
-        if probe.returncode != 0 and b"Vulkan" in probe.stderr:
+        # Only a machine with no Vulkan at all skips: a device that the renderer could not make is a failure.
+        if probe.returncode != 0 and b"\nno Vulkan: " in b"\n" + probe.stderr:
             print("skipped:", probe.stderr.decode(errors="replace").strip())
             sys.exit(SKIP)
         blank = render("blank", b"")

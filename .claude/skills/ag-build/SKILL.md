@@ -100,7 +100,10 @@ before a commit.
   `build/tools/aglow/aglow-only`, with Qt hidden and no Phosphor directory. It compiles zlib-ng again and takes some
   minutes. `-LE slow` leaves it out while you work. The whole suite before a commit includes it.
 
-- The renderer tests (`libs/afterglow-render/tests`, the `Shaders/` tests) need a working Vulkan driver.
+- The renderer tests (`libs/afterglow-render/tests`, the `Shaders/` tests) need a working Vulkan driver. They
+  skip only on a machine with no Vulkan. A device that cannot be made fails them. They take turns on the GPU
+  (`RESOURCE_LOCK gpu`, also `aglow_icat_render`): each test process makes its own device, and several at once ran
+  out of device memory beside the desktop's own use of the GPU. Give a new GPU test the same lock.
 - The native window tests (`afterglow_native_tests`) are not in CTest by default (`AFTERGLOW_NATIVE_TESTS=OFF`).
   They need a nested KWin. Use the `ag-verify-live` skill to run them.
 - The Python suites in `afterglow/tests/*.py` are separate. Run the ones that cover the area that you changed

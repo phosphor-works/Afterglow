@@ -38,6 +38,8 @@
 #include <QImageReader>
 #include <QBuffer>
 #include <QMargins>
+#include <QVulkanFunctions>
+#include <QVulkanInstance>
 
 #include <algorithm>
 #include <array>
@@ -971,16 +973,29 @@ int run(QGuiApplication& app)
     return 0;
 }
 
+/// Whether the machine has Vulkan: a loader, a driver and a physical device.
+bool hasVulkanDevice()
+{
+    QVulkanInstance instance;
+    if (!instance.create()) return false;
+    std::uint32_t count = 0;
+    instance.functions()->vkEnumeratePhysicalDevices(instance.vkInstance(), &count, nullptr);
+    return count > 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
     QGuiApplication app(argc, argv);
     // No Vulkan device, or an allocation that fails: a message, not an abort.
+    // "no Vulkan" starts the message only when the machine has none, so that
+    // a test can skip then and fail on a device that a machine with Vulkan
+    // could not make.
     try {
         return run(app);
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "%s\n", e.what());
+        std::fprintf(stderr, "%s%s\n", hasVulkanDevice() ? "" : "no Vulkan: ", e.what());
         return 1;
     }
 }

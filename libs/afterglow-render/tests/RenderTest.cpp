@@ -12,6 +12,8 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QImage>
+#include <QVulkanFunctions>
+#include <QVulkanInstance>
 
 #include <QMatrix4x4>
 #include <gtest/gtest.h>
@@ -39,6 +41,10 @@ bool hasGlyph(FontSet& fonts, char32_t cp)
 }
 
 std::unique_ptr<GpuDevice> s_device;
+/// Why there is no device. A machine without Vulkan skips the tests that
+/// draw. On one with Vulkan, a device that cannot be made fails them.
+std::string s_noDevice;
+bool s_noVulkan = false;
 
 class Render : public ::testing::Test
 {
@@ -49,7 +55,8 @@ protected:
     void SetUp() override
     {
         if (!s_device) {
-            GTEST_SKIP() << "no Vulkan device";
+            if (s_noVulkan) GTEST_SKIP() << s_noDevice;
+            FAIL() << s_noDevice;
         }
         renderer = std::make_unique<WindowRenderer>(*s_device, nullptr);
         const FontMetrics& m = renderer->fonts().fonts->metrics();
@@ -3595,6 +3602,16 @@ TEST_F(Render, WithoutAnOverlayTransitionAnOverlaySwitchesAtOnce)
     }
 }
 
+/// Whether the machine has Vulkan: a loader, a driver and a physical device.
+bool hasVulkanDevice()
+{
+    QVulkanInstance instance;
+    if (!instance.create()) return false;
+    std::uint32_t count = 0;
+    instance.functions()->vkEnumeratePhysicalDevices(instance.vkInstance(), &count, nullptr);
+    return count > 0;
+}
+
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);
@@ -3603,13 +3620,26 @@ int main(int argc, char** argv)
         qputenv("QT_QPA_PLATFORM", "offscreen");
     }
     QGuiApplication app(argc, argv);
-    if (QGuiApplication::platformName() == QLatin1String("wayland")) {
+    if (QGuiApplication::platformName() != QLatin1String("wayland")) {
+        s_noVulkan = true;
+        s_noDevice = "no Wayland display";
+    } else if (!hasVulkanDevice()) {
+        s_noVulkan = true;
+        s_noDevice = "no Vulkan device";
+    } else {
+        // Qt's reason (a VkResult) comes as a warning: it goes into the failure.
+        static std::string s_warnings;
+        const QtMessageHandler previous = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext&, const QString& text) {
+            if (type != QtDebugMsg && type != QtInfoMsg) s_warnings += "\n" + text.toStdString();
+        });
         try {
             s_device = std::make_unique<GpuDevice>(FontSpec{});
             s_device->rhi(nullptr);
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
             s_device.reset();
+            s_noDevice = std::string("this machine has a Vulkan device, and the test could not make one: ") + error.what() + s_warnings;
         }
+        qInstallMessageHandler(previous);
     }
     const int result = RUN_ALL_TESTS();
     s_device.reset();

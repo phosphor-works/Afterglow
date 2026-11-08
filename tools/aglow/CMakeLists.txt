@@ -275,7 +275,8 @@ if(BUILD_TESTING)
             add_test(NAME aglow_icat_render
                      COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/icat_render.py
                              $<TARGET_FILE:aglow> $<TARGET_FILE:afterglow_renderpng>)
-            set_tests_properties(aglow_icat_render PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77
+            # It takes its turn on the GPU with the renderer's tests (RESOURCE_LOCK gpu).
+            set_tests_properties(aglow_icat_render PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 RESOURCE_LOCK gpu
                                  ENVIRONMENT "${AGLOW_FOREIGN_TMUX}")
         endif()
     endif()
