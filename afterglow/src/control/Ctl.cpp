@@ -442,11 +442,19 @@ int runCtl(int argc, char** argv)
     if (!trailing.isEmpty() && !TakesTrailing.contains(command)) {
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
-    // The options of a command that take a value, when it says so: then a
-    // word is an option only where no such option before it takes it as its
-    // value, whatever the order in which they are taken. A title or a
-    // directory can be spelled like an option.
-    QStringList valueOptions;
+    // The options of the command that take a value: a word is an option only
+    // where no such option before it takes it as its value, whatever the
+    // order in which they are taken. A title or a directory can be spelled
+    // like an option, as the shell completions read it.
+    QStringList valueOptions{QStringLiteral("--pane")};
+    if (command == QLatin1String("overlay")) {
+        valueOptions += {QStringLiteral("--capture"), QStringLiteral("--cwd"),   QStringLiteral("--title"),  QStringLiteral("-w"),
+                         QStringLiteral("--width"),   QStringLiteral("-h"),      QStringLiteral("--height"), QStringLiteral("--position")};
+    } else if (command == QLatin1String("new-window") || command == QLatin1String("new-tab")) {
+        valueOptions += QStringLiteral("--cwd");
+    } else if (command == QLatin1String("open-directory")) {
+        valueOptions += QStringLiteral("--layout");
+    }
     auto indexOfOption = [&args, &valueOptions](const QString& flag) -> qsizetype {
         for (qsizetype i = 0; i < args.size(); ++i) {
             if (args[i] == flag) return i;
@@ -737,8 +745,6 @@ int runCtl(int argc, char** argv)
             return run(QStringLiteral("notify"), {pane, title, body});
         };
     } else if (command == QLatin1String("overlay")) {
-        valueOptions = {QStringLiteral("--capture"), QStringLiteral("--cwd"),    QStringLiteral("--title"),   QStringLiteral("-w"),
-                        QStringLiteral("--width"),   QStringLiteral("-h"),       QStringLiteral("--height"),  QStringLiteral("--position")};
         const bool noInput = takeFlag(QStringLiteral("-n")) | takeFlag(QStringLiteral("--no-stdin"));
         const bool border = takeFlag(QStringLiteral("--border"));
         const bool noBorder = takeFlag(QStringLiteral("--no-border"));

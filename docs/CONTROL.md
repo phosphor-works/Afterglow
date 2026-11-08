@@ -280,7 +280,6 @@ A result over 1 MiB is cut, and a message goes to standard error.
 A width, a height or `--border` makes the overlay a popup: the pane stays visible around it.
 `--border` alone makes a popup that fills the pane, with the program inside the border.
 [SCRIPTING.md](SCRIPTING.md#popups) gives the limits and the layout.
-The word after an option that takes a value is that value, also when it starts with `-`.
 `afterglow ctl` checks the options and the command before it reads standard input or connects.
 A value that breaks a rule of [SCRIPTING.md](SCRIPTING.md#overlays) is a usage error, with exit status 2.
 Afterglow checks that the `--cwd` directory exists. When it does not, `afterglow ctl` exits with status 1.
@@ -608,6 +607,9 @@ To send text that starts with `--`, put it after `--`: `afterglow ctl send-text 
 
 Only `send-text`, `set-title`, `notify`, `split`, `new-tab`, `new-window` and `overlay` read words after `--`.
 The other commands stop with a usage error when you give such words.
+
+The word after an option that takes a value, such as `--pane`, `--cwd` or `--title`, is that value.
+It is that value also when it starts with `-`, but not when it is `--`.
 
 ## Exit status of afterglow ctl
 

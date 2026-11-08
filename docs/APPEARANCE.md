@@ -159,7 +159,7 @@ Afterglow has no counterpart for the faint and intense text colors, the wallpape
 An Afterglow JSON theme is one object with color keys.
 The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeground`, `selectionBackground`, `divider` and `popupBorder`.
 `searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.
-A color key can have `-` or `_` between its words, in upper or lower case, such as `popup-border` in a Ghostty theme.
+A color key can have `-` or `_` between its words, in any mix of upper and lower case, such as `popup-border` in a Ghostty theme.
 Afterglow logs other keys in a JSON theme.
 A color in a theme or in `Colors` is a Qt color name, such as `#1e1e2e`, `#fff` or `red`.
 These colors have no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`.

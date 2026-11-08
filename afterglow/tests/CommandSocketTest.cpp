@@ -1401,6 +1401,10 @@ TEST(CtlBinaryTest, UsageErrorsExitWithTwoBeforeAnyConnection)
           std::pair{QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("-W"), QStringLiteral("5"), QStringLiteral("--"),
                                 QStringLiteral("fzf")},
                     QStringLiteral("unknown option -W")},
+          // The word after -w is its value, a flag or not.
+          std::pair{QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("-w"), QStringLiteral("--no-border"), QStringLiteral("60"),
+                                QStringLiteral("--"), QStringLiteral("fzf")},
+                    QStringLiteral("unexpected argument 60")},
           // A leading zero, as a percentage refuses one.
           std::pair{QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("-w"), QStringLiteral("060"), QStringLiteral("--"),
                                 QStringLiteral("fzf")},
@@ -1639,10 +1643,20 @@ TEST(CtlOverlayTest, SendsAPopupsOptionsInTheirJsonTypes)
         EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("title")).toString(), QStringLiteral("--capture"));
         EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("capture")).toString(), QStringLiteral("none"));
     }
+    // -n as a title is no flag: the standard input still goes.
     r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 0}}),
                    {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--title"), QStringLiteral("-n"), QStringLiteral("--"), QStringLiteral("fzf")});
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
     EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("title")).toString(), QStringLiteral("-n"));
+    EXPECT_TRUE(overlayOptions(r.calls).contains(QStringLiteral("stdin")));
+    // --pane as a title, before the --pane that names the pane.
+    r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 0}}),
+                   {QStringLiteral("--title"), QStringLiteral("--pane"), QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--"),
+                    QStringLiteral("fzf")});
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    ASSERT_EQ(r.calls.size(), 1);
+    EXPECT_EQ(r.calls.first().value(QStringLiteral("args")).toArray().at(0).toInteger(), 3);
+    EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("title")).toString(), QStringLiteral("--pane"));
 }
 
 TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)

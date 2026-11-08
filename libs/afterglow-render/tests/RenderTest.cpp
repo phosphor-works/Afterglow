@@ -49,7 +49,7 @@ protected:
     void SetUp() override
     {
         if (!s_device) {
-            GTEST_SKIP() << "no Vulkan device";
+            GTEST_SKIP() << "no Wayland display or no Vulkan device";
         }
         renderer = std::make_unique<WindowRenderer>(*s_device, nullptr);
         const FontMetrics& m = renderer->fonts().fonts->metrics();

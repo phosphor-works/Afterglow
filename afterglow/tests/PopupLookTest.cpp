@@ -50,7 +50,7 @@ bool showsColor(const QImage& image, const QRect& rect, QRgb color)
 
 TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
 {
-    if (!s_device) GTEST_SKIP() << "no Vulkan device";
+    if (!s_device) GTEST_SKIP() << "no Wayland display or no Vulkan device";
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
     auto write = [&](const QString& name, const QByteArray& data) -> QString {
