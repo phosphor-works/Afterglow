@@ -328,9 +328,10 @@ public:
     /// by the owner only, so that an editor can open it. False if it cannot.
     bool ensureFile();
     /// The files whose change reloads: the config file, every place its
-    /// theme could come from, the target of each that is a symbolic link
-    /// and, for a plasma theme, the kdeglobals files. Only the tests read it:
-    /// the store watches them itself.
+    /// theme could come from and, for a plasma theme, the kdeglobals files.
+    /// The set follows each that is a symbolic link itself, so a link target
+    /// is not in this list. Only the tests read it: the store watches them
+    /// itself.
     QStringList watchedPaths() const { return m_files.paths(); }
     /// What the last read could not use: a file that does not parse, unknown
     /// keys, bad values, missing themes. Each is logged when it appears.
@@ -416,8 +417,8 @@ private:
     QStringList m_fileProblems;
     QStringList m_readProblems;
     QStringList m_publishedProblems;
-    /// The config file, every place its theme could come from, the targets
-    /// of those that are links, and kdeglobals (watchedPaths()).
+    /// The config file, every place its theme could come from, and
+    /// kdeglobals (watchedPaths()). It follows the links among them itself.
     PhosphorFsLoader::WatchedFileSet m_files;
 };
 

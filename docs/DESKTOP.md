@@ -287,7 +287,7 @@ A requested directory ends with a slash: the program can read all the files in i
 | Request | What the dialog lists | What happens to the other paths |
 | --- | --- | --- |
 | Receive | The first 100 requested paths | The other requests get `EPERM`. |
-| Send | The destinations of the files that wait, up to 100 | A file that came later, or that the dialog did not list, gets a dialog of its own. After the dialog in the cooldown that follows a denial, the files that it did not list get `EPERM`. |
+| Send | The destinations of the files that wait, up to 100 | A file that came later, or that the dialog did not list, gets a dialog of its own. When you answer the dialog in the cooldown that follows a denial, the files that it did not list get `EPERM`. This includes the files that came while it was open. |
 
 A send session starts at once, because the program names its destinations only after the start.
 The dialog opens when Afterglow has handled every command that had reached the window when Afterglow held the first destination.
@@ -299,9 +299,12 @@ If you deny the first dialog of a session, the session ends with `EPERM`.
 If you deny a later dialog, its files get `EPERM`. The files that you approved before continue.
 The files that came while the dialog was open get one more dialog, in the cooldown that follows the denial.
 That dialog lists the first 100 files that wait. These can include files that came after the denial and before the dialog opened.
-It is the last dialog for these files. When you answer it with **Yes** or **No**, the files that it does not list get `EPERM`. The dialog tells you this.
+It is the last dialog for these files. When you answer it with **Yes** or **No**, the files that it does not list get `EPERM`.
+The files that come while it is open also get `EPERM` when you answer it. The dialog tells you this, also when it lists all the files that wait.
 If you deny that dialog, the cooldown of 10 seconds starts again.
-A file that comes in a cooldown gets `EPERM`. A file that comes after the cooldown gets a dialog of its own.
+Except for that last dialog, no dialog opens in a cooldown. If the dialog of a file would open in a cooldown, the file gets `EPERM`.
+If you approved no file of its session before, the session ends with `EPERM`.
+A file that came in a cooldown can still get a dialog after the cooldown, for example when the dialog of another session was open until then.
 Afterglow writes an approved file only where the dialog showed:
 
 - A directory that existed when the dialog opened must still be at the path where links led it then.

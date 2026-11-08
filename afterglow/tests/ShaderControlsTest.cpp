@@ -13,9 +13,11 @@
 #include <QSet>
 #include <gtest/gtest.h>
 #include <cstdio>
+#include <fcntl.h>
 #include <functional>
 #include <limits>
 #include <tuple>
+#include <sys/stat.h>
 using namespace Afterglow;
 using namespace AfterglowRender;
 
@@ -717,8 +719,25 @@ TEST(ShaderReload, AnIncludeThroughALinkThatIsRetargetedRebuilds)
     QTemporaryDir outside;
     ASSERT_TRUE(outside.isValid());
     for (const char* name : {"a", "b"}) ASSERT_TRUE(QDir().mkpath(outside.filePath(QString::fromLatin1(name))));
-    ASSERT_TRUE(writeShaderFixture(outside.filePath(QStringLiteral("a/color.glsl")), "float shade(){return 0.25;}\n"));
-    ASSERT_TRUE(writeShaderFixture(outside.filePath(QStringLiteral("b/color.glsl")), "float shade(){return 0.5;}\n"));
+    // The two targets have the same size, modification time and change
+    // time, in the milliseconds that the signature reads: only the target
+    // that the signature resolves tells them apart. No call sets a change
+    // time, so the times are set until the kernel gives both the same one.
+    const QString targetA = outside.filePath(QStringLiteral("a/color.glsl"));
+    const QString targetB = outside.filePath(QStringLiteral("b/color.glsl"));
+    ASSERT_TRUE(writeShaderFixture(targetA, "float shade(){return 0.25;}\n"));
+    ASSERT_TRUE(writeShaderFixture(targetB, "float shade(){return 0.50;}\n"));
+    const auto changeTime = [](const QString& path) { return QFileInfo(path).metadataChangeTime().toMSecsSinceEpoch(); };
+    const timespec times[2] = {{1'600'000'000, 0}, {1'600'000'000, 0}};
+    bool same = false;
+    for (int attempt = 0; attempt < 1000 && !same; ++attempt) {
+        ASSERT_EQ(::utimensat(AT_FDCWD, QFile::encodeName(targetA).constData(), times, 0), 0);
+        ASSERT_EQ(::utimensat(AT_FDCWD, QFile::encodeName(targetB).constData(), times, 0), 0);
+        same = changeTime(targetA) == changeTime(targetB);
+    }
+    ASSERT_TRUE(same);
+    ASSERT_EQ(QFileInfo(targetA).size(), QFileInfo(targetB).size());
+    ASSERT_EQ(QFileInfo(targetA).lastModified(), QFileInfo(targetB).lastModified());
     // lib -> OUTSIDE/current -> OUTSIDE/a
     const QString current = outside.filePath(QStringLiteral("current"));
     ASSERT_TRUE(QFile::link(outside.filePath(QStringLiteral("a")), current));
@@ -738,16 +757,14 @@ TEST(ShaderReload, AnIncludeThroughALinkThatIsRetargetedRebuilds)
         EXPECT_NE(rebuilt.window.front(), first.window.front());
         first = std::move(rebuilt);
     };
-    // An edit of the target.
-    rebuilds([&] { ASSERT_TRUE(writeShaderFixture(outside.filePath(QStringLiteral("a/color.glsl")), "float shade(){return 0.75;}\n")); });
     // The link retargeted as dotfile managers do it: a new one renamed over the old.
     rebuilds([&] {
         const QString next = current + QStringLiteral(".next");
         ASSERT_TRUE(QFile::link(outside.filePath(QStringLiteral("b")), next));
         ASSERT_EQ(::rename(QFile::encodeName(next).constData(), QFile::encodeName(current).constData()), 0);
     });
-    // The new target is watched.
-    rebuilds([&] { ASSERT_TRUE(writeShaderFixture(outside.filePath(QStringLiteral("b/color.glsl")), "float shade(){return 1.0;}\n")); });
+    // An edit of the new target, through the link.
+    rebuilds([&] { ASSERT_TRUE(writeShaderFixture(targetB, "float shade(){return 1.0;}\n")); });
     ASSERT_TRUE(QDir(dir).removeRecursively());
 }
 

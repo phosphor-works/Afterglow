@@ -388,7 +388,12 @@ TEST(TransferQuestion, ShowsTheFirstPathsAndCountsTheRest)
     EXPECT_TRUE(readMore.text.endsWith(QStringLiteral("and 90 more\nRequested files not in this list: 1. They are refused.")));
     // The dialog in the cooldown after a No: the files that it does not list are refused.
     const auto writeLast = FileTransfer::question(true, paths.mid(0, 100), 101, true);
-    EXPECT_TRUE(writeLast.text.endsWith(QStringLiteral("and 90 more\nFiles not in this list: 1. They are refused.")));
+    EXPECT_TRUE(writeLast.text.endsWith(
+        QStringLiteral("and 90 more\nFiles not in this list: 1. They are refused. Files that come later are refused too.")));
+    // It lists every file that waits: it still tells that files that come while it shows are refused.
+    EXPECT_TRUE(FileTransfer::question(true, paths.mid(0, 3), 3, true).text.endsWith(
+        QStringLiteral("/home/u/f2\nFiles not in this list, and files that come later, are refused.")));
+    EXPECT_TRUE(FileTransfer::question(true, paths.mid(0, 3), 3, false).text.endsWith(QStringLiteral("/home/u/f2")));
     EXPECT_FALSE(readMore.detail.contains(QStringLiteral("/home/u/f100")));
     // 0 of 5: only the count.
     EXPECT_EQ(FileTransfer::question(false, { }, 5, true).text, read + QStringLiteral("\nRequested files not in this list: 5. They are refused."));

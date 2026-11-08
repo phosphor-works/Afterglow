@@ -7069,8 +7069,8 @@ TEST_F(NativeWindow, LinkLabelsOnAHeldFrameStayUntilTheHoldEnds) {
     pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?2026h\x1b[H\x1b[2Jhttps://example.com/last\r\n"); });
     ASSERT_TRUE(window->runAction(pane, Action::UrlsCopy));
     ASSERT_EQ(chrome->urlHints().size(), 1);
-    // Labels found on a held frame go with the first frame that shows other
-    // text, before the chrome draws them over it.
+    // Labels found on a held frame close with the first frame taken after the
+    // hold, before the chrome draws them over its text.
     pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?2026l"); });
     ASSERT_TRUE(nextFrame(window));
     EXPECT_EQ(pane->snapshot().generation, generation());

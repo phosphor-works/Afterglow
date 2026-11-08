@@ -2350,14 +2350,17 @@ FileTransfer::Question FileTransfer::question(bool writing, const QStringList& p
     if (paths.size() > QuestionPaths)
         q.text += QLatin1Char('\n') + tr("and %n more", nullptr, int(paths.size() - QuestionPaths));
     // A Yes covers the listed paths only.
-    if (const int rest = total - int(paths.size()); rest > 0) {
-        QString others;
-        if (!writing)
-            others = tr("Requested files not in this list: %1. They are refused.");
-        else if (othersRefused)
-            others = tr("Files not in this list: %1. They are refused.");
-        else
-            others = tr("Files not in this list: %1. They get a question of their own.");
+    const int rest = total - int(paths.size());
+    if (writing && othersRefused) {
+        // The last dialog of the files that wait: the files that come while
+        // it shows are refused at the answer too, so it says so with no
+        // file left out.
+        q.text += QLatin1Char('\n')
+            + (rest > 0 ? tr("Files not in this list: %1. They are refused. Files that come later are refused too.").arg(rest)
+                        : tr("Files not in this list, and files that come later, are refused."));
+    } else if (rest > 0) {
+        const QString others = writing ? tr("Files not in this list: %1. They get a question of their own.")
+                                       : tr("Requested files not in this list: %1. They are refused.");
         q.text += QLatin1Char('\n') + others.arg(rest);
     }
     if (!writing && std::any_of(paths.begin(), paths.end(), [](const QString& p) { return p.endsWith(QLatin1Char('/')); }))

@@ -355,26 +355,36 @@ TEST(Extensions, ITerm2InterruptedMultipartFileLeavesNoImage)
     t.programExited();
     t.feed("\x1b]1337;FileEnd\x07");
     EXPECT_EQ(t.graphics().placements().size(), 1u);
-    // Not cut off by a prompt: a job in the background still sends it.
-    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
-    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    // Not cut off by a new prompt: a job in the background (imgcat &) still
+    // sends it after its command line ends.
+    t.feed("\x1b]133;C\x07\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
     t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
     EXPECT_EQ(t.graphics().placements().size(), 2u);
-    // Over many prompts, while parts come between them.
-    t.feed("\x1b]1337;MultipartFile=inline=1\x07");
-    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FilePart=cGl\x07");
-    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FilePart=jdH\x07");
-    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FilePart=VyZQ==\x07");
-    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FileEnd\x07");
+    // Over many new prompts, while parts come between them.
+    t.feed("\x1b]133;C\x07\x1b]1337;MultipartFile=inline=1\x07");
+    for (const char* part : {"cGl", "jdH", "VyZQ=="}) {
+        t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07\x1b]133;C\x07");
+        t.feed(std::string("\x1b]1337;FilePart=") + part + "\x07");
+    }
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FileEnd\x07");
     EXPECT_EQ(t.graphics().placements().size(), 3u);
     // Not cut off by the shell drawing its prompt again (a resize, Ctrl+L):
-    // the prompt marks come with no command between them.
-    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    // after one new prompt, the prompt marks come with no command between them.
+    t.feed("\x1b]133;C\x07\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
     t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
     t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
     t.feed("\x1b]133;A;redraw=1\x07$ \x1b]133;B\x07\x1b]633;A\x07$ \x1b]633;B\x07");
     t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
     EXPECT_EQ(t.graphics().placements().size(), 4u);
+    // Not cut off by Enter on an empty line: bash and zsh send D before each
+    // prompt, but no C, as no command ran.
+    t.feed("\x1b]133;C\x07\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]633;D;0\x07\x1b]633;A\x07$ \x1b]633;B\x07");
+    t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 5u);
     // Cut off by two new prompts, each after a command, with no part between:
     // the sender was interrupted, so its data is given back and a late
     // FileEnd does nothing.
@@ -382,13 +392,13 @@ TEST(Extensions, ITerm2InterruptedMultipartFileLeavesNoImage)
     t.feed("\x1b]133;D;130\x07\x1b]133;A\x07$ \x1b]133;B\x07");
     t.feed("\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
     t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
-    EXPECT_EQ(t.graphics().placements().size(), 4u);
+    EXPECT_EQ(t.graphics().placements().size(), 5u);
     // A header with no part yet is cut off the same way, also by the marks of
-    // OSC 633 and by 133 N, which finishes the command itself.
-    t.feed("\x1b]1337;MultipartFile=inline=1\x07");
+    // OSC 633 and by 133 N after a command.
+    t.feed("\x1b]633;C\x07\x1b]1337;MultipartFile=inline=1\x07");
     t.feed("\x1b]633;D;1\x07\x1b]633;A\x07\x1b]633;C\x07\x1b]133;N\x07");
     t.feed("\x1b]1337;FilePart=cGljdHVyZQ==\x07\x1b]1337;FileEnd\x07");
-    EXPECT_EQ(t.graphics().placements().size(), 4u);
+    EXPECT_EQ(t.graphics().placements().size(), 5u);
 }
 
 TEST(Extensions, ITerm2ImageSizes)

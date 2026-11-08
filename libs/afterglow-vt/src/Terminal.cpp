@@ -4230,7 +4230,9 @@ void Terminal::semanticPrompt(std::string_view args)
         // sender is gone (an interrupted imgcat): its data is given back.
         // Only a prompt after a command counts: shells send A again each
         // time they redraw the same prompt (a resize, Ctrl+L, an async
-        // prompt segment, a continuation line), with no C or D between.
+        // prompt segment, a continuation line), with no C between. A D
+        // alone is no command either: bash and zsh send one before each
+        // prompt, also after Enter on an empty line.
         if (m_iterm2Receiving && m_commandSincePrompt) {
             if (m_iterm2PromptSincePart) {
                 endITerm2Multipart();
@@ -4288,7 +4290,6 @@ void Terminal::semanticPrompt(std::string_view args)
     case 'D': { // command finished, D ; exit-code
         m_semanticZone = SemanticZone::Output;
         m_promptRedrawPending = false;
-        m_commandSincePrompt = true;
         int code = -1;
         if (args.size() > 2 && args[1] == ';') {
             const std::string_view rest = args.substr(2);

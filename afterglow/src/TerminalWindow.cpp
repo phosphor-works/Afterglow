@@ -2027,15 +2027,10 @@ bool TerminalWindow::applyScroll(Pane* pane, PaneMotion& m)
     }
     m.scrollShift = float((qreal(m.appliedOffset) - m.scrollValue) * m_renderer->fonts().fonts->metrics().cellHeight);
     if (!pane->refreshSnapshot(m.scrollShift > 0.5f ? 1 : 0)) return false;
-    // Labels found on a held frame: this frame shows the terminal again.
-    // Before the chrome draws, so no frame shows them over other text.
-    if (m_urlMode.heldGeneration && pane == m_urlMode.pane) {
-        if (pane->snapshot().generation != m_urlMode.heldGeneration) {
-            stopUrlMode();
-        } else {
-            m_urlMode.generation = std::exchange(m_urlMode.heldGeneration, 0);
-        }
-    }
+    // Labels found on a held frame: this frame is newer than the held one,
+    // so it shows other text. Before the chrome draws, so no frame shows
+    // them over that text.
+    if (m_urlMode.held && pane == m_urlMode.pane) stopUrlMode();
     return true;
 }
 
@@ -3642,10 +3637,14 @@ void TerminalWindow::startUrlMode(bool copy)
     // The labels sit on the text of this snapshot: output that changes it
     // takes them away, as for show_hints. A held pane draws a snapshot older
     // than its terminal: the labels sit on that drawn text, so they stay
-    // until the hold ends, and go then if the frame taken shows other text.
+    // until the hold ends, and close then.
     if (m_urlMode.active) {
         const auto current = inputPane(m_focused)->withTerminal([](Terminal& t) { return t.generation(); });
-        (current == snap.generation ? m_urlMode.generation : m_urlMode.heldGeneration) = snap.generation;
+        if (current == snap.generation) {
+            m_urlMode.generation = snap.generation;
+        } else {
+            m_urlMode.held = true;
+        }
     }
 }
 

@@ -822,8 +822,8 @@ private:
         QString typed;
         std::uint64_t generation = 0;
         /// Labels found on a held frame (DEC 2026, a prompt redraw), older
-        /// than the terminal: its generation, until a frame is taken again.
-        std::uint64_t heldGeneration = 0;
+        /// than the terminal: the next frame taken closes them.
+        bool held = false;
     } m_urlMode;
     std::shared_ptr<std::atomic<bool>> m_hintCancel;
     void startHints();

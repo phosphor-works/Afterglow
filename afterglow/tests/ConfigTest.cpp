@@ -2789,7 +2789,7 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     EXPECT_FALSE(unclearStore.settings().control.enabled);
     // It stays off, so the text must not say that it uses the default.
     EXPECT_TRUE(mentions(unclearStore.problems(),
-                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file can be read")))
+                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file can be read and holds settings")))
         << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
     EXPECT_FALSE(mentions(unclearStore.problems(), QStringLiteral("Scripts.enabled must be true or false. Using the default")));
     // An editor that saves in place empties the file first: its text may
@@ -2804,6 +2804,12 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("until it holds settings. Delete it for the defaults")))
         << store.problems().join(QLatin1Char('\n')).toStdString();
     EXPECT_FALSE(mentions(store.problems(), QStringLiteral("until it can be read")));
+    // The text of an unclear override fits the empty file as well.
+    unclearStore.reload();
+    EXPECT_FALSE(unclearStore.settings().scripts);
+    EXPECT_TRUE(mentions(unclearStore.problems(),
+                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file can be read and holds settings")))
+        << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
     // Repaired: the file's own values.
     write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
     store.reload();

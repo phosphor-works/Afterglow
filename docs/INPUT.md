@@ -200,8 +200,9 @@ A pane content change, a scroll of the pane or a change of the layout cancels th
 The same is true for the URL labels of `show_urls_open` and `show_urls_copy`.
 In a pane with continuous output, the labels therefore close at the next output.
 A pane can hold its last frame while a program updates it (synchronized output, mode 2026).
+It also holds its last frame while the shell draws its prompt again after a change of the pane width.
 URL labels that open then are on the text of that frame.
-They stay until the hold ends, and close when the next frame shows other text.
+They stay until the hold ends, and close then.
 
 ## Links and URL hints
 

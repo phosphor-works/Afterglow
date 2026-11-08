@@ -2150,6 +2150,22 @@ return {
         } while (timer.elapsed()<3000);
         return false;
     };
+    // A reload sends SIGKILL to the old job before it returns. The QProcess
+    // reaps the job later, from the event loop, and kill(pid, 0) answers
+    // for a zombie until then: a killed job is gone, or a zombie.
+    auto stat = [](qint64 pid) {
+        QFile file(QStringLiteral("/proc/%1/stat").arg(pid));
+        if (!file.open(QIODevice::ReadOnly)) return QByteArray();
+        const auto line = file.readAll();
+        // The state follows the name, which can hold spaces and parentheses.
+        return line.mid(line.lastIndexOf(')') + 2).trimmed();
+    };
+    auto killed = [&](qint64 pid) {
+        if (::kill(pid_t(pid),0)==-1 && errno==ESRCH) return true;
+        const auto state = stat(pid);
+        return state.isEmpty() || state.startsWith('Z');
+    };
+    auto described = [&](qint64 pid) { return "pid " + std::to_string(pid) + " /proc state: " + stat(pid).toStdString(); };
     ASSERT_NO_FATAL_FAILURE(config(0)); host->setEnabled(true);
     ASSERT_TRUE(wait([&]{return pid()>0;}));
     qint64 previousPid=pid();
@@ -2159,7 +2175,7 @@ return {
         ASSERT_TRUE(bool(obsoleteReply));
         ASSERT_NO_FATAL_FAILURE(config(generation)); host->reload();
         ASSERT_TRUE(wait([&]{return pid()>0 && pid()!=previousPid;}));
-        ASSERT_TRUE(wait([&]{return ::kill(pid_t(previousPid),0)==-1 && errno==ESRCH;}));
+        ASSERT_TRUE(wait([&]{return killed(previousPid);})) << described(previousPid);
         previousPid=pid();
         EXPECT_EQ(cleaned.size(),generation);
         obsoleteReply({{},{{"text","obsolete"}}, {}});
@@ -2175,7 +2191,7 @@ return {
     }
     ASSERT_TRUE(QDir(user.filePath("lifecycle")).removeRecursively());
     host->reload();
-    ASSERT_TRUE(wait([&]{return ::kill(pid_t(previousPid),0)==-1 && errno==ESRCH;}));
+    ASSERT_TRUE(wait([&]{return killed(previousPid);})) << described(previousPid);
     EXPECT_EQ(cleaned.size(),6);
     EXPECT_TRUE(host->commands().isEmpty());
     EXPECT_TRUE(host->diagnostics().isEmpty());

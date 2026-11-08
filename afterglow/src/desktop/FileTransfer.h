@@ -26,7 +26,9 @@ public:
     /// the first paths, a count of the others and a count of the paths that
     /// the answer does not cover, and the detail, with every path that
     /// permissionRequested gives. @p othersRefused tells whether the paths
-    /// that the answer does not cover are refused or get a question of their own.
+    /// that the answer does not cover are refused or get a question of their
+    /// own. For a write, it also tells that the files that come later are
+    /// refused, also when the question lists every file.
     struct Question {
         QString text;
         QString detail;
@@ -68,7 +70,8 @@ Q_SIGNALS:
     /// once every command that reached the GUI thread before its first
     /// waiting file has reached handle() and the worker. The files wait
     /// until the answer. The paths stay as they are: what comes later waits
-    /// for a request of its own, and a Yes approves only @p paths.
+    /// for a request of its own, unless @p othersRefused, and a Yes approves
+    /// only @p paths.
     /// @p othersRefused: the answer refuses the files that @p paths does not
     /// hold, with no other request for them. That is always so for a read,
     /// and for a write in the request that opens in the cooldown after a No.

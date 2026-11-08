@@ -90,7 +90,9 @@ struct RemoteSockets::Session
     /// this can run inside a call of that router (a remote run's handler
     /// that turns the setting off or closes the pane), and the router must
     /// not be destroyed inside its own call (IpcRouter's contract). Without
-    /// a context Afterglow quits, and no event loop is left to deliver.
+    /// a context, nothing waits to be delivered or no event loop is left to
+    /// deliver it: open() failed before the socket had a client, or
+    /// Afterglow quits.
     void closeSocket(const QString& reason, QObject* context)
     {
         if (commands) commands->cancelAll(reason);
@@ -201,7 +203,7 @@ QString RemoteSockets::open(const Request& request, Opened& out)
         // descriptor here and a channel of the shared ssh connection.
         session->router->setMaxConnections(MaxConnectionsPerSession);
         connect(session->router.get(), &PhosphorIpc::IpcRouter::connectionRefused, this,
-                [this, host = request.host, refused = std::weak_ptr<Session>(session)] {
+                [host = request.host, refused = std::weak_ptr<Session>(session)] {
                     const std::shared_ptr<Session> s = refused.lock();
                     // Once for each time the socket is full, not for each client that a loop opens.
                     if (!s || std::exchange(s->full, true)) return;
