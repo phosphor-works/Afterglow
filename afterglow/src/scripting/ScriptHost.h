@@ -178,8 +178,8 @@ public:
     /// CpuOverrunGapMs after the one before.
     static constexpr int MaxCpuOverruns = 5;
     static constexpr int CpuOverrunGapMs = 3000;
-    /// Calls that wait for CPU time (results, keys, dock clicks, command
-    /// starts) before the script is disabled.
+    /// Calls that wait for CPU time before the script is disabled. The
+    /// "CPU time" section of docs/SCRIPTING.md lists the calls that wait.
     static constexpr int MaxDelayedCalls = 256;
     static constexpr int MaxSleeping = 16;
     static constexpr int MaxSleepMs = 600000;
@@ -277,8 +277,9 @@ private:
                                                  const QString& kind, quint32 eventPane);
     bool withinBudget(Script& script, const QString& kind, bool structural);
     /// Counts a handler call against the script's callback budget: the one
-    /// for events, or for @p task the one for its timers and watchers. A
-    /// script that used its CPU budget gets none.
+    /// for events, or for @p task the one for its timers and watchers. An
+    /// event of a script that used its CPU budget is refused. A timer's or a
+    /// watcher's call is not: it waits in defer.
     bool admitCallback(Script& script, bool task = false);
     /// The script's handler time in the last second, in ns.
     qint64 cpuUsed(Script& script) const;
@@ -321,7 +322,9 @@ private:
     /// visits candidates highest priority first: the first to claim an id keeps it.
     QStringList performScan(const QStringList& directories) override;
     void retire(const ScriptPtr& script);
-    void emitOwned(const ScriptPtr&, const QString& handler, QVariantMap event, quint32 pane);
+    /// @p repeating: the ScriptTasks key of a repeating timer or a watcher,
+    /// whose calls do not queue behind each other for CPU time.
+    void emitOwned(const ScriptPtr&, const QString& handler, QVariantMap event, quint32 pane, quint64 repeating = 0);
 
     Callbacks m_callbacks;
     std::unique_ptr<ScriptTasks> m_tasks;

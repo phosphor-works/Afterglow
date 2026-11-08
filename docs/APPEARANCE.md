@@ -10,7 +10,7 @@ The usual path is `~/.config/afterglow/config.json`.
 Afterglow reloads this file when it changes.
 A file that cannot be read, does not parse or does not hold a JSON object keeps the current settings.
 At the start there are no current settings to keep. Afterglow then uses the defaults, but with `Scripts.enabled` and `Control.enabled` off, because the file can turn them off.
-They come on when the file can be read and does not turn them off. A `-o` option for them still applies.
+They come on when the file can be read and does not turn them off. A `-o` option that gives one of them a boolean value still applies.
 A file that becomes empty in the meantime keeps them off, because an editor that saves in place empties the file first.
 A configuration file that is a symbolic link to a file that does not exist counts as a file that cannot be read.
 A file that holds `Terminal.fileTransferPassword` and that other users can read gives a warning. Make it readable by you only (`chmod 600`).

@@ -604,6 +604,15 @@ private:
     /// Scrolls a pane's view by @p rows (positive is back in history),
     /// eased when @p animate and scroll animation is on.
     void scrollPane(Pane* pane, double rows, bool animate = true);
+    /// Takes a move of @p pane's view by the terminal (output, typing) into
+    /// @p m: the easing follows it.
+    void followViewport(Pane* pane, PaneMotion& m);
+    /// Shows the rows of @p m's scroll position in @p pane, sets its pixel
+    /// shift and refreshes the snapshot. False while the pane holds its frame.
+    bool applyScroll(Pane* pane, PaneMotion& m);
+    /// Ends @p pane's scroll easing at its target now, with the snapshot of
+    /// that place, for a mode that reads the rows as drawn.
+    void settleScroll(Pane* pane);
     /// Advances a pane's motion and returns how to draw it; refreshes its
     /// snapshot. Sets @p animating when something is still moving.
     void preparePane(Pane* pane, const QRect& layoutRect, AfterglowRender::FrameBuilder::PaneParams& params,

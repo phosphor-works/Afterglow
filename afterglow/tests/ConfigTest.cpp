@@ -1041,7 +1041,6 @@ TEST(Config, ScriptCommandLimitsOfTheHostMatchTheSettingDefaults)
     EXPECT_EQ(limits.inputBytes, settings.scriptCommandStdinLimit);
     EXPECT_EQ(limits.runs, settings.scriptCommandRunLimit);
     EXPECT_EQ(limits.outputBytes, settings.scriptCommandOutputLimit);
-    EXPECT_EQ(ScriptHost::DefaultCpuBudgetMs, settings.scriptCpuBudget);
     // The description states the host's rule for disabling a script.
     const QString cpu = SettingsStore::reference()
                             .value(QStringLiteral("groups")).toObject()
@@ -2780,6 +2779,14 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     SettingsStore overridden(path, overrides);
     EXPECT_TRUE(overridden.settings().scripts);
     EXPECT_FALSE(overridden.settings().control.enabled);
+    // One that is no boolean says nothing: it must not read as the default on.
+    QJsonObject unclear;
+    ASSERT_TRUE(SettingsStore::addOverride(unclear, QStringLiteral("Scripts.enabled=maybe")));
+    ASSERT_TRUE(SettingsStore::addOverride(unclear, QStringLiteral("Control.enabled=2")));
+    SettingsStore unclearStore(path, unclear);
+    EXPECT_FALSE(unclearStore.settings().scripts);
+    EXPECT_FALSE(unclearStore.settings().control.enabled);
+    EXPECT_TRUE(mentions(unclearStore.problems(), QStringLiteral("Scripts.enabled must be true or false")));
     // An editor that saves in place empties the file first: its text may
     // still turn them off.
     write(QStringLiteral("config.json"), "");
@@ -2788,6 +2795,10 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     EXPECT_FALSE(store.settings().control.enabled);
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("is empty. Using the defaults, with Scripts.enabled")))
         << store.problems().join(QLatin1Char('\n')).toStdString();
+    // It was read: only text that holds settings ends the wait.
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("until it holds settings. Delete it for the defaults")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_FALSE(mentions(store.problems(), QStringLiteral("until it can be read")));
     // Repaired: the file's own values.
     write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
     store.reload();

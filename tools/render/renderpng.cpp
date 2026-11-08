@@ -1105,7 +1105,6 @@ int run(QGuiApplication& app)
     };
     renderer.setTranslucent(std::any_of(panes.begin(), panes.end(), translucentPane)
                             || std::any_of(docks.begin(), docks.end(), translucentDock));
-    // iDate: the date given, advanced with the frames.
     auto seconds = [](double s) {
         return std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(s));
     };
@@ -1123,6 +1122,7 @@ int run(QGuiApplication& app)
     for (int frame = 0; frame < frames; ++frame) {
         const double elapsed = frame / fps;
         renderer.setClockOverride(time + elapsed);
+        // iDate: the date given, advanced with the frames.
         setDate(elapsed);
         // Ages follow the requested playback rate, not render speed: each is
         // stamped this frame as its starting age plus the frames' time.

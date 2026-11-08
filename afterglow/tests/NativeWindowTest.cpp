@@ -6995,6 +6995,51 @@ TEST_F(NativeWindow, APointerOverAViewScrolledByPartOfARowIsOnTheRowDrawnUnderIt
     EXPECT_GT(highest, gridTop - row * 0.7) << highest << " " << gridTop;
 }
 
+TEST_F(NativeWindow, HintsThatOpenWhileTheViewEasesSitOnTheRowsWhereItStops) {
+    // A scroll that eases for long: the hints open while it moves.
+    restartApplication(QStringLiteral("scroll.conf"),
+        testSettings({{QStringLiteral("Animation"), QJsonObject{{QStringLiteral("scroll"), true}, {QStringLiteral("scrollDuration"), 5000}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    pane->withTerminal([](AfterglowVt::Terminal& t) {
+        std::string text;
+        for (int i = 0; i < 200; ++i) text += "row " + std::to_string(i) + " https://example.com/" + std::to_string(i) + "\r\n";
+        t.feed(text);
+    });
+    expectIdle(window);
+    const double gridTop = window->mapFromGlobal(window->accessibleCellRect(pane, pane->selectionPointAt(0, 0)).topLeft()).y();
+    const auto offset = [pane] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }); };
+    const auto page = std::size_t(std::max(1, pane->rows() - 1));
+    ASSERT_TRUE(window->runAction(pane, Action::ScrollPageUp));
+    ASSERT_TRUE(nextFrame(window));
+    ASSERT_LT(offset(), page);
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(window->runAction(pane, Action::UrlsCopy));
+    // The view stops a page back at once, and the labels sit on its rows:
+    // the highest on the top row.
+    EXPECT_EQ(offset(), page);
+    ASSERT_FALSE(chrome->urlHints().isEmpty());
+    QVariantMap highest;
+    for (const QVariant& hint : chrome->urlHints())
+        if (highest.isEmpty() || hint.toMap().value(QStringLiteral("y")).toDouble() < highest.value(QStringLiteral("y")).toDouble())
+            highest = hint.toMap();
+    EXPECT_NEAR(highest.value(QStringLiteral("y")).toDouble(), gridTop, 1.0);
+    const QString top = pane->text(AfterglowVt::Terminal::TextScope::Screen).section(QLatin1Char('\n'), 0, 0);
+    const QString url = top.section(QLatin1Char(' '), 2, 2);
+    ASSERT_TRUE(url.startsWith(QLatin1String("https://"))) << top.toStdString();
+    // Frames go on, and the view stays under the labels.
+    ASSERT_TRUE(nextFrame(window));
+    ASSERT_TRUE(nextFrame(window));
+    EXPECT_EQ(offset(), page);
+    // The label of the top row copies that row's URL.
+    for (const QChar letter : highest.value(QStringLiteral("label")).toString())
+        sendKey(window, Qt::Key_A + (letter.toLower().unicode() - u'a'), Qt::NoModifier, QString(letter));
+    EXPECT_TRUE(waitFor([&] { return QGuiApplication::clipboard()->text() == url; }))
+        << QGuiApplication::clipboard()->text().toStdString() << " " << url.toStdString();
+}
+
 TEST_F(NativeWindow, ASplitWhoseShellDoesNotStartKeepsTheZoom) {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
@@ -7074,16 +7119,40 @@ TEST_F(NativeWindow, AnOverlaysProgramGetsTheRemoteSocketOfItsHost) {
 }
 
 TEST_F(NativeWindow, ARefusedMoveToANewTabKeepsItsKeyAndSaysWhy) {
+    // cat -v shows each byte that reaches the program: the chord would
+    // come as ESC and CR.
+    restartApplication(QStringLiteral("move.conf"),
+        testSettings({{QStringLiteral("Keybinds"), QJsonObject{
+            {QStringLiteral("bindings"), QJsonObject{{QStringLiteral("move_pane_to_tab"), QStringLiteral("Ctrl+Alt+M")}}}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty raw -echo; printf ready; exec cat -v")});
+    if (HasFatalFailure()) return;
     RegisteredNotificationServer notices;
     ASSERT_TRUE(notices.registered);
     Pane* lone = window->focusedPane();
+    const auto screen = [lone] { return lone->text(AfterglowVt::Terminal::TextScope::Screen); };
+    ASSERT_TRUE(waitFor([&] { return screen().contains(QStringLiteral("ready")); })) << screen().toStdString();
     const quint32 tab = window->tabIdOf(lone);
-    // A pane alone in its tab: the move would only replace the tab.
-    EXPECT_TRUE(window->runAction(lone, Action::MovePaneToTab));
+    // A pane alone in its tab: the move would only replace the tab. The
+    // chord is held: its repeats do not try again.
+    holdKey(window, Qt::Key_M, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("m"), 4);
+    ASSERT_TRUE(settleQueued());
     EXPECT_EQ(window->tabIdOf(lone), tab);
     EXPECT_EQ(window->tabs().size(), 1);
-    ASSERT_TRUE(waitFor([&] { return notices.server.count >= 1; }));
-    EXPECT_EQ(notices.server.bodies, QStringList{QStringLiteral("The pane is alone in its tab already")});
+    // The next key is the first that the program gets: it shows right
+    // after "ready".
+    sendKey(window, Qt::Key_Z, Qt::NoModifier, QStringLiteral("z"));
+    EXPECT_TRUE(waitFor([&] { return screen().contains(QLatin1Char('z')); })) << screen().toStdString();
+    EXPECT_TRUE(screen().contains(QStringLiteral("readyz"))) << screen().toStdString();
+    // afterglow ctl and scripts hear that it failed, and the user hears why
+    // once more.
+    EXPECT_FALSE(window->runAction(lone, Action::MovePaneToTab));
+    EXPECT_EQ(window->tabs().size(), 1);
+    // The notices arrive in the order sent: all of them are in once the
+    // last one is.
+    NotificationCenter::instance().showNotice(nullptr, QStringLiteral("Test"), QStringLiteral("last"));
+    ASSERT_TRUE(waitFor([&] { return notices.server.bodies.contains(QStringLiteral("last")); }));
+    const QString refused = QStringLiteral("The pane is alone in its tab already");
+    EXPECT_EQ(notices.server.bodies, (QStringList{refused, refused, QStringLiteral("last")}));
 }
 
 TEST_F(NativeWindow, TerminalEventsReachTheGuiThreadInTheOrderTheyHappened) {
@@ -7102,8 +7171,9 @@ TEST_F(NativeWindow, TerminalEventsReachTheGuiThreadInTheOrderTheyHappened) {
 }
 
 TEST_F(NativeWindow, QueuedClipboardWritesAreBoundedByTheirSize) {
-    // A program that reads nothing: the terminal's replies do not come back
-    // as output.
+    // A program that reads nothing: only the line discipline echoes the
+    // terminal's replies, as text with ESC shown as ^[, so none comes back
+    // as a sequence.
     PaneLaunchOptions launch;
     launch.command = {QStringLiteral("/bin/sleep"), QStringLiteral("30")};
     Pane* pane = window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr);

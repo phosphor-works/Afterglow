@@ -381,6 +381,11 @@ struct ScopedEnvironment {
         saved.emplace_back(name, qEnvironmentVariableIsSet(name) ? std::optional(qgetenv(name)) : std::nullopt);
         qputenv(name, value);
     }
+    void unset(const char* name)
+    {
+        saved.emplace_back(name, qEnvironmentVariableIsSet(name) ? std::optional(qgetenv(name)) : std::nullopt);
+        qunsetenv(name);
+    }
     ~ScopedEnvironment()
     {
         for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
@@ -416,6 +421,10 @@ struct FakeSsh {
         environment.set("TERM_PROGRAM_VERSION", "1.0");
         environment.set("TERM", "xterm-256color");
         environment.set("AFTERGLOW_SSH_TERMINFO", "install");
+        // The pane that runs the tests: its Afterglow must never get the
+        // calls of the remote commands probe.
+        environment.unset("AFTERGLOW_SOCKET");
+        environment.unset("AFTERGLOW_PANE_ID");
     }
     // The recorded runs, emptying the log.
     QStringList take()
@@ -649,6 +658,22 @@ TEST(Ssh, InstallsTheTerminfoEntryOnceOrFallsBack)
     ssh.environment.set("AFTERGLOW_SSH_TERMINFO", "fallback");
     EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 7);
     EXPECT_EQ(ssh.take(), QStringList({"ARGS [prod]", "TERM=xterm-256color"}));
+}
+
+TEST(Ssh, ADashMInstallsAsNoMasterAndSharesNothing)
+{
+    // ssh -M joins no master: a master that the install made would only
+    // take the session's ControlPath.
+    FakeSsh ssh;
+    if (!ssh.compileTerminfo()) GTEST_SKIP() << "tic or infocmp not installed";
+    ssh.environment.set("TERM", "afterglow");
+    ssh.environment.set("FAKE_SETENV", "1");
+    EXPECT_EQ(Afterglow::Ssh::run({"-vM", "-p", "2222", "prod"}), 7);
+    const auto runs = ssh.take();
+    ASSERT_EQ(runs.size(), 4) << runs.join('\n').toStdString();
+    EXPECT_TRUE(runs[0].startsWith("ARGS [-o] [ControlMaster=no] [-v] [-p] [2222] [-T] [--] [prod] [sh -c ")) << runs[0].toStdString();
+    EXPECT_EQ(runs[2], "ARGS [-vM] [-p] [2222] [prod]");
+    EXPECT_EQ(runs[3], "TERM=afterglow");
 }
 
 TEST(Ssh, InstallsPastRemoteCommandWithLaterOptionsAndInput)

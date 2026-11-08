@@ -23,7 +23,7 @@ inline constexpr std::size_t MaxPathBytes = 103;
 /// Why a pane has no socket to give.
 enum class Error {
     Off, ///< no forward for this session: no ssh session, or remote commands are off
-    Forward, ///< the ssh server refused the forward (AllowStreamLocalForwarding)
+    Forward, ///< the ssh server refused the forward (AllowStreamLocalForwarding), or Afterglow did not confirm it in time
     Version, ///< the aglow on the remote host speaks another protocol version
     Length, ///< the socket path on the remote host would be over MaxPathBytes
 };

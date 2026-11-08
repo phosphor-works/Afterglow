@@ -241,7 +241,7 @@ QString RemoteSockets::failed(const QString& token, const QString& reason)
     // Nothing to cancel: the forward was never added, or the client
     // cancelled it after its remoteSocketForwarded got no answer in time,
     // which can come before this.
-    session->closeSocket(QStringLiteral("the ssh server refused the forward of the socket"), this);
+    session->closeSocket(QStringLiteral("the ssh server refused the forward of the socket, or Afterglow did not confirm it in time"), this);
     session->answer = {{}, Remote::Error::Forward};
     session->answering = true;
     refresh(session->pane);

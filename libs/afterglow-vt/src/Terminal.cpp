@@ -4224,8 +4224,17 @@ void Terminal::semanticPrompt(std::string_view args)
             m_explicitCommand.reset(); // nor one a shell reported (OSC 633 E) in the last
         }
         // Back at the shell: whatever a program reported in flight is over.
-        // An iTerm2 file in parts goes on: a job in the background (imgcat
-        // &) still sends it while the shell shows its prompt.
+        // An iTerm2 file in parts goes on over one prompt: a job in the
+        // background (imgcat &) still sends it while the shell shows its
+        // prompt. A second prompt with no part since the first means the
+        // sender is gone (an interrupted imgcat): its data is given back.
+        if (m_iterm2Receiving) {
+            if (m_iterm2PromptSincePart) {
+                endITerm2Multipart();
+            } else {
+                m_iterm2PromptSincePart = true;
+            }
+        }
         if (m_programStatus.endActivity()) {
             m_host.programStatusChanged();
         }
@@ -4389,6 +4398,7 @@ void Terminal::iterm2(std::string_view args, bool bel)
                 endITerm2Multipart(); // up to 96 MiB: give it back
             } else {
                 m_iterm2Data.append(value);
+                m_iterm2PromptSincePart = false;
             }
         }
     } else if (key == "FileEnd") {
@@ -4442,6 +4452,7 @@ void Terminal::endITerm2Multipart()
     m_iterm2Args.clear();
     std::string().swap(m_iterm2Data);
     m_iterm2Limit = 0;
+    m_iterm2PromptSincePart = false;
 }
 
 void Terminal::iterm2File(std::string_view args, std::string_view base64)

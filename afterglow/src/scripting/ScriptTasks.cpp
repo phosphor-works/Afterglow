@@ -140,12 +140,13 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
         if (delay < 0 || repeat < 0 || (repeat && repeat < 250)) return reject(QStringLiteral("Timers require delay_ms >= 1 and repeat_ms = 0 or >= 250"));
         auto* timer = new QTimer(task);
         timer->setSingleShot(true);
-        connect(timer, &QTimer::timeout, task, [this, task, timer, repeat] {
+        const quint64 repeating = repeat ? ++m_lastRepeating : 0;
+        connect(timer, &QTimer::timeout, task, [this, task, timer, repeat, repeating] {
             if (task->done) return;
             const auto event = task->event;
             const QVariantMap data{{QStringLiteral("name"), task->id}};
             if (!repeat) finish(task, {}, false);
-            if (event) event(QStringLiteral("on_timer"), data);
+            if (event) event(QStringLiteral("on_timer"), data, repeating);
             if (repeat && !task->done) timer->start(repeat);
         });
         timer->start(delay);
@@ -158,10 +159,10 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
         auto* watcher = new PhosphorFsLoader::WatchedFileSet(task);
         watcher->setDebounceInterval(250);
         watcher->setPaths({path});
-        connect(watcher, &PhosphorFsLoader::WatchedFileSet::filesChanged, task, [task, path] {
+        connect(watcher, &PhosphorFsLoader::WatchedFileSet::filesChanged, task, [task, path, repeating = ++m_lastRepeating] {
             if (task->done) return;
             task->event(QStringLiteral("on_file_changed"), {{QStringLiteral("name"), task->id},
-                {QStringLiteral("path"), path}, {QStringLiteral("exists"), QFileInfo::exists(path)}});
+                {QStringLiteral("path"), path}, {QStringLiteral("exists"), QFileInfo::exists(path)}}, repeating);
         });
         return {};
     }

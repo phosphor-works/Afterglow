@@ -360,6 +360,25 @@ TEST(Extensions, ITerm2InterruptedMultipartFileLeavesNoImage)
     t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
     t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
     EXPECT_EQ(t.graphics().placements().size(), 2u);
+    // Over many prompts, while parts come between them.
+    t.feed("\x1b]1337;MultipartFile=inline=1\x07");
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FilePart=cGl\x07");
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FilePart=jdH\x07");
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FilePart=VyZQ==\x07");
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 3u);
+    // Cut off by two prompts with no part between: the sender was
+    // interrupted, so its data is given back and a late FileEnd does nothing.
+    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    t.feed("\x1b]1337;FilePart=VyZQ==\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 3u);
+    // A header with no part yet is cut off the same way.
+    t.feed("\x1b]1337;MultipartFile=inline=1\x07");
+    t.feed("\x1b]133;A\x07\x1b]133;A\x07");
+    t.feed("\x1b]1337;FilePart=cGljdHVyZQ==\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(t.graphics().placements().size(), 3u);
 }
 
 TEST(Extensions, ITerm2ImageSizes)

@@ -1242,7 +1242,7 @@ TEST(ScriptTasksTest, OwnerCleanupStopsTimersAndDropsAsyncCallbacks)
     int callbacks = 0;
     const int repeatMs = 250;
     EXPECT_TRUE(tasks.apply("owner", {{"kind", "timer"}, {"name", "tick"}, {"delay_ms", 5}, {"repeat_ms", repeatMs}},
-        {}, [&](auto, auto) { ++callbacks; }).error.isEmpty());
+        {}, [&](auto, auto, auto) { ++callbacks; }).error.isEmpty());
     ASSERT_TRUE(await([&] { return callbacks == 1; }));
     const auto before = children();
     EXPECT_TRUE(tasks.apply("owner", job("job", {"/bin/sleep", "5"}), [&](auto) { ++callbacks; }, {}).deferred);
@@ -1299,7 +1299,7 @@ TEST(ScriptTasksTest, WatchSurvivesAtomicFileReplacement)
     ScriptTasks tasks;
     int changes = 0;
     EXPECT_TRUE(tasks.apply("owner", {{"kind", "watch_file"}, {"name", "watch"}, {"path", path}}, {},
-        [&](const QString& handler, const QVariantMap& event) {
+        [&](const QString& handler, const QVariantMap& event, quint64) {
             EXPECT_EQ(handler, QStringLiteral("on_file_changed"));
             EXPECT_TRUE(event["exists"].toBool());
             ++changes;
@@ -6662,7 +6662,9 @@ TEST_F(ScriptHostTest, ACancelledDialogIsNoEffectErrorAndADisableKeepsItsReason)
     ASSERT_TRUE(pendingReply);
     for (int i = 0; i < ScriptHost::MaxFailures && !host->isDisabled("ask"); ++i) ASSERT_TRUE(run("ask.fail", 7));
     ASSERT_TRUE(host->isDisabled("ask"));
-    // Still open: the disable closes the dialogs of runs only.
+    // This harness's cleanup only records the owner, so the dialog's reply
+    // can still come, as it can from a window that answers late. The
+    // window's cleanup would close it.
     ASSERT_TRUE(pendingReply);
     std::exchange(pendingReply, {})({QStringLiteral("Dialog failed"), {}, QStringLiteral("operation_failed")});
     pump();
@@ -6709,6 +6711,52 @@ TEST_F(ScriptHostTest, AOneShotTimerPastTheBudgetWaitsInsteadOfBeingDropped)
     ASSERT_TRUE(await([&] { return !rec.applied.isEmpty(); }, 4000));
     EXPECT_EQ(rec.applied.first().value("text"), "once");
     EXPECT_GE(firstDiagnostic()["delayed_callbacks"].toULongLong(), 1u);
+}
+
+TEST_F(ScriptHostTest, ARepeatingTimerPastTheBudgetWaitsWithOneCallNotOneForEachTick)
+{
+    // The timer ticks each 250 ms while the burn of on_bell keeps the script
+    // past its budget for a second. The ticks that come while its call waits
+    // add no call: once time returns, on_timer runs once. Its first call
+    // cancels the timer, so a second call could come only from a tick that
+    // waited.
+    WRITE(user, "late.luau", R"(return {
+    on_bell = function()
+        local t = os.clock() while os.clock() - t < 0.015 do end
+        return afterglow.timer("tick", 1, 250)
+    end,
+    on_timer = function(ev) return { afterglow.cancel(ev.name), afterglow.copy(ev.name) } end,
+})");
+    host->setCpuBudget(10);
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    const auto copies = [&] {
+        return std::count_if(rec.applied.cbegin(), rec.applied.cend(), [](const QVariantMap& e) { return e["kind"] == "copy"; });
+    };
+    ASSERT_TRUE(await([&] { return copies() > 0; }, 4000));
+    await([] { return false; }, 500);
+    EXPECT_EQ(copies(), 1);
+    const auto stats = firstDiagnostic();
+    EXPECT_GE(stats["delayed_callbacks"].toULongLong(), 1u);
+    // Each tick that came while the call waited.
+    EXPECT_GE(stats["dropped_callbacks"].toULongLong(), 2u);
+}
+
+TEST_F(ScriptHostTest, ARemoteReadWithABadLimitStaysAnInvalidEffect)
+{
+    // The remote gate does not hide the first refusal, a bad max_bytes.
+    WRITE(user, "far.luau", R"(return {
+    metadata = { commands = { look = { summary = "Look", remote = true } } },
+    run_command = function(command, ev)
+        local _, err = afterglow.await(afterglow.read_text(ev.pane, "screen", 0))
+        return afterglow.output(ev, err.code .. "\n")
+    end,
+})");
+    host->setEnabled(true);
+    Client& client = newClient();
+    ASSERT_NE(startRequest({"far", "look", {}, "/home/far", 7, std::nullopt, "remote", "box"}, client), 0u);
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }));
+    EXPECT_EQ(client.out, QStringLiteral("invalid_effect\n"));
 }
 
 TEST_F(ScriptHostTest, ACommandRunThatWaitedForCpuTimeGetsTheStateOfItsStart)

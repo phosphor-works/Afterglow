@@ -958,7 +958,7 @@ TEST(RunRemote, WithoutALocalAfterglowBothFindingsShow)
                                    .askTerminal = answers(replyError(Remote::Error::Forward))});
         const Outcome outcome = client.wait();
         EXPECT_EQ(outcome.status, 1);
-        EXPECT_EQ(outcome.err.find("aglow run: the ssh server refuses"), 0u) << outcome.err;
+        EXPECT_EQ(outcome.err.find("aglow run: the socket of the commands has no forward"), 0u) << outcome.err;
     }
 }
 
@@ -1025,7 +1025,8 @@ TEST(RunRemote, CompletionWaitsOnceForTheQueryTheConnectionAndTheList)
 TEST(RunClient, ASocketWithoutTheCommandsTargetNamesBothCauses)
 {
     // The Afterglow of $AFTERGLOW_SOCKET has commands off, or the socket is
-    // one that afterglow ssh forwarded, under a name that is not TOKEN.sock.
+    // one that afterglow ssh forwarded, under a name that is not TOKEN.sock:
+    // s.sock is neither of these nor the name of an Afterglow's socket.
     FakeServer server;
     Client client(server, {});
     ASSERT_TRUE(server.accept());
@@ -1037,6 +1038,25 @@ TEST(RunClient, ASocketWithoutTheCommandsTargetNamesBothCauses)
     EXPECT_EQ(outcome.status, 1);
     EXPECT_EQ(outcome.err, "aglow run: the Afterglow at $AFTERGLOW_SOCKET takes no commands (Control.enabled or Scripts.enabled "
                            "is off). A socket that afterglow ssh forwarded takes them only by its own name, DIRECTORY/TOKEN.sock\n");
+}
+
+TEST(RunClient, ThePaneSocketWithoutTheCommandsTargetHasCommandsOff)
+{
+    // The name that every pane sets: no hint on forwarded sockets.
+    FakeServer server;
+    TempDir runtime;
+    ASSERT_FALSE(runtime.path().empty());
+    const std::string pane = runtime.path() + "/afterglow-wayland-0.sock";
+    ASSERT_EQ(::symlink(server.path().c_str(), pane.c_str()), 0);
+    Client client(server, {}, {.socket = false, .variables = {{"AFTERGLOW_SOCKET", pane}}});
+    ASSERT_TRUE(server.accept());
+    const auto call = expect(server, "list");
+    ASSERT_TRUE(call);
+    server.error(*call, "NO_SUCH_TARGET", "no such target");
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.err,
+              "aglow run: the Afterglow at $AFTERGLOW_SOCKET takes no commands (Control.enabled or Scripts.enabled is off)\n");
 }
 
 TEST(RunClient, InputWaitsForASlowLinkWithoutATimeLimit)

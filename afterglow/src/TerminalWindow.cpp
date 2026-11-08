@@ -1940,48 +1940,16 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     const QRect shown = m.rect.value().toRect();
 
     // Scrolling: the terminal shows whole rows; the rest is a pixel shift.
-    const auto [offset, written] = pane->withTerminal([](Terminal& t) {
-        const auto& screen = t.screen();
-        return std::pair{screen.viewportOffset(), std::uint64_t(screen.rowsDropped() + screen.historySize())};
-    });
-    std::uint64_t& seen = m_historyRows[pane];
-    const std::uint64_t added = written >= seen ? written - seen : 0;
-    seen = written;
-    if (offset != m.appliedOffset) {
-        const qint64 moved = qint64(offset) - qint64(m.appliedOffset);
-        if (m.scroll.isAnimating() && moved > 0 && std::uint64_t(moved) == added) {
-            // Output entered the history while the view is scrolled back, and
-            // the terminal moved the view by as much to keep it on the same
-            // text: the easing goes on from the shifted place.
-            m.scrollValue = m.scroll.value() + qreal(moved);
-            m.scrollTarget += qreal(moved);
-            m.scroll.start(m.scrollValue, m.scrollTarget, motionSpec(anim.scrollCurve, anim.scrollDuration, m_scrollCurve,
-                                                                     "Animation.scrollCurve", AnimationSettings{}.scrollCurve));
-        } else {
-            // Moved by something else (typing, a prompt jump): follow it.
-            m.scroll.cancel();
-            m.scrollValue = qreal(offset);
-            m.scrollTarget = qreal(offset);
-        }
-        m.appliedOffset = offset;
-    }
+    followViewport(pane, m);
     if (m.scroll.isAnimating()) {
         m.scroll.advance();
         m.scrollValue = m.scroll.value();
         animating |= m.scroll.isAnimating();
     }
-    const auto rowsBack = std::size_t(std::ceil(std::max<qreal>(0, m.scrollValue - 1e-3)));
-    if (rowsBack != offset) {
-        m.appliedOffset = pane->withTerminal([rowsBack](Terminal& t) {
-            t.setViewportOffset(rowsBack);
-            return t.screen().viewportOffset();
-        });
-    }
-    const float shift = float((qreal(m.appliedOffset) - m.scrollValue) * metrics.cellHeight);
-    m.scrollShift = shift;
-    if (!pane->refreshSnapshot(shift > 0.5f ? 1 : 0)) {
+    if (!applyScroll(pane, m)) {
         holding = true;
     }
+    const float shift = m.scrollShift;
 
     // The cursor glides from cell to cell.
     const AfterglowRender::PaneSnapshot& snap = pane->snapshot();
@@ -2016,6 +1984,60 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     params.scrollShift = shift;
     params.signals = pane->shaderSignals();
     params.shaderParameters = m_shaderControls.values(pane->id());
+}
+
+void TerminalWindow::followViewport(Pane* pane, PaneMotion& m)
+{
+    const auto [offset, written] = pane->withTerminal([](Terminal& t) {
+        const auto& screen = t.screen();
+        return std::pair{screen.viewportOffset(), std::uint64_t(screen.rowsDropped() + screen.historySize())};
+    });
+    std::uint64_t& seen = m_historyRows[pane];
+    const std::uint64_t added = written >= seen ? written - seen : 0;
+    seen = written;
+    if (offset == m.appliedOffset) return;
+    const qint64 moved = qint64(offset) - qint64(m.appliedOffset);
+    if (m.scroll.isAnimating() && moved > 0 && std::uint64_t(moved) == added) {
+        // Output entered the history while the view is scrolled back, and
+        // the terminal moved the view by as much to keep it on the same
+        // text: the easing goes on from the shifted place.
+        const AnimationSettings& anim = m_settings.settings().animation;
+        m.scrollValue = m.scroll.value() + qreal(moved);
+        m.scrollTarget += qreal(moved);
+        m.scroll.start(m.scrollValue, m.scrollTarget, motionSpec(anim.scrollCurve, anim.scrollDuration, m_scrollCurve,
+                                                                 "Animation.scrollCurve", AnimationSettings{}.scrollCurve));
+    } else {
+        // Moved by something else (typing, a prompt jump): follow it.
+        m.scroll.cancel();
+        m.scrollValue = qreal(offset);
+        m.scrollTarget = qreal(offset);
+    }
+    m.appliedOffset = offset;
+}
+
+bool TerminalWindow::applyScroll(Pane* pane, PaneMotion& m)
+{
+    const auto rowsBack = std::size_t(std::ceil(std::max<qreal>(0, m.scrollValue - 1e-3)));
+    if (rowsBack != m.appliedOffset) {
+        m.appliedOffset = pane->withTerminal([rowsBack](Terminal& t) {
+            t.setViewportOffset(rowsBack);
+            return t.screen().viewportOffset();
+        });
+    }
+    m.scrollShift = float((qreal(m.appliedOffset) - m.scrollValue) * m_renderer->fonts().fonts->metrics().cellHeight);
+    return pane->refreshSnapshot(m.scrollShift > 0.5f ? 1 : 0);
+}
+
+void TerminalWindow::settleScroll(Pane* pane)
+{
+    PaneMotion& m = motion(pane);
+    followViewport(pane, m);
+    if (m.scroll.isAnimating()) {
+        m.scroll.cancel();
+        m.scrollValue = m.scrollTarget;
+    }
+    applyScroll(pane, m);
+    scheduleRender();
 }
 
 void TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)
@@ -2340,6 +2362,9 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     // Only a key in a sequence or a table changes what the window shows for
     // it: any other key would cost a frame.
     if (sequenceWasActive || m_keyMode.active()) updateKeyMode();
+    // A held chord moves the pane once: each repeat would find it alone in
+    // its new tab, and show the refusal again.
+    const auto heldMove = [e](Action action) { return action == Action::MovePaneToTab && e->isAutoRepeat(); };
     if (result.consumed) {
         if (result.target.startsWith(Keybinds::TextPrefix) && m_focused) {
             const QByteArray bytes = Keybinds::unescape(result.target.mid(Keybinds::TextPrefix.size()));
@@ -2354,7 +2379,10 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
                 runScriptCommand(result.target.mid(Keybinds::ScriptPrefix.size()), m_focused, QStringLiteral("key"));
         } else {
             for (Action action : Keybinds::allActions()) {
-                if (Keybinds::token(action) == result.target) { performAction(action); break; }
+                if (Keybinds::token(action) == result.target) {
+                    if (!heldMove(action)) performAction(action);
+                    break;
+                }
             }
         }
         return true;
@@ -2362,12 +2390,13 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     const Keybinds& kb = m_settings.settings().keybinds;
     const Action action = kb.match(e, bindingBaseKey(e));
     if (action != Action::None) {
+        if (heldMove(action)) return true;
         // These keep their key even when there is nothing to do: the
         // encoded chord would reach the shell as a control byte (the
         // overview's Ctrl+Shift+D as EOF, a rotation's as ESC or GS).
         constexpr std::array keepsKey{Action::PaneOverview, Action::RotatePanesClockwise, Action::RotatePanesCounterclockwise,
                                       Action::SwapLeft, Action::SwapRight, Action::SwapUp, Action::SwapDown,
-                                      Action::UsePackageShaders, Action::TogglePaneZoom};
+                                      Action::UsePackageShaders, Action::TogglePaneZoom, Action::MovePaneToTab};
         return performAction(action) || std::find(keepsKey.begin(), keepsKey.end(), action) != keepsKey.end();
     }
     if (const QByteArray text = kb.matchText(e, bindingBaseKey(e)); !text.isEmpty()) {
@@ -2429,11 +2458,11 @@ bool TerminalWindow::performAction(Action action)
     case Action::UsePackageShaders: return usePackageShaders();
     case Action::MovePaneToTab: {
         if (!m_focused) return false;
-        // A refused move keeps its key, as a refused split does: the chord
-        // would reach the shell as a control byte. The user hears why.
-        if (const QString error = movePaneTo(m_focused, this, nullptr, SplitTree::Direction::Right); !error.isEmpty())
-            NotificationCenter::instance().showNotice(m_focused, tr("Could not move the pane"), error);
-        return true;
+        // A refused move fails (afterglow ctl and scripts get an error) and
+        // keeps its key (keepsKey in handleShortcut). The user hears why.
+        const QString error = movePaneTo(m_focused, this, nullptr, SplitTree::Direction::Right);
+        if (!error.isEmpty()) NotificationCenter::instance().showNotice(m_focused, tr("Could not move the pane"), error);
+        return error.isEmpty();
     }
     case Action::MovePaneToWindow:
     case Action::DetachTab: {
@@ -3518,6 +3547,9 @@ void TerminalWindow::startHints()
     m_hintCancel = cancelled;
     // Over an overlay's text while one runs over the pane.
     const QPointer<Pane> pane = inputPane(m_focused);
+    // On the rows where the view stops: a scroll that eased on would change
+    // the generation, and the hints found would be dropped.
+    settleScroll(pane);
     std::uint64_t generation = 0, firstRow = 0;
     auto snapshot = pane->withTerminal([&](Terminal& terminal) {
         AfterglowVt::TextSnapshot snapshot;
@@ -3581,6 +3613,10 @@ void TerminalWindow::startUrlMode(bool copy)
     if (!m_focused) {
         return;
     }
+    // The labels sit on the rows of this snapshot: a scroll that eased on
+    // under them would move the text away, and change the generation that
+    // the first letter checks.
+    settleScroll(inputPane(m_focused));
     const AfterglowRender::PaneSnapshot& snap = inputPane(m_focused)->snapshot();
     const bool detectUrls = m_settings.settings().links.detectUrls;
     std::vector<UrlHint> hints;

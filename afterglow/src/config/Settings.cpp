@@ -678,9 +678,9 @@ PhosphorConfig::Schema buildSchema()
                               "1. A run from a key, a menu or the palette counts only its standard error.")),
         intKey(QStringLiteral("cpuBudget"), d.scriptCpuBudget, 10, 1000,
                QStringLiteral("Milliseconds of handler time that one script can use in each second. Past it, Afterglow "
-                              "drops the script's events, and delays its results, timers, keys and command runs. A script "
-                              "whose calls wait in 5 seconds, each less than 3 seconds after the one before, is disabled. "
-                              "Dropped events do not count toward that.")),
+                              "drops the script's events, and delays its results, timers, keys and command runs. Afterglow "
+                              "disables a script that has a call wait in 5 seconds, each less than 3 seconds after the one "
+                              "before. Dropped events do not count toward that.")),
     };
     const AudioSettings& audio = d.audio;
     schema.groups[AudioGroup] = {
@@ -1058,8 +1058,8 @@ SettingsStore::~SettingsStore() = default;
 namespace {
 /// What a file that has not been read since the start leaves on. A -o
 /// override of either key still wins (read()).
-const QString NeverReadNote = QStringLiteral(
-    ". Using the defaults, with Scripts.enabled and Control.enabled off unless -o sets them, until it can be read");
+const QString NeverReadNote =
+    QStringLiteral(". Using the defaults, with Scripts.enabled and Control.enabled off unless -o sets them");
 } // namespace
 
 bool SettingsStore::loadFile()
@@ -1079,11 +1079,11 @@ bool SettingsStore::loadFile()
         // document in use stays instead.
         m_backend->replaceRoot(before);
         m_backend->clearDirty();
-        problem += m_neverRead ? NeverReadNote : QStringLiteral(". Keeping the current settings");
+        problem += m_neverRead ? NeverReadNote + QStringLiteral(", until it can be read") : QStringLiteral(". Keeping the current settings");
     } else if (m_backend->blankFile() && m_neverRead && !m_fileProblems.isEmpty()) {
         // An editor that saves in place over a file that could not be read
         // at the start: the text that comes may turn them off.
-        problem = m_path + QStringLiteral(" is empty") + NeverReadNote;
+        problem = m_path + QStringLiteral(" is empty") + NeverReadNote + QStringLiteral(", until it holds settings. Delete it for the defaults");
     } else if (m_backend->blankFile() && heldSettings) {
         // An editor that saves in place empties the file before it writes
         // it. A file that held settings and holds nothing now is such a
@@ -1375,9 +1375,10 @@ Settings SettingsStore::read()
     }
     if (m_neverRead) {
         // The file could not be read since the start and may turn them off.
-        // A command-line override still wins: it is the user's word.
+        // A command-line override still wins: it is the user's word. One
+        // that is no boolean says nothing, and would read as the default on.
         for (const QString& group : {ScriptsGroup, ControlGroup}) {
-            if (m_overrides.value(group).toObject().contains(QLatin1String("enabled"))) continue;
+            if (isBoolValue(m_overrides.value(group).toObject().value(QLatin1String("enabled")))) continue;
             QJsonObject keys = overlay.value(group).toObject();
             keys.insert(QStringLiteral("enabled"), false);
             overlay.insert(group, keys);

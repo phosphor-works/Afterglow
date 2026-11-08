@@ -43,6 +43,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QTimer>
 
 #include <csignal>
 #include <cstring>
@@ -99,16 +100,19 @@ return {
 /// A fake ssh for the probe tests. It writes each run's words to
 /// FAKE_SSH_LOG, separated by 0x1f, one run on each line, and acts as the
 /// FAKE_* variables say: the probe's report, the exit status of -O check
-/// and -O forward, and a session that waits for the file FAKE_RELEASE.
-/// ssh -G reports what real ssh does without a ControlPath, for the
-/// destination it is given, with RequestTTY force (FAKE_TTY), as -tt would:
-/// the helper runs without a terminal here. The helper's second ssh -G
-/// reads the user's files through -F /dev/stdin, and its own Host * block
-/// last: the fake takes that block's values, with %C as "fakehash", unless
-/// FAKE_USER sets ControlPath none or ControlMaster no ("path-none",
-/// "master-no"). A session whose test failed before it released it ends
-/// when its parent has gone, or after 3000 waits of 20 ms: it never
-/// outlives the test for long.
+/// and -O forward, an -O forward that ends only once the file
+/// FAKE_FORWARD_GATE is there, and a session that waits for the file
+/// FAKE_RELEASE.
+/// ssh -G reports what real ssh does without a ControlPath, or with the
+/// user's ControlPath FAKE_CONTROL_PATH, for the destination it is given,
+/// with RequestTTY force (FAKE_TTY), as -tt would: the helper runs without
+/// a terminal here. The helper's second ssh -G reads the user's files
+/// through -F /dev/stdin, and its own Host * block last: the fake takes
+/// that block's values, with %C as "fakehash", unless FAKE_USER sets
+/// ControlPath none or ControlMaster no ("path-none", "master-no"), or
+/// FAKE_CONTROL_PATH is set. A session whose test failed before it
+/// released it ends when its parent has gone, or after 3000 waits of 20 ms:
+/// it never outlives the test for long.
 const QByteArray FakeSsh = R"sh(#!/bin/sh
 { for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> "$FAKE_SSH_LOG"
 op=; prev=; last=
@@ -119,11 +123,12 @@ done
 for a in "$@"; do
     case "$a" in -G)
         printf 'host %s\nhostname %s.example\nuser me\nport 22\ncontrolpersist no\nrequesttty %s\n' "$last" "$last" "${FAKE_TTY:-force}"
+        [ -n "${FAKE_CONTROL_PATH:-}" ] && printf 'controlpath %s\n' "$FAKE_CONTROL_PATH"
         case " $* " in
             *" /dev/stdin "*)
                 own=$(sed -n 's/^ *ControlPath \(.*\)$/\1/p; s/^ *ControlMaster \(.*\)$/master \1/p')
-                case "${FAKE_USER:-}" in
-                    path-none) ;;
+                case "${FAKE_USER:-}${FAKE_CONTROL_PATH:-}" in
+                    path-none|/*) ;;
                     *) printf 'controlpath %s\n' "$(printf '%s\n' "$own" | sed -n '1s/%C/fakehash/p')";;
                 esac
                 case "${FAKE_USER:-}" in
@@ -137,7 +142,13 @@ for a in "$@"; do
 done
 case "$op" in
     check) exit "${FAKE_CHECK:-0}";;
-    forward) exit "${FAKE_FORWARD:-0}";;
+    forward)
+        n=0
+        while [ -n "${FAKE_FORWARD_GATE:-}" ] && [ ! -e "$FAKE_FORWARD_GATE" ]; do
+            n=$((n + 1)); [ "$n" -gt 3000 ] && exit 8
+            sleep 0.02
+        done
+        exit "${FAKE_FORWARD:-0}";;
     ?*) exit 0;;
 esac
 case "$last" in
@@ -1028,14 +1039,40 @@ TEST_F(RemoteCommandsTest, ARunWhoseHandlerClosesItsSocketAsItStartsIsCancelled)
 TEST_F(RemoteCommandsTest, TheProbeIsNoMasterOfItsOwnForAUsersDashM)
 {
     ASSERT_TRUE(start());
-    auto process = helper({QStringLiteral("-M"), QStringLiteral("-vM"), QStringLiteral("prod")});
+    // The user's ControlPath, on which a master runs: the probe is its
+    // client, and the forward lives on it.
+    const QString userPath = m_dir.filePath(QStringLiteral("user-cp"));
+    auto process = helper({QStringLiteral("-M"), QStringLiteral("-vM"), QStringLiteral("prod")},
+                          {{QStringLiteral("FAKE_CONTROL_PATH"), userPath}});
     const auto probes = runsWith(QStringLiteral("-T"));
     ASSERT_EQ(probes.size(), 1);
     EXPECT_FALSE(probes.first().contains(QStringLiteral("-M"))) << qPrintable(probes.first().join(QLatin1Char(' ')));
+    EXPECT_TRUE(probes.first().contains(QStringLiteral("ControlMaster=no")));
     EXPECT_TRUE(probes.first().contains(QStringLiteral("-v")));
+    EXPECT_EQ(m_remote->tokens().size(), 1);
     // The session keeps the user's -M.
     EXPECT_TRUE(runs().last().contains(QStringLiteral("-M")));
     EXPECT_EQ(finish(*process), 7);
+}
+
+TEST_F(RemoteCommandsTest, ADashMWithoutAControlPathOfTheUsersGetsNoRemoteCommands)
+{
+    // ssh -M joins no master: the session would not share the helper's
+    // connection, which holds the forward and ends after ControlPersist.
+    ASSERT_TRUE(start());
+    const QString shared = QStringLiteral("ControlPath=") + m_runtime + QStringLiteral("/afterglow-ssh-%C");
+    auto process = helper({QStringLiteral("-M"), QStringLiteral("prod")});
+    EXPECT_TRUE(runsWith(QStringLiteral("-T")).isEmpty());
+    EXPECT_TRUE(m_remote->tokens().isEmpty());
+    EXPECT_TRUE(runs().last().contains(QStringLiteral("-M")));
+    EXPECT_FALSE(runs().last().contains(shared));
+    EXPECT_EQ(finish(*process), 7);
+    EXPECT_TRUE(m_stderr.isEmpty()) << qPrintable(m_stderr);
+    process = helper({QStringLiteral("-vM"), QStringLiteral("prod")});
+    EXPECT_EQ(finish(*process), 7);
+    EXPECT_TRUE(m_stderr.contains(QLatin1String("no remote commands in this session: -M needs a "
+                                                "ControlPath of your own")))
+        << qPrintable(m_stderr);
 }
 
 TEST_F(RemoteCommandsTest, ALiveSocketHoldsItsLockAndAWaitingForwardAnswersNothing)
@@ -1136,6 +1173,47 @@ TEST_F(RemoteCommandsTest, ControlPathNoneOrControlMasterNoKeepsTheUsersChoice)
     auto process = helper({QStringLiteral("-v"), QStringLiteral("prod")}, {{QStringLiteral("FAKE_USER"), QStringLiteral("path-none")}});
     EXPECT_EQ(finish(*process), 7);
     EXPECT_TRUE(m_stderr.contains(QLatin1String("no remote commands in this session: ControlPath is none"))) << qPrintable(m_stderr);
+}
+
+TEST_F(RemoteCommandsTest, AForwardThatAfterglowConfirmsTooLateIsCancelledWithTheReasonForward)
+{
+    ASSERT_TRUE(start());
+    // As ssh -O forward runs, the test opens its gate and then holds the
+    // event loop longer than the helper waits for remoteSocketForwarded.
+    // Afterglow takes that call only after the helper gave up on it,
+    // cancelled the forward and sent remoteSocketFailed behind it.
+    const QString gate = m_dir.filePath(QStringLiteral("gate"));
+    QTimer stall;
+    QObject::connect(&stall, &QTimer::timeout, [&] {
+        if (runsWith(QStringLiteral("-O"), QStringLiteral("forward")).isEmpty()) return;
+        stall.stop();
+        QFile open(gate);
+        EXPECT_TRUE(open.open(QIODevice::WriteOnly));
+        QThread::msleep(3000);
+    });
+    stall.start(5);
+    auto process = helper({QStringLiteral("-v"), QStringLiteral("prod")}, {{QStringLiteral("FAKE_FORWARD_GATE"), gate}});
+    ASSERT_FALSE(stall.isActive());
+    ASSERT_EQ(m_remote->tokens().size(), 1);
+    const QString token = m_remote->tokens().first();
+    // The late confirmation answered with the path, and the failure after it
+    // replaced the answer: the query tells aglow run why.
+    EXPECT_TRUE(pumpUntil([&] { return m_answers.value(FakePane) == (Remote::Answer{{}, Remote::Error::Forward}); }));
+    EXPECT_TRUE(m_remote->socket(token).isEmpty());
+    // The helper cancelled the forward that it had added.
+    const auto forwards = runsWith(QStringLiteral("-O"), QStringLiteral("forward"));
+    ASSERT_EQ(forwards.size(), 1);
+    const QString spec = forwards.first().value(forwards.first().indexOf(QStringLiteral("-R")) + 1);
+    const auto cancels = runsWith(QStringLiteral("-O"), QStringLiteral("cancel"));
+    ASSERT_EQ(cancels.size(), 1);
+    EXPECT_TRUE(cancels.first().contains(spec)) << qPrintable(cancels.first().join(QLatin1Char(' ')));
+    EXPECT_EQ(finish(*process), 7);
+    EXPECT_TRUE(m_stderr.contains(QLatin1String("no remote commands in this session: Afterglow did not answer, and the forward is "
+                                                "cancelled")))
+        << qPrintable(m_stderr);
+    // Afterglow cancels nothing more as the session ends.
+    ASSERT_TRUE(pumpUntil([&] { return !fakeSshRuns(); }));
+    EXPECT_EQ(runsWith(QStringLiteral("-O"), QStringLiteral("cancel")).size(), 1);
 }
 
 TEST_F(RemoteCommandsTest, AProbeThatRanIsNoFailureOfSshWhateverItsStatus)
@@ -1406,6 +1484,17 @@ TEST_F(RemoteCommandsTest, OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThro
     ASSERT_TRUE(local.listen(target));
     ASSERT_EQ(sshd.ssh({QStringLiteral("-MNf"), QStringLiteral("allow")}).status, 0);
     ASSERT_EQ(sshd.ssh({QStringLiteral("-MNf"), QStringLiteral("refuse")}).status, 0);
+    // With -M, past the config's ControlMaster auto, a session joins no
+    // master that runs on its ControlPath: it signs in on its own and shares
+    // nothing. Thus afterglow ssh -M forwards no socket on a master of its
+    // own.
+    const Sshd::Result dashM = sshd.ssh({QStringLiteral("-M"), QStringLiteral("allow"), QStringLiteral("true")});
+    EXPECT_EQ(dashM.status, 0) << qPrintable(dashM.err);
+    EXPECT_TRUE(dashM.err.contains(QLatin1String("already exists, disabling multiplexing"))) << qPrintable(dashM.err);
+    // A client of the master says nothing.
+    const Sshd::Result client = sshd.ssh({QStringLiteral("allow"), QStringLiteral("true")});
+    EXPECT_EQ(client.status, 0);
+    EXPECT_TRUE(client.err.isEmpty()) << qPrintable(client.err);
     const QString directory = sshd.remoteRun() + QStringLiteral("/t");
     QDir().mkpath(directory);
     const QString forwarded = directory + QStringLiteral("/a.sock");

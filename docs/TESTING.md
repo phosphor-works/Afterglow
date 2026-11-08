@@ -329,7 +329,9 @@ ctest --test-dir build --output-on-failure -R '^(Transfer|TransferQuestion|Trans
 ```
 
 `TransferQuestion.*` checks the paths that the permission dialog shows.
-`TransferUmask.*` checks that the mode of a received file comes from the umask that the GUI thread had when the transfer service was made, not from the umask at the time of the transfer.
+`TransferUmask.*` checks the mode of a received file.
+The mode comes from the umask that the GUI thread had when it made the transfer service.
+A later change of the umask does not change the mode.
 
 Run the tests of the protocol library, which has these formats and the other wire formats.
 The names of these tests start with `Proto.`.
@@ -490,9 +492,9 @@ Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skippe
 `aglow_icat_decode` reports Skipped when its user can read a directory of mode 0, as root can. It runs its other cases first.
 `aglow_icat_decode` and `aglow_icat_render` run `aglow` without `TMUX`, so the tests do not change the settings of a tmux that runs them.
 `aglow_icat_render` also runs `afterglow_renderpng` without `TMUX`.
+It runs `afterglow_renderpng` with `QT_QPA_PLATFORMTHEME=generic`, so the theme plugin of the desktop does not load.
 `aglow_run_pty` and `aglow_tmux_pty` run `aglow` without `TMUX`, `TMUX_PANE`, `AFTERGLOW_SOCKET`, `AFTERGLOW_PANE_ID` and `WAYLAND_DISPLAY`, with an `XDG_RUNTIME_DIR` of their own.
 Thus they do not reach a tmux or an Afterglow that runs them. `aglow_tmux_pty` starts its own tmux server with `tmux -L` and its own `TMUX_TMPDIR`.
-It runs `afterglow_renderpng` with `QT_QPA_PLATFORMTHEME=generic`, so the theme plugin of the desktop does not load.
 
 `aglow_icat_render` checks a PNG image, a mirrored image, an image placed with `--place`, Unicode placeholders and each frame of an animated GIF.
 It also gives `aglow icat` a PNG header of 12,000 × 12,000 pixels.

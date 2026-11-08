@@ -509,9 +509,15 @@ struct FileTransfer::Worker {
         // The user approved files of this session before: a later No
         // refuses the files of its own dialog, and the others finish.
         bool granted = false;
-        // A later No left files that came while its dialog showed. They get
-        // a dialog of their own: they did not ask again after the No.
+        // A later No left files that came while its dialog showed. They did
+        // not ask again after the No: the next dialog of the session opens
+        // in the cooldown. Like any dialog, it lists the first files that
+        // wait, which include those that came after the No and before it
+        // opened. A No of that dialog grants no other: the cooldown refuses
+        // the files that are left, so a program cannot keep a dialog open.
         bool afterNo = false;
+        // The dialog that shows opened in the cooldown, after a No.
+        bool askedAfterNo = false;
         std::map<QByteArray, std::unique_ptr<File>> files;
         // Links whose target file has not reached its final state, keyed by the target.
         std::multimap<QByteArray, QByteArray> waiters;
@@ -869,15 +875,16 @@ struct FileTransfer::Worker {
     // A path as the dialog lists it: a slash after a directory, which is
     // read whole, and a line under it with where links lead it, when that is
     // elsewhere. A name cannot hold a line break (shown() escapes it), so a
-    // name cannot make such a line. A home directory that is a link (/home
-    // on another disk) is the same place for every path under it: that
-    // link alone gets no line.
-    static QString described(const QString& path, const QString& real, bool directory)
+    // name cannot make such a line. A home directory whose path goes
+    // through a link (/home on another disk) is the same place for itself
+    // and every path under it: that link alone gets no line. @p realHome is
+    // where @p home leads.
+    static QString described(const QString& path, const QString& real, bool directory, const QString& home,
+        const QString& realHome)
     {
         const auto slash = [directory](const QString& p) { return directory && !p.endsWith(QLatin1Char('/')) ? p + QLatin1Char('/') : p; };
-        const QString home = QDir::homePath(), realHome = QFileInfo(home).canonicalFilePath();
-        const bool underHome = path.startsWith(home + QLatin1Char('/')) && !realHome.isEmpty();
-        if (real == path || (underHome && real == realHome + path.mid(home.size())))
+        const bool inHome = (path == home || path.startsWith(home + QLatin1Char('/'))) && !realHome.isEmpty();
+        if (real == path || (inHome && real == realHome + path.mid(home.size())))
             return slash(shown(path));
         return slash(shown(path)) + QLatin1Char('\n') + FileTransfer::tr("  resolves to %1").arg(slash(shown(real)));
     }
@@ -898,7 +905,9 @@ struct FileTransfer::Worker {
             }
             return;
         }
+        s.askedAfterNo = exempt && coolingDown();
         QStringList paths;
+        const QString home = QDir::homePath(), realHome = QFileInfo(home).canonicalFilePath();
         if (s.holding) {
             s.asked = std::min(s.heldOrder.size(), std::size_t(MaxPromptPaths));
             for (std::size_t i = 0; i < s.asked; ++i) {
@@ -906,7 +915,7 @@ struct FileTransfer::Worker {
                 const QString path = pathOf(s.held.at(fid).front().value("n"));
                 const QFileInfo info(path);
                 Place place = placeOf(info.absolutePath());
-                paths.push_back(described(path, joined(place.path(), info.fileName()), false));
+                paths.push_back(described(path, joined(place.path(), info.fileName()), false, home, realHome));
                 s.places[fid] = std::move(place);
             }
         } else {
@@ -918,7 +927,7 @@ struct FileTransfer::Worker {
                 const QString real = joined(request.place->path(), info.fileName());
                 struct stat st { };
                 const bool directory = ::lstat(QFile::encodeName(real).constData(), &st) == 0 && S_ISDIR(st.st_mode);
-                paths.push_back(described(request.path, real, directory));
+                paths.push_back(described(request.path, real, directory, home, realHome));
             }
         }
         const int total = int(s.holding ? s.heldOrder.size() : s.requests.size());
@@ -1080,10 +1089,11 @@ struct FileTransfer::Worker {
         if (!allowed) {
             denied.start();
             // A later No refuses the files of its own dialog. Those that the
-            // user approved before finish, and those that came while it
-            // showed get a dialog of their own.
+            // user approved before finish. Those that came while it showed
+            // get one more dialog in the cooldown, unless this dialog was
+            // that one.
             if (s.granted) {
-                s.afterNo = s.heldOrder.size() > s.asked;
+                s.afterNo = !s.askedAfterNo && s.heldOrder.size() > s.asked;
                 refuseHeld(s, s.asked, "EPERM");
             }
             else {
@@ -1902,8 +1912,9 @@ void FileTransfer::Worker::list(Session& s)
     for (const auto& request : s.requests) {
         const QFileInfo info(request.path);
         const Place place = request.place ? *request.place : placeOf(info.absolutePath());
-        const AfterglowProto::UniqueFd directory(openPlace(place, creationMask, nullptr));
+        // Before openPlace(): an allocation between it and errorName() could change errno.
         const QByteArray name = QFile::encodeName(info.fileName());
+        const AfterglowProto::UniqueFd directory(openPlace(place, creationMask, nullptr));
         struct stat st { };
         // "/" has no name in its directory: it is the directory itself.
         if (!directory.valid()

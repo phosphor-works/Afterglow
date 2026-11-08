@@ -607,6 +607,42 @@ TEST(Client, ALinkWaitsForTheMetadataOfItsTarget)
     EXPECT_GT(linkEnd, targetAt);
 }
 
+// Past the cap on open delta uploads, the sender holds back only the next
+// delta upload: the files after it are named at once, so that a terminal
+// that asks the user lists them in one question.
+TEST(Client, AHeldDeltaUploadDoesNotHoldBackTheFilesAfterIt)
+{
+    TempDir dir;
+    for (int i = 0; i < 33; ++i) {
+        dir.write("tree/d" + std::to_string(100 + i), std::string(5000, char('a' + i % 26)));
+    }
+    dir.write("tree/z", "small");
+    auto options = optionsIn(dir);
+    options.deltas = true;
+    std::string error;
+    auto sender = makeTransferSender(options, { "tree", "/d/" }, error);
+    ASSERT_TRUE(sender) << error;
+    const auto byName = announced(*sender);
+    EXPECT_TRUE(byName.contains("/d/tree/z"));
+    EXPECT_FALSE(byName.contains("/d/tree/d132"));
+    EXPECT_EQ(std::count_if(byName.begin(), byName.end(), [](const auto& entry) { return entry.second.contains("tt"); }), 32);
+
+    // The held delta upload is named when one finishes, and the session ends.
+    auto again = makeTransferSender(options, { "tree", "/d/" }, error);
+    ASSERT_TRUE(again) << error;
+    FakeTerminal terminal { *again, "/home/r" };
+    terminal.run();
+    ASSERT_EQ(again->state(), TransferClient::State::Done) << again->error();
+    std::map<std::string, int> named;
+    for (const auto& m : terminal.sent) {
+        if (m.at("ac") == "file") {
+            ++named[m.at("n")];
+        }
+    }
+    EXPECT_EQ(named.size(), 35u);
+    EXPECT_TRUE(std::all_of(named.begin(), named.end(), [](const auto& entry) { return entry.second == 1; }));
+}
+
 TEST(Client, AFileThatShrankAfterTheScanFails)
 {
     TempDir dir;

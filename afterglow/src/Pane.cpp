@@ -1269,9 +1269,10 @@ void Pane::tickAnimations()
 
 void Pane::notify(std::string_view title, std::string_view body)
 {
-    queueEvent([this, title = QString::fromUtf8(title.data(), qsizetype(title.size())),
-                body = QString::fromUtf8(body.data(), qsizetype(body.size()))] { Q_EMIT notificationRequested(title, body); },
-               title.size() + body.size());
+    QString heading = QString::fromUtf8(title.data(), qsizetype(title.size()));
+    QString text = QString::fromUtf8(body.data(), qsizetype(body.size()));
+    const std::size_t bytes = std::size_t(heading.size() + text.size()) * sizeof(QChar);
+    queueEvent([this, heading = std::move(heading), text = std::move(text)] { Q_EMIT notificationRequested(heading, text); }, bytes);
 }
 
 void Pane::pointerShapeChanged(std::string_view shape)

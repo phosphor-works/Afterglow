@@ -295,8 +295,10 @@ struct Settings
 /// the first write() or ensureFile() creates it, readable by the owner only.
 /// A file that cannot be read at the start gives every default, but with
 /// Scripts.enabled and Control.enabled off until it can be read: the file may
-/// have turned them off. A -o override of either still wins. A link whose
-/// target is gone counts as such a file: PhosphorConfig cannot open it.
+/// have turned them off. An empty file that follows it keeps them off too, as
+/// it may be a save in progress. A -o override of either with a boolean
+/// still wins. A link whose target is gone counts as such a file:
+/// PhosphorConfig cannot open it.
 class SettingsStore : public QObject
 {
     Q_OBJECT
@@ -339,7 +341,9 @@ public:
     /// empty file kept them; a deleted file, or one that is empty or only
     /// white space and held no settings, means every default. A file that
     /// held settings and is empty now keeps them, as an editor that saves in
-    /// place empties it first.
+    /// place empties it first. Until the file is read once, an empty file
+    /// keeps Scripts.enabled and Control.enabled off, as the unreadable
+    /// file did.
     void reload();
     /// Writes one key to the config file and reloads. A value equal to the
     /// default removes the key. Command-line overrides keep winning over the
@@ -412,8 +416,8 @@ private:
     QStringList m_fileProblems;
     QStringList m_readProblems;
     QStringList m_publishedProblems;
-    /// The config file, its theme, the targets of those that are links, and
-    /// kdeglobals (watchedPaths()).
+    /// The config file, every place its theme could come from, the targets
+    /// of those that are links, and kdeglobals (watchedPaths()).
     PhosphorFsLoader::WatchedFileSet m_files;
 };
 

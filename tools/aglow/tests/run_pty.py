@@ -281,6 +281,17 @@ def unasked_cases(aglow, scratch):
     check(code == 1 and b"no running Afterglow on this display" in written, code, written)
     check(b"24569" not in written, "the query went after tmux took the whole wait", written)
     check(took < 6, took)
+    # tmux gets half of the guard's time. One that answers after that leaves the query too little time: aglow
+    # asks nothing. One that answers early leaves the query the rest, and the status report ends the wait.
+    for delay, asks in (("1.5", False), ("0.3", True)):
+        with open(os.path.join(fake, "tmux"), "w") as f:
+            f.write(f"#!/bin/sh\nsleep {delay}\necho on\n")
+        code, written, took = play([aglow, "run", "far", "there"], env, lambda _: GUARD,
+                                   also=[(b"\x1b[5n", b"\x1b[0n")])
+        check(code == 1 and b"no running Afterglow on this display" in written, delay, code, written)
+        check((b"24569" in written) == asks, delay, "the query went with too little time" if not asks
+              else "no query after an early answer of tmux", written)
+        check(took < 1.9 if asks else took < 6, delay, took)
     # No controlling terminal at all.
     result = subprocess.run([aglow, "run", "far", "there"], env=environment(runtime), stdin=subprocess.DEVNULL,
                             capture_output=True, start_new_session=True, timeout=20)

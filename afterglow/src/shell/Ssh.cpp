@@ -296,6 +296,55 @@ QByteArray withoutNullInput(const QByteArray& word, bool& valueFollows)
     return kept.size() > 1 ? kept : QByteArray();
 }
 
+// The words of ARGS for the probe and the install, which open the connection
+// that the session then shares: the options and their values, without -n and
+// -M. ssh takes -M as it comes, past an -o ControlMaster before it: the run
+// would try to be a master of its own, and sign in again.
+QByteArrayList connectionOptions(const QByteArrayList& args, const Arguments& parsed)
+{
+    QByteArrayList out;
+    bool isValue = false;
+    for (const int i : parsed.options) {
+        if (isValue) {
+            out << args[i];
+            isValue = false;
+            continue;
+        }
+        const QByteArray word = withoutNullInput(args[i], isValue);
+        QByteArray kept = "-";
+        for (qsizetype c = 1; c < word.size(); ++c) {
+            if (FlagsWithValue.find(word[c]) != std::string_view::npos) {
+                kept += word.mid(c);
+                break;
+            }
+            if (word[c] != 'M') kept += word[c];
+        }
+        if (kept.size() > 1) out << kept;
+    }
+    return out;
+}
+
+// Whether ARGS have the flag FLAG, which takes no value.
+bool hasFlag(const QByteArrayList& args, const Arguments& parsed, char flag)
+{
+    bool isValue = false;
+    for (const int i : parsed.options) {
+        if (isValue) {
+            isValue = false;
+            continue;
+        }
+        const QByteArray& word = args[i];
+        for (qsizetype c = 1; c < word.size(); ++c) {
+            if (word[c] == flag) return true;
+            if (FlagsWithValue.find(word[c]) != std::string_view::npos) {
+                isValue = c == word.size() - 1;
+                break;
+            }
+        }
+    }
+    return false;
+}
+
 // ssh's own failure status, distinct from the remote command's.
 constexpr int SshFailed = 255;
 
@@ -327,8 +376,13 @@ InstallResult installTerminfo(const QByteArrayList& args, const Arguments& parse
         if (line != cached.last()) remember(path, key, line);
         return {line == key ? Install::Installed : Install::Unavailable};
     }
-    const QByteArrayList shared = sharing(config);
-    // The connection options and the destination, without a tty, the remote command or -n.
+    // ssh -M joins no master: the session cannot share the install's
+    // connection, and a master that the install made would hold the
+    // session's ControlPath, which -M wants for itself. Then the install is
+    // no master, and the session gets nothing to share.
+    const bool dashM = hasFlag(args, parsed, 'M');
+    const QByteArrayList shared = dashM ? QByteArrayList() : sharing(config);
+    // The connection options and the destination, without a tty, the remote command, -n or -M.
     QByteArrayList install{"ssh"};
     install << shared;
     // A command-line value wins over the config, and the config's RemoteCommand
@@ -337,15 +391,8 @@ InstallResult installTerminfo(const QByteArrayList& args, const Arguments& parse
     // The config's StdinNull would send tic an empty entry. Only an ssh that
     // printed the key knows it, so older ones never see the option.
     if (config.stdinNull) install << "-o" << "StdinNull=no";
-    bool isValue = false;
-    for (const int i : parsed.options) {
-        if (isValue) {
-            install << args[i];
-            isValue = false;
-        } else if (const QByteArray word = withoutNullInput(args[i], isValue); !word.isEmpty()) {
-            install << word;
-        }
-    }
+    if (dashM) install << "-o" << "ControlMaster=no";
+    install << connectionOptions(args, parsed);
     install << "-T" << "--" << args[parsed.destination]
             << "sh -c 'command -v tic >/dev/null 2>&1 && mkdir -p \"$HOME/.terminfo\""
                " && tic -x -o \"$HOME/.terminfo\" - >/dev/null 2>&1"
@@ -362,54 +409,11 @@ InstallResult installTerminfo(const QByteArrayList& args, const Arguments& parse
     return {status == 0 ? Install::Installed : Install::Unavailable};
 }
 
-// The words of ARGS for the probe, which opens the connection that the
-// session then shares: the options and their values, without -n and -M.
-// ssh takes -M as it comes, past an -o ControlMaster before it: the probe
-// would try to be a master of its own, and sign in again.
-QByteArrayList connectionOptions(const QByteArrayList& args, const Arguments& parsed)
-{
-    QByteArrayList out;
-    bool isValue = false;
-    for (const int i : parsed.options) {
-        if (isValue) {
-            out << args[i];
-            isValue = false;
-            continue;
-        }
-        const QByteArray word = withoutNullInput(args[i], isValue);
-        QByteArray kept = "-";
-        for (qsizetype c = 1; c < word.size(); ++c) {
-            if (FlagsWithValue.find(word[c]) != std::string_view::npos) {
-                kept += word.mid(c);
-                break;
-            }
-            if (word[c] != 'M') kept += word[c];
-        }
-        if (kept.size() > 1) out << kept;
-    }
-    return out;
-}
-
 // Whether ARGS ask for ssh's debug output (-v): the helper then says why a
 // session gets no remote commands.
 bool verbose(const QByteArrayList& args, const Arguments& parsed)
 {
-    bool isValue = false;
-    for (const int i : parsed.options) {
-        if (isValue) {
-            isValue = false;
-            continue;
-        }
-        const QByteArray& word = args[i];
-        for (qsizetype c = 1; c < word.size(); ++c) {
-            if (word[c] == 'v') return true;
-            if (FlagsWithValue.find(word[c]) != std::string_view::npos) {
-                isValue = c == word.size() - 1;
-                break;
-            }
-        }
-    }
-    return false;
+    return hasFlag(args, parsed, 'v');
 }
 
 // What the user's configuration and command line say about connection
@@ -597,6 +601,12 @@ RemoteResult forwardRemote(const QByteArrayList& args, const Arguments& parsed, 
     // The user's choice stays: no connection of the helper's in its place.
     if (user.controlPath.isEmpty()) return skip("ControlPath is none");
     if (user.masterNo) return skip("ControlMaster is no");
+    // -M makes ControlMaster yes (ask for -MM) past any -o, and ssh then
+    // joins no master and finds the helper's socket taken. The master that
+    // the probe makes would hold the forward with no session, and end after
+    // its ControlPersist. A ControlMaster of an -o or a file gives way to the
+    // helper's -o ControlMaster=auto, which comes first.
+    if (user.own && hasFlag(args, parsed, 'M')) return skip("-M needs a ControlPath of your own");
     // The control commands run with that path alone and no configuration:
     // -O forward and -O cancel would also add and cancel the forwards of the
     // command line and of the files. ssh expands % and ${} in -S too.

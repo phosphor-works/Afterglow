@@ -280,9 +280,12 @@ These calls wait:
 
 - Results, also the results that resume a handler after `afterglow.await` or `afterglow.sleep`.
 - `on_timer` and `on_file_changed`. A one-shot timer and a file change do not come again, so Afterglow does not drop them.
+  A repeating timer or a watcher has one call that waits, at most.
+  A tick or a change that comes while that call waits adds no call. `dropped_callbacks` counts it.
+  The call that waits gets the newest event, so a watcher's `exists` is that of the last change.
 - `on_key`, and the clicks, hovers, layouts and the `start`, `end` and `cancel` calls of dock events.
 - The start of a command run, and the cleanup of a run that ended.
-- An event that comes while other calls wait. It runs after them, with a new snapshot.
+- An event that comes after the script has time again, but before the calls that wait have run. It runs after them, with a new snapshot.
 
 A command run that waits to start is live. `Scripts.commandTimeout` counts the wait.
 Each second in which a call had to wait counts.
@@ -412,6 +415,7 @@ A script that has 16 active tasks, or a total of 128 active tasks, gets `rate_li
 | `repeat_ms` | 0 for one callback, or 250 to 3,600,000 ms |
 
 The next interval starts when the handler returns or first waits.
+When the call waits for CPU time, the next interval starts at once. A tick that comes while the call waits adds no call (see [CPU time](#cpu-time)).
 So an `on_timer` that waits can still wait when the next tick comes.
 Waiting handlers then collect until waits return `busy`.
 For slow work, use a single timer and start it again at the end of the handler.
@@ -1186,7 +1190,7 @@ The [creation example](../data/examples/scripts/create-and-title.luau) uses laun
 
 ## Diagnostics
 
-`afterglow ctl scripts` reports `id`, `name`, `path`, `version`, `status`, `error`, `calls`, `handler_errors`, `effect_errors` and `last_error`.
+`afterglow ctl scripts` reports `id`, `name`, `path`, `version`, `status`, `error`, `disabled_reason`, `calls`, `handler_errors`, `effect_errors` and `last_error`.
 `error` is the load error of a `failed` or `last-good` script, why a script is `superseded`, or why a script is `disabled`. Else it is empty.
 For a `disabled` script whose file changed and does not load, `error` is the load error. `disabled_reason` always tells why a script was disabled.
 `version` is the package version. A single-file script has none.

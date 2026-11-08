@@ -24,6 +24,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -34,8 +35,8 @@ struct Host : AfterglowVt::ITerminalHost
 {
     bool permissive = false;
 
-    /// A remote socket reply reads back as an answer, with a path a reply
-    /// may carry: the one with a control byte must have become error=off.
+    /// A remote socket reply reads back as the answer that remoteSocket()
+    /// gave for it: the path with a control byte must have become error=off.
     void writeToPty(std::string_view bytes) override
     {
         constexpr std::string_view Introducer = "\x1b]24569;";
@@ -44,7 +45,8 @@ struct Host : AfterglowVt::ITerminalHost
         }
         const std::size_t end = bytes.ends_with('\x07') ? bytes.size() - 1 : bytes.size() - 2;
         const auto answer = AfterglowProto::Remote::parseReply(bytes.substr(Introducer.size(), end - Introducer.size()));
-        if (!answer || (!answer->path.empty() && !AfterglowProto::Remote::validPath(answer->path))) {
+        const auto expected = std::exchange(expectedReply, std::nullopt);
+        if (!answer || !expected || *answer != *expected) {
             __builtin_trap();
         }
     }
@@ -66,14 +68,19 @@ struct Host : AfterglowVt::ITerminalHost
         }
         switch (remoteAnswers++ % 3) {
         case 0:
-            return AfterglowProto::Remote::Answer{"/run/user/1000/afterglow/0123456789abcdef.sock", Error::Off};
+            expectedReply = AfterglowProto::Remote::Answer{"/run/user/1000/afterglow/0123456789abcdef.sock", Error::Off};
+            return expectedReply;
         case 1:
-            return AfterglowProto::Remote::Answer{{}, Error::Forward};
+            expectedReply = AfterglowProto::Remote::Answer{{}, Error::Forward};
+            return expectedReply;
         default:
+            expectedReply = AfterglowProto::Remote::Answer{{}, Error::Off};
             return AfterglowProto::Remote::Answer{"/tmp/a\x1b]2;x\x07.sock", Error::Off};
         }
     }
     unsigned remoteAnswers = 0;
+    /// What the reply to the last answer must parse back to.
+    std::optional<AfterglowProto::Remote::Answer> expectedReply;
     std::string notificationCapabilities() override { return permissive ? "a=focus,report:o=always:p=title,body" : ""; }
     bool decodeImage(std::string_view, std::uint32_t& width, std::uint32_t& height,
                      std::vector<std::uint8_t>& rgba) override

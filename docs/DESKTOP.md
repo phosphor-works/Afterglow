@@ -281,7 +281,7 @@ The dialog lists at most 100 paths. The question shows the first 10 of them and 
 **Yes** approves only the paths that the dialog lists. The dialog does not change while it is open.
 The dialog shows some characters of a path as `\uXXXX`, or as `\UXXXXXXXX` above U+FFFF.
 These are control characters, line separators, invisible format characters (such as a zero-width space) and backslashes.
-When a link above a path leads elsewhere, a second line under the path shows where it resolves to. A home directory that is a link gets no such line for the paths under it.
+When a link above a path leads elsewhere, a second line under the path shows where it resolves to. When the path of your home directory goes through a link, your home directory and the paths under it get no such line.
 A requested directory ends with a slash: the program can read all the files in it.
 
 | Request | What the dialog lists | What happens to the other paths |
@@ -290,12 +290,16 @@ A requested directory ends with a slash: the program can read all the files in i
 | Send | The destinations of the files that wait, up to 100 | A file that came later, or that the dialog did not list, gets a dialog of its own. |
 
 A send session starts at once, because the program names its destinations only after the start.
-The dialog opens when Afterglow has handled every command that the program wrote before Afterglow held the first destination.
+The dialog opens when Afterglow has handled every command that had reached the window when Afterglow held the first destination.
+A command that the program wrote at about the same time can come after the dialog opens, also from the same write.
 A program that names many files can get more than one dialog, if some of its files come after that.
 A file waits, with its data, until you approve its destination. Nothing is written before that. The approved files of the session continue meanwhile.
 A finish waits until no file waits.
 If you deny the first dialog of a session, the session ends with `EPERM`.
-If you deny a later dialog, its files get `EPERM`. The files that you approved before continue. The files that came while the dialog was open get a dialog of their own.
+If you deny a later dialog, its files get `EPERM`. The files that you approved before continue.
+The files that came while the dialog was open get one more dialog, in the cooldown that follows the denial.
+That dialog lists the first 100 files that wait. These can include files that came after the denial and before the dialog opened.
+If you deny that dialog too, no other dialog opens: the files that wait get `EPERM`.
 Afterglow writes an approved file only where the dialog showed:
 
 - A directory that existed when the dialog opened must still be at the path where links led it then.
@@ -307,7 +311,7 @@ If one of these checks fails, the file gets an error status (`EPERM`, `ELOOP` or
 Each pane shows one permission dialog at a time. A new session gets `EBUSY` while a dialog is open.
 A session that started before the dialog opened waits for its own dialog until the open one closes.
 After you deny a dialog, or after a program ends its session while its dialog is open, new sessions in that pane get `EPERM` for 10 seconds.
-A file of a session that you approved before, and that came after the dialog that you denied, also gets `EPERM` in that time.
+A file of a session that you approved before also gets `EPERM` in that time, if that one more dialog does not list it.
 
 Run these commands on the computer where the terminal program runs:
 

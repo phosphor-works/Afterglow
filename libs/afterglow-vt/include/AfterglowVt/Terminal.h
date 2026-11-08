@@ -637,6 +637,8 @@ private:
     std::string m_iterm2Args;
     std::string m_iterm2Data;
     std::size_t m_iterm2Limit = 0;
+    /// A prompt (133 A) came with no FilePart since: a second one ends the file.
+    bool m_iterm2PromptSincePart = false;
     void endITerm2Multipart();
     void semanticPrompt(std::string_view args);
     void vscodeShellIntegration(std::string_view args);

@@ -41,8 +41,12 @@ using AfterglowProto::Run::TerminalAnswer;
 enum class Passthrough {
     Off,
     Unknown, ///< on, or tmux cannot tell: the query goes, and the guard ends the wait
-    Late, ///< tmux did not answer by the deadline: no time is left for the query
+    Late, ///< tmux did not answer by its deadline
 };
+
+/// The least time that the query gets after tmux answered. A query that
+/// cannot wait for its answer would leave the answer to the shell.
+constexpr long long MinQueryMs = 200;
 
 /// Asks tmux by @p deadline (nowMs()). tmux waits for its server, which may
 /// not answer.
@@ -250,14 +254,15 @@ TerminalAnswer askTerminal(int timeoutMs)
     const bool tmux = tmuxVariable && *tmuxVariable;
     // Before the modes change: tmux gets the process's own signal mask.
     if (tmux) {
-        switch (passthrough(deadline)) {
+        // tmux gets half of the time, and the query the rest: a tmux that
+        // answers near the deadline leaves the query no time to wait.
+        switch (passthrough(deadline - timeoutMs / 2)) {
         case Passthrough::Off:
             return {TerminalAnswer::Kind::Passthrough, {}};
         case Passthrough::Late:
-            // A query without time to wait for its answer would leave the
-            // answer to the shell.
             return {TerminalAnswer::Kind::Other, {}};
         case Passthrough::Unknown:
+            if (deadline - nowMs() < MinQueryMs) return {TerminalAnswer::Kind::Other, {}};
             break;
         }
     }

@@ -308,6 +308,7 @@ The install and the session share one connection.
 You authenticate once when your SSH configuration sets `ControlMaster auto`, or else when `XDG_RUNTIME_DIR` is an absolute path of letters, digits, `/`, `.`, `_` and `-`.
 Afterglow puts its own control socket there, so keep that directory private to you, as systemd makes it.
 For this first connection, Afterglow's shared connection replaces a `ControlPath none` setting for that host.
+With `-M`, ssh does not use a shared connection. Then the install shares nothing and does not become the master. The session authenticates on its own.
 The reason is that `ssh -G` shows `none` and the default value in the same way.
 To keep `ControlPath none`, set `Terminal.sshTerminfo` to `fallback`.
 Afterglow records the host in `$XDG_STATE_HOME/afterglow/ssh-terminfo`, by default under `~/.local/state`.

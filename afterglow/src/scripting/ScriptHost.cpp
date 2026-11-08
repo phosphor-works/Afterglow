@@ -103,6 +103,10 @@ struct ScriptHost::Script
     qint64 lastOverrun = -1;
     /// Calls that wait for CPU time, in the order they came.
     std::deque<std::function<void(bool)>> delayed;
+    /// The newest event of each repeating timer or watcher (by its
+    /// ScriptTasks key) whose call waits in delayed: one call of it waits at
+    /// most, so its stale ticks do not pile up behind the budget.
+    QHash<quint64, QVariantMap> waitingTasks;
     bool drainDue = false; ///< a timer drains delayed
     QString lastError;
     bool disabled = false;
@@ -1514,10 +1518,12 @@ void ScriptHost::retire(const ScriptPtr& script)
     m_tasks->clear(script->owner);
     stopSleeps(*script, {});
     script->delayed.clear();
+    script->waitingTasks.clear();
     if (m_callbacks.cleanup) m_callbacks.cleanup(script->owner);
 }
 
-void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVariantMap event, quint32 pane)
+void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVariantMap event, quint32 pane,
+                           quint64 repeating)
 {
     if (script->disabled || script->retiring || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()
         || !script->engine->hasFunction(script->module, handler)) return;
@@ -1529,13 +1535,26 @@ void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVar
     // dispatchTo. Timers and watchers have a budget of their own,
     // so a title storm that spends the events' budget does not stop them.
     const bool task = handler == QLatin1String("on_timer") || handler == QLatin1String("on_file_changed");
+    // A repeating timer restarts its interval as soon as its call waits, and
+    // a watcher sees each change: their ticks would queue faster than the
+    // budget lets them run. The call that waits takes the newest event
+    // instead (a watcher's newest "exists"). A one-shot timer has no later tick.
+    if (repeating) {
+        if (const auto waiting = script->waitingTasks.find(repeating); waiting != script->waitingTasks.end()) {
+            *waiting = std::move(event);
+            ++script->droppedCallbacks;
+            return;
+        }
+    }
     if (task && !admitCallback(*script, true)) return;
+    if (repeating) script->waitingTasks.insert(repeating, event);
     // Past Scripts.cpuBudget, the calls that must not be dropped wait, in
     // their order: a key mode's keys come out as typed.
-    defer(script, [this, weak = std::weak_ptr<Script>(script), handler, event = std::move(event), pane](bool) mutable {
+    defer(script, [this, weak = std::weak_ptr<Script>(script), handler, event = std::move(event), pane, repeating](bool) mutable {
         const ScriptPtr script = weak.lock();
         if (!script || script->disabled || script->retiring || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end())
             return;
+        if (repeating) event = script->waitingTasks.take(repeating);
         event.insert(QStringLiteral("terminal"), state());
         if (pane) event.insert(QStringLiteral("pane"), eventPane(pane));
         call(script, handler, {event}, EventTimeoutMs, pane);
@@ -1812,7 +1831,8 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             && own && m_call.run && !m_call.ended) {
             const auto run = script->runs.find(m_call.run);
             if (run != script->runs.end() && run->second->sink.finished) effect.insert(QStringLiteral("client_run"), true);
-            if (run != script->runs.end() && run->second->remote && !m_limits.remoteReadText) {
+            // An earlier refusal keeps its code.
+            if (error.isEmpty() && run != script->runs.end() && run->second->remote && !m_limits.remoteReadText) {
                 // As Control refuses a read that Scripts.allowReadText turns off.
                 result.code = QStringLiteral("operation_failed");
                 error = QStringLiteral("reading pane text for a remote run is off (Control.allowRemoteReadText)");
@@ -2116,8 +2136,8 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         } else if (kind == QLatin1String("timer") || kind == QLatin1String("cancel") || kind == QLatin1String("exec")
                    || kind == QLatin1String("read_file") || kind == QLatin1String("watch_file")) {
             result = m_tasks->apply(script->owner, effect, completion(script, request, kind, eventPane),
-                [this, weak = std::weak_ptr<Script>(script), eventPane](const QString& handler, QVariantMap event) {
-                    if (auto script = weak.lock()) emitOwned(script, handler, std::move(event), eventPane);
+                [this, weak = std::weak_ptr<Script>(script), eventPane](const QString& handler, QVariantMap event, quint64 repeating) {
+                    if (auto script = weak.lock()) emitOwned(script, handler, std::move(event), eventPane, repeating);
                 });
         } else if (m_callbacks.applyOwned || m_callbacks.apply) {
             if (kind == QLatin1String("pulse")) {
@@ -2134,8 +2154,10 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             error = QStringLiteral("no effect handler is available");
         }
     }
-    // A run that ended under its output, or a client that left, is no
-    // fault of the script, as a dialog that the user closes is not.
+    // A run that had ended before its output went, or a client that left
+    // ("cancelled"), is no fault of the script, as a dialog that the user
+    // closes is not. Output past Scripts.commandOutputLimit is: it fails
+    // with operation_failed, and counts.
     if (!error.isEmpty() && result.code != QLatin1String("cancelled")) {
         // An error can quote what the script gave (a kind, a field name): bounded, with no controls.
         const QString shown = loggable(error, MaxLogCharacters);

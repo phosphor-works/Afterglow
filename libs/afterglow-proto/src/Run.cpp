@@ -269,10 +269,19 @@ public:
     void report(const IpcConnection::Error& error, int timeoutMs) const
     {
         if (error.code == "NO_SUCH_TARGET") {
-            fail(remote()       ? "the socket " + m_socket.path + " has no target for remote commands: afterglow ssh did not forward it"
-                 : m_socket.own ? "the Afterglow at $AFTERGLOW_SOCKET takes no commands (Control.enabled or Scripts.enabled is off). "
-                                  "A socket that afterglow ssh forwarded takes them only by its own name, DIRECTORY/TOKEN.sock"
-                                : "the running Afterglow takes no commands (Control.enabled or Scripts.enabled is off)");
+            const std::string off = "takes no commands (Control.enabled or Scripts.enabled is off)";
+            if (remote()) {
+                fail("the socket " + m_socket.path + " has no target for remote commands: afterglow ssh did not forward it");
+            } else if (!m_socket.own) {
+                fail("the running Afterglow " + off);
+            } else if (afterglowName(m_socket.path)) {
+                // Every pane sets $AFTERGLOW_SOCKET to such a name: the hint
+                // below is for a socket that the user named by hand.
+                fail("the Afterglow at $AFTERGLOW_SOCKET " + off);
+            } else {
+                fail("the Afterglow at $AFTERGLOW_SOCKET " + off
+                     + ". A socket that afterglow ssh forwarded takes them only by its own name, DIRECTORY/TOKEN.sock");
+            }
         } else if (error.timedOut) {
             fail("Afterglow did not answer in " + std::to_string(timeoutMs / 1000) + " seconds");
         } else if (error.code.empty()) {
@@ -361,8 +370,9 @@ private:
                 local = true;
                 break;
             case Remote::Error::Forward:
-                reason = "the ssh server refuses to forward the socket of the commands (AllowStreamLocalForwarding in "
-                         "its sshd_config)";
+                reason = "the socket of the commands has no forward: the ssh server refused it (AllowStreamLocalForwarding "
+                         "in its sshd_config), or Afterglow did not confirm the forward in time (afterglow ssh -v tells "
+                         "which)";
                 break;
             case Remote::Error::Version:
                 reason = "this aglow speaks another protocol than the Afterglow of this ssh session (aglow --version), "
@@ -414,6 +424,14 @@ private:
         return name.size() == token + 5 && name.ends_with(".sock")
             && std::all_of(name.begin(), name.begin() + std::ptrdiff_t(token),
                            [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+    }
+
+    /// Whether @p path has the name of a socket of an Afterglow,
+    /// afterglow-*.sock (sharedSocketPath, ownSocketPath).
+    static bool afterglowName(std::string_view path)
+    {
+        const std::string_view name = path.substr(path.rfind('/') + 1);
+        return name.starts_with("afterglow-") && name.ends_with(".sock");
     }
 
     /// Why the local lookup gives no socket to use.

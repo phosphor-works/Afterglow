@@ -925,6 +925,24 @@ TEST_F(Transfer, APromptNamesWhereALinkLeads)
     ASSERT_TRUE(waitFor([&] { return prompts == 2; }));
     EXPECT_EQ(prompted, QStringList { file("downloads/sub") + QStringLiteral("/\n  resolves to ") + real + QStringLiteral("/sub/") });
 }
+// A home directory under a link (/home on another disk) is the same place
+// for itself and every path under it: the home gets no second line either.
+TEST_F(Transfer, AHomeUnderALinkGetsNoLineOfItsOwn)
+{
+    QTemporaryDir outside;
+    ASSERT_TRUE(outside.isValid());
+    const QString real = QFileInfo(outside.path()).canonicalFilePath();
+    ASSERT_TRUE(QDir().mkpath(real + QStringLiteral("/user/sub")));
+    ASSERT_EQ(::symlink(QFile::encodeName(real).constData(), QFile::encodeName(file("home")).constData()), 0);
+    const QByteArray home = qgetenv("HOME");
+    const auto restore = qScopeGuard([&] { qputenv("HOME", home); });
+    qputenv("HOME", QFile::encodeName(file("home/user")));
+    service.handle("id=read;ac=receive;sz=2");
+    service.handle("id=read;ac=file;fid=h;n=" + b64("~"));
+    service.handle("id=read;ac=file;fid=s;n=" + b64("~/sub"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 1; }));
+    EXPECT_EQ(prompted, (QStringList { file("home/user") + QStringLiteral("/"), file("home/user/sub") + QStringLiteral("/") }));
+}
 // A read goes where the prompt showed. A directory that became a link since
 // leads the read nowhere else.
 TEST_F(Transfer, AReadGoesWhereThePromptShowed)
@@ -960,7 +978,7 @@ TEST_F(Transfer, AReadGoesWhereThePromptShowed)
     EXPECT_FALSE(std::any_of(replies.begin(), replies.end(), [](const auto& b) { return b.contains("ac=file;"); }));
 }
 // The mode of a new file and of a new directory comes from the umask when
-// the transfer began, on the GUI thread. Code that sets another umask for a
+// the service was made, on the GUI thread. Code that sets another umask for a
 // moment (a socket that binds with mode 0600) does not change it.
 TEST(TransferUmask, ComesFromTheGuiThread)
 {
@@ -1517,6 +1535,35 @@ TEST_F(Transfer, FilesThatCameDuringADeniedPromptGetAPromptOfTheirOwn)
     ASSERT_TRUE(fileStatus("d", "EPERM"));
     EXPECT_EQ(prompts, 3);
 }
+// The prompt after a later No opens in the cooldown once. A No of that
+// prompt too leaves the files that came while it showed to the cooldown: a
+// program that names a file during each prompt cannot keep one open.
+TEST_F(Transfer, ANoOfThePromptAfterANoOpensNoOther)
+{
+    send("ac=send");
+    send("ac=file;fid=a;n=" + path("a"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 1; }));
+    service.approve(token, true);
+    ASSERT_TRUE(fileStatus("a", "STARTED"));
+    send("ac=file;fid=b;n=" + path("b"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 2; }));
+    send("ac=file;fid=c;n=" + path("c"));
+    ASSERT_TRUE(barrier());
+    service.approve(token, false);
+    ASSERT_TRUE(fileStatus("b", "EPERM"));
+    ASSERT_TRUE(waitFor([&] { return prompts == 3; }));
+    EXPECT_EQ(prompted, QStringList { file("c") });
+    send("ac=file;fid=d;n=" + path("d"));
+    ASSERT_TRUE(barrier());
+    service.approve(token, false);
+    ASSERT_TRUE(fileStatus("c", "EPERM"));
+    ASSERT_TRUE(fileStatus("d", "EPERM"));
+    ASSERT_TRUE(barrier());
+    EXPECT_EQ(prompts, 3);
+    // The session goes on: the file that the user approved finishes.
+    send("ac=end_data;fid=a;d=" + b64("x"));
+    ASSERT_TRUE(fileStatus("a", "OK"));
+}
 // A level that did not exist when the prompt showed, and that exists now as
 // a directory, is part of the path that is read: not the file of the same
 // name above it.
@@ -1752,16 +1799,19 @@ struct TransferLimits : Transfer {
         Transfer::SetUp();
     }
 };
-TEST_F(TransferLimits, ADeltaUploadWithNoDescriptorForItsSignatureIsRefusedBeforeItStarts)
+TEST_F(TransferLimits, ADeltaUploadWithNoRoomForItsDescriptorsIsRefusedBeforeItStarts)
 {
-    // A delta upload holds its output, its basis and the signature stream.
+    // A delta upload holds its output (two descriptors), its basis and the
+    // signature stream. The file command checks for all four before it
+    // opens any.
     QFile basis(dir.filePath(QStringLiteral("basis")));
     ASSERT_TRUE(basis.open(QIODevice::WriteOnly));
     ASSERT_EQ(basis.write(QByteArray(8192, 'b')), 8192);
     basis.close();
     ASSERT_TRUE(start());
     // Each upload with data holds two: its temporary file and its directory.
-    // Room is left for the basis and the signature, not for the output.
+    // Two or three are left: room for the basis and the signature, not for
+    // the output.
     const qsizetype open = (qsizetype(limit) - 2) / 2;
     for (qsizetype i = 0; i < open; ++i) {
         send("ac=file;fid=" + QByteArray::number(i) + ";n=" + b64(dir.filePath(QString::number(i)).toUtf8()));
