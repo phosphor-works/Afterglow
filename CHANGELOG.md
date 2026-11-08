@@ -33,7 +33,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 ### Graphics and text sizing
 
-- Kitty graphics: transmission, placement, animation, Unicode placeholders and relative placements with parent chains.
+- Kitty graphics: transmission, placement, animation, Unicode placeholders and relative placements with parent chains. Indexed images (`f=8` and `f=16`) take the colors of the pane and change with them.
 - Kitty images sent as a file, a temporary file or shared memory, unless `Terminal.graphicsFileTransfer` is `deny`.
 - An image memory limit for the main and the alternate screen of each pane (`Graphics.quota`, 320 MiB each by default). Images that no placement shows go first: those sent with the transient hint (`N=1`), then the oldest.
 - Sixel images.

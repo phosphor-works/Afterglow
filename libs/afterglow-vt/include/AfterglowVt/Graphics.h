@@ -59,11 +59,25 @@ private:
 
 /// One frame of an image, RGBA8, immutable once published so renderers can
 /// hold it without a lock.
+/// How a frame holds its pixels. Indexed frames (kitty f=8 and f=16) hold
+/// palette indices, so an image follows the colour scheme: the renderer
+/// gives each index the pane's colour when it draws the frame.
+enum class PixelFormat : std::uint8_t {
+    Rgba,
+    Indexed, ///< one index for each pixel, opaque
+    IndexedAlpha, ///< an index and an alpha for each pixel
+};
+
 struct ImageFrame
 {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
-    std::vector<std::uint8_t> rgba;
+    PixelFormat format = PixelFormat::Rgba;
+    std::vector<std::uint8_t> rgba; ///< Rgba frames only
+    std::vector<std::uint8_t> indices; ///< Indexed and IndexedAlpha frames only
+
+    bool indexed() const noexcept { return format != PixelFormat::Rgba; }
+    std::size_t byteSize() const noexcept { return rgba.size() + indices.size(); }
 };
 using FramePtr = std::shared_ptr<const ImageFrame>;
 

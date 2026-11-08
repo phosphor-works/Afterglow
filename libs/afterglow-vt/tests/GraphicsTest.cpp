@@ -1307,6 +1307,70 @@ TEST(Graphics, TransientImagesGoFirstAtTheImageLimit)
     EXPECT_EQ(t.g().images().count(1), 1u); // the oldest stays: it has no hint
 }
 
+TEST(Graphics, IndexedFormatsKeepTheirIndices)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=8,s=2,v=1,i=1", base64Encode(std::string("\x01\xf8", 2))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;OK\x1b\\");
+    const ImageFrame& opaque = *t.g().images().at(1).frames.front();
+    EXPECT_EQ(opaque.format, PixelFormat::Indexed);
+    EXPECT_EQ(opaque.indices, (std::vector<std::uint8_t>{1, 248}));
+    EXPECT_TRUE(opaque.rgba.empty());
+    EXPECT_EQ(opaque.byteSize(), 2u);
+    // f=16: an index and an alpha for each pixel, here compressed.
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=16,s=1,v=2,o=z,i=2", base64Encode(zlibCompress(std::string("\x05\x80\xfc\xff", 4)))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=2;OK\x1b\\");
+    const ImageFrame& alpha = *t.g().images().at(2).frames.front();
+    EXPECT_EQ(alpha.format, PixelFormat::IndexedAlpha);
+    EXPECT_EQ(alpha.indices, (std::vector<std::uint8_t>{5, 0x80, 0xfc, 0xff}));
+    // A query checks support and stores nothing.
+    t.host.written.clear();
+    t.t.feed(apc("a=q,f=8,s=1,v=1,i=3", base64Encode(std::string("\x07", 1))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=3;OK\x1b\\");
+    EXPECT_EQ(t.g().images().count(3), 0u);
+}
+
+TEST(Graphics, IndexedFormatsAreCheckedLikeRawPixels)
+{
+    TerminalOptions o;
+    o.graphicsQuota = 10;
+    Term t(20, 10, o);
+    t.t.feed(apc("a=t,f=8,i=1", base64Encode("abc")));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;EINVAL:missing or invalid image size\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=16,s=2,v=1,i=2", base64Encode("abc"))); // 3 bytes of 4
+    EXPECT_EQ(t.host.written, "\x1b_Gi=2;ENODATA:insufficient image data\x1b\\");
+    // The quota counts the bytes kept: one or two for each pixel.
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=8,s=3,v=3,i=3", base64Encode(std::string(9, '\x01'))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=3;OK\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=16,s=3,v=3,i=4", base64Encode(std::string(18, '\x01'))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=4;ENOSPC:image larger than the storage quota\x1b\\");
+    // An unknown format still fails.
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=12,s=1,v=1,i=5", base64Encode("ab")));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=5;EINVAL:unknown format\x1b\\");
+}
+
+TEST(Graphics, IndexedImagesHaveNoFrames)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=8,s=1,v=1,i=1,q=2", base64Encode(std::string("\x01", 1))));
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=2,q=2", base64Encode(rgba(1, 1, 1, 2, 3))));
+    t.t.feed(apc("a=f,i=1,f=32,s=1,v=1", base64Encode(rgba(1, 1, 1, 2, 3))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;EINVAL:indexed images have no frames\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=f,i=2,f=8,s=1,v=1", base64Encode(std::string("\x01", 1))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=2;EINVAL:indexed images have no frames\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=c,i=1,r=1,c=1"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;EINVAL:indexed images have no frames\x1b\\");
+    EXPECT_EQ(t.g().images().at(1).frames.size(), 1u);
+    EXPECT_EQ(t.g().images().at(2).frames.size(), 1u);
+}
+
 TEST(Graphics, LowerQuotaEvictsAtOnce)
 {
     Term t(20, 10);
@@ -2209,9 +2273,12 @@ TEST(Graphics, FeatureQueryEchoesWhatIsSupported)
     t.t.feed(apc("a=q,i=31,e=T,U=1,C=1"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=31,e=T,C=1,U=1;OK\x1b\\");
     t.host.written.clear();
-    // Indexed colour (f=8) is not supported: f is left out.
+    // A frame takes no indexed colour (f=8): f is left out.
     t.t.feed(apc("a=q,i=32,e=f,r=1,X=1,f=8"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=32,e=f,r=1,X=1;OK\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=q,i=37,e=T,f=16"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=37,e=T,f=16;OK\x1b\\");
     t.host.written.clear();
     t.t.feed(apc("a=q,i=33,e=d,d=F"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=33,e=d,d=F;OK\x1b\\");

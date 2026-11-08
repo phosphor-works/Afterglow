@@ -38,6 +38,13 @@ constexpr std::uint32_t DefaultFrameGap = 40;
 /// cannot read exists, what kind it is or how long it is.
 constexpr std::string_view FileError = "EBADF:failed to read image file";
 
+/// Pixels that the command gives byte by byte, with s and v: RGB, RGBA, and
+/// the palette indices of f=8 (index) and f=16 (index and alpha).
+constexpr bool isRawFormat(std::uint32_t format)
+{
+    return format == 24 || format == 32 || format == 8 || format == 16;
+}
+
 /// The answer to a command over the work budget. It asks for a retry only
 /// when the command can be sent again as it was: not when the refusal
 /// deleted its medium (@p released), the temporary file of a t=t command or
@@ -251,7 +258,7 @@ std::size_t Image::byteSize() const
 {
     std::size_t total = 0;
     for (const FramePtr& f : frames) {
-        total += f->rgba.size();
+        total += f->byteSize();
     }
     return total;
 }
@@ -579,10 +586,10 @@ void GraphicsStore::respond(const Command& cmd, Context& ctx, std::string_view s
 
 void GraphicsStore::featureQuery(const Command& cmd, Context& ctx)
 {
-    // The keys kitty's supported_keys_for_query() lists for each action,
-    // less what this store does not do: the indexed formats f=8 and f=16.
-    // Usage hints (N=) belong to the transmission, so frames do not report
-    // them. Keys with their default value are left out.
+    // The keys kitty's supported_keys_for_query() lists for each action.
+    // Usage hints (N=) and the indexed formats (f=8, f=16) belong to the
+    // transmission, so frames do not report them. Keys with their default
+    // value are left out.
     if (!cmd.id || cmd.quiet >= 1) {
         return; // a query names its id; quiet leaves nothing to say about an OK
     }
@@ -621,7 +628,9 @@ void GraphicsStore::featureQuery(const Command& cmd, Context& ctx)
         add('e', e);
         if (cmd.medium == 'f' || cmd.medium == 't' || cmd.medium == 's') add('t', cmd.medium);
         if (cmd.compression == 'z') add('o', 'z');
-        if (cmd.format == 24 || cmd.format == 100) add('f', cmd.format);
+        if (cmd.format == 24 || cmd.format == 100 || (e != 'f' && (cmd.format == 8 || cmd.format == 16))) {
+            add('f', cmd.format);
+        }
         if (cmd.s && cmd.s <= MaxDimension) add('s', cmd.s);
         if (cmd.v && cmd.v <= MaxDimension) add('v', cmd.v);
         if (cmd.size) add('S', cmd.size);
@@ -685,7 +694,7 @@ void GraphicsStore::featureQuery(const Command& cmd, Context& ctx)
 bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size_t readLimit, std::size_t inflateLimit,
                                 std::string& error)
 {
-    const bool cut = cmd.compression == 0 && (cmd.format == 24 || cmd.format == 32);
+    const bool cut = cmd.compression == 0 && isRawFormat(cmd.format);
     const bool fromFile = cmd.medium == 'f' || cmd.medium == 't' || cmd.medium == 's';
     if (fromFile && !m_fileTransfer) {
         error = "EPERM:file transmission is turned off";
@@ -815,8 +824,10 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
     // PNG and o=z bytes have the limit of inline data in every medium. The
     // quota applies to the decoded image (transmit() checks it), so a PNG
     // file longer than the quota whose pixels fit is kept.
-    const bool raw = cmd.format == 24 || cmd.format == 32;
+    const bool raw = isRawFormat(cmd.format);
     const std::size_t bpp = cmd.format / 8;
+    // An indexed frame keeps its bytes; the other raw formats become RGBA.
+    const std::size_t storedBpp = cmd.format == 8 || cmd.format == 16 ? bpp : 4;
     std::size_t readLimit = MaxPayload;
     std::size_t inflateLimit = std::min(m_quota, MaxPayload);
     if (cmd.compression != 0 && cmd.compression != 'z') {
@@ -825,9 +836,9 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
         error = "EINVAL:unknown format";
     } else if (raw && (cmd.s == 0 || cmd.v == 0 || cmd.s > MaxDimension || cmd.v > MaxDimension)) {
         error = "EINVAL:missing or invalid image size";
-    } else if (raw && std::size_t(cmd.s) * cmd.v * 4 > MaxPayload) {
+    } else if (raw && std::size_t(cmd.s) * cmd.v * storedBpp > MaxPayload) {
         error = "EFBIG:image payload too large";
-    } else if (raw && std::size_t(cmd.s) * cmd.v * 4 > m_quota) {
+    } else if (raw && std::size_t(cmd.s) * cmd.v * storedBpp > m_quota) {
         error = "ENOSPC:image larger than the storage quota";
     } else if (raw) {
         // Raw pixels past the image are never used, so they are not read.
@@ -856,7 +867,10 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
         }
         out.width = cmd.s;
         out.height = cmd.v;
-        if (bpp == 4) {
+        if (cmd.format == 8 || cmd.format == 16) {
+            out.format = cmd.format == 8 ? PixelFormat::Indexed : PixelFormat::IndexedAlpha;
+            out.indices.assign(data.begin(), data.begin() + std::ptrdiff_t(expected));
+        } else if (bpp == 4) {
             out.rgba.assign(data.begin(), data.begin() + std::ptrdiff_t(expected));
         } else {
             out.rgba.resize(std::size_t(cmd.s) * cmd.v * 4);
@@ -872,8 +886,9 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
         error = "EINVAL:invalid image dimensions";
         return false;
     }
-    const auto expectedBytes = std::size_t(out.width) * out.height * 4;
-    if (expectedBytes > MaxPayload || out.rgba.size() != expectedBytes) {
+    const std::size_t outBpp = out.format == PixelFormat::Indexed ? 1 : out.format == PixelFormat::IndexedAlpha ? 2 : 4;
+    const auto expectedBytes = std::size_t(out.width) * out.height * outBpp;
+    if (expectedBytes > MaxPayload || out.byteSize() != expectedBytes) {
         error = "EINVAL:invalid decoded image extent";
         return false;
     }
@@ -889,7 +904,7 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
         respond(cmd, ctx, error, true);
         return;
     }
-    if (frame.rgba.size() > m_quota) {
+    if (frame.byteSize() > m_quota) {
         respond(cmd, ctx, "ENOSPC:image larger than the storage quota", true);
         return;
     }
@@ -1377,6 +1392,13 @@ void GraphicsStore::frame(const Command& cmdIn, std::string data, Context& ctx)
         respond(cmdIn, ctx, "ENOENT:no such image", true);
         return;
     }
+    // Indexed images have no animation in the protocol: their colours
+    // come from the palette when drawn, which frame composition cannot use.
+    if (img->frames.front()->indexed() || cmdIn.format == 8 || cmdIn.format == 16) {
+        releaseMedium(cmdIn, data);
+        respond(cmdIn, ctx, "EINVAL:indexed images have no frames", true);
+        return;
+    }
     Command cmd = cmdIn;
     cmd.id = img->id;
     const std::uint32_t gap = cmd.z < 0 ? 0 : cmd.z > 0 ? std::uint32_t(cmd.z) : DefaultFrameGap;
@@ -1499,6 +1521,10 @@ void GraphicsStore::compose(const Command& cmdIn, Context& ctx)
     }
     Command cmd = cmdIn;
     cmd.id = img->id;
+    if (img->frames.front()->indexed()) {
+        respond(cmd, ctx, "EINVAL:indexed images have no frames", true);
+        return;
+    }
     const std::size_t n = img->frames.size();
     if (cmd.r < 1 || cmd.c < 1 || std::size_t(cmd.r) > n || std::size_t(cmd.c) > n) {
         respond(cmd, ctx, "ENOENT:no such frame", true);

@@ -5,6 +5,7 @@
 
 #include "GpuTestDevice.h"
 
+#include <AfterglowProto/Base64.h>
 #include <AfterglowRender/GpuDevice.h>
 #include <AfterglowRender/GridRenderer.h>
 #include <AfterglowRender/Snapshot.h>
@@ -827,6 +828,30 @@ TEST_F(Render, KittyImageIsTopDown)
     EXPECT_PIXEL_NEAR(img, cellCenter(1, 2), qRgb(0, 0, 255), 40);
     EXPECT_PIXEL_NEAR(img, cellCenter(2, 2), qRgb(255, 255, 255), 40);
     EXPECT_PIXEL(img, cellCenter(0, 0), rgb(snapshot.defaultBg));
+}
+
+TEST_F(Render, IndexedImagesTakeTheColoursOfThePane)
+{
+    // kitty f=8 and f=16: palette indices, drawn in the pane's colours.
+    using AfterglowProto::base64Encode;
+    const std::string red = "\x1b]4;1;rgb:ff/00/00\x1b\\";
+    // Four 1x1 images, one cell each, side by side: palette 1, the cursor
+    // colour (252), palette 1 at alpha 0 (f=16), the default background (248).
+    std::string bytes = "\x1b[?25l" + red + "\x1b]12;rgb:12/34/56\x1b\\\x1b[1;1H";
+    bytes += "\x1b_Ga=T,f=8,s=1,v=1,c=1,r=1,q=2;" + base64Encode(std::string("\x01", 1)) + "\x1b\\";
+    bytes += "\x1b[1;2H\x1b_Ga=T,f=8,s=1,v=1,c=1,r=1,q=2;" + base64Encode(std::string("\xfc", 1)) + "\x1b\\";
+    bytes += "\x1b[1;3H\x1b_Ga=T,f=16,s=1,v=1,c=1,r=1,q=2;" + base64Encode(std::string("\x01\x00", 2)) + "\x1b\\";
+    bytes += "\x1b[1;4H\x1b_Ga=T,f=8,s=1,v=1,c=1,r=1,q=2;" + base64Encode(std::string("\xf8", 1)) + "\x1b\\";
+    // A pane at half opacity: the default background of the image stays opaque.
+    QImage img = render(bytes, true, 128, 0x00000000u);
+    EXPECT_PIXEL_NEAR(img, cellCenter(0, 0), qRgb(255, 0, 0), 12);
+    EXPECT_PIXEL_NEAR(img, cellCenter(1, 0), qRgb(0x12, 0x34, 0x56), 12);
+    EXPECT_LT(qAlpha(img.pixel(cellCenter(2, 0))), 200); // alpha 0: the half-transparent pane shows
+    EXPECT_EQ(qAlpha(img.pixel(cellCenter(3, 0))), 255);
+    EXPECT_PIXEL_NEAR(img, cellCenter(3, 0), rgb(snapshot.defaultBg), 12);
+    // A new palette entry redraws the image in the new colour.
+    img = render("\x1b]4;1;rgb:00/ff/00\x1b\\", true, 128, 0x00000000u);
+    EXPECT_PIXEL_NEAR(img, cellCenter(0, 0), qRgb(0, 255, 0), 12);
 }
 
 TEST_F(Render, AHeldFrameKeepsTheImageThatASynchronizedUpdateReplaces)
@@ -3184,6 +3209,35 @@ TEST(Snapshot, MovesKeepTheIdentityAndLeaveANewOne)
     EXPECT_NE(b.identity.value(), value);
     EXPECT_NE(b.identity.value(), replaced);
     EXPECT_NE(b.identity.value(), a.identity.value());
+}
+
+TEST(SnapshotImages, IndexedFramesKeepTheirColoursUntilTheColoursChange)
+{
+    NullHost host;
+    AfterglowVt::Terminal terminal(10, 4, host);
+    terminal.resize(10, 4, 8, 16);
+    terminal.feed("\x1b_Ga=T,f=8,s=2,v=1,i=1,q=2;" + AfterglowProto::base64Encode(std::string("\x01\x02", 2)) + "\x1b\\");
+    PaneSnapshot snap;
+    snap.capture(terminal);
+    ASSERT_EQ(snap.images.size(), 1u);
+    const AfterglowVt::FramePtr first = snap.images[0].frame;
+    ASSERT_FALSE(first->indexed());
+    ASSERT_EQ(first->rgba.size(), 8u);
+    EXPECT_EQ(first->rgba[0], terminal.paletteColor(1).r);
+    EXPECT_EQ(first->rgba[3], 255);
+    // Text changes, the colours do not: the same RGBA frame, so the same texture.
+    terminal.feed("hello");
+    snap.capture(terminal);
+    EXPECT_EQ(snap.images[0].frame, first);
+    terminal.feed("\x1b]4;2;rgb:01/02/03\x1b\\");
+    snap.capture(terminal);
+    ASSERT_NE(snap.images[0].frame, first);
+    EXPECT_EQ(snap.images[0].frame->rgba[4], 1);
+    EXPECT_EQ(snap.images[0].frame->rgba[6], 3);
+    // When nothing shows the image, its colours go.
+    terminal.feed("\x1b_Ga=d,d=A\x1b\\");
+    snap.capture(terminal);
+    EXPECT_TRUE(snap.coloredFrames.empty());
 }
 
 TEST(GlyphCache, OversizedSpritesDrawNothingInsteadOfThrowing)

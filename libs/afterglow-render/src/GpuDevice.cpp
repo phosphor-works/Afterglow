@@ -140,6 +140,10 @@ QRhiTexture* GpuDevice::imageTexture(const AfterglowVt::FramePtr& frame, QRhiRes
         delete it->second.texture;
         m_imageTextures.erase(it);
     }
+    // Only RGBA frames reach the GPU: the snapshot colours indexed ones.
+    if (frame->rgba.size() != std::size_t(frame->width) * frame->height * 4) {
+        return nullptr;
+    }
     const QSize size(int(frame->width), int(frame->height));
     const int limit = m_rhi->resourceLimit(QRhi::TextureSizeMax);
     std::unique_ptr<QRhiTexture> created;

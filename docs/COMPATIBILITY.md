@@ -96,7 +96,6 @@ While a read waits, for example on a network mount that does not answer, the pan
 To prevent this, set `Terminal.graphicsFileTransfer` to `"deny"`.
 
 A feature query (`a=q` with `e`) gets the keys of that action that Afterglow supports.
-Afterglow does not support the indexed formats `f=8` and `f=16`.
 The transient usage hint (`N=1`) applies to a transmission (`a=t`, `a=T`). It does not apply to a frame (`a=f`).
 When Afterglow must delete an image to make room, it first deletes an image with the hint that has no placement.
 A feature query reports `N` for the transmit and query actions.
@@ -105,21 +104,44 @@ The `r` key selects the frame (the first frame is 1). Without `r`, the command d
 On an image with one frame, `d=F` deletes the image, and `d=f` keeps it.
 
 Afterglow checks the size that a Kitty transmission declares before it reads or decompresses the data.
-Raw pixels (`f=24` or `f=32`) use 3 or 4 bytes for each pixel.
+Raw pixels (`f=24` or `f=32`) use 3 or 4 bytes for each pixel, and Afterglow keeps 4.
+Indexed pixels (`f=8` or `f=16`) use 1 or 2 bytes for each pixel, and Afterglow keeps the same number.
 
 | Case | Result |
 | --- | --- |
 | `o` has a value that is not `z` | The program gets an `EINVAL` error. |
-| `f` is not 24, 32 or 100 | The program gets an `EINVAL` error. |
-| Raw pixels without `s` or `v`, or with a value above 10,000 | The program gets an `EINVAL` error. |
-| Raw pixels where `s` × `v` × 4 bytes is more than 320 MiB | The program gets an `EFBIG` error. |
-| Raw pixels where `s` × `v` × 4 bytes is more than `Graphics.quota` | The program gets an `ENOSPC` error. |
+| `f` is not 8, 16, 24, 32 or 100 | The program gets an `EINVAL` error. |
+| Raw or indexed pixels without `s` or `v`, or with a value above 10,000 | The program gets an `EINVAL` error. |
+| Raw or indexed pixels where `s` × `v` × the bytes kept for each pixel is more than 320 MiB | The program gets an `EFBIG` error. |
+| Raw or indexed pixels where `s` × `v` × the bytes kept for each pixel is more than `Graphics.quota` | The program gets an `ENOSPC` error. |
 | Uncompressed raw pixels from a file or shared memory | Afterglow reads `s` × `v` pixels and no more of the file. |
 | Raw pixels with `o=z` that decompress to more than `s` × `v` pixels | The program gets an `EINVAL` error. |
 | PNG data (`f=100`) or `o=z` data that is longer than 320 MiB, inline | The program gets an `EFBIG` error. |
 | PNG data with `o=z` that decompresses to more than `Graphics.quota` or 320 MiB | The program gets an `EINVAL` error. |
 | A PNG image whose decoded pixels (width × height × 4 bytes) are more than 320 MiB | The program gets an `EBADPNG` error. |
 | A PNG image whose decoded pixels (width × height × 4 bytes) are more than `Graphics.quota` | The program gets an `ENOSPC` error. |
+
+## Indexed images
+
+An indexed image (`f=8` or `f=16`) holds palette indices, so it follows the colors of the pane.
+Afterglow draws it again in the new colors when a theme, OSC 4, OSC 10 to 12, OSC 17, OSC 19 or OSC 21 changes them.
+With `f=8`, every pixel is opaque. With `f=16`, the second byte of each pixel is its alpha.
+
+| Index | Color |
+| --- | --- |
+| 0 to 247 | The 256-color palette |
+| 248 | The default background. It is always opaque, also when the window is transparent. |
+| 249 | The default foreground |
+| 250 | The selection background |
+| 251 | The selection foreground |
+| 252 | The cursor color |
+| 253 | The cursor text color |
+| 254 | The default foreground. Afterglow shows a link under the pointer in its own text color, so it has no hover color. |
+| 255 | The default foreground (reserved) |
+
+When no setting or program sets a selection or cursor color, Afterglow uses the color that it draws with: the default foreground or background.
+An indexed image has one frame. A frame action (`a=f`) or a composition (`a=c`) on it gets the error `EINVAL:indexed images have no frames`, and so does a frame action with `f=8` or `f=16`.
+A feature query reports `f=8` and `f=16` for the transmit and query actions.
 
 ## Multiple cursors
 

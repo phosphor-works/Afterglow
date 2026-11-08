@@ -324,7 +324,69 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     for (int i = 0; i < 256; ++i) {
         palette[std::size_t(i)] = packRgba(t.paletteColor(i));
     }
+    colorIndexedImages();
     if (reorder) applyBidi(t);
+}
+
+void PaneSnapshot::colorIndexedImages()
+{
+    // The colours of the kitty indexed formats: 0-247 the 256-colour table,
+    // then the default background (always opaque) and foreground, the
+    // selection background and foreground, the cursor and its text, the
+    // link hover colour and one reserved entry. Afterglow shows a hovered
+    // link in its own text colour, so 254 is the default foreground, as the
+    // reserved 255 is.
+    std::array<std::uint32_t, 256> colors = palette;
+    colors[248] = defaultBg;
+    colors[249] = defaultFg;
+    colors[250] = selectionBackgroundColor;
+    colors[251] = selectionForegroundColor;
+    colors[252] = cursorColor;
+    colors[253] = cursorTextColor;
+    colors[254] = defaultFg;
+    colors[255] = defaultFg;
+    std::uint64_t key = 14695981039346656037ull; // FNV-1a over the colours
+    for (const std::uint32_t c : colors) {
+        key = (key ^ (c & 0x00FFFFFFu)) * 1099511628211ull;
+    }
+    bool any = false;
+    for (AfterglowVt::VisiblePlacement& image : images) {
+        const AfterglowVt::FramePtr frame = image.frame;
+        if (!frame || !frame->indexed()) continue;
+        any = true;
+        ColoredFrame& entry = coloredFrames[frame.get()];
+        if (entry.rgba && entry.colors == key && entry.source.lock() == frame) {
+            image.frame = entry.rgba;
+            continue;
+        }
+        auto rgba = std::make_shared<AfterglowVt::ImageFrame>();
+        rgba->width = frame->width;
+        rgba->height = frame->height;
+        const std::size_t pixels = std::size_t(frame->width) * frame->height;
+        const bool alpha = frame->format == AfterglowVt::PixelFormat::IndexedAlpha;
+        if (frame->indices.size() == pixels * (alpha ? 2 : 1)) {
+            rgba->rgba.resize(pixels * 4);
+            for (std::size_t i = 0; i < pixels; ++i) {
+                const std::uint32_t c = colors[frame->indices[alpha ? 2 * i : i]];
+                std::uint8_t* out = &rgba->rgba[i * 4];
+                out[0] = std::uint8_t(c);
+                out[1] = std::uint8_t(c >> 8);
+                out[2] = std::uint8_t(c >> 16);
+                out[3] = alpha ? frame->indices[2 * i + 1] : 255;
+            }
+        }
+        entry = ColoredFrame{frame, key, rgba};
+        image.frame = std::move(rgba);
+    }
+    // Frames that no placement shows any more give their colours back.
+    if (!any) {
+        coloredFrames.clear();
+        return;
+    }
+    std::erase_if(coloredFrames, [&](const auto& item) {
+        return std::none_of(images.begin(), images.end(),
+                            [&](const AfterglowVt::VisiblePlacement& image) { return image.frame == item.second.rgba; });
+    });
 }
 
 } // namespace AfterglowRender

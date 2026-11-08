@@ -11,7 +11,9 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -130,7 +132,18 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     std::array<std::uint32_t, 256> palette{};
 
     /// Kitty graphics placements in the viewport, in pixels from cell (0, 0).
+    /// Their frames are RGBA: capture() gives indexed frames their colours.
     std::vector<AfterglowVt::VisiblePlacement> images;
+
+    /// An indexed frame in the colours of the last capture that showed it.
+    /// A frame keeps its texture until the colours change.
+    struct ColoredFrame
+    {
+        std::weak_ptr<const AfterglowVt::ImageFrame> source;
+        std::uint64_t colors = 0;
+        AfterglowVt::FramePtr rgba;
+    };
+    std::unordered_map<const AfterglowVt::ImageFrame*, ColoredFrame> coloredFrames;
 
     /// DEC line size per captured row.
     std::vector<AfterglowVt::LineSize> lineSizes;
@@ -158,6 +171,9 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     /// @param reorder applies bidirectional reordering (applyBidi()).
     void capture(const AfterglowVt::Terminal& terminal, const AfterglowVt::Selection* selection = nullptr,
                  const SearchHighlight& search = {}, int extraRows = 0, bool reorder = true);
+
+private:
+    void colorIndexedImages();
 };
 
 } // namespace AfterglowRender
