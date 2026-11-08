@@ -1612,11 +1612,10 @@ TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)
 TEST(CtlOverlayTest, SendsAPopupsOptionsInTheirJsonTypes)
 {
     // A count of cells as a number, which afterglow takes and a string of
-    // digits is not; a percentage as a string. A flag after an option with a
-    // value stays a flag.
+    // digits is not; a percentage as a string.
     AgainstTarget r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 0}}),
-                                 {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("-w"), QStringLiteral("--no-border"),
-                                  QStringLiteral("60"), QStringLiteral("--height"), QStringLiteral("60%"), QStringLiteral("--position"),
+                                 {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("-w"), QStringLiteral("60"),
+                                  QStringLiteral("--no-border"), QStringLiteral("--height"), QStringLiteral("60%"), QStringLiteral("--position"),
                                   QStringLiteral("top-right"), QStringLiteral("--"), QStringLiteral("fzf")});
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
     const QJsonObject options = overlayOptions(r.calls);
@@ -1629,13 +1628,21 @@ TEST(CtlOverlayTest, SendsAPopupsOptionsInTheirJsonTypes)
     r = ctlAgainst(overlayResult({}), {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--"), QStringLiteral("fzf")});
     for (const char* key : {"width", "height", "position", "border"})
         EXPECT_FALSE(overlayOptions(r.calls).contains(QLatin1String(key))) << key;
-    // A value spelled as an option that came before is a value, not that
-    // option given twice.
+    // The word after an option that takes a value is its value, spelled as
+    // an option or not, before or after that option.
+    for (const QStringList& words : {QStringList{QStringLiteral("--capture"), QStringLiteral("none"), QStringLiteral("--title"), QStringLiteral("--capture")},
+                                     QStringList{QStringLiteral("--title"), QStringLiteral("--capture"), QStringLiteral("--capture"), QStringLiteral("none")}}) {
+        SCOPED_TRACE(qPrintable(words.join(QLatin1Char(' '))));
+        r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 0}}),
+                       QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + words + QStringList{QStringLiteral("--"), QStringLiteral("fzf")});
+        EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+        EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("title")).toString(), QStringLiteral("--capture"));
+        EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("capture")).toString(), QStringLiteral("none"));
+    }
     r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 0}}),
-                   {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--capture"), QStringLiteral("none"), QStringLiteral("--title"),
-                    QStringLiteral("--capture"), QStringLiteral("--"), QStringLiteral("fzf")});
+                   {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--title"), QStringLiteral("-n"), QStringLiteral("--"), QStringLiteral("fzf")});
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
-    EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("title")).toString(), QStringLiteral("--capture"));
+    EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("title")).toString(), QStringLiteral("-n"));
 }
 
 TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)

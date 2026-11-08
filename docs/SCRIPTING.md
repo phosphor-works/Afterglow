@@ -453,7 +453,7 @@ The [fzf picker package](../data/examples/packages/fzf-picker/README.md) does no
 | `capture` | Where `stdout` of the result comes from. `"stdout"` (the default) reads the program's standard output. `"file"` sets `AFTERGLOW_RESULT` to the path of a new file that only you can read, and reads that file. `"none"` returns an empty `stdout`. |
 | `cwd` | The program's directory: an absolute path, `~`, or a path that starts with `~/`. Another value refuses the effect. When the directory does not exist on this machine, for example a path that a remote shell reported, the program starts in `$HOME`. |
 | `env` | Variables for the program, as for `exec`. `false` removes a variable. At most 256 variables and 64 KiB of names and values. |
-| `title` | Shows as the pane's title while the overlay runs, at most 512 characters. It must not have a control character, a line break or a bidirectional control, as command text (see [Commands](#commands)). A border shows it in its top edge. |
+| `title` | Shows as the pane's title while the overlay runs, at most 512 UTF-16 units. It follows the character rules of command text (see [Commands](#commands)): no control character, line break or bidirectional control. A border shows it in its top edge. |
 | `width`, `height` | Make the overlay a popup. Give a whole number of cells, such as `60`, or a percentage of the pane's grid as a string, such as `"80%"`. The border is part of the size. A side that you do not give takes the whole grid. Without `width` and `height`, the overlay takes the whole pane. |
 | `position` | Where a popup is in the pane: `"center"` (the default), `"top"`, `"bottom"`, `"left"`, `"right"`, `"top-left"`, `"top-right"`, `"bottom-left"` or `"bottom-right"`. It has no effect without `width` or `height`. |
 | `border` | `true` puts a line one cell wide around the program's grid, in the popup border color, with the title in its top edge. `true` without `width` and `height` makes a popup that fills the pane. The default is `true` for a popup and `false` for a full-pane overlay. |
@@ -503,7 +503,7 @@ When the overlay closes, the focus goes back to the pane. The pane's cursor and 
 | --- | --- |
 | The pane overview, other tabs | The overlay shows where its pane is. |
 | A moved pane, a detached tab | The overlay goes with its pane. |
-| Zoom, a resize | They apply to both. The program gets the pane's new size. A popup is placed again, and its program gets the popup's new size. |
+| Zoom, a resize | They apply to both. The program of a full-pane overlay gets the pane's new size. Afterglow places a popup again, and its program gets the popup's new size. |
 | Saved projects | Overlays are not saved. |
 | Copy mode, search, hints, paste, the mouse | They act on the overlay while its pane has the focus. |
 | Assistive technology | It reads the overlay's text in place of the pane's. For a popup, the text is at the place of the popup's grid. |

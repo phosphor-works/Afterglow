@@ -6564,8 +6564,8 @@ TEST_F(NativeWindow, APopupOverOnePaneTakesThePointerInItsOwnCellsOnly) {
     mouseAt(window, QEvent::MouseButtonPress, host.topLeft() + QPointF(3, 3), Qt::LeftButton, Qt::LeftButton);
     dragLeft(window, host.topLeft() + QPointF(host.width() / 3, 3));
     mouseAt(window, QEvent::MouseButtonRelease, host.topLeft() + QPointF(host.width() / 3, 3), Qt::LeftButton, Qt::NoButton);
-    // A frame moves the view by what the wheel scrolled.
-    ASSERT_TRUE(nextFrame(window));
+    // Any scroll that the wheel started has eased to its end, and frames stop.
+    expectIdle(window);
     EXPECT_FALSE(answer->done);
     EXPECT_FALSE(pane->hasSelection());
     EXPECT_FALSE(program->hasSelection());

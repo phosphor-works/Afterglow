@@ -468,7 +468,8 @@ private:
         /// The popup runs: its cursor is the one the pane's keyboard moves.
         bool popupRuns = false;
         /// A transparent instance over the pane, which clears @c popup in the
-        /// text and cursor layers before the popup draws there.
+        /// text and cursor layers before the popup draws there. Only in a
+        /// layered frame: drawRange does not read it.
         std::optional<std::uint32_t> popupClear = {};
         /// The black layer over the pane around a popup (an instance).
         std::optional<std::uint32_t> dim = {};
@@ -586,7 +587,7 @@ private:
         std::uint64_t seenFrame = 0;
     };
     std::unordered_map<std::uint64_t, PaneCache> m_paneCache; ///< by PaneSnapshot::identity
-    std::unordered_map<std::uint64_t, PaneCache> m_hostPaneCache; ///< the panes under fading overlays
+    std::unordered_map<std::uint64_t, PaneCache> m_hostPaneCache; ///< a pane drawn a second time in a frame: under a fading popup
     std::vector<Instance> m_scratch;
 };
 

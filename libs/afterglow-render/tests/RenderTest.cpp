@@ -3814,13 +3814,20 @@ TEST_F(PopupRender, TheCursorInputsAreThePopupsWhileItRunsAndThePanesOnceItEnds)
         chains.pane = {layerShader("cursor-at", body.c_str())};
         renderer->setShaderChains(chains);
     };
+    // The pane away from the frame's corner: the inputs are in the pane's
+    // own pixels, not the frame's.
+    const QPoint offset(2 * cw, ch);
+    const QSize bigger = size + QSize(offset.x(), offset.y());
     WindowRenderer::Pane running = withPopup(true);
+    running.params.rect.translate(offset);
+    running.params.contentOrigin = running.params.rect.topLeft();
+    running.overlay->popup->rect.translate(offset);
     cursorAt(6, 1);
-    EXPECT_PIXEL(frame(running), cellCenter(2, 0), qRgb(0, 255, 0));
+    EXPECT_PIXEL(renderer->renderToImage(bigger, {running}, {}, snapshot.defaultBg), cellCenter(4, 1), qRgb(0, 255, 0));
     WindowRenderer::Pane ended = running;
     ended.overlay->running = false;
     cursorAt(1, 1);
-    EXPECT_PIXEL(frame(ended), cellCenter(2, 0), qRgb(0, 255, 0));
+    EXPECT_PIXEL(renderer->renderToImage(bigger, {ended}, {}, snapshot.defaultBg), cellCenter(4, 1), qRgb(0, 255, 0));
 }
 
 TEST_F(PopupRender, ATitleThatDoesNotFitIsCutAndAZeroWidthCharacterTakesNoCell)

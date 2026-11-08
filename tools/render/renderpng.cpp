@@ -18,9 +18,10 @@
 // over the first pane, faded in by --overlay-progress through the
 // --overlay-transition shader, or as it fades out with --overlay-ended;
 // --overlay-width, --overlay-height or --overlay-border true make it a
-// popup, placed as the window places one, at --overlay-position. Further options set the other renderer inputs
-// (pointer, selection, search, glide, scroll shift, hovered link, blink
-// phase, bidi, contrast, hinting, cell scale); --help lists them all.
+// popup, placed as the window places one, at --overlay-position. Further
+// options set the other renderer inputs (pointer, selection, search, glide,
+// scroll shift, hovered link, blink phase, bidi, contrast, hinting, cell
+// scale); --help lists them all.
 
 #include <AfterglowProto/Graphics.h>
 #include <AfterglowRender/GpuDevice.h>

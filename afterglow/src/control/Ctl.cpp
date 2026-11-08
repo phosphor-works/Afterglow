@@ -68,15 +68,14 @@ of the active window or of the window that was active last.
   action NAME                           run a keybind action (split_right, new_tab...)
                                         or start a script command (script:ID.COMMAND)
   overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n|--no-stdin]
-          [-w|--width N|N%] [-h|--height N|N%] [--position POS] [--border|--no-border] -- CMD...
+          [-w|--width N[%]] [-h|--height N[%]] [--position POS] [--border|--no-border] -- CMD...
                                         run CMD over the pane until it exits, print its
                                         result and exit with its status. Standard input,
                                         unless it is a terminal or -n is given, goes to
-                                        CMD (at most 768 KiB). A width, a height or
-                                        --border makes a popup: cells or a percentage
-                                        of the pane, at POS
-                                        (center, top, bottom, left, right, top-left,
-                                        top-right, bottom-left or bottom-right)
+                                        CMD (at most 768 KiB). A width or a height
+                                        (cells, or N% of the pane) or --border makes a
+                                        popup at POS (center, top, bottom, left, right,
+                                        top-left, top-right, bottom-left or bottom-right)
   watch                                 print events as JSON lines until interrupted
 
 Put text that starts with -- after a "--": send-text -- --stdin.
@@ -443,14 +442,33 @@ int runCtl(int argc, char** argv)
     if (!trailing.isEmpty() && !TakesTrailing.contains(command)) {
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
-    auto takeFlag = [&args](const QString& flag) { return args.removeAll(flag) > 0; };
+    // The options of a command that take a value, when it says so: then a
+    // word is an option only where no such option before it takes it as its
+    // value, whatever the order in which they are taken. A title or a
+    // directory can be spelled like an option.
+    QStringList valueOptions;
+    auto indexOfOption = [&args, &valueOptions](const QString& flag) -> qsizetype {
+        for (qsizetype i = 0; i < args.size(); ++i) {
+            if (args[i] == flag) return i;
+            if (valueOptions.contains(args[i])) ++i;
+        }
+        return -1;
+    };
+    auto takeFlag = [&args, &indexOfOption](const QString& flag) {
+        bool found = false;
+        for (qsizetype i = indexOfOption(flag); i >= 0; i = indexOfOption(flag)) {
+            args.removeAt(i);
+            found = true;
+        }
+        return found;
+    };
     // An option that needs a value and came last: a usage error of its own,
     // not an unknown option. So is one given twice, which shows as a word
     // left once every option took its value (extra).
     std::optional<QString> missingValue;
     QStringList takenValues;
-    auto takeValue = [&args, &missingValue, &takenValues](const QString& flag) -> std::optional<QString> {
-        const qsizetype i = args.indexOf(flag);
+    auto takeValue = [&args, &missingValue, &takenValues, &indexOfOption](const QString& flag) -> std::optional<QString> {
+        const qsizetype i = indexOfOption(flag);
         if (i < 0) return std::nullopt;
         takenValues.append(flag);
         if (i + 1 >= args.size()) {
@@ -719,7 +737,8 @@ int runCtl(int argc, char** argv)
             return run(QStringLiteral("notify"), {pane, title, body});
         };
     } else if (command == QLatin1String("overlay")) {
-        // The flags first: a value never takes a flag that follows its option.
+        valueOptions = {QStringLiteral("--capture"), QStringLiteral("--cwd"),    QStringLiteral("--title"),   QStringLiteral("-w"),
+                        QStringLiteral("--width"),   QStringLiteral("-h"),       QStringLiteral("--height"),  QStringLiteral("--position")};
         const bool noInput = takeFlag(QStringLiteral("-n")) | takeFlag(QStringLiteral("--no-stdin"));
         const bool border = takeFlag(QStringLiteral("--border"));
         const bool noBorder = takeFlag(QStringLiteral("--no-border"));
@@ -741,8 +760,7 @@ int runCtl(int argc, char** argv)
         QJsonObject options{{QStringLiteral("capture"), capture}, {QStringLiteral("cwd"), *dir}};
         if (title) options.insert(QStringLiteral("title"), *title);
         // A count of cells goes as a number, a percentage as text, by the
-        // rules of afterglow.overlay.
-        // No leading zero, as in a percentage.
+        // rules of afterglow.overlay, which take no leading zero in either.
         auto size = [](const QString& value) {
             const std::optional<quint32> cells = value.startsWith(QLatin1Char('0')) ? std::nullopt : decimal(value);
             return cells ? QJsonValue(qint64(*cells)) : QJsonValue(value);

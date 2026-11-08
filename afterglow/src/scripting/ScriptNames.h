@@ -21,6 +21,7 @@ inline bool validScriptId(const QString& id)
 {
     return validName(id) && !id.startsWith(QLatin1Char('-'));
 }
+
 /// The rule of validScriptId, for error messages.
 inline constexpr QLatin1StringView ScriptIdRule{"1 to 64 letters, digits, _ and -, and must not start with -"};
 

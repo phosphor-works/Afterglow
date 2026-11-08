@@ -1527,9 +1527,9 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     // A pane's instances, from its cache when nothing it shows has changed.
     // Subpixel text needs an opaque target that no chain resamples.
     // A pane under a fading popup shows in the frame twice, once with the
-    // popup and once without it, with another focus: the second gets a cache
-    // of its own, or both rebuild each frame. The pane under a full-pane
-    // overlay shows once, and keeps its cache.
+    // popup and once without it (with another focus while the popup runs):
+    // the second gets a cache of its own, or both rebuild each frame. The
+    // pane under a full-pane overlay shows once, and keeps its cache.
     auto appendPane = [&](const Pane& pane, bool subpixelTarget, bool overlayHost = false) -> DrawRange {
         const auto first = std::uint32_t(m_frame.size());
         FrameBuilder::PaneParams pp = pane.params;
@@ -1543,8 +1543,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         if (!pp.focused || !cursorBlinks) pp.cursorBlinkOn = true;
         if (!pane.snapshot->hasBlinkingText) pp.textBlinkOn = true;
         const std::uint64_t identity = pane.snapshot->identity.value();
-        const auto drawn = m_paneCache.find(identity);
-        const bool twice = overlayHost && drawn != m_paneCache.end() && drawn->second.seenFrame == m_frameCounter + 1;
+        const auto seen = m_paneCache.find(identity);
+        const bool twice = overlayHost && seen != m_paneCache.end() && seen->second.seenFrame == m_frameCounter + 1;
         PaneCache& cache = (twice ? m_hostPaneCache : m_paneCache)[identity];
         const bool reusable = cache.snapshotVersion == pane.snapshot->version && cache.fontEpoch == m_fontEpoch
             && cache.glyphEpoch == res.glyphs.epoch() && cache.fontIdentity == res.fonts->identity() && cache.rect == pp.rect

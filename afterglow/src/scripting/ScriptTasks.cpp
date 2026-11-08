@@ -197,7 +197,7 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
     if (kind != QLatin1String("exec")) return reject(QStringLiteral("Unknown task kind"));
     auto command = e.value(QStringLiteral("command")).toStringList();
     if (command.isEmpty() || command.size() > 64) return reject(QStringLiteral("exec needs an argv list of 1 to 64 strings"));
-    for (const auto& arg : command) if (arg.size() > 4096 || arg.contains(QChar(0))) return reject(QStringLiteral("Invalid command argument"));
+    for (const auto& arg : command) if (arg.size() > 4096 || arg.contains(QChar(0))) return reject(QStringLiteral("A command argument is over 4096 characters or has a NUL character"));
     const QString cwd = e.value(QStringLiteral("cwd")).toString();
     if (!cwd.isEmpty() && (cwd.contains(QChar(0)) || !cwd.startsWith(QLatin1Char('/'))))
         return reject(QStringLiteral("exec cwd must be an absolute path"));

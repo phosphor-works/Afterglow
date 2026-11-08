@@ -272,14 +272,15 @@ A result over 1 MiB is cut, and a message goes to standard error.
 | `--cwd DIR` | The program's directory. The default is the directory of `afterglow ctl`. The directory must exist. When the directory of `afterglow ctl` was removed, `afterglow ctl` exits with status 1. Then give an absolute `--cwd`, `~` or one that starts with `~/`. |
 | `--title TEXT` | The pane's title while the overlay runs. It must not have a control character, a line break or a bidirectional control. |
 | `-n`, `--no-stdin` | Standard input does not go to the program. |
-| `-w`, `--width N` | A popup N cells wide, or `N%` of the pane's columns. The border is part of the width. |
-| `-h`, `--height N` | A popup N cells tall, or `N%` of the pane's rows. The border is part of the height. |
+| `-w`, `--width N` | A popup N cells wide, or `N%` of the pane's columns. The border is part of the width. N has no leading zero. |
+| `-h`, `--height N` | A popup N cells tall, or `N%` of the pane's rows. The border is part of the height. N has no leading zero. |
 | `--position POS` | Where the popup is: `center` (the default), `top`, `bottom`, `left`, `right`, `top-left`, `top-right`, `bottom-left` or `bottom-right`. It has no effect without `-w` or `-h`. |
 | `--border`, `--no-border` | A border around the program, or none. A popup has a border by default, and a full-pane overlay has none. |
 
 A width, a height or `--border` makes the overlay a popup: the pane stays visible around it.
 `--border` alone makes a popup that fills the pane, with the program inside the border.
 [SCRIPTING.md](SCRIPTING.md#popups) gives the limits and the layout.
+The word after an option that takes a value is that value, also when it starts with `-`.
 `afterglow ctl` checks the options and the command before it reads standard input or connects.
 A value that breaks a rule of [SCRIPTING.md](SCRIPTING.md#overlays) is a usage error, with exit status 2.
 Afterglow checks that the `--cwd` directory exists. When it does not, `afterglow ctl` exits with status 1.
@@ -555,7 +556,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Subscriptions on one connection | 256 | The subscription fails with `MALFORMED_REQUEST`. A second subscription to the same event also fails. |
 | `afterglow ctl` reply time | 10 seconds | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. `afterglow ctl overlay` waits for the program without a limit. |
 | `afterglow ctl overlay` standard input | 768 KiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |
-| `afterglow ctl overlay` command | 64 words of at most 4096 UTF-16 units | `afterglow ctl` exits with status 2 before it connects. |
+| `afterglow ctl overlay` command | 64 arguments of at most 4096 UTF-16 units each | `afterglow ctl` exits with status 2 before it connects. |
 | `afterglow ctl overlay --title` | 512 UTF-16 units | `afterglow ctl` exits with status 2 before it connects. |
 | `afterglow ctl overlay` request | 1 MiB | `afterglow ctl` exits with status 1 and opens nothing. JSON writes most C0 control characters, such as U+0001, as 6 bytes. Thus input below 768 KiB with many control characters can make a request over 1 MiB. |
 | `stdin` of the `overlay` call | The request line of 1 MiB | The socket closes the connection. |
@@ -614,7 +615,7 @@ The other commands stop with a usage error when you give such words.
 | --- | --- |
 | 0 | The command succeeded. `afterglow ctl --help` also exits with status 0. |
 | 1 | An error, for example no Afterglow, a call that failed or no reply in 10 seconds. |
-| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option that takes a value, given two times, is a usage error too. So is an `overlay` option that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 768 KiB or not UTF-8 text. `afterglow ctl` checks the text before it connects. |
+| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option that takes a value, given two times, is a usage error too. So is an `overlay` option or command that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 768 KiB or not UTF-8 text. `afterglow ctl` checks the text before it connects. |
 | 0 to 255 from `overlay` | `afterglow ctl overlay` exits with the exit status of its program. Thus a status of 1 or 2 can come from the program. A failed or cancelled overlay gives 1. So does an exit status outside 0 to 255. |
 
 `afterglow ctl watch` prints events until the connection or a subscription ends.
