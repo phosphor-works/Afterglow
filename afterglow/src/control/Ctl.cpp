@@ -8,6 +8,7 @@
 #include "../config/Keybinds.h"
 #include "../scripting/OverlaySpec.h"
 
+#include <AfterglowProto/Random.h>
 #include <AfterglowProto/Run.h>
 #include <AfterglowProto/Socket.h>
 #include <AfterglowProto/Text.h>
@@ -71,7 +72,7 @@ of the active window or of the window that was active last.
                                         run CMD over the pane until it exits, print its
                                         result and exit with its status. Standard input,
                                         unless it is a terminal or -n is given, goes to
-                                        CMD (at most 768 KiB)
+                                        CMD (at most 4 MiB)
   watch                                 print events as JSON lines until interrupted
 
 Put text that starts with -- after a "--": send-text -- --stdin.
@@ -405,10 +406,11 @@ const QStringList Commands = {
     QStringLiteral("overlay"),
 };
 
-// The standard input that `overlay` sends with the call, which goes in one
-// request line (IpcClient::MaxLineBytes): room for the rest of the call,
-// and for JSON escapes, which most text does not need.
-constexpr qsizetype CtlOverlayInput = 768 * 1024;
+// The standard input of `overlay`, as much as an overlay takes. It goes in
+// parts before the call (overlayInput), each a string of at most half of a
+// request line (IpcClient::MaxLineBytes) once written as JSON.
+constexpr qsizetype CtlOverlayInput = OverlaySpec::MaxInput;
+constexpr std::size_t CtlInputPartBytes = 512 * 1024;
 
 } // namespace
 
@@ -717,6 +719,7 @@ int runCtl(int argc, char** argv)
         const auto dir = absolute(cwd);
         if (!dir) return fail(NoCurrentDirectory);
         QJsonObject options{{QStringLiteral("capture"), capture}, {QStringLiteral("cwd"), *dir}};
+        std::optional<QByteArray> overlayInput;
         if (title) options.insert(QStringLiteral("title"), *title);
         // A list piped in, as for fzf. A terminal is no list: the program
         // reads the pane instead, and the call does not wait for an end of
@@ -724,12 +727,27 @@ int runCtl(int argc, char** argv)
         if (!noInput && !isatty(STDIN_FILENO)) {
             int status = 0;
             const std::optional<QString> input = readStdin(
-                CtlOverlayInput, QStringLiteral("standard input over %1 KiB: use a script for a longer list").arg(CtlOverlayInput >> 10),
+                CtlOverlayInput, QStringLiteral("standard input over %1 MiB, the most that an overlay takes").arg(CtlOverlayInput >> 20),
                 status);
             if (!input) return status;
-            options.insert(QStringLiteral("stdin"), *input);
+            overlayInput = input->toUtf8();
         }
-        act = [&, options](qint64 pane) {
+        act = [&, options, overlayInput](qint64 pane) mutable {
+            if (overlayInput) {
+                // In parts before the call: a list can be larger than one request.
+                const auto name = AfterglowProto::randomHex(16);
+                if (!name) return fail(QStringLiteral("the kernel gave no random bytes for the name of the input"));
+                const std::string_view bytes(overlayInput->constData(), std::size_t(overlayInput->size()));
+                std::size_t at = 0;
+                do {
+                    const std::size_t size = AfterglowProto::Run::inputPart(bytes.substr(at), true, CtlInputPartBytes);
+                    const bool last = at + size == bytes.size();
+                    const QString part = QString::fromUtf8(bytes.substr(at, size).data(), qsizetype(size));
+                    if (!client.call(QStringLiteral("overlayInput"), {QString::fromStdString(*name), part, last})) return 1;
+                    at += size;
+                } while (at < bytes.size());
+                options.insert(QStringLiteral("input"), QString::fromStdString(*name));
+            }
             const auto result = client.call(QStringLiteral("overlay"), {pane, QJsonArray::fromStringList(trailing), options}, -1);
             if (!result) return 1;
             const QJsonObject done = result->toObject();

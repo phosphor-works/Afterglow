@@ -1383,14 +1383,14 @@ TEST(CtlBinaryTest, UsageErrorsExitWithTwoBeforeAnyConnection)
     const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), {ctl, QStringLiteral("send-text"), QStringLiteral("--stdin")}, "abc\xff");
     EXPECT_EQ(r.status, 2) << qPrintable(r.err);
     EXPECT_EQ(r.err, QStringLiteral("afterglow ctl: standard input is not UTF-8 text\n"));
-    // So is the list of overlay, with the limit of what one request carries.
+    // So is the list of overlay, with the limit of an overlay.
     const QStringList overlay{ctl, QStringLiteral("overlay"), QStringLiteral("--"), QStringLiteral("fzf")};
     const Isolated bad = isolate(QStringLiteral(AFTERGLOW_BINARY), overlay, "abc\xff");
     EXPECT_EQ(bad.status, 2) << qPrintable(bad.err);
     EXPECT_EQ(bad.err, QStringLiteral("afterglow ctl: standard input is not UTF-8 text\n"));
-    const Isolated big = isolate(QStringLiteral(AFTERGLOW_BINARY), overlay, QByteArray(768 * 1024 + 1, 'x'));
+    const Isolated big = isolate(QStringLiteral(AFTERGLOW_BINARY), overlay, QByteArray(4 * 1024 * 1024 + 1, 'x'));
     EXPECT_EQ(big.status, 2) << qPrintable(big.err);
-    EXPECT_EQ(big.err, QStringLiteral("afterglow ctl: standard input over 768 KiB: use a script for a longer list\n"));
+    EXPECT_EQ(big.err, QStringLiteral("afterglow ctl: standard input over 4 MiB, the most that an overlay takes\n"));
 }
 
 // A current directory that was removed has no path: a relative directory
@@ -1506,14 +1506,44 @@ QJsonObject overlayResult(const QJsonObject& result)
     return {{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), result}};
 }
 
-/// The options object of the overlay call that @p calls hold, the only call.
+/// The options object of the overlay call that @p calls hold, the last
+/// call, after the parts of its standard input.
 QJsonObject overlayOptions(const QList<QJsonObject>& calls)
 {
-    if (calls.size() != 1) {
-        ADD_FAILURE() << calls.size() << " calls";
+    if (calls.isEmpty() || calls.last().value(QStringLiteral("fn")).toString() != QLatin1String("overlay")) {
+        ADD_FAILURE() << calls.size() << " calls, the last not overlay";
         return {};
     }
-    return calls.first().value(QStringLiteral("args")).toArray().at(2).toObject();
+    return calls.last().value(QStringLiteral("args")).toArray().at(2).toObject();
+}
+
+/// The parts of standard input that came before the overlay call, joined:
+/// nothing when the call names none.
+std::optional<QString> overlayInput(const QList<QJsonObject>& calls)
+{
+    const QJsonObject options = overlayOptions(calls);
+    if (!options.contains(QStringLiteral("input"))) return std::nullopt;
+    const QString name = options.value(QStringLiteral("input")).toString();
+    QString input;
+    bool ended = false;
+    for (const QJsonObject& call : calls) {
+        if (call.value(QStringLiteral("fn")).toString() != QLatin1String("overlayInput")) continue;
+        const QJsonArray args = call.value(QStringLiteral("args")).toArray();
+        EXPECT_EQ(args.at(0).toString(), name);
+        EXPECT_FALSE(ended) << "a part after the end";
+        input += args.at(1).toString();
+        ended = args.at(2).toBool();
+    }
+    EXPECT_TRUE(ended);
+    return input;
+}
+
+/// The longest request line of @p calls, as ctl wrote it.
+qsizetype longestCall(const QList<QJsonObject>& calls)
+{
+    qsizetype longest = 0;
+    for (const QJsonObject& call : calls) longest = std::max(longest, QJsonDocument(call).toJson(QJsonDocument::Compact).size() + 1);
+    return longest;
 }
 
 TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)
@@ -1526,8 +1556,9 @@ TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)
     EXPECT_EQ(r.outcome.status, 7) << qPrintable(r.outcome.err);
     EXPECT_EQ(r.outcome.out, QStringLiteral("picked\n"));
     EXPECT_EQ(r.outcome.err, QString());
-    ASSERT_EQ(r.calls.size(), 1);
-    const QJsonObject call = r.calls.first();
+    // One part of input, then the call.
+    ASSERT_EQ(r.calls.size(), 2);
+    const QJsonObject call = r.calls.last();
     EXPECT_EQ(call.value(QStringLiteral("target")).toString(), QStringLiteral("control"));
     EXPECT_EQ(call.value(QStringLiteral("fn")).toString(), QStringLiteral("overlay"));
     const QJsonArray callArgs = call.value(QStringLiteral("args")).toArray();
@@ -1536,7 +1567,7 @@ TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)
     const QJsonObject options = callArgs.at(2).toObject();
     EXPECT_EQ(options.value(QStringLiteral("capture")).toString(), QStringLiteral("stdout"));
     EXPECT_EQ(options.value(QStringLiteral("title")).toString(), QStringLiteral("Pick"));
-    EXPECT_EQ(options.value(QStringLiteral("stdin")).toString(), QStringLiteral("a\nb\n"));
+    EXPECT_EQ(overlayInput(r.calls), QStringLiteral("a\nb\n"));
     // The directory of ctl, which a relative --cwd starts from too.
     const QString cwd = options.value(QStringLiteral("cwd")).toString();
     EXPECT_TRUE(QDir::isAbsolutePath(cwd)) << qPrintable(cwd);
@@ -1581,7 +1612,8 @@ TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)
     for (const QString& flag : {QStringLiteral("-n"), QStringLiteral("--no-stdin")}) {
         const AgainstTarget r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3"), flag} + command, "a\n");
         EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
-        EXPECT_FALSE(overlayOptions(r.calls).contains(QStringLiteral("stdin"))) << qPrintable(flag);
+        EXPECT_EQ(overlayInput(r.calls), std::nullopt) << qPrintable(flag);
+        EXPECT_EQ(r.calls.size(), 1);
     }
     // A terminal is no list: the call goes at once, without stdin. Both
     // ends are opened with O_NOCTTY: neither becomes the controlling
@@ -1596,7 +1628,7 @@ TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)
     ASSERT_TRUE(terminal.valid());
     AgainstTarget r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, terminal.get());
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
-    EXPECT_FALSE(overlayOptions(r.calls).contains(QStringLiteral("stdin")));
+    EXPECT_EQ(overlayInput(r.calls), std::nullopt);
     // A non-blocking pipe that is still empty when ctl reads it: ctl waits
     // for the list instead of failing on EAGAIN.
     int ends[2] = {-1, -1};
@@ -1614,16 +1646,17 @@ TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)
     r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, readEnd.get());
     writer.join();
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
-    EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("stdin")).toString(), QStringLiteral("late\n"));
-    // The limit itself goes. Escapes that JSON needs can take a list under
-    // it past what one request carries: nothing is sent then.
-    r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, QByteArray(768 * 1024, 'x'));
-    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
-    EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("stdin")).toString().size(), 768 * 1024);
-    r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, QByteArray(256 * 1024, '\x01'));
-    EXPECT_EQ(r.outcome.status, 1);
-    EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: the request is over what one call carries (1 MiB)\n"));
-    EXPECT_TRUE(r.calls.isEmpty());
+    EXPECT_EQ(overlayInput(r.calls), QStringLiteral("late\n"));
+    // The overlay's limit itself goes, in parts that each fit in a request.
+    // So does a list of control characters, which JSON writes as 6 bytes each.
+    for (const char byte : {'x', '\x01'}) {
+        const QByteArray list(4 * 1024 * 1024, byte);
+        r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, list);
+        EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+        EXPECT_TRUE(overlayInput(r.calls) == QString::fromLatin1(list)) << int(byte);
+        EXPECT_GT(r.calls.size(), 2);
+        EXPECT_LE(longestCall(r.calls), 1024 * 1024);
+    }
 }
 
 // The help and the version need no desktop: afterglow prints them before it

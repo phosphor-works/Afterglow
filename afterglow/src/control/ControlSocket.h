@@ -66,8 +66,20 @@ public:
     /// none), cwd, env and title, as for the overlay effect, with a cwd that
     /// must exist. A refusal or a cancel fails the call with the code busy,
     /// no_pane, spawn_failed or cancelled. The overlay is cancelled when the
-    /// caller's connection closes.
+    /// caller's connection closes. The option input names the standard
+    /// input that overlayInput() sent on this connection, in place of stdin.
     Q_INVOKABLE void overlay(double pane, const QStringList& argv, const QVariantMap& options);
+    /// Standard input for an overlay of this connection, in parts, before
+    /// overlay() names it with its input option: input that does not fit in
+    /// one request. Kept until that call takes it or the connection closes.
+    /// Returns true. More than OverlaySpec::MaxInput bytes of UTF-8 for one
+    /// input fails, and drops that input.
+    Q_INVOKABLE bool overlayInput(const QString& input, const QString& chunk, bool eof);
+
+    /// Inputs that wait for overlay(), for one connection.
+    static constexpr int MaxWaitingInputs = 4;
+    /// The bytes of all the inputs that wait, of every connection.
+    static constexpr qsizetype MaxWaitingInputBytes = 16 * OverlaySpec::MaxInput;
 
     /// For `afterglow ssh`: whether it can forward a socket for remote
     /// commands (RemoteSockets::enabled), before it asks the remote host.
@@ -114,9 +126,19 @@ private:
     /// The pane ID in @p value, or nothing after an error reply.
     std::optional<quint32> paneId(double value);
 
+    struct WaitingInput
+    {
+        QByteArray bytes; ///< UTF-8
+        bool eof = false;
+    };
+    /// Drops the input @p name of @p connection.
+    void dropInput(quint64 connection, const QString& name);
+
     Control& m_control;
     SettingsStore& m_settings;
     RemoteSockets* m_remote = nullptr;
+    QHash<quint64, QHash<QString, WaitingInput>> m_inputs;
+    qsizetype m_inputBytes = 0;
     /// The open connections that have opened an overlay.
     QSet<quint64> m_overlayClients;
 };

@@ -242,6 +242,7 @@ Another number fails with `CALL_FAILED`.
 | `openProject` | name, new instance | An object: the window and its panes |
 | `scriptDiagnostics` | None | Script and package diagnostics |
 | `overlay` | pane, argv, options | An object: `exit_code`, `stdout` and `truncated`. See [overlays](#overlays). |
+| `overlayInput` | input name, text, end | `true`. Standard input for an `overlay` of the connection, in parts. See [overlays](#overlays). |
 | `remoteCommandsEnabled` | None | `true` when `afterglow ssh` can forward a socket for [remote commands](#remote-commands) |
 | `openRemoteSocket` | pane, process, host, directory, protocol, ssh options, destination | An object: `token`, `socket` and `path`, or `token` and `error`. See [remote commands](#remote-commands). |
 | `remoteSocketFailed` | token, reason | None. The reason is `forward`. |
@@ -276,7 +277,8 @@ A result over 1 MiB is cut, and a message goes to standard error.
 | `-n`, `--no-stdin` | Standard input does not go to the program. |
 
 Without `-n`, standard input goes to the program when it is not a terminal.
-The input goes in the request, so it is at most 768 KiB. For a longer list, use a script.
+The input can be up to 4 MiB of UTF-8, the limit of an overlay.
+`afterglow ctl` sends it in parts with `overlayInput`, before the `overlay` call.
 `afterglow ctl` reads standard input before it connects. It refuses input that is not UTF-8 text.
 When standard input is a terminal, the program reads the pane.
 
@@ -291,6 +293,11 @@ While an overlay runs, `sendText` and `getText` act on the pane under it, not on
 Thus `afterglow ctl send-text` types into the pane that the overlay hides.
 
 The `overlay` call takes the pane (0 for the focused pane), the argv list and an object of options: `stdin`, `capture`, `cwd`, `env` and `title`.
+In place of `stdin`, the option `input` names standard input that came before the call in `overlayInput` calls.
+Give the parts in order, and `true` as the end with the last part.
+The name is 1 to 64 letters, digits, `_` and `-`, and belongs to the connection.
+The `overlay` call takes the input, also when it fails. An input that has not ended fails the call.
+Afterglow drops the inputs of a connection when it closes.
 It answers when the program exits: the reply comes later, and other calls on the connection get their replies meanwhile.
 An argv list or an option that breaks a rule fails the call with `CALL_FAILED`, and no program starts.
 An empty `cwd` starts the program in the home directory.
@@ -612,8 +619,9 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Waiting output to one client | 16 MiB | The socket closes the connection to a client that does not read its events. |
 | Subscriptions on one connection | 256 | The subscription fails with `MALFORMED_REQUEST`. A second subscription to the same event also fails. |
 | `afterglow ctl` reply time | 10 seconds | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. `afterglow ctl overlay` waits for the program without a limit. |
-| `afterglow ctl overlay` standard input | 768 KiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |
-| `afterglow ctl overlay` request | 1 MiB | `afterglow ctl` exits with status 1 and opens nothing. JSON writes most C0 control characters, such as U+0001, as 6 bytes. Thus input below 768 KiB with many control characters can make a request over 1 MiB. |
+| `afterglow ctl overlay` standard input | 4 MiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |
+| One part of `overlayInput` from `afterglow ctl` | 512 KiB, written as a JSON string | `afterglow ctl` cuts the input there. JSON writes most C0 control characters, such as U+0001, as 6 bytes, and a part with them holds fewer bytes of input. |
+| Inputs of `overlayInput` that wait for `overlay` | 4 for each connection, 64 MiB for all connections | The `overlayInput` call fails. An input over 4 MiB fails, and Afterglow drops it. |
 | `stdin` of the `overlay` call | The request line of 1 MiB | The socket closes the connection. |
 | `stdout` of an overlay's result | 1 MiB of UTF-8 | The text is cut, and `truncated` is true. |
 | `aglow run` reply time for `list` and `input` | 10 seconds | `aglow run` stops with exit status 1. The time to connect counts toward the time of `list`. It does not wait for the reply of `cancel` or `ack`. It waits for the end of a run without a limit. |
@@ -670,7 +678,7 @@ The other commands stop with a usage error when you give such words.
 | --- | --- |
 | 0 | The command succeeded. `afterglow ctl --help` also exits with status 0. |
 | 1 | An error, for example no Afterglow, a call that failed or no reply in 10 seconds. |
-| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 768 KiB or not UTF-8 text. `afterglow ctl` checks the text before it connects. |
+| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 4 MiB or not UTF-8 text. `afterglow ctl` checks the text before it connects. |
 | 0 to 255 from `overlay` | `afterglow ctl overlay` exits with the exit status of its program. Thus a status of 1 or 2 can come from the program. A failed or cancelled overlay gives 1. So does an exit status outside 0 to 255. |
 
 `afterglow ctl watch` prints events until the connection or a subscription ends.

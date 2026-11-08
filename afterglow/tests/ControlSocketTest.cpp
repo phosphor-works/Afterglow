@@ -285,6 +285,69 @@ TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
     EXPECT_EQ(noPane({0, QJsonArray{QStringLiteral("fzf")}, QJsonObject{}}), QStringLiteral("no focused pane"));
 }
 
+TEST_F(ControlSocketTest, OverlayInputComesInPartsAndBelongsToItsConnection)
+{
+    ASSERT_TRUE(start());
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    const auto error = [](const QJsonObject& frame) {
+        EXPECT_EQ(frame.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+        return frame.value(QStringLiteral("message")).toString();
+    };
+    const auto overlay = [&](const QString& input) {
+        return call(client, QStringLiteral("overlay"),
+                    {7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("input"), input}}});
+    };
+    // Parts in order, the last with the end: past the input, the call fails
+    // only for the pane, which does not exist here.
+    const QString part(512 * 1024, QLatin1Char('x'));
+    for (int i = 0; i < 4; ++i)
+        EXPECT_TRUE(call(client, QStringLiteral("overlayInput"), {QStringLiteral("list"), part, false})
+                        .value(QStringLiteral("result")).toBool());
+    EXPECT_TRUE(call(client, QStringLiteral("overlayInput"), {QStringLiteral("list"), part, true}).value(QStringLiteral("result")).toBool());
+    EXPECT_EQ(overlay(QStringLiteral("list")).value(QStringLiteral("code")).toString(), QStringLiteral("no_pane"));
+    // The call took it, whatever it decided.
+    EXPECT_EQ(error(overlay(QStringLiteral("list"))), QStringLiteral("no complete input list on this connection"));
+    // An input that has not ended is not complete, and goes with the call too.
+    call(client, QStringLiteral("overlayInput"), {QStringLiteral("open"), QStringLiteral("a"), false});
+    EXPECT_EQ(error(overlay(QStringLiteral("open"))), QStringLiteral("no complete input open on this connection"));
+    // Nothing comes after the end.
+    call(client, QStringLiteral("overlayInput"), {QStringLiteral("done"), QStringLiteral("a"), true});
+    EXPECT_EQ(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("done"), QStringLiteral("b"), true})),
+              QStringLiteral("the input done has ended"));
+    // stdin and input exclude each other.
+    EXPECT_EQ(error(call(client, QStringLiteral("overlay"),
+                         {7, QJsonArray{QStringLiteral("fzf")},
+                          QJsonObject{{QStringLiteral("input"), QStringLiteral("done")}, {QStringLiteral("stdin"), QStringLiteral("x")}}})),
+              QStringLiteral("the overlay options stdin and input exclude each other"));
+    // The overlay's limit, 4 MiB: one byte more drops the input.
+    const QString limit(int(OverlaySpec::MaxInput), QLatin1Char('y'));
+    for (qsizetype at = 0; at < limit.size(); at += part.size())
+        EXPECT_TRUE(call(client, QStringLiteral("overlayInput"), {QStringLiteral("big"), limit.mid(at, part.size()), false})
+                        .value(QStringLiteral("result")).toBool());
+    EXPECT_EQ(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("big"), QStringLiteral("z"), true})),
+              QStringLiteral("The overlay's stdin is over 4 MiB"));
+    EXPECT_EQ(error(overlay(QStringLiteral("big"))), QStringLiteral("no complete input big on this connection"));
+    // A bad name, and at most four inputs that wait on one connection.
+    EXPECT_FALSE(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("a b"), QString(), true})).isEmpty());
+    for (const char* name : {"w1", "w2", "w3", "w4"})
+        call(client, QStringLiteral("overlayInput"), {QLatin1String(name), QStringLiteral("a"), true});
+    EXPECT_EQ(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("w5"), QStringLiteral("a"), true})),
+              QStringLiteral("4 inputs wait for their overlay already"));
+    // Another connection has inputs of its own: it does not see these.
+    QLocalSocket other;
+    ASSERT_TRUE(connect(other));
+    const QJsonObject elsewhere = call(other, QStringLiteral("overlay"),
+                                       {7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("input"), QStringLiteral("w1")}}});
+    EXPECT_EQ(error(elsewhere), QStringLiteral("no complete input w1 on this connection"));
+    // A connection that closes drops its inputs: a new one can wait four again.
+    client.disconnectFromServer();
+    ASSERT_TRUE(waitFor([&] { return client.state() == QLocalSocket::UnconnectedState; }));
+    for (const char* name : {"w1", "w2", "w3", "w4"})
+        EXPECT_TRUE(call(other, QStringLiteral("overlayInput"), {QLatin1String(name), QStringLiteral("a"), true})
+                        .value(QStringLiteral("result")).toBool());
+}
+
 /// Runs @p work on a thread of its own while this thread's event loop
 /// serves the socket: the client blocks.
 template<typename Work>
