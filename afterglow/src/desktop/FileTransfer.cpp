@@ -2356,8 +2356,8 @@ FileTransfer::Question FileTransfer::question(bool writing, const QStringList& p
         // it shows are refused at the answer too, so it says so with no
         // file left out.
         q.text += QLatin1Char('\n')
-            + (rest > 0 ? tr("Files not in this list: %1. They are refused. Files that come later are refused too.").arg(rest)
-                        : tr("Files not in this list, and files that come later, are refused."));
+            + (rest > 0 ? tr("Files not in this list: %1. They are refused, and so are the files that come while this question shows.").arg(rest)
+                        : tr("Files not in this list, and files that come while this question shows, are refused."));
     } else if (rest > 0) {
         const QString others = writing ? tr("Files not in this list: %1. They get a question of their own.")
                                        : tr("Requested files not in this list: %1. They are refused.");

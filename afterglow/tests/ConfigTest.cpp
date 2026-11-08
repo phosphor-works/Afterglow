@@ -2789,7 +2789,7 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     EXPECT_FALSE(unclearStore.settings().control.enabled);
     // It stays off, so the text must not say that it uses the default.
     EXPECT_TRUE(mentions(unclearStore.problems(),
-                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file can be read and holds settings")))
+                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file parses and is not empty")))
         << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
     EXPECT_FALSE(mentions(unclearStore.problems(), QStringLiteral("Scripts.enabled must be true or false. Using the default")));
     // An editor that saves in place empties the file first: its text may
@@ -2800,15 +2800,15 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     EXPECT_FALSE(store.settings().control.enabled);
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("is empty. Using the defaults, with Scripts.enabled")))
         << store.problems().join(QLatin1Char('\n')).toStdString();
-    // It was read: only text that holds settings ends the wait.
-    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("until it holds settings. Delete it for the defaults")))
+    // It was read: only text that is not empty ends the wait.
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("until it is not empty. Delete it for the defaults")))
         << store.problems().join(QLatin1Char('\n')).toStdString();
-    EXPECT_FALSE(mentions(store.problems(), QStringLiteral("until it can be read")));
+    EXPECT_FALSE(mentions(store.problems(), QStringLiteral("until it parses")));
     // The text of an unclear override fits the empty file as well.
     unclearStore.reload();
     EXPECT_FALSE(unclearStore.settings().scripts);
     EXPECT_TRUE(mentions(unclearStore.problems(),
-                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file can be read and holds settings")))
+                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file parses and is not empty")))
         << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
     // Repaired: the file's own values.
     write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");

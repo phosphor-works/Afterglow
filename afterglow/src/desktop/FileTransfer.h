@@ -27,8 +27,8 @@ public:
     /// the answer does not cover, and the detail, with every path that
     /// permissionRequested gives. @p othersRefused tells whether the paths
     /// that the answer does not cover are refused or get a question of their
-    /// own. For a write, it also tells that the files that come later are
-    /// refused, also when the question lists every file.
+    /// own. For a write, it also tells that the files that come while the
+    /// question shows are refused, also when it lists every file.
     struct Question {
         QString text;
         QString detail;

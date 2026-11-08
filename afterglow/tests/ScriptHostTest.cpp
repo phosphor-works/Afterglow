@@ -2150,9 +2150,9 @@ return {
         } while (timer.elapsed()<3000);
         return false;
     };
-    // A reload sends SIGKILL to the old job before it returns. The QProcess
-    // reaps the job later, from the event loop, and kill(pid, 0) answers
-    // for a zombie until then: a killed job is gone, or a zombie.
+    // A reload sends SIGKILL to the old job before it returns. kill(pid, 0)
+    // also answers for a zombie that the QProcess has not reaped yet, so a
+    // killed job is gone or a zombie. On a failure the /proc state says why.
     auto stat = [](qint64 pid) {
         QFile file(QStringLiteral("/proc/%1/stat").arg(pid));
         if (!file.open(QIODevice::ReadOnly)) return QByteArray();
