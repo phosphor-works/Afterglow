@@ -80,8 +80,21 @@ Terminal fonts and colors have separate settings.
 
 If the family is not installed, fontconfig selects the nearest match.
 Without a desktop font setting, Afterglow uses the `monospace` alias at 11 points.
-Afterglow draws box drawing, block elements, Braille and the Powerline separators itself.
+Afterglow draws the characters in the table below itself, so that they fill the cell and join the next cell.
 `Font.symbolMap` does not change these characters.
+The font draws the other characters of these blocks, such as the pictures and the digits.
+
+| Characters | Code points |
+| --- | --- |
+| Box drawing and block elements | U+2500 to U+259F |
+| Braille patterns | U+2800 to U+28FF |
+| Powerline separators | U+E0B0 to U+E0BF |
+| Sextants, smooth mosaics and triangles | U+1FB00 to U+1FB6F, U+1FB9A to U+1FB9F |
+| Eighth blocks, quarter blocks, third blocks and half shades | U+1FB70 to U+1FB92, U+1FB94, U+1FBCE, U+1FBCF, U+1FBE4 to U+1FBE7 |
+| Diagonal box drawing | U+1FBA0 to U+1FBAE, U+1FBD0 to U+1FBDF |
+| Separated quadrants and sextants | U+1CC21 to U+1CC2F, U+1CE51 to U+1CE8F |
+| Octants | U+1CD00 to U+1CDE5 |
+| Sixteenth blocks and partial quarter blocks | U+1CE90 to U+1CEAF |
 
 ## Font rendering
 

@@ -13,6 +13,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - VT100 to VT500 control sequences, with conformance levels and the `afterglow` terminfo entry.
 - Scrollback with reflow on resize. Rows that still fit keep their cells, styles and graphemes.
 - Unicode graphemes, wide characters, color emoji, font shaping and optional primary-screen bidirectional layout.
+- Box drawing, block elements, Braille, the Powerline separators and the block shapes of Symbols for Legacy Computing (sextants, octants, smooth mosaics, diagonals) are drawn to fill the cell, with no font needed.
 - Text attributes, including curly, dotted and dashed underlines, underline colors, overlines and OSC 8 hyperlinks.
 - Rectangular editing (DECFRA, DECCRA), character repeat (REP) and cursor shapes (DECSCUSR).
 - Status queries: DECRQM, DECRQSS, XTGETTCAP and XTWINOPS size reports.

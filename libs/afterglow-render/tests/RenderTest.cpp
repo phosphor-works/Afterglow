@@ -736,6 +736,120 @@ TEST_F(Render, BlockSpritesCoverTheirCell)
     EXPECT_PIXEL(img, QPoint(2 * cw + cw / 2, ch - 2), fg);
 }
 
+TEST_F(Render, LegacyComputingSpritesFillTheirParts)
+{
+    // Symbols for Legacy Computing and its Supplement, drawn to the cell:
+    // a sample of each family, checked at the centres of its parts.
+    const QRgb fg = qRgb(240, 240, 240);
+    std::u32string text = U"\U0001FB00\U0001FB3B\U0001CD00\U0001CDE5\U0001FB3C\U0001FB41\U0001FB6C\U0001FB68"
+                          U"\U0001CEA0\U0001CE95\U0001FB82\U0001CC2F\U0001FB8C\U0001FBA2\U0001FB70\U0001FBE6";
+    std::string utf8;
+    for (char32_t cp : text) {
+        utf8 += QString::fromUcs4(&cp, 1).toStdString();
+    }
+    const QImage img = render("\x1b[?25l\x1b[38;2;240;240;240m" + utf8);
+    const QRgb bg = rgb(snapshot.defaultBg);
+    // fx and fy are fractions of the cell. Lit: nearer the foreground.
+    auto lit = [&](int cell, double fx, double fy) {
+        const QRgb p = img.pixel(int(cell * cw + fx * cw), int(fy * ch));
+        auto dist = [&](QRgb q) { return std::abs(qRed(p) - qRed(q)) + std::abs(qGreen(p) - qGreen(q)) + std::abs(qBlue(p) - qBlue(q)); };
+        return dist(fg) < dist(bg);
+    };
+    // A grid's part centres, bit 0 at the upper left, row by row.
+    auto expectGrid = [&](int cell, unsigned mask, int cols, int rows) {
+        for (int i = 0; i < cols * rows; ++i) {
+            EXPECT_EQ(lit(cell, (i % cols + 0.5) / cols, (i / cols + 0.5) / rows), bool(mask & (1u << i)))
+                << "cell " << cell << " part " << i;
+        }
+    };
+    expectGrid(0, 0b000001, 2, 3); // U+1FB00 BLOCK SEXTANT-1
+    expectGrid(1, 0b111110, 2, 3); // U+1FB3B BLOCK SEXTANT-23456
+    expectGrid(2, 0b00000100, 2, 4); // U+1CD00 BLOCK OCTANT-3
+    expectGrid(3, 0b11111110, 2, 4); // U+1CDE5 BLOCK OCTANT-2345678
+    // U+1FB3C: lower left, from the lower third of the left edge to the
+    // centre of the bottom edge.
+    EXPECT_TRUE(lit(4, 0.05, 0.95));
+    EXPECT_FALSE(lit(4, 0.5, 0.5));
+    EXPECT_FALSE(lit(4, 0.45, 0.75));
+    // U+1FB41: lower right, cut off from the upper third of the left edge to
+    // the centre of the top edge.
+    EXPECT_FALSE(lit(5, 0.05, 0.05));
+    EXPECT_TRUE(lit(5, 0.5, 0.5));
+    EXPECT_TRUE(lit(5, 0.6, 0.05));
+    // U+1FB6C left triangle to the centre; U+1FB68 the three others.
+    EXPECT_TRUE(lit(6, 0.1, 0.5));
+    EXPECT_FALSE(lit(6, 0.9, 0.5));
+    EXPECT_FALSE(lit(6, 0.5, 0.1));
+    EXPECT_FALSE(lit(7, 0.1, 0.5));
+    EXPECT_TRUE(lit(7, 0.9, 0.5));
+    EXPECT_TRUE(lit(7, 0.5, 0.1));
+    EXPECT_TRUE(lit(7, 0.5, 0.9));
+    expectGrid(8, 0b1100000000000000, 4, 4); // U+1CEA0 right half, lower quarter
+    expectGrid(9, 0b0000000000100000, 4, 4); // U+1CE95 a sixteenth
+    expectGrid(10, 0b00000011, 2, 4); // U+1FB82 UPPER ONE QUARTER BLOCK: the first of four rows
+    // U+1CC2F separated quadrants: all four parts, with gaps between them
+    // and at the edges of the cell.
+    expectGrid(11, 0b1111, 2, 2);
+    EXPECT_FALSE(lit(11, 0.5, 0.5));
+    EXPECT_FALSE(lit(11, 0.0, 0.25));
+    // U+1FB8C left half medium shade: half coverage.
+    EXPECT_PIXEL_NEAR(img, QPoint(12 * cw + cw / 4, ch / 2),
+                      qRgb((qRed(fg) + qRed(bg)) / 2, (qGreen(fg) + qGreen(bg)) / 2, (qBlue(fg) + qBlue(bg)) / 2), 60);
+    EXPECT_FALSE(lit(12, 0.75, 0.5));
+    // U+1FBA2 a line from the middle of the left edge to the centre of the
+    // bottom edge.
+    EXPECT_FALSE(lit(13, 0.75, 0.25));
+    EXPECT_FALSE(lit(13, 0.1, 0.1));
+    // U+1FB70 VERTICAL ONE EIGHTH BLOCK-2: the second of eight columns.
+    {
+        const int x0 = int(std::lround(cw / 8.0));
+        const int x1 = int(std::lround(cw * 2 / 8.0));
+        ASSERT_GT(x1, x0);
+        EXPECT_PIXEL(img, QPoint(13 * cw + cw + x0, ch / 2), fg);
+        EXPECT_PIXEL(img, QPoint(13 * cw + cw + x1, ch / 2), bg);
+    }
+    // U+1FBE6 middle left quarter.
+    EXPECT_TRUE(lit(15, 0.25, 0.5));
+    EXPECT_FALSE(lit(15, 0.25, 0.1));
+    EXPECT_FALSE(lit(15, 0.75, 0.5));
+}
+
+TEST_F(Render, LegacyComputingDiagonalsMeetTheBoxDrawingLines)
+{
+    // U+2500, then U+1FBA2 and U+1FBA3, then U+2500: the diagonals start at
+    // the middle of the edge, where the horizontal line ends.
+    const QImage img = render("\x1b[?25l\x1b[38;2;240;240;240m─\U0001FBA2\U0001FBA3─");
+    const QRgb fg = qRgb(240, 240, 240);
+    int row = -1;
+    for (int y = 0; y < ch && row < 0; ++y) {
+        if (img.pixel(cw / 2, y) == fg) row = y;
+    }
+    ASSERT_GE(row, 0);
+    // At the edge, each diagonal covers the row of the horizontal line (in
+    // part: the steep line is antialiased) and nothing above it.
+    const int bg = qGray(rgb(snapshot.defaultBg));
+    for (const int x : {cw, 3 * cw - 1}) {
+        EXPECT_GT(qGray(img.pixel(x, row)), bg + 40) << "column " << x;
+        EXPECT_LE(qGray(img.pixel(x, row - 2)), bg + 6) << "column " << x;
+    }
+}
+
+TEST_F(Render, ScaledLegacyComputingSpritesKeepTheirParts)
+{
+    // A 2x2 OSC 66 block draws the sprite at twice the size.
+    const QImage img = render("\x1b[?25l\x1b[38;2;240;240;240m\x1b]66;s=2;\U0001FB00\U0001CD00\x07");
+    const QRgb fg = qRgb(240, 240, 240);
+    const QRgb bg = rgb(snapshot.defaultBg);
+    // fx and fy are fractions of the 2x2 block.
+    auto at = [&](int block, double fx, double fy) { return QPoint(int((2 * block + 2 * fx) * cw), int(2 * fy * ch)); };
+    EXPECT_PIXEL(img, at(0, 0.25, 1 / 6.0), fg); // U+1FB00 BLOCK SEXTANT-1: the upper left part
+    EXPECT_PIXEL(img, at(0, 0.75, 1 / 6.0), bg);
+    EXPECT_PIXEL(img, at(0, 0.25, 0.5), bg);
+    EXPECT_PIXEL(img, at(1, 0.25, 3 / 8.0), fg); // U+1CD00 BLOCK OCTANT-3: second row, left
+    EXPECT_PIXEL(img, at(1, 0.25, 1 / 8.0), bg);
+    EXPECT_PIXEL(img, at(1, 0.75, 3 / 8.0), bg);
+}
+
 TEST_F(Render, InverseSwapsColours)
 {
     const QImage img = render("\x1b[?25l\x1b[7m \x1b[0m");
@@ -3199,6 +3313,35 @@ TEST(GlyphCache, OversizedSpritesDrawNothingInsteadOfThrowing)
     const GlyphEntry* small = cache.sprite(fonts, U'\u2588');
     ASSERT_NE(small, nullptr);
     EXPECT_FALSE(small->empty);
+}
+
+TEST(GlyphCache, LegacyComputingSpritesAreTheFamiliesThatFillCells)
+{
+    // Every character that the sprites take is drawn, and every other one
+    // in the two blocks goes to the font: a sprite has no font fallback.
+    auto drawn = [](char32_t cp) {
+        return (cp >= 0x1FB00 && cp <= 0x1FB92) || cp == 0x1FB94 || (cp >= 0x1FB9A && cp <= 0x1FBAE)
+            || cp == 0x1FBCE || cp == 0x1FBCF || (cp >= 0x1FBD0 && cp <= 0x1FBDF) || (cp >= 0x1FBE4 && cp <= 0x1FBE7)
+            || (cp >= 0x1CC21 && cp <= 0x1CC2F) || (cp >= 0x1CD00 && cp <= 0x1CDE5) || (cp >= 0x1CE51 && cp <= 0x1CEAF);
+    };
+    FontSet fonts(FontSpec{}, 1.0);
+    GlyphCache cache;
+    cache.beginFrame(1000, 8192);
+    std::vector<char32_t> blocks;
+    for (char32_t cp = 0x1FB00; cp <= 0x1FBFF; ++cp) blocks.push_back(cp);
+    for (char32_t cp = 0x1CC00; cp <= 0x1CEBF; ++cp) blocks.push_back(cp);
+    for (char32_t cp : blocks) {
+        const GlyphEntry* e = cache.sprite(fonts, cp);
+        ASSERT_NE(e, nullptr);
+        EXPECT_EQ(!e->empty, drawn(cp)) << std::hex << std::uint32_t(cp);
+        if (e->empty) continue;
+        const QImage& page = cache.grayPage(e->page).image();
+        int coverage = 0;
+        for (int y = e->v; y < e->v + e->height; ++y) {
+            for (int x = e->u; x < e->u + e->width; ++x) coverage += qAlpha(page.pixel(x, y)) > 0;
+        }
+        EXPECT_GT(coverage, 0) << std::hex << std::uint32_t(cp);
+    }
 }
 
 TEST(GlyphCache, OverBudgetOnlyAPageUnusedForStaleAfterDiscardsTheCache)
