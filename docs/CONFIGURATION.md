@@ -95,7 +95,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `italicSlant` | `-11` | -90–90 | Slant of italic text in degrees, for variable fonts with a slant axis. |
 | `size` | `0` | 4–96 | Size in points. A value of 0 or less uses the size of the desktop's fixed-width font. Afterglow clamps other values to 4–96. |
 | `sizeStep` | `1` | 0.1–12 | Points that the font_bigger and font_smaller actions add or remove. |
-| `symbolMap` | `{}` |  | Preferred families for codepoint ranges, such as { "U+E000-U+F8FF,U+F0000-U+FFFFD": "Symbols Nerd Font Mono" }. Afterglow draws box drawing, block elements, Braille and the Powerline separators U+E0B0 to U+E0BF itself, so this setting does not change them. |
+| `symbolMap` | `{}` |  | Preferred families for codepoint ranges, such as { "U+E000-U+F8FF,U+F0000-U+FFFFD": "Symbols Nerd Font Mono" }. Afterglow draws box drawing, block elements, Braille, the Powerline separators U+E0B0 to U+E0BF and the block shapes of Symbols for Legacy Computing itself, so this setting does not change them. |
 | `weight` | `400` | 100–900 | Weight of regular text. It selects a static font and sets the weight axis of a variable font. |
 | `width` | `100` | 50–200 | Width axis of variable fonts. A value of 100 is the normal width. Each font limits it to its own range. |
 

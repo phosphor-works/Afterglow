@@ -379,8 +379,9 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Column-width multiplier relative to font metrics.")),
         {QStringLiteral("symbolMap"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Preferred families for codepoint ranges, such as { \"U+E000-U+F8FF,U+F0000-U+FFFFD\": \"Symbols Nerd "
-                        "Font Mono\" }. Afterglow draws box drawing, block elements, Braille and the Powerline separators "
-                        "U+E0B0 to U+E0BF itself, so this setting does not change them.")},
+                        "Font Mono\" }. Afterglow draws box drawing, block elements, Braille, the Powerline separators "
+                        "U+E0B0 to U+E0BF and the block shapes of Symbols for Legacy Computing itself, so this setting "
+                        "does not change them.")},
         enumKey(QStringLiteral("hinting"), HintingChoices, font.hinting,
                 QStringLiteral("How glyph outlines align to the pixel grid. The none value keeps the outlines as designed. The light "
                                "value aligns vertical positions only. The full value aligns both axes.")),
