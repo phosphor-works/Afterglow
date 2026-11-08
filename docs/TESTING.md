@@ -20,7 +20,7 @@ Run the CTest suite:
 ctest --test-dir build --output-on-failure -j4
 ```
 
-Without a Vulkan device, the renderer tests report Skipped.
+Without a Wayland display or a Vulkan device, the renderer tests and `PopupLook.*` report Skipped.
 Some renderer tests also skip without a font that they need, or without 4× multisampling.
 The fonts are DejaVu Sans, DejaVu Sans Mono, a color emoji font, a Nerd Font and an Arabic font.
 Check the skipped count in the CTest summary.

@@ -138,13 +138,15 @@ function __afterglow_ctl
                     complete -C (string join ' ' -- $rest "$cur")
                 end
                 return
-            case --pane --cwd --layout --capture --title
-                # --capture and --title are the options of overlay. Elsewhere they are no option of ctl.
-                if test $command = overlay; or not contains -- $argv[$i] --capture --title
+            case --pane --cwd --layout --capture --title -w --width -h --height --position
+                # The options after --layout are those of overlay. Elsewhere they are no option of ctl.
+                if test $command = overlay; or not contains -- $argv[$i] --capture --title -w --width -h --height --position
                     if test $i -eq $n
                         # The cursor is at the option's value.
                         test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
                         test $argv[$i] = --capture; and __afterglow_print stdout file none
+                        test $argv[$i] = --position
+                        and __afterglow_print center top bottom left right top-left top-right bottom-left bottom-right
                         return
                     end
                     set i (math $i + 1)
@@ -215,6 +217,13 @@ function __afterglow_ctl
             contains -- -n $argv; or contains -- --no-stdin $argv
             or set -a offer -n\t'Keep standard input from the command' \
                 --no-stdin\t'Keep standard input from the command'
+            contains -- -w $argv; or contains -- --width $argv
+            or set -a offer -w\t'A popup this wide, in cells or N%' --width\t'A popup this wide, in cells or N%'
+            contains -- -h $argv; or contains -- --height $argv
+            or set -a offer -h\t'A popup this tall, in cells or N%' --height\t'A popup this tall, in cells or N%'
+            contains -- --position $argv; or set -a offer --position\t'Where the popup sits'
+            contains -- --border $argv; or contains -- --no-border $argv
+            or set -a offer --border\t'Draw a border' --no-border\t'Draw no border'
         case open-directory
             contains -- --layout $argv; or set -a offer --layout\t'A saved layout'
         case save-project

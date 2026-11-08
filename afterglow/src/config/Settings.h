@@ -5,6 +5,7 @@
 
 #include "Keybinds.h"
 #include "KeyModes.h"
+#include "Theme.h"
 #include "../audio/AudioSettings.h"
 #include "../shaders/ShaderRefs.h"
 
@@ -29,8 +30,6 @@ struct Schema;
 
 namespace Afterglow {
 
-struct Theme;
-
 struct WindowSettings
 {
     int padding = 6; ///< logical pixels around each pane's grid
@@ -38,10 +37,20 @@ struct WindowSettings
     int initialRows = 30;
     static constexpr AfterglowVt::Rgb DefaultDivider{0x3a, 0x3a, 0x42};
     std::uint32_t dividerColor = AfterglowRender::packRgba(DefaultDivider); ///< RGBA8 in memory order
+    /// Unset, halfway from the background to the text in use: here the
+    /// defaults.
+    static inline const std::uint32_t DefaultPopupBorderColor = [] {
+        const AfterglowVt::TerminalOptions defaults;
+        return AfterglowRender::packRgba(Themes::derivedPopupBorder(defaults.defaultBackground, defaults.defaultForeground));
+    }();
+    std::uint32_t popupBorderColor = DefaultPopupBorderColor; ///< RGBA8 in memory order
     double unfocusedDim = 0.19;
+    double popupDim = 0.35; ///< over a pane behind a popup overlay
     double backgroundOpacity = 1.0; ///< of the default background
     bool blur = false; ///< blur what shows through a translucent background (KWin)
     bool paneTitles = false; ///< label each split with its title
+    enum class PopupCorners { Rounded, Square };
+    PopupCorners popupCorners = PopupCorners::Rounded; ///< of a popup overlay's border
     /// Where new tabs, splits and windows start: "inherit" (the focused
     /// pane's directory, or the launcher's), "home", or a path.
     QString workingDirectory = QStringLiteral("inherit");

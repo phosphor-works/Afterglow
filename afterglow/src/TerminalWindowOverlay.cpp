@@ -19,6 +19,17 @@ Pane* TerminalWindow::inputPane(Pane* pane)
     return pane && pane->overlay() ? pane->overlay()->pane() : pane;
 }
 
+Pane* TerminalWindow::pointerTarget(Pane* pane, const QPointF& pos) const
+{
+    Pane* target = inputPane(pane);
+    if (!target || target == pane || !m_splits || !pane->overlay()->popup()) return target;
+    // The program's own cells: a popup's grid, which its border is not. By
+    // the layout and the pixel the point is in, as paneUnder and cellAt
+    // find a pane and a cell, also while a split eases towards it.
+    const QRect grid = contentRect(target, m_splits->rectOf(pane));
+    return grid.contains(dockPixel(pos)) ? target : nullptr;
+}
+
 QString TerminalWindow::openOverlay(const QString& owner, const QString& request, Pane* pane, const OverlaySpec& spec,
                                     OverlayReply reply, QString& code)
 {
@@ -95,17 +106,22 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
     } else {
         setFocusedPane(pane);
     }
-    // The pane's name is the overlay's title now (shownTitle).
+    // The pane's name is the overlay's title now (shownTitle), and a
+    // popup's grid is where its text is.
     if (QAccessible::isActive()) {
         QAccessibleEvent event(pane, QAccessible::NameChanged);
         QAccessible::updateAccessibility(&event);
+        if (spec.popup()) {
+            QAccessibleEvent moved(pane, QAccessible::LocationChanged);
+            QAccessible::updateAccessibility(&moved);
+        }
     }
     updatePaneVisibility();
     startOverlayFade(pane, 1.0);
     // The overlay shows here; the window does not jump forward for it.
     if (!isActive()) alert(0);
     refreshInputMethod();
-    // The pointer is over the overlay's cells now, with the overlay's shape.
+    // The pointer may be over the overlay's cells now: its shape follows them.
     applyPointerShape();
     scheduleRender();
     return {};
@@ -128,6 +144,8 @@ void TerminalWindow::startOverlayFade(Pane* host, qreal target)
     const AnimationSettings& anim = m_settings.settings().animation;
     OverlayFade& fade = m_overlayFades[host];
     fade.last.reset();
+    fade.lastPopup.reset();
+    fade.lastTitle.clear();
     const qreal from = fade.progress.isAnimating() ? std::clamp(fade.progress.value(), 0.0, 1.0) : 1.0 - target;
     fade.progress.start(from, target, motionSpec(anim.overlayCurve, anim.overlayDuration, m_overlayCurve, "Animation.overlayCurve",
                                                  AnimationSettings{}.overlayCurve));
@@ -174,8 +192,17 @@ void TerminalWindow::overlayEnded(Pane* host, PaneOverlay* overlay, bool hostClo
     // that frame in its closing effect instead (closePane).
     if (!hostCloses && tabOf(host) >= 0) startOverlayFade(host, 0.0);
     else m_overlayFades.erase(host);
-    if (const auto fade = m_overlayFades.find(host); fade != m_overlayFades.end())
-        fade->second.last = std::make_shared<AfterglowRender::PaneSnapshot>(program->takeSnapshot());
+    if (const auto fade = m_overlayFades.find(host); fade != m_overlayFades.end()) {
+        // Still and with no cursor: the host has the keyboard. The new
+        // version keeps the renderer from drawing it from its cache.
+        auto last = std::make_shared<AfterglowRender::PaneSnapshot>(program->takeSnapshot());
+        last->cursorVisible = false;
+        last->extraCursors.clear();
+        ++last->version;
+        fade->second.last = std::move(last);
+        fade->second.lastPopup = overlay->popup() ? std::optional(overlay->placement()) : std::nullopt;
+        fade->second.lastTitle = overlay->borderTitle();
+    }
     // The host has the input again, its view and cursor where they were.
     if (focused && !hostCloses) {
         if (m_windowFocused) reportFocus(host, true);
@@ -188,6 +215,10 @@ void TerminalWindow::overlayEnded(Pane* host, PaneOverlay* overlay, bool hostClo
     if (!hostCloses && QAccessible::isActive()) {
         QAccessibleEvent event(host, QAccessible::NameChanged);
         QAccessible::updateAccessibility(&event);
+        if (overlay->popup()) {
+            QAccessibleEvent moved(host, QAccessible::LocationChanged);
+            QAccessible::updateAccessibility(&moved);
+        }
     }
     // Its program gets SIGHUP when it goes, if it still runs.
     overlay->deleteLater();
@@ -226,6 +257,8 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
     if (!overlay && fade == m_overlayFades.end()) return;
     float progress = 1.0f;
     std::shared_ptr<AfterglowRender::PaneSnapshot> last;
+    std::optional<OverlaySpec::Placement> lastPopup;
+    std::string lastTitle;
     if (fade != m_overlayFades.end()) {
         auto& value = fade->second.progress;
         value.advance();
@@ -237,6 +270,8 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
             animating = true;
             progress = float(std::clamp(value.value(), 0.0, 1.0));
             last = fade->second.last;
+            lastPopup = fade->second.lastPopup;
+            lastTitle = fade->second.lastTitle;
         } else {
             // Settled: an overlay that runs shows whole, one that ended is gone.
             m_overlayFades.erase(fade);
@@ -245,6 +280,9 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
     }
     AfterglowRender::WindowRenderer::Pane::Overlay shown;
     shown.progress = progress;
+    // A popup's grid is its own part of the host's, wherever the host is drawn.
+    if (overlay && overlay->popup()) preparePopup(overlay->placement(), overlay->borderTitle(), wp.params.contentOrigin, shown);
+    else if (!overlay && lastPopup) preparePopup(*lastPopup, lastTitle, wp.params.contentOrigin, shown);
     if (overlay) {
         Pane* program = overlay->pane();
         AfterglowRender::FrameBuilder::PaneParams own;
@@ -264,8 +302,33 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
         // while it fades out.
         if (!last) return;
         shown.snapshot = last.get();
+        shown.running = false;
     }
     wp.overlay = shown;
+}
+
+void TerminalWindow::preparePopup(const OverlaySpec::Placement& placement, const std::string& title, QPoint origin,
+                                  AfterglowRender::WindowRenderer::Pane::Overlay& shown) const
+{
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const QRect grid = placement.grid;
+    shown.popup = popupLook(m_settings.settings(), placement.border, title);
+    shown.popup->rect = QRect(origin + QPoint(grid.x() * m.cellWidth, grid.y() * m.cellHeight),
+                              QSize(grid.width() * m.cellWidth, grid.height() * m.cellHeight));
+}
+
+AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border, const std::string& title)
+{
+    AfterglowRender::WindowRenderer::Pane::Overlay::Popup popup;
+    popup.border = border;
+    popup.title = title;
+    popup.roundedCorners = settings.window.popupCorners == WindowSettings::PopupCorners::Rounded;
+    popup.bidi = settings.terminal.bidi;
+    // The settings': the popup border for the line, the text colour for the title.
+    popup.borderColor = settings.window.popupBorderColor;
+    popup.titleColor = AfterglowRender::packRgba(settings.terminal.defaultForeground);
+    popup.dim = float(settings.window.popupDim);
+    return popup;
 }
 
 } // namespace Afterglow

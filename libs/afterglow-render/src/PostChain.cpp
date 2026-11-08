@@ -765,14 +765,23 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
         const std::uint64_t identitySnapshot = sharedBackground || !region.snapshot ? 0 : region.snapshot->identity.value();
         auto& passes = m_buffers[{&program, scope, step, identitySnapshot}];
         auto& samples = result[regionIndex];
+        // A pane's buffers are its own, with a popup over it or not.
+        const std::vector<HistoryRegion> identity{{identitySnapshot, region.rect,
+            region.snapshot ? region.snapshot->defaultBg : 0, region.snapshot ? region.snapshot->defaultFg : 0,
+            region.cellSize, region.backgroundOpacity, QRect()}};
         // The window's one background buffer set steps once a frame, for the
         // frame's own panes and with their colours. The panes under fading
         // overlays composite first: they read it as the last frame left it.
         // Only where it does not exist yet (the first frame, a new size) do
         // they make and step it, and the frame's own panes take that result.
+        // A pane's own set steps once a frame too: under a fading popup the
+        // pane shows twice with one snapshot, and the second takes what the
+        // first stepped.
         const std::size_t passCount = program.buffers().size();
-        if (sharedBackground && std::all_of(passes.begin(), passes.begin() + passCount, [](const auto& p) { return bool(p); })
-            && (region.overlayHost || passes[0]->stepped == m_frame)) {
+        const bool made = std::all_of(passes.begin(), passes.begin() + passCount, [](const auto& p) { return bool(p); });
+        if (made
+            && (sharedBackground ? region.overlayHost || passes[0]->stepped == m_frame
+                                 : passes[0]->stepped == m_frame && passes[0]->regions == identity)) {
             for (std::size_t index = 0; index < passCount; ++index) {
                 auto& buffer = *passes[index];
                 buffer.used = m_frame;
@@ -783,9 +792,6 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
             }
             continue;
         }
-        const std::vector<HistoryRegion> identity{{identitySnapshot, region.rect,
-            region.snapshot ? region.snapshot->defaultBg : 0, region.snapshot ? region.snapshot->defaultFg : 0,
-            region.cellSize, region.backgroundOpacity}};
         // Initialise every pass before running any of them. Earlier passes
         // read later passes' previous frames; later passes read earlier current frames.
         for (std::size_t index = 0; index < program.buffers().size(); ++index) {
@@ -1130,7 +1136,7 @@ void PostChain::copyHistoryRegions(RenderFrame& frame, QRhiTexture* to, QRhiText
     QRhiResourceUpdateBatch* updates = m_device.rhi()->nextResourceUpdateBatch();
     for (const HistoryRegion& region : regions) {
         if (std::find(held.begin(), held.end(), region) == held.end()) continue;
-        const QRect rect = std::get<QRect>(region).intersected(QRect(QPoint(), m_size));
+        const QRect rect = std::get<1>(region).intersected(QRect(QPoint(), m_size));
         if (rect.isEmpty()) continue;
         QRhiTextureCopyDescription copy;
         copy.setSourceTopLeft(rect.topLeft());
@@ -1157,7 +1163,7 @@ std::vector<PostChain::HistoryRegion> PostChain::historyRegions(const std::vecto
     for (const auto& pane : panes) {
         regions.emplace_back(pane.snapshot ? pane.snapshot->identity.value() : 0, pane.rect,
                              pane.snapshot ? pane.snapshot->defaultBg : 0,
-                             pane.snapshot ? pane.snapshot->defaultFg : 0, pane.cellSize, pane.backgroundOpacity);
+                             pane.snapshot ? pane.snapshot->defaultFg : 0, pane.cellSize, pane.backgroundOpacity, pane.popup);
     }
     return regions;
 }

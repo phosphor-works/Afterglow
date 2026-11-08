@@ -67,11 +67,15 @@ of the active window or of the window that was active last.
   open-project NAME [--new]             switch to a project or launch its layout
   action NAME                           run a keybind action (split_right, new_tab...)
                                         or start a script command (script:ID.COMMAND)
-  overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n|--no-stdin] -- CMD...
+  overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n|--no-stdin]
+          [-w|--width N[%]] [-h|--height N[%]] [--position POS] [--border|--no-border] -- CMD...
                                         run CMD over the pane until it exits, print its
                                         result and exit with its status. Standard input,
                                         unless it is a terminal or -n is given, goes to
-                                        CMD (at most 768 KiB)
+                                        CMD (at most 768 KiB). A width or a height
+                                        (cells, or N% of the pane) or --border makes a
+                                        popup at POS (center, top, bottom, left, right,
+                                        top-left, top-right, bottom-left or bottom-right)
   watch                                 print events as JSON lines until interrupted
 
 Put text that starts with -- after a "--": send-text -- --stdin.
@@ -325,9 +329,9 @@ QString column(const QString& text, int cells)
     return out + QString(cells - used, QLatin1Char(' '));
 }
 
-// A pane ID as aglow run reads one: decimal digits only, no sign and no
-// space, which QString::toUInt would take.
-std::optional<quint32> paneNumber(const QString& text)
+// A pane ID as aglow run reads one, or a count of cells: decimal digits
+// only, no sign and no space, which QString::toUInt would take.
+std::optional<quint32> decimal(const QString& text)
 {
     const bool digits = std::all_of(text.cbegin(), text.cend(), [](QChar c) { return c.unicode() >= u'0' && c.unicode() <= u'9'; });
     bool ok = false;
@@ -438,13 +442,43 @@ int runCtl(int argc, char** argv)
     if (!trailing.isEmpty() && !TakesTrailing.contains(command)) {
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
-    auto takeFlag = [&args](const QString& flag) { return args.removeAll(flag) > 0; };
+    // The options of the command that take a value: a word is an option only
+    // where no such option before it takes it as its value, whatever the
+    // order in which they are taken. A title or a directory can be spelled
+    // like an option, as the shell completions read it.
+    QStringList valueOptions{QStringLiteral("--pane")};
+    if (command == QLatin1String("overlay")) {
+        valueOptions += {QStringLiteral("--capture"), QStringLiteral("--cwd"),   QStringLiteral("--title"),  QStringLiteral("-w"),
+                         QStringLiteral("--width"),   QStringLiteral("-h"),      QStringLiteral("--height"), QStringLiteral("--position")};
+    } else if (command == QLatin1String("new-window") || command == QLatin1String("new-tab")) {
+        valueOptions += QStringLiteral("--cwd");
+    } else if (command == QLatin1String("open-directory")) {
+        valueOptions += QStringLiteral("--layout");
+    }
+    auto indexOfOption = [&args, &valueOptions](const QString& flag) -> qsizetype {
+        for (qsizetype i = 0; i < args.size(); ++i) {
+            if (args[i] == flag) return i;
+            if (valueOptions.contains(args[i])) ++i;
+        }
+        return -1;
+    };
+    auto takeFlag = [&args, &indexOfOption](const QString& flag) {
+        bool found = false;
+        for (qsizetype i = indexOfOption(flag); i >= 0; i = indexOfOption(flag)) {
+            args.removeAt(i);
+            found = true;
+        }
+        return found;
+    };
     // An option that needs a value and came last: a usage error of its own,
-    // not an unknown option.
+    // not an unknown option. So is one given twice, which shows as a word
+    // left once every option took its value (extra).
     std::optional<QString> missingValue;
-    auto takeValue = [&args, &missingValue](const QString& flag) -> std::optional<QString> {
-        const qsizetype i = args.indexOf(flag);
+    QStringList takenValues;
+    auto takeValue = [&args, &missingValue, &takenValues, &indexOfOption](const QString& flag) -> std::optional<QString> {
+        const qsizetype i = indexOfOption(flag);
         if (i < 0) return std::nullopt;
+        takenValues.append(flag);
         if (i + 1 >= args.size()) {
             missingValue = flag;
             args.removeAt(i);
@@ -456,11 +490,17 @@ int runCtl(int argc, char** argv)
     };
 
     Client client;
-    // Options left after a command took its own are typing errors.
-    auto extra = [&args, &missingValue](qsizetype positional) -> std::optional<QString> {
+    // Options left after a command took its own are typing errors. With
+    // @p shortOptions the command has options such as -n: a word like -W is
+    // one too, and not an argument.
+    auto extra = [&args, &missingValue, &takenValues](qsizetype positional, bool shortOptions = false) -> std::optional<QString> {
         if (missingValue) return QStringLiteral("%1 needs a value").arg(*missingValue);
         for (const QString& arg : std::as_const(args)) {
-            if (arg.startsWith(QLatin1String("--"))) return QStringLiteral("unknown option %1").arg(arg);
+            if (takenValues.contains(arg)) return QStringLiteral("%1 is given more than once").arg(arg);
+        }
+        for (const QString& arg : std::as_const(args)) {
+            const bool shortOption = shortOptions && arg.size() > 1 && arg[0] == QLatin1Char('-') && arg[1].isLetter();
+            if (arg.startsWith(QLatin1String("--")) || shortOption) return QStringLiteral("unknown option %1").arg(arg);
         }
         if (positional >= 0 && args.size() > positional) return QStringLiteral("unexpected argument %1").arg(args.value(positional));
         return std::nullopt;
@@ -474,7 +514,7 @@ int runCtl(int argc, char** argv)
                                          QStringLiteral("open-project"), QStringLiteral("new-window")};
     if (paneArg && Paneless.contains(command)) return usage(QStringLiteral("%1 takes no --pane").arg(command));
     // A pane ID as `aglow run --pane` takes it: 0 names no pane.
-    const std::optional<quint32> paneId = paneArg ? paneNumber(*paneArg) : std::nullopt;
+    const std::optional<quint32> paneId = paneArg ? decimal(*paneArg) : std::nullopt;
     if (paneArg && (!paneId || *paneId == 0)) return usage(QStringLiteral("--pane takes a pane ID from 1"));
     // @p focused: for none, ask afterglow for its focused pane. Else 0 goes,
     // which a script command takes for the focused pane or none.
@@ -671,7 +711,7 @@ int runCtl(int argc, char** argv)
             return printPane(QStringLiteral("newTab"), {pane, dir, QJsonArray::fromStringList(trailing)});
         };
     } else if (command == QLatin1String("move-pane")) {
-        const std::optional<quint32> target = paneNumber(args.value(0));
+        const std::optional<quint32> target = decimal(args.value(0));
         if (const auto error = extra(2)) return usage(*error);
         if (!target || args.size() != 2) return usage(QStringLiteral("move-pane needs TARGET and PLACEMENT"));
         act = [&, to = *target, placement = args[1]](qint64 pane) {
@@ -705,19 +745,43 @@ int runCtl(int argc, char** argv)
             return run(QStringLiteral("notify"), {pane, title, body});
         };
     } else if (command == QLatin1String("overlay")) {
+        const bool noInput = takeFlag(QStringLiteral("-n")) | takeFlag(QStringLiteral("--no-stdin"));
+        const bool border = takeFlag(QStringLiteral("--border"));
+        const bool noBorder = takeFlag(QStringLiteral("--no-border"));
         const QString capture = takeValue(QStringLiteral("--capture")).value_or(QStringLiteral("stdout"));
         // By default the directory of ctl, which "." names.
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QStringLiteral("."));
         const std::optional<QString> title = takeValue(QStringLiteral("--title"));
-        const bool noInput = takeFlag(QStringLiteral("-n")) | takeFlag(QStringLiteral("--no-stdin"));
-        if (const auto error = extra(0)) return usage(*error);
+        // A popup, in tmux's forms: -w 80% or -w 60.
+        const auto width = takeValue(QStringLiteral("-w")), longWidth = takeValue(QStringLiteral("--width"));
+        const auto height = takeValue(QStringLiteral("-h")), longHeight = takeValue(QStringLiteral("--height"));
+        const auto position = takeValue(QStringLiteral("--position"));
+        if (const auto error = extra(0, true)) return usage(*error);
         if (trailing.isEmpty()) return usage(QStringLiteral("overlay needs a command after --"));
-        if (capture != QLatin1String("stdout") && capture != QLatin1String("file") && capture != QLatin1String("none"))
-            return usage(QStringLiteral("--capture takes stdout, file or none"));
+        if (width && longWidth) return usage(QStringLiteral("-w and --width exclude each other"));
+        if (height && longHeight) return usage(QStringLiteral("-h and --height exclude each other"));
+        if (border && noBorder) return usage(QStringLiteral("--border and --no-border exclude each other"));
         const auto dir = absolute(cwd);
         if (!dir) return fail(NoCurrentDirectory);
         QJsonObject options{{QStringLiteral("capture"), capture}, {QStringLiteral("cwd"), *dir}};
         if (title) options.insert(QStringLiteral("title"), *title);
+        // A count of cells goes as a number, a percentage as text, by the
+        // rules of afterglow.overlay, which take no leading zero in either.
+        auto size = [](const QString& value) {
+            const std::optional<quint32> cells = value.startsWith(QLatin1Char('0')) ? std::nullopt : decimal(value);
+            return cells ? QJsonValue(qint64(*cells)) : QJsonValue(value);
+        };
+        if (const auto w = width ? width : longWidth) options.insert(QStringLiteral("width"), size(*w));
+        if (const auto h = height ? height : longHeight) options.insert(QStringLiteral("height"), size(*h));
+        if (position) options.insert(QStringLiteral("position"), *position);
+        if (border || noBorder) options.insert(QStringLiteral("border"), border);
+        // Checked here by the rules afterglow reads them by: a bad value is a
+        // usage error before any input is read or a connection made.
+        // Its messages start as sentences do; usage errors do not.
+        if (QString problem; !OverlaySpec::read(trailing, options.toVariantMap(), &problem)) {
+            if (!problem.isEmpty()) problem[0] = problem[0].toLower();
+            return usage(problem);
+        }
         // A list piped in, as for fzf. A terminal is no list: the program
         // reads the pane instead, and the call does not wait for an end of
         // file that never comes.

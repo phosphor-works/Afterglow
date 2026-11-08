@@ -70,6 +70,12 @@ inline QString textPrefix(const QString& text, qsizetype limit)
     return text.left(limit > 0 && text.at(limit).isLowSurrogate() ? limit - 1 : limit);
 }
 
+/// How a popup overlay looks with @p settings: the popup border colour for
+/// its border line (when @p border) with Window.popupCorners, the text
+/// colour for @p title (UTF-8) in Terminal.bidi's order, and Colors.popupDim
+/// over the pane around it.
+AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border, const std::string& title);
+
 /// A top-level terminal window: a split tree of panes drawn in one render
 /// pass on the shared GpuDevice.
 class TerminalWindow : public QWindow
@@ -179,7 +185,8 @@ public:
     /// The overview for scripts: open, highlighted and its cards, by pane ID.
     QVariantMap overviewState() const;
     /// Runs @p spec over @p pane (an overlay): it shows in the pane's place,
-    /// with the pane's tab and the focus, until the program exits. Refused
+    /// or as a popup over a part of it with the pane showing around it, with
+    /// the pane's tab and the focus, until the program exits. Refused
     /// while the pane has one, a script dialog is open in this window,
     /// another owner's key mode holds the keyboard, or a prompt, a menu or
     /// the command palette is open. An open search closes.
@@ -286,6 +293,11 @@ private:
     /// The pane whose program gets @p pane's input: its overlay's while one
     /// runs over it.
     static Pane* inputPane(Pane* pane);
+    /// The pane whose program the pointer at @p pos (logical) reaches over
+    /// @p pane: inputPane(), or none where a popup leaves the pane showing.
+    /// A click there focuses the pane, reaches no program and leaves the
+    /// popup open.
+    Pane* pointerTarget(Pane* pane, const QPointF& pos) const;
     /// The pane in the tab for @p pane: the host of an overlay's pane, else
     /// @p pane itself.
     static Pane* hostOf(Pane* pane) { return pane && pane->overlayHost() ? pane->overlayHost() : pane; }
@@ -296,8 +308,9 @@ private:
         if (pane && pane->overlayHost()) return inputPane(pane->overlayHost()) == pane && tabOf(pane->overlayHost()) >= 0;
         return pane && tabOf(pane) >= 0;
     }
-    /// The title that shows for @p pane (window, tab, split label): its
-    /// overlay's while that has one, else its own.
+    /// The title that shows for @p pane (window, tab, and the split label
+    /// under a full-pane overlay): its overlay's while that has one, else
+    /// its own. A popup's split label keeps the pane's own title.
     static QString shownTitle(const Pane* pane);
     /// Tells @p pane's own program that it got or lost the focus, when it
     /// asked to hear it (mode 1004). Not its overlay's: callers choose.
@@ -922,11 +935,19 @@ private:
     struct OverlayFade
     {
         PhosphorAnimation::AnimatedValue<qreal> progress;
-        /// The last frame of an overlay that ended, while it fades out.
+        /// The last frame of an overlay that ended, while it fades out, and
+        /// where it was when it was a popup.
         std::shared_ptr<AfterglowRender::PaneSnapshot> last;
+        std::optional<OverlaySpec::Placement> lastPopup;
+        std::string lastTitle; ///< UTF-8, as the border shows it
         /// prepareOverlay advanced it in the frame that is being built.
         bool advanced = false;
     };
+    /// A popup's grid at @p placement in its host's grid, drawn at @p origin
+    /// (the host's cell 0,0), with @p title (UTF-8) in its border, into
+    /// @p shown.
+    void preparePopup(const OverlaySpec::Placement& placement, const std::string& title, QPoint origin,
+                      AfterglowRender::WindowRenderer::Pane::Overlay& shown) const;
     std::unordered_map<const Pane*, OverlayFade> m_overlayFades;
     CurveCache m_overlayCurve;
     /// The unfocused dim (when @p dim) and the dividers of a pane drawn at
