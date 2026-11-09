@@ -18,7 +18,8 @@ The following table describes tested features. It does not claim complete xterm,
 | OSC 1337 downloads | `File`, `MultipartFile`, `FilePart`, `FileEnd`; explicit native Save dialog; cancellation; bounded data | `Extensions.Downloads*`, `desktop_acceptance.py`; [download client](../data/examples/compatibility/download.py), upstream [it2dl](https://iterm2.com/utilities/it2dl) |
 | IME context | Live cursor-row surrounding text, before/after text, UTF-16 position and cursor rectangle | `DesktopText.*`; [IME behavior](DESKTOP.md#input-methods-and-directionality) |
 | Native terminal accessibility | Viewport text, cursor, selection and character geometry through Qt/AT-SPI; pane actions, the pane menu and docked-area buttons | `DesktopText.*`, `NativeWindow.Accessible*`, `desktop_acceptance.py`; [accessibility](DESKTOP.md#accessible-terminal-text) |
-| Local file drop | Local absolute paths quoted for Bash/Zsh/Fish, targeted pane, bracketed paste, no automatic Enter | `FileDrop.*`; [file-drop workflow](DESKTOP.md#drop-files-into-a-pane) |
+| Local file drop | Local absolute paths quoted for Bash/Zsh/Fish, targeted pane, bracketed paste, no automatic Enter | `FileDrop.*`; [file-drop workflow](DESKTOP.md#drop-files-and-text-into-a-pane) |
+| Text drop and selection drag | Dropped text pasted with the size limit and the question of a paste, selected text dragged to another pane or application (`Mouse.dragSelection`) | `NativeWindow.Dropped*`, `NativeWindow.DropsThatAPaneRefusesPasteNothing`, `NativeWindow.ASelection*`, `NativeWindow.*InsideTheSelection*`; [text drops](DESKTOP.md#drop-files-and-text-into-a-pane), [selection drag](INPUT.md#drag-selected-text-out-of-a-pane) |
 | Kitty indexed images | `f=8` and `f=16`; the special indices 248 to 255; a new color of the pane draws the image again; no frames | `Graphics.Indexed*`, `Render.IndexedImages*`, `SnapshotImages.Indexed*`; [indexed images](#indexed-images) |
 
 ## Relative images

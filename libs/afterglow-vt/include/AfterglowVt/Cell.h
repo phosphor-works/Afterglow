@@ -52,6 +52,18 @@ public:
 
     constexpr bool operator==(const Cell&) const = default;
 
+    /// The two words of the cell as they are stored, for the mux codec
+    /// (StateSync.cpp), which checks each part of a cell that it reads.
+    constexpr std::uint32_t rawCodepoint() const { return std::uint32_t(m_cp); }
+    constexpr std::uint32_t rawPacked() const { return m_packed; }
+    static constexpr Cell fromRaw(std::uint32_t codepoint, std::uint32_t packed)
+    {
+        Cell c;
+        c.m_cp = char32_t(codepoint);
+        c.m_packed = packed;
+        return c;
+    }
+
 private:
     static constexpr std::uint32_t StyleMask = (1u << 24) - 1;
     static constexpr int WidthShift = 24;

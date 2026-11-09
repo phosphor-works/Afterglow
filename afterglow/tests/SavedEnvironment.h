@@ -18,6 +18,12 @@ struct Saved
         , value(qgetenv(name))
     {
     }
+    /// Saves @p name, then sets it to @p set until the guard goes.
+    Saved(const char* name, const QByteArray& set)
+        : Saved(name)
+    {
+        qputenv(name, set);
+    }
     ~Saved()
     {
         if (wasSet) qputenv(name, value);

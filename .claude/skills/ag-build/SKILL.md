@@ -25,7 +25,7 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 | --- | --- | --- | --- |
 | `build` | RelWithDebInfo (`dev` preset) | ON | Day-to-day work. All the commands below use it. |
 | `build-release` | Release | ON | Performance numbers and release checks |
-| `build-prof` | RelWithDebInfo | ON | Profiling (Tracy and perf) |
+| `build-prof` | RelWithDebInfo | ON | Profiling with `perf` |
 | `build-fuzz` | RelWithDebInfo, clang for C and C++, `AFTERGLOW_BUILD_FUZZERS=ON`, `BUILD_TESTING=OFF` | OFF | The libFuzzer targets `afterglow_vtfuzz`, `afterglow_protofuzz` and `afterglow_imagefuzz` only. Build them by name: the other binaries are not supported there (zlib-ng is instrumented in place). The fuzz option turns `aglow` off. Make it when you fuzz, with the commands in `docs/TESTING.md`. |
 | `build-debug` | Debug with ASan and UBSan (`debug` preset) | — | Make it when you look for memory errors. `aglow` links dynamically there, and `aglow_static` is left out. |
 
@@ -48,21 +48,47 @@ file, set the new hash there and list the patch at the top of `tools/aglow/StbIm
 `afterglow_native_bench`. Shader previews, `aglow_icat_render` and `afterglow_headless_runner` need it. The renderer
 tests (`Render.*`) do not: `BUILD_TESTING` builds them.
 
+## afterglow-mux
+
+`afterglow-mux` (`mux/`) is the session daemon of `afterglow mux`. It has no Qt and links `afterglow-vt`,
+`afterglow-pty` and `afterglow-proto`. It builds next to `afterglow` (`build/afterglow/afterglow-mux`), because
+`afterglow mux` runs the daemon from its own directory, and building `afterglow` builds it too. A build of `aglow`
+alone (`AFTERGLOW_AGLOW_ONLY`) does not build it. Its tests are `afterglow_mux_tests` (`Mux.*`) and the client
+tests of `afterglow mux` in `afterglow_mux_client_tests` (`MuxClientTest.*`), with the server and socket tests of
+`afterglow-proto`: `ctest -R '^(Proto\.(IpcServer|Socket)|Mux|MuxClientTest)\.' -j4` takes about 10 seconds. Most
+of that time is the start wait of `Mux.MuxDaemon.ADaemonThatNobodyReachesEnds`. Without `-j`, the run takes about 15
+seconds.
+
+`afterglow mux` (every command but `--help`) and `afterglow-mux` (every run but `--help` and `--version`) reach the
+user's mux daemon and its sessions, also from a nested KWin. Run them only with a private `XDG_RUNTIME_DIR` and
+`XDG_STATE_HOME` under `/tmp`, as these tests do (they also give a `HOME` of their own), and kill the sessions that
+you made. Never stop, restart or mask the user's `afterglow-mux.service`, and never remove the files in the user's
+two `afterglow-mux` directories.
+
 ## The Phosphor libraries
 
-`cmake/AfterglowPhosphor.cmake` compiles the Phosphor libraries from `../PlasmaZones/phosphor-libs`
-(`AFTERGLOW_PHOSPHOR_LIBS_DIR`). Thus the state of that checkout is part of the Afterglow build:
+`cmake/AfterglowPhosphor.cmake` compiles the Phosphor libraries from a PlasmaZones checkout. The default is
+`../PlasmaZones/phosphor-libs`. A build directory can name another checkout with `-DAFTERGLOW_PHOSPHOR_LIBS_DIR`.
+Each build directory keeps its own value, and the `grep` at the top of this skill shows it. The state of that
+checkout is part of the Afterglow build. When a build fails or changes for no reason in this repository, check the
+checkout first:
 
-- If the PlasmaZones checkout is on another branch, or has uncommitted work, an Afterglow build can fail or change
-  for reasons that are not in this repository. Check `git -C ../PlasmaZones status -sb` before you blame Afterglow.
-- Never edit PlasmaZones from an Afterglow session. A Phosphor change goes through a PlasmaZones branch and pull
-  request. Tell the user what Phosphor needs.
-- The renderer uses Qt private APIs. After a Qt update, rebuild everything (`cmake --build build --clean-first`).
+| Condition | Check | Action |
+| --- | --- | --- |
+| The checkout is not on `main` or at the commit that `docs/BUILD.md` names, or has uncommitted work. | `git -C <checkout> status -sb` | Tell the user. |
+| The checkout does not contain the PlasmaZones commit that `docs/BUILD.md` names. | `git -C <checkout> merge-base --is-ancestor <commit> HEAD` | Tell the user which commit the build needs. |
+| The checkout contains that commit, and the build fails in a Phosphor call. | Compare the call with the Phosphor header in the checkout. | If Afterglow calls a newer API, name its commit in `docs/BUILD.md` in the same change. Tell the user that the checkout needs it. If PlasmaZones changed the API after the commit, tell the user. |
+
+- Never edit a checkout that a build directory compiles from. Update one only with the user's approval. On a
+  clean `main`, use `git pull --ff-only`. On a detached checkout, use `git checkout <commit>`. A Phosphor change
+  goes through a PlasmaZones branch and pull request. Tell the user what Phosphor needs.
+- The renderer uses Qt private APIs. After a Qt update, rebuild everything in the capped scope:
+  `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build --clean-first -j6`.
 - The pinned archives (Luau and valijson from `PhosphorDependencies.cmake` in PlasmaZones, zlib-ng and xxHash from
-  `cmake/AfterglowDependencies.cmake`) download into the CPM cache, by default `../PlasmaZones/.cache/cpm`, and
-  Afterglow's own `.cache/cpm` when only `PHOSPHOR_DEPS_ARCHIVES` is set (`docs/BUILD.md` has the order). A
-  configure without network works once that cache holds them. A build of `aglow` alone loads no PlasmaZones
-  module, so its default cache is Afterglow's own `.cache/cpm`.
+  `cmake/AfterglowDependencies.cmake`) download into the CPM cache. By default that is `.cache/cpm` in the
+  PlasmaZones checkout that the build uses, and Afterglow's own `.cache/cpm` when only `PHOSPHOR_DEPS_ARCHIVES` is
+  set (`docs/BUILD.md` has the order). A configure without network works once that cache holds them. A build of
+  `aglow` alone loads no PlasmaZones module, so its default cache is Afterglow's own `.cache/cpm`.
 
 ## Build
 
@@ -77,7 +103,6 @@ grep -c "warning:" <scratchpad>/build.log
 - Always build and test in the capped scope above. The session runs in the cgroup of the user's Afterglow, and
   when memory runs out, systemd-oomd kills that whole unit with every window of the user. In the scope, the
   kernel stops the build at the cap. Run one build or test run at a time.
-
 - Use `-j6`. The machine has 8 cores, and the user works on it while you build.
 - The build uses `-Wall -Wextra -Wpedantic` with no `-Werror`. A build with warnings is not green. The user treats
   a warning as a defect. An incremental build shows warnings only for the files it compiled again.
@@ -95,13 +120,12 @@ systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
     ctest --test-dir build --output-on-failure -j6 2>&1 | tail -15
 ```
 
-The suite has about 1,630 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
+The suite has about 1,800 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
 before a commit.
 
 - `aglow_only_build` (label `slow`) configures, builds and installs `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) in
   `build/tools/aglow/aglow-only`, with Qt hidden and no Phosphor directory. It compiles zlib-ng again and takes some
   minutes. `-LE slow` leaves it out while you work. The whole suite before a commit includes it.
-
 - The renderer tests (`libs/afterglow-render/tests`) and `afterglow/tests/PopupLookTest.cpp` need a Wayland display and
   a working Vulkan driver. They skip only on a machine with no Wayland display or no Vulkan. A device that cannot be
   made fails them. They take turns on the GPU (`RESOURCE_LOCK gpu`, also `aglow_icat_render`): each test process makes

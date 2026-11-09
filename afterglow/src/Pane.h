@@ -12,6 +12,7 @@
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
 
+#include <QDeadlineTimer>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QList>
@@ -32,6 +33,9 @@
 #include <utility>
 #include <vector>
 
+class QDialog;
+class QWindow;
+
 namespace Afterglow {
 
 /// A program status record (OSC 7501) as the GUI uses it.
@@ -50,11 +54,6 @@ struct PaneStatusRecord
 class FileTransfer;
 class DockArea;
 class PaneOverlay;
-
-/// Applies a launch's own variables to @p options (`env` of a script or a
-/// control call): a string sets the name, false unsets it. The launch wins
-/// over what @p options had, and each name is set or unset once.
-void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantMap& environment);
 
 /// One terminal: the emulator state, the child process on its pty, and the
 /// snapshot the window renders from. The pty thread feeds the terminal under
@@ -139,6 +138,10 @@ public:
     /// prompt the shell has not repainted yet.
     /// @p extraRows below the viewport are captured for fractional scrolling.
     bool refreshSnapshot(int extraRows = 0);
+    /// While refreshSnapshot holds the previous frame: the milliseconds until
+    /// that hold times out, when a frame must be drawn whatever the program
+    /// does. 0 when the last refresh held nothing.
+    qint64 holdRemaining() const;
     const AfterglowRender::PaneSnapshot& snapshot() const noexcept { return m_snapshot; }
     /// Hands the snapshot out with its identity, for the last frame of a
     /// pane that draws no more (an overlay that ended, fading out). The next
@@ -164,7 +167,11 @@ public:
     /// The program closing the pane would end: the shell's foreground job, or
     /// the program the pane was opened for. Empty while a shell sits idle.
     QString foregroundJob() const;
-    /// Names the program the pane was opened to run (afterglow -e), instead of a shell.
+    /// The command that a project saves for the pane and runs again when it
+    /// opens: the program the pane was opened for (afterglow -e, a script,
+    /// afterglow ctl, a project), even when a fallback shell runs in its
+    /// place. Empty for a shell, and for a tab whose program does not
+    /// outlive it (show_last_output).
     const QStringList& launchCommand() const { return m_launchCommand; }
     const QString& launchDirectory() const { return m_launchDirectory; }
     void setLaunch(const QString& cwd, const QStringList& command) { m_launchDirectory = cwd; m_launchCommand = command; }
@@ -230,8 +237,9 @@ public:
     /// Returns false when there is none that way.
     bool jumpToPrompt(int direction);
 
-    // Selection (GUI thread). Points are absolute rows (history included);
-    // selectionPointAt turns a cell of the current viewport into one.
+    // Selection (GUI thread). Points are stable row ids (Screen::rowsDropped()
+    // plus the row's index in history and screen); selectionPointAt turns a
+    // cell of the current viewport into one.
     AfterglowVt::SelectionPoint selectionPointAt(int col, int row) const;
     void startSelection(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow);
     void extendSelection(AfterglowVt::SelectionPoint head);
@@ -245,6 +253,10 @@ public:
     QVariantMap historyPosition() const;
     void scrollHistory(double fraction);
     bool hasSelection() const;
+    /// Whether the cell at @p col, @p row of the viewport (as selectionPointAt()
+    /// takes it) is in the selection, with its words and lines expanded as
+    /// they are drawn. The copy cursor of copy mode is not a selection here.
+    bool selectionContains(int col, int row) const;
     QString selectedText() const;
     QVariantMap readSelection(std::size_t limit) const;
     QVariantMap semanticRegions() const;
@@ -252,8 +264,16 @@ public:
     TerminalText accessibleText(bool cursorRow = false) const;
 
 Q_SIGNALS:
+    /// keepDialogOverPane put @p dialog over this pane's window, and the
+    /// dialog is about to show there: when it opens, and when it moves to
+    /// the window that the pane went to. Emitted on the pane in the tab, also
+    /// for an overlay's dialog. The window can change how the dialog shows
+    /// (the quick terminal does).
+    void dialogOpened(QDialog* dialog);
     /// The terminal changed. Emitted on the GUI thread, coalesced.
     void contentChanged();
+    /// The program's drag offer (OSC 72) starts as a drag of the desktop.
+    void programDragStarting();
     void searchStatusChanged(const QString& status);
     void titleUpdated(const QString& title);
     void contextUpdated();
@@ -300,16 +320,29 @@ private:
     /// keeps its place: what it delivers then is the latest state, which
     /// can be newer than events queued after it.
     void queueOnce(std::atomic_bool& queued, std::function<void()> deliver);
+    /// What the events of one kind that wait in m_events hold, guarded by
+    /// m_mutex. Each kind has its own: a flood of notifications or a large
+    /// clipboard write must not drop the command events of shell
+    /// integration, which the window and the scripts pair up.
+    struct EventBudget
+    {
+        std::size_t events = 0;
+        std::size_t bytes = 0;
+        std::size_t dropped = 0;
+    };
     /// pty thread, m_mutex held: queues @p event, which emits one signal, for
     /// the GUI thread, where the pane emits it to the receivers it has then
     /// (a moved pane's new window). @p bytes is about what the event holds:
     /// the memory of its fields that a program sizes (text, data), not of
     /// the small fixed ones. False, and nothing queued, when MaxQueuedEvents
-    /// wait already, or when the waiting ones would hold more than
+    /// of @p budget wait already, or when they would hold more than
     /// MaxQueuedEventBytes with it: a program that writes them faster than
     /// the window takes them loses the rest. One event alone is never
     /// refused for its size.
-    bool queueEvent(std::function<void()> event, std::size_t bytes = 0);
+    /// With @p paired, @p event ends one that was queued (a command's end
+    /// after its start) and is never refused: a start must not wait for an
+    /// end that never comes.
+    bool queueEvent(std::function<void()> event, std::size_t bytes, EventBudget& budget, bool paired = false);
     /// Posts one deliverEvents() unless one is posted already.
     void postEvents();
     /// GUI thread: emits the queued events in order.
@@ -318,9 +351,8 @@ private:
     /// As much as one clipboard write may carry.
     static constexpr std::size_t MaxQueuedEventBytes = AfterglowVt::ClipboardAssembler::MaxWrite;
     std::deque<std::function<void()>> m_events; ///< guarded by m_mutex
-    std::size_t m_queuedEvents = 0; ///< the queueEvent ones in m_events, guarded by m_mutex
-    std::size_t m_queuedEventBytes = 0; ///< guarded by m_mutex
-    std::size_t m_droppedEvents = 0; ///< guarded by m_mutex
+    EventBudget m_requestBudget; ///< notifications and clipboard requests
+    EventBudget m_commandBudget; ///< command starts and ends (OSC 133)
     std::atomic_bool m_eventsPosted{false};
     /// GUI thread: titleUpdated when the title to show changed.
     void announceTitle();
@@ -447,6 +479,11 @@ private:
     std::vector<std::pair<QString, QString>> m_pendingUserVars;
     Signals m_signals{};
     QString m_command; ///< guarded by m_mutex
+    /// What became of the start of m_command: its end goes the same way.
+    /// The window, the scripts and afterglow ctl pair the two. Guarded by
+    /// m_mutex.
+    enum class CommandStart : std::uint8_t { None, Queued, Dropped };
+    CommandStart m_commandStartEvent = CommandStart::None;
     AfterglowProto::Remote::Answer m_remoteSocket; ///< guarded by m_mutex
     std::chrono::steady_clock::time_point m_commandStart;
     AfterglowVt::Terminal m_terminal;
@@ -459,6 +496,11 @@ private:
     AfterglowVt::SelectionPoint m_copyCursor;
     AfterglowVt::Selection m_selection;
     bool m_selectionOnAltScreen = false;
+    /// The selection is drawn: active, made on the screen shown, and valid
+    /// for its rows. m_mutex held.
+    bool selectionShown() const;
+    /// selectionPointAt() with m_mutex held.
+    AfterglowVt::SelectionPoint pointAt(int col, int row) const;
     std::uint64_t m_selectionSerial = 0;
 
     struct SearchJob {
@@ -484,8 +526,9 @@ private:
     std::u32string m_searchQuery;
     int m_searchCurrent = -1;
     bool m_searchActive = false;
-    /// Set by the window from the Colors.search* settings when it creates
-    /// the pane (setSearchColors), so the defaults live in one place.
+    /// Set by the window from the Colors.search* settings (setSearchColors),
+    /// when it creates the pane and when the settings change, so the
+    /// defaults live in one place.
     struct SearchColors
     {
         std::uint32_t match = 0;
@@ -505,6 +548,7 @@ private:
     std::uint64_t m_syncSerial = 0; ///< the synchronized update m_syncTimer times
     QElapsedTimer m_syncHoldTimer; ///< since synchronized updates began to hold the frames
     QElapsedTimer m_promptTimer;
+    QDeadlineTimer m_holdDeadline; ///< when the frame refreshSnapshot holds is drawn anyway
 
     std::atomic<bool> m_notifyPending{false};
     QTimer m_animationTimer;

@@ -3,7 +3,6 @@
 #pragma once
 #include <QFile>
 #include <QFileInfo>
-#include <QMimeData>
 #include <QUrl>
 #include <sys/stat.h>
 namespace Afterglow {
@@ -21,11 +20,9 @@ inline QString localFilePath(const QUrl& url)
     return path.startsWith(QLatin1Char('/')) ? path : QString();
 }
 /// Local files only; shell quoting works in bash, zsh and fish. Never adds Enter.
-inline QString droppedFiles(const QMimeData* mime)
+inline QString droppedFiles(const QList<QUrl>& urls)
 {
-    if (!mime || !mime->hasUrls()) return {};
-    const auto urls = mime->urls();
-    if (urls.size() > 256) return {};
+    if (urls.isEmpty() || urls.size() > 256) return {};
     QStringList paths;
     qsizetype size = 0;
     for (const QUrl& url : urls) {

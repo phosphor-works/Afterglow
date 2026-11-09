@@ -18,6 +18,8 @@
 #include <QImage>
 
 #include <QMatrix4x4>
+#include <QFloat16>
+#include <rhi/qrhi.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -337,6 +339,123 @@ TEST(Fonts, HintingChoosesLoadFlags)
     EXPECT_NE(none, full);
     EXPECT_NE(full, light);
     EXPECT_NE(none, light);
+}
+
+namespace {
+
+/// A readback of @p format, @p width x @p height, with @p bytes as its data.
+QRhiReadbackResult readbackOf(QRhiTexture::Format format, int width, int height, QByteArray bytes)
+{
+    QRhiReadbackResult readback;
+    readback.format = format;
+    readback.pixelSize = QSize(width, height);
+    readback.data = std::move(bytes);
+    return readback;
+}
+
+/// The premultiplied ARGB word of @p image at (@p x, @p y).
+QRgb word(const QImage& image, int x, int y)
+{
+    return image.convertToFormat(QImage::Format_ARGB32_Premultiplied).pixel(x, y);
+}
+
+} // namespace
+
+TEST(Readback, EightBitFormatsKeepTheirPremultipliedBytes)
+{
+    // Two pixels: an opaque red, and a blue at half alpha (premultiplied).
+    const char rgba[] = {char(200), 10, 20, char(255), 0, 0, 64, char(128)};
+    const char bgra[] = {20, 10, char(200), char(255), 64, 0, 0, char(128)};
+    for (auto [format, bytes] : {std::pair{QRhiTexture::RGBA8, rgba}, std::pair{QRhiTexture::BGRA8, bgra}}) {
+        QRhiReadbackResult readback = readbackOf(format, 2, 1, QByteArray(bytes, 8));
+        const QImage image = WindowRenderer::readbackImage(readback, false, false);
+        if (image.isNull()) {
+            ADD_FAILURE() << "no image for format " << int(format);
+            continue;
+        }
+        EXPECT_TRUE(readback.data.isEmpty()) << "the image takes the bytes";
+        EXPECT_EQ(image.size(), QSize(2, 1));
+        EXPECT_EQ(word(image, 0, 0), qRgba(200, 10, 20, 255)) << int(format);
+        EXPECT_EQ(word(image, 1, 0), qRgba(0, 0, 64, 128)) << int(format);
+    }
+}
+
+TEST(Readback, OpaqueSetsAlphaAndKeepsTheShownColours)
+{
+    // A surface without alpha shows the stored (premultiplied) colour. The
+    // bytes are checked as they are: a conversion would set alpha by itself.
+    const char bgra[] = {64, 0, 0, char(128)};
+    QRhiReadbackResult words = readbackOf(QRhiTexture::BGRA8, 1, 1, QByteArray(bgra, 4));
+    const QImage wordImage = WindowRenderer::readbackImage(words, false, true);
+    ASSERT_FALSE(wordImage.isNull());
+    EXPECT_FALSE(wordImage.hasAlphaChannel());
+    if (Q_BYTE_ORDER == Q_LITTLE_ENDIAN) {
+        EXPECT_EQ(wordImage.format(), QImage::Format_RGB32);
+        EXPECT_EQ(reinterpret_cast<const quint32*>(wordImage.constScanLine(0))[0], 0xff000040u);
+    }
+    const char rgba[] = {64, 0, 0, char(128)};
+    QRhiReadbackResult bytes = readbackOf(QRhiTexture::RGBA8, 1, 1, QByteArray(rgba, 4));
+    const QImage byteImage = WindowRenderer::readbackImage(bytes, false, true);
+    ASSERT_FALSE(byteImage.isNull());
+    EXPECT_EQ(byteImage.format(), QImage::Format_RGBX8888);
+    const uchar* pixel = byteImage.constScanLine(0);
+    EXPECT_EQ(pixel[0], 64);
+    EXPECT_EQ(pixel[1], 0);
+    EXPECT_EQ(pixel[2], 0);
+    EXPECT_EQ(pixel[3], 0xff);
+}
+
+TEST(Readback, YUpFlipsTheRows)
+{
+    const char rgba[] = {char(255), 0, 0, char(255), 0, char(255), 0, char(255)};
+    QRhiReadbackResult readback = readbackOf(QRhiTexture::RGBA8, 1, 2, QByteArray(rgba, 8));
+    const QImage image = WindowRenderer::readbackImage(readback, true, false);
+    ASSERT_FALSE(image.isNull());
+    EXPECT_EQ(word(image, 0, 0), qRgba(0, 255, 0, 255));
+    EXPECT_EQ(word(image, 0, 1), qRgba(255, 0, 0, 255));
+}
+
+TEST(Readback, TenBitAndFloatFormatsBecomeEightBit)
+{
+    // A2B10G10R10: R in the low bits.
+    const quint32 packed = 1023u | (0u << 10) | (512u << 20) | (3u << 30);
+    QRhiReadbackResult tenBit = readbackOf(QRhiTexture::RGB10A2, 1, 1,
+                                           QByteArray(reinterpret_cast<const char*>(&packed), sizeof packed));
+    const QImage ten = WindowRenderer::readbackImage(tenBit, false, false);
+    ASSERT_FALSE(ten.isNull());
+    EXPECT_EQ(ten.format(), QImage::Format_ARGB32_Premultiplied);
+    EXPECT_EQ(qRed(word(ten, 0, 0)), 255);
+    EXPECT_EQ(qGreen(word(ten, 0, 0)), 0);
+    EXPECT_NEAR(qBlue(word(ten, 0, 0)), 128, 1);
+    EXPECT_EQ(qAlpha(word(ten, 0, 0)), 255);
+
+    const std::array<qfloat16, 4> halves = {qfloat16(1.0f), qfloat16(0.5f), qfloat16(0.0f), qfloat16(1.0f)};
+    QRhiReadbackResult half = readbackOf(QRhiTexture::RGBA16F, 1, 1,
+                                         QByteArray(reinterpret_cast<const char*>(halves.data()), sizeof halves));
+    const QImage floats = WindowRenderer::readbackImage(half, false, false);
+    ASSERT_FALSE(floats.isNull());
+    EXPECT_EQ(qRed(word(floats, 0, 0)), 255);
+    EXPECT_NEAR(qGreen(word(floats, 0, 0)), 128, 1);
+    EXPECT_EQ(qBlue(word(floats, 0, 0)), 0);
+
+    const std::array<float, 4> singles = {0.0f, 0.5f, 1.0f, 1.0f};
+    QRhiReadbackResult single = readbackOf(QRhiTexture::RGBA32F, 1, 1,
+                                           QByteArray(reinterpret_cast<const char*>(singles.data()), sizeof singles));
+    const QImage wide = WindowRenderer::readbackImage(single, false, false);
+    ASSERT_FALSE(wide.isNull());
+    EXPECT_EQ(qRed(word(wide, 0, 0)), 0);
+    EXPECT_NEAR(qGreen(word(wide, 0, 0)), 128, 1);
+    EXPECT_EQ(qBlue(word(wide, 0, 0)), 255);
+}
+
+TEST(Readback, OtherFormatsAndShortDataGiveANullImage)
+{
+    QRhiReadbackResult red = readbackOf(QRhiTexture::R8, 2, 2, QByteArray(4, char(255)));
+    EXPECT_TRUE(WindowRenderer::readbackImage(red, false, false).isNull());
+    QRhiReadbackResult shortData = readbackOf(QRhiTexture::RGBA8, 2, 2, QByteArray(12, char(255)));
+    EXPECT_TRUE(WindowRenderer::readbackImage(shortData, false, false).isNull());
+    QRhiReadbackResult empty = readbackOf(QRhiTexture::RGBA8, 0, 0, {});
+    EXPECT_TRUE(WindowRenderer::readbackImage(empty, false, false).isNull());
 }
 
 class FontRendering : public Render

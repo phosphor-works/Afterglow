@@ -86,8 +86,13 @@ struct MouseSettings
     enum class MiddleClick { Primary, Clipboard, None };
     MiddleClick middleClick = MiddleClick::Primary;
     /// Milliseconds between the rows a selection scrolls while it is
-    /// dragged past the top or bottom of its pane.
+    /// extended past the top or bottom of its pane.
     int autoScrollInterval = 50;
+    /// A single press inside the selection and a move drag its text out, to
+    /// another pane or another application. A click there without a move
+    /// clears the selection. Off, as in Kitty: a press inside the selection
+    /// selects as it does elsewhere.
+    bool dragSelection = false;
     bool operator==(const MouseSettings&) const = default;
 };
 
@@ -236,7 +241,7 @@ struct Settings
     int notificationRateWindow = 10; ///< seconds that notificationRateLimit counts over
     /// Milliseconds between two program status notifications of one pane.
     int statusNotificationInterval = 3000;
-    bool confirmUnsafePaste = true; ///< ask before pasting lines a shell would run
+    bool confirmUnsafePaste = true; ///< ask before pasting or dropping lines a shell would run
     bool confirmClose = true; ///< ask before closing where a program is running
     bool hideMouseWhileTyping = false;
     int scrollLines = 3; ///< lines per mouse wheel notch

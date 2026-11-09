@@ -126,13 +126,13 @@ cd Afterglow
 2. Get the Phosphor source in the adjacent directory:
 
 ```sh
-git clone https://github.com/fuddlesworth/PlasmaZones ../PlasmaZones
+git clone https://github.com/phosphor-works/PlasmaZones ../PlasmaZones
 ```
 
 3. Select the PlasmaZones commit that this Afterglow source was tested with:
 
 ```sh
-git -C ../PlasmaZones checkout 04c6295a0
+git -C ../PlasmaZones checkout 01c112566
 ```
 
 A later PlasmaZones commit can change the Phosphor API. The build then fails.
@@ -233,6 +233,7 @@ The installation includes the executable, desktop entry, AppStream metadata, ico
 It also includes the shell integration scripts, the API declarations, the examples and the license texts.
 It also includes the shell completions for Bash, Zsh and Fish.
 It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions.
+It installs the [mux daemon](MUX.md) `afterglow-mux` in the same directory as `afterglow`, because `afterglow mux` runs it from there.
 The Fish completions need Fish 4 or later.
 The license notices of the code in `aglow` go in `share/licenses/afterglow`:
 

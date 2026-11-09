@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -14,14 +15,16 @@
 #include <optional>
 #include <sstream>
 #include <system_error>
+#include <unordered_set>
 
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
-#include <pty.h>
 #include <pwd.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -31,14 +34,54 @@ extern char** environ;
 
 namespace AfterglowPty {
 
+void setVariable(SpawnOptions& options, std::string name, std::string value)
+{
+    std::erase_if(options.environment, [&name](const auto& entry) { return entry.first == name; });
+    std::erase(options.unsetEnvironment, name);
+    options.environment.emplace_back(std::move(name), std::move(value));
+}
+
+void unsetVariable(SpawnOptions& options, std::string name)
+{
+    std::erase_if(options.environment, [&name](const auto& entry) { return entry.first == name; });
+    std::erase(options.unsetEnvironment, name);
+    options.unsetEnvironment.push_back(std::move(name));
+}
+
+std::optional<ProcessStat> parseProcessStat(std::string_view stat)
+{
+    const std::size_t open = stat.find('(');
+    const std::size_t close = stat.rfind(')');
+    if (open == std::string_view::npos || close == std::string_view::npos || close < open) return std::nullopt;
+    std::istringstream fields{std::string(stat.substr(close + 1))};
+    ProcessStat parsed;
+    if (!(fields >> parsed.state >> parsed.parent >> parsed.group >> parsed.session >> parsed.terminal
+          >> parsed.foregroundGroup))
+        return std::nullopt;
+    return parsed;
+}
+
+std::optional<ProcessStat> processStat(pid_t pid)
+{
+    // The whole file: a line read would stop at a new line in the name.
+    std::ifstream file("/proc/" + std::to_string(pid) + "/stat");
+    if (!file) return std::nullopt;
+    std::ostringstream whole;
+    whole << file.rdbuf();
+    return parseProcessStat(whole.str());
+}
+
 std::string Pty::defaultShell(const SpawnOptions& options)
 {
     const auto set = std::find_if(options.environment.rbegin(), options.environment.rend(),
                                   [](const auto& kv) { return kv.first == "SHELL"; });
     if (set != options.environment.rend()) {
         if (!set->second.empty()) return set->second;
-    } else if (std::find(options.unsetEnvironment.begin(), options.unsetEnvironment.end(), "SHELL")
-               == options.unsetEnvironment.end()) {
+    } else if (options.inheritEnvironment
+               && std::find(options.unsetEnvironment.begin(), options.unsetEnvironment.end(), "SHELL")
+                   == options.unsetEnvironment.end()) {
+        // The parent's SHELL only when the child gets the parent's environment:
+        // the mux daemon's is not the session's.
         if (const char* s = std::getenv("SHELL"); s && *s) return s;
     }
     if (const passwd* pw = getpwuid(getuid()); pw && pw->pw_shell && *pw->pw_shell) {
@@ -67,7 +110,7 @@ winsize makeWinsize(int cols, int rows, int pw, int ph)
 }
 
 // What the child reports through the exec pipe before it gives up.
-enum ExecStage : int { EnterDirectory, RunProgram };
+enum ExecStage : int { TakeTerminal, EnterDirectory, RunProgram };
 
 // How long spawn() waits for exec on the caller's thread. A child stuck in
 // chdir or execve on a hung mount must not freeze the GUI.
@@ -185,17 +228,8 @@ std::optional<std::string> directoryOf(pid_t pid)
 // exited, and its PID may now be another process's.
 bool inSession(pid_t pid, pid_t session)
 {
-    std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
-    std::string line;
-    std::getline(stat, line);
-    // The command name in parentheses can hold spaces: fields follow the last ')'.
-    const auto name = line.rfind(')');
-    if (name == std::string::npos) return false;
-    std::istringstream fields(line.substr(name + 1));
-    char state = 0;
-    long parent = 0, group = 0, owner = 0;
-    fields >> state >> parent >> group >> owner;
-    return fields && owner == session;
+    const auto stat = processStat(pid);
+    return stat && stat->session == session;
 }
 
 } // namespace
@@ -208,6 +242,12 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
     if (args.empty()) {
         args.push_back(defaultShell(options));
     }
+    // The path search would try each directory itself, and execve on a
+    // directory fails with EACCES: execvp's answer is ENOENT.
+    if (args.front().empty()) {
+        if (error) *error = std::string("cannot run a program with an empty name: ") + std::strerror(ENOENT);
+        return nullptr;
+    }
     std::vector<char*> argv;
     for (std::string& a : args) {
         argv.push_back(a.data());
@@ -215,23 +255,24 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
     argv.push_back(nullptr);
 
     // One entry per name, the last value given: programs disagree on which
-    // of two entries counts (getenv takes the first, Bash the last).
+    // of two entries counts (getenv takes the first, Bash the last). Sets,
+    // not scans: a mux session's environment is the client's, whole.
     std::vector<const std::pair<std::string, std::string>*> overrides;
-    for (auto it = options.environment.rbegin(); it != options.environment.rend(); ++it) {
-        if (std::none_of(overrides.begin(), overrides.end(), [&](const auto* kv) { return kv->first == it->first; }))
-            overrides.push_back(&*it);
+    std::unordered_set<std::string_view> replaced(options.unsetEnvironment.begin(), options.unsetEnvironment.end());
+    {
+        std::unordered_set<std::string_view> given;
+        for (auto it = options.environment.rbegin(); it != options.environment.rend(); ++it) {
+            if (given.insert(it->first).second) overrides.push_back(&*it);
+        }
+        replaced.insert(given.begin(), given.end());
     }
     std::reverse(overrides.begin(), overrides.end());
 
     std::vector<std::string> envStore;
-    for (char** e = environ; *e; ++e) {
+    for (char** e = environ; options.inheritEnvironment && *e; ++e) {
         const std::string_view entry(*e);
         const auto eq = entry.find('=');
-        const std::string_view key = entry.substr(0, eq);
-        const bool overridden =
-            std::find(options.unsetEnvironment.begin(), options.unsetEnvironment.end(), key) != options.unsetEnvironment.end()
-            || std::any_of(overrides.begin(), overrides.end(), [key](const auto* kv) { return kv->first == key; });
-        if (!overridden) {
+        if (!replaced.contains(entry.substr(0, eq))) {
             envStore.emplace_back(entry);
         }
     }
@@ -265,7 +306,14 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
     shellArgv.push_back(nullptr);
 
     const std::string cwd = options.workingDirectory;
-    winsize ws = makeWinsize(options.cols, options.rows, options.pixelWidth, options.pixelHeight);
+    const int childUmask = options.umask;
+    // Worked out here: the child only calls setrlimit.
+    std::optional<rlimit> childFileLimit;
+    if (rlimit limit{}; options.fileLimit >= 0 && getrlimit(RLIMIT_NOFILE, &limit) == 0) {
+        limit.rlim_cur = limit.rlim_max == RLIM_INFINITY ? rlim_t(options.fileLimit) : std::min(rlim_t(options.fileLimit), limit.rlim_max);
+        childFileLimit = limit;
+    }
+    const winsize ws = makeWinsize(options.cols, options.rows, options.pixelWidth, options.pixelHeight);
 
     const int wakeFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (wakeFd < 0) {
@@ -281,8 +329,10 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
     // The child's stdin and stdout pipes, when it has them: -1 otherwise.
     int inputPipe[2] = {-1, -1};
     int outputPipe[2] = {-1, -1};
+    int master = -1;
+    int slave = -1;
     auto closeAll = [&] {
-        for (int fd : {execPipe[0], execPipe[1], inputPipe[0], inputPipe[1], outputPipe[0], outputPipe[1], wakeFd})
+        for (int fd : {execPipe[0], execPipe[1], inputPipe[0], inputPipe[1], outputPipe[0], outputPipe[1], master, slave, wakeFd})
             if (fd >= 0) close(fd);
     };
     if ((options.input && pipe2(inputPipe, O_CLOEXEC) != 0) || (options.captureOutput && pipe2(outputPipe, O_CLOEXEC) != 0)) {
@@ -291,9 +341,39 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
         if (error) *error = std::string("stdio pipe failed: ") + std::strerror(code);
         return nullptr;
     }
-    // Above the standard streams, which forkpty points at the terminal in
-    // the child before it takes its pipes.
-    for (int* descriptor : {&execPipe[0], &execPipe[1], &inputPipe[0], &inputPipe[1], &outputPipe[0], &outputPipe[1]}) {
+    // Both ends close on exec from the start (forkpty's do not): a program
+    // that another thread starts while this one waits for exec must not
+    // hold the terminal open, or the shell gets no hangup when its pane closes.
+    const bool opened = [&] {
+        master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+        if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0) return false;
+        // TIOCGPTPEER opens this master's own peer. A path from ptsname can
+        // name another terminal when /dev/pts is a different mount (a
+        // container). Any failure falls back to the path, as glibc's openpty
+        // does: an error that the path has too (EMFILE) comes from its open.
+#ifdef TIOCGPTPEER
+        slave = ioctl(master, TIOCGPTPEER, O_RDWR | O_NOCTTY | O_CLOEXEC);
+#endif
+        if (slave < 0) {
+            char name[128];
+            if (const int failure = ptsname_r(master, name, sizeof name); failure != 0) {
+                errno = failure;
+                return false;
+            }
+            slave = open(name, O_RDWR | O_NOCTTY | O_CLOEXEC);
+        }
+        return slave >= 0 && ioctl(slave, TIOCSWINSZ, &ws) == 0;
+    }();
+    if (!opened) {
+        const int code = errno;
+        closeAll();
+        if (error) *error = std::string("cannot open a terminal: ") + std::strerror(code);
+        return nullptr;
+    }
+    // Above the standard streams, which the child points at the terminal
+    // before it takes its pipes. The terminal too: dup2 onto itself would
+    // keep its close-on-exec.
+    for (int* descriptor : {&execPipe[0], &execPipe[1], &inputPipe[0], &inputPipe[1], &outputPipe[0], &outputPipe[1], &slave}) {
         if (*descriptor < 0 || *descriptor >= 3) continue;
         const int moved = fcntl(*descriptor, F_DUPFD_CLOEXEC, 3);
         if (moved < 0) {
@@ -305,28 +385,45 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
         close(*descriptor);
         *descriptor = moved;
     }
-    int master = -1;
-    const pid_t pid = forkpty(&master, nullptr, nullptr, &ws);
+    // No handler of the parent may run in the child between fork and the
+    // reset below: it would act on the parent's state (posix_spawn blocks
+    // signals the same way). The child clears the mask itself.
+    sigset_t blockAll;
+    sigset_t parentMask;
+    sigfillset(&blockAll);
+    pthread_sigmask(SIG_SETMASK, &blockAll, &parentMask);
+    const pid_t pid = fork();
+    const int forkError = errno;
+    if (pid != 0) pthread_sigmask(SIG_SETMASK, &parentMask, nullptr);
     if (pid < 0) {
-        const int forkError = errno;
         closeAll();
-        errno = forkError;
-        if (error) {
-            *error = std::string("forkpty failed: ") + std::strerror(errno);
-        }
+        if (error) *error = std::string("fork failed: ") + std::strerror(forkError);
         return nullptr;
     }
 
     if (pid == 0) {
         // Child. Signals the launcher ignored stay ignored across exec: give
-        // the program the defaults it expects.
-        sigset_t all;
-        sigemptyset(&all);
-        sigprocmask(SIG_SETMASK, &all, nullptr);
+        // the program the defaults it expects. The handlers go first: a
+        // signal that waited in the mask would run the parent's handler here.
         struct sigaction fallback {};
         fallback.sa_handler = SIG_DFL;
         for (int sig = 1; sig < NSIG; ++sig) {
             if (sig != SIGKILL && sig != SIGSTOP) sigaction(sig, &fallback, nullptr);
+        }
+        sigset_t all;
+        sigemptyset(&all);
+        sigprocmask(SIG_SETMASK, &all, nullptr);
+        auto failed = [&](int stage) {
+            const int report[2] = {stage, errno};
+            ssize_t sent;
+            do { sent = ::write(execPipe[1], report, sizeof report); } while (sent < 0 && errno == EINTR);
+            _exit(127);
+        };
+        // A session of its own, with the terminal as its controlling
+        // terminal and its standard streams (login_tty).
+        if (setsid() < 0 || ioctl(slave, TIOCSCTTY, 0) != 0) failed(TakeTerminal);
+        for (int stream : {STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO}) {
+            if (dup2(slave, stream) < 0) failed(TakeTerminal);
         }
         // Canonical-mode programs (cat, read, password prompts) erase whole
         // UTF-8 characters only with IUTF8, which a new pty lacks.
@@ -341,12 +438,8 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
         if (outputPipe[1] >= 0) dup2(outputPipe[1], STDOUT_FILENO);
         if (execPipe[1] > 3) close_range(3, unsigned(execPipe[1] - 1), 0);
         close_range(unsigned(execPipe[1] + 1), ~0U, 0);
-        auto failed = [&](int stage) {
-            const int report[2] = {stage, errno};
-            ssize_t sent;
-            do { sent = ::write(execPipe[1], report, sizeof report); } while (sent < 0 && errno == EINTR);
-            _exit(127);
-        };
+        if (childUmask >= 0) ::umask(mode_t(childUmask));
+        if (childFileLimit) setrlimit(RLIMIT_NOFILE, &*childFileLimit);
         if (!cwd.empty() && chdir(cwd.c_str()) != 0) failed(EnterDirectory);
         bool denied = false;
         for (auto& executable : executables) {
@@ -366,7 +459,7 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
     }
 
     close(execPipe[1]);
-    for (int fd : {inputPipe[0], outputPipe[1]})
+    for (int fd : {inputPipe[0], outputPipe[1], slave})
         if (fd >= 0) close(fd);
     int pidFd = -1;
 #ifdef SYS_pidfd_open
@@ -409,14 +502,15 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
     if (received != 0) {
         if (error) {
             const std::string reason = std::strerror(received == sizeof report ? report[1] : readError);
-            *error = received == sizeof report && report[0] == EnterDirectory
-                ? "cannot enter directory " + cwd + ": " + reason
-                : "cannot run " + args.front() + ": " + reason;
+            const int stage = received == sizeof report ? report[0] : RunProgram;
+            *error = stage == TakeTerminal ? "cannot open a terminal: " + reason
+                : stage == EnterDirectory  ? "cannot enter directory " + cwd + ": " + reason
+                                           : "cannot run " + args.front() + ": " + reason;
         }
         return nullptr;
     }
     const int flags = fcntl(master, F_GETFL);
-    if (flags < 0 || fcntl(master, F_SETFL, flags | O_NONBLOCK) < 0 || fcntl(master, F_SETFD, FD_CLOEXEC) < 0) {
+    if (flags < 0 || fcntl(master, F_SETFL, flags | O_NONBLOCK) < 0) {
         if (error) *error = std::string("pty setup failed: ") + std::strerror(errno);
         return nullptr;
     }
@@ -501,7 +595,7 @@ void Pty::resize(int cols, int rows, int pixelWidth, int pixelHeight)
 
 std::string Pty::currentWorkingDirectory() const
 {
-    // forkpty makes the child a session leader: its PID is the session ID.
+    // spawn() makes the child a session leader: its PID is the session ID.
     const pid_t child = m_pid.load();
     if (child <= 0) return {};
     if (const pid_t group = tcgetpgrp(m_master); group > 0 && group != child && inSession(group, child)) {
