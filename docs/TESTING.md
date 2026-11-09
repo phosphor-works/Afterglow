@@ -469,6 +469,7 @@ The `StateSync.*` tests cover these cases:
 - Scrolling in small frames, a replica that starts late, a replica that keeps less history, and a view scrolled back into the history
 - The alternate screen, a resize, cleared and dropped history, and 60 runs of random output
 - A history row larger than a frame still goes, and a screen larger than a frame goes in several frames
+- Rows that a frame left out go first in the next frame
 - The link definitions of history rows count in the size of a frame
 - A damaged frame and a link without a URI, which the reader refuses without a crash
 - After a refused frame, the reader takes the first frame of a writer that starts over
@@ -491,6 +492,7 @@ The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow 
 - The usage errors of every command, and `detach` without a daemon
 - The refusals of `attach` and `new` without a Wayland display, and of `new` with another `QT_QPA_PLATFORM`
 - The start errors of the daemon, a socket that another daemon holds, and a daemon of another protocol version
+- A start of the daemon while `afterglow mux` inherited `SIGCHLD` as ignored
 - The largest and smallest values of the settings that a session takes
 
 These tests in the [native window suite](#native-window-tests) show a session in a real window, with a daemon of the test:
@@ -502,7 +504,7 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.AWindowThatLosesItsSessionLeavesItRunning` | A detach and a takeover close the pane and kill nothing |
 | `NativeWindow.AMuxSessionCanOutliveItsWindow` | `Mux.onClose` detach |
 | `NativeWindow.MuxOnCloseAppliesToAnOpenSessionPane` | A change of `Mux.onClose` reaches an open pane |
-| `NativeWindow.ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow` | A launch of a session that a window shows brings that window to the front. A launch of an unknown session fails with the reason. |
+| `NativeWindow.ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow` | A launch of a session that a window shows brings that window to the front and shows the pane of the session. A launch of an unknown session fails with the reason. |
 | `NativeWindow.ALargePasteReachesTheProgramOfASessionWhole` | Input larger than a frame goes in parts, in order |
 
 Not every test starts a daemon. A test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.

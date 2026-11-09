@@ -257,6 +257,10 @@ bool startDetached(const std::string& daemon, int reportFd, std::string* error)
         *error = std::string("cannot start afterglow-mux: cannot wait for its starter: ") + std::strerror(errno);
         return false;
     }
+    if (WIFSIGNALED(status)) {
+        *error = "cannot start afterglow-mux: its starter was killed by signal " + std::to_string(WTERMSIG(status));
+        return false;
+    }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         *error = "cannot start afterglow-mux: the second fork failed";
         return false;

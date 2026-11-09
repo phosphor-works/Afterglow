@@ -110,7 +110,7 @@ The command itself is not a running program when it runs in the foreground of a 
 
 `afterglow mux attach NAME` opens a window that shows session `NAME`.
 The window opens in the Afterglow that runs on your display, as the window of any launch.
-When a window of that Afterglow shows the session already, that window comes to the front, and no new window opens.
+When a window of that Afterglow shows the session already, that window shows the pane of the session and comes to the front, and no new window opens.
 Without `NAME`, the command shows the only session. When no session runs, it creates one, as `afterglow mux new` does.
 When more than one session runs, it stops and names them.
 
@@ -122,7 +122,7 @@ One window at a time shows a session.
 When another window shows the session, its pane of the session closes, and the session moves to the new window.
 A window that has no other pane closes with it.
 With `--no-takeover`, the command refuses instead, with exit status 1.
-A window of the same Afterglow does not count: it comes to the front, also with `--no-takeover`.
+A window of the same Afterglow does not count: it shows the pane of the session and comes to the front, also with `--no-takeover`.
 
 `afterglow mux attach` and `afterglow mux new` without `--detach` need a Wayland display.
 The display is `WAYLAND_DISPLAY`, by default `wayland-0`, as a socket in `XDG_RUNTIME_DIR` unless it is a path.
@@ -268,7 +268,7 @@ An `afterglow` that starts from a session pane does not give `AFTERGLOW_SESSION`
 
 `afterglow mux new` also sends the terminal settings of your configuration, such as `Terminal.scrollback` and the theme colors.
 The session keeps these values. A later change of the configuration does not change a running session.
-`afterglow mux new` reads no colors from the palette of the desktop.
+`afterglow mux new` reads no colors from the application palette.
 When `Colors.theme` names a dark and a light theme, the session gets the dark theme.
 With a `plasma` theme, the session gets only the colors that `kdeglobals` sets, over the theme.
 When `kdeglobals` sets no background, `plasma` alone takes `afterglow-dark`.

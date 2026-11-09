@@ -40,9 +40,10 @@ class MuxPane final : public AfterglowVt::ITerminalHost, public AfterglowPty::IP
 public:
     /// @p wake runs when the program exits, after output, a resize, a reset
     /// or a clear while takeChanged() has not taken the last change yet, and
-    /// when the PTY's input queue has room again after it refused input. The
-    /// reader thread runs it for output, the exit and room, the daemon's
-    /// thread for the others: it must be safe to call from any thread.
+    /// when the PTY's input queue has room again after it refused input, or
+    /// takes no more input. The reader thread runs it for output, the exit
+    /// and the queue, the daemon's thread for the others: it must be safe to
+    /// call from any thread.
     MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, const PaneSize& size,
             std::string notificationCapabilities, std::function<void()> wake);
     /// Hangs up the program: the PTY's reaper kills it when it stays.
@@ -61,7 +62,7 @@ public:
     /// What input() did.
     enum class Input : std::uint8_t {
         Written,
-        Full, ///< the PTY's queue is full: the wake says when it has room again
+        Full, ///< the PTY's queue is full: the wake says when it has room again, or takes none (then Gone)
         Gone, ///< the program exited, or its terminal takes no more input
     };
     /// Input of an attached window for the program.

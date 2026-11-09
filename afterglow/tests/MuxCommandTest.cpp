@@ -337,7 +337,9 @@ TEST_F(MuxCommandTest, CreatesListsAndKillsASessionAndTheDaemonEndsWithIt)
 TEST_F(MuxCommandTest, ASigchldThatTheCommandGotAsIgnoredDoesNotStopTheStart)
 {
     const std::string wrapper = m_dir + "/afterglow-ignoring-sigchld";
-    std::ofstream(wrapper) << "#!/bin/sh\ntrap '' CHLD\nexec '" << AFTERGLOW_BINARY << "' \"$@\"\n";
+    // The binary's path comes in the environment: no quoting of it here.
+    m_environment.push_back(std::string("AFTERGLOW_TEST_BINARY=") + AFTERGLOW_BINARY);
+    std::ofstream(wrapper) << "#!/bin/sh\ntrap '' CHLD\nexec \"$AFTERGLOW_TEST_BINARY\" \"$@\"\n";
     ASSERT_EQ(::chmod(wrapper.c_str(), 0700), 0);
     const Result r = mux({"new", "--detach", "--", "/bin/sh", "-c", "exec sleep 60"}, wrapper);
     EXPECT_EQ(r.status, 0) << r.err;

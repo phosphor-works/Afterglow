@@ -527,6 +527,9 @@ TEST(MuxAttach, AKillGoesPastInputThatWaitsForAFullPty)
         }
     }
     EXPECT_GT(sent, std::size_t(32) << 20);
+    // The PTY's 32 MiB, the channel's 4 MiB and the socket's buffers: far
+    // below the bound unless the daemon read on.
+    EXPECT_LT(sent, std::size_t(64) << 20) << "the daemon read on past held input";
     ASSERT_TRUE(w.action(Attach::InputType::Kill));
     ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::SessionEnded); }));
     EXPECT_FALSE(sessionNamed(daemon, "stuck"));

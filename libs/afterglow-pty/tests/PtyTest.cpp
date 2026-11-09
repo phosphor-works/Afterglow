@@ -381,6 +381,26 @@ TEST(Pty, AWriteThatTheFullQueueRefusedHearsOfRoom)
     EXPECT_TRUE(pty->write(part));
 }
 
+// A writer that waits for room hears too when the terminal takes no more
+// input while the child runs on: it waits for nothing then.
+TEST(Pty, AWriterThatWaitsHearsThatTheTerminalTakesNoMore)
+{
+    Listener listener;
+    // The child reads nothing, closes its terminal, and lives on.
+    auto pty = Pty::spawn(shell("stty raw -echo; sleep 1; exec sleep 10 0<&- 1>&- 2>&-"), listener);
+    ASSERT_TRUE(pty);
+    const std::string part(64 * 1024, 'x');
+    bool refused = false;
+    for (std::size_t sent = 0; sent <= 2 * Pty::MaxPendingInput && !refused; sent += part.size()) refused = !pty->write(part);
+    ASSERT_TRUE(refused);
+    EXPECT_TRUE(pty->accepting());
+    std::unique_lock lock(listener.mutex);
+    ASSERT_TRUE(listener.changed.wait_for(lock, 20s, [&] { return listener.writable > 0; }));
+    EXPECT_FALSE(listener.closed) << "the child still runs";
+    lock.unlock();
+    EXPECT_FALSE(pty->accepting());
+}
+
 TEST(Pty, TheExitStatusComesAfterTheOutput)
 {
     SpawnOptions options = shell("printf partial; exit 3");
