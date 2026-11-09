@@ -448,7 +448,7 @@ Run the test in the `debug` preset, which has the sanitizers, to see it every ti
 Run the tests of the [mux daemon](MUX.md), of `afterglow mux` and of the server side of its protocol:
 
 ```sh
-ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|MuxClientTest)\.' -j4
+ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|MuxClientTest|StateSync)\.' -j4
 ```
 
 | Tests | Binary | What they run |
@@ -457,6 +457,7 @@ ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|M
 | `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run`, and the sockets of the mux daemon: their order and the name of the state socket |
 | `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, session names, and the keys and fields that belong to the protocol version |
 | `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own: sessions, the environment of a pane, the answers to queries and refusals while no window shows a session, and when the daemon exits |
+| `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`): a replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are text, styles, links, wide and combined characters, the long text of a sizing block, also after a resize flattens it, scrolling in small frames, a replica that starts late, a replica that keeps less history, a view scrolled back into the history, the alternate screen, a resize, cleared and dropped history, and 60 runs of random output. A history row larger than a frame still goes, and the link definitions of history rows count in the size of a frame. The reader refuses a damaged frame and a link without a URI, and does not crash. After a refused frame, it takes the first frame of a writer that starts over. |
 | `MuxClientTest.*` | `afterglow_mux_client_tests` | `afterglow mux new`, `ls` and `kill`, with the daemon that `afterglow mux new` starts in a session of its own: usage errors, the start errors of the daemon, a socket that another daemon holds, a daemon of another protocol version, and the largest and smallest values of the settings that a session takes |
 
 Not every test starts a daemon. A `Mux.MuxDaemon.*` or `MuxClientTest.*` test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.
