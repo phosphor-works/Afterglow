@@ -231,6 +231,20 @@ Afterglow opens OSC 8 links and plain-text URLs with a click while you hold the 
 A selection that you drag past the top or bottom of a pane scrolls one row each `Mouse.autoScrollInterval`
 milliseconds (50 by default).
 
+### Drag the selection
+
+With `Mouse.dragSelection` (on by default), you can drag the selected text out of a pane.
+
+1. Press the left button inside the selection.
+2. Move the pointer to another pane or another application.
+3. Release the button. The target gets the text. The selection stays.
+
+A pane that gets the text pastes it, as a paste from the clipboard does (see [paste](#paste)).
+The pane that the text comes from does not paste it.
+A click inside the selection without a move still clears the selection.
+A double click or a triple click inside it still selects a word or a line.
+Set `Mouse.dragSelection` to `false` to start a new selection with a press inside the old one.
+
 ## Quick terminal
 
 The quick terminal is a window that slides in from a screen edge.

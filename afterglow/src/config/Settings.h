@@ -88,6 +88,9 @@ struct MouseSettings
     /// Milliseconds between the rows a selection scrolls while it is
     /// dragged past the top or bottom of its pane.
     int autoScrollInterval = 50;
+    /// A press inside the selection and a move drag its text out, to
+    /// another pane or another application. A click there still selects.
+    bool dragSelection = true;
     bool operator==(const MouseSettings&) const = default;
 };
 

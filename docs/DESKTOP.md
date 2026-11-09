@@ -144,6 +144,9 @@ Quotes and backslashes in a name are escaped outside the single quotes, so Bash,
 A local path dropped into SSH remains a local path. The drop does not upload a file.
 Use `aglow transfer`, `scp` or another transfer tool for uploads.
 
+Text that you drop on a pane, from another application or [from another pane](INPUT.md#drag-the-selection), is pasted.
+The paste has the same checks as a paste from the clipboard: the size limit and the question before an unsafe paste.
+
 ## Receive a file from a terminal application
 
 OSC 1337 `File` and `MultipartFile` downloads open a native Save dialog.

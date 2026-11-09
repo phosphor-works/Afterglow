@@ -1367,12 +1367,13 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(defaults.settings().statusNotificationInterval, 3000);
     EXPECT_EQ(defaults.settings().pasteReadTimeout, 10);
     EXPECT_EQ(defaults.settings().mouse.autoScrollInterval, 50);
+    EXPECT_TRUE(defaults.settings().mouse.dragSelection);
     EXPECT_EQ(defaults.settings().control.eventInterval, 100);
 
     SettingsStore custom(write(QStringLiteral("custom.json"), R"({
         "Terminal": {"bellSoundInterval": 0, "pasteReadTimeout": 30},
         "Notifications": {"statusInterval": 0},
-        "Mouse": {"autoScrollInterval": 120},
+        "Mouse": {"autoScrollInterval": 120, "dragSelection": false},
         "Control": {"eventInterval": 0}
     })"));
     EXPECT_EQ(custom.settings().control.eventInterval, 0);
@@ -1380,6 +1381,7 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(custom.settings().statusNotificationInterval, 0);
     EXPECT_EQ(custom.settings().pasteReadTimeout, 30);
     EXPECT_EQ(custom.settings().mouse.autoScrollInterval, 120);
+    EXPECT_FALSE(custom.settings().mouse.dragSelection);
 
     SettingsStore clamped(write(QStringLiteral("clamped.json"), R"({
         "Terminal": {"bellSoundInterval": 99999, "pasteReadTimeout": 0},

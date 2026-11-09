@@ -363,6 +363,16 @@ bool Pane::hasSelection() const
         && m_selection.validFor(m_terminal.screen());
 }
 
+bool Pane::selectionContains(AfterglowVt::SelectionPoint point) const
+{
+    std::lock_guard lock(m_mutex);
+    const AfterglowVt::Screen& screen = m_terminal.screen();
+    if (!m_selection.active || m_selectionOnAltScreen != m_terminal.modes().altScreen || !m_selection.validFor(screen)) {
+        return false;
+    }
+    return m_selection.range(screen, m_terminal.options().wordBoundaries).contains(point.row, point.col);
+}
+
 QString Pane::selectedText() const
 {
     std::string text;

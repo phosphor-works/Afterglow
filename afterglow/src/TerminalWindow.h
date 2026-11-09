@@ -630,6 +630,9 @@ private:
     /// Encodes @p e for @p pane (the focused pane's input pane when null) and sends it.
     void sendKey(QKeyEvent* e, Pane* pane = nullptr);
     void paste(QClipboard::Mode mode);
+    /// Pastes @p text into @p target, with the size limit and the question
+    /// before an unsafe paste (Terminal.confirmUnsafePaste).
+    void pasteText(Pane* target, const QByteArray& text);
 
     // Clipboard protocol (OSC 5522)
     void clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRequest& request);
@@ -704,6 +707,8 @@ private:
     /// Cell row under @p pos without clamping; negative above, >= rows below.
     int rawRowAt(Pane* pane, const QPointF& pos) const;
     void updateSelectionDrag();
+    /// Drags the selected text of the held press out (QDrag, text/plain).
+    void dragSelectionText();
     void copySelection(bool toClipboard);
     /// Copies @p pane's new selection where Terminal.copyOnSelect says.
     void copyOnSelect(Pane* pane);
@@ -1057,6 +1062,12 @@ private:
 
     // Selection dragging.
     QPointer<Pane> m_selectionPane;
+    /// A press inside the selection (Mouse.dragSelection), held back: a move
+    /// drags the text out, a release clicks where the press was.
+    QPointer<Pane> m_textDragPane;
+    QPointF m_textDragFrom;
+    /// The pane whose selection a drag carries while it runs: no drop there.
+    QPointer<Pane> m_textDragSource;
     /// The selection's press moved to another cell: its release is no click,
     /// even when output cleared the selection meanwhile.
     bool m_selectionDragged = false;

@@ -245,6 +245,9 @@ public:
     QVariantMap historyPosition() const;
     void scrollHistory(double fraction);
     bool hasSelection() const;
+    /// Whether the selection holds @p point (from selectionPointAt()), with
+    /// its words and lines expanded as they are drawn.
+    bool selectionContains(AfterglowVt::SelectionPoint point) const;
     QString selectedText() const;
     QVariantMap readSelection(std::size_t limit) const;
     QVariantMap semanticRegions() const;

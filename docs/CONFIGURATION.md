@@ -136,6 +136,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `autoScrollInterval` | `50` | 10–1000 | Milliseconds between the rows that a selection scrolls while you drag it past the top or bottom of a pane. |
+| `dragSelection` | `true` |  | Drag the selected text to another pane or application. Press inside the selection and move the pointer. A click inside the selection without a move selects as before. |
 | `middleClick` | `"primary"` | `"primary"`, `"clipboard"`, `"none"` | What a middle click pastes. The none value turns middle-click paste off. |
 | `rightClick` | `"menu"` | `"menu"`, `"paste"`, `"copy-or-paste"`, `"extend"` | What a right click does. The menu value opens the context menu. The paste value pastes the clipboard. The copy-or-paste value copies an existing selection, or else pastes. The extend value extends the selection. |
 

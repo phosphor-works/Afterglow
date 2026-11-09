@@ -601,6 +601,9 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("autoScrollInterval"), d.mouse.autoScrollInterval, 10, 1000,
                QStringLiteral("Milliseconds between the rows that a selection scrolls while you drag it past the top or bottom "
                               "of a pane.")),
+        {QStringLiteral("dragSelection"), d.mouse.dragSelection, QMetaType::Bool,
+         QStringLiteral("Drag the selected text to another pane or application. Press inside the selection and move the "
+                        "pointer. A click inside the selection without a move selects as before.")},
     };
     schema.groups[LinksGroup] = {
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,
@@ -1727,6 +1730,7 @@ Settings SettingsStore::read()
     s.mouse.rightClick = readEnum(st, MouseGroup, QStringLiteral("rightClick"), RightClickChoices, s.mouse.rightClick);
     s.mouse.middleClick = readEnum(st, MouseGroup, QStringLiteral("middleClick"), MiddleClickChoices, s.mouse.middleClick);
     s.mouse.autoScrollInterval = st.read<int>(MouseGroup, QStringLiteral("autoScrollInterval"));
+    s.mouse.dragSelection = st.read<bool>(MouseGroup, QStringLiteral("dragSelection"));
     s.links.detectUrls = st.read<bool>(LinksGroup, QStringLiteral("detectUrls"));
     s.links.openWith = st.read<QString>(LinksGroup, QStringLiteral("openWith")).trimmed();
     s.links.modifier = readEnum(st, LinksGroup, QStringLiteral("modifier"), ModifierChoices, s.links.modifier);
