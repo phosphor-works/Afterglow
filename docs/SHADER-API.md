@@ -227,6 +227,7 @@ Afterglow evaluates the map on the GPU into a grid of 128 columns, and the rows 
 Between grid points the map is linear, so a map must be smooth.
 Afterglow evaluates it again when the canvas size or a parameter value changes, at the next pointer event.
 [CRT Curve](../data/shaders/crt-curve/effect.frag) bends the canvas and moves the pointer the same way.
+[Tilt](../data/shaders/tilt/effect.frag) turns the canvas in perspective. Its map casts the same ray as its picture.
 
 ## Mesh passes
 
