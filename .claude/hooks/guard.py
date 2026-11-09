@@ -24,6 +24,7 @@ import os
 import pwd
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -1279,15 +1280,22 @@ MAX_PARALLEL_JOBS = 64
 
 
 def parallel_change(word, how):
-    """WORD as parallel's {.} {/} {//} {/.} give it (HOW is '.', '/', '//' or '/.'), or as it is."""
+    """WORD as parallel's {.} {/} {//} {/.} give it (HOW is '.', '/', '//' or '/.'), or as it is. parallel uses
+    Perl's File::Basename, which drops a slash at the end first, and its {.} removes the last .EXT even of a
+    dotfile, as the Perl s:[.][^/.]*$:: does)."""
+    def no_extension(w):
+        return re.sub(r'\.[^/.]*$', '', w)
+
+    path = word.rstrip('/') or word[:1]
+    base = path.rsplit('/', 1)[-1] or path
     if how == '.':
-        return os.path.splitext(word)[0]
+        return no_extension(word)
     if how == '/':
-        return os.path.basename(word)
+        return base
     if how == '//':
-        return os.path.dirname(word) or '.'
+        return (path.rsplit('/', 1)[0] or '/') if '/' in path else '.'
     if how == '/.':
-        return os.path.splitext(os.path.basename(word))[0]
+        return no_extension(base)
     return word
 
 
@@ -1956,11 +1964,20 @@ def check(call):
     return None
 
 
+def out_of_time(signum, frame):
+    raise TimeoutError('the command takes longer to check than the guard allows')
+
+
 def main():
-    # A hook that fails with another status than 2 lets the call run: any failure of a check blocks it instead
+    # A hook that fails with another status than 2 lets the call run: any failure of a check blocks it instead.
+    # So does a hook that runs past its timeout: a timer ends any check after CHECK_SECONDS, wherever it is.
+    signal.signal(signal.SIGALRM, out_of_time)
+    signal.setitimer(signal.ITIMER_REAL, CHECK_SECONDS)
     try:
         message = check(json.load(sys.stdin))
+        signal.setitimer(signal.ITIMER_REAL, 0)
     except Exception as error:
+        signal.setitimer(signal.ITIMER_REAL, 0)
         print(MSG_FAILED.format(f'{type(error).__name__}: {error}'[:200]), file=sys.stderr)
         sys.exit(2)
     if message:

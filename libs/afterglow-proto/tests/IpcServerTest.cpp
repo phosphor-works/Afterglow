@@ -330,7 +330,8 @@ TEST(IpcServer, ALockFileIsHeldOnTheFileSystemOfTheTests)
         AfterglowProto::unlockFile(lock, held);
     }
     EXPECT_FALSE(AfterglowProto::lockFileHeld(lock));
-    ::rmdir(dir.c_str());
+    std::error_code ignored;
+    std::filesystem::remove_all(dir, ignored);
 }
 
 TEST(IpcServer, ACloseRemovesOnlyTheFilesOfItsOwnListener)

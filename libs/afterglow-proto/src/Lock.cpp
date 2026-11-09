@@ -76,6 +76,7 @@ std::string lockDevice(const std::string& path, const struct stat& file)
 {
     unsigned int major = ::major(file.st_dev);
     unsigned int minor = ::minor(file.st_dev);
+#ifdef STATX_MNT_ID
     struct statx mount{};
     if (::statx(AT_FDCWD, path.c_str(), AT_SYMLINK_NOFOLLOW, STATX_MNT_ID, &mount) == 0
         && (mount.stx_mask & STATX_MNT_ID) != 0) {
@@ -94,6 +95,7 @@ std::string lockDevice(const std::string& path, const struct stat& file)
             }
         }
     }
+#endif
     char device[32];
     std::snprintf(device, sizeof device, "%02x:%02x:", major, minor);
     return device;
