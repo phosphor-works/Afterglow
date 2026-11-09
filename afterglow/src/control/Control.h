@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "Capture.h"
 #include "../scripting/OverlaySpec.h"
 
 #include <AfterglowProto/Remote.h>
@@ -172,6 +173,15 @@ public:
     /// apart: no_pane, busy or spawn_failed.
     QString overlay(const QString& owner, const QString& request, quint32 pane, const OverlaySpec& spec, OverlayReply reply,
                     QString& code);
+    /// Reads back the next frame of @p pane's window, as it shows on screen,
+    /// cut to @p scope. It needs Control.allowReadText (see captureRefusal()).
+    /// A refusal returns its error at once, with @p code denied or no_pane.
+    /// Else @p reply gets the image, or not_shown or failed.
+    QString capture(quint32 pane, CaptureScope scope, CaptureReply reply, QString& code);
+    /// Why a screenshot is refused now, with @p code denied, or empty. A
+    /// picture shows more than getText reads (an overlay over the pane, the
+    /// chrome, a paste preview), and it takes the same permission.
+    QString captureRefusal(QString& code) const;
     /// Cancels every overlay of @p owner (a control client that has gone).
     void closeOverlays(const QString& owner, const QString& message);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);
@@ -190,6 +200,8 @@ public:
     static QString localDirectory(QString& cwd);
     static QString scopeName(TextScope scope);
     static std::optional<TextScope> scopeFromName(const QString& name);
+    /// The capture scope that @p name (pane, tab or window) names.
+    static std::optional<CaptureScope> captureScopeFromName(const QString& name);
 
 Q_SIGNALS:
     void paneCreated(quint32 pane);

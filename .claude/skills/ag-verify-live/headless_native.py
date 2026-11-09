@@ -5,7 +5,6 @@
 
 Usage:
   python3 .claude/skills/ag-verify-live/headless_native.py [--filter 'NativeWindow.*:KeyMapping.*'] [--icd lvp.json]
-                                                          [--platform-theme generic|kde]
 
 --icd selects a Vulkan driver manifest, such as a lavapipe build for software rendering. Without it the tests use
 the host driver. On a failure, the last KWin log lines are printed. The runner starts itself again under
@@ -30,10 +29,10 @@ parser.add_argument('--filter', default='NativeWindow.*:KeyMapping.*', help='--g
 parser.add_argument('--icd', help='Vulkan ICD manifest (for example a lavapipe lvp.json)')
 parser.add_argument('--timeout', type=int, default=400, help='seconds for the whole test binary')
 parser.add_argument('--size', default='1100x750', help='virtual output size')
-parser.add_argument('--platform-theme', default='generic', choices=('generic', 'kde'),
-                    help='QT_QPA_PLATFORMTHEME of the tests: kde runs the dialog tests against the native file dialog '
-                         'of Plasma (the other tests expect generic)')
+parser.add_argument('--outputs', type=int, default=1, help='virtual outputs (2 runs the tests that move between screens)')
 parser.add_argument('--validation', action='store_true', help='enable the Vulkan validation layer')
+parser.add_argument('--platform-theme', default='generic',
+                    help='QT_QPA_PLATFORMTHEME of the tests (kde runs the native KDE file dialogs, gtk3 the GTK one)')
 parser.add_argument('--private-bus', action='store_true', help=argparse.SUPPRESS)
 args = parser.parse_args()
 
@@ -58,9 +57,9 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
     env = dict(
         os.environ,
         XDG_CONFIG_HOME=str(config),
-        # Scripts, packs and state under the user's own data directory must not reach the tests.
+        # Scripts, packs and state under the user's own directories must not reach the tests: script
+        # state and the KDE file dialog's afterglowstaterc (XDG_STATE_HOME), and caches (XDG_CACHE_HOME).
         XDG_DATA_HOME=str(root / 'data'),
-        # Plasma's file dialog and KIO keep recent places and caches in the state and cache of the application.
         XDG_STATE_HOME=str(root / 'state'),
         XDG_CACHE_HOME=str(root / 'cache'),
         QT_FORCE_STDERR_LOGGING='1',
@@ -69,8 +68,8 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
         QT_QUICK_CONTROLS_STYLE='Basic',
         QT_QPA_PLATFORMTHEME=args.platform_theme,
     )
-    # A run from an Afterglow pane must not hand the tests that pane's socket.
-    for name in ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID'):
+    # A run from an Afterglow pane, a mux session or tmux must not hand the tests the user's sockets.
+    for name in ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID', 'AFTERGLOW_SESSION', 'TMUX'):
         env.pop(name, None)
     if args.icd:
         env.update(
@@ -84,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
     with log_path.open('w') as log:
         compositor = subprocess.Popen(
             ['kwin_wayland', '--virtual', '--socket', socket, '--width', width, '--height', height,
-             '--no-lockscreen', '--no-global-shortcuts', '--no-kactivities'],
+             '--output-count', str(args.outputs), '--no-lockscreen', '--no-global-shortcuts', '--no-kactivities'],
             env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 10

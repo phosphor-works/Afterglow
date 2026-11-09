@@ -73,7 +73,7 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
     // pane is in none of its tabs.
     const Pane* overlayProgram = pane->overlay() ? pane->overlay()->pane() : nullptr;
     for (auto it = m_sentKeys.begin(); it != m_sentKeys.end();) {
-        if (it->data() != pane && (!overlayProgram || it->data() != overlayProgram)) { ++it; continue; }
+        if (it->pane.data() != pane && (!overlayProgram || it->pane.data() != overlayProgram)) { ++it; continue; }
         destination->m_sentKeys.insert(it.key(), *it);
         it = m_sentKeys.erase(it);
     }
@@ -97,7 +97,6 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
     if (!pane->docks().empty()) windowAccessibilityChanged(this);
     pane->setParent(destination);
     destination->bindPane(pane);
-    Q_EMIT pane->movedToWindow(destination);
     // Its dialogs went with it: the quick terminal forgets them, and does not
     // slide in for them (settleQuickDialogs). Queued: once the transfer is over.
     if (m_quick) QMetaObject::invokeMethod(this, &TerminalWindow::settleQuickDialogs, Qt::QueuedConnection);

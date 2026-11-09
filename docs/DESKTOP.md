@@ -122,12 +122,15 @@ Context contains only displayed cells. Afterglow does not synthesize password co
 Selection, pointer targeting and accessible geometry follow visual cell order.
 See [bidirectional text](BIDI.md) for choices and limits.
 
-## Drop files into a pane
+## Drop files and text into a pane
 
 Drag local files or directories from a file manager onto a pane.
+A drop that holds a `file` URL is a file drop.
 Afterglow focuses that pane and inserts absolute paths quoted for Bash, Zsh and Fish.
 Paths use the normal bracketed-paste encoder. Afterglow does not append Enter.
-Drops are disabled while a native terminal prompt owns keyboard input or the target is held after exit.
+Afterglow rejects drops while the overview, the command palette, the search bar, a menu, a prompt or a dialog is open.
+It also rejects drops on a pane that stays open after its program ended or could not start.
+When the program does not accept drops, Afterglow rejects a drag that offers only a move, because a paste copies.
 
 | Item | Limit | At the limit |
 | --- | --- | --- |
@@ -136,13 +139,22 @@ Drops are disabled while a native terminal prompt owns keyboard input or the tar
 
 These items also reject the entire drop:
 
-- Remote URLs, and `file` URLs with a host other than `localhost`.
+- URLs of other schemes in a file drop, and `file` URLs with a host other than `localhost`.
 - Relative paths.
 - Names with control characters (C0, DEL or C1) or format characters such as bidirectional overrides.
 
 Quotes and backslashes in a name are escaped outside the single quotes, so Bash, Zsh and Fish read the same path.
 A local path dropped into SSH remains a local path. The drop does not upload a file.
 Use `aglow transfer`, `scp` or another transfer tool for uploads.
+
+Afterglow focuses the pane and pastes text that you drop on it, from another application or
+[from another pane](INPUT.md#drag-selected-text-out-of-a-pane).
+The text has the [limit and the question of a paste](INPUT.md#paste).
+The program gets the text with no paste event (OSC 5522), because the text is not on the clipboard.
+A file drop that Afterglow rejects pastes nothing.
+A drop of other URLs, such as a link from a browser, pastes its text, as in Kitty.
+When the program in the pane accepts drops ([Kitty drag and drop](#kitty-drag-and-drop)), the program gets the text.
+A selection that you drop on its own pane does nothing. A program's drag that you drop on its own pane does not paste.
 
 ## Receive a file from a terminal application
 
@@ -449,6 +461,8 @@ Afterglow cancels a drop after 30 seconds without a message, so the limit is bel
 
 A program must enable the protocol before it receives drag events.
 A source offer requires a physical left-button drag gesture.
+The offer comes before the [drag of selected text](INPUT.md#drag-selected-text-out-of-a-pane) when the press is inside
+the selection.
 When a drag ends, Afterglow tells the source the action that the drop took (the `o` key of `t=e:x=4`).
 
 | `o` value | Action of the drop |
@@ -481,7 +495,7 @@ Afterglow sends a desktop MIME type name to the program only when the name obeys
 - It has 255 bytes or fewer.
 - It contains only printable ASCII characters. A space is not permitted.
 
-Programs without protocol support retain the quoted-path paste behavior for local file drops.
+Programs without protocol support get local file drops as quoted paths and text drops as a paste.
 
 The desktop gets the program's answer to a drag only when the pointer enters the pane or moves.
 When a drag shows new MIME types to the program, Afterglow waits for the answer.
@@ -571,7 +585,9 @@ The suite also checks these behaviors:
 - Button key releases.
 - Notifications and script text permissions.
 - Kitty drag and drop with `aglow dnd`: a text drag between two panes, and a remote directory drag. The same tests run with `kitten dnd` when it is installed.
+- Selected text that drags into another pane and not back into its own pane, with real compositor input.
 - Overlays: standard input that a control client sends in parts, and the OSC 24569 answer to the program of an overlay.
+- Screenshots: the images of a pane, its tab and its window, and the refusals `not_shown` and `denied`.
 - Pane and tab ends: the panes of the last tab close before their window, and the end of a pane alone in its tab is announced once. A window can be deleted while it shows.
 - Terminal events that reach the GUI thread in their order, with a bound on the events that wait.
 - Focus and keys: the palette closes when the focus moves, and a held key that closes a pane does not repeat into the next pane.

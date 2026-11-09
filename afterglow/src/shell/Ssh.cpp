@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Ssh.h"
 #include <AfterglowProto/Ipc.h>
+#include <AfterglowProto/IpcServer.h>
 #include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Text.h>
 #include <AfterglowProto/Version.h>
@@ -580,6 +581,16 @@ RemoteResult forwardRemote(const QByteArrayList& args, const Arguments& parsed, 
     if (!ipc.connect(socket.toStdString(), &error, CallTimeoutMs)) return skip("Afterglow does not answer");
     const int left = int(std::max<qint64>(1, CallTimeoutMs - clock.elapsed()));
     const auto enabled = ipc.call("control", "remoteCommandsEnabled", {}, left, &error);
+    // An error that the socket's server answered says why: a session pane
+    // of the mux daemon takes no control call while no window shows it. The
+    // router of Afterglow has no control target while Control.enabled is
+    // off, and its message for that names only the target.
+    if (!enabled && error.code == AfterglowProto::IpcErrorCode::NoSuchTarget) {
+        return skip("Afterglow has no control target: Control.enabled is off");
+    }
+    if (!enabled && !error.code.empty() && !error.message.empty()) {
+        return skip(AfterglowProto::printable(error.message).c_str());
+    }
     if (!enabled) return skip("Afterglow does not answer");
     if (!enabled->toBool()) return skip("remote commands are off in Afterglow");
 

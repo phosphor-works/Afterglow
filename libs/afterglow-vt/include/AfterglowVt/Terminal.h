@@ -418,6 +418,10 @@ public:
 
 private:
     friend class Parser<Terminal>;
+    // The mux: the writer reads the alternate screen and the colors as they
+    // are set, and the reader sets them on a replica (StateSync.h).
+    friend class StateWriter;
+    friend class StateReader;
 
     // Parser handler interface.
     void print(char32_t cp);

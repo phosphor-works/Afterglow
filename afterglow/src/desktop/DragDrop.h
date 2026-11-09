@@ -95,6 +95,9 @@ public:
     void setAnswerWait(int ms);
     bool acceptsDrops() const;
     bool offersDrags() const;
+    /// The program's drag offer runs as a drag of the desktop now, from
+    /// before QDrag::exec() until it returns, or until a reset cancels it.
+    bool dragging() const;
     /// The last drag event over the pane accepted the drag, so the desktop
     /// has the program's acceptance.
     bool acceptsDrag() const;
@@ -105,6 +108,9 @@ public:
     bool move(QWindow* window, QPoint position, QPoint cell, QPoint pixel);
 Q_SIGNALS:
     void reply(const QByteArray& bytes);
+    /// The program's drag offer starts as a drag of the desktop (QDrag::exec),
+    /// which takes the keyboard until it ends.
+    void dragStarting();
 
 private:
     struct State;

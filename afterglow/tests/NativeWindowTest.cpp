@@ -6,6 +6,9 @@
 #include "desktop/DragDrop.h"
 #include "desktop/FileTransfer.h"
 #include <QAbstractButton>
+#include <QFileDialog>
+#include <QLineEdit>
+#include <QPushButton>
 #include <QMessageBox>
 #include <optional>
 #include <QJsonArray>
@@ -43,6 +46,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <sys/stat.h>
+#include <dlfcn.h>
 #include <unistd.h>
 #include <QAccessible>
 #include "app/NotificationCenter.h"
@@ -250,6 +254,12 @@ void clickLeft(QWindow* window, const QPointF& at) {
     pressLeft(window, at);
     releaseLeft(window, at);
 }
+// Where @p pane's grid is drawn, in @p window's logical pixels: a popup's
+// own cells for an overlay's pane.
+QRectF gridOf(TerminalWindow* window, Pane* pane) {
+    const QRect global = window->accessiblePaneRect(pane);
+    return QRectF(window->mapFromGlobal(global.topLeft()), global.size());
+}
 void clickRight(QWindow* window, const QPointF& at) {
     mouseAt(window, QEvent::MouseButtonPress, at, Qt::RightButton, Qt::RightButton);
     mouseAt(window, QEvent::MouseButtonRelease, at, Qt::RightButton, Qt::NoButton);
@@ -442,6 +452,19 @@ protected:
         application = std::make_unique<Application>(testSocket(), directory.filePath(config), settings);
         openWindow(command);
     }
+    // The fixture's settings with Mouse.dragSelection on, and @p overrides
+    // over them by group, in a new application whose window runs @p command.
+    void restartWithDragSelection(QJsonObject overrides = {},
+                                  const QStringList& command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                                                QStringLiteral("stty -echo; cat")}) {
+        QJsonObject mouse = overrides.value(QStringLiteral("Mouse")).toObject();
+        mouse.insert(QStringLiteral("dragSelection"), true);
+        overrides.insert(QStringLiteral("Mouse"), mouse);
+        QJsonObject windowSettings = overrides.value(QStringLiteral("Window")).toObject();
+        windowSettings.insert(QStringLiteral("paneTitles"), true);
+        overrides.insert(QStringLiteral("Window"), windowSettings);
+        restartApplication(QStringLiteral("drag.conf"), testSettings(overrides), command);
+    }
     void openWindow(const QStringList& command) {
         WindowOptions options;
         options.command = command;
@@ -591,6 +614,212 @@ TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Shaders, NativeRenderer, ::testing::Bool());
+
+// A screenshot, as Control::capture answers it.
+struct Shot {
+    bool done = false;
+    QString error, code;
+    QImage image;
+};
+// Asks @p control for a screenshot of @p pane, and waits for the answer.
+Shot captureShot(Control& control, Pane* pane, CaptureScope scope) {
+    auto shot = std::make_shared<Shot>();
+    QString code;
+    const QString error = control.capture(pane->id(), scope,
+        [shot](const QString& e, const QString& c, const QImage& image) { *shot = Shot{true, e, c, image}; }, code);
+    if (!error.isEmpty()) return Shot{true, error, code, {}};
+    // Longer than a default tab switch and the window's bound on a frame
+    // together: an answer always comes.
+    EXPECT_TRUE(waitFor([shot] { return shot->done; }));
+    return *shot;
+}
+// Mostly red, green or blue, whatever a pane effect does to the shade.
+bool reddish(QRgb c) { return qRed(c) > 120 && qRed(c) > 2 * qGreen(c) && qRed(c) > 2 * qBlue(c); }
+bool greenish(QRgb c) { return qGreen(c) > 120 && qGreen(c) > 2 * qRed(c) && qGreen(c) > 2 * qBlue(c); }
+bool bluish(QRgb c) { return qBlue(c) > 120 && qBlue(c) > 2 * qRed(c) && qBlue(c) > 2 * qGreen(c); }
+// The pixel at the fractions @p x and @p y of @p image.
+QRgb pixelAt(const QImage& image, double x, double y) {
+    return image.pixel(int(x * image.width()), int(y * image.height()));
+}
+
+TEST_F(NativeWindow, ScreenshotsShowThePaneItsTabAndItsWindow) {
+    SettingsStore settings(directory.filePath(QStringLiteral("capture.conf")),
+                           QJsonObject{{QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowReadText"), true}}}});
+    Control control(settings, {});
+    control.attachWindow(window);
+    // Two panes side by side, each filled with its own background colour.
+    Pane* left = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+    Pane* right = window->splitPane(left, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    expectIdle(window);
+    left->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;220;20;20m\x1b[2J"); });
+    right->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;20;200;20m\x1b[2J"); });
+    ASSERT_TRUE(nextFrame(window));
+    // From an idle window: the capture asks for its own frame.
+    expectIdle(window);
+    const QSize windowPixels = window->framePixels();
+    ASSERT_FALSE(windowPixels.isEmpty());
+
+    const Shot whole = captureShot(control, left, CaptureScope::Window);
+    ASSERT_TRUE(whole.error.isEmpty()) << qPrintable(whole.error);
+    EXPECT_TRUE(whole.code.isEmpty());
+    EXPECT_EQ(whole.image.size(), windowPixels);
+    EXPECT_TRUE(reddish(pixelAt(whole.image, 0.25, 0.5)));
+    EXPECT_TRUE(greenish(pixelAt(whole.image, 0.75, 0.5)));
+    const Shot tab = captureShot(control, right, CaptureScope::Tab);
+    ASSERT_TRUE(tab.error.isEmpty()) << qPrintable(tab.error);
+    EXPECT_TRUE(tab.code.isEmpty());
+    // One tab: no tab bar (Window.tabBar auto), so the tab is the window.
+    EXPECT_EQ(tab.image.size(), windowPixels);
+    EXPECT_TRUE(reddish(pixelAt(tab.image, 0.25, 0.5)));
+    EXPECT_TRUE(greenish(pixelAt(tab.image, 0.75, 0.5)));
+    const Shot leftShot = captureShot(control, left, CaptureScope::Pane);
+    const Shot rightShot = captureShot(control, right, CaptureScope::Pane);
+    ASSERT_TRUE(leftShot.error.isEmpty()) << qPrintable(leftShot.error);
+    ASSERT_TRUE(rightShot.error.isEmpty()) << qPrintable(rightShot.error);
+    EXPECT_TRUE(leftShot.code.isEmpty());
+    EXPECT_TRUE(rightShot.code.isEmpty());
+    // Each pane as it shows, with its padding: the two side by side fill
+    // the tab, less the divider between them.
+    EXPECT_LT(leftShot.image.width(), tab.image.width() * 3 / 4);
+    EXPECT_LT(rightShot.image.width(), tab.image.width() * 3 / 4);
+    EXPECT_GE(leftShot.image.width() + rightShot.image.width(), tab.image.width() - 16);
+    EXPECT_LE(leftShot.image.width() + rightShot.image.width(), tab.image.width());
+    // The cells: only red in the left pane, only green in the right one.
+    for (const double at : {0.25, 0.5, 0.75}) {
+        EXPECT_TRUE(reddish(pixelAt(leftShot.image, at, at))) << at;
+        EXPECT_TRUE(greenish(pixelAt(rightShot.image, at, at))) << at;
+    }
+    // A capture lets the window go idle again.
+    expectIdle(window);
+
+    // A pane that a split makes is cut once it has grown to its place.
+    Pane* below = window->splitPane(right, SplitTree::Direction::Down, launch, nullptr);
+    ASSERT_NE(below, nullptr);
+    // Blue once its terminal has the size of its place, which the first
+    // frame gives it. The pane then still grows: at the top of its place,
+    // a frame of the way shows the green pane above.
+    ASSERT_TRUE(nextFrame(window));
+    below->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;20;20;220m\x1b[2J"); });
+    const Shot fresh = captureShot(control, below, CaptureScope::Pane);
+    ASSERT_TRUE(fresh.error.isEmpty()) << qPrintable(fresh.error);
+    EXPECT_EQ(fresh.image.width(), rightShot.image.width());
+    EXPECT_LT(fresh.image.height(), rightShot.image.height() * 3 / 4);
+    EXPECT_TRUE(bluish(pixelAt(fresh.image, 0.5, 0.1)));
+    EXPECT_TRUE(bluish(pixelAt(fresh.image, 0.5, 0.5)));
+    // A pane that closes before its frame has no picture: not the window.
+    auto closing = std::make_shared<Shot>();
+    QString code;
+    ASSERT_TRUE(control.capture(below->id(), CaptureScope::Pane,
+        [closing](const QString& e, const QString& c, const QImage& image) { *closing = Shot{true, e, c, image}; }, code).isEmpty());
+    window->requestClosePane(below);
+    ASSERT_TRUE(waitFor([closing] { return closing->done; }));
+    EXPECT_EQ(closing->code, QStringLiteral("not_shown"));
+    EXPECT_TRUE(closing->image.isNull());
+    // The right pane grows back. A zoom that hides it on the way leaves it
+    // a motion that never advances: its picture is not_shown, not a wait.
+    ASSERT_TRUE(window->paneMoving(right));
+    ASSERT_TRUE(window->runAction(left, Action::TogglePaneZoom));
+    EXPECT_EQ(captureShot(control, right, CaptureScope::Pane).code, QStringLiteral("not_shown"));
+    ASSERT_TRUE(window->runAction(left, Action::TogglePaneZoom));
+    expectIdle(window);
+
+    // A zoom hides the other pane: it has no picture, but its tab has, which
+    // shows the zoomed pane.
+    ASSERT_TRUE(window->runAction(left, Action::TogglePaneZoom));
+    expectIdle(window);
+    // Red again at the new size: the columns that the zoom added are blank.
+    left->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[48;2;220;20;20m\x1b[2J"); });
+    ASSERT_TRUE(nextFrame(window));
+    EXPECT_EQ(captureShot(control, right, CaptureScope::Pane).code, QStringLiteral("not_shown"));
+    const Shot zoomed = captureShot(control, right, CaptureScope::Tab);
+    ASSERT_TRUE(zoomed.error.isEmpty()) << qPrintable(zoomed.error);
+    EXPECT_TRUE(reddish(pixelAt(zoomed.image, 0.75, 0.5)));
+    ASSERT_TRUE(window->runAction(left, Action::TogglePaneZoom));
+    expectIdle(window);
+    // The zoom's end reflows the red rows: red again at the old size.
+    left->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[48;2;220;20;20m\x1b[2J"); });
+    ASSERT_TRUE(nextFrame(window));
+
+    // A second tab shows the tab bar, which only the window has.
+    Pane* other = window->openTab(launch, nullptr);
+    ASSERT_NE(other, nullptr);
+    other->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;20;20;220m\x1b[2J"); });
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0 && !window->tabSwitching(); }));
+    expectIdle(window);
+    const int bar = int(std::lround(chrome->tabBarHeight() * window->devicePixelRatio()));
+    const Shot shown = captureShot(control, left, CaptureScope::Window);
+    ASSERT_TRUE(shown.error.isEmpty()) << qPrintable(shown.error);
+    // The window shows its tab, which is not the tab of the pane.
+    EXPECT_EQ(shown.image.size(), windowPixels);
+    EXPECT_TRUE(bluish(shown.image.pixel(shown.image.width() / 2, bar + (shown.image.height() - bar) / 2)));
+    const Shot otherTab = captureShot(control, other, CaptureScope::Tab);
+    ASSERT_TRUE(otherTab.error.isEmpty()) << qPrintable(otherTab.error);
+    EXPECT_EQ(otherTab.image.size(), QSize(windowPixels.width(), windowPixels.height() - bar));
+    EXPECT_TRUE(bluish(pixelAt(otherTab.image, 0.5, 0.5)));
+    // A pane in a tab in the background has no picture, and its tab neither.
+    EXPECT_EQ(captureShot(control, left, CaptureScope::Pane).code, QStringLiteral("not_shown"));
+    EXPECT_EQ(captureShot(control, left, CaptureScope::Tab).code, QStringLiteral("not_shown"));
+
+    // During a tab switch the pane waits for the end of the switch.
+    window->revealPane(left);
+    ASSERT_TRUE(window->tabSwitching());
+    const Shot afterSwitch = captureShot(control, left, CaptureScope::Pane);
+    ASSERT_TRUE(afterSwitch.error.isEmpty()) << qPrintable(afterSwitch.error);
+    EXPECT_FALSE(window->tabSwitching());
+    EXPECT_TRUE(reddish(pixelAt(afterSwitch.image, 0.5, 0.5)));
+    expectIdle(window);
+
+    // The overview draws cards: a pane or a tab has no picture, the window has.
+    ASSERT_TRUE(window->openOverview());
+    EXPECT_EQ(captureShot(control, left, CaptureScope::Pane).code, QStringLiteral("not_shown"));
+    EXPECT_EQ(captureShot(control, left, CaptureScope::Tab).code, QStringLiteral("not_shown"));
+    EXPECT_TRUE(captureShot(control, left, CaptureScope::Window).error.isEmpty());
+
+    // Without Control.allowReadText, a refusal at once, and no answer later.
+    SettingsStore closed(directory.filePath(QStringLiteral("closed.conf")),
+                         QJsonObject{{QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowReadText"), false}}}});
+    Control denied(closed, {});
+    denied.attachWindow(window);
+    bool answered = false;
+    EXPECT_FALSE(denied.capture(left->id(), CaptureScope::Window,
+        [&answered](const QString&, const QString&, const QImage&) { answered = true; }, code).isEmpty());
+    EXPECT_EQ(code, QStringLiteral("denied"));
+    ASSERT_TRUE(nextFrame(window));
+    EXPECT_FALSE(answered);
+
+    // A window that leaves the screen before its frame answers not_shown,
+    // and one off screen answers at once.
+    auto hiding = std::make_shared<Shot>();
+    ASSERT_TRUE(control.capture(left->id(), CaptureScope::Window,
+        [hiding](const QString& e, const QString& c, const QImage& image) { *hiding = Shot{true, e, c, image}; }, code).isEmpty());
+    ASSERT_FALSE(hiding->done) << "the capture waits for its frame";
+    window->hide();
+    ASSERT_TRUE(waitFor([hiding] { return hiding->done; }));
+    EXPECT_EQ(hiding->code, QStringLiteral("not_shown"));
+    auto hidden = std::make_shared<Shot>();
+    ASSERT_TRUE(control.capture(left->id(), CaptureScope::Window,
+        [hidden](const QString& e, const QString& c, const QImage& image) { *hidden = Shot{true, e, c, image}; }, code).isEmpty());
+    EXPECT_TRUE(hidden->done) << "answered at once";
+    EXPECT_EQ(hidden->code, QStringLiteral("not_shown"));
+
+    // Shown again (a new toplevel): one that is minimized before its frame
+    // answers not_shown too.
+    window->show();
+    ASSERT_TRUE(waitFor([&] { return window->isExposed(); }));
+    ASSERT_TRUE(nextFrame(window));
+    auto minimizing = std::make_shared<Shot>();
+    ASSERT_TRUE(control.capture(left->id(), CaptureScope::Window,
+        [minimizing](const QString& e, const QString& c, const QImage& image) { *minimizing = Shot{true, e, c, image}; }, code).isEmpty());
+    ASSERT_FALSE(minimizing->done) << "the capture waits for its frame";
+    window->showMinimized();
+    ASSERT_TRUE(waitFor([minimizing] { return minimizing->done; }));
+    EXPECT_EQ(minimizing->code, QStringLiteral("not_shown"));
+}
 
 TEST_F(NativeWindow, FailedLaunchDoesNotAddPaneOrTab) {
     const int panes = window->panes().size(), tabs = window->tabs().size();
@@ -1749,6 +1978,32 @@ TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
     ASSERT_TRUE(waitFor([&] { return server.count == 4; }));
     EXPECT_EQ(server.closes, 0);
 }
+// Shows @p window full screen for the runner's compositor input, whose
+// pointer goes to screen positions: a Wayland client does not know where its
+// window is. The first drag of a process lists the image formats that Qt can
+// convert, and that loads every image plugin: seconds with a cold page cache,
+// on the GUI thread, while the drag runs. They load here, before it.
+[[nodiscard]] bool showFullScreenForDrag(QWindow* window) {
+    window->showFullScreen();
+    if (!waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); })) return false;
+    QImageReader::supportedMimeTypes();
+    QImageWriter::supportedMimeTypes();
+    return true;
+}
+// Asks the runner (native_window_acceptance.py) for a drag from @p from to
+// @p to, positions in @p window. With @p awaitHover, the runner releases
+// only once the test creates @p ready + ".hovered", as a person waits for
+// the cursor: a slow first frame must not race the release.
+[[nodiscard]] bool writeDragMarker(const QString& ready, QWindow* window, QPointF from, QPointF to, bool awaitHover) {
+    // The runner's pointer goes to screen positions: the window must fill the screen.
+    if (window->size() != window->screen()->size()) return false;
+    QFile marker(ready);
+    if (!marker.open(QIODevice::WriteOnly)) return false;
+    const QPoint a = window->mapToGlobal(from.toPoint()), b = window->mapToGlobal(to.toPoint());
+    marker.write(QByteArray::number(a.x()) + " " + QByteArray::number(a.y()) + " " + QByteArray::number(b.x()) + " "
+                 + QByteArray::number(b.y()) + (awaitHover ? " 1" : ""));
+    return true;
+}
 class DragSender : public QObject {
 public:
     QUrl url;
@@ -1773,20 +2028,14 @@ public:
 };
 TEST_F(NativeWindow, NativeWaylandFileDrop) {
     REQUIRE_NATIVE_DND(ready);
-    window->showFullScreen();
-    // The marker below holds positions in the full-screen window.
-    ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
+    ASSERT_TRUE(showFullScreenForDrag(window));
     const QString path = directory.filePath(QString::fromUtf8("drag's café.txt"));
     QFile file(path); ASSERT_TRUE(file.open(QIODevice::WriteOnly)); file.close();
     DragSender sender; sender.url = QUrl::fromLocalFile(path);
     sender.pressedMarker = ready + QStringLiteral(".pressed");
     window->installEventFilter(&sender);
-    QFile marker(ready); ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
-    const QPoint from = window->mapToGlobal(QPoint(window->width() / 4, window->height() / 3));
-    const QPoint to = window->mapToGlobal(QPoint(window->width() * 3 / 4, window->height() * 2 / 3));
-    marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " "
-                 + QByteArray::number(to.x()) + " " + QByteArray::number(to.y()));
-    marker.close();
+    ASSERT_TRUE(writeDragMarker(ready, window, QPointF(window->width() / 4, window->height() / 3),
+                                QPointF(window->width() * 3 / 4, window->height() * 2 / 3), false));
     waitFor([&] { return sender.completed; }, 15000);
     window->removeEventFilter(&sender);
     EXPECT_TRUE(sender.started);
@@ -1869,13 +2118,7 @@ void NativeWindow::openDragClients(const QStringList& sourceCommand, const QStri
     QObject::connect(drag.receiver, &Pane::terminalProtocolRequested, &drag.listener, [&drag](int code, const QByteArray& bytes) {
         if (code == 72) drag.dropped += "RECEIVER: " + bytes + "\n";
     });
-    window->showFullScreen();
-    ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
-    // The first drag of a process lists the image formats that Qt can
-    // convert, and that loads every image plugin: seconds with a cold page
-    // cache, on the GUI thread, while the drag runs. Load them before it.
-    QImageReader::supportedMimeTypes();
-    QImageWriter::supportedMimeTypes();
+    ASSERT_TRUE(showFullScreenForDrag(window));
     // Both clients start at once: wait for each one's command.
     waitFor([&] { return drag.source->dragDrop()->offersDrags() && drag.receiver->dragDrop()->acceptsDrops(); }, 5000);
     ASSERT_TRUE(drag.source->dragDrop()->offersDrags()) << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
@@ -1902,12 +2145,9 @@ void NativeWindow::runClientDrag(const QString& ready, ClientDrag& drag, const s
     });
     PressMarker input; input.path = ready + QStringLiteral(".pressed"); window->installEventFilter(&input);
     const auto removeInput = qScopeGuard([&] { window->removeEventFilter(&input); });
-    QFile marker(ready); ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
-    const QPoint from = window->mapToGlobal(QPoint(window->width() / 4, window->height() / 3));
-    const QPoint to = window->mapToGlobal(QPoint(window->width() * 3 / 4, window->height() * 2 / 3));
-    // The fifth token asks the runner to release only after the receiver's
-    // program has accepted the drag, as a person waits for the cursor.
-    marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " " + QByteArray::number(to.x()) + " " + QByteArray::number(to.y()) + " 1"); marker.close();
+    // The runner releases only after the receiver's program has accepted the drag.
+    ASSERT_TRUE(writeDragMarker(ready, window, QPointF(window->width() / 4, window->height() / 3),
+                                QPointF(window->width() * 3 / 4, window->height() * 2 / 3), true));
     // A timer, because the drag runs in QDrag::exec's own event loop.
     QTimer hover;
     QObject::connect(&hover, &QTimer::timeout, &drag.listener, [&] {
@@ -2114,11 +2354,7 @@ void NativeWindow::remoteDragToWaylandTarget(const QString& client, const QStrin
     options.cwd = directory.path();
     drag.source = window->openTab(options, nullptr);
     ASSERT_NE(drag.source, nullptr);
-    window->showFullScreen();
-    ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
-    // See openDragClients: the image plugins load before the drag.
-    QImageReader::supportedMimeTypes();
-    QImageWriter::supportedMimeTypes();
+    ASSERT_TRUE(showFullScreenForDrag(window));
     waitFor([&] { return drag.source->dragDrop()->offersDrags(); }, 5000);
     ASSERT_TRUE(drag.source->dragDrop()->offersDrags()) << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
     // A machine id that is not this computer's: the source is remote.
@@ -2207,6 +2443,588 @@ TEST_F(NativeWindow, AglowRemoteDragRefusedByAWaylandTargetKeepsTheFiles) {
     REQUIRE_NATIVE_DND(ready);
     REQUIRE_AGLOW(aglow);
     remoteDragToWaylandTarget(aglow, ready, Qt::MoveAction, true);
+}
+// Selected text that drags out of a pane (Mouse.dragSelection), and text that
+// drops on a pane. Only ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn needs
+// the real compositor input of native_window_acceptance.py. The others send
+// their events to the window. A drag here ends soon, as the compositor
+// refuses a drag that no real press started: a zero timer acts in QDrag::exec's
+// event loop before it does.
+
+// Writes @p line into every row of @p pane.
+void fillRows(Pane* pane, const QByteArray& line) {
+    QByteArray text = "\x1b[2J\x1b[H";
+    for (int row = 0; row < pane->rows(); ++row) text += line + (row + 1 < pane->rows() ? "\r\n" : "");
+    pane->withTerminal([&text](AfterglowVt::Terminal& t) { t.feed(std::string_view(text.constData(), std::size_t(text.size()))); });
+}
+// Selects from cell (@p fromCol, @p fromRow) to cell (@p toCol, @p toRow) of @p pane, as a drag does.
+void selectCells(Pane* pane, int fromCol, int fromRow, int toCol, int toRow) {
+    pane->startSelection(pane->selectionPointAt(fromCol, fromRow), AfterglowVt::SelectionMode::Normal, true);
+    pane->extendSelection(pane->selectionPointAt(toCol, toRow));
+}
+// One row: a drop of it asks no paste question.
+void selectRow(Pane* pane, int row) { selectCells(pane, 0, row, pane->cols() - 1, row); }
+void selectWholeScreen(Pane* pane) { selectCells(pane, 0, 0, pane->cols() - 1, pane->rows() - 1); }
+// The centre of cell (@p col, @p row) of @p pane, in window logical pixels.
+QPointF cellCentre(TerminalWindow* window, Pane* pane, int col, int row) {
+    const QRectF grid = gridOf(window, pane);
+    return grid.topLeft() + QPointF((col + 0.5) * grid.width() / pane->cols(), (row + 0.5) * grid.height() / pane->rows());
+}
+// A command for a pane that writes what its program gets to @p path, byte for byte.
+QStringList catInto(const QString& path) {
+    return {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty raw -echo; exec cat > \"$0\""), path};
+}
+// A left press with @p modifiers, from @p source.
+void pressLeftWith(QWindow* window, const QPointF& at, Qt::KeyboardModifiers modifiers,
+                   Qt::MouseEventSource source = Qt::MouseEventNotSynthesized) {
+    QMouseEvent event(QEvent::MouseButtonPress, at, at, window->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, modifiers, source);
+    QCoreApplication::sendEvent(window, &event);
+}
+// A distance that starts a drag, in logical pixels.
+qreal dragDistance() { return 4 * QGuiApplication::styleHints()->startDragDistance(); }
+// Fails the test when @p window starts a drag, which it cancels so that the
+// test goes on. A drag that ended leaves its QDrag: its deleteLater came from
+// no event loop, so only an explicit send of the deferred deletes takes it.
+class NoDrag : public QObject {
+public:
+    explicit NoDrag(QWindow* window) : m_window(window) {
+        QObject::connect(&m_timer, &QTimer::timeout, this, [this] {
+            if (!m_window->findChild<QDrag*>()) return;
+            m_started = true;
+            QDrag::cancel();
+        });
+        m_timer.start(0);
+    }
+    ~NoDrag() override { EXPECT_FALSE(m_started || m_window->findChild<QDrag*>()) << "a drag started"; }
+private:
+    QWindow* m_window;
+    QTimer m_timer;
+    bool m_started = false;
+};
+TEST_F(NativeWindow, APressInsideTheSelectionWaitsForAMoveOrClicks) {
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "select me here");
+    selectWholeScreen(pane);
+    ASSERT_TRUE(pane->hasSelection());
+    // A click inside the selection clears it, as any click does. The press
+    // only waits: a press that started a selection would end this one.
+    const QPointF at = cellCentre(window, pane, 3, 0);
+    pressLeft(window, at);
+    EXPECT_TRUE(pane->hasSelection());
+    releaseLeft(window, at);
+    EXPECT_FALSE(pane->hasSelection());
+    // A move shorter than the drag distance does not drag. Another cell, so
+    // that this press is no double click.
+    selectWholeScreen(pane);
+    const QPointF other = cellCentre(window, pane, 4, 2);
+    const QPointF near = other + QPointF(QGuiApplication::styleHints()->startDragDistance() - 1, 0);
+    pressLeft(window, other);
+    dragLeft(window, near);
+    EXPECT_TRUE(pane->hasSelection());
+    releaseLeft(window, near);
+    EXPECT_FALSE(pane->hasSelection());
+}
+TEST_F(NativeWindow, TheClickThatAPressInsideTheSelectionHeldMovesTheShellCursor) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    restartWithDragSelection({}, catInto(received));
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received) && !gridOf(window, pane).isEmpty(); }));
+    // A prompt that takes clicks (OSC 133 click_events), with the cursor
+    // after its command, in column 13.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b]133;A;click_events=1\x07$ \x1b]133;B\x07hello world"); });
+    selectCells(pane, 2, 0, 12, 0);
+    // A release on another cell, nearer than the drag distance, is a drag
+    // that selects nothing: it moves no cursor.
+    const QRectF grid = gridOf(window, pane);
+    const QPointF edge = grid.topLeft() + QPointF(5 * grid.width() / pane->cols(), 0.5 * grid.height() / pane->rows());
+    pressLeft(window, edge - QPointF(1, 0));
+    releaseLeft(window, edge + QPointF(1, 0));
+    EXPECT_FALSE(pane->hasSelection());
+    // A click on column 6 moves the cursor 7 characters to the left.
+    selectCells(pane, 2, 0, 12, 0);
+    clickLeft(window, cellCentre(window, pane, 6, 0));
+    EXPECT_FALSE(pane->hasSelection());
+    QByteArray left;
+    for (int i = 0; i < 7; ++i) left += "\x1b[D";
+    EXPECT_TRUE(waitFor([&] { return fileContent(received) == left; }))
+        << QString::fromLatin1(fileContent(received).toPercentEncoding()).toStdString();
+}
+TEST_F(NativeWindow, AProgramThatReportsTheMouseGetsAPressInsideTheSelection) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    restartWithDragSelection({}, catInto(received));
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received) && !gridOf(window, pane).isEmpty(); }));
+    fillRows(pane, "select me here");
+    selectWholeScreen(pane);
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?1000h\x1b[?1006h"); });
+    const QPointF at = cellCentre(window, pane, 3, 1);
+    pressLeft(window, at);
+    releaseLeft(window, at);
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).contains("M") && fileContent(received).endsWith("m"); }))
+        << QString::fromLatin1(fileContent(received).toPercentEncoding()).toStdString();
+    EXPECT_TRUE(pane->hasSelection());
+    // With Shift the window takes the press, which waits inside the selection.
+    pressLeftWith(window, at, Qt::ShiftModifier);
+    EXPECT_TRUE(pane->hasSelection());
+    releaseLeft(window, at);
+    EXPECT_FALSE(pane->hasSelection());
+}
+TEST_F(NativeWindow, ClicksInsideTheSelectionSelectAWordALineOrABlock) {
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "select me here");
+    selectWholeScreen(pane);
+    // The press held back inside the selection is the first click of a
+    // series: a double click selects a word, and a third press inside that
+    // word selects the line.
+    const QPointF at = cellCentre(window, pane, 8, 1);
+    clickLeft(window, at);
+    clickLeft(window, at);
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("me"));
+    clickLeft(window, at);
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("select me here"));
+    // The fourth press of the series counts as one again, inside the line:
+    // it starts a selection, which a move extends.
+    pressLeft(window, at);
+    EXPECT_FALSE(pane->hasSelection());
+    dragLeft(window, cellCentre(window, pane, 11, 1));
+    releaseLeft(window, cellCentre(window, pane, 11, 1));
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("e he"));
+    // An Alt press starts a block selection, and a press that Qt makes from a
+    // touch starts a selection: neither waits to drag.
+    selectWholeScreen(pane);
+    const QPointF block = cellCentre(window, pane, 2, 3);
+    pressLeftWith(window, block, Qt::AltModifier);
+    EXPECT_FALSE(pane->hasSelection());
+    releaseLeft(window, block);
+    selectWholeScreen(pane);
+    const QPointF touch = cellCentre(window, pane, 5, 4);
+    pressLeftWith(window, touch, Qt::NoModifier, Qt::MouseEventSynthesizedByQt);
+    EXPECT_FALSE(pane->hasSelection());
+    releaseLeft(window, touch);
+}
+TEST_F(NativeWindow, APressOutsideTheSelectionOrOnBlanksSelects) {
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "abcdef");
+    // Outside the selection, a press selects from where it is.
+    selectRow(pane, 0);
+    pressLeft(window, cellCentre(window, pane, 1, 2));
+    EXPECT_FALSE(pane->hasSelection());
+    dragLeft(window, cellCentre(window, pane, 4, 2));
+    releaseLeft(window, cellCentre(window, pane, 4, 2));
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("bcde"));
+    // Blanks after the end of a line hold no text: a press on them waits,
+    // and its move selects from the press as any press does.
+    selectCells(pane, 10, 0, 20, 0);
+    ASSERT_TRUE(pane->hasSelection());
+    ASSERT_TRUE(pane->selectedText().isEmpty());
+    pressLeft(window, cellCentre(window, pane, 15, 0));
+    EXPECT_TRUE(pane->hasSelection());
+    dragLeft(window, cellCentre(window, pane, 3, 1));
+    releaseLeft(window, cellCentre(window, pane, 3, 1));
+    EXPECT_TRUE(pane->selectedText().endsWith(QStringLiteral("abcd"))) << pane->selectedText().toStdString();
+    // A press whose release went elsewhere ends at the next move without
+    // the button. A move with the button after it drags nothing.
+    selectRow(pane, 0);
+    const QPointF held = cellCentre(window, pane, 2, 0);
+    pressLeft(window, held);
+    hoverAt(window, held);
+    dragLeft(window, held + QPointF(dragDistance(), 0));
+    releaseLeft(window, held + QPointF(dragDistance(), 0));
+    EXPECT_TRUE(pane->hasSelection());
+}
+TEST_F(NativeWindow, WithoutDragSelectionAPressInsideTheSelectionSelectsAgain) {
+    // The default, as in Kitty.
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "select me here");
+    selectWholeScreen(pane);
+    // Away from where the old selection starts, so that the old selection
+    // extended to the move would show.
+    pressLeft(window, cellCentre(window, pane, 2, 1));
+    ASSERT_FALSE(pane->hasSelection());
+    dragLeft(window, cellCentre(window, pane, 5, 1));
+    releaseLeft(window, cellCentre(window, pane, 5, 1));
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("lect"));
+}
+TEST_F(NativeWindow, AProgramsDragComesBeforeTheDragOfTheSelection) {
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "select me here");
+    selectWholeScreen(pane);
+    // The program offers drags (OSC 72), as kitten dnd does.
+    pane->dragDrop()->handle("t=o:x=1;");
+    ASSERT_TRUE(pane->dragDrop()->offersDrags());
+    QByteArray replies;
+    QObject context;
+    QObject::connect(pane->dragDrop(), &DragDrop::reply, &context, [&replies](const QByteArray& bytes) { replies += bytes; });
+    const QPointF at = cellCentre(window, pane, 3, 1);
+    pressLeft(window, at);
+    dragLeft(window, at + QPointF(dragDistance(), 0));
+    releaseLeft(window, at + QPointF(dragDistance(), 0));
+    // The program hears that its drag starts, and the selection stays.
+    EXPECT_TRUE(dndKeys(replies).contains("t=o")) << replies.toStdString();
+    EXPECT_TRUE(pane->hasSelection());
+}
+TEST_F(NativeWindow, ASelectionDropsOnAnotherPaneAndNotOnItsOwn) {
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    Pane* left = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = catInto(received);
+    Pane* right = window->splitPane(left, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    ASSERT_TRUE(waitFor([&] { return !gridOf(window, right).isEmpty() && QFileInfo::exists(received); }));
+    fillRows(left, "dragged words");
+    selectRow(left, 1);
+    // While the drag runs, the drops that the compositor would send. The
+    // drop event finds the drag's source through Qt.
+    bool dragging = false, ownTaken = true, otherTaken = false;
+    QByteArray toProgram;
+    QObject context;
+    QTimer::singleShot(0, window, [&] {
+        auto* drag = window->findChild<QDrag*>();
+        dragging = drag;
+        if (drag) {
+            const auto dropAt = [&](Pane* pane, QEvent::Type type) {
+                QDropEvent event(gridOf(window, pane).center(), Qt::CopyAction, drag->mimeData(), Qt::NoButton, Qt::NoModifier, type);
+                QCoreApplication::sendEvent(window, &event);
+                return event.isAccepted();
+            };
+            ownTaken = dropAt(left, QEvent::Drop);
+            // A program that accepts drops (OSC 72) hears nothing of its
+            // own pane's selection either.
+            left->dragDrop()->handle("t=a;");
+            QObject::connect(left->dragDrop(), &DragDrop::reply, &context, [&](const QByteArray& bytes) { toProgram += bytes; });
+            dropAt(left, QEvent::DragMove);
+            ownTaken = dropAt(left, QEvent::Drop) || ownTaken;
+            otherTaken = dropAt(right, QEvent::Drop);
+        }
+        QDrag::cancel();
+    });
+    const QPointF at = cellCentre(window, left, 2, 1);
+    pressLeft(window, at);
+    dragLeft(window, at + QPointF(dragDistance(), 0));
+    releaseLeft(window, at + QPointF(dragDistance(), 0));
+    ASSERT_TRUE(dragging);
+    EXPECT_FALSE(ownTaken);
+    EXPECT_TRUE(toProgram.isEmpty()) << toProgram.toStdString();
+    EXPECT_TRUE(otherTaken);
+    EXPECT_TRUE(waitFor([&] { return fileContent(received) == "dragged words"; })) << fileContent(received).toStdString();
+    EXPECT_TRUE(left->hasSelection()); // copied, not moved
+}
+TEST_F(NativeWindow, AWindowThatClosesDuringASelectionDragGoesAfterIt) {
+    restartWithDragSelection({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}}}});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "dragged words");
+    selectRow(pane, 0);
+    // The drag runs this close in its event loop, with its QDrag a child of
+    // the window: the window goes after the drag.
+    const QPointer<TerminalWindow> closing = window;
+    bool dragging = false, moveReturned = false, deletedInTheDrag = false;
+    QObject context;
+    QObject::connect(window, &QObject::destroyed, &context, [&] { deletedInTheDrag = !moveReturned; });
+    // A drag of a person runs on after the close, and its event loop deletes
+    // what the close left with deleteLater. Here the compositor ends the
+    // drag at once: the timer sends those deletes as that loop would.
+    QTimer::singleShot(0, window, [&] {
+        dragging = closing->findChild<QDrag*>();
+        closing->close();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    });
+    const QPointF at = cellCentre(window, pane, 2, 0);
+    pressLeft(window, at);
+    dragLeft(window, at + QPointF(dragDistance(), 0));
+    moveReturned = true;
+    EXPECT_TRUE(dragging);
+    EXPECT_FALSE(deletedInTheDrag);
+    window = nullptr;
+    // The window went with deleteLater once the drag returned.
+    drainDeferredDeletes();
+    EXPECT_TRUE(closing.isNull());
+}
+TEST_F(NativeWindow, AKeyHeldIntoASelectionDragIsReleasedToItsProgram) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    restartWithDragSelection({}, catInto(received));
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received); }));
+    // The program asks for key releases (Kitty keyboard flags 1, 2 and 8).
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[>11u"); });
+    // A key press clears the selection, as typing does: the selection comes after it.
+    QKeyEvent down(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+    QCoreApplication::sendEvent(window, &down);
+    fillRows(pane, "dragged words");
+    selectRow(pane, 0);
+    // The key comes up during the drag, which takes the key events: the
+    // program has its release from when the drag started, and only that one.
+    bool dragging = false;
+    QTimer::singleShot(0, window, [&] {
+        dragging = window->findChild<QDrag*>();
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+        QCoreApplication::sendEvent(window, &up);
+        QDrag::cancel();
+    });
+    const QPointF at = cellCentre(window, pane, 2, 0);
+    pressLeft(window, at);
+    dragLeft(window, at + QPointF(dragDistance(), 0));
+    releaseLeft(window, at + QPointF(dragDistance(), 0));
+    ASSERT_TRUE(dragging);
+    // Input after the drag reaches the program after any release that the drag sent.
+    ASSERT_TRUE(pane->sendInput("|end"));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).endsWith("|end"); }))
+        << QString::fromLatin1(fileContent(received).toPercentEncoding()).toStdString();
+    EXPECT_EQ(fileContent(received).count("\x1b[97;1:3u"), 1);
+}
+TEST_F(NativeWindow, AProgramsDragStartReleasesTheKeysThatItsWindowSent) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    restartWithDragSelection({}, catInto(received));
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received); }));
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[>11u"); });
+    QKeyEvent down(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+    QCoreApplication::sendEvent(window, &down);
+    // DragDrop::start() says this before QDrag::exec(), which takes the key events.
+    Q_EMIT pane->dragDrop()->dragStarting();
+    ASSERT_TRUE(pane->sendInput("|end"));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).endsWith("|end"); }))
+        << QString::fromLatin1(fileContent(received).toPercentEncoding()).toStdString();
+    EXPECT_EQ(fileContent(received).count("\x1b[97;1:3u"), 1);
+    // The key is taken: its release after the drag sends nothing more.
+    QKeyEvent up(QEvent::KeyRelease, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+    QCoreApplication::sendEvent(window, &up);
+    ASSERT_TRUE(pane->sendInput("|after"));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).endsWith("|after"); }));
+    EXPECT_EQ(fileContent(received).count("\x1b[97;1:3u"), 1);
+}
+TEST_F(NativeWindow, DroppedTextPastesIntoThePane) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = catInto(received);
+    Pane* right = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    ASSERT_TRUE(waitFor([&] { return !gridOf(window, right).isEmpty() && QFileInfo::exists(received); }));
+    // The program uses bracketed paste: the text arrives in its brackets.
+    right->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?2004h"); });
+    window->revealPane(first);
+    ASSERT_EQ(window->focusedPane(), first);
+    QMimeData mime;
+    mime.setText(QStringLiteral("dropped words"));
+    // The desktop drops only where a move of the drag was accepted.
+    QDragMoveEvent move(gridOf(window, right).center(), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &move);
+    EXPECT_TRUE(move.isAccepted());
+    QDropEvent drop(gridOf(window, right).center(), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &drop);
+    EXPECT_TRUE(drop.isAccepted());
+    EXPECT_TRUE(waitFor([&] { return fileContent(received) == "\x1b[200~dropped words\x1b[201~"; }))
+        << fileContent(received).toStdString();
+    EXPECT_EQ(window->focusedPane(), right);
+    // A link from a browser holds no file: its text pastes, as in Kitty.
+    QMimeData link;
+    link.setUrls({QUrl(QStringLiteral("https://example.com/page"))});
+    link.setText(QStringLiteral("https://example.com/page"));
+    QDropEvent linkDrop(gridOf(window, right).center(), Qt::CopyAction, &link, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &linkDrop);
+    EXPECT_TRUE(linkDrop.isAccepted());
+    EXPECT_TRUE(waitFor([&] {
+        return fileContent(received) == "\x1b[200~dropped words\x1b[201~\x1b[200~https://example.com/page\x1b[201~";
+    })) << fileContent(received).toStdString();
+}
+TEST_F(NativeWindow, DroppedLinesAskBeforeTheyPaste) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = catInto(received);
+    Pane* right = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    ASSERT_TRUE(waitFor([&] { return !gridOf(window, right).isEmpty() && QFileInfo::exists(received); }));
+    window->revealPane(first);
+    QMimeData mime;
+    mime.setText(QStringLiteral("one\ntwo\n"));
+    QDropEvent drop(gridOf(window, right).center(), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &drop);
+    EXPECT_TRUE(drop.isAccepted());
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(chrome->pasteConfirmOpen());
+    EXPECT_EQ(window->focusedPane(), right);
+    // The question takes the drops until it has its answer.
+    QMimeData other;
+    other.setText(QStringLiteral("other"));
+    QDropEvent second(gridOf(window, right).center(), Qt::CopyAction, &other, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &second);
+    EXPECT_FALSE(second.isAccepted());
+    auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    EXPECT_TRUE(fileContent(received).isEmpty());
+    QKeyEvent accept(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &accept);
+    EXPECT_FALSE(chrome->pasteConfirmOpen());
+    // A paste sends line feeds as carriage returns, as Enter does.
+    EXPECT_TRUE(waitFor([&] { return fileContent(received) == "one\rtwo\r"; })) << fileContent(received).toStdString();
+}
+TEST_F(NativeWindow, DropsThatAPaneRefusesPasteNothing) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    PaneLaunchOptions launch;
+    launch.command = catInto(received);
+    Pane* right = window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    ASSERT_TRUE(waitFor([&] { return !gridOf(window, right).isEmpty() && QFileInfo::exists(received); }));
+    const auto dropOnRight = [&](const QMimeData& mime, Qt::DropActions actions) {
+        QDropEvent drop(gridOf(window, right).center(), actions, &mime, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+        QCoreApplication::sendEvent(window, &drop);
+        return drop.isAccepted();
+    };
+    // A file on another host is no local file. Qt gives the URL as the
+    // drop's text, which does not paste either.
+    QMimeData remote;
+    remote.setUrls({QUrl(QStringLiteral("file://example.com/share/file.txt"))});
+    ASSERT_TRUE(remote.hasText());
+    EXPECT_FALSE(dropOnRight(remote, Qt::CopyAction));
+    // A name with a bidirectional override, with text of its own as well.
+    QMimeData disguised;
+    disguised.setUrls({QUrl::fromLocalFile(directory.filePath(QStringLiteral("name") + QChar(0x202E) + QStringLiteral("txt.sh")))});
+    disguised.setText(QStringLiteral("disguised"));
+    EXPECT_FALSE(dropOnRight(disguised, Qt::CopyAction));
+    // A local file beside a link: the link is no local file, so the whole
+    // file drop is refused, and its text does not paste either.
+    QMimeData mixed;
+    mixed.setUrls({QUrl::fromLocalFile(directory.filePath(QStringLiteral("a"))), QUrl(QStringLiteral("https://example.com/mixed"))});
+    mixed.setText(QStringLiteral("https://example.com/mixed"));
+    EXPECT_FALSE(dropOnRight(mixed, Qt::CopyAction));
+    // A drag with neither text nor URLs: its move is refused on its types.
+    QMimeData picture;
+    picture.setData(QStringLiteral("image/png"), QByteArray("not read"));
+    QDragMoveEvent overRight(gridOf(window, right).center(), Qt::CopyAction, &picture, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &overRight);
+    EXPECT_FALSE(overRight.isAccepted());
+    EXPECT_FALSE(dropOnRight(picture, Qt::CopyAction));
+    // A drag that offers only a move: a paste copies.
+    QMimeData moved;
+    moved.setText(QStringLiteral("moved"));
+    EXPECT_FALSE(dropOnRight(moved, Qt::MoveAction));
+    // A pane held open after its program ended takes no drop.
+    PaneLaunchOptions ending;
+    ending.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("read line")};
+    Pane* held = window->splitPane(right, SplitTree::Direction::Down, ending, nullptr);
+    ASSERT_NE(held, nullptr);
+    held->setHold(true);
+    ASSERT_TRUE(settleQueued());
+    ASSERT_TRUE(held->sendInput("\n"));
+    ASSERT_TRUE(waitFor([&] { return held->isHeld() && !gridOf(window, held).isEmpty(); }));
+    QDropEvent onHeld(gridOf(window, held).center(), Qt::CopyAction, &moved, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &onHeld);
+    EXPECT_FALSE(onHeld.isAccepted());
+    // The program accepts drops (OSC 72): it gets the text, not as a paste.
+    right->dragDrop()->handle("t=a;");
+    ASSERT_TRUE(right->dragDrop()->acceptsDrops());
+    QMimeData forProgram;
+    forProgram.setText(QStringLiteral("for the program"));
+    dropOnRight(forProgram, Qt::CopyAction);
+    right->dragDrop()->reset();
+    // A drop that pastes, after them: only its text arrives.
+    QMimeData marker;
+    marker.setText(QStringLiteral("marker"));
+    EXPECT_TRUE(dropOnRight(marker, Qt::CopyAction));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).endsWith("marker"); })) << fileContent(received).toStdString();
+    EXPECT_FALSE(fileContent(received).contains("for the program"));
+    EXPECT_FALSE(fileContent(received).contains("disguised"));
+    EXPECT_FALSE(fileContent(received).contains("example.com"));
+    EXPECT_FALSE(fileContent(received).contains("moved"));
+}
+// Drag events that reach a window, also in QDrag::exec's own event loop.
+class DragEvents : public QObject {
+public:
+    QRectF over;     ///< where moves count
+    QString hovered; ///< made at the first move over `over`, for the runner
+    int moves = 0;
+    bool ended = false; ///< a drop or a leave after a move
+    bool eventFilter(QObject*, QEvent* event) override {
+        if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+            if (over.contains(static_cast<QDropEvent*>(event)->position()) && ++moves == 1 && !hovered.isEmpty()) {
+                QFile marker(hovered);
+                if (marker.open(QIODevice::WriteOnly)) marker.close();
+            }
+        } else if ((event->type() == QEvent::Drop || event->type() == QEvent::DragLeave) && moves > 0) {
+            ended = true;
+        }
+        return false;
+    }
+};
+// Selected text dragged with real compositor input: into another pane it
+// pastes, back onto its own pane it does not.
+TEST_F(NativeWindow, ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn) {
+    REQUIRE_NATIVE_DND(ready);
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    Pane* left = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = catInto(received);
+    Pane* right = window->splitPane(left, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    ASSERT_TRUE(showFullScreenForDrag(window));
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received) && !gridOf(window, right).isEmpty(); }));
+    // The full screen layout and the compositor settle first: a width that
+    // changes ends a selection, and a press while the surface still changes
+    // is lost.
+    expectIdle(window);
+    PressMarker input;
+    input.path = ready + QStringLiteral(".pressed");
+    window->installEventFilter(&input);
+    const auto removeInput = qScopeGuard([&] { window->removeEventFilter(&input); });
+    DragEvents events;
+    events.hovered = ready + QStringLiteral(".hovered");
+    window->installEventFilter(&events);
+    const auto removeEvents = qScopeGuard([&] { window->removeEventFilter(&events); });
+    // Presses about a third down and in the middle of a row, as the other
+    // drags press: clear of the pane titles and of the window's border, where
+    // the compositor takes the press.
+    const int leftRow = left->rows() / 3, rightRow = right->rows() / 3;
+    fillRows(left, "dragged words");
+    selectRow(left, leftRow);
+    ASSERT_TRUE(left->hasSelection());
+    events.over = gridOf(window, right);
+    ASSERT_TRUE(writeDragMarker(ready, window, cellCentre(window, left, left->cols() / 2, leftRow),
+                                gridOf(window, right).center(), true));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received) == "dragged words"; }, 15000)) << fileContent(received).toStdString();
+    EXPECT_TRUE(left->hasSelection()); // copied, not moved
+    // From the right pane back onto itself: the drag moves over the pane and
+    // ends with no paste. The selection stays, so the press waited and
+    // started no selection.
+    fillRows(right, "own words");
+    selectRow(right, rightRow);
+    ASSERT_TRUE(right->hasSelection());
+    events.moves = 0;
+    events.ended = false;
+    ASSERT_TRUE(writeDragMarker(ready, window, cellCentre(window, right, right->cols() / 2, rightRow),
+                                cellCentre(window, right, right->cols() / 2, right->rows() * 2 / 3), true));
+    ASSERT_TRUE(waitFor([&] { return events.ended; }, 15000)) << "moves over the pane: " << events.moves;
+    // Input after the drop reaches the program after a paste of the drop would.
+    ASSERT_TRUE(right->sendInput("|end"));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).endsWith("|end"); })) << fileContent(received).toStdString();
+    EXPECT_EQ(fileContent(received), "dragged words|end");
+    EXPECT_EQ(right->selectedText(), QStringLiteral("own words"));
 }
 
 TEST_F(NativeWindow, ScriptQueriesAreBoundedAndRespectTextPolicy) {
@@ -3093,9 +3911,17 @@ TEST_F(NativeWindow, ASplitRefusedForRoomKeepsTheZoom) {
     }));
     QString error;
     EXPECT_EQ(window->splitPane(last, SplitTree::Direction::Down, launch, &error), nullptr);
-    EXPECT_FALSE(error.isEmpty());
+    EXPECT_EQ(error, TerminalWindow::noRoomForPane());
     EXPECT_TRUE(window->accessiblePaneRect(first).isEmpty());
     EXPECT_FALSE(window->accessiblePaneRect(last).isEmpty());
+    // afterglow ctl and scripts get the lowercase text of their other errors.
+    SettingsStore settings(directory.filePath(QStringLiteral("control.conf")));
+    Control control(settings, {});
+    control.attachWindow(window);
+    quint32 created = 0;
+    EXPECT_EQ(control.split(last->id(), QStringLiteral("down"), {QStringLiteral("/bin/cat")}, {}, created),
+              QStringLiteral("not enough room for another pane"));
+    EXPECT_EQ(created, 0u);
 }
 
 TEST_F(NativeWindow, ClipboardReadFromABackgroundTabAsksWithoutSwitching) {
@@ -5051,6 +5877,29 @@ TEST_F(NativeWindow, ASplitRightAfterADockCountsTheRoomTheDockTakes) {
     window->clearScriptOwner(QStringLiteral("a@1"));
 }
 
+TEST_F(NativeWindow, ASplitRightAfterABiggerFontStartsAtTheSizeItKeeps) {
+    // A left dock of 8 columns grows with the font. The split comes before
+    // the frame that lays the bigger font out: the new pane counts the room
+    // that the dock takes now, and its program starts at the size it keeps.
+    auto* pane = window->focusedPane();
+    ASSERT_TRUE(window->setScriptDock(QStringLiteral("a@1"), {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), QStringLiteral("side")},
+                                                            {QStringLiteral("edge"), QStringLiteral("left")}, {QStringLiteral("size"), 8}})
+                    .isEmpty());
+    expectIdle(window);
+    for (int step = 0; step < 4; ++step) ASSERT_TRUE(window->runAction(pane, Action::FontBigger));
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    QString error;
+    Pane* second = window->splitPane(pane, SplitTree::Direction::Right, launch, &error);
+    ASSERT_NE(second, nullptr) << error.toStdString();
+    const int cols = second->cols();
+    const int rows = second->rows();
+    expectIdle(window);
+    EXPECT_EQ(second->cols(), cols);
+    EXPECT_EQ(second->rows(), rows);
+    window->clearScriptOwner(QStringLiteral("a@1"));
+}
+
 // --- pane callbacks, reported directories, replies, selections and the overview's key mode ---
 
 TEST_F(NativeWindow, StatusAndContextChangesOnTheGuiThreadDoNotDeadlock) {
@@ -5775,6 +6624,31 @@ TEST_F(NativeWindow, AFileDroppedOnAnOverlayFocusesItsHostAndReachesItsProgram) 
     EXPECT_TRUE(waitFor([&] { return screenOf(first).contains(QStringLiteral("zz")); })) << screenOf(first).toStdString();
     EXPECT_FALSE(screenOf(second).contains(QStringLiteral("zz"))) << screenOf(second).toStdString();
 }
+TEST_F(NativeWindow, TextDroppedOnAnOverlayReachesItsProgram) {
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+    Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    auto answer = runOverlay(window, first, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                             QStringLiteral("stty -echo; read line; printf 'got:%s' \"$line\"")});
+    ASSERT_NE(first->overlay(), nullptr);
+    window->revealPane(second);
+    ASSERT_EQ(window->focusedPane(), second);
+    ASSERT_TRUE(waitFor([&] { return !window->accessiblePaneRect(first).isEmpty(); }));
+    QMimeData mime;
+    mime.setText(QStringLiteral("overlay words"));
+    const QPointF at = window->mapFromGlobal(QPointF(window->accessiblePaneRect(first).center()));
+    QDropEvent drop(at, Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &drop);
+    EXPECT_TRUE(drop.isAccepted());
+    // The pane in the tab has the focus. Its overlay's program got the text.
+    EXPECT_EQ(window->focusedPane(), first);
+    typeText(window, QStringLiteral("\r"));
+    ASSERT_TRUE(waitFor([&] { return answer->done; }));
+    EXPECT_TRUE(answer->result.value(QStringLiteral("stdout")).toString().contains(QStringLiteral("got:overlay words")))
+        << answer->result.value(QStringLiteral("stdout")).toString().toStdString();
+}
 
 TEST_F(NativeWindow, AConfirmedPasteReachesTheOverlaysProgram) {
     Pane* pane = window->focusedPane();
@@ -6324,9 +7198,13 @@ public:
     SettingsStore& settings() { return m_settings; }
     // The overlay call of afterglow ctl overlay: it answers when it ends.
     void overlay(quint32 pane, const QStringList& argv, const QJsonObject& options = {}) {
+        call(QStringLiteral("overlay"), QJsonArray{double(pane), QJsonArray::fromStringList(argv), options});
+    }
+    // Sends the call @p fn of the control target, with @p args.
+    void call(const QString& fn, const QJsonArray& args) {
         const QJsonObject frame{{QStringLiteral("type"), QStringLiteral("call")}, {QStringLiteral("id"), ++m_id},
-                                {QStringLiteral("target"), QStringLiteral("control")}, {QStringLiteral("fn"), QStringLiteral("overlay")},
-                                {QStringLiteral("args"), QJsonArray{double(pane), QJsonArray::fromStringList(argv), options}}};
+                                {QStringLiteral("target"), QStringLiteral("control")}, {QStringLiteral("fn"), fn},
+                                {QStringLiteral("args"), args}};
         client.write(QJsonDocument(frame).toJson(QJsonDocument::Compact) + '\n');
         client.flush();
     }
@@ -6391,6 +7269,69 @@ TEST_F(NativeWindow, AControlClientGetsAnOverlaysOutputOnlyWithReadAccess) {
         }
         EXPECT_TRUE(waitFor([&] { return pane->overlay() == nullptr; }));
     }
+}
+
+TEST_F(NativeWindow, AControlClientGetsAScreenshotAsAPngWhileReadAccessHolds) {
+    // A tab switch longer than the bound on a frame (2 s): a screenshot waits
+    // for its end all the same, and the wait is long enough to change a
+    // setting in.
+    restartApplication(QStringLiteral("long-switch.conf"),
+        testSettings({{QStringLiteral("Animation"), QJsonObject{{QStringLiteral("tabCurve"), QStringLiteral("0.2,0,0,1")},
+                                                                 {QStringLiteral("tabDuration"), 3000}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    ControlConnection ctl(directory.filePath(QStringLiteral("shot.sock")), window);
+    ASSERT_TRUE(ctl.connected());
+    ASSERT_TRUE(ctl.settings().write(QStringLiteral("Control"), QStringLiteral("allowReadText"), true));
+    Pane* pane = window->focusedPane();
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;220;20;20m\x1b[2J"); });
+    ASSERT_TRUE(nextFrame(window));
+    ctl.call(QStringLiteral("screenshot"), {double(pane->id()), QStringLiteral("pane")});
+    const auto reply = ctl.next(5000);
+    ASSERT_TRUE(reply.has_value());
+    ASSERT_EQ(reply->value(QStringLiteral("type")).toString(), QStringLiteral("reply")) << qPrintable(reply->value(QStringLiteral("message")).toString());
+    const QJsonObject result = reply->value(QStringLiteral("result")).toObject();
+    const QImage image = QImage::fromData(QByteArray::fromBase64(result.value(QStringLiteral("png")).toString().toLatin1()), "PNG");
+    ASSERT_FALSE(image.isNull());
+    EXPECT_EQ(image.size(), QSize(result.value(QStringLiteral("width")).toInt(), result.value(QStringLiteral("height")).toInt()));
+    // An opaque window gives an opaque picture.
+    EXPECT_FALSE(image.hasAlphaChannel());
+    EXPECT_TRUE(reddish(pixelAt(image, 0.5, 0.5)));
+
+    // During the switch: the answer comes when it ends, past 2 s.
+    Pane* other = window->openTab({}, nullptr);
+    ASSERT_NE(other, nullptr);
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }, 6000));
+    window->revealPane(pane);
+    ASSERT_TRUE(window->tabSwitching());
+    QElapsedTimer waited;
+    waited.start();
+    ctl.call(QStringLiteral("screenshot"), {double(pane->id()), QStringLiteral("pane")});
+    const auto switched = ctl.next(6000);
+    ASSERT_TRUE(switched.has_value());
+    EXPECT_EQ(switched->value(QStringLiteral("type")).toString(), QStringLiteral("reply"))
+        << qPrintable(switched->value(QStringLiteral("message")).toString());
+    EXPECT_GT(waited.elapsed(), 2000);
+    EXPECT_FALSE(window->tabSwitching());
+
+    // Read access that goes while the screenshot waits for its frame.
+    window->revealPane(other);
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }, 6000));
+    window->revealPane(pane);
+    ASSERT_TRUE(window->tabSwitching());
+    ctl.call(QStringLiteral("screenshot"), {double(pane->id()), QStringLiteral("pane")});
+    // Its reply comes once the call before it has gone on to wait.
+    ctl.call(QStringLiteral("focusedPane"), {});
+    const auto focused = ctl.next();
+    ASSERT_TRUE(focused.has_value());
+    ASSERT_EQ(focused->value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
+    ASSERT_TRUE(window->tabSwitching()) << "the switch ended before the screenshot could wait for it";
+    ASSERT_TRUE(ctl.settings().write(QStringLiteral("Control"), QStringLiteral("allowReadText"), false));
+    const auto late = ctl.next(6000);
+    ASSERT_TRUE(late.has_value());
+    EXPECT_EQ(late->value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+    EXPECT_EQ(late->value(QStringLiteral("code")).toString(), QStringLiteral("denied"));
+    expectIdle(window);
 }
 
 TEST_F(NativeWindow, AControlClientsInputPartsJoinAsTheOverlaysStdin) {
@@ -6596,12 +7537,6 @@ TEST_F(NativeWindow, APressWaitsForTheButtonsThatAnotherPanesProgramHolds) {
     EXPECT_TRUE(answer->done);
 }
 
-// Where @p pane's grid is drawn, in @p window's logical pixels: a popup's
-// own cells for an overlay's pane.
-QRectF gridOf(TerminalWindow* window, Pane* pane) {
-    const QRect global = window->accessiblePaneRect(pane);
-    return QRectF(window->mapFromGlobal(global.topLeft()), global.size());
-}
 OverlaySpec popupSpec(const QVariantMap& options) {
     QString error;
     const auto spec = OverlaySpec::read({QStringLiteral("x")}, options, &error);
@@ -7164,7 +8099,12 @@ void expectDialogsOver(const PaneDialogs& dialogs, QWindow* window) {
     EXPECT_TRUE(dialogs.prompt->isVisible());
     EXPECT_TRUE(dialogs.save->isVisible());
     EXPECT_TRUE(shownOver(QStringLiteral("File transfer"), window));
-    EXPECT_TRUE(shownOver(QStringLiteral("Save file received from"), window));
+    // The GTK file dialog and the desktop portal's are no windows of Qt:
+    // ANativeGtkSaveDialogKeepsItsNameWhenItsWindowCloses tests the GTK one.
+    const QByteArray theme = qgetenv("QT_QPA_PLATFORMTHEME");
+    if (theme != "gtk3" && theme != "xdgdesktopportal") {
+        EXPECT_TRUE(shownOver(QStringLiteral("Save file received from"), window));
+    }
 }
 // The prompt's Yes still reaches the transfer.
 void expectPromptAnswers(PaneDialogs& dialogs) {
@@ -7175,10 +8115,10 @@ void expectPromptAnswers(PaneDialogs& dialogs) {
 }
 
 TEST_F(NativeWindow, APanesDialogsMoveWithItAndOutliveTheWindowItLeft) {
-    // The pane moves to another window, which its dialogs then ask over;
-    // the window it left closes later and takes no dialog with it. Qt's
-    // Wayland platform hides the transient children of a window whose
-    // surface it destroys.
+    // The pane moves to another window, and the window it left closes
+    // later: its dialogs then ask over the pane's new window. Qt's Wayland
+    // platform hides the transient children of a window whose surface it
+    // destroys.
     WindowOptions options; options.command = {QStringLiteral("/bin/cat")};
     QPointer<TerminalWindow> source = application->newWindow(options); ASSERT_TRUE(source);
     source->show();
@@ -7195,7 +8135,9 @@ TEST_F(NativeWindow, APanesDialogsMoveWithItAndOutliveTheWindowItLeft) {
     EXPECT_EQ(dialogs.save->windowHandle()->transientParent(), source.data());
     ASSERT_TRUE(source->movePaneTo(pane, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
     ASSERT_TRUE(source);
-    ASSERT_NO_FATAL_FAILURE(expectDialogsOver(dialogs, destination));
+    // The dialogs stay over the window that shows while it is there
+    // (keepDialogOverPane).
+    ASSERT_NO_FATAL_FAILURE(expectDialogsOver(dialogs, source));
     // The pane that stayed ends: its window closes.
     stays->sendInput("\x04");
     ASSERT_TRUE(waitDeleted(source));
@@ -7254,7 +8196,8 @@ TEST_F(NativeWindow, AnOverlaysDialogsMoveWithItsHost) {
     EXPECT_EQ(dialogs.prompt->windowHandle()->transientParent(), source.data());
     EXPECT_EQ(dialogs.save->windowHandle()->transientParent(), source.data());
     ASSERT_TRUE(source->movePaneTo(host, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
-    ASSERT_NO_FATAL_FAILURE(expectDialogsOver(dialogs, destination));
+    ASSERT_TRUE(source);
+    ASSERT_NO_FATAL_FAILURE(expectDialogsOver(dialogs, source));
     stays->sendInput("\x04");
     ASSERT_TRUE(waitDeleted(source));
     ASSERT_TRUE(settleQueued());
@@ -7470,7 +8413,7 @@ TEST_F(NativeWindow, AMoveBesideAPaneWithNoRoomIsRefused) {
         if (Pane* added = destination->splitPane(narrow, SplitTree::Direction::Right, launch, &error)) narrow = added;
         ASSERT_TRUE(nextFrame(destination));
     }
-    ASSERT_EQ(error, QStringLiteral("There is not enough room to split this pane"));
+    ASSERT_EQ(error, TerminalWindow::noRoomForPane());
     const auto panes = destination->panes().size();
     Pane* moving = window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(moving, nullptr);
@@ -7488,6 +8431,791 @@ TEST_F(NativeWindow, AMoveBesideAPaneWithNoRoomIsRefused) {
     // Below it there is room.
     EXPECT_TRUE(window->movePaneTo(moving, destination, narrow, SplitTree::Direction::Down).isEmpty());
     EXPECT_EQ(moving->parent(), destination);
+}
+
+// The platform theme of the run: generic (the widget dialog of Qt), or the
+// one that headless_native.py --platform-theme names.
+QByteArray platformTheme() {
+    return qgetenv("QT_QPA_PLATFORMTHEME");
+}
+// Why the tests that type in the save dialog cannot do it in this run, or
+// empty. The GTK dialog has a test of its own.
+std::string untypableDialog() {
+    const QByteArray theme = platformTheme();
+    if (theme == "gtk3") return "the GTK file dialog is no Qt widget: ANativeGtkSaveDialogKeepsItsNameWhenItsWindowCloses tests it";
+    if (theme == "xdgdesktopportal") return "the file dialog of the desktop portal runs in another process";
+    return {};
+}
+// With --platform-theme kde, the native KDE dialog shows in place of the
+// widget dialog of Qt. The widget dialog there means that the KDE theme did
+// not load (plasma-integration), and the run would test no native dialog.
+bool themeDialogShows(QFileDialog* dialog) {
+    return platformTheme() != "kde" || dialog->testAttribute(Qt::WA_DontShowOnScreen);
+}
+// The widget that the user sees for @p dialog: the dialog itself, or the
+// native dialog of the platform theme (the KDE file dialog), which shows in a
+// window of its own while the dialog's window stays hidden.
+QWidget* shownDialog(QFileDialog* dialog) {
+    if (!dialog->testAttribute(Qt::WA_DontShowOnScreen)) return dialog;
+    for (auto* widget : QApplication::topLevelWidgets())
+        if (widget != dialog && widget->isVisible() && qobject_cast<QDialog*>(widget)) return widget;
+    return nullptr;
+}
+// The line edit in @p widget that holds @p text: the file name field.
+QLineEdit* editHolding(QWidget* widget, const QString& text) {
+    for (auto* edit : widget->findChildren<QLineEdit*>())
+        if (edit->isVisible() && edit->text() == text) return edit;
+    return nullptr;
+}
+// Saves @p name in @p folder through @p dialog as the user would: in the
+// name field that holds @p typed, and through the Save button of a native
+// dialog, which reads its own name field.
+void saveThrough(QFileDialog* dialog, const QString& typed, const QString& folder, const QString& name) {
+    QWidget* const shown = shownDialog(dialog);
+    ASSERT_NE(shown, nullptr);
+    QLineEdit* const edit = editHolding(shown, typed);
+    ASSERT_NE(edit, nullptr) << "no name field holds " << typed.toStdString();
+    dialog->setDirectory(folder);
+    edit->setText(name);
+    if (shown == dialog) {
+        // QFileDialog::accept is protected: the QDialog slot reaches it.
+        static_cast<QDialog*>(dialog)->accept();
+        return;
+    }
+    for (auto* button : shown->findChildren<QPushButton*>())
+        if (button->isVisible() && button->isDefault()) { button->click(); return; }
+    ADD_FAILURE() << "the native dialog has no default button";
+}
+
+// The visible save dialog of a download, once @p ready holds for it.
+QPointer<QFileDialog> downloadDialog(const std::function<bool(QFileDialog*)>& ready) {
+    QPointer<QFileDialog> dialog;
+    const bool shown = waitFor([&] {
+        for (auto* widget : QApplication::topLevelWidgets())
+            if (auto* box = qobject_cast<QFileDialog*>(widget); box && box->isVisible()) dialog = box;
+        return !dialog.isNull() && ready(dialog);
+    });
+    return shown ? dialog : QPointer<QFileDialog>();
+}
+// A window whose program sends a file (OSC 1337 File, named moved.txt), and
+// the save dialog that the download opens over it, once its name field
+// shows the name. With @p quick, the window is a quick terminal, slid in.
+QPointer<QFileDialog> openDownloadDialog(Application& application, QPointer<TerminalWindow>& source,
+                                         const std::function<bool(QFileDialog*)>& ready = {}, bool quick = false) {
+    WindowOptions options; options.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+        QStringLiteral("printf '\\033]1337;File=name=bW92ZWQudHh0;size=2:aGk=\\007'; exec cat")};
+    options.quick = quick;
+    source = application.newWindow(options);
+    if (!source) return {};
+    if (quick) source->toggleQuick();
+    else source->show();
+    if (ready) return downloadDialog(ready);
+    return downloadDialog([](QFileDialog* dialog) {
+        return shownDialog(dialog) && editHolding(shownDialog(dialog), QStringLiteral("moved.txt"));
+    });
+}
+
+// Closes @p window and waits until it is gone.
+bool closeAndWait(QPointer<TerminalWindow> window) {
+    if (window) window->close();
+    const bool gone = waitFor([&] {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        return window.isNull();
+    });
+    drain(50);
+    return gone;
+}
+
+TEST_F(NativeWindow, ADownloadsSaveDialogMovesWithItsPaneWhenItsWindowCloses) {
+    // The save dialog of a download waits over its pane's window. The pane
+    // moves to another window, and its first window closes: the dialog
+    // moves too, with the name that the user typed in it, and is not
+    // cancelled. The default run tests the widget dialog of Qt, and a run
+    // with --platform-theme kde the native KDE dialog, which moves by a
+    // hide and a show.
+    if (const std::string why = untypableDialog(); !why.empty()) GTEST_SKIP() << why;
+    QPointer<TerminalWindow> source;
+    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source);
+    const auto rejectAll = qScopeGuard([&dialog] {
+        if (dialog) dialog->reject();
+        drainDeferredDeletes();
+    });
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(dialog);
+    ASSERT_TRUE(themeDialogShows(dialog)) << "the KDE platform theme did not load: no native dialog";
+    WindowOptions plain; plain.command = {QStringLiteral("/bin/cat")};
+    auto* destination = application->newWindow(plain); ASSERT_NE(destination, nullptr);
+    destination->show();
+    QPointer<Pane> pane = source->focusedPane(); ASSERT_TRUE(pane);
+    const QPointer<QWidget> shown = shownDialog(dialog);
+    ASSERT_TRUE(shown);
+    EXPECT_EQ(shown->windowHandle()->transientParent(), source.data());
+    QLineEdit* const name = editHolding(shown, QStringLiteral("moved.txt"));
+    ASSERT_NE(name, nullptr);
+    name->setText(QStringLiteral("typed.txt"));
+    ASSERT_TRUE(source->movePaneTo(pane, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
+    ASSERT_TRUE(closeAndWait(source));
+    ASSERT_TRUE(dialog) << "the dialog was cancelled";
+    EXPECT_TRUE(dialog->isVisible());
+    ASSERT_TRUE(shown) << "the native dialog went";
+    EXPECT_EQ(shownDialog(dialog), shown.data());
+    EXPECT_TRUE(shown->isVisible());
+    EXPECT_EQ(shown->windowHandle()->transientParent(), destination);
+    EXPECT_NE(editHolding(shown, QStringLiteral("typed.txt")), nullptr) << "the typed name is lost";
+    const QString saved = directory.filePath(QStringLiteral("typed.txt"));
+    saveThrough(dialog, QStringLiteral("typed.txt"), directory.path(), QStringLiteral("typed.txt"));
+    EXPECT_TRUE(waitFor([&] { return QFileInfo(saved).size() == 2; }));
+}
+
+TEST_F(NativeWindow, ADownloadsSaveDialogMovesWithItsPaneTwice) {
+    // The window that the dialog moved to closes in its turn, after the
+    // pane moved on: the dialog follows it again.
+    if (const std::string why = untypableDialog(); !why.empty()) GTEST_SKIP() << why;
+    // The windows close with their programs running, with no question.
+    restartApplication(QStringLiteral("no-confirm.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}}}}), {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    QPointer<TerminalWindow> source;
+    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source);
+    const auto rejectAll = qScopeGuard([&dialog] {
+        if (dialog) dialog->reject();
+        drainDeferredDeletes();
+    });
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(dialog);
+    ASSERT_TRUE(themeDialogShows(dialog)) << "the KDE platform theme did not load: no native dialog";
+    WindowOptions plain; plain.command = {QStringLiteral("/bin/cat")};
+    QPointer<TerminalWindow> middle = application->newWindow(plain); ASSERT_TRUE(middle);
+    middle->show();
+    auto* destination = application->newWindow(plain); ASSERT_NE(destination, nullptr);
+    destination->show();
+    QPointer<Pane> pane = source->focusedPane(); ASSERT_TRUE(pane);
+    ASSERT_TRUE(source->movePaneTo(pane, middle, middle->focusedPane(), SplitTree::Direction::Right).isEmpty());
+    ASSERT_TRUE(closeAndWait(source));
+    ASSERT_TRUE(dialog) << "the dialog was cancelled at the first move";
+    ASSERT_NE(shownDialog(dialog), nullptr);
+    EXPECT_EQ(shownDialog(dialog)->windowHandle()->transientParent(), middle.data());
+    ASSERT_TRUE(pane);
+    ASSERT_TRUE(middle->movePaneTo(pane, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
+    ASSERT_TRUE(closeAndWait(middle));
+    ASSERT_TRUE(dialog) << "the dialog was cancelled at the second move";
+    ASSERT_NE(shownDialog(dialog), nullptr);
+    EXPECT_TRUE(shownDialog(dialog)->isVisible());
+    EXPECT_EQ(shownDialog(dialog)->windowHandle()->transientParent(), destination);
+    const QString saved = directory.filePath(QStringLiteral("moved.txt"));
+    saveThrough(dialog, QStringLiteral("moved.txt"), directory.path(), QStringLiteral("moved.txt"));
+    EXPECT_TRUE(waitFor([&] { return QFileInfo(saved).size() == 2; }));
+}
+
+TEST_F(NativeWindow, ADownloadsSaveDialogGoesWithItsPanesWindow) {
+    // The pane closes with its window: its dialog is cancelled, and saves
+    // nothing. Two paths cancel it, and each one alone passes this test:
+    // the dialog keeper, when the window's surface goes with the pane
+    // still in it, and the pane's own destroyed signal (Pane.cpp).
+    if (const std::string why = untypableDialog(); !why.empty()) GTEST_SKIP() << why;
+    // The windows close with their programs running, with no question.
+    restartApplication(QStringLiteral("no-confirm.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}}}}), {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    QPointer<TerminalWindow> source;
+    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source);
+    const auto rejectAll = qScopeGuard([&dialog] {
+        if (dialog) dialog->reject();
+        drainDeferredDeletes();
+    });
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(dialog);
+    ASSERT_TRUE(themeDialogShows(dialog)) << "the KDE platform theme did not load: no native dialog";
+    const QPointer<QWidget> shown = shownDialog(dialog);
+    ASSERT_TRUE(closeAndWait(source));
+    EXPECT_TRUE(waitFor([&] {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        return dialog.isNull();
+    })) << "the dialog of a closed pane stays";
+    EXPECT_TRUE(!shown || !shown->isVisible());
+    EXPECT_TRUE(QDir(directory.path()).entryList({QStringLiteral("moved.txt")}, QDir::Files).isEmpty());
+}
+
+TEST_F(NativeWindow, ADownloadsSaveDialogStaysWhileItsWindowHides) {
+    // A window that hides keeps its surface: the dialog over it stays,
+    // with the name that the user typed in it, and is over the window
+    // again when it shows. A layer surface is no parent for a dialog: the
+    // quick terminal slides out on its own while the dialog asks, hides
+    // when it has slid out, and slides in again when the dialog closes.
+    if (const std::string why = untypableDialog(); !why.empty()) GTEST_SKIP() << why;
+    for (const bool quick : {false, true}) {
+        SCOPED_TRACE(quick ? "quick terminal" : "window");
+        QPointer<TerminalWindow> source;
+        QPointer<QFileDialog> dialog = openDownloadDialog(*application, source, {}, quick);
+        const auto rejectAll = qScopeGuard([&dialog] {
+            if (dialog) dialog->reject();
+            drainDeferredDeletes();
+        });
+        ASSERT_TRUE(source);
+        ASSERT_TRUE(dialog);
+        ASSERT_TRUE(themeDialogShows(dialog)) << "the KDE platform theme did not load: no native dialog";
+        const QPointer<QWidget> shown = shownDialog(dialog);
+        ASSERT_TRUE(shown);
+        QLineEdit* const name = editHolding(shown, QStringLiteral("moved.txt"));
+        ASSERT_NE(name, nullptr);
+        name->setText(QStringLiteral("typed.txt"));
+        if (!quick) {
+            expectIdle(source);
+            source->hide();
+        }
+        ASSERT_TRUE(waitFor([&] { return source && !source->isVisible(); }, 5000));
+        drain(200);
+        ASSERT_TRUE(dialog) << "the dialog was cancelled";
+        ASSERT_TRUE(shown);
+        EXPECT_TRUE(shown->isVisible());
+        if (!quick) {
+            source->show();
+            ASSERT_TRUE(waitFor([&] { return source && source->isExposed(); }, 5000));
+        }
+        ASSERT_TRUE(dialog) << "the dialog was cancelled when its window showed";
+        EXPECT_EQ(shownDialog(dialog), shown.data());
+        EXPECT_EQ(shown->windowHandle()->transientParent(), quick ? nullptr : source.data());
+        const QString saved = directory.filePath(quick ? QStringLiteral("quick.txt") : QStringLiteral("window.txt"));
+        saveThrough(dialog, QStringLiteral("typed.txt"), directory.path(), QFileInfo(saved).fileName());
+        EXPECT_TRUE(waitFor([&] { return QFileInfo(saved).size() == 2; }));
+        if (quick) {
+            EXPECT_TRUE(waitFor([&] { return source && source->quickShown() && source->isExposed(); }, 5000));
+        }
+    }
+}
+
+TEST_F(NativeWindow, AQuickTerminalToggledBackMidSlideEndsWhereItWasSent) {
+    // A slide starts where the last one is. Toggled out before its slide
+    // in has moved, the quick terminal has no distance to go: it still
+    // hides. Toggled in again while it slides out, it stays. A slide in
+    // starts at the edge, where no frame callback comes to a surface that
+    // is wholly off screen: it still moves.
+    using PhosphorWayland::LayerSurface;
+    const auto openQuick = [this] {
+        WindowOptions options;
+        options.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("exec cat")};
+        options.quick = true;
+        return QPointer<TerminalWindow>(application->newWindow(options));
+    };
+    const auto slidOut = [](const QPointer<TerminalWindow>& quick) {
+        return waitFor([&] { return quick && !quick->isVisible(); }, 5000);
+    };
+    {
+        SCOPED_TRACE("out before any frame");
+        QPointer<TerminalWindow> quick = openQuick();
+        ASSERT_TRUE(quick);
+        quick->toggleQuick();
+        quick->toggleQuick();
+        EXPECT_TRUE(slidOut(quick)) << "the quick terminal stays shown";
+    }
+    {
+        SCOPED_TRACE("out after the first frame");
+        QPointer<TerminalWindow> quick = openQuick();
+        ASSERT_TRUE(quick);
+        quick->toggleQuick();
+        ASSERT_TRUE(waitFor([&] { return quick && quick->isExposed() && quick->submittedFrames() > 0; }));
+        quick->toggleQuick();
+        EXPECT_TRUE(slidOut(quick)) << "the quick terminal stays shown";
+    }
+    {
+        SCOPED_TRACE("out while it slides in");
+        QPointer<TerminalWindow> quick = openQuick();
+        ASSERT_TRUE(quick);
+        quick->toggleQuick();
+        const int hidden = LayerSurface::get(quick)->margins().top();
+        ASSERT_LT(hidden, 0);
+        ASSERT_TRUE(waitFor([&] { return quick && LayerSurface::get(quick)->margins().top() > hidden / 2; }))
+            << "the slide in stays at " << LayerSurface::get(quick)->margins().top();
+        quick->toggleQuick();
+        EXPECT_TRUE(slidOut(quick)) << "the quick terminal stays shown";
+    }
+    {
+        SCOPED_TRACE("in again before its slide out moved");
+        QPointer<TerminalWindow> quick = openQuick();
+        ASSERT_TRUE(quick);
+        quick->toggleQuick();
+        expectIdle(quick);
+        ASSERT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+        quick->toggleQuick();
+        quick->toggleQuick();
+        expectIdle(quick);
+        EXPECT_TRUE(quick->isVisible());
+        EXPECT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+    }
+    {
+        // With no slide to go in, the slide out stops where it is: the
+        // quick terminal must still show at its edge.
+        SCOPED_TRACE("in with no slide while it slides out");
+        QPointer<TerminalWindow> quick = openQuick();
+        ASSERT_TRUE(quick);
+        quick->toggleQuick();
+        expectIdle(quick);
+        ASSERT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+        SettingsStore file(directory.filePath(QStringLiteral("afterglow.conf")));
+        ASSERT_TRUE(file.write(QStringLiteral("QuickTerminal"), QStringLiteral("duration"), 5000));
+        ASSERT_TRUE(quick->runAction(quick->focusedPane(), Action::ReloadConfig));
+        quick->toggleQuick();
+        ASSERT_TRUE(waitFor([&] { return quick && LayerSurface::get(quick)->margins().top() < -10; }))
+            << "the slide out stays at " << LayerSurface::get(quick)->margins().top();
+        ASSERT_TRUE(file.write(QStringLiteral("QuickTerminal"), QStringLiteral("animate"), false));
+        ASSERT_TRUE(quick->runAction(quick->focusedPane(), Action::ReloadConfig));
+        quick->toggleQuick();
+        expectIdle(quick);
+        EXPECT_TRUE(quick->isVisible());
+        EXPECT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+    }
+}
+
+TEST_F(NativeWindow, AHeldChordWithNothingToDoRepeatsIntoTheProgram) {
+    // Fullscreen has nothing to do in a quick terminal: F11 reaches the
+    // program, which must get its repeats too. cat -v in raw mode shows
+    // each F11 as "^[[23~".
+    const QString program = directory.filePath(QStringLiteral("cat-v.sh"));
+    {
+        QFile script(program);
+        ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+        script.write("#!/bin/sh\nstty raw -echo; printf ready; exec cat -v\n");
+    }
+    ASSERT_TRUE(QFile::setPermissions(program, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    WindowOptions options;
+    options.command = {program};
+    options.quick = true;
+    QPointer<TerminalWindow> quick = application->newWindow(options);
+    ASSERT_TRUE(quick);
+    quick->toggleQuick();
+    Pane* pane = quick->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("ready")); }));
+    holdKey(quick, Qt::Key_F11, Qt::NoModifier, {}, 3);
+    ASSERT_TRUE(settleQueued());
+    const QString key = QStringLiteral("^[[23~");
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).count(key) >= 4; })) << screenOf(pane).toStdString();
+    drain(200);
+    EXPECT_EQ(screenOf(pane).count(key), 4) << screenOf(pane).toStdString();
+    EXPECT_FALSE(quick->windowStates().testFlag(Qt::WindowFullScreen));
+}
+
+TEST_F(NativeWindow, AQuickTerminalMovesToTheScreenNamedWhileItShowedAtItsNextShow) {
+    // A shown layer surface keeps its output: a QuickTerminal.screen set
+    // while it shows takes effect when it shows again, and meanwhile it
+    // keeps the size of the output that it is on.
+    using PhosphorWayland::LayerSurface;
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    if (screens.size() < 2) GTEST_SKIP() << "needs two outputs (kwin_wayland --output-count 2)";
+    QScreen* const first = QGuiApplication::primaryScreen();
+    QScreen* const second = screens.value(0) == first ? screens.value(1) : screens.value(0);
+    WindowOptions options;
+    options.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("exec cat")};
+    options.quick = true;
+    QPointer<TerminalWindow> quick = application->newWindow(options);
+    ASSERT_TRUE(quick);
+    quick->toggleQuick();
+    ASSERT_TRUE(waitFor([&] { return quick && quick->isExposed() && quick->submittedFrames() > 0; }));
+    expectIdle(quick);
+    ASSERT_EQ(LayerSurface::get(quick)->screen(), first);
+    const int height = quick->height();
+    SettingsStore file(directory.filePath(QStringLiteral("afterglow.conf")));
+    ASSERT_TRUE(file.write(QStringLiteral("QuickTerminal"), QStringLiteral("screen"), second->name()));
+    ASSERT_TRUE(quick->runAction(quick->focusedPane(), Action::ReloadConfig));
+    EXPECT_EQ(LayerSurface::get(quick)->screen(), first);
+    // The outputs of the runner have one size, so this guards the height: it
+    // cannot tell the height of the new screen from the old one.
+    EXPECT_EQ(quick->height(), height);
+    quick->toggleQuick();
+    ASSERT_TRUE(waitFor([&] { return quick && !quick->isVisible(); }, 5000));
+    quick->toggleQuick();
+    ASSERT_TRUE(waitFor([&] { return quick && quick->isExposed(); }));
+    EXPECT_EQ(LayerSurface::get(quick)->screen(), second);
+    EXPECT_TRUE(waitFor([&] { return quick && quick->screen() == second; })) << "the quick terminal shows on " << (quick && quick->screen() ? quick->screen()->name() : QString()).toStdString();
+    expectIdle(quick);
+    EXPECT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+}
+
+// The file chooser of the gtk3 platform theme, which is no Qt widget: the
+// test reaches it through the GTK that the theme loaded.
+class GtkChooser
+{
+public:
+    GtkChooser()
+        : m_gtk(dlopen("libgtk-3.so.0", RTLD_NOLOAD | RTLD_LAZY)), m_glib(dlopen("libglib-2.0.so.0", RTLD_NOLOAD | RTLD_LAZY)),
+          m_gobject(dlopen("libgobject-2.0.so.0", RTLD_NOLOAD | RTLD_LAZY))
+    {
+    }
+    ~GtkChooser()
+    {
+        for (void* library : {m_gtk, m_glib, m_gobject})
+            if (library) dlclose(library);
+    }
+    GtkChooser(const GtkChooser&) = delete;
+    GtkChooser& operator=(const GtkChooser&) = delete;
+    /// The visible file chooser dialogs.
+    std::vector<void*> shown() const
+    {
+        struct List { void* data; List* next; List* previous; };
+        const auto list = symbol<List* (*)()>(m_gtk, "gtk_window_list_toplevels");
+        const auto chooserType = symbol<std::size_t (*)()>(m_gtk, "gtk_file_chooser_get_type");
+        const auto isA = symbol<int (*)(void*, std::size_t)>(m_gobject, "g_type_check_instance_is_a");
+        const auto visible = symbol<int (*)(void*)>(m_gtk, "gtk_widget_get_visible");
+        const auto release = symbol<void (*)(List*)>(m_glib, "g_list_free");
+        std::vector<void*> out;
+        if (!list || !chooserType || !isA || !visible || !release) return out;
+        List* const all = list();
+        for (List* each = all; each; each = each->next)
+            if (isA(each->data, chooserType()) && visible(each->data)) out.push_back(each->data);
+        release(all);
+        return out;
+    }
+    QString name(void* chooser) const
+    {
+        const auto get = symbol<char* (*)(void*)>(m_gtk, "gtk_file_chooser_get_current_name");
+        const auto release = symbol<void (*)(void*)>(m_glib, "g_free");
+        if (!get || !release) return {};
+        char* const text = get(chooser);
+        const QString out = QString::fromUtf8(text);
+        release(text);
+        return out;
+    }
+    /// Types @p name in the name field, as the user would.
+    void setName(void* chooser, const QString& name) const
+    {
+        if (const auto set = symbol<void (*)(void*, const char*)>(m_gtk, "gtk_file_chooser_set_current_name"))
+            set(chooser, name.toUtf8().constData());
+    }
+    /// The Save button (GTK_RESPONSE_OK, which the theme gives it).
+    void save(void* chooser) const
+    {
+        if (const auto respond = symbol<void (*)(void*, int)>(m_gtk, "gtk_dialog_response")) respond(chooser, -5);
+    }
+
+private:
+    template <class Function>
+    static Function symbol(void* library, const char* name)
+    {
+        return library ? reinterpret_cast<Function>(dlsym(library, name)) : nullptr;
+    }
+    void* m_gtk;
+    void* m_glib;
+    void* m_gobject;
+};
+
+TEST_F(NativeWindow, ANativeGtkSaveDialogKeepsItsNameWhenItsWindowCloses) {
+    // The GTK dialog shows in a window that is not Qt's, and the window
+    // that closes does not close it. It stays as it is: shown again, it
+    // would take back the first name, and what the user typed would go.
+    if (platformTheme() != "gtk3") GTEST_SKIP() << "runs with --platform-theme gtk3";
+    const GtkChooser gtk;
+    QPointer<TerminalWindow> source;
+    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source, [&](QFileDialog*) {
+        const auto shown = gtk.shown();
+        return shown.size() == 1 && gtk.name(shown.front()) == QStringLiteral("moved.txt");
+    });
+    const auto rejectAll = qScopeGuard([&dialog] {
+        if (dialog) dialog->reject();
+        drainDeferredDeletes();
+    });
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(dialog) << "no GTK file chooser shows the name";
+    void* const chooser = gtk.shown().front();
+    gtk.setName(chooser, QStringLiteral("typed.txt"));
+    WindowOptions plain; plain.command = {QStringLiteral("/bin/cat")};
+    auto* destination = application->newWindow(plain); ASSERT_NE(destination, nullptr);
+    destination->show();
+    QPointer<Pane> pane = source->focusedPane(); ASSERT_TRUE(pane);
+    ASSERT_TRUE(source->movePaneTo(pane, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
+    ASSERT_TRUE(closeAndWait(source));
+    drain(200);
+    ASSERT_TRUE(dialog) << "the dialog was cancelled";
+    EXPECT_EQ(dialog->windowHandle()->transientParent(), destination);
+    ASSERT_EQ(gtk.shown(), std::vector<void*>{chooser});
+    EXPECT_EQ(gtk.name(chooser).toStdString(), "typed.txt") << "the typed name is lost";
+    const QString saved = directory.filePath(QStringLiteral("typed.txt"));
+    dialog->setDirectory(directory.path());
+    ASSERT_TRUE(waitFor([&] { return dialog->selectedFiles() == QStringList{saved}; }))
+        << dialog->selectedFiles().join(QLatin1Char(',')).toStdString();
+    gtk.save(chooser);
+    EXPECT_TRUE(waitFor([&] { return QFileInfo(saved).size() == 2; }));
+}
+
+TEST_F(NativeWindow, NewTabFromTheMenuOfABackgroundTabSwitchesTabsOnce) {
+    // The tab menu's New Tab on a tab that does not show opens the new tab
+    // beside that tab, with one switch: from the current tab to the new
+    // one, not through the menu's tab first.
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    Pane* second = window->openTab(launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    ASSERT_EQ(window->focusedPane(), second);
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(settleQueued());
+    const quint32 current = window->activeTabId();
+    QList<std::pair<quint32, quint32>> switches;
+    QObject listener;
+    QObject::connect(window, &TerminalWindow::tabSwitched, &listener,
+                     [&](quint32 from, quint32 to, int) { switches.append({from, to}); });
+    chrome->tabMenu(0, 50, 15);
+    int newTab = -1;
+    for (const auto& item : chrome->contextMenu().value(QStringLiteral("items")).toList())
+        if (item.toMap().value(QStringLiteral("title")).toString() == QStringLiteral("New Tab"))
+            newTab = item.toMap().value(QStringLiteral("id")).toInt();
+    ASSERT_GE(newTab, 0);
+    chrome->activateMenuItem(newTab);
+    ASSERT_TRUE(waitFor([&] { return window->tabs().size() == 3; }));
+    ASSERT_TRUE(settleQueued());
+    ASSERT_EQ(switches.size(), 1);
+    EXPECT_EQ(switches[0].first, current);
+    EXPECT_EQ(switches[0].second, window->activeTabId());
+    EXPECT_EQ(window->tabIndexOf(window->focusedPane()), 1);
+}
+
+TEST_F(NativeWindow, AProgramWhoseTabClosedShowsAndWritesNothing) {
+    // What a program sends while its tab closes arrives after the close: a
+    // new notice, a status that asks for attention, a bell and a clipboard
+    // write from a program that is ending reach nothing, and the close of a
+    // notice it showed still goes through.
+    RegisteredNotificationServer notices;
+    ASSERT_TRUE(notices.registered);
+    // The bell's sound is a pw-play of the test's own, which counts the
+    // bells that play.
+    const QString bin = directory.filePath(QStringLiteral("bin"));
+    const QString bells = directory.filePath(QStringLiteral("bells"));
+    ASSERT_TRUE(QDir().mkpath(bin));
+    {
+        QFile player(bin + QStringLiteral("/pw-play"));
+        ASSERT_TRUE(player.open(QIODevice::WriteOnly));
+        player.write(QStringLiteral("#!/bin/sh\necho \"$1\" >> '%1'\n").arg(bells).toUtf8());
+    }
+    ASSERT_TRUE(QFile::setPermissions(bin + QStringLiteral("/pw-play"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    const QByteArray path = qgetenv("PATH");
+    qputenv("PATH", QFile::encodeName(bin) + ':' + path);
+    const auto restorePath = qScopeGuard([path] { qputenv("PATH", path); });
+    const auto played = [&] {
+        QFile file(bells);
+        return file.open(QIODevice::ReadOnly) ? file.readAll().count('\n') : 0;
+    };
+    restartApplication(QStringLiteral("closed-tab.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false},
+                                                               {QStringLiteral("clipboardWrite"), QStringLiteral("ask")},
+                                                               {QStringLiteral("bell"), QStringLiteral("visual")},
+                                                               {QStringLiteral("bellSound"), directory.filePath(QStringLiteral("bell.oga"))},
+                                                               {QStringLiteral("bellSoundInterval"), 0}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    QPointer<Pane> first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    Pane* second = window->openTab(launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    feedFromReader(first, "\x1b]99;i=shown;before\x1b\\");
+    ASSERT_TRUE(waitFor([&] { return notices.server.count == 1; }));
+    ASSERT_TRUE(window->runAction(first, Action::CloseTab));
+    ASSERT_EQ(window->tabs().size(), 1);
+    // The pane lives until its deferred delete, which the test holds back.
+    ASSERT_TRUE(first);
+    ASSERT_EQ(notices.server.closes, 0);
+    feedFromReader(first, "\x1b]99;i=late;after\x1b\\" "\x1b]9;after\x07" "\x1b]7501;state=error\x1b\\" "\a"
+                          "\x1b]52;c;bGF0ZQ==\x07" "\x1b]99;i=shown:p=close;\x1b\\");
+    EXPECT_TRUE(waitFor([&] { return notices.server.closes == 1; })) << "the close of the notice did not arrive";
+    ASSERT_TRUE(settleQueued());
+    drain(100);
+    EXPECT_EQ(notices.server.count, 1) << notices.server.bodies.join(QLatin1Char('|')).toStdString();
+    EXPECT_FALSE(chrome->clipboardPromptOpen());
+    // The same write and bell from a program in a tab ask and ring. The
+    // bell of the closed tab would have played first.
+    feedFromReader(second, "\a");
+    EXPECT_TRUE(waitFor([&] { return played() >= 1; })) << "no bell plays";
+    drain(200);
+    EXPECT_EQ(played(), 1) << "the bell of the closed tab played";
+    feedFromReader(second, "\x1b]52;c;bGF0ZQ==\x07");
+    EXPECT_TRUE(waitFor([&] { return chrome->clipboardPromptOpen(); }));
+}
+
+TEST_F(NativeWindow, AHeldChordSplitsOpensAndClosesOnce) {
+    // Each auto-repeat of a held chord would split, open or close one more,
+    // or turn a toggle back. The repeats are taken: no program gets one of
+    // them. Every pane runs cat -v in raw mode, which shows a chord that
+    // reached it as "^[^R". A setting that no group has makes each reload
+    // of the configuration show its problems again.
+    RegisteredNotificationServer notices;
+    ASSERT_TRUE(notices.registered);
+    const QString program = directory.filePath(QStringLiteral("cat-v.sh"));
+    {
+        QFile script(program);
+        ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+        script.write("#!/bin/sh\nstty raw -echo; printf ready; exec cat -v\n");
+    }
+    ASSERT_TRUE(QFile::setPermissions(program, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    restartApplication(QStringLiteral("held.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}, {QStringLiteral("shell"), program}}},
+                      {QStringLiteral("Keybinds"), QJsonObject{{QStringLiteral("bindings"), QJsonObject{
+                          {QStringLiteral("split_right"), QStringLiteral("Ctrl+Alt+R")},
+                          {QStringLiteral("new_tab"), QStringLiteral("Ctrl+Alt+N")},
+                          {QStringLiteral("close_pane"), QStringLiteral("Ctrl+Alt+W")},
+                          {QStringLiteral("toggle_pane_zoom"), QStringLiteral("Ctrl+Alt+Z")},
+                          {QStringLiteral("reload_config"), QStringLiteral("Ctrl+Alt+L")}}}}},
+                      {QStringLiteral("NoSuchGroup"), QJsonObject{{QStringLiteral("key"), 1}}}}),
+        {});
+    if (HasFatalFailure()) return;
+    // The panes of every tab, each once its program is ready for keys.
+    const auto ready = [&] {
+        return waitFor([&] {
+            for (Pane* pane : window->panes())
+                if (!screenOf(pane).contains(QStringLiteral("ready"))) return false;
+            return true;
+        });
+    };
+    const auto noKeyReached = [&] {
+        for (Pane* pane : window->panes()) EXPECT_FALSE(screenOf(pane).contains(QLatin1Char('^'))) << screenOf(pane).toStdString();
+    };
+    ASSERT_TRUE(ready());
+    holdKey(window, Qt::Key_R, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("r"), 4);
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(window->panes().size(), 2);
+    ASSERT_TRUE(ready());
+    holdKey(window, Qt::Key_N, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("n"), 4);
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(window->tabs().size(), 2);
+    ASSERT_TRUE(ready());
+    noKeyReached();
+    // The new tab's pane closes, and its tab with it: the split stays.
+    holdKey(window, Qt::Key_W, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("w"), 4);
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(window->tabs().size(), 1);
+    ASSERT_EQ(window->panes().size(), 2);
+    // A held toggle turns once: four presses would turn it back.
+    Pane* const zoomed = window->focusedPane();
+    Pane* const other = window->panes().value(0) == zoomed ? window->panes().value(1) : window->panes().value(0);
+    holdKey(window, Qt::Key_Z, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("z"), 3);
+    ASSERT_TRUE(settleQueued());
+    EXPECT_TRUE(waitFor([&] { return window->accessiblePaneRect(other).isEmpty() && !window->accessiblePaneRect(zoomed).isEmpty(); }))
+        << "the zoom turned back";
+    drain(100);
+    noKeyReached();
+    // A held reload shows the problems once.
+    drain(300);
+    const int shown = notices.server.count;
+    holdKey(window, Qt::Key_L, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("l"), 3);
+    ASSERT_TRUE(settleQueued());
+    EXPECT_TRUE(waitFor([&] { return notices.server.count > shown; })) << "the reload showed no problems";
+    drain(300);
+    EXPECT_EQ(notices.server.count, shown + 1);
+    noKeyReached();
+}
+
+TEST_F(NativeWindow, ASplitFromAfterglowCtlDoesNotShowItsWindow) {
+    // afterglow ctl and scripts split a pane where it is: its tab shows and
+    // the new pane takes the focus, and the window is neither shown,
+    // raised nor activated.
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    ASSERT_NE(window->openTab(launch, nullptr), nullptr);
+    window->hide();
+    ASSERT_TRUE(waitFor([&] { return !window->isVisible(); }));
+    QString error;
+    Pane* added = window->splitPane(first, SplitTree::Direction::Right, launch, &error);
+    ASSERT_NE(added, nullptr) << error.toStdString();
+    ASSERT_TRUE(settleQueued());
+    EXPECT_FALSE(window->isVisible());
+    EXPECT_EQ(window->tabIndexOf(added), window->tabIndexOf(first));
+    EXPECT_EQ(window->tabIndexOf(window->focusedPane()), window->tabIndexOf(first));
+    EXPECT_EQ(window->focusedPane(), added);
+}
+
+TEST_F(NativeWindow, AProjectSavesTheTabOfTheLastOutputAsAShell) {
+    // The pager of show_last_output reads a temporary file that goes with
+    // its tab: a project saves that tab as a shell, not as the pager.
+    restartApplication(QStringLiteral("pager.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("pager"), QStringLiteral("/usr/bin/tail -f")}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    feedFromReader(pane, "\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\echo test\x1b]133;C\x1b\\result\r\n\x1b]133;D;0\x1b\\");
+    ASSERT_TRUE(settleQueued());
+    ASSERT_TRUE(window->runAction(pane, Action::ShowLastOutput));
+    ASSERT_EQ(window->tabs().size(), 2);
+    Pane* pager = window->focusedPane();
+    ASSERT_NE(pager, pane);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pager).contains(QStringLiteral("result")); })) << screenOf(pager).toStdString();
+    bool found = false;
+    for (const auto tab : window->projectLayout().value(QStringLiteral("tabs")).toArray()) {
+        const QJsonObject saved = tab.toObject().value(QStringLiteral("tree")).toObject().value(QStringLiteral("pane")).toObject();
+        if (saved.value(QStringLiteral("id")).toString() != QString::number(pager->id())) continue;
+        found = true;
+        EXPECT_TRUE(saved.value(QStringLiteral("command")).toArray().isEmpty())
+            << QJsonDocument(saved).toJson(QJsonDocument::Compact).toStdString();
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST_F(NativeWindow, AWindowWhoseJobNamesNothingClosesWithNoQuestion) {
+    // A job whose name is only characters that disguise text names nothing
+    // in the question: the window closes at once, as with no job.
+    const QString program = directory.filePath(QString(QChar(0x200B)));
+    ASSERT_TRUE(QFile::link(QStringLiteral("/bin/cat"), program));
+    WindowOptions options;
+    options.command = {program};
+    QPointer<TerminalWindow> other = application->newWindow(options);
+    ASSERT_TRUE(other);
+    other->show();
+    ASSERT_TRUE(waitFor([&] { return other->isExposed(); }));
+    auto* chrome = other->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    EXPECT_TRUE(other->close());
+    EXPECT_FALSE(chrome->confirmPromptOpen());
+    EXPECT_TRUE(waitFor([&] {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        return other.isNull();
+    })) << "the window stayed";
+}
+
+TEST_F(NativeWindow, AHeldPaneSaysWhichSignalEndedItsProgram) {
+    // A program killed by a signal did not exit with a status: the note
+    // names the signal, not the 128 + N of a shell's $?.
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("read line; kill -9 $$")};
+    Pane* held = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(held, nullptr);
+    held->setHold(true);
+    ASSERT_TRUE(settleQueued());
+    ASSERT_TRUE(held->sendInput("\n"));
+    ASSERT_TRUE(waitFor([&] { return held->isHeld(); }));
+    ASSERT_TRUE(waitFor([&] { return screenOf(held).contains(QStringLiteral("Press any key")); })) << screenOf(held).toStdString();
+    EXPECT_TRUE(screenOf(held).contains(QStringLiteral("killed by signal 9"))) << screenOf(held).toStdString();
+    EXPECT_FALSE(screenOf(held).contains(QStringLiteral("137"))) << screenOf(held).toStdString();
+}
+
+TEST_F(NativeWindow, AProjectPaneWhoseProgramCannotStartGetsAShellInItsDirectory) {
+    // The program of a restored pane exists but cannot run (its interpreter
+    // is missing): the pane holds a plain sh, in the pane's directory.
+    const QString place = directory.filePath(QStringLiteral("project-place"));
+    ASSERT_TRUE(QDir().mkpath(place));
+    const QString broken = directory.filePath(QStringLiteral("broken-program"));
+    {
+        QFile file(broken);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write("#!/nonexistent/afterglow-interpreter\n");
+    }
+    ASSERT_TRUE(QFile::setPermissions(broken, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    const QJsonObject paneData{{QStringLiteral("id"), QStringLiteral("p")}, {QStringLiteral("cwd"), place},
+                               {QStringLiteral("title"), QString()}, {QStringLiteral("command"), QJsonArray{broken}}};
+    const QJsonObject document{{QStringLiteral("version"), 1}, {QStringLiteral("active_tab"), QStringLiteral("t")},
+        {QStringLiteral("tabs"), QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("t")}, {QStringLiteral("title"), QString()},
+            {QStringLiteral("active_pane"), QStringLiteral("p")}, {QStringLiteral("tree"), QJsonObject{{QStringLiteral("pane"), paneData}}}}}}};
+    WindowOptions options;
+    options.empty = true;
+    QPointer<TerminalWindow> restored = application->newWindow(options);
+    ASSERT_TRUE(restored);
+    const QVariantMap result = restored->restoreProject(document);
+    ASSERT_TRUE(result.value(QStringLiteral("error")).toString().isEmpty()) << result.value(QStringLiteral("error")).toString().toStdString();
+    EXPECT_TRUE(result.value(QStringLiteral("warnings")).toStringList().join(QLatin1Char('\n')).contains(QStringLiteral("/bin/sh recovery")));
+    restored->show();
+    Pane* pane = restored->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    EXPECT_TRUE(waitFor([&] { return pane->workingDirectory() == place; })) << pane->workingDirectory().toStdString();
 }
 
 TEST_F(NativeWindow, AnOverlaysProgramGetsTheRemoteSocketOfItsHost) {
