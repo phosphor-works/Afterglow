@@ -143,7 +143,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - `new_tab(pane)` starts in the directory of that pane and opens its tab after the tab of that pane.
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
 - External control through `afterglow ctl` and a control socket, with access settings and merged state events.
-- `afterglow ctl screenshot` saves a PNG of a pane, its tab or its window as the window shows it, with the shader packs and the chrome. It needs `Control.allowReadText`.
+- `afterglow ctl screenshot` saves a PNG of a pane, its tab or its window as the window shows it, with the shader packs. With `--window` it includes the tab bar. It needs `Control.allowReadText`.
 - Script commands. A script or package declares each command with a summary. A usage text, a palette title and standard input are optional. A script can also change its commands at run time with `afterglow.set_commands`, which takes the same map of names as the package manifest.
 - Commands that a script marks `remote` also run from a remote host, with `aglow run` in an `afterglow ssh` session. They need `Terminal.sshRemoteCommands`, which is off by default, and `Control.enabled` and `Scripts.enabled`. `Terminal.sshIntegration` is not necessary, because you can also run `afterglow ssh` yourself.
 - `afterglow ssh` forwards a socket of Afterglow for each session over the shared ssh connection, and `aglow run` on the host finds it with OSC 24569. Before the session, `aglow remote-prune` removes the sockets of sessions that ended. An `afterglow ssh` in an overlay has a socket of its own, and the pane keeps the socket of its session.

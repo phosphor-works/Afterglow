@@ -126,7 +126,7 @@ The daemon serves the phosphor-ipc wire format without Qt.
 | --- | --- | --- |
 | Layout: new tab, split, close, move | The daemon changes the layout. The client shows the change. | The daemon changes the layout. |
 | Pane input and pane text | The daemon | The daemon |
-| Window and chrome: overview, palette, focus | The daemon passes the call to a local client. | Refused with an error that says that no client is attached |
+| Window and chrome: overview, palette, focus, screenshot | The daemon passes the call to a local client. | Refused with an error that says that no client is attached |
 
 The daemon applies `Control.enabled` and `Control.allowReadText` to `afterglow ctl` calls, with the values of its last client.
 The client and the `afterglow mux` commands reach the daemon also when `Control.enabled` is off.

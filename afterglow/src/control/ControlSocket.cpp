@@ -7,13 +7,11 @@
 #include "../config/Settings.h"
 
 #include <QBuffer>
-#include <QCoreApplication>
 #include <QImage>
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QPointer>
 #include <QRegularExpression>
-#include <QThreadPool>
 
 #include <algorithm>
 #include <cmath>
@@ -52,6 +50,9 @@ ControlApi::ControlApi(Control& control, SettingsStore& settings, QObject* paren
     , m_control(control)
     , m_settings(settings)
 {
+    // One at a time: a screenshot waits for its frame anyway, and the cap
+    // of MaxScreenshots bounds the queue.
+    m_encoder.setMaxThreadCount(1);
 }
 
 bool ControlApi::failed(const QString& error)
@@ -92,66 +93,102 @@ void ControlApi::sendText(double pane, const QString& text)
     if (const auto id = paneId(pane)) failed(m_control.sendText(*id, text));
 }
 
+ControlApi::PendingReply ControlApi::deferCall(const QString& noClient)
+{
+    auto reply = std::make_shared<PhosphorIpc::IpcPendingReply>(deferReply());
+    if (reply->isValid()) return reply;
+    // A call from no connection has nobody to answer later; past the
+    // router's limit of waiting calls, the router fails it.
+    if (!connectionId()) failed(noClient);
+    return nullptr;
+}
+
+std::optional<quint32> ControlApi::targetPane(PhosphorIpc::IpcPendingReply& reply, quint32 id)
+{
+    if (id != 0) return id;
+    if (const auto focused = m_control.focusedPane()) return *focused;
+    reply.fail(QStringLiteral("no_pane"), QStringLiteral("no focused pane"));
+    return std::nullopt;
+}
+
 void ControlApi::screenshot(double pane, const QString& scope)
 {
     const auto id = paneId(pane);
     if (!id) return;
-    std::optional<Control::CaptureScope> s;
-    if (scope == QLatin1String("pane")) s = Control::CaptureScope::Pane;
-    else if (scope == QLatin1String("tab")) s = Control::CaptureScope::Tab;
-    else if (scope == QLatin1String("window")) s = Control::CaptureScope::Window;
-    if (!s) {
+    const auto captureScope = Control::captureScopeFromName(scope);
+    if (!captureScope) {
         failed(QStringLiteral("scope is pane, tab or window"));
         return;
     }
-    const quint64 connection = connectionId();
-    auto reply = std::make_shared<PhosphorIpc::IpcPendingReply>(deferReply());
-    if (!reply->isValid()) {
-        if (!connection) failed(QStringLiteral("a screenshot needs a client connection"));
+    const PendingReply reply = deferCall(QStringLiteral("a screenshot needs a client connection"));
+    if (!reply) return;
+    // From here on a failure has a code of its own, which only the pending
+    // reply sends. The permission goes first: it holds for every pane.
+    QString code;
+    if (const QString refused = m_control.captureRefusal(code); !refused.isEmpty()) {
+        reply->fail(code, refused);
         return;
     }
-    quint32 target = *id;
-    if (target == 0) {
-        const auto focused = m_control.focusedPane();
-        if (!focused) {
-            reply->fail(QStringLiteral("no_pane"), QStringLiteral("no focused pane"));
-            return;
-        }
-        target = *focused;
+    if (m_screenshots >= MaxScreenshots) {
+        reply->fail(QStringLiteral("busy"), QStringLiteral("%1 screenshots are in progress").arg(MaxScreenshots));
+        return;
     }
-    QString code;
-    const QString error = m_control.capture(target, *s,
+    const auto target = targetPane(*reply, *id);
+    if (!target) return;
+    ++m_screenshots;
+    const QString error = m_control.capture(*target, *captureScope,
         [reply, api = QPointer<ControlApi>(this)](const QString& error, const QString& code, const QImage& image) {
+            if (!api) {
+                reply->fail(QStringLiteral("failed"), QStringLiteral("the control socket closed"));
+                return;
+            }
             if (!error.isEmpty()) {
+                --api->m_screenshots;
                 reply->fail(code, error);
                 return;
             }
-            // Checked again as the picture goes out: read access can go
-            // while the frame is drawn.
-            if (!api || !api->m_settings.settings().control.allowReadText) {
-                reply->fail(QStringLiteral("denied"), QStringLiteral("screenshots are off (Control.allowReadText)"));
-                return;
-            }
             // A 4K PNG takes a moment to encode: not on the thread that draws
-            // the windows. The reply goes out on the router's thread.
-            QThreadPool::globalInstance()->start([reply, image] {
+            // the windows. The answer comes back to this object's thread,
+            // the router's.
+            ControlApi* self = api.data();
+            // The reply moves on to the posted call: the pool keeps no copy,
+            // so it ends on the router's thread, as IpcPendingReply wants.
+            self->m_encoder.start([reply, image, self]() mutable {
                 QByteArray png;
                 QBuffer buffer(&png);
                 buffer.open(QIODevice::WriteOnly);
-                const bool saved = image.save(&buffer, "PNG");
-                QMetaObject::invokeMethod(QCoreApplication::instance(), [reply, png, saved, size = image.size()] {
-                    if (!saved) {
-                        reply->fail(QStringLiteral("failed"), QStringLiteral("the PNG could not be written"));
-                        return;
-                    }
-                    reply->finish(QJsonObject{{QStringLiteral("png"), QString::fromLatin1(png.toBase64())},
-                                              {QStringLiteral("width"), size.width()},
-                                              {QStringLiteral("height"), size.height()}});
+                const QString base64 = image.save(&buffer, "PNG") ? QString::fromLatin1(png.toBase64()) : QString();
+                buffer.close();
+                png = {};
+                QMetaObject::invokeMethod(self, [reply = std::move(reply), base64, size = image.size(), self] {
+                    self->finishScreenshot(*reply, base64, size);
                 });
             });
         },
         code);
-    if (!error.isEmpty()) reply->fail(code, error);
+    if (!error.isEmpty()) {
+        --m_screenshots;
+        reply->fail(code, error);
+    }
+}
+
+void ControlApi::finishScreenshot(PhosphorIpc::IpcPendingReply& reply, const QString& base64, const QSize& size)
+{
+    --m_screenshots;
+    // Checked again as the picture goes out: read access, or control
+    // itself, can go off while the frame is drawn and encoded.
+    QString code;
+    if (const QString refused = m_control.captureRefusal(code); !refused.isEmpty()) {
+        reply.fail(code, refused);
+    } else if (!m_settings.settings().control.enabled) {
+        reply.fail(QStringLiteral("cancelled"), QStringLiteral("Control.enabled is off"));
+    } else if (base64.isEmpty()) {
+        reply.fail(QStringLiteral("failed"), QStringLiteral("the PNG could not be written"));
+    } else {
+        reply.finish(QJsonObject{{QStringLiteral("png"), base64},
+                                 {QStringLiteral("width"), size.width()},
+                                 {QStringLiteral("height"), size.height()}});
+    }
 }
 
 QString ControlApi::getText(double pane, const QString& scope)
@@ -404,26 +441,14 @@ void ControlApi::overlay(double pane, const QStringList& argv, const QVariantMap
     if (spec) error = Control::localDirectory(spec->cwd);
     if (failed(error)) return;
     const quint64 connection = connectionId();
-    auto reply = std::make_shared<PhosphorIpc::IpcPendingReply>(deferReply());
-    if (!reply->isValid()) {
-        // A call from no connection has nobody to answer later; past the
-        // router's limit of waiting calls, the router fails it.
-        if (!connection) failed(QStringLiteral("an overlay needs a client connection"));
-        return;
-    }
+    const PendingReply reply = deferCall(QStringLiteral("an overlay needs a client connection"));
+    if (!reply) return;
     // From here on a failure has a code of its own, which only the pending
     // reply sends.
-    quint32 target = *id;
-    if (target == 0) {
-        const auto focused = m_control.focusedPane();
-        if (!focused) {
-            reply->fail(QStringLiteral("no_pane"), QStringLiteral("no focused pane"));
-            return;
-        }
-        target = *focused;
-    }
+    const auto target = targetPane(*reply, *id);
+    if (!target) return;
     QString code;
-    error = m_control.overlay(overlayOwner(connection), {}, target, *spec,
+    error = m_control.overlay(overlayOwner(connection), {}, *target, *spec,
         [reply, api = QPointer<ControlApi>(this)](const QString& error, const QString& code, const QVariantMap& result) {
             if (!error.isEmpty()) {
                 reply->fail(code, error);

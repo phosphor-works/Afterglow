@@ -390,12 +390,18 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
             [](const QStringList& problems) { reportProblems(ProblemSource::Shaders, problems); });
     reportProblems(ProblemSource::Shaders, m_shaders.problems());
 
+    m_captureTimer.setSingleShot(true);
+    connect(&m_captureTimer, &QTimer::timeout, this, &TerminalWindow::expireCaptures);
     m_textBlinkTimer.setInterval(m_settings.settings().textBlinkInterval);
     connect(&m_textBlinkTimer, &QTimer::timeout, this, [this] {
         m_textBlinkOn = !m_textBlinkOn;
         scheduleRender();
     });
-    connect(this, &QWindow::windowStateChanged, this, [this] { updatePaneVisibility(); });
+    connect(this, &QWindow::windowStateChanged, this, [this] {
+        updatePaneVisibility();
+        // A minimized window may stay exposed, but it shows nothing.
+        if (windowState() == Qt::WindowMinimized) abortCaptures(QStringLiteral("the window is not on screen"));
+    });
     m_blinkTimer.setInterval(m_settings.settings().cursorBlinkInterval);
     connect(&m_blinkTimer, &QTimer::timeout, this, [this] {
         m_blinkOn = !m_blinkOn;
@@ -434,6 +440,8 @@ TerminalWindow::~TerminalWindow()
     // their parent: the panes that are left are freed only after this body.
     for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
     for (Pane* pane : live) for (const auto& dock : pane->docks()) releaseDockAccessibility(dock.get());
+    // Their renderer goes below: a client hears why.
+    abortCaptures(QStringLiteral("the window closed"));
     // The chrome renders on the device through this window; it goes first.
     delete m_chrome;
     m_chrome = nullptr;
@@ -994,6 +1002,12 @@ bool TerminalWindow::paneDrawn(const Pane* pane) const
     if (index == m_currentTab) return m_splits && m_splits->isVisible(pane);
     if (overviewShowing()) return true;
     return m_tabTransition.progress.isAnimating() && m_tabs[std::size_t(index)]->id == m_tabTransition.from;
+}
+
+bool TerminalWindow::paneLaidOut(const Pane* pane) const
+{
+    const Pane* host = pane && pane->overlayHost() ? pane->overlayHost() : pane;
+    return m_splits && !m_splits->rectOf(host).isEmpty();
 }
 
 QString TerminalWindow::shownTitle(const Pane* pane)
@@ -1596,46 +1610,145 @@ bool TerminalWindow::resizeFocused(SplitTree::Neighbour direction)
     return changed;
 }
 
-void TerminalWindow::captureFrame(Pane* pane, CaptureScope scope, CaptureDone done)
+void TerminalWindow::captureFrame(Pane* pane, CaptureScope scope, CaptureReply reply)
 {
-    // The time a window has to draw the frame. A window that cannot draw
-    // (it went off screen, its surface is lost) gives an error, not a wait.
-    constexpr int CaptureTimeoutMs = 2000;
-    Pane* host = hostOf(pane);
-    auto shown = [this](Pane* p) { return p && m_splits && !m_splits->rectOf(p).isEmpty(); };
-    if (!isExposed() || (scope != CaptureScope::Window && !shown(host))) {
-        done(QStringLiteral("the pane is not on screen"), QStringLiteral("not_shown"), {});
+    const QString windowHidden = QStringLiteral("the window is not on screen");
+    if (!isExposed() || windowState() == Qt::WindowMinimized || (m_quick && !m_quickShown)) {
+        reply(windowHidden, QStringLiteral("not_shown"), {});
         return;
     }
-    // One answer: from the frame or from the timeout, whichever comes first.
-    auto pending = std::make_shared<CaptureDone>(std::move(done));
-    auto answer = [pending](const QString& error, const QString& code, const QImage& image) {
-        if (!*pending) return;
-        const CaptureDone finish = std::exchange(*pending, {});
-        finish(error, code, image);
-    };
-    m_renderer->captureNextFrame([answer, shown, scope, self = QPointer<TerminalWindow>(this), target = QPointer<Pane>(host)](QImage image) {
-        if (!self || image.isNull()) {
-            answer(QStringLiteral("the frame could not be read"), QStringLiteral("failed"), {});
+    Pane* host = hostOf(pane);
+    if (scope != CaptureScope::Window && (!m_splits || tabOf(host) != m_currentTab)) {
+        reply(QStringLiteral("the pane is not on screen"), QStringLiteral("not_shown"), {});
+        return;
+    }
+    auto capture = std::make_shared<PendingCapture>();
+    capture->scope = scope;
+    capture->target = host;
+    capture->reply = std::move(reply);
+    capture->deadline = QDeadlineTimer(CaptureTimeoutMs);
+    m_pendingCaptures.push_back(capture);
+    armCaptureTimer();
+    scheduleRender();
+}
+
+bool TerminalWindow::captureWaits(const PendingCapture& capture) const
+{
+    // The frame answers these: not_shown for the overview.
+    if (capture.scope == CaptureScope::Window || !capture.target || overviewShowing()) return false;
+    // A tab switch blends two tabs.
+    if (tabSwitching()) return true;
+    // A pane that is not drawn keeps the motion it had: it would wait for good.
+    if (capture.scope != CaptureScope::Pane || !paneLaidOut(capture.target)) return false;
+    // A pane on the way to its place (a split, a resize, a swap) is cut
+    // where it settles.
+    const auto motion = m_motion.find(capture.target.data());
+    return motion != m_motion.end() && motion->second->rect.isAnimating();
+}
+
+void TerminalWindow::prepareCaptures()
+{
+    // After the frame's animations advanced: what waits is decided on the
+    // state that this frame draws.
+    bool waiting = false;
+    for (const auto& capture : m_pendingCaptures) {
+        // Asked already: the redraw after a Retry frame serves it.
+        if (capture->ticket) continue;
+        if (captureWaits(*capture)) {
+            // The frames go on while it waits: its bound is on a frame, not
+            // on the wait. No readback until then.
+            capture->deadline.setRemainingTime(CaptureTimeoutMs);
+            waiting = true;
+            continue;
+        }
+        // The renderer runs it inside this window's render(), and the window
+        // answers its captures before it frees the renderer.
+        capture->ticket = m_renderer->captureNextFrame([this, weak = std::weak_ptr<PendingCapture>(capture)](QImage image) {
+            if (auto drawn = weak.lock()) captureDrawn(drawn, image);
+        });
+    }
+    if (waiting) armCaptureTimer();
+}
+
+void TerminalWindow::captureDrawn(const std::shared_ptr<PendingCapture>& capture, const QImage& image)
+{
+    capture->ticket = 0;
+    if (image.isNull()) {
+        finishCapture(capture, QStringLiteral("the frame could not be read"), QStringLiteral("failed"));
+        return;
+    }
+    const QString paneHidden = QStringLiteral("the pane is not on screen");
+    Pane* target = capture->target;
+    QRect crop = image.rect();
+    if (capture->scope != CaptureScope::Window) {
+        // The pane can close, or its tab go to the background, before the frame.
+        if (!target || !m_splits || tabOf(target) != m_currentTab) {
+            finishCapture(capture, paneHidden, QStringLiteral("not_shown"));
             return;
         }
-        QRect crop = image.rect();
-        if (scope == CaptureScope::Tab) {
-            crop = self->paneArea();
-        } else if (scope == CaptureScope::Pane) {
-            // The pane can close or leave the screen before the frame.
-            if (!shown(target)) {
-                answer(QStringLiteral("the pane is not on screen"), QStringLiteral("not_shown"), {});
+        // The overview draws cards, not the layout.
+        if (overviewShowing()) {
+            finishCapture(capture, QStringLiteral("the overview shows"), QStringLiteral("not_shown"));
+            return;
+        }
+        crop = paneArea();
+        if (capture->scope == CaptureScope::Pane) {
+            if (!paneLaidOut(target)) {
+                finishCapture(capture, paneHidden, QStringLiteral("not_shown"));
                 return;
             }
-            crop = self->m_splits->rectOf(target);
+            crop = m_splits->rectOf(target);
         }
-        answer({}, {}, image.copy(crop.intersected(image.rect())));
-    });
-    QTimer::singleShot(CaptureTimeoutMs, this, [answer] {
-        answer(QStringLiteral("no frame was drawn in time"), QStringLiteral("failed"), {});
-    });
-    scheduleRender();
+    }
+    crop = crop.intersected(image.rect());
+    if (crop.isEmpty()) {
+        finishCapture(capture, paneHidden, QStringLiteral("not_shown"));
+        return;
+    }
+    finishCapture(capture, {}, {}, crop == image.rect() ? image : image.copy(crop));
+}
+
+void TerminalWindow::finishCapture(std::shared_ptr<PendingCapture> capture, const QString& error, const QString& code,
+                                   const QImage& image)
+{
+    std::erase(m_pendingCaptures, capture);
+    if (capture->ticket) m_renderer->cancelCapture(std::exchange(capture->ticket, 0));
+    armCaptureTimer();
+    if (const CaptureReply reply = std::exchange(capture->reply, {})) reply(error, code, image);
+}
+
+void TerminalWindow::abortCaptures(const QString& error)
+{
+    m_captureTimer.stop();
+    for (const auto& capture : std::exchange(m_pendingCaptures, {})) {
+        if (capture->ticket) m_renderer->cancelCapture(std::exchange(capture->ticket, 0));
+        if (const CaptureReply reply = std::exchange(capture->reply, {})) reply(error, QStringLiteral("not_shown"), {});
+    }
+}
+
+void TerminalWindow::expireCaptures()
+{
+    const auto pending = m_pendingCaptures;
+    for (const auto& capture : pending) {
+        if (capture->deadline.hasExpired()) {
+            finishCapture(capture, QStringLiteral("no frame was drawn in time"), QStringLiteral("failed"));
+        }
+    }
+    armCaptureTimer();
+}
+
+void TerminalWindow::armCaptureTimer()
+{
+    std::optional<qint64> first;
+    for (const auto& capture : m_pendingCaptures) {
+        const qint64 left = capture->deadline.remainingTime();
+        if (!first || left < *first) first = left;
+    }
+    if (first) {
+        m_captureTimer.start(int(*first));
+    } else {
+        m_captureTimer.stop();
+    }
 }
 
 void TerminalWindow::scheduleRender()
@@ -1710,6 +1823,7 @@ void TerminalWindow::renderNow()
         sliding = m_slide.isAnimating();
         if (!sliding && !m_quickShown) {
             hide();
+            abortCaptures(QStringLiteral("the window is not on screen"));
             return;
         }
     }
@@ -1900,6 +2014,7 @@ void TerminalWindow::renderNow()
     // is not retried, not even for an animation: every retry would fail the
     // same way and spin the loop.
     using FrameResult = AfterglowRender::WindowRenderer::FrameResult;
+    prepareCaptures();
     const FrameResult frame = m_renderer->render(panes, shading, clear, chrome, m_chrome->serial());
     if (frame == FrameResult::Retry)
         scheduleRender();
@@ -2304,10 +2419,14 @@ void TerminalWindow::exposeEvent(QExposeEvent*)
     }
     if (isExposed()) {
         renderNow();
-    } else if (m_textBlinkTimer.isActive()) {
-        // Nothing draws while hidden: blinking text waits for the next frame.
-        m_textBlinkTimer.stop();
-        m_textBlinkOn = true;
+    } else {
+        // No frame comes while hidden.
+        abortCaptures(QStringLiteral("the window is not on screen"));
+        if (m_textBlinkTimer.isActive()) {
+            // Blinking text waits for the next frame.
+            m_textBlinkTimer.stop();
+            m_textBlinkOn = true;
+        }
     }
     updatePaneVisibility();
 }
@@ -4067,6 +4186,7 @@ void TerminalWindow::toggleQuick()
     } else {
         if (!animate) {
             hide();
+            abortCaptures(QStringLiteral("the window is not on screen"));
             return;
         }
         m_slide.start(m_slide.isAnimating() ? m_slide.value() : 0.0, hidden, spec);
@@ -4586,7 +4706,7 @@ bool TerminalWindow::sendMouse(Pane* pane, const QPointF& pos, int button, int a
     // A pane that a tab switch or a zoom took off screen while a button was
     // held: the pointer is over none of its cells. Its release goes where
     // the last report was, and its drags go nowhere.
-    const bool shown = !m_splits->rectOf(hostOf(pane)).isEmpty();
+    const bool shown = paneLaidOut(pane);
     if (!shown && action != int(AfterglowVt::MouseAction::Release)) return true;
     const QPoint cell = shown ? cellAt(pane, pos) : pane == m_lastMousePane ? m_lastMouseCell : QPoint();
     if (action == int(AfterglowVt::MouseAction::Motion) && cell == m_lastMouseCell && pane == m_lastMousePane
@@ -5184,7 +5304,7 @@ bool TerminalWindow::chromeHasKeyboard() const
 }
 QRect TerminalWindow::accessiblePaneRect(Pane* pane) const
 {
-    if (!m_splits || tabIdOf(hostOf(pane)) != activeTabId() || m_splits->rectOf(hostOf(pane)).isEmpty()) return {};
+    if (!paneLaidOut(pane)) return {};
     return globalRect(contentRect(pane, m_splits->rectOf(hostOf(pane))));
 }
 std::optional<AfterglowVt::SelectionPoint> TerminalWindow::accessibleCellAt(Pane* pane, const QPoint& global) const

@@ -12,11 +12,13 @@
 #include "animation/PaneMotion.h"
 #include "app/Services.h"
 #include "config/Settings.h"
+#include "control/Capture.h"
 #include "shaders/ShaderControls.h"
 
 #include <AfterglowRender/GridRenderer.h>
 
 #include <QClipboard>
+#include <QDeadlineTimer>
 #include <QElapsedTimer>
 #include <QPointer>
 #include <QSet>
@@ -118,6 +120,15 @@ public:
     void setGpuTimingEnabled(bool enabled) { m_renderer->setGpuTimingEnabled(enabled); }
     double completedGpuSeconds() const { return m_renderer->completedGpuSeconds(); }
     std::uint64_t submittedFrames() const { return m_renderer->submittedFrames(); }
+    /// The size of the frames that the renderer draws, in device pixels:
+    /// the size of a window screenshot. For the tests.
+    QSize framePixels() const { return m_renderer->pixelSize(); }
+    /// @p pane moves to its place (a split, a resize). For the tests.
+    bool paneMoving(const Pane* pane) const
+    {
+        const auto motion = m_motion.find(pane);
+        return motion != m_motion.end() && motion->second->rect.isAnimating();
+    }
 
     /// Every pane, tab by tab.
     QList<Pane*> panes() const;
@@ -188,21 +199,26 @@ public:
     /// @p reply gets the result, or "cancelled" when the overlay closes first.
     QString openOverlay(const QString& owner, const QString& request, Pane* pane, const OverlaySpec& spec,
                         OverlayReply reply, QString& code);
-    /// What a capture shows: one pane, the panes of its tab (the area under
-    /// the tab bar), or the whole window with its chrome.
-    enum class CaptureScope { Pane, Tab, Window };
-    /// Gets the image in device pixels, or an error and its code: not_shown
-    /// or failed.
-    using CaptureDone = std::function<void(const QString& error, const QString& code, const QImage& image)>;
-    /// Draws a frame and reads it back as the window shows it, shader packs
-    /// and chrome included, cut to @p scope around @p pane. A pane in a tab
-    /// that is not shown, or a window that is not on screen, is not_shown.
-    void captureFrame(Pane* pane, CaptureScope scope, CaptureDone done);
     /// Cancels @p owner's overlays whose request IDs start with @p prefix.
     void closeOverlays(const QString& owner, const QString& prefix, const QString& message);
     /// How far the overlay of @p pane has faded in, 0 to 1, and whether the
     /// fade still runs. For the tests.
     std::pair<qreal, bool> overlayFade(const Pane* pane) const;
+    /// Draws a frame and reads it back as the window shows it, cut to
+    /// @p scope around @p pane: shader packs, an overlay over the pane and
+    /// the chrome over it are in the image. A translucent background stays
+    /// translucent, without what is behind the window. @p reply gets
+    /// not_shown at once when the window is not on screen, and for the pane
+    /// and tab scopes when the pane is in a tab in the background. In the
+    /// frame, those two scopes are not_shown while the overview shows, and
+    /// for a pane that closed, left the tab or whose tab went to the
+    /// background; the pane scope also for a pane that a zoom hides or that
+    /// has no area. They wait for the end of a tab switch, and the pane
+    /// scope for the end of a move of the pane (a split, a resize), with no
+    /// readback while they wait. A window that leaves the screen or closes
+    /// first gives not_shown. A frame that cannot be read gives failed, and
+    /// so does no frame for CaptureTimeoutMs (each frame of a wait restarts it).
+    void captureFrame(Pane* pane, CaptureScope scope, CaptureReply reply);
     /// Plays effect @p effect over the pane in Shaders.paneEffects.
     QString pulsePane(Pane* pane, int effect, int durationMs, int color);
     /// Where a pane split from, and the edge it shares with that pane
@@ -383,6 +399,9 @@ private:
     /// @p pane is drawn this frame: visible in the current tab, a card of
     /// the overview, or in the tab a tab switch is leaving.
     bool paneDrawn(const Pane* pane) const;
+    /// @p pane (or the host of an overlay) has a place in the current tab's
+    /// layout: not in another tab, not hidden by a zoom, laid out.
+    bool paneLaidOut(const Pane* pane) const;
     void closePane(Pane* pane);
     void setFocusedPane(Pane* pane);
     void scheduleRender();
@@ -781,6 +800,38 @@ private:
     int m_quickHeight = 0;
     PhosphorAnimation::AnimatedValue<qreal> m_slide;
     std::unordered_map<const Pane*, std::unique_ptr<PaneMotion>> m_motion;
+    /// A screenshot that waits for its frame (captureFrame).
+    struct PendingCapture
+    {
+        CaptureScope scope = CaptureScope::Pane;
+        QPointer<Pane> target;
+        CaptureReply reply;
+        std::uint64_t ticket = 0; ///< the renderer's, once the frame is asked for
+        QDeadlineTimer deadline; ///< for the next frame
+    };
+    /// A bound on a failure, not a value to tune: a frame takes milliseconds,
+    /// and a window that cannot draw (its surface is lost, the compositor
+    /// sends it no frames) gives an error after this.
+    static constexpr int CaptureTimeoutMs = 2000;
+    std::vector<std::shared_ptr<PendingCapture>> m_pendingCaptures;
+    /// Fires at the first deadline of m_pendingCaptures.
+    QTimer m_captureTimer;
+    /// Before a frame: asks the renderer to read it back for the captures
+    /// that wait no more, and restarts the deadline of those that wait.
+    void prepareCaptures();
+    /// @p capture waits for the end of a tab switch, or of a move of its pane.
+    bool captureWaits(const PendingCapture& capture) const;
+    /// Cuts @p image, the frame drawn for @p capture.
+    void captureDrawn(const std::shared_ptr<PendingCapture>& capture, const QImage& image);
+    /// Gives @p capture its answer and forgets it.
+    void finishCapture(std::shared_ptr<PendingCapture> capture, const QString& error, const QString& code,
+                       const QImage& image = {});
+    /// Answers every pending capture with @p error (not_shown).
+    void abortCaptures(const QString& error);
+    /// Answers the captures whose deadline has passed with failed.
+    void expireCaptures();
+    /// Starts m_captureTimer for the first deadline, or stops it.
+    void armCaptureTimer();
     /// Where a pane just created by a split grows from.
     std::unordered_map<const Pane*, QRectF> m_growFrom;
     /// Rows each pane's history has taken in, at the last frame: a view

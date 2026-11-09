@@ -151,8 +151,18 @@ function __afterglow_ctl
                         return
                     end
                     set i (math $i + 1)
+                else if contains -- $argv[$i] -w -h
+                    # Words outside overlay, as -x.png is.
+                    set positional (math $positional + 1)
                 end
+            case '-'
+                # A lone - is a word for every command: the standard output of
+                # screenshot, text for send-text.
+                set positional (math $positional + 1)
+            case '--*'
             case '-*'
+                # -x.png is a word too, except where overlay takes -n, -w and -h.
+                test $command != overlay; and set positional (math $positional + 1)
             case '*'
                 set positional (math $positional + 1)
         end

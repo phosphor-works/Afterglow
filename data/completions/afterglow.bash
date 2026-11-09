@@ -116,14 +116,29 @@ _afterglow_ctl()
             ((i++))
             ;;
         --capture | --title | -w | --width | -h | --height | --position)
-            # The options of overlay. Elsewhere they are no option of ctl.
-            [[ $command == overlay ]] && ((i++))
+            # The options of overlay. Elsewhere they are no option of ctl,
+            # and -w and -h are words, as -x.png is.
+            if [[ $command == overlay ]]; then
+                ((i++))
+            elif [[ ${words[i]} == -[wh] ]]; then
+                ((positional++))
+                text=1
+            fi
             ;;
-        -*) ;;
-        *)
+        # A lone - is a word for every command: the standard output of
+        # screenshot, text for send-text.
+        - | [!-]* | '')
             ((positional++))
             text=1
             ;;
+        -[!-]*)
+            # -x.png is a word too, except where overlay takes -n, -w and -h.
+            if [[ $command != overlay ]]; then
+                ((positional++))
+                text=1
+            fi
+            ;;
+        -*) ;;
         esac
     done
     case $prev in

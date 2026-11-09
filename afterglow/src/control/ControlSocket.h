@@ -6,6 +6,7 @@
 #include "Control.h"
 
 #include <PhosphorIpc/IpcCallContext.h>
+#include <PhosphorIpc/IpcPendingReply.h>
 #include <PhosphorIpc/IpcRouter.h>
 
 #include <QElapsedTimer>
@@ -13,8 +14,11 @@
 #include <QJsonArray>
 #include <QObject>
 #include <QSet>
+#include <QSize>
+#include <QThreadPool>
 #include <QTimer>
 
+#include <memory>
 #include <optional>
 
 namespace Afterglow {
@@ -24,9 +28,9 @@ class SettingsStore;
 
 /// The calls of the control socket's "control" target. A call that fails
 /// sends an error reply (CALL_FAILED) with Control's message, and its return
-/// value is dropped. The overlay call, which answers later, fails with codes
-/// of its own too. The signals name the events that a client can subscribe
-/// to. ControlSocket sends them; Qt never emits them.
+/// value is dropped. The overlay and screenshot calls, which answer later,
+/// fail with codes of their own too. The signals name the events that a
+/// client can subscribe to. ControlSocket sends them; Qt never emits them.
 class ControlApi : public QObject, protected PhosphorIpc::IpcCallContext
 {
     Q_OBJECT
@@ -70,11 +74,13 @@ public:
     /// connection closes. The option input names the standard input that
     /// overlayInput() sent on this connection, in place of stdin.
     Q_INVOKABLE void overlay(double pane, const QStringList& argv, const QVariantMap& options);
-    /// A PNG of the pane as its window shows it, with the shader packs and
-    /// the chrome: @p scope is pane, tab (the panes of its tab) or window.
-    /// Returns { png: base64, width, height } in device pixels. Needs
-    /// Control.allowReadText. Fails with the code denied, no_pane, not_shown
-    /// (a tab in the background, a window off screen) or failed.
+    /// A PNG of @p pane (0: the focused pane), its tab or its window, by
+    /// @p scope (pane, tab or window), as the window shows it: see
+    /// TerminalWindow::captureFrame. Only the window scope has the tab bar.
+    /// Returns {png: base64, width, height} in device pixels. Needs
+    /// Control.allowReadText, also as the reply goes out. Fails with the
+    /// code denied, busy (MaxScreenshots), no_pane, not_shown, failed, or
+    /// cancelled when Control.enabled goes off first.
     Q_INVOKABLE void screenshot(double pane, const QString& scope);
     /// Standard input for an overlay of this connection, in parts, before
     /// overlay() names it with its input option: input that does not fit in
@@ -91,6 +97,10 @@ public:
     static constexpr int MaxWaitingInputs = 4;
     /// The bytes of all the inputs that wait, of every connection.
     static constexpr qsizetype MaxWaitingInputBytes = 16 * OverlaySpec::MaxInput;
+    /// Screenshots from the call to the reply, of every connection: each
+    /// holds a frame and its PNG. A client that closes its connection does
+    /// not stop its frame or encode, so the count drops only as they end.
+    static constexpr int MaxScreenshots = 4;
 
     /// For `afterglow ssh`: whether it can forward a socket for remote
     /// commands (RemoteSockets::enabled), before it asks the remote host.
@@ -143,6 +153,16 @@ private:
     bool failed(const QString& error);
     /// The pane ID in @p value, or nothing after an error reply.
     std::optional<quint32> paneId(double value);
+    using PendingReply = std::shared_ptr<PhosphorIpc::IpcPendingReply>;
+    /// The reply of the running call, to answer later, or null after the
+    /// error @p noClient for a call from no connection.
+    PendingReply deferCall(const QString& noClient);
+    /// @p id, or the focused pane for 0, or nothing after @p reply failed
+    /// with no_pane.
+    std::optional<quint32> targetPane(PhosphorIpc::IpcPendingReply& reply, quint32 id);
+    /// Sends the PNG of a screenshot, @p base64 (empty when it could not be
+    /// written), unless read access or control went off meanwhile.
+    void finishScreenshot(PhosphorIpc::IpcPendingReply& reply, const QString& base64, const QSize& size);
 
     struct WaitingInput
     {
@@ -159,6 +179,11 @@ private:
     qsizetype m_inputBytes = 0;
     /// The open connections that have opened an overlay.
     QSet<quint64> m_overlayClients;
+    int m_screenshots = 0;
+    /// Encodes the PNGs, off the thread that draws the windows, and away
+    /// from the global pool of searches and hints. Last: its destructor
+    /// waits for the encodes, which post their reply to this object.
+    QThreadPool m_encoder;
 };
 
 /// External control on the process's socket (InstanceSocket): the "control"

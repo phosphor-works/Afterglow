@@ -5,7 +5,7 @@
 
 Other programs can control Afterglow with the command line or the control socket.
 They can list panes, send text, create panes, set titles, show notifications and run actions.
-They can also run a program over a pane (an [overlay](#overlays)) and run the commands of scripts.
+They can also run a program over a pane (an [overlay](#overlays)), save a [screenshot](#screenshots) and run the commands of scripts.
 The `watch` command writes each event as a JSON line, such as `{"args":[3,"vim"],"event":"titleChanged"}`.
 
 ```sh
@@ -102,14 +102,14 @@ The tmux panes that exist already keep the old values. Use `--pane` in them.
 
 ## Access settings
 
-Set `Control.allowReadText=true` to permit external terminal text queries.
+Set `Control.allowReadText=true` to permit external terminal text queries and screenshots.
 Set `Control.enabled=false` to remove the `control` and `commands` targets.
 These settings are separate from [script text permissions](SCRIPTING.md#text-and-semantic-regions).
 
 | Item | With `Control.allowReadText=false` |
 | --- | --- |
 | `getText` | Fails with an error. |
-| `screenshot` | Fails with the code `denied`. A picture of a pane shows its text. |
+| `screenshot` | Fails with the code `denied`, also for a pane that does not exist. Only a pane ID that is not a whole number from 0 to 4294967295, or an unknown scope, fails first, with `CALL_FAILED`. A picture shows the text of the pane, and more. See [screenshots](#screenshots). |
 | `runAction` with `copy`, `paste`, `select_all` or `show_last_output` | Fails with an error. These actions move pane text to the clipboard, into another pane or into a pager. |
 | The `command` field of `listPanes` | Empty. |
 | The command in `commandStarted` and `commandFinished` | Empty. |
@@ -158,6 +158,7 @@ An error for a line that does not parse has no `id`.
 A call can answer after other calls on the connection, when its target answers later.
 `run` of the `commands` target does this: it answers when the run ends.
 `overlay` of the `control` target also does this: it answers when its program exits.
+`screenshot` of the `control` target also does this: it answers when the PNG of the frame is ready.
 Use the `id` to find the reply of each request.
 
 An event goes to a subscriber with `subscriptionId`.
@@ -186,6 +187,7 @@ The events of a run arrive before the reply of the run.
 | `INVOCATION_FAILED` | The call could not run. |
 | `MALFORMED_REQUEST` | The line is not a valid request, or a limit is reached. |
 | `no_pane`, `busy`, `spawn_failed`, `cancelled` | An `overlay` call failed. See [overlays](#overlays). |
+| `denied`, `busy`, `no_pane`, `not_shown`, `failed`, `cancelled` | A `screenshot` call failed. See [screenshots](#screenshots). |
 
 `phosphorctl` from the Phosphor shell can also use the socket: `phosphorctl --socket "$AFTERGLOW_SOCKET" list`.
 
@@ -312,6 +314,7 @@ The `cancel_overlay` action closes the overlay of the focused pane.
 
 While an overlay runs, `sendText` and `getText` act on the pane under it, not on the program of the overlay.
 Thus `afterglow ctl send-text` types into the pane under the overlay.
+A `screenshot` shows the overlay, as the window shows it.
 
 The `overlay` call takes the pane (0 for the focused pane), the argv list and an object of options.
 
@@ -343,26 +346,51 @@ Other failures have their own error codes:
 
 ## Screenshots
 
-`afterglow ctl screenshot [--tab|--window] FILE` saves a PNG image of the pane as its window shows it.
-The image includes the shader packs. With `--window`, it also includes the tab bar and the other chrome.
-`FILE` is `-` for standard output.
-`afterglow ctl` writes the file. It writes all of the image, or no file.
+`afterglow ctl screenshot [--tab|--window] FILE` saves a PNG image of the [target pane](#which-process-and-pane), its tab or its window, as the window shows it.
+The image includes the shader packs, and an overlay or a popup over the pane.
+It also includes the chrome over its area, for example the scrollbar, a prompt, the palette or a menu.
+Only `--window` includes the tab bar.
+A translucent background stays translucent in the image. What is behind the window is not in the image.
 
 | Scope | Option | The image |
 | --- | --- | --- |
-| `pane` | None | The pane with its title and padding |
-| `tab` | `--tab` | The panes of the pane's tab: the window below the tab bar |
-| `window` | `--window` | The whole window |
+| `pane` | None | The pane with its padding and its docked areas. The title of the pane shows when `Window.paneTitles` is on and the tab has two or more panes. |
+| `tab` | `--tab` | The panes of the pane's tab: the window without the tab bar and without the docked areas of the window |
+| `window` | `--window` | The whole window. It shows the tab that the window shows, which can be another tab than the tab of the pane. |
+
+Give `-` as `FILE` to write the image to standard output.
+`afterglow ctl` refuses a terminal, as `-` or as a `FILE` such as `/dev/tty`, and exits with status 2.
+It also refuses a socket as `FILE`, such as `/dev/stdout` when standard output is a socket, and exits with status 2.
+`afterglow ctl` writes a new file beside `FILE`, then puts it in the place of `FILE`.
+Thus it writes all of the image or nothing, and when the write fails, an existing `FILE` stays as it was.
+In a directory where `afterglow ctl` cannot make a new file, it writes over an existing `FILE`.
+It writes directly to a pipe or a device, such as `/dev/fd/3`, too.
+In these two cases, a failed write can leave part of the image.
 
 Afterglow draws a frame for the screenshot and reads it back. The size is in device pixels.
-The `screenshot` call needs `Control.allowReadText`.
+During a tab switch, the `pane` and `tab` scopes wait for the end of the switch.
+While a pane moves to its place, for example after a split, the `pane` scope waits until it is there.
+Afterglow must draw the frame of a screenshot in 2 seconds. Each frame of such a wait starts these 2 seconds again.
+A wait has no limit of its own. `afterglow ctl` stops after 30 seconds.
+The `screenshot` call takes the pane (0 for the focused pane) and the scope: `pane`, `tab` or `window`.
+Another scope fails the call with `CALL_FAILED`.
+The reply is `{"png": BASE64, "width": W, "height": H}`.
 
-| Code | Meaning |
+The `screenshot` call needs `Control.allowReadText`.
+A screenshot shows more than `getText` reads, for example the program of an overlay, the text of a paste confirmation and the dialogs of scripts.
+
+| Code | Cause |
 | --- | --- |
-| `denied` | `Control.allowReadText` is off, also when it went off while the frame was drawn |
-| `no_pane` | No pane has the ID, or no pane has the focus for a pane of 0 |
-| `not_shown` | The pane is in a tab in the background, or the window is not on the screen |
-| `failed` | Afterglow did not draw the frame in 2 seconds, or it could not read the frame or write the PNG |
+| `denied` | `Control.allowReadText` is off. Afterglow checks it again when the reply goes out. |
+| `busy` | 4 screenshots are in progress, from all clients. |
+| `no_pane` | No pane has the ID, or no pane has the focus for a pane of 0. |
+| `not_shown` | The window is not on the screen, is minimized, or closed before the frame. For the `pane` and `tab` scopes also: the pane is in a tab in the background, the pane closed, or the overview shows or closes. For the `pane` scope also: another pane of the tab is zoomed. |
+| `failed` | Afterglow drew no frame in 2 seconds, for example when the compositor sends no frames to the window. It also fails when Afterglow cannot read the frame or write the PNG. Some GPU drivers cannot read a window back: Afterglow then logs a warning. |
+| `cancelled` | `Control.enabled` is off when the image is ready. |
+
+The reply of a screenshot of a large window can be larger than 16 MiB.
+The socket closes a connection when more than 16 MiB of output waits and an event comes.
+Thus take screenshots on a connection without subscriptions.
 
 ## Pane object
 
@@ -762,7 +790,9 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Lines that do not parse, one after the other | 16 | The socket closes the connection at the next one. |
 | Waiting output to one client | 16 MiB | The socket closes the connection to a client that does not read its events. |
 | Subscriptions on one connection | 256 | The subscription fails with `MALFORMED_REQUEST`. A second subscription to the same event also fails. |
-| `afterglow ctl` reply time | 10 seconds | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. `afterglow ctl overlay` waits for the program without a limit. |
+| `afterglow ctl` reply time | 10 seconds, 30 seconds for `screenshot` | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. `afterglow ctl overlay` waits for the program without a limit. |
+| Time to draw the frame of a screenshot | 2 seconds | The `screenshot` call fails with the code `failed`. |
+| Screenshots in progress | 4, for all clients | The `screenshot` call fails with the code `busy`. |
 | `afterglow ctl overlay` standard input | 4 MiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |
 | One part of `overlayInput` from `afterglow ctl` | 512 KiB, written as a JSON string | `afterglow ctl` cuts the input there. JSON writes most C0 control characters, such as U+0001, as 6 bytes, and a part with them holds fewer bytes of input. |
 | Inputs of `overlayInput` that wait for `overlay` | 4 for each connection, 64 MiB for all connections | The `overlayInput` call fails. At the limit of 64 MiB, the parts that came before stay and wait. They go when `overlay` takes them, the connection closes or `Control.enabled` goes off. An input over 4 MiB fails, and Afterglow drops it. |
@@ -787,6 +817,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 
 `getText` and `screenshot` have no size limit.
 A reply with a long scrollback can take more than the 10 seconds of `afterglow ctl`.
+A screenshot of a large window also takes time: Afterglow waits for a frame and encodes the PNG.
 
 Text that `afterglow ctl send-text` sends in parts arrives as separate inputs.
 Keys and other clients can type between two parts.
@@ -820,14 +851,15 @@ The other commands stop with a usage error when you give such words.
 
 The word after an option that takes a value, such as `--pane`, `--cwd` or `--title`, is that value.
 It is that value also when it starts with `-`, but not when it is `--`.
+Give a `FILE` or a `PATH` that starts with `--` as `./--FILE` or `./--PATH`.
 
 ## Exit status of afterglow ctl
 
 | Exit status | Cause |
 | --- | --- |
 | 0 | The command succeeded. `afterglow ctl --help` also exits with status 0. |
-| 1 | An error, for example no Afterglow, a call that failed or no reply in 10 seconds. |
-| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option that takes a value, given two times, is a usage error too. So is an `overlay` option or command that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 4 MiB or not UTF-8 text. `afterglow ctl` checks the text before it connects. |
+| 1 | An error, for example no Afterglow, a call that failed or no reply in time. |
+| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option given two times is a usage error too. So is an `overlay` option or command that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 4 MiB or not UTF-8 text. So does `screenshot` when its `FILE`, or `-`, is a terminal, or when `FILE` is a socket. `afterglow ctl` finds these errors before it connects. |
 | 0 to 255 from `overlay` | `afterglow ctl overlay` exits with the exit status of its program. Thus a status of 1 or 2 can come from the program. A failed or cancelled overlay gives 1. So does an exit status outside 0 to 255. |
 
 `afterglow ctl watch` prints events until the connection or a subscription ends.

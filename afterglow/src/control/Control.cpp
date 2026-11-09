@@ -663,12 +663,19 @@ QString Control::scopeName(TextScope scope)
     return {};
 }
 
-QString Control::capture(quint32 id, CaptureScope scope, CaptureReply reply, QString& code)
+QString Control::captureRefusal(QString& code) const
 {
-    // A picture of a pane shows its text: the same permission as reading it.
     if (!m_settings.settings().control.allowReadText) {
         code = QStringLiteral("denied");
         return QStringLiteral("screenshots are off (Control.allowReadText)");
+    }
+    return {};
+}
+
+QString Control::capture(quint32 id, CaptureScope scope, CaptureReply reply, QString& code)
+{
+    if (QString refused = captureRefusal(code); !refused.isEmpty()) {
+        return refused;
     }
     TerminalWindow* window = nullptr;
     Pane* pane = find(id, &window);
@@ -676,11 +683,16 @@ QString Control::capture(quint32 id, CaptureScope scope, CaptureReply reply, QSt
         code = QStringLiteral("no_pane");
         return noPane(id);
     }
-    const auto windowScope = scope == CaptureScope::Window ? TerminalWindow::CaptureScope::Window
-        : scope == CaptureScope::Tab                       ? TerminalWindow::CaptureScope::Tab
-                                                           : TerminalWindow::CaptureScope::Pane;
-    window->captureFrame(pane, windowScope, std::move(reply));
+    window->captureFrame(pane, scope, std::move(reply));
     return {};
+}
+
+std::optional<CaptureScope> Control::captureScopeFromName(const QString& name)
+{
+    if (name == QLatin1String("pane")) return CaptureScope::Pane;
+    if (name == QLatin1String("tab")) return CaptureScope::Tab;
+    if (name == QLatin1String("window")) return CaptureScope::Window;
+    return std::nullopt;
 }
 
 std::optional<Control::TextScope> Control::scopeFromName(const QString& name)
