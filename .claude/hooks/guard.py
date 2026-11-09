@@ -28,6 +28,7 @@ import signal
 import subprocess
 import sys
 import time
+import warnings
 
 # Local state that never goes into git: another tool's workspace, Python caches, build trees (build/, build-asan/)
 # and .cache. A file whose name starts with "build" is a source file (build-inspector.luau).
@@ -1327,10 +1328,14 @@ def parallel_jobs(args):
         plus |= args[k] == '--plus'
         files |= flag in ('-a', '--arg-file')
         if flag in ('-d', '--delimiter') and value:
-            try:  # parallel reads escapes such as \0 and \t in the delimiter
-                delimiters.add(value.encode().decode('unicode_escape'))
+            # parallel reads escapes such as \0, \t and \x2c in the delimiter, and keeps other characters as they are
+            delimiters.add(value)
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    delimiters.add(value.encode('latin-1', 'backslashreplace').decode('unicode_escape'))
             except UnicodeDecodeError:
-                delimiters.add(value)
+                pass
         k = after
     end = next((j for j in range(k, len(args)) if args[j] in PARALLEL_LISTS), len(args))
     lists = []
@@ -1338,24 +1343,34 @@ def parallel_jobs(args):
         if a in PARALLEL_LISTS:
             lists.append([] if a.startswith(':::') and len(a.rstrip('+')) == 3 else None)
         elif lists[-1] is not None:
-            # parallel splits a word of a ::: list at each newline ('x\nmain' is the jobs x and main), at the
-            # delimiter of -d, or not at all with -0. The guard checks the whole word and each of its pieces.
-            lists[-1].extend(dict.fromkeys([a] + [piece for d in delimiters for piece in a.split(d)]))
+            lists[-1].append(a)
     files |= not lists or None in lists
     lists = [words for words in lists if words]
+    # parallel splits each word of the ::: lists at each newline ('x\nmain' is the jobs x and main), at the delimiter
+    # of -d, or not at all with -0, and the same way for every list. The guard checks each of these readings.
+    readings = [None, '\n'] + sorted(d for d in delimiters if d and d != '\n')
+
+    def read(words, delimiter):
+        return list(dict.fromkeys(piece for w in words for piece in ([w] if delimiter is None else w.split(delimiter))))
+
     if k == end:
-        return [a for words in lists for a in words], files
+        return list(dict.fromkeys(a for d in readings for words in lists for a in read(words, d))), files
     command = ' '.join(args[k:end])
     if not lists:
         return [command], files
-    jobs = [()]
-    for words in lists:
-        jobs = [job + (w,) for job in jobs for w in words]
-        if len(jobs) > MAX_PARALLEL_JOBS:
-            firsts = [words[0] for words in lists]
-            jobs = [tuple(firsts[:n] + [w] + firsts[n + 1 :]) for n, words in enumerate(lists) for w in words]
-            jobs.append(tuple(w for words in lists for w in words))
-            break
+    jobs = {}
+    for delimiter in readings:
+        read_lists = [read(words, delimiter) for words in lists]
+        reading = [()]
+        for words in read_lists:
+            reading = [job + (w,) for job in reading for w in words]
+            if len(reading) > MAX_PARALLEL_JOBS:
+                firsts = [words[0] for words in read_lists]
+                reading = [tuple(firsts[:n] + [w] + firsts[n + 1 :]) for n, words in enumerate(read_lists)
+                           for w in words]
+                reading.append(tuple(w for words in read_lists for w in words))
+                break
+        jobs.update(dict.fromkeys(reading))
 
     pattern = PARALLEL_PLUS if plus else PARALLEL_REPLACE
     unknown = []
