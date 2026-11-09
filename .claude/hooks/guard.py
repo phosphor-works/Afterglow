@@ -28,6 +28,7 @@ import signal
 import subprocess
 import sys
 import time
+import math
 import warnings
 
 # Local state that never goes into git: another tool's workspace, Python caches, build trees (build/, build-asan/)
@@ -1306,6 +1307,19 @@ def parallel_change(word, how):
     return {'.': no_extension(word), '/': base, '//': dirname(word), '/.': no_extension(base)}.get(how, word)
 
 
+def parallel_delimiter(value):
+    """The -d VALUE of parallel as its unquote_printf reads it: \\t \\n \\r, then \\xNN (two hexadecimal digits,
+    and the rest as it is), then three octal digits, then one digit (8 and 9 stand for themselves)."""
+    def octal(digits):
+        n = len(digits) - len(digits.lstrip('01234567'))
+        return chr(int(digits[:n], 8)) + digits[n:] if n else digits[1:] if digits[0] in '89' else digits
+
+    value = value.replace('\\t', '\t').replace('\\n', '\n').replace('\\r', '\r')
+    value = re.sub(r'\\x([0-9a-fA-F]+)', lambda m: chr(int(m.group(1)[:2], 16)) + m.group(1)[2:], value)
+    value = re.sub(r'\\(\d\d\d)', lambda m: octal(m.group(1)), value)
+    return re.sub(r'\\(\d)', lambda m: octal(m.group(1)) if m.group(1) in '01234567' else m.group(1), value)
+
+
 def parallel_jobs(args):
     """(the shell commands that parallel ARGS runs, whether parallel adds words of its input or of files to them).
     The command is the words after parallel's options, up to the first of PARALLEL_LISTS, as one line (parallel
@@ -1330,6 +1344,7 @@ def parallel_jobs(args):
         if flag in ('-d', '--delimiter') and value:
             # parallel reads escapes such as \0, \t and \x2c in the delimiter, and keeps other characters as they are
             delimiters.add(value)
+            delimiters.add(parallel_delimiter(value))
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
@@ -1361,15 +1376,17 @@ def parallel_jobs(args):
     jobs = {}
     for delimiter in readings:
         read_lists = [read(words, delimiter) for words in lists]
+        distinct = [list(dict.fromkeys(words)) for words in read_lists]
         reading = [()]
-        for words in read_lists:
+        for words in distinct:
             reading = [job + (w,) for job in reading for w in words]
             if len(reading) > MAX_PARALLEL_JOBS:
-                firsts = [words[0] for words in read_lists]
-                reading = [tuple(firsts[:n] + [w] + firsts[n + 1 :]) for n, words in enumerate(read_lists)
+                firsts = [words[0] for words in distinct]
+                reading = [tuple(firsts[:n] + [w] + firsts[n + 1 :]) for n, words in enumerate(distinct)
                            for w in words]
-                reading.append(tuple(w for words in read_lists for w in words))
                 break
+        if math.prod(len(words) for words in read_lists) > MAX_PARALLEL_JOBS:
+            reading.append(tuple(w for words in read_lists for w in words))
         jobs.update(dict.fromkeys(reading))
 
     pattern = PARALLEL_PLUS if plus else PARALLEL_REPLACE
