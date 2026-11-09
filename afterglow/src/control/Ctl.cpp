@@ -23,6 +23,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaMethod>
+#include <QSaveFile>
 
 #include <algorithm>
 #include <cerrno>
@@ -52,6 +53,8 @@ of the active window or of the window that was active last.
   send-text --stdin                     type standard input (UTF-8 text)
   get-text [--screen|--scrollback|--selection|--last-output]
                                         print pane text (needs Control.allowReadText)
+  screenshot [--tab|--window] FILE      save the pane, its tab or its window as shown, as
+                                        PNG (- for standard output; needs Control.allowReadText)
   split [--left|--right|--up|--down] [-- CMD...]
                                         split, run CMD or the shell, and print the new pane
   move-pane TARGET PLACEMENT            move beside pane TARGET (left, right, up or down)
@@ -409,7 +412,7 @@ const QStringList Commands = {
     QStringLiteral("focus"), QStringLiteral("close"), QStringLiteral("set-title"), QStringLiteral("signal"),
     QStringLiteral("notify"), QStringLiteral("scripts"), QStringLiteral("open-directory"), QStringLiteral("projects"),
     QStringLiteral("save-project"), QStringLiteral("open-project"), QStringLiteral("action"), QStringLiteral("watch"),
-    QStringLiteral("overlay"),
+    QStringLiteral("overlay"), QStringLiteral("screenshot"),
 };
 
 // The standard input of `overlay`, as much as an overlay takes. It goes in
@@ -693,6 +696,29 @@ int runCtl(int argc, char** argv)
             if (text.toUtf8().size() > CtlMaxText) return fail(tooLong, AfterglowProto::Run::UsageError);
         }
         act = [&sendText, text](qint64 pane) { return sendText(pane, text); };
+    } else if (command == QLatin1String("screenshot")) {
+        const bool tab = takeFlag(QStringLiteral("--tab"));
+        const bool window = takeFlag(QStringLiteral("--window"));
+        if (tab && window) return usage(QStringLiteral("screenshot takes --tab or --window, not both"));
+        if (const auto error = extra(1)) return usage(*error);
+        if (args.size() != 1) return usage(QStringLiteral("screenshot takes FILE (- for standard output)"));
+        const QString scope = window ? QStringLiteral("window") : tab ? QStringLiteral("tab") : QStringLiteral("pane");
+        act = [&client, scope, path = args.first()](qint64 pane) {
+            const auto result = client.call(QStringLiteral("screenshot"), {pane, scope});
+            if (!result) return 1;
+            const QByteArray png = QByteArray::fromBase64(result->toObject().value(QLatin1String("png")).toString().toLatin1(),
+                                                          QByteArray::AbortOnBase64DecodingErrors);
+            if (png.isEmpty()) return fail(QStringLiteral("the reply holds no image"));
+            if (path == QLatin1String("-")) {
+                return std::fwrite(png.constData(), 1, std::size_t(png.size()), stdout) == std::size_t(png.size()) ? 0 : 1;
+            }
+            // Written whole or not at all: a failed write leaves no half image.
+            QSaveFile file(path);
+            if (!file.open(QIODevice::WriteOnly) || file.write(png) != png.size() || !file.commit()) {
+                return fail(QStringLiteral("cannot write %1: %2").arg(path, file.errorString()));
+            }
+            return 0;
+        };
     } else if (command == QLatin1String("get-text")) {
         QString scope = QStringLiteral("screen");
         int scopes = 0;

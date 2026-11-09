@@ -1596,6 +1596,48 @@ bool TerminalWindow::resizeFocused(SplitTree::Neighbour direction)
     return changed;
 }
 
+void TerminalWindow::captureFrame(Pane* pane, CaptureScope scope, CaptureDone done)
+{
+    // The time a window has to draw the frame. A window that cannot draw
+    // (it went off screen, its surface is lost) gives an error, not a wait.
+    constexpr int CaptureTimeoutMs = 2000;
+    Pane* host = hostOf(pane);
+    auto shown = [this](Pane* p) { return p && m_splits && !m_splits->rectOf(p).isEmpty(); };
+    if (!isExposed() || (scope != CaptureScope::Window && !shown(host))) {
+        done(QStringLiteral("the pane is not on screen"), QStringLiteral("not_shown"), {});
+        return;
+    }
+    // One answer: from the frame or from the timeout, whichever comes first.
+    auto pending = std::make_shared<CaptureDone>(std::move(done));
+    auto answer = [pending](const QString& error, const QString& code, const QImage& image) {
+        if (!*pending) return;
+        const CaptureDone finish = std::exchange(*pending, {});
+        finish(error, code, image);
+    };
+    m_renderer->captureNextFrame([answer, shown, scope, self = QPointer<TerminalWindow>(this), target = QPointer<Pane>(host)](QImage image) {
+        if (!self || image.isNull()) {
+            answer(QStringLiteral("the frame could not be read"), QStringLiteral("failed"), {});
+            return;
+        }
+        QRect crop = image.rect();
+        if (scope == CaptureScope::Tab) {
+            crop = self->paneArea();
+        } else if (scope == CaptureScope::Pane) {
+            // The pane can close or leave the screen before the frame.
+            if (!shown(target)) {
+                answer(QStringLiteral("the pane is not on screen"), QStringLiteral("not_shown"), {});
+                return;
+            }
+            crop = self->m_splits->rectOf(target);
+        }
+        answer({}, {}, image.copy(crop.intersected(image.rect())));
+    });
+    QTimer::singleShot(CaptureTimeoutMs, this, [answer] {
+        answer(QStringLiteral("no frame was drawn in time"), QStringLiteral("failed"), {});
+    });
+    scheduleRender();
+}
+
 void TerminalWindow::scheduleRender()
 {
     // requestUpdate() coalesces on its own. Tracking "already requested" here

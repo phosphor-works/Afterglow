@@ -6,10 +6,14 @@
 #include "RemoteSockets.h"
 #include "../config/Settings.h"
 
+#include <QBuffer>
+#include <QCoreApplication>
+#include <QImage>
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QThreadPool>
 
 #include <algorithm>
 #include <cmath>
@@ -86,6 +90,68 @@ uint ControlApi::focusedPane()
 void ControlApi::sendText(double pane, const QString& text)
 {
     if (const auto id = paneId(pane)) failed(m_control.sendText(*id, text));
+}
+
+void ControlApi::screenshot(double pane, const QString& scope)
+{
+    const auto id = paneId(pane);
+    if (!id) return;
+    std::optional<Control::CaptureScope> s;
+    if (scope == QLatin1String("pane")) s = Control::CaptureScope::Pane;
+    else if (scope == QLatin1String("tab")) s = Control::CaptureScope::Tab;
+    else if (scope == QLatin1String("window")) s = Control::CaptureScope::Window;
+    if (!s) {
+        failed(QStringLiteral("scope is pane, tab or window"));
+        return;
+    }
+    const quint64 connection = connectionId();
+    auto reply = std::make_shared<PhosphorIpc::IpcPendingReply>(deferReply());
+    if (!reply->isValid()) {
+        if (!connection) failed(QStringLiteral("a screenshot needs a client connection"));
+        return;
+    }
+    quint32 target = *id;
+    if (target == 0) {
+        const auto focused = m_control.focusedPane();
+        if (!focused) {
+            reply->fail(QStringLiteral("no_pane"), QStringLiteral("no focused pane"));
+            return;
+        }
+        target = *focused;
+    }
+    QString code;
+    const QString error = m_control.capture(target, *s,
+        [reply, api = QPointer<ControlApi>(this)](const QString& error, const QString& code, const QImage& image) {
+            if (!error.isEmpty()) {
+                reply->fail(code, error);
+                return;
+            }
+            // Checked again as the picture goes out: read access can go
+            // while the frame is drawn.
+            if (!api || !api->m_settings.settings().control.allowReadText) {
+                reply->fail(QStringLiteral("denied"), QStringLiteral("screenshots are off (Control.allowReadText)"));
+                return;
+            }
+            // A 4K PNG takes a moment to encode: not on the thread that draws
+            // the windows. The reply goes out on the router's thread.
+            QThreadPool::globalInstance()->start([reply, image] {
+                QByteArray png;
+                QBuffer buffer(&png);
+                buffer.open(QIODevice::WriteOnly);
+                const bool saved = image.save(&buffer, "PNG");
+                QMetaObject::invokeMethod(QCoreApplication::instance(), [reply, png, saved, size = image.size()] {
+                    if (!saved) {
+                        reply->fail(QStringLiteral("failed"), QStringLiteral("the PNG could not be written"));
+                        return;
+                    }
+                    reply->finish(QJsonObject{{QStringLiteral("png"), QString::fromLatin1(png.toBase64())},
+                                              {QStringLiteral("width"), size.width()},
+                                              {QStringLiteral("height"), size.height()}});
+                });
+            });
+        },
+        code);
+    if (!error.isEmpty()) reply->fail(code, error);
 }
 
 QString ControlApi::getText(double pane, const QString& scope)

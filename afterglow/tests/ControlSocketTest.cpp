@@ -231,6 +231,34 @@ TEST_F(ControlSocketTest, CallsReplyWithResultsOrErrors)
     EXPECT_EQ(unknown.value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_FN"));
 }
 
+TEST_F(ControlSocketTest, ScreenshotChecksItsScopeThenFailsWithCodesOfItsOwn)
+{
+    const auto failure = [this](QLocalSocket& client, const QJsonArray& args) {
+        const QJsonObject frame = call(client, QStringLiteral("screenshot"), args);
+        EXPECT_EQ(frame.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+        return std::make_pair(frame.value(QStringLiteral("code")).toString(), frame.value(QStringLiteral("message")).toString());
+    };
+    {
+        // A picture shows the text: off without Control.allowReadText.
+        ASSERT_TRUE(start());
+        QLocalSocket client;
+        ASSERT_TRUE(connect(client));
+        EXPECT_EQ(failure(client, {7, QStringLiteral("page")}),
+                  std::make_pair(QStringLiteral("CALL_FAILED"), QStringLiteral("scope is pane, tab or window")));
+        EXPECT_EQ(failure(client, {-1, QStringLiteral("pane")}).first, QStringLiteral("CALL_FAILED"));
+        const auto denied = failure(client, {7, QStringLiteral("pane")});
+        EXPECT_EQ(denied.first, QStringLiteral("denied"));
+        EXPECT_TRUE(denied.second.contains(QStringLiteral("Control.allowReadText")));
+    }
+    TearDown();
+    ASSERT_TRUE(start(R"({"Control": {"allowReadText": true}})"));
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    // No windows here: no pane, also for the focused pane (0).
+    EXPECT_EQ(failure(client, {7, QStringLiteral("window")}).first, QStringLiteral("no_pane"));
+    EXPECT_EQ(failure(client, {0, QStringLiteral("tab")}).first, QStringLiteral("no_pane"));
+}
+
 TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
 {
     ASSERT_TRUE(start());

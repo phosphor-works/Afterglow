@@ -8,6 +8,7 @@
 #include <AfterglowProto/Remote.h>
 
 #include <QHash>
+#include <QImage>
 #include <QList>
 #include <QObject>
 #include <QPair>
@@ -56,6 +57,10 @@ class Control : public QObject
 
 public:
     enum class TextScope { Screen, Scrollback, Selection, LastOutput };
+    /// What a screenshot shows: the pane, the panes of its tab, or its window.
+    enum class CaptureScope { Pane, Tab, Window };
+    /// Gets the image in device pixels, or an error and its code.
+    using CaptureReply = std::function<void(const QString& error, const QString& code, const QImage& image)>;
     using WindowFactory = std::function<TerminalWindow*(const QString& workingDirectory, const QStringList& command, bool empty)>;
     /// Starts a script command ("<script id>.<command>") with no arguments and
     /// no client, from @p source (ev.source). Returns an error, or empty.
@@ -172,6 +177,11 @@ public:
     /// apart: no_pane, busy or spawn_failed.
     QString overlay(const QString& owner, const QString& request, quint32 pane, const OverlaySpec& spec, OverlayReply reply,
                     QString& code);
+    /// Reads back the next frame of @p pane's window, as it shows on screen,
+    /// cut to @p scope. It needs Control.allowReadText, as a picture shows
+    /// the text. @p code tells a refusal apart: denied, no_pane, not_shown
+    /// or failed. A refusal returns at once; the rest come to @p reply.
+    QString capture(quint32 pane, CaptureScope scope, CaptureReply reply, QString& code);
     /// Cancels every overlay of @p owner (a control client that has gone).
     void closeOverlays(const QString& owner, const QString& message);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);

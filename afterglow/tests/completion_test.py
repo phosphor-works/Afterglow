@@ -493,6 +493,8 @@ def cases(ctl_commands, paneless, actions, options, run, overlay):
     yield 'afterglow ctl focus ', {'--pane'}
     yield 'afterglow ctl focus --pane ', set()
     yield 'afterglow ctl get-text --screen ', {'--pane'}
+    yield 'afterglow ctl screenshot -', {'--pane', '--tab', '--window'}
+    yield 'afterglow ctl screenshot --window -', {'--pane'}
     yield 'afterglow ctl split --left -', {'--pane'}
     yield 'afterglow ctl send-text -', {'--pane', '--raw', '--stdin'}
     yield 'afterglow ctl send-text --stdin -', {'--pane'}

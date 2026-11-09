@@ -109,6 +109,7 @@ These settings are separate from [script text permissions](SCRIPTING.md#text-and
 | Item | With `Control.allowReadText=false` |
 | --- | --- |
 | `getText` | Fails with an error. |
+| `screenshot` | Fails with the code `denied`. A picture of a pane shows its text. |
 | `runAction` with `copy`, `paste`, `select_all` or `show_last_output` | Fails with an error. These actions move pane text to the clipboard, into another pane or into a pager. |
 | The `command` field of `listPanes` | Empty. |
 | The command in `commandStarted` and `commandFinished` | Empty. |
@@ -248,6 +249,7 @@ Another number fails with `CALL_FAILED`.
 | `openProject` | name, new instance | An object: the window and its panes |
 | `scriptDiagnostics` | None | Script and package diagnostics |
 | `overlay` | pane, argv, options | An object: `exit_code`, `stdout` and `truncated`. See [overlays](#overlays). |
+| `screenshot` | pane, scope | An object: `png` (the PNG image in base64), `width` and `height` in device pixels. See [screenshots](#screenshots). |
 | `overlayInput` | input name, text, end | `true`. Standard input for an `overlay` of the connection, in parts. See [overlays](#overlays). |
 | `remoteCommandsEnabled` | None | `true` when `afterglow ssh` can forward a socket for [remote commands](#remote-commands) |
 | `openRemoteSocket` | pane, process, host, directory, protocol, ssh options, destination, overlay | An object: `token`, `socket` and `path`, or `token` and `error`. See [remote commands](#remote-commands). |
@@ -338,6 +340,29 @@ Other failures have their own error codes:
 | `busy` | The pane has an overlay already. Or, in its window, a script dialog, a prompt, a confirmation, the command palette or a context menu is open. Or a script's key mode holds the keyboard. |
 | `spawn_failed` | The program cannot start. |
 | `cancelled` | The overlay closed before the program exited. For example, its pane closed, its client went away, or `Control.enabled` went off. |
+
+## Screenshots
+
+`afterglow ctl screenshot [--tab|--window] FILE` saves a PNG image of the pane as its window shows it.
+The image includes the shader packs. With `--window`, it also includes the tab bar and the other chrome.
+`FILE` is `-` for standard output.
+`afterglow ctl` writes the file. It writes all of the image, or no file.
+
+| Scope | Option | The image |
+| --- | --- | --- |
+| `pane` | None | The pane with its title and padding |
+| `tab` | `--tab` | The panes of the pane's tab: the window below the tab bar |
+| `window` | `--window` | The whole window |
+
+Afterglow draws a frame for the screenshot and reads it back. The size is in device pixels.
+The `screenshot` call needs `Control.allowReadText`.
+
+| Code | Meaning |
+| --- | --- |
+| `denied` | `Control.allowReadText` is off, also when it went off while the frame was drawn |
+| `no_pane` | No pane has the ID, or no pane has the focus for a pane of 0 |
+| `not_shown` | The pane is in a tab in the background, or the window is not on the screen |
+| `failed` | Afterglow did not draw the frame in 2 seconds, or it could not read the frame or write the PNG |
 
 ## Pane object
 
@@ -760,7 +785,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `notify` title | 256 UTF-16 units | The title is cut. |
 | `notify` body | 2048 UTF-16 units | The body is cut. |
 
-`getText` has no size limit.
+`getText` and `screenshot` have no size limit.
 A reply with a long scrollback can take more than the 10 seconds of `afterglow ctl`.
 
 Text that `afterglow ctl send-text` sends in parts arrives as separate inputs.

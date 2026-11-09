@@ -663,6 +663,26 @@ QString Control::scopeName(TextScope scope)
     return {};
 }
 
+QString Control::capture(quint32 id, CaptureScope scope, CaptureReply reply, QString& code)
+{
+    // A picture of a pane shows its text: the same permission as reading it.
+    if (!m_settings.settings().control.allowReadText) {
+        code = QStringLiteral("denied");
+        return QStringLiteral("screenshots are off (Control.allowReadText)");
+    }
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    if (!pane) {
+        code = QStringLiteral("no_pane");
+        return noPane(id);
+    }
+    const auto windowScope = scope == CaptureScope::Window ? TerminalWindow::CaptureScope::Window
+        : scope == CaptureScope::Tab                       ? TerminalWindow::CaptureScope::Tab
+                                                           : TerminalWindow::CaptureScope::Pane;
+    window->captureFrame(pane, windowScope, std::move(reply));
+    return {};
+}
+
 std::optional<Control::TextScope> Control::scopeFromName(const QString& name)
 {
     for (TextScope s : {TextScope::Screen, TextScope::Scrollback, TextScope::Selection, TextScope::LastOutput}) {

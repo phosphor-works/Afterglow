@@ -70,6 +70,12 @@ public:
     /// connection closes. The option input names the standard input that
     /// overlayInput() sent on this connection, in place of stdin.
     Q_INVOKABLE void overlay(double pane, const QStringList& argv, const QVariantMap& options);
+    /// A PNG of the pane as its window shows it, with the shader packs and
+    /// the chrome: @p scope is pane, tab (the panes of its tab) or window.
+    /// Returns { png: base64, width, height } in device pixels. Needs
+    /// Control.allowReadText. Fails with the code denied, no_pane, not_shown
+    /// (a tab in the background, a window off screen) or failed.
+    Q_INVOKABLE void screenshot(double pane, const QString& scope);
     /// Standard input for an overlay of this connection, in parts, before
     /// overlay() names it with its input option: input that does not fit in
     /// one request. Kept until that call takes it, the connection closes or

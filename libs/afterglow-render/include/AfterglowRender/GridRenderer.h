@@ -397,12 +397,19 @@ public:
     /// iDate (year, month, day, seconds since midnight) instead of the
     /// wall clock's date, for reproducible renders; unset returns to it.
     void setDateOverride(std::optional<std::array<float, 4>> date) { m_dateOverride = date; }
+    /// Reads back the next frame that render() presents, as the window shows
+    /// it: shader packs and chrome included. @p done gets the image in device
+    /// pixels with premultiplied alpha, or a null image when that frame
+    /// fails. It runs inside render(), after the frame ends.
+    void captureNextFrame(std::function<void(QImage)> done) { m_captures.push_back(std::move(done)); }
+
     /// Renders the panes into an image instead of the window, through the
     /// same passes and post-processing. For tests and visual checks.
     QImage renderToImage(const QSize& size, const std::vector<Pane>& panes,
                          const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor);
 
 private:
+    std::vector<std::function<void(QImage)>> m_captures;
     bool m_gpuTimingEnabled = false;
     bool m_frameFailureLogged = false;
     double m_completedGpuSeconds = 0;

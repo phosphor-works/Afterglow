@@ -791,15 +791,39 @@ QSize WindowRenderer::pixelSize() const
     return m_hasSwapChain ? m_swapChain->currentPixelSize() : QSize();
 }
 
+namespace {
+
+/// The image of a swapchain readback, in the bytes of its format. Formats
+/// other than 8-bit RGBA and BGRA (a wide-gamut swapchain) give a null image.
+QImage readbackImage(const QRhiReadbackResult& readback, bool yUp)
+{
+    QImage::Format format = QImage::Format_Invalid;
+    if (readback.format == QRhiTexture::RGBA8) format = QImage::Format_RGBA8888_Premultiplied;
+    else if (readback.format == QRhiTexture::BGRA8) format = QImage::Format_ARGB32_Premultiplied;
+    const QSize size = readback.pixelSize;
+    if (format == QImage::Format_Invalid || size.isEmpty()
+        || readback.data.size() < qsizetype(size.width()) * size.height() * 4) {
+        return {};
+    }
+    QImage image(reinterpret_cast<const uchar*>(readback.data.constData()), size.width(), size.height(),
+                 size.width() * 4, format);
+    return yUp ? image.flipped(Qt::Vertical) : image.copy();
+}
+
+} // namespace
+
 bool WindowRenderer::ensureSwapChain()
 {
     QRhi* rhi = m_device.rhi(m_window);
     if (!m_swapChain) {
         m_swapChain.reset(rhi->newSwapChain());
         m_swapChain->setWindow(m_window);
+        // A transfer source, so captureNextFrame() can read the backbuffer.
+        QRhiSwapChain::Flags flags = QRhiSwapChain::UsedAsTransferSource;
         if (m_translucent) {
-            m_swapChain->setFlags(QRhiSwapChain::SurfaceHasPreMulAlpha);
+            flags |= QRhiSwapChain::SurfaceHasPreMulAlpha;
         }
+        m_swapChain->setFlags(flags);
         m_renderPass.reset(m_swapChain->newCompatibleRenderPassDescriptor());
         m_swapChain->setRenderPassDescriptor(m_renderPass.get());
     }
@@ -1343,7 +1367,25 @@ WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& pane
             failed("endFrame", r);
         }
     };
+    // A capture reads the backbuffer after the last pass, and waits for it
+    // once the frame ends: a screenshot is wanted at once, not frames later.
+    const std::vector<std::function<void(QImage)>> captures = std::exchange(m_captures, {});
+    QRhiReadbackResult readback;
+    if (!captures.empty()) {
+        target.finalUpdates = [rhi, &readback] {
+            QRhiResourceUpdateBatch* u = rhi->nextResourceUpdateBatch();
+            u->readBackTexture(QRhiReadbackDescription(), &readback);
+            return u;
+        };
+    }
     renderTo(target, panes, docks, overlays, clearColor, overlayTexture, overlaySerial);
+    if (!captures.empty()) {
+        QImage image;
+        if (result == FrameResult::Presented && rhi->finish() == QRhi::FrameOpSuccess && !readback.data.isEmpty()) {
+            image = readbackImage(readback, rhi->isYUpInFramebuffer());
+        }
+        for (const auto& done : captures) done(image);
+    }
     return result;
 }
 

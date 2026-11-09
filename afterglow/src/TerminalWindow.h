@@ -188,6 +188,16 @@ public:
     /// @p reply gets the result, or "cancelled" when the overlay closes first.
     QString openOverlay(const QString& owner, const QString& request, Pane* pane, const OverlaySpec& spec,
                         OverlayReply reply, QString& code);
+    /// What a capture shows: one pane, the panes of its tab (the area under
+    /// the tab bar), or the whole window with its chrome.
+    enum class CaptureScope { Pane, Tab, Window };
+    /// Gets the image in device pixels, or an error and its code: not_shown
+    /// or failed.
+    using CaptureDone = std::function<void(const QString& error, const QString& code, const QImage& image)>;
+    /// Draws a frame and reads it back as the window shows it, shader packs
+    /// and chrome included, cut to @p scope around @p pane. A pane in a tab
+    /// that is not shown, or a window that is not on screen, is not_shown.
+    void captureFrame(Pane* pane, CaptureScope scope, CaptureDone done);
     /// Cancels @p owner's overlays whose request IDs start with @p prefix.
     void closeOverlays(const QString& owner, const QString& prefix, const QString& message);
     /// How far the overlay of @p pane has faded in, 0 to 1, and whether the

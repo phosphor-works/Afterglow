@@ -10,7 +10,7 @@
 # bash-completion, source aglow.bash as well.
 
 _afterglow_ctl_commands="ls send-text get-text split move-pane detach-tab new-tab new-window focus close set-title
-signal notify scripts open-directory projects save-project open-project action watch overlay"
+signal notify scripts open-directory projects save-project open-project action watch overlay screenshot"
 # The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp).
 _afterglow_actions="swap_left swap_right swap_up swap_down rotate_panes_clockwise rotate_panes_counterclockwise
 pane_overview use_package_shaders move_pane_to_tab move_pane_to_window detach_tab save_project switch_project
@@ -156,6 +156,10 @@ _afterglow_ctl()
             _afterglow_files -d
             return
             ;;
+        screenshot:0)
+            _afterglow_files
+            return
+            ;;
         move-pane:1)
             _afterglow_matching left right up down new-tab new-window
             return
@@ -201,6 +205,7 @@ _afterglow_ctl()
         fi
         ;;
     get-text) _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output" ;;
+    screenshot) _afterglow_unused $pane "--tab|--window" ;;
     split) _afterglow_unused $pane "--left|--right|--up|--down" ;;
     new-tab | new-window) _afterglow_unused $pane --cwd ;;
     overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" ;;

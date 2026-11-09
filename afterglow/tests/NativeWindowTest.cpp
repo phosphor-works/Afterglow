@@ -580,6 +580,92 @@ TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
 
 INSTANTIATE_TEST_SUITE_P(Shaders, NativeRenderer, ::testing::Bool());
 
+TEST_F(NativeWindow, ScreenshotsShowThePaneItsTabAndItsWindow) {
+    QFile conf(directory.filePath(QStringLiteral("capture.conf")));
+    ASSERT_TRUE(conf.open(QIODevice::WriteOnly));
+    conf.write(R"({"Control": {"allowReadText": true}})");
+    conf.close();
+    SettingsStore settings(conf.fileName());
+    Control control(settings, {});
+    control.attachWindow(window);
+    // Two panes side by side, each filled with its own background colour.
+    Pane* left = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+    Pane* right = window->splitPane(left, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    left->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;220;20;20m\x1b[2J"); });
+    right->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;20;200;20m\x1b[2J"); });
+    // The split animation and the first frames of the new pane end.
+    const std::uint64_t start = window->submittedFrames();
+    waitFor([] { return false; }, 1000);
+    ASSERT_GT(window->submittedFrames(), start);
+
+    struct Shot {
+        bool done = false;
+        QString error, code;
+        QImage image;
+    };
+    auto capture = [&](Pane* pane, Control::CaptureScope scope) {
+        auto shot = std::make_shared<Shot>();
+        QString code;
+        const QString error = control.capture(pane->id(), scope,
+            [shot](const QString& error, const QString& code, const QImage& image) {
+                *shot = Shot{true, error, code, image};
+            }, code);
+        if (!error.isEmpty()) return Shot{true, error, code, {}};
+        EXPECT_TRUE(waitFor([shot] { return shot->done; }));
+        return *shot;
+    };
+    // Mostly red or mostly green, whatever a pane effect does to the shade.
+    auto red = [](QRgb c) { return qRed(c) > 120 && qRed(c) > 2 * qGreen(c); };
+    auto green = [](QRgb c) { return qGreen(c) > 120 && qGreen(c) > 2 * qRed(c); };
+    const QSize windowPixels = (QSizeF(window->size()) * window->devicePixelRatio()).toSize();
+
+    const Shot whole = capture(left, Control::CaptureScope::Window);
+    ASSERT_TRUE(whole.error.isEmpty()) << qPrintable(whole.error);
+    EXPECT_EQ(whole.image.size(), windowPixels);
+    const Shot tab = capture(right, Control::CaptureScope::Tab);
+    ASSERT_TRUE(tab.error.isEmpty()) << qPrintable(tab.error);
+    EXPECT_EQ(tab.image.width(), windowPixels.width());
+    EXPECT_LE(tab.image.height(), windowPixels.height());
+    EXPECT_TRUE(red(tab.image.pixel(tab.image.width() / 4, tab.image.height() / 2)));
+    EXPECT_TRUE(green(tab.image.pixel(tab.image.width() * 3 / 4, tab.image.height() / 2)));
+    const Shot leftShot = capture(left, Control::CaptureScope::Pane);
+    const Shot rightShot = capture(right, Control::CaptureScope::Pane);
+    ASSERT_TRUE(leftShot.error.isEmpty()) << qPrintable(leftShot.error);
+    ASSERT_TRUE(rightShot.error.isEmpty()) << qPrintable(rightShot.error);
+    // Each pane as it shows, with its title and padding: the two side by
+    // side fill the tab, less the divider between them.
+    EXPECT_LT(leftShot.image.width(), tab.image.width() * 3 / 4);
+    EXPECT_LT(rightShot.image.width(), tab.image.width() * 3 / 4);
+    EXPECT_GE(leftShot.image.width() + rightShot.image.width(), tab.image.width() - 16);
+    EXPECT_LE(leftShot.image.width() + rightShot.image.width(), tab.image.width());
+    // The cells: only red in the left pane, only green in the right one.
+    for (const QPointF at : {QPointF(0.25, 0.25), QPointF(0.5, 0.5), QPointF(0.75, 0.75)}) {
+        const QPoint l(int(at.x() * leftShot.image.width()), int(at.y() * leftShot.image.height()));
+        const QPoint r(int(at.x() * rightShot.image.width()), int(at.y() * rightShot.image.height()));
+        EXPECT_TRUE(red(leftShot.image.pixel(l))) << l.x() << "," << l.y();
+        EXPECT_TRUE(green(rightShot.image.pixel(r))) << r.x() << "," << r.y();
+    }
+
+    // A pane in a tab that is not shown has no picture, and its tab neither.
+    ASSERT_NE(window->openTab(launch, nullptr), nullptr);
+    EXPECT_EQ(capture(left, Control::CaptureScope::Pane).code, QStringLiteral("not_shown"));
+    EXPECT_EQ(capture(left, Control::CaptureScope::Tab).code, QStringLiteral("not_shown"));
+    EXPECT_TRUE(capture(left, Control::CaptureScope::Window).error.isEmpty());
+
+    // Without Control.allowReadText, a refusal at once.
+    SettingsStore closed(directory.filePath(QStringLiteral("closed.conf")));
+    Control denied(closed, {});
+    denied.attachWindow(window);
+    QString code;
+    EXPECT_FALSE(denied.capture(left->id(), Control::CaptureScope::Window, [](const QString&, const QString&, const QImage&) {
+        ADD_FAILURE() << "a refused capture answers no later";
+    }, code).isEmpty());
+    EXPECT_EQ(code, QStringLiteral("denied"));
+}
+
 TEST_F(NativeWindow, FailedLaunchDoesNotAddPaneOrTab) {
     const int panes = window->panes().size(), tabs = window->tabs().size();
     PaneLaunchOptions options; options.command = {QStringLiteral("/nonexistent/afterglow-test-program")};
