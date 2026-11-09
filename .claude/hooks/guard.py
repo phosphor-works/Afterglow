@@ -11,8 +11,10 @@ do, !, env, xargs, timeout, nohup, sudo, strace...) skipped. So `then pkill x` d
 word inside a quoted string (grep 'a|sudo') doesn't trip it. Here-document bodies (commit messages) are text, not
 commands, unless a shell reads them as its script. The $(...) and backquote commands in a body whose delimiter is
 not quoted (<<EOF, not <<'EOF') are commands, because the shell runs them to expand the body. The scripts of nested
-shells, eval, watch, script -c, tmux, ssh and a shell that reads standard input are read the same way, and so are the
-commands in another command's arguments (find -exec, gdb --args, systemd-run).
+shells, eval, watch, script -c, flock -c, tmux, ssh, parallel and a shell that reads standard input are read the same
+way, and so are the commands in another command's arguments (find -exec, parallel, gdb --args, flock, chrt,
+systemd-run). Every rule applies to a command that find, parallel, flock, chrt, taskset, catchsegv, flatpak-spawn or
+systemd-run starts, at any depth, with the environment and the directory that it starts in.
 """
 
 import fnmatch
@@ -79,7 +81,7 @@ PERF_COMMANDS = set('record stat trace ftrace c2c mem sched lock kmem kwork time
 SHELLS = set('bash sh zsh dash ash ksh mksh yash fish'.split())
 # Commands that start the command in their arguments with their own environment (find -exec, gdb --args). Any
 # other (systemd-run, ssh, flatpak-spawn) may start it in an environment that the guard cannot see.
-INHERITS = set('find gdb lldb rr flock chrt taskset catchsegv parallel'.split())
+INHERITS = set('find gdb lldb rr flock chrt taskset catchsegv parallel watch'.split())
 # Commands that never run their arguments: a word of theirs is text (echo aglow run, grep -r afterglow ctl)
 TEXT_COMMANDS = set(
     'echo printf print grep egrep fgrep rg ugrep cat head tail less more wc ls stat file which whereis type whence '
@@ -126,8 +128,8 @@ MSG_BROAD = 'Stage files by name (git add path...), not with -A, -u, ., *, :/ or
 MSG_PUSH = 'Never force-push. Fix the branch with a new commit instead.'
 MSG_PUSH_MAIN = ('Never push to main. Push a branch and open a pull request. The user merges it. '
                  'If this command makes the branch, name it: git push -u origin BRANCH.')
-MSG_PUSH_UNKNOWN = ('This push names no branch, and the command runs git in a directory the guard cannot resolve. '
-                    'Name the branch: git push -u origin BRANCH.')
+MSG_PUSH_UNKNOWN = ('This push names no branch, and the command runs git in a directory the guard cannot resolve, '
+                    'or where git cannot tell its current branch. Name the branch: git push -u origin BRANCH.')
 # A directory the guard cannot know before the shell runs: $(...), $VAR, a backquote command, cd -, GIT_DIR
 UNKNOWN = object()
 # Wrapper options that take the next word as their value
@@ -160,6 +162,20 @@ WRAPPER_VALUES = {
                     '--on-timezone-change', '--on-clock-change', '--expand-environment', '--json'},
     'flock': {'-w', '--timeout', '--wait', '-E', '--conflict-exit-code'},
     'chrt': {'-T', '--sched-runtime', '-P', '--sched-period', '-D', '--sched-deadline'},
+    # GNU parallel's options with a value (man parallel). -e, -i, -l, --eof, --max-lines and --replace take an
+    # optional one, and Getopt::Long gives them the next word too when it is not an option.
+    'parallel': set(
+        '-a --arg-file --arg-file-sep --arg-sep --basefile --bf --basenameextensionreplace --bner --basenamereplace '
+        '--bnr --bin --block --block-size --block-timeout --bt --colsep -C --combineexec --combine-executable '
+        '--compress-program --decompress-program -d --delimiter --delay --dirnamereplace --dnr -e --eof -E --env '
+        '--er --extensionreplace --filter --group-by --halt --halt-on-error --header -i -I --id --jl --joblog -j '
+        '--jobs -J --load -l -L --limit --match --max-args --max-chars --max-lines --max-procs --max-replace-args '
+        '--memfree --memsuspend --milestone --minversion --nice -n -N --parens -P --process-slot-var --profile '
+        '--recend --recstart --replace --res --results --retries --return --rpl --rsync-opts --semaphore-name '
+        '--semaphore-timeout --st --seqreplace --shard --shell-completion -S --sshlogin --slf --sshloginfile '
+        '--slotreplace -s --sql-and-worker --sql-master --sql-worker --ssh --ssh-delay --tagstring --ctagstring '
+        '--template --tmpl --term-seq --tf --transferfile --timeout --tmpdir --total --total-jobs --trc --trim '
+        '--wd --workdir'.split()),
 }
 MSG_PKILL = (
     'pkill and killall match by name, and the user runs Afterglow as their terminal: `pkill afterglow` closes the '
@@ -352,13 +368,58 @@ def split_heredocs(command):
     return ''.join(out), bodies, commands
 
 
+class Word(str):
+    """A word that the shell passes on as it is, though it reads as a separator: the \\; or ';' that ends find -exec."""
+
+
+# The character that stands for such a word while shlex splits the line: shlex returns the same ';' for \; as for a
+# separator, and the separator ends the command
+SEMICOLON_MARK = ''
+
+
+def mark_semicolons(command):
+    """COMMAND with each \\;, ';' and ";" that is a word of its own, outside quotes, replaced by SEMICOLON_MARK."""
+    out, i, n, quote, start = [], 0, len(command), '', True
+    ends = ' \t\r\n' + SEPARATORS
+    while i < n:
+        ch = command[i]
+        if quote:
+            if ch == '\\' and quote == '"':
+                out.append(command[i : i + 2])
+                i += 2
+                continue
+            quote = '' if ch == quote else quote
+            out.append(ch)
+            i += 1
+            continue
+        form = start and next((f for f in ('\\;', "';'", '";"') if command.startswith(f, i)
+                               and (i + len(f) == n or command[i + len(f)] in ends)), None)
+        if form:
+            out.append(SEMICOLON_MARK)
+            i, start = i + len(form), False
+            continue
+        if ch == '\\':
+            out.append(command[i : i + 2])
+            i, start = i + 2, False
+            continue
+        if ch in '\'"':
+            quote = ch
+        start = ch in ends
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
 def tokens(command):
-    lex = shlex.shlex(command, posix=True, punctuation_chars=SEPARATORS)
+    if SEMICOLON_MARK in command:
+        # The character itself would come back as the \; of find -exec, a word that ends no command
+        raise ValueError('the command holds U+E000, which the guard uses to mark the \\; of find -exec')
+    lex = shlex.shlex(mark_semicolons(command), posix=True, punctuation_chars=SEPARATORS)
     lex.whitespace = ' \t\r'
     lex.whitespace_split = True
     lex.commenters = ''
     try:
-        return list(lex)
+        return [Word(';') if t == SEMICOLON_MARK else t for t in lex]
     except ValueError:  # unbalanced quotes: split at whitespace and separators, quotes dropped
         return re.findall(r'[%s]+|[^\s%s]+' % (re.escape(SEPARATORS), re.escape(SEPARATORS)), command.replace('"', ''))
 
@@ -418,7 +479,7 @@ def simple_commands(command):
     for line in lines:
         words = []
         for tok in tokens(line) + [';']:
-            if tok and all(ch in SEPARATORS for ch in tok):
+            if tok and not isinstance(tok, Word) and all(ch in SEPARATORS for ch in tok):
                 if words:
                     yield split_wrappers(words)
                 words = []
@@ -592,23 +653,33 @@ def git_reads(args):
 
 
 def current_branch(directory):
+    """The branch checked out in DIRECTORY, '' for a detached HEAD, or UNKNOWN when git fails or does not answer: a
+    push from there may be a push of main."""
     try:
         out = subprocess.run(['git', 'symbolic-ref', '--short', '-q', 'HEAD'], capture_output=True, text=True,
                              timeout=5, cwd=directory)
-        return out.stdout.strip()
     except (OSError, subprocess.SubprocessError):
-        return ''
+        return UNKNOWN
+    if out.returncode == 0:
+        return out.stdout.strip()
+    # -q makes a detached HEAD exit with 1 and no message. Any other failure, outside a repository too, says nothing
+    # about the branch.
+    return '' if out.returncode == 1 and not out.stderr.strip() else UNKNOWN
 
 
 def pushes_main(rest, directories):
     """The refusal for `git push ARGS`, if it can update main: a refspec whose destination is main, --all, or no
     refspec (push.default then pushes the current branch) while main is checked out in any directory the command
-    may run git in. A directory the guard cannot resolve counts as main for HEAD and the current branch."""
+    may run git in. A directory the guard cannot resolve, or whose current branch git does not give, counts as main
+    for HEAD and the current branch."""
 
     def current_is_main():
         if any(d is UNKNOWN for d in directories):
             return MSG_PUSH_UNKNOWN
-        return MSG_PUSH_MAIN if any(current_branch(d) == 'main' for d in directories) else None
+        branches = [current_branch(d) for d in directories]
+        if 'main' in branches:
+            return MSG_PUSH_MAIN
+        return MSG_PUSH_UNKNOWN if UNKNOWN in branches else None
 
     words, k = [], 0
     while k < len(rest):
@@ -927,7 +998,8 @@ def mux_directories():
 # - a copy that replaces a socket or a lock file: cp -f, cp --remove-destination, install, tar or another archiver
 #   that extracts over the files (cp -f /tmp/x ~/.local/state/afterglow-mux/ID.sock);
 # - the paths that xargs or parallel reads from a file or a pipe whose contents name them, when the line itself
-#   names no path there or above (cat list | xargs rm).
+#   names no path there or above (cat list | xargs rm);
+# - the commands that parallel reads from its input (echo 'rm -rf ~/.local/state' | parallel).
 
 # The commands that take away each path that they name (shred overwrites it), and gio's subcommands that do
 REMOVES = {'rm', 'unlink', 'rmdir', 'mv', 'shred', 'trash', 'trash-put'}
@@ -991,40 +1063,84 @@ def find_starts(args):
     return starts or ['.']
 
 
-def removes_mux_files(word, args, places):
-    """The path that WORD ARGS takes away from a socket directory of the user's mux daemon, or None: a command of
-    REMOVES, or gio with one of GIO_REMOVES, with a path that touches_mux() finds; ln with its link there, not above;
-    rsync with one of RSYNC_DELETES and its destination there or above it, or with --remove-source-files and any of
-    its paths there or above it; find with -delete, or with -exec, -execdir, -ok or -okdir of a command of REMOVES
-    or gio, from a start path there or above it. mv counts for its destination as well as for its sources, and so
-    for a directory above (mv /tmp/x ~/.local/state/ is blocked though it removes nothing): a destination inside a
-    protected directory can replace a socket, and a directory above it can be a link to it. The rule stays that
-    cautious. A path in the arguments of find -exec (find . -exec rm PATH ;) is the removal's own, which
-    argument_commands() yields."""
+def removes_input(word, args):
+    """Whether WORD ARGS takes away paths that come from outside its own words: removes_from_input() for the command,
+    or for a command of a script that it runs (xargs sh -c 'rm "$@"' sh), whose arguments ("$@", "{}") are the
+    paths."""
+    if removes_from_input(word, args):
+        return True
+    return any(removes_input(name, rest) for script in shell_scripts(word, args)
+               for _, name, rest in simple_commands(script))
+
+
+FIND_ACTIONS = ('-exec', '-execdir', '-ok', '-okdir')
+
+
+def find_action_list(args):
+    """(the action, its command) for each -exec, -execdir, -ok and -okdir in find ARGS: the words up to its ';', or
+    up to a '+' right after a {} (any other '+' is an argument)."""
+    actions, k = [], 0
+    while k < len(args):
+        if args[k] not in FIND_ACTIONS:
+            k += 1
+            continue
+        end = k + 1
+        while end < len(args) and args[end] != ';' and not (args[end] == '+' and args[end - 1] == '{}'):
+            end += 1
+        actions.append((args[k], args[k + 1 : end]))
+        k = end + 1
+    return actions
+
+
+def find_actions(args):
+    """The command of each action in find ARGS (find_action_list())."""
+    return [words for _, words in find_action_list(args)]
+
+
+def taken_paths(word, args):
+    """(the paths that WORD ARGS takes away, whether a directory above a protected one counts): the operands of a
+    command of REMOVES, the paths after gio's subcommand of GIO_REMOVES, the link that ln makes or replaces (not a
+    directory above), and the destination of rsync with one of RSYNC_DELETES, or each of its paths with
+    --remove-source-files."""
     words, _ = operands(args)
     if word == 'gio':
-        if words[:1] and words[0] in GIO_REMOVES:
-            return next((w for w in words[1:] if touches_mux(w, places)), None)
-        return None
+        return (words[1:] if words[:1] and words[0] in GIO_REMOVES else []), True
     if word in REMOVES:
-        return next((w for w in words if touches_mux(w, places)), None)
+        return words, True
     if word == 'ln':
-        # The link that ln makes or replaces: the last operand, into -t DIR, or the target's name in this directory
+        # The last operand, into -t DIR, or the target's name in this directory
         links = [a.split('=', 1)[1] for a in args if a.startswith('--target-directory=')]
         links += [args[k + 1] for k, a in enumerate(args[:-1]) if re.fullmatch(r'-[A-Za-z]*t', a)]
         if not links and words:
             links = [words[-1]] if len(words) > 1 else [os.path.basename(words[0].rstrip('/'))]
-        return next((w for w in links if touches_mux(w, places, above=False)), None)
-    if word == 'rsync':
-        if not (RSYNC_DELETES | {'--remove-source-files'}) & set(args) or not words:
-            return None
-        paths = words if '--remove-source-files' in args else words[-1:]
-        return next((w for w in paths if touches_mux(w, places)), None)
-    if word == 'find':
-        actions = {os.path.basename(args[k + 1]) for k, a in enumerate(args[:-1])
-                   if a in ('-exec', '-execdir', '-ok', '-okdir')}
-        if '-delete' in args or actions & (REMOVES | {'gio'}):
-            return next((w for w in find_starts(args) if touches_mux(w, places)), None)
+        return links, False
+    if word == 'rsync' and (RSYNC_DELETES | {'--remove-source-files'}) & set(args):
+        return (words if '--remove-source-files' in args else words[-1:]), True
+    return [], True
+
+
+def removes_mux_files(word, args, places):
+    """The path that WORD ARGS takes away from a socket directory of the user's mux daemon, or None: one of
+    taken_paths() that touches_mux() finds; or find from a start path there or above it, with -delete, or with an
+    -exec, -execdir, -ok or -okdir whose command takes away the file that find found ({} among its taken_paths(),
+    or {} given to a script with a command of removes_input()). mv counts for its destination as well as for its
+    sources, and so for a directory above (mv /tmp/x ~/.local/state/ is blocked though it removes nothing): a
+    destination inside a protected directory can replace a socket, and a directory above it can be a link to it.
+    The rule stays that cautious. A path in the arguments of find -exec (find . -exec rm PATH ;) is the removal's
+    own, which argument_commands() yields."""
+    if word != 'find':
+        paths, above = taken_paths(word, args)
+        return next((w for w in paths if touches_mux(w, places, above)), None)
+
+    def takes_found(action):
+        _, name, rest = split_wrappers(action)
+        if any('{}' in w for w in taken_paths(name, rest)[0]):
+            return True
+        return any('{}' in a for a in rest) and any(removes_input(n, r) for script in shell_scripts(name, rest)
+                                                    for _, n, r in simple_commands(script))
+
+    if '-delete' in args or any(takes_found(action) for action in find_actions(args)):
+        return next((w for w in find_starts(args) if touches_mux(w, places)), None)
     return None
 
 
@@ -1132,33 +1248,52 @@ def launches_window(args):
     return True
 
 
-# The commands that argument_commands() yields after find -exec and parallel: the mux daemon, and the commands of
-# stops_mux_unit() and removes_mux_files()
-ARGUMENT_REMOVES = REMOVES | {'afterglow-mux', 'systemctl', 'ln', 'rsync', 'gio'}
+# The words that end the command of parallel and start a list of its arguments, or of files that hold them
+PARALLEL_LISTS = {':::', '::::', ':::+', '::::+'}
+
+
+def parallel_scripts(args):
+    """The shell commands that parallel ARGS runs: its command after its options, up to the first of PARALLEL_LISTS,
+    as one line (parallel joins the words and gives them to a shell, so 'rm -f {}' is rm), or without a command, each
+    word of its ::: lists. A command that parallel reads from its input is not known here."""
+    k = 0
+    while k < len(args) and args[k].startswith('-'):
+        if args[k] == '--':
+            k += 1
+            break
+        k = option_value('parallel', args, k)[3]
+    end = next((j for j in range(k, len(args)) if args[j] in PARALLEL_LISTS), len(args))
+    if k < end:
+        return [' '.join(args[k:end])]
+    return [a for a in args[end:] if a not in PARALLEL_LISTS]
 
 
 def argument_commands(wrappers, word, args):
-    """(wrappers, command word, arguments) for each command that may run from the arguments of WORD: find -exec,
-    gdb --args, systemd-run, a debugger or a tracer the guard does not list. Only afterglow, aglow, a wrapper, a
-    shell, eval, watch, gdb or VAR=value starts one, so that an argument such as -name stays an argument. After find
-    and parallel, which surely run a command, so do afterglow-mux, systemctl and the commands that take files away
-    (ARGUMENT_REMOVES). A command of TEXT_COMMANDS runs none, and find only after -exec, -execdir, -ok or
-    -okdir."""
+    """(wrappers, command word, arguments) for each command that may run from the arguments of WORD: the command of
+    each find -exec, -execdir, -ok and -okdir, the commands of parallel, then gdb --args, systemd-run, a debugger or
+    a tracer the guard does not list. In those, only afterglow, aglow, a wrapper, a shell, eval, watch, gdb or
+    VAR=value starts one, so that an argument such as -name stays an argument, and cmake --target afterglow-mux
+    names a target. A command of TEXT_COMMANDS runs none: find -exec grep -l afterglow-mux {} + runs grep, and
+    parallel echo ::: systemctl runs echo. parallel adds the words of its input, or of its ::: lists, after its
+    commands."""
     if word in TEXT_COMMANDS:
         return
-    if word == 'find':
-        start = next((k for k, a in enumerate(args) if a in ('-exec', '-execdir', '-ok', '-okdir')), len(args))
-        args = args[start + 1 :]
     outer = wrappers if word in INHERITS else wrappers + ['inherit:?']
-    if word == 'parallel':  # parallel adds the words of its input, or of its ::: lists, after the command
-        outer = outer + ['append']
+    if word in ('find', 'parallel'):
+        if word == 'find':
+            nested = [split_wrappers(action) for action in find_actions(args)]
+        else:
+            nested = [c for script in parallel_scripts(args) for c in simple_commands(script)]
+            outer = outer + ['append']
+        for inner, name, rest in nested:
+            yield outer + inner, name, rest
+            yield from argument_commands(outer + inner, name, rest)
+        return
     k = 0
     while k < len(args):
         name = os.path.basename(args[k])
-        # afterglow-mux and the others only where a command surely follows: cmake --target afterglow-mux names a
-        # target, and grep rm names a pattern
         if (name in WRAPPERS or name in SHELLS or name in ('afterglow', 'aglow', 'eval', 'watch', 'gdb')
-                or '=' in args[k] or (name in ARGUMENT_REMOVES and word in ('find', 'parallel'))):
+                or '=' in args[k]):
             inner, name, rest = split_wrappers(args[k:])
             yield outer + inner, name, rest
             # Go on after the command word: its env and VAR=value words belong to it
@@ -1167,16 +1302,31 @@ def argument_commands(wrappers, word, args):
             k += 1
 
 
+def service_directory(user):
+    """The working directory of a service that systemd-run starts without one: the home directory of the user's
+    account in the user's service manager, / in the system's. None when the account has no entry."""
+    if not user:
+        return '/'
+    try:
+        return pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError:
+        return None
+
+
 def launched_commands(wrappers, word, args):
     """(wrappers, command word, arguments) of the command that WORD starts from its arguments: the one after the
-    options and operands of a command in LAUNCHERS, with the environment it gets, or each command of find -exec."""
+    options and operands of a command in LAUNCHERS, with the environment it gets, or each command of find -exec.
+    A command that starts in an environment that the guard cannot see also starts in another directory: a
+    systemd-run service in the working directory of its service manager (the home directory of the user for --user,
+    else /), unless --same-dir (-d, and --shell, -S) or --working-directory names one, and a command of
+    flatpak-spawn in one that the guard does not know ('cwd:?')."""
     if word == 'find':
         yield from argument_commands(wrappers, word, args)
         return
     if word not in LAUNCHERS:
         return
     before, inherits = LAUNCHERS[word]
-    sets, k = [], 0
+    sets, k, same_dir, directory = [], 0, False, None
     while k < len(args) and args[k].startswith('-') and args[k] != '-':
         if args[k] == '--':
             k += 1
@@ -1185,6 +1335,10 @@ def launched_commands(wrappers, word, args):
         flag, letters, value, after = option_value(word, args, k)
         if word == 'systemd-run' and a == '--scope':
             inherits = True
+        elif word == 'systemd-run' and (a in ('--same-dir', '--shell') or 'd' in letters or 'S' in letters):
+            same_dir = True
+        elif word == 'systemd-run' and flag == '--working-directory':
+            directory = value
         elif word == 'systemd-run' and flag in ('-E', '--setenv'):
             # -E NAME passes systemd-run's own value
             sets.append('set:' + value if '=' in value else
@@ -1199,7 +1353,11 @@ def launched_commands(wrappers, word, args):
     k += before
     if k < len(args):
         inner, name, rest = split_wrappers(args[k:])
-        yield (wrappers if inherits else wrappers + ['inherit:?']) + sets + inner, name, rest
+        if directory is None and not inherits and not same_dir and word == 'systemd-run':
+            directory = service_directory('--user' in args[:k])
+        here = (['chdir:' + directory] if directory is not None else
+                [] if inherits or same_dir else ['cwd:?'])
+        yield (wrappers if inherits else wrappers + ['inherit:?']) + sets + here + inner, name, rest
 
 
 def gdb_inferior(args):
@@ -1305,9 +1463,10 @@ def ssh_command(args):
 
 
 def shell_scripts(word, args):
-    """The scripts that a nested shell, eval, watch, script -c, tmux, ssh or a gdb shell command runs. Every word
-    after a shell's -c is checked: bash takes options after -c, and fish takes several -c and -C scripts. Each word
-    of tmux can be a shell command (new-session, send-keys, run-shell). flock -c runs its command with sh -c."""
+    """The scripts that a nested shell, eval, watch, script -c, tmux, ssh, parallel or a gdb shell command runs.
+    Every word after a shell's -c is checked: bash takes options after -c, and fish takes several -c and -C scripts.
+    Each word of tmux can be a shell command (new-session, send-keys, run-shell). flock -c runs its command with
+    sh -c, and parallel runs its command with a shell (parallel_scripts())."""
     if word in SHELLS:
         for k, a in enumerate(args):
             if a in ('-c', '--command', '-C', '--init-command') or 'c' in short_flags(a) or 'C' in short_flags(a):
@@ -1337,6 +1496,8 @@ def shell_scripts(word, args):
         return []
     if word == 'flock':
         return [args[k + 1] for k, a in enumerate(args[:-1]) if a in ('-c', '--command')]
+    if word == 'parallel':
+        return parallel_scripts(args)
     if word == 'tmux':
         return list(args)
     if word == 'ssh' or (word == 'afterglow' and args[:1] == ['ssh']):
@@ -1403,9 +1564,116 @@ def stdin_scripts(cmds, bodies, places):
     return scripts
 
 
-def check_bash(command, cwd=None):
+# More commands than this, started from the arguments of one command, fail closed
+MAX_STARTED = 256
+
+
+def unique_commands(cmds):
+    """CMDS without repeats, in order."""
+    seen, out = set(), []
+    for wrappers, word, args in cmds:
+        key = (tuple(wrappers), word, tuple(args))
+        if key not in seen:
+            seen.add(key)
+            out.append((wrappers, word, args))
+    return out
+
+
+def started_commands(wrappers, word, args):
+    """(wrappers, command word, arguments) of each command that WORD ARGS starts from its arguments, at any depth:
+    the commands of find's actions, the commands of parallel, and the command of each of LAUNCHERS, then the ones
+    that those start (flock FILE systemd-run --scope cmake --install). Unlike argument_commands(), no argument is
+    taken for a command because of its name, so git grep sudo stays a search. The command of -execdir and -okdir
+    runs in the directory of each file that find finds ('cwd:?')."""
+    found, pending = [], [(wrappers, word, args)]
+    while pending:
+        outer, name, rest = pending.pop()
+        if name == 'find':
+            nested = []
+            for action, words in find_action_list(rest):
+                inner, nested_name, nested_rest = split_wrappers(words)
+                here = ['cwd:?'] if action in ('-execdir', '-okdir') else []
+                nested.append((outer + here + inner, nested_name, nested_rest))
+        elif name == 'parallel':
+            nested = [(outer + ['append'] + inner, nested_name, nested_rest) for script in parallel_scripts(rest)
+                      for inner, nested_name, nested_rest in simple_commands(script)]
+        else:
+            nested = list(launched_commands(outer, name, rest))
+        found += nested
+        pending += nested
+        if len(found) > MAX_STARTED:
+            raise ValueError('a command starts more than %d commands from its arguments' % MAX_STARTED)
+    return found
+
+
+def command_places(outer, wrappers, places):
+    """The directories in which a command with WRAPPERS, started from the arguments of a command with the wrappers
+    OUTER, may run: where the 'chdir:' words after OUTER (its own env -C, a systemd-run --working-directory) lead
+    from PLACES (those of the shell, with the env -C of OUTER), UNKNOWN after a 'cwd:?', and PLACES too: as for a
+    cd of the shell, the rules hold in each directory that the guard has seen."""
+    own = wrappers[len(outer) :] if wrappers[: len(outer)] == outer else wrappers
+    here = list(places)
+    for w in own:
+        if w == 'cwd:?':
+            here = [UNKNOWN]
+        elif w.startswith('chdir:'):
+            here = [resolve(place, w[len('chdir:') :]) for place in here]
+    return list(dict.fromkeys(list(places) + here))
+
+
+# The commands that run their script on this computer, in the environment that they got
+LOCAL_SCRIPTS = SHELLS | {'eval', 'watch', 'script', 'flock', 'parallel'}
+# The variables that the rules read from the environment of a command (environment())
+RULE_VARIABLES = CLIENT_VARIABLES + ('DESTDIR',)
+# The commands that set or unset the variables that their arguments name: an argument with an expansion can name
+# one of RULE_VARIABLES without spelling it (export "$v=...", read "$v", eval "$x")
+NAMES_VARIABLES = set(
+    'export unset declare typeset local readonly integer float private set read mapfile readarray let getopts vared '
+    'zparseopts eval'.split()
+)
+# The commands after which a script can run with other variables, whatever their words spell: source and . run a
+# file, and an alias can put VAR=value in front of a later command
+READS_DEFINITIONS = {'source', '.', 'alias'}
+
+
+def passed_environment(wrappers, word, args):
+    """The words of WRAPPERS that make the environment of the script that WORD ARGS runs: VAR=value, env -u, env -i
+    and the unknown environment of a service. None for a command that runs its script elsewhere: ssh on another
+    computer, tmux in the environment of its server, parallel -S (--sshlogin, --slf) on the computers it names."""
+    if word not in LOCAL_SCRIPTS or (word == 'parallel' and any(re.match(r'^(-S|--s(sh|lf))', a) for a in args)):
+        return []
+    return [w for w in wrappers if w in ('clear', 'inherit:?') or w.startswith(('set:', 'unset:'))]
+
+
+def script_environment(inherited, script, cmds):
+    """INHERITED, the environment words that SCRIPT got from the command that runs it, or none when a command of the
+    script (CMDS) can change one of RULE_VARIABLES before a later command reads it: the script spells the name of
+    one (export XDG_RUNTIME_DIR=..., for HOME in ..., ${DESTDIR:=...}), a command of NAMES_VARIABLES or printf -v
+    names a variable through an expansion, a ${...=...} expansion assigns one (zsh's ${(P)v::=...} names it
+    indirectly), or the script runs a command of READS_DEFINITIONS or defines a function. Without them the guard
+    reads the script in this session's environment, as it reads a command line. A startup file of the shell
+    (~/.zshenv, fish's config.fish) that sets one of the variables is not seen."""
+    if not inherited:
+        return []
+    if any(re.search(r'(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])' % name, script) for name in RULE_VARIABLES):
+        return []
+    if re.search(r'\$\{[^}]*=|\(\s*\)|(?<![A-Za-z0-9_-])function(?![A-Za-z0-9_-])', script):
+        return []
+    for _, word, args in cmds:
+        expands = any('$' in a or '`' in a for a in args)
+        if (word in READS_DEFINITIONS or (word in NAMES_VARIABLES and expands)
+                or (word == 'printf' and expands and any(a.startswith('-v') for a in args))):
+            return []
+    return list(inherited)
+
+
+def check_bash(command, cwd=None, inherited=()):
+    """The message that blocks COMMAND, or None. A nested script is read in the directories CWD of the shell that
+    runs it, and with INHERITED, the environment words (VAR=value, env -u, env -i) of the command that runs it."""
     text, bodies, expansions = split_heredocs(command)
     cmds = list(simple_commands(text))
+    inherited = script_environment(inherited, command, cmds)
+    cmds = [(inherited + wrappers, word, args) for wrappers, word, args in cmds]
     # Every directory a later git may run in: the start, each cd, pushd and env -C target, and UNKNOWN after a
     # GIT_DIR or GIT_WORK_TREE. A cd in a subshell or a failed cd leaves the start in place, so all of them are
     # kept, not only the last. A nested shell starts from all of them.
@@ -1423,40 +1691,45 @@ def check_bash(command, cwd=None):
             places = places[:16] + [UNKNOWN]
         # After this command's own env -C or GIT_DIR, which the nested shell inherits
         commands = [(wrappers, word, args)] + list(argument_commands(wrappers, word, args))
-        for script in (script for _, name, rest in commands for script in shell_scripts(name, rest)):
-            if message := check_bash(script, list(places)):
-                return message
-        if word in KILL_BY_NAME:
+        # This command and each command that it starts, each with its own wrappers and directories
+        started = [(wrappers, word, args)] + started_commands(wrappers, word, args)
+        for c in unique_commands(commands + started):
+            where = command_places(wrappers, c[0], places)
+            for script in shell_scripts(c[1], c[2]):
+                if message := check_bash(script, where, passed_environment(*c)):
+                    return message
+        if any(c[1] in KILL_BY_NAME for c in started):
             return MSG_PKILL
-        if word in PRIVILEGED or PRIVILEGED & set(wrappers):
+        if any(c[1] in PRIVILEGED or PRIVILEGED & set(c[0]) for c in started):
             return MSG_SUDO
-        if is_install(wrappers, word, args):
+        if any(is_install(*c) for c in started):
             return MSG_INSTALL
-        if any(drives(*c) for c in commands):
+        if any(drives(*c) for c in commands + started):
             return MSG_CTL
         launches = [(wrappers, word, args)] + list(launched_commands(wrappers, word, args))
-        if any(reaches_mux(*c) for c in commands + launches) or (word == 'gdb' and gdb_mux(wrappers, args)):
+        every = unique_commands(commands + launches + started)
+        if any(reaches_mux(*c) for c in every) or (word == 'gdb' and gdb_mux(wrappers, args)):
             return MSG_MUX
-        if any(stops_mux_unit(*c) or removes_mux_files(c[1], c[2], places) for c in commands + launches):
+        if any(stops_mux_unit(*c) or removes_mux_files(c[1], c[2], command_places(wrappers, c[0], places))
+               for c in every):
             return MSG_MUX
-        if (any(appends(c[0]) and removes_from_input(c[1], c[2]) for c in commands + launches)
-                and names_mux(text, places)):
+        if any(appends(c[0]) and removes_input(c[1], c[2]) for c in every) and names_mux(text, places):
             return MSG_MUX
-        if any(opens_window(*c) for c in launches) or (word == 'gdb' and gdb_launches(wrappers, args)):
+        if any(opens_window(*c) for c in launches + started) or (word == 'gdb' and gdb_launches(wrappers, args)):
             return MSG_LAUNCH
-        if path := edits_plasmazones(word, args, places):
-            return plasmazones_message(path)
-        if word == 'git':
-            msg = check_git(args, places)
-            if msg:
+        for c in started:
+            where = command_places(wrappers, c[0], places)
+            if path := edits_plasmazones(c[1], c[2], where):
+                return plasmazones_message(path)
+            if c[1] == 'git' and (msg := check_git(c[2], where)):
                 return msg
     # Here-document commands run where the shell is when it reaches them, after any cd before them: check
     # them against every directory of the line, not only the start.
     for script in expansions:
-        if message := check_bash(script, list(places)):
+        if message := check_bash(script, list(places), inherited):
             return message + ' ' + MSG_HEREDOC
     for script in stdin_scripts(cmds, bodies, places):
-        if message := check_bash(script, list(places)):
+        if message := check_bash(script, list(places), inherited):
             return message
     # kill $(pgrep ...), pgrep ... | xargs kill, a loop over pgrep -f: kill with PIDs that a name matched
     finders = {w for _, w, a in cmds if w in ('pgrep', 'pidof', 'ps')}

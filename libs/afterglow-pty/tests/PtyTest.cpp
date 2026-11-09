@@ -9,10 +9,12 @@
 #include <charconv>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -538,6 +540,24 @@ TEST(Pty, TheChildStartsWithNoBlockedOrIgnoredSignalAndTheCallerKeepsItsMask)
     EXPECT_EQ(listener.output, "SigBlk:\t0000000000000000\nSigIgn:\t0000000000000000\n");
 }
 
+namespace {
+
+// Whether the effective capabilities of this process (CapEff in
+// /proc/self/status) hold CAP_SYS_RESOURCE (24) or CAP_SYS_ADMIN (21).
+bool exemptFromProcessLimit()
+{
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    while (std::getline(status, line)) {
+        if (!line.starts_with("CapEff:")) continue;
+        const std::uint64_t caps = std::stoull(line.substr(7), nullptr, 16);
+        return (caps >> 24 & 1) != 0 || (caps >> 21 & 1) != 0;
+    }
+    return false;
+}
+
+} // namespace
+
 TEST(Pty, AFailedForkReportsWhyAndLeavesNoDescriptor)
 {
     // In a process of its own: a soft RLIMIT_NPROC of 0 makes every fork()
@@ -545,6 +565,7 @@ TEST(Pty, AFailedForkReportsWhyAndLeavesNoDescriptor)
     // The kernel does not apply the limit to root, nor to a process with
     // CAP_SYS_RESOURCE or CAP_SYS_ADMIN.
     if (geteuid() == 0) GTEST_SKIP() << "RLIMIT_NPROC does not limit root";
+    if (exemptFromProcessLimit()) GTEST_SKIP() << "RLIMIT_NPROC does not limit a process with CAP_SYS_RESOURCE or CAP_SYS_ADMIN";
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_EXIT(
         {

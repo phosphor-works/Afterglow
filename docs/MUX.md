@@ -57,7 +57,7 @@ It writes `afterglow mux new: ` and a message on standard error:
 | `setsid` | The daemon exits before it listens and reports no error | `afterglow-mux ended before it listened`. The command stops at once, without the wait of 5 seconds. |
 | `setsid` | No socket of the daemon answers in 5 seconds | `afterglow-mux did not start: no daemon answers on PATH`, with the path of each socket |
 | systemd user unit | The unit is in the state `deactivating`, and no socket answers in 5 seconds | `afterglow-mux did not start: the daemon of afterglow-mux.service is ending. Try again when it has ended` |
-| systemd user unit | No socket of the daemon answers in 5 seconds, or the unit that the command started ends before its daemon answers | `afterglow-mux did not start: see journalctl --user -u afterglow-mux`. The journal shows the error of the daemon. |
+| systemd user unit | No socket of the daemon answers in 5 seconds, or the unit that the command started ends before its daemon answers and no file `SOCKET.lock` of a socket exists | `afterglow-mux did not start: see journalctl --user -u afterglow-mux`. The journal shows the error of the daemon. When a file `SOCKET.lock` exists, another daemon holds that socket, and the command waits for that daemon until the 5 seconds end. |
 
 Two commands can start a daemon at the same time. Then the second daemon finds the socket of the first daemon and exits.
 Its command waits for the first daemon, because the first daemon can take some time before it answers.
@@ -77,7 +77,7 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 | Command | Function |
 | --- | --- |
 | `afterglow mux new --detach` | Creates a session and prints its name. Options: `--name NAME`, `--cwd DIR`, `-- COMMAND...`. |
-| `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE`, `WINDOWS` and `PANES` |
+| `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES` |
 | `afterglow mux kill NAME` | Ends a session and its programs. Option: `--force`. |
 | `afterglow mux server` | Runs `afterglow-mux` in the foreground |
 | `afterglow mux --help` | Prints the usage |
@@ -91,6 +91,7 @@ The daemon does not give the same number two times while it runs. A number that 
 A name that a session has already is refused.
 
 `afterglow mux ls` shows `detached` in the `STATE` column, because no window shows a session.
+The `PANES` column shows the number of panes of the session.
 Without a daemon, `afterglow mux ls` and `afterglow mux kill` report that there are no sessions.
 
 When `Terminal.confirmClose` is on and a program runs in the session, `afterglow mux kill` asks first.

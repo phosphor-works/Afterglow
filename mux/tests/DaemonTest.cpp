@@ -407,7 +407,6 @@ TEST(MuxDaemon, CreatesListsAndKillsSessions)
     EXPECT_EQ(names(daemon.sessions()), (std::vector<std::string>{"keep", "1", "2", "work"}));
     for (const auto& session : daemon.sessions()) {
         EXPECT_FALSE(session.attached);
-        EXPECT_EQ(session.windows, 1);
         EXPECT_EQ(session.panes, 1);
     }
 

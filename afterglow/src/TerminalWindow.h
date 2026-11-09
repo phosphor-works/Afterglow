@@ -641,9 +641,12 @@ private:
     void applyShaders();
     void applyWindowEffects();
     void setUpQuickTerminal();
-    /// Moves the quick terminal @p offset pixels out from its screen edge
-    /// (negative is off screen).
+    /// Moves the quick terminal @p offset pixels out from its screen edge: 0
+    /// shows all of it, and a negative offset puts that many pixel rows of it
+    /// off screen.
     void setQuickOffset(int offset);
+    /// The offset of the slide's frame now, with one pixel row on screen at least.
+    int slideOffset() const;
     QMetaObject::Connection m_quickScreenWatch; ///< the quick terminal's screen changing size
     /// Encodes @p e for @p pane (the focused pane's input pane when null) and sends it.
     void sendKey(QKeyEvent* e, Pane* pane = nullptr);

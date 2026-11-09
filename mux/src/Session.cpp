@@ -54,7 +54,6 @@ SessionInfo Session::info(pid_t caller) const
 {
     SessionInfo info;
     info.name = m_name;
-    info.windows = m_panes.empty() ? 0 : 1;
     info.panes = int(m_panes.size());
     for (const auto& pane : m_panes) {
         if (std::string job = pane->foregroundJob(caller); !job.empty() && std::find(info.jobs.begin(), info.jobs.end(), job) == info.jobs.end()) {

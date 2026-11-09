@@ -24,7 +24,7 @@ namespace AfterglowMux {
 /// it: the client calls Fn::Version first on each connection, and the daemon
 /// refuses a newSession of another version. MuxProtocolTest pins the keys of
 /// the options to this number, so that a new key changes it too.
-inline constexpr int ProtocolVersion = 2;
+inline constexpr int ProtocolVersion = 3;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -127,7 +127,6 @@ struct SessionInfo
 {
     std::string name;
     bool attached = false;
-    int windows = 0;
     int panes = 0;
     /// The programs that run in the foreground of its panes, for the
     /// question of `afterglow mux kill`. Their names are the programs' own

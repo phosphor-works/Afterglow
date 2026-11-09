@@ -50,6 +50,7 @@ Options:
 | `--platform-theme kde` | `generic` | Loads the KDE platform theme, so file dialogs are the native KDE ones that Plasma users get. `gtk3` loads the GTK file dialog |
 | `--validation` | Off | Enables the Vulkan validation layer and GPU logging |
 | `--size 1920x1080` | `1100x750` | Changes the virtual output size |
+| `--outputs 2` | `1` | Gives KWin two virtual outputs. The tests that move a window between screens skip with one. |
 | `--timeout 400` | 400 | Stops the test binary after this many seconds and 10 more, and reports status 124 |
 
 The log is long. Read it with `grep`, never in full.

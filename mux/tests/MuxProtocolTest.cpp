@@ -55,7 +55,7 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 2) << "a new protocol version: update the key lists of this test";
+    ASSERT_EQ(ProtocolVersion, 3) << "a new protocol version: update the key lists of this test";
     // A new field that toJson leaves out would still pass the key lists. The
     // bindings name every field, so a new field stops this test compiling
     // until it has its key, its place in the round trip and a new version.
@@ -67,7 +67,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
                             selectionBackground, boldIsBright, minimumContrast, wordBoundaries, ambiguousWide, bidi, cursorShape,
                             cursorBlink, allowScreenReadback, graphicsQuota, graphicsFileTransfer] = fields.terminal;
     SessionInfo info;
-    [[maybe_unused]] auto& [infoName, attached, windows, panes, jobs] = info;
+    [[maybe_unused]] auto& [infoName, attached, panes, jobs] = info;
 
     const Json::Value options = toJson(SessionOptions{});
     EXPECT_EQ(keys(options), (std::vector<std::string>{"name", "argv", "cwd", "environment", "launchedProgram", "umask", "cols", "rows",
@@ -77,7 +77,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
                                         "selectionForeground", "selectionBackground", "boldIsBright", "minimumContrast", "wordBoundaries",
                                         "ambiguousWide", "bidi", "cursorShape", "cursorBlink", "allowScreenReadback", "graphicsQuota",
                                         "graphicsFileTransfer"}));
-    EXPECT_EQ(keys(toJson(SessionInfo{})), (std::vector<std::string>{"name", "attached", "windows", "panes", "jobs"}));
+    EXPECT_EQ(keys(toJson(SessionInfo{})), (std::vector<std::string>{"name", "attached", "panes", "jobs"}));
 }
 
 TEST(MuxProtocol, SessionOptionsRoundTrip)
@@ -262,16 +262,15 @@ TEST(MuxProtocol, TheFirstErrorIsTheOneReported)
 
 TEST(MuxProtocol, SessionInfoRoundTrip)
 {
-    SessionInfo info{"2", true, 1, 3, {"vim", "make"}};
+    SessionInfo info{"2", true, 3, {"vim", "make"}};
     const auto back = sessionInfo(toJson(info));
     ASSERT_TRUE(back);
     EXPECT_EQ(back->name, "2");
     EXPECT_TRUE(back->attached);
-    EXPECT_EQ(back->windows, 1);
     EXPECT_EQ(back->panes, 3);
     EXPECT_EQ(back->jobs, info.jobs);
     EXPECT_FALSE(sessionInfo(Json::Object{{"name", "x"}}));
-    EXPECT_FALSE(sessionInfo(with(toJson(info), "windows", -1)));
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "panes", -1)));
     EXPECT_FALSE(sessionInfo(with(toJson(info), "jobs", Json::Array{1})));
     // A key of another version.
     EXPECT_FALSE(sessionInfo(with(toJson(info), "title", "x")));

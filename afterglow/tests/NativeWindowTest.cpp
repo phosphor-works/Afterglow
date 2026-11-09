@@ -7455,6 +7455,151 @@ TEST_F(NativeWindow, ADownloadsSaveDialogStaysWhileItsWindowHides) {
     }
 }
 
+TEST_F(NativeWindow, AQuickTerminalToggledBackMidSlideEndsWhereItWasSent) {
+    // A slide starts where the last one is. Toggled out before its slide
+    // in has moved, the quick terminal has no distance to go: it still
+    // hides. Toggled in again while it slides out, it stays. A slide in
+    // starts at the edge, where no frame callback comes to a surface that
+    // is wholly off screen: it still moves.
+    using PhosphorWayland::LayerSurface;
+    const auto openQuick = [this] {
+        WindowOptions options;
+        options.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("exec cat")};
+        options.quick = true;
+        return QPointer<TerminalWindow>(application->newWindow(options));
+    };
+    const auto slidOut = [](const QPointer<TerminalWindow>& quick) {
+        return waitFor([&] { return quick && !quick->isVisible(); }, 5000);
+    };
+    {
+        SCOPED_TRACE("out before any frame");
+        QPointer<TerminalWindow> quick = openQuick();
+        ASSERT_TRUE(quick);
+        quick->toggleQuick();
+        quick->toggleQuick();
+        EXPECT_TRUE(slidOut(quick)) << "the quick terminal stays shown";
+    }
+    {
+        SCOPED_TRACE("out after the first frame");
+        QPointer<TerminalWindow> quick = openQuick();
+        ASSERT_TRUE(quick);
+        quick->toggleQuick();
+        ASSERT_TRUE(waitFor([&] { return quick && quick->isExposed() && quick->submittedFrames() > 0; }));
+        quick->toggleQuick();
+        EXPECT_TRUE(slidOut(quick)) << "the quick terminal stays shown";
+    }
+    {
+        SCOPED_TRACE("out while it slides in");
+        QPointer<TerminalWindow> quick = openQuick();
+        ASSERT_TRUE(quick);
+        quick->toggleQuick();
+        const int hidden = LayerSurface::get(quick)->margins().top();
+        ASSERT_LT(hidden, 0);
+        ASSERT_TRUE(waitFor([&] { return quick && LayerSurface::get(quick)->margins().top() > hidden / 2; }))
+            << "the slide in stays at " << LayerSurface::get(quick)->margins().top();
+        quick->toggleQuick();
+        EXPECT_TRUE(slidOut(quick)) << "the quick terminal stays shown";
+    }
+    {
+        SCOPED_TRACE("in again before its slide out moved");
+        QPointer<TerminalWindow> quick = openQuick();
+        ASSERT_TRUE(quick);
+        quick->toggleQuick();
+        expectIdle(quick);
+        ASSERT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+        quick->toggleQuick();
+        quick->toggleQuick();
+        expectIdle(quick);
+        EXPECT_TRUE(quick->isVisible());
+        EXPECT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+    }
+    {
+        // With no slide to go in, the slide out stops where it is: the
+        // quick terminal must still show at its edge.
+        SCOPED_TRACE("in with no slide while it slides out");
+        QPointer<TerminalWindow> quick = openQuick();
+        ASSERT_TRUE(quick);
+        quick->toggleQuick();
+        expectIdle(quick);
+        ASSERT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+        SettingsStore file(directory.filePath(QStringLiteral("afterglow.conf")));
+        ASSERT_TRUE(file.write(QStringLiteral("QuickTerminal"), QStringLiteral("duration"), 5000));
+        ASSERT_TRUE(quick->runAction(quick->focusedPane(), Action::ReloadConfig));
+        quick->toggleQuick();
+        ASSERT_TRUE(waitFor([&] { return quick && LayerSurface::get(quick)->margins().top() < -10; }))
+            << "the slide out stays at " << LayerSurface::get(quick)->margins().top();
+        ASSERT_TRUE(file.write(QStringLiteral("QuickTerminal"), QStringLiteral("animate"), false));
+        ASSERT_TRUE(quick->runAction(quick->focusedPane(), Action::ReloadConfig));
+        quick->toggleQuick();
+        expectIdle(quick);
+        EXPECT_TRUE(quick->isVisible());
+        EXPECT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+    }
+}
+
+TEST_F(NativeWindow, AHeldChordWithNothingToDoRepeatsIntoTheProgram) {
+    // Fullscreen has nothing to do in a quick terminal: F11 reaches the
+    // program, which must get its repeats too. cat -v in raw mode shows
+    // each F11 as "^[[23~".
+    const QString program = directory.filePath(QStringLiteral("cat-v.sh"));
+    {
+        QFile script(program);
+        ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+        script.write("#!/bin/sh\nstty raw -echo; printf ready; exec cat -v\n");
+    }
+    ASSERT_TRUE(QFile::setPermissions(program, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    WindowOptions options;
+    options.command = {program};
+    options.quick = true;
+    QPointer<TerminalWindow> quick = application->newWindow(options);
+    ASSERT_TRUE(quick);
+    quick->toggleQuick();
+    Pane* pane = quick->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("ready")); }));
+    holdKey(quick, Qt::Key_F11, Qt::NoModifier, {}, 3);
+    ASSERT_TRUE(settleQueued());
+    const QString key = QStringLiteral("^[[23~");
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).count(key) >= 4; })) << screenOf(pane).toStdString();
+    drain(200);
+    EXPECT_EQ(screenOf(pane).count(key), 4) << screenOf(pane).toStdString();
+    EXPECT_FALSE(quick->windowStates().testFlag(Qt::WindowFullScreen));
+}
+
+TEST_F(NativeWindow, AQuickTerminalMovesToTheScreenNamedWhileItShowedAtItsNextShow) {
+    // A shown layer surface keeps its output: a QuickTerminal.screen set
+    // while it shows takes effect when it shows again, and meanwhile it
+    // keeps the size of the output that it is on.
+    using PhosphorWayland::LayerSurface;
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    if (screens.size() < 2) GTEST_SKIP() << "needs two outputs (kwin_wayland --output-count 2)";
+    QScreen* const first = QGuiApplication::primaryScreen();
+    QScreen* const second = screens.value(0) == first ? screens.value(1) : screens.value(0);
+    WindowOptions options;
+    options.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("exec cat")};
+    options.quick = true;
+    QPointer<TerminalWindow> quick = application->newWindow(options);
+    ASSERT_TRUE(quick);
+    quick->toggleQuick();
+    ASSERT_TRUE(waitFor([&] { return quick && quick->isExposed() && quick->submittedFrames() > 0; }));
+    expectIdle(quick);
+    ASSERT_EQ(LayerSurface::get(quick)->screen(), first);
+    const int height = quick->height();
+    SettingsStore file(directory.filePath(QStringLiteral("afterglow.conf")));
+    ASSERT_TRUE(file.write(QStringLiteral("QuickTerminal"), QStringLiteral("screen"), second->name()));
+    ASSERT_TRUE(quick->runAction(quick->focusedPane(), Action::ReloadConfig));
+    EXPECT_EQ(LayerSurface::get(quick)->screen(), first);
+    EXPECT_EQ(quick->height(), height);
+    quick->toggleQuick();
+    ASSERT_TRUE(waitFor([&] { return quick && !quick->isVisible(); }, 5000));
+    quick->toggleQuick();
+    ASSERT_TRUE(waitFor([&] { return quick && quick->isExposed(); }));
+    EXPECT_EQ(LayerSurface::get(quick)->screen(), second);
+    EXPECT_TRUE(waitFor([&] { return quick && quick->screen() == second; })) << "the quick terminal shows on " << quick->screen()->name().toStdString();
+    expectIdle(quick);
+    EXPECT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+}
+
 // The file chooser of the gtk3 platform theme, which is no Qt widget: the
 // test reaches it through the GTK that the theme loaded.
 class GtkChooser
@@ -7660,7 +7805,10 @@ TEST_F(NativeWindow, AHeldChordSplitsOpensAndClosesOnce) {
     // Each auto-repeat of a held chord would split, open or close one more,
     // or turn a toggle back. The repeats are taken: no program gets one of
     // them. Every pane runs cat -v in raw mode, which shows a chord that
-    // reached it as "^[^R".
+    // reached it as "^[^R". A setting that no group has makes each reload
+    // of the configuration show its problems again.
+    RegisteredNotificationServer notices;
+    ASSERT_TRUE(notices.registered);
     const QString program = directory.filePath(QStringLiteral("cat-v.sh"));
     {
         QFile script(program);
@@ -7674,7 +7822,9 @@ TEST_F(NativeWindow, AHeldChordSplitsOpensAndClosesOnce) {
                           {QStringLiteral("split_right"), QStringLiteral("Ctrl+Alt+R")},
                           {QStringLiteral("new_tab"), QStringLiteral("Ctrl+Alt+N")},
                           {QStringLiteral("close_pane"), QStringLiteral("Ctrl+Alt+W")},
-                          {QStringLiteral("toggle_pane_zoom"), QStringLiteral("Ctrl+Alt+Z")}}}}}}),
+                          {QStringLiteral("toggle_pane_zoom"), QStringLiteral("Ctrl+Alt+Z")},
+                          {QStringLiteral("reload_config"), QStringLiteral("Ctrl+Alt+L")}}}}},
+                      {QStringLiteral("NoSuchGroup"), QJsonObject{{QStringLiteral("key"), 1}}}}),
         {});
     if (HasFatalFailure()) return;
     // The panes of every tab, each once its program is ready for keys.
@@ -7711,6 +7861,15 @@ TEST_F(NativeWindow, AHeldChordSplitsOpensAndClosesOnce) {
     EXPECT_TRUE(waitFor([&] { return window->accessiblePaneRect(other).isEmpty() && !window->accessiblePaneRect(zoomed).isEmpty(); }))
         << "the zoom turned back";
     drain(100);
+    noKeyReached();
+    // A held reload shows the problems once.
+    drain(300);
+    const int shown = notices.server.count;
+    holdKey(window, Qt::Key_L, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("l"), 3);
+    ASSERT_TRUE(settleQueued());
+    EXPECT_TRUE(waitFor([&] { return notices.server.count > shown; })) << "the reload showed no problems";
+    drain(300);
+    EXPECT_EQ(notices.server.count, shown + 1);
     noKeyReached();
 }
 

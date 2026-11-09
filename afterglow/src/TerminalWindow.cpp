@@ -1673,12 +1673,12 @@ void TerminalWindow::renderNow()
     bool sliding = false;
     if (m_quick && m_slide.isAnimating()) {
         m_slide.advance();
-        setQuickOffset(int(std::lround(m_slide.value())));
         sliding = m_slide.isAnimating();
         if (!sliding && !m_quickShown) {
             hide();
             return;
         }
+        setQuickOffset(slideOffset());
     }
     ensureLayout();
 
@@ -2376,18 +2376,22 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     // A held chord runs these once: each repeat would open, split, close or
     // move one more (a moved pane finds itself alone in its new tab, and
     // shows the refusal again), open the configuration again, or turn a
-    // toggle back. The repeat is taken all the same: it is no key for the
-    // program. Focus, resize, scroll, font size and the tab and prompt
-    // moves repeat.
+    // toggle back, or reload and show the problems again. The repeat is
+    // taken all the same: it is no key for the program. Focus, resize,
+    // scroll, font size and the tab and prompt moves repeat.
     static constexpr std::array onceWhileHeld{Action::NewTab,           Action::NewWindow,      Action::SplitRight,
                                               Action::SplitDown,        Action::SplitLeft,      Action::SplitUp,
                                               Action::ClosePane,        Action::CloseTab,       Action::MovePaneToTab,
                                               Action::MovePaneToWindow, Action::DetachTab,      Action::ShowLastOutput,
-                                              Action::OpenConfig,       Action::ToggleFullscreen, Action::TogglePaneZoom,
-                                              Action::NotifyOnFinish};
+                                              Action::OpenConfig,       Action::ReloadConfig,   Action::ToggleFullscreen,
+                                              Action::TogglePaneZoom,   Action::NotifyOnFinish};
     const auto heldRepeat = [e](Action action) {
         return e->isAutoRepeat() && std::find(onceWhileHeld.begin(), onceWhileHeld.end(), action) != onceWhileHeld.end();
     };
+    // The press of a chord whose action had nothing to do (fullscreen in a
+    // quick terminal) reached the program: so do its repeats, which the
+    // program would otherwise get none of between its press and release.
+    const bool pressSent = e->isAutoRepeat() && m_sentKeys.contains(physicalKeyOf(e));
     // Text a binding types, from a key mode or a chord alike.
     const auto typeText = [this](const QByteArray& text) {
         Pane* target = inputPane(m_focused);
@@ -2408,6 +2412,7 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
             for (Action action : Keybinds::allActions()) {
                 if (Keybinds::token(action) == result.target) {
                     if (!heldRepeat(action)) performAction(action);
+                    else if (pressSent) return false;
                     break;
                 }
             }
@@ -2417,7 +2422,7 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     const Keybinds& kb = m_settings.settings().keybinds;
     const Action action = kb.match(e, bindingBaseKey(e));
     if (action != Action::None) {
-        if (heldRepeat(action)) return true;
+        if (heldRepeat(action)) return !pressSent;
         // These keep their key even when there is nothing to do: the
         // encoded chord would reach the shell as a control byte (the
         // overview's Ctrl+Shift+D as EOF, a rotation's as ESC or GS).
@@ -3994,9 +3999,13 @@ void TerminalWindow::setUpQuickTerminal()
     for (QScreen* candidate : QGuiApplication::screens()) {
         if (!quick.screen.isEmpty() && candidate->name() == quick.screen) screen = candidate;
     }
+    LayerSurface* surface = LayerSurface::get(this);
+    // A shown layer surface keeps its output (LayerSurface::setScreen refuses
+    // it), so it keeps that output's size: toggleQuick sets it up again
+    // before the next show, on the output named by then.
+    if (isVisible() && surface->screen()) screen = surface->screen();
     const QRect avail = screen ? screen->availableGeometry() : QRect(0, 0, 1280, 800);
     m_quickHeight = int(std::lround(avail.height() * quick.height));
-    LayerSurface* surface = LayerSurface::get(this);
     surface->setLayer(LayerSurface::LayerTop);
     const auto edge = quick.position == QuickTerminalSettings::Position::Bottom ? LayerSurface::AnchorBottom : LayerSurface::AnchorTop;
     surface->setAnchors(LayerSurface::Anchors(edge | LayerSurface::AnchorLeft | LayerSurface::AnchorRight));
@@ -4004,9 +4013,9 @@ void TerminalWindow::setUpQuickTerminal()
     surface->setScope(QStringLiteral("afterglow-quick-terminal"));
     surface->setExclusiveZone(0);
     surface->setDesiredSize(QSize(0, m_quickHeight));
-    if (screen) surface->setScreen(screen);
+    if (screen && !isVisible()) surface->setScreen(screen);
     // Margins from an earlier edge would push it off the new one.
-    setQuickOffset(m_quickShown && !m_slide.isAnimating() ? 0 : -m_quickHeight);
+    setQuickOffset(m_slide.isAnimating() ? slideOffset() : m_quickShown ? 0 : -m_quickHeight);
     resize(avail.width(), m_quickHeight);
     // A resolution change or a panel moving changes the space it fills.
     disconnect(m_quickScreenWatch);
@@ -4019,6 +4028,15 @@ void TerminalWindow::setQuickOffset(int offset)
     PhosphorWayland::LayerSurface::get(this)->setMargins(bottom ? QMargins(0, 0, 0, offset) : QMargins(0, offset, 0, 0));
 }
 
+int TerminalWindow::slideOffset() const
+{
+    // The compositor sends no frame callback to a surface that is on no
+    // output, and Qt then stops sending update requests: a frame drawn wholly
+    // off screen would be the last frame of the slide. One pixel row stays on
+    // screen until the slide ends, and the end of a slide out hides the window.
+    return std::max(int(std::lround(m_slide.value())), 1 - m_quickHeight);
+}
+
 void TerminalWindow::toggleQuick()
 {
     if (!m_quick) {
@@ -4027,21 +4045,24 @@ void TerminalWindow::toggleQuick()
     const QuickTerminalSettings& quick = m_settings.settings().quickTerminal;
     const bool animate = quick.animate;
     const auto spec = motionSpec(quick.curve, quick.duration, m_quickCurve, "QuickTerminal.curve", QuickTerminalSettings{}.curve);
-    const qreal hidden = -qreal(m_quickHeight);
     m_quickShown = !m_quickShown;
+    if (m_quickShown && !isVisible()) {
+        // The output named while it showed, and that output's size.
+        setUpQuickTerminal();
+        setQuickOffset(animate ? -m_quickHeight : 0);
+        show();
+    }
+    const qreal hidden = -qreal(m_quickHeight);
     if (m_quickShown) {
-        if (!isVisible()) {
-            setQuickOffset(animate ? int(hidden) : 0);
-            show();
-        }
         requestActivate();
-        m_slide.start(animate ? (m_slide.isAnimating() ? m_slide.value() : hidden) : 0.0, 0.0, spec);
-    } else {
-        if (!animate) {
-            hide();
-            return;
-        }
-        m_slide.start(m_slide.isAnimating() ? m_slide.value() : 0.0, hidden, spec);
+        // A slide with no distance to go does not start, and no frame ends it.
+        if (!m_slide.start(animate ? (m_slide.isAnimating() ? m_slide.value() : hidden) : 0.0, 0.0, spec)) setQuickOffset(0);
+    } else if (!animate || !m_slide.start(m_slide.isAnimating() ? m_slide.value() : 0.0, hidden, spec)) {
+        // Toggled out before its slide in moved, it has no distance to go.
+        // A hidden quick terminal has no slide: the next one starts at its edge.
+        m_slide.cancel();
+        hide();
+        return;
     }
     scheduleRender();
 }

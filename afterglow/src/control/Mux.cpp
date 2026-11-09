@@ -91,6 +91,17 @@ int usage(const std::string& message)
 
 using AfterglowProto::printable;
 
+// Whether a lock file of a socket exists: a daemon took it before it binds,
+// and removes it when it ends. A daemon killed with SIGKILL leaves it, and the
+// caller then waits until its deadline.
+bool lockHeldElsewhere(const AfterglowProto::MuxSockets& sockets)
+{
+    return std::any_of(sockets.candidates.cbegin(), sockets.candidates.cend(), [](const AfterglowProto::MuxSocket& socket) {
+        struct stat info {};
+        return ::lstat((socket.path + ".lock").c_str(), &info) == 0;
+    });
+}
+
 std::string daemonPath(std::string* error)
 {
     return Aglow::siblingExecutable("afterglow-mux", error);
@@ -367,16 +378,21 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, std::string* e
             // then --collect unloads it. Nothing starts a daemon after that,
             // so this command starts it once more. A unit that this command
             // started and that is gone had a daemon that ended: nothing
-            // will answer.
+            // answers, unless that daemon found a socket held by one that
+            // another command started outside the user manager. The holder
+            // keeps its lock file from before it binds until it ends.
             bool retried = false;
             while (true) {
                 Reached reached = connectAny(sockets, error);
                 if (reached.connection || !error->empty()) return reached;
                 if (std::chrono::steady_clock::now() >= deadline) break;
                 if (!unitLoaded()) {
-                    if (ours || retried) break;
-                    retried = true;
-                    ours = run(start) == 0;
+                    if (!ours && !retried) {
+                        retried = true;
+                        ours = run(start) == 0;
+                    } else if (!lockHeldElsewhere(sockets)) {
+                        break;
+                    }
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
@@ -604,10 +620,10 @@ int listSessions(int argc, char** argv)
     }
     std::size_t width = 4;
     for (const auto& s : list) width = std::max(width, s.name.size());
-    std::printf("%-*s  %-8s  %7s  %5s\n", int(width), "NAME", "STATE", "WINDOWS", "PANES");
+    std::printf("%-*s  %-8s  %5s\n", int(width), "NAME", "STATE", "PANES");
     for (const auto& s : list) {
-        std::printf("%-*s  %-8s  %7d  %5d\n", int(width), printable(s.name).c_str(), s.attached ? "attached" : "detached",
-                    s.windows, s.panes);
+        std::printf("%-*s  %-8s  %5d\n", int(width), printable(s.name).c_str(), s.attached ? "attached" : "detached",
+                    s.panes);
     }
     return 0;
 }

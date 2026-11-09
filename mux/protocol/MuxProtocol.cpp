@@ -327,7 +327,6 @@ Json::Value toJson(const SessionInfo& info)
     return Json::Object{
         {"name", info.name},
         {"attached", info.attached},
-        {"windows", info.windows},
         {"panes", info.panes},
         {"jobs", Json::Array(info.jobs.begin(), info.jobs.end())},
     };
@@ -340,7 +339,6 @@ std::optional<SessionInfo> sessionInfo(const Json::Value& value)
     Reader r(value, nullptr);
     r.string("name", info.name);
     r.boolean("attached", info.attached);
-    if (const auto n = r.integer("windows", 0, 1 << 20)) info.windows = int(*n);
     if (const auto n = r.integer("panes", 0, 1 << 20)) info.panes = int(*n);
     r.strings("jobs", info.jobs);
     r.noOtherKeys();

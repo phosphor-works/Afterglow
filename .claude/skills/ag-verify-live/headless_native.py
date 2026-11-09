@@ -29,6 +29,7 @@ parser.add_argument('--filter', default='NativeWindow.*:KeyMapping.*', help='--g
 parser.add_argument('--icd', help='Vulkan ICD manifest (for example a lavapipe lvp.json)')
 parser.add_argument('--timeout', type=int, default=400, help='seconds for the whole test binary')
 parser.add_argument('--size', default='1100x750', help='virtual output size')
+parser.add_argument('--outputs', type=int, default=1, help='virtual outputs (2 runs the tests that move between screens)')
 parser.add_argument('--validation', action='store_true', help='enable the Vulkan validation layer')
 parser.add_argument('--platform-theme', default='generic',
                     help='QT_QPA_PLATFORMTHEME of the tests (kde runs the native KDE file dialogs, gtk3 the GTK one)')
@@ -82,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
     with log_path.open('w') as log:
         compositor = subprocess.Popen(
             ['kwin_wayland', '--virtual', '--socket', socket, '--width', width, '--height', height,
-             '--no-lockscreen', '--no-global-shortcuts', '--no-kactivities'],
+             '--output-count', str(args.outputs), '--no-lockscreen', '--no-global-shortcuts', '--no-kactivities'],
             env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 10
