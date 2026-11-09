@@ -96,6 +96,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - A portal across a pane whose shell moves to another host, user or container, and a colored frame while it is away.
 - Pane and tab moves between tabs and windows. A drag outside the tab bar detaches a tab into a new window.
 - Saved projects that store a window's tabs, splits, directories and launch arguments.
+- Terminal sessions that keep running without a window, in the `afterglow-mux` daemon. `afterglow mux new --detach` starts a session with one pane, and `afterglow mux ls` and `afterglow mux kill` list and end the sessions. A window cannot show a session.
 - A quick terminal on a Wayland layer surface, toggled by a global shortcut. It slides from the top or bottom edge of a chosen screen.
 - Optional background blur on KWin, window transparency and a history scrollbar over the pane that fades when idle.
 - `Window.tabBarHeight` sets the height of the tab bar, and `Window.scrollbarWidth` sets the width of the scrollbar.
@@ -205,4 +206,5 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 - [Desktop integration](docs/DESKTOP.md) for accessibility, input methods, file drops, Kitty file transfer, Kitty drag and drop, and the `aglow` client.
 - [Bidirectional text](docs/BIDI.md) for the application-grid policy.
 - [External control](docs/CONTROL.md) for `afterglow ctl`, the control socket and script commands from a shell.
+- [The mux daemon](docs/MUX.md) for `afterglow mux` and the sessions that it keeps.
 - [Testing](docs/TESTING.md) for regression and native desktop test procedures.

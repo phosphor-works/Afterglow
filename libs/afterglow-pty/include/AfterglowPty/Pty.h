@@ -48,7 +48,40 @@ struct SpawnOptions
     /// /dev/tty: a list on stdin, the interface on /dev/tty, the answer on
     /// stdout.
     bool captureOutput = false;
+    /// The file mode creation mask of the child: -1 keeps the parent's,
+    /// else the child sets it before exec. The mux daemon's own mask is not
+    /// the one of the user who started the session.
+    int umask = -1;
+    /// The soft RLIMIT_NOFILE of the child: -1 keeps the parent's, else the
+    /// child sets its soft limit to this (at most the hard limit, which
+    /// stays) before exec. The mux daemon raises its own soft limit, which
+    /// programs that use select() must not get.
+    long fileLimit = -1;
 };
+
+/// Sets @p name to @p value for the child, replacing every earlier set or unset of it.
+AFTERGLOWPTY_EXPORT void setVariable(SpawnOptions& options, std::string name, std::string value);
+/// Removes @p name from the child's environment, replacing every earlier set or unset of it.
+AFTERGLOWPTY_EXPORT void unsetVariable(SpawnOptions& options, std::string name);
+
+/// The fields of /proc/PID/stat after the command name that a terminal asks about.
+struct ProcessStat
+{
+    char state = 0;
+    long long parent = 0;
+    long long group = 0;
+    long long session = 0;
+    long long terminal = 0;
+    long long foregroundGroup = 0; ///< tpgid: the foreground process group of the controlling terminal
+};
+
+/// Parses the text of /proc/PID/stat. The command name, between the first
+/// '(' and the last ')', can hold any byte, ')' and new lines included.
+/// Empty when the text does not have the fields.
+AFTERGLOWPTY_EXPORT std::optional<ProcessStat> parseProcessStat(std::string_view stat);
+/// Reads the whole of /proc/@p pid/stat and parses it. Empty when the
+/// process is gone or the file does not parse.
+AFTERGLOWPTY_EXPORT std::optional<ProcessStat> processStat(pid_t pid);
 
 /// Receives pty events on the pty's I/O thread.
 class IPtyListener
@@ -75,8 +108,9 @@ class AFTERGLOWPTY_EXPORT Pty
 {
 public:
     /// The shell the child gets: SHELL as the child's environment will have
-    /// it (@p options' overrides and unsets first), then the account's login
-    /// shell, falling back to /bin/sh.
+    /// it (@p options' overrides and unsets first, then the parent's unless
+    /// the child does not inherit it), then the account's login shell,
+    /// falling back to /bin/sh.
     static std::string defaultShell(const SpawnOptions& options = {});
     /// Takes @p options by value: move them in, and a large
     /// SpawnOptions::input is not copied.

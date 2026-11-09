@@ -14,6 +14,8 @@ qt_add_library(afterglow_app STATIC
     src/DockArea.cpp
     src/DockArea.h
     src/Pane.cpp
+    src/PaneDialog.cpp
+    src/PaneDialog.h
     src/PaneLaunch.cpp
     src/PaneLaunch.h
     src/PaneText.cpp

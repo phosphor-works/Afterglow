@@ -72,6 +72,10 @@ Afterglow rejects ambiguous sequences and prefixes that overlap single-key short
 Remove the original binding before you use its key as a prefix.
 Tables and sequences accept built-in actions, text bindings and script commands.
 A held key starts a script command once. Its repeats do not start it again.
+A held key also runs these actions once: `new_tab`, `new_window`, the `split_*` actions, `close_pane`, `close_tab`,
+`move_pane_to_tab`, `move_pane_to_window`, `detach_tab`, `show_last_output`, `open_config`, `toggle_fullscreen`,
+`toggle_pane_zoom` and `notify_on_finish`.
+The other actions, such as focus, resize, scroll and font size, repeat while the key is held.
 A table or sequence that names a command no script has shows a notification.
 A single binding to such a command sends the key to the terminal.
 

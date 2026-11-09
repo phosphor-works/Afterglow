@@ -88,7 +88,7 @@ include(cmake/AfterglowPhosphor.cmake)
 # variables of the scope that loads it.
 include(cmake/AfterglowDependencies.cmake)
 
-add_subdirectory(libs/afterglow-proto)  # protocol formats, terminal and client side: transfer, drag and drop, images, clipboard (no Qt)
+add_subdirectory(libs/afterglow-proto)  # protocol formats, terminal and client side: transfer, drag and drop, images, clipboard, the phosphor-ipc client and server (no Qt)
 add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, screen, Unicode, input encoding (no Qt)
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas

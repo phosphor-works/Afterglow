@@ -238,9 +238,12 @@ end
 function __afterglow_mux
     set -l cur (commandline -ct)
     if not set -q argv[1]
-        string match -q -- '-*' "$cur"
-        or __afterglow_print server\t'Run afterglow-mux in the foreground' new\t'Create a session' \
-            ls\t'List the sessions' kill\t'End a session and its programs'
+        if string match -q -- '-*' "$cur"
+            __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
+        else
+            __afterglow_print server\t'Run afterglow-mux in the foreground' new\t'Create a session' \
+                ls\t'List the sessions' kill\t'End a session and its programs'
+        end
         return
     end
     set -l command $argv[1]

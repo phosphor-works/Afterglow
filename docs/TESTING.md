@@ -32,6 +32,8 @@ See [compatibility](COMPATIBILITY.md) for protocol test names.
 
 The tests of the pseudo-terminal library start with `PtyLib.`.
 They check the spawn options that overlays use: standard input and output on pipes, apart from `/dev/tty`.
+They also check the spawn options that mux sessions use: a child environment without the environment of the parent.
+Other tests check the signals of a new child, a failed `fork()` and the parser of `/proc/PID/stat`.
 
 ```sh
 ctest --test-dir build --output-on-failure -R '^PtyLib\.'
@@ -413,13 +415,10 @@ ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest
 | `AfterglowRunWithoutAglowTest.*` | `afterglow_command_tests` | `afterglow run` in a build without `aglow`. The test checks the error and exit status 127. |
 | `Proto.RunClient.*` and `Proto.RunInput.*` | `afterglow_proto_tests` | The client of `aglow run` against a server that the test plays, and the parts of standard input that it sends |
 | `Proto.RunRemote.*` | `afterglow_proto_tests` | How the client of `aglow run` uses the answer of the terminal to OSC 24569, and its messages when there is no socket |
-| `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run` |
+| `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run`, and the sockets of the mux daemon: their order and the name of the state socket |
 | `Proto.Remote.*` | `afterglow_proto_tests` | OSC 24569, the remote directory and `aglow remote-prune` |
 | `RemoteCommandsTest.*` | `afterglow_remote_tests` | The sockets of remote commands, the probe of `afterglow ssh` with a fake `ssh`, and an acceptance test with `sshd` |
 | `Proto.Ipc.*` | `afterglow_proto_tests` | The phosphor-ipc client of the protocol library |
-| `Proto.IpcServer.*` | `afterglow_proto_tests` | The server side of the phosphor-ipc wire format that `afterglow-mux` uses: requests, errors, the listener and long lines |
-| `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux` |
-| `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory of its own: sessions, the environment of a pane, the answers to queries and refusals while no client is attached, and when the daemon exits |
 | `Extensions.*RemoteSocket*` | `afterglow_vt_tests` | The answer of the pane to OSC 24569: the path or the reason, and the order of the answer before DA1 |
 | `aglow_run_pty` and `aglow_tmux_pty` | Python scripts | The OSC 24569 query of `aglow run` in a pseudo-terminal, also in a private tmux server. See [aglow tests](#aglow-tests) |
 
@@ -429,7 +428,6 @@ ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest
 In a build without `aglow`, the `RunBinaryTest.*` tests and `RemoteCommandsTest.OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThroughIt` report Skipped.
 In a build with `aglow`, `AfterglowRunWithoutAglowTest.SaysThatTheBuildHasNoAglow` reports Skipped.
 The tests give `aglow run` their own `XDG_RUNTIME_DIR` and socket. They never reach the Afterglow that runs them.
-The `Mux.MuxDaemon.*` tests do the same for `afterglow-mux`. Some of them need `python3`. Without it, they report Skipped.
 
 The acceptance test of remote commands starts two `sshd` as you, on free ports of 127.0.0.1.
 It makes host and client keys, `sshd_config` and an ssh client configuration in a temporary directory.
@@ -442,6 +440,32 @@ When the test binary dies first, the kernel stops the `sshd`.
 `RemoteCommandsTest.ARunWhoseHandlerTurnsTheSettingOffEndsWithItsSocket` turns the setting off inside the call of a run.
 A socket that went away inside its own call is a use of freed memory, which a normal build does not always show.
 Run the test in the `debug` preset, which has the sanitizers, to see it every time.
+
+## Mux daemon tests
+
+Run the tests of the [mux daemon](MUX.md), of `afterglow mux` and of the server side of its protocol:
+
+```sh
+ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|MuxClientTest)\.' -j4
+```
+
+| Tests | Binary | What they run |
+| --- | --- | --- |
+| `Proto.IpcServer.*` | `afterglow_proto_tests` | The server side of the phosphor-ipc wire format that `afterglow-mux` uses: requests, errors, the listener and long lines |
+| `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run`, and the sockets of the mux daemon: their order and the name of the state socket |
+| `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, session names, and the keys and fields that belong to the protocol version |
+| `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own: sessions, the environment of a pane, the answers to queries and refusals while no window shows a session, and when the daemon exits |
+| `MuxClientTest.*` | `afterglow_mux_client_tests` | `afterglow mux new`, `ls` and `kill`, with the daemon that `afterglow mux new` starts in a session of its own: usage errors, the start errors of the daemon, a socket that another daemon holds, a daemon of another protocol version, and the largest and smallest values of the settings that a session takes |
+
+Not every test starts a daemon. A `Mux.MuxDaemon.*` or `MuxClientTest.*` test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.
+Thus a test daemon never reaches the mux daemon of the user, and never starts in a systemd user unit.
+The tests get the name of the state socket from `AfterglowProto::muxStateSocketName`, which the daemon uses too (see [sockets](MUX.md#sockets)).
+At its end, each `MuxClientTest.*` test kills the processes that have its `XDG_RUNTIME_DIR`.
+Some `MuxClientTest.*` tests put an `afterglow` with a script as its daemon in `build/afterglow/muxclient-PID-*`.
+The test removes the directory at its end. When a timeout kills the test first, the next `MuxClientTest.*` test removes it.
+Some of the tests need `python3`. Without it, they report Skipped.
+With `-j4`, the tests take about 10 seconds. `Mux.MuxDaemon.ADaemonThatNobodyReachesEnds` waits out the start wait of the daemon, which is 10 seconds.
+Without `-j`, the tests take about 15 seconds.
 
 ## Shell completion tests
 

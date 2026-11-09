@@ -51,11 +51,6 @@ class FileTransfer;
 class DockArea;
 class PaneOverlay;
 
-/// Applies a launch's own variables to @p options (`env` of a script or a
-/// control call): a string sets the name, false unsets it. The launch wins
-/// over what @p options had, and each name is set or unset once.
-void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantMap& environment);
-
 /// One terminal: the emulator state, the child process on its pty, and the
 /// snapshot the window renders from. The pty thread feeds the terminal under
 /// m_mutex, and a captured standard output (an overlay's) under
@@ -164,7 +159,11 @@ public:
     /// The program closing the pane would end: the shell's foreground job, or
     /// the program the pane was opened for. Empty while a shell sits idle.
     QString foregroundJob() const;
-    /// Names the program the pane was opened to run (afterglow -e), instead of a shell.
+    /// The command that a project saves for the pane and runs again when it
+    /// opens: the program the pane was opened for (afterglow -e, a script,
+    /// afterglow ctl, a project), even when a fallback shell runs in its
+    /// place. Empty for a shell, and for a tab whose program does not
+    /// outlive it (show_last_output).
     const QStringList& launchCommand() const { return m_launchCommand; }
     const QString& launchDirectory() const { return m_launchDirectory; }
     void setLaunch(const QString& cwd, const QStringList& command) { m_launchDirectory = cwd; m_launchCommand = command; }
@@ -300,16 +299,29 @@ private:
     /// keeps its place: what it delivers then is the latest state, which
     /// can be newer than events queued after it.
     void queueOnce(std::atomic_bool& queued, std::function<void()> deliver);
+    /// What the events of one kind that wait in m_events hold, guarded by
+    /// m_mutex. Each kind has its own: a flood of notifications or a large
+    /// clipboard write must not drop the command events of shell
+    /// integration, which the window and the scripts pair up.
+    struct EventBudget
+    {
+        std::size_t events = 0;
+        std::size_t bytes = 0;
+        std::size_t dropped = 0;
+    };
     /// pty thread, m_mutex held: queues @p event, which emits one signal, for
     /// the GUI thread, where the pane emits it to the receivers it has then
     /// (a moved pane's new window). @p bytes is about what the event holds:
     /// the memory of its fields that a program sizes (text, data), not of
     /// the small fixed ones. False, and nothing queued, when MaxQueuedEvents
-    /// wait already, or when the waiting ones would hold more than
+    /// of @p budget wait already, or when they would hold more than
     /// MaxQueuedEventBytes with it: a program that writes them faster than
     /// the window takes them loses the rest. One event alone is never
     /// refused for its size.
-    bool queueEvent(std::function<void()> event, std::size_t bytes = 0);
+    /// With @p paired, @p event ends one that was queued (a command's end
+    /// after its start) and is never refused: a start must not wait for an
+    /// end that never comes.
+    bool queueEvent(std::function<void()> event, std::size_t bytes, EventBudget& budget, bool paired = false);
     /// Posts one deliverEvents() unless one is posted already.
     void postEvents();
     /// GUI thread: emits the queued events in order.
@@ -318,9 +330,8 @@ private:
     /// As much as one clipboard write may carry.
     static constexpr std::size_t MaxQueuedEventBytes = AfterglowVt::ClipboardAssembler::MaxWrite;
     std::deque<std::function<void()>> m_events; ///< guarded by m_mutex
-    std::size_t m_queuedEvents = 0; ///< the queueEvent ones in m_events, guarded by m_mutex
-    std::size_t m_queuedEventBytes = 0; ///< guarded by m_mutex
-    std::size_t m_droppedEvents = 0; ///< guarded by m_mutex
+    EventBudget m_requestBudget; ///< notifications and clipboard requests
+    EventBudget m_commandBudget; ///< command starts and ends (OSC 133)
     std::atomic_bool m_eventsPosted{false};
     /// GUI thread: titleUpdated when the title to show changed.
     void announceTitle();
@@ -447,6 +458,11 @@ private:
     std::vector<std::pair<QString, QString>> m_pendingUserVars;
     Signals m_signals{};
     QString m_command; ///< guarded by m_mutex
+    /// What became of the start of m_command: its end goes the same way.
+    /// The window, the scripts and afterglow ctl pair the two. Guarded by
+    /// m_mutex.
+    enum class CommandStart : std::uint8_t { None, Queued, Dropped };
+    CommandStart m_commandStartEvent = CommandStart::None;
     AfterglowProto::Remote::Answer m_remoteSocket; ///< guarded by m_mutex
     std::chrono::steady_clock::time_point m_commandStart;
     AfterglowVt::Terminal m_terminal;

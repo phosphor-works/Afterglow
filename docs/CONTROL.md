@@ -27,9 +27,12 @@ It owns no D-Bus name.
 
 ## Which process and pane
 
-Every pane sets `AFTERGLOW_PANE_ID` to its pane ID and `AFTERGLOW_SOCKET` to the socket of its Afterglow process.
+Every pane of a window sets `AFTERGLOW_PANE_ID` to its pane ID and `AFTERGLOW_SOCKET` to the socket of its Afterglow process.
 In a pane, `afterglow ctl` and `aglow run` send their requests to that process.
-Outside Afterglow, they use the socket of the main process on the current Wayland display.
+Outside Afterglow, `afterglow ctl` and `aglow run` use the socket of the main process on the current Wayland display.
+
+A pane of a [mux session](MUX.md) sets `AFTERGLOW_SOCKET` to the socket of the mux daemon and `AFTERGLOW_SESSION` to the session name.
+The daemon answers each request to the `control` and `commands` targets with `CALL_FAILED` (see [control in a session pane](MUX.md#control-in-a-session-pane)).
 
 | Process | Socket |
 | --- | --- |

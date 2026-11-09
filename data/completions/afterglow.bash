@@ -212,13 +212,16 @@ _afterglow_ctl()
     esac
 }
 
-# Whether the option $1 is on the command line before the cursor.
 # afterglow mux COMMAND ...: the commands, their options, the directory of
 # new --cwd, and after new -- the program and its arguments.
 _afterglow_mux()
 {
     if ((cword == 2)); then
-        _afterglow_matching server new ls kill
+        if [[ $cur == -* ]]; then
+            _afterglow_matching -h --help
+        else
+            _afterglow_matching server new ls kill
+        fi
         return
     fi
     local i start=3
@@ -248,6 +251,7 @@ _afterglow_mux()
     esac
 }
 
+# Whether the option $1 is on the command line before the cursor.
 _afterglow_given()
 {
     local j

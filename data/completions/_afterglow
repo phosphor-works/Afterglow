@@ -227,7 +227,12 @@ _afterglow_ctl() {
 # afterglow mux COMMAND ...: $words[1] is mux.
 _afterglow_mux() {
     if (( CURRENT == 2 )); then
-        local -a commands
+        local -a commands help
+        if [[ $PREFIX == -* ]]; then
+            help=('-h:show the usage' '--help:show the usage')
+            _describe -t options 'option' help
+            return
+        fi
         commands=(
             'server:run afterglow-mux in the foreground'
             'new:create a session'

@@ -20,24 +20,30 @@ namespace AfterglowMux {
 class Session
 {
 public:
-    Session(std::string name, SessionOptions options);
+    /// @p fileLimit is the soft RLIMIT_NOFILE that the programs get: the
+    /// daemon's own before it raised it, or -1 for the daemon's.
+    Session(std::string name, SessionOptions options, long fileLimit);
 
     const std::string& name() const { return m_name; }
 
-    /// Starts a pane with the session's launch, its environment and the
-    /// variables that name the session, the pane and the daemon socket.
-    MuxPane* addPane(std::uint32_t id, const std::string& daemonSocket, std::function<void()> exited, std::string* error);
+    /// Starts a pane with the session's launch, its environment and umask,
+    /// and the variables that name the session, the pane and the daemon
+    /// socket. False when its program cannot start: @p error says why.
+    bool addPane(std::uint32_t id, const std::string& daemonSocket, std::function<void()> exited, std::string* error);
     /// Removes the panes whose programs exited. True when none is left: the
     /// last program of a session ended, and so does the session.
     bool reap();
     /// Ends every program of the session.
     void kill();
 
-    SessionInfo info() const;
+    /// What listSessions says of the session to @p caller, the process of
+    /// the client that asks (0 when unknown): see MuxPane::foregroundJob.
+    SessionInfo info(pid_t caller) const;
 
 private:
     std::string m_name;
     SessionOptions m_options;
+    long m_fileLimit;
     std::vector<std::unique_ptr<MuxPane>> m_panes;
 };
 

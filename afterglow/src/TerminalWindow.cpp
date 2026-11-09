@@ -3,7 +3,6 @@
 
 #include "TerminalWindow.h"
 #include "DockArea.h"
-#include <QQuickWindow>
 #include <QQuickItem>
 #include "desktop/FileDrop.h"
 #include "desktop/PointerShape.h"
@@ -14,7 +13,7 @@
 #include <QAccessible>
 #include <QDropEvent>
 #include <QDragEnterEvent>
-#include "audio/AudioController.h"
+#include "PaneDialog.h"
 #include "PaneLaunch.h"
 
 #include "app/NotificationCenter.h"
@@ -23,8 +22,6 @@
 #include "KeyMapping.h"
 #include "chrome/ChromeController.h"
 
-#include <PhosphorAnimation/CurveRegistry.h>
-#include <PhosphorAnimation/Spring.h>
 #include <PhosphorWayland/LayerSurface.h>
 
 #include <KWindowEffects>
@@ -46,7 +43,6 @@
 #include <QKeyEvent>
 #include <QLoggingCategory>
 #include <QDBusConnection>
-#include <QDateTime>
 #include <QMimeData>
 #include <QProcess>
 #include <QTemporaryFile>
@@ -55,7 +51,6 @@
 #include <QStandardPaths>
 #include <QUuid>
 #include <QDBusMessage>
-#include <QDBusPendingCall>
 #include <QInputMethod>
 #include <QInputMethodEvent>
 #include <QInputMethodQueryEvent>
@@ -72,7 +67,6 @@
 
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <memory>
 
 Q_LOGGING_CATEGORY(lcWindow, "afterglow.window", QtInfoMsg)
@@ -479,8 +473,11 @@ void TerminalWindow::bindPane(Pane* pane)
             flashPane(guard);
         }
     });
+    // The events below can arrive after the pane's tab or overlay closed:
+    // a bell, a notice or a status change then belongs to a program that
+    // is ending, and nobody sees its pane.
     connect(pane, &Pane::statusChanged, this, [this, guard = QPointer<Pane>(pane)] {
-        if (guard) {
+        if (guard && takesInput(guard)) {
             paneStatusChanged(guard);
         }
     });
@@ -545,7 +542,7 @@ void TerminalWindow::bindPane(Pane* pane)
         }
     });
     connect(pane, &Pane::clipboardWriteRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& text, bool primary) {
-        if (!guard) return;
+        if (!guard || !takesInput(guard)) return;
         AfterglowVt::ClipboardRequest write;
         write.kind = AfterglowVt::ClipboardRequest::Kind::Write;
         write.osc52 = true;
@@ -554,13 +551,13 @@ void TerminalWindow::bindPane(Pane* pane)
         clipboardWrite(guard, write);
     });
     connect(pane, &Pane::bellRang, this, [this, guard = QPointer<Pane>(pane)] {
-        if (guard) {
+        if (guard && takesInput(guard)) {
             ringBell(guard);
         }
     });
     connect(pane, &Pane::notificationRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& title, const QString& body) {
         // Only when the user is not looking at that pane (or the overlay on it) already.
-        if (guard && m_settings.settings().notifications && (!isActive() || hostOf(guard) != m_focused)) {
+        if (guard && takesInput(guard) && m_settings.settings().notifications && (!isActive() || hostOf(guard) != m_focused)) {
             NotificationCenter::instance().showSimple(guard, title.isEmpty() ? guard->title() : title, body);
         }
     });
@@ -579,8 +576,11 @@ void TerminalWindow::bindPane(Pane* pane)
                 }
                 using Kind = AfterglowVt::NotificationRequest::Kind;
                 using Occasion = AfterglowVt::NotificationRequest::Occasion;
+                // Only a new notice waits for a pane that shows: a close
+                // still takes down what the program showed before its tab
+                // or overlay closed, and a query still gets its answer.
                 if (request.kind == Kind::Show) {
-                    if (!m_settings.settings().notifications) {
+                    if (!takesInput(guard) || !m_settings.settings().notifications) {
                         return;
                     }
                     // The program's occasion: when the user is not on the pane, or cannot see it.
@@ -640,19 +640,12 @@ void TerminalWindow::bindPane(Pane* pane)
         // worker refuses them.
         const FileTransfer::Question question = FileTransfer::question(writing, paths, total, othersRefused, clipboardAsker(pane));
         auto* dialog = new QMessageBox(QMessageBox::Question, tr("File transfer"), question.text, QMessageBox::Yes | QMessageBox::No);
-        // This window closes. A pane that moved to another window still asks, over that one.
-        connect(this, &QObject::destroyed, dialog, [this, dialog, pane] {
-            // An overlay's program is a child of its overlay: its window is its host's.
-            Pane* const shown = pane && pane->overlayHost() ? pane->overlayHost() : pane.data();
-            QObject* const holder = shown ? shown->parent() : nullptr;
-            if (auto* window = holder != this ? qobject_cast<QWindow*>(holder) : nullptr) dialog->windowHandle()->setTransientParent(window);
-            else dialog->reject();
-        });
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->setTextFormat(Qt::PlainText);
         dialog->setDefaultButton(QMessageBox::No);
         if (!question.detail.isEmpty()) dialog->setDetailedText(question.detail);
-        dialog->winId(); dialog->windowHandle()->setTransientParent(this);
+        // This window closes. A pane that moved to another window still asks, over that one.
+        keepDialogOverPane(dialog, pane);
         connect(dialog, &QDialog::finished, dialog, [guard, token](int result) {
             if (guard) guard->approve(token, result == QMessageBox::Yes);
         });
@@ -683,7 +676,7 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     // Before the program starts: a quick one may exit at once.
     pane->setHold(std::exchange(m_holdNextPane, false));
     pane->setHoldOnFailure(fallback);
-    if (!command.isEmpty()) pane->setLaunchedProgram(QFileInfo(command.first()).fileName());
+    pane->setLaunchedProgram(launchedProgramName(command));
     const auto& m = m_renderer->fonts().fonts->metrics();
     const QRect content = contentRect(area);
     const int cols = std::max(2, content.width() / m.cellWidth);
@@ -693,11 +686,12 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
         qCCritical(lcWindow) << "failed to start the shell:" << error;
         if (failure) *failure = error;
         if (fallback) {
-            // A project must remain inspectable even if its configured shell fails.
-            AfterglowPty::SpawnOptions rescue;
-            rescue.argv = {"/bin/sh"};
-            rescue.workingDirectory = QDir::homePath().toStdString();
-            rescue.environment = m_settings.settings().environment;
+            // A project must remain inspectable even if its configured shell
+            // fails: a plain sh, in the pane's directory (the project checked
+            // that it is one), with the launch's environment and the ssh
+            // helper as any pane has them.
+            AfterglowPty::SpawnOptions rescue = prepareLaunch(m_settings.settings(), workingDirectory, {QStringLiteral("/bin/sh")}, environment);
+            pane->setLaunchedProgram({});
             pane->setHold(true);
             if (!pane->start(std::move(rescue), m_settings.settings().term, cols, rows, m.cellWidth, m.cellHeight, &error))
                 pane->holdStartFailure();
@@ -722,14 +716,14 @@ Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QString
         // lack of room leaves the zoom, and every pane's size, as they were.
         m_splits->setZoomedPane(nullptr);
         m_splits->layout(paneArea(), divider);
-    } else if (m_docksMoved) {
-        // A dock moved since the last frame: the rectangles below are from
-        // before it, and the room it took would not count.
-        finishDockMoves();
-    } else if (m_layoutSize.isEmpty()) {
-        // Not laid out since the last split, or never drawn: the rectangles
-        // below would be empty, and the shell would start at 2x1.
-        relayout();
+    } else {
+        // A dock moved, or the scale or the font changed since the last
+        // frame: the rectangles below would be from before, and the shell
+        // would start at a size it does not keep. Never drawn, they would
+        // be empty, and the shell would start at 2x1. A new window size
+        // counts from the frame that resizes the swap chain: that frame
+        // lays out and resizes the new pane with the others.
+        ensureLayout();
     }
     // Start the new shell at the size its requested share of the split will have.
     QRect area = m_splits->rectOf(m_focused);
@@ -742,7 +736,7 @@ Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QString
         m_splits->layout(paneArea(), divider);
     }
     if (available < 2 * smallest) {
-        if (error) *error = QStringLiteral("There is not enough room to split this pane");
+        if (error) *error = noRoomForPane();
         return nullptr;
     }
     const double fraction = std::clamp(options.fraction, double(smallest) / available, 1.0 - double(smallest) / available);
@@ -1067,7 +1061,11 @@ QList<TerminalWindow::TabInfo> TerminalWindow::tabs() const
 Pane* TerminalWindow::splitPane(Pane* pane, SplitTree::Direction direction, const PaneLaunchOptions& options, QString* error)
 {
     if (tabOf(pane) < 0) return nullptr;
-    revealPane(pane);
+    // As openTab: the pane's tab shows and the pane takes the focus, in
+    // this window, which a call from a script or afterglow ctl neither
+    // raises nor activates.
+    if (const int tab = tabOf(pane); tab != m_currentTab) switchTab(tab);
+    setFocusedPane(pane);
     return splitFocused(direction, options.command, options, error);
 }
 
@@ -1077,6 +1075,12 @@ Pane* TerminalWindow::openTab(const PaneLaunchOptions& options, QString* error, 
     const QString inherited = beside >= 0 ? from->workingDirectory() : focusedDirectory();
     return newTab(options.cwd.isEmpty() ? startDirectory(inherited) : options.cwd, options.command, options.environment, error,
                   beside >= 0 ? beside + 1 : -1);
+}
+
+void TerminalWindow::openShellTab(Pane* from)
+{
+    QString error;
+    if (!openTab({}, &error, from)) NotificationCenter::instance().showNotice(m_focused, tr("Could not open a tab"), error);
 }
 
 QString TerminalWindow::focusedDirectory() const
@@ -1105,20 +1109,29 @@ QString TerminalWindow::startDirectory(const QString& inherited) const
     return fallback;
 }
 
-void TerminalWindow::confirmClose(const QList<Pane*>& panes, const QString& what, std::function<void()> close)
+QStringList TerminalWindow::closingJobs(const QList<Pane*>& panes) const
 {
     QStringList jobs;
-    if (m_settings.settings().confirmClose) {
-        for (Pane* p : panes) {
-            // An overlay's program runs on the pane too, and closing ends it.
-            for (Pane* running : {p, inputPane(p)}) {
-                // The name is the program's to choose (prctl): shown as plain text.
-                if (const QString job = sanitizedText(running->foregroundJob(), 64); !job.isEmpty() && !jobs.contains(job)) {
-                    jobs << job;
-                }
+    if (!m_settings.settings().confirmClose) return jobs;
+    for (Pane* p : panes) {
+        // An overlay's program runs on the pane too, and closing ends it.
+        for (Pane* running : {p, inputPane(p)}) {
+            // The name is the program's to choose (prctl): shown as plain text.
+            if (const QString job = sanitizedText(running->foregroundJob(), 64); !job.isEmpty() && !jobs.contains(job)) {
+                jobs << job;
             }
         }
     }
+    return jobs;
+}
+
+void TerminalWindow::confirmClose(const QList<Pane*>& panes, const QString& what, std::function<void()> close)
+{
+    confirmClose(closingJobs(panes), panes, what, std::move(close));
+}
+
+void TerminalWindow::confirmClose(const QStringList& jobs, const QList<Pane*>& panes, const QString& what, std::function<void()> close)
+{
     if (jobs.isEmpty()) {
         close();
         return;
@@ -1212,6 +1225,9 @@ bool TerminalWindow::actOnPane(Pane* pane, Action action)
             // The pane named is the one that the new window focuses.
             m_tabs[std::size_t(tab)]->focused = pane;
             detachTab(tab);
+            return true;
+        case Action::NewTab:
+            openShellTab(pane);
             return true;
         default:
             break;
@@ -1402,10 +1418,16 @@ void TerminalWindow::runTabMenuItem(int id)
     case TabMenuRename:
         renameTab(index);
         break;
-    case TabMenuNew:
-        switchTab(index);
-        performAction(Action::NewTab);
+    case TabMenuNew: {
+        // Beside this tab, from its pane, as a new tab of the current one
+        // opens: switching to it first would make two tab transitions.
+        auto& tab = *m_tabs[std::size_t(index)];
+        Pane* from = index == m_currentTab ? m_focused.data() : tab.focused.data();
+        // A restored tab that never showed may name no pane yet.
+        if (!from) tab.splits->forEachPane([&](Pane* candidate, const QRect&) { if (!from) from = candidate; });
+        openShellTab(from);
         break;
+    }
     case TabMenuMoveLeft:
         moveTab(index, index - 1);
         break;
@@ -1630,6 +1652,18 @@ void TerminalWindow::relayout()
     m_layoutFontEpoch = m_device.fontEpoch();
 }
 
+bool TerminalWindow::layoutStale() const
+{
+    return m_layoutSize.isEmpty() || m_renderer->pixelSize() != m_layoutSize || devicePixelRatio() != m_layoutDpr
+        || m_device.fontEpoch() != m_layoutFontEpoch;
+}
+
+void TerminalWindow::ensureLayout()
+{
+    if (m_docksMoved) finishDockMoves();
+    else if (layoutStale()) relayout();
+}
+
 void TerminalWindow::renderNow()
 {
     if (!m_splits || !isExposed() || !m_renderer->ensureSwapChain()) {
@@ -1646,12 +1680,7 @@ void TerminalWindow::renderNow()
             return;
         }
     }
-    if (m_docksMoved) {
-        finishDockMoves();
-    } else if (m_renderer->pixelSize() != m_layoutSize || devicePixelRatio() != m_layoutDpr
-               || m_device.fontEpoch() != m_layoutFontEpoch) {
-        relayout();
-    }
+    ensureLayout();
 
     std::vector<AfterglowRender::WindowRenderer::Pane> panes;
     std::vector<std::pair<QRect, std::uint32_t>> shading;
@@ -1921,7 +1950,7 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     followViewport(pane, m);
     if (m.scroll.isAnimating()) {
         m.scroll.advance();
-        m.scrollValue = m.scroll.value();
+        m.scrollValue = m.scroll.value() + m.scrollRebase;
         animating |= m.scroll.isAnimating();
     }
     if (!applyScroll(pane, m)) {
@@ -1978,15 +2007,14 @@ void TerminalWindow::followViewport(Pane* pane, PaneMotion& m)
     if (m.scroll.isAnimating() && moved > 0 && std::uint64_t(moved) == added) {
         // Output entered the history while the view is scrolled back, and
         // the terminal moved the view by as much to keep it on the same
-        // text: the easing goes on from the shifted place.
-        const AnimationSettings& anim = m_settings.settings().animation;
-        m.scrollValue = m.scroll.value() + qreal(moved);
+        // text: the easing goes on, shifted, at its own pace.
+        m.scrollRebase += qreal(moved);
+        m.scrollValue += qreal(moved);
         m.scrollTarget += qreal(moved);
-        m.scroll.start(m.scrollValue, m.scrollTarget, motionSpec(anim.scrollCurve, anim.scrollDuration, m_scrollCurve,
-                                                                 "Animation.scrollCurve", AnimationSettings{}.scrollCurve));
     } else {
         // Moved by something else (typing, a prompt jump): follow it.
         m.scroll.cancel();
+        m.scrollRebase = 0;
         m.scrollValue = qreal(offset);
         m.scrollTarget = qreal(offset);
     }
@@ -2040,8 +2068,9 @@ void TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)
         m.scroll.cancel();
         m.scrollValue = target;
     } else if (m.scroll.isAnimating()) {
-        m.scroll.retarget(target, PhosphorAnimation::RetargetPolicy::PreserveVelocity);
+        m.scroll.retarget(target - m.scrollRebase, PhosphorAnimation::RetargetPolicy::PreserveVelocity);
     } else {
+        m.scrollRebase = 0;
         m.scroll.start(m.scrollValue, target, motionSpec(anim.scrollCurve, anim.scrollDuration, m_scrollCurve,
                                                          "Animation.scrollCurve", AnimationSettings{}.scrollCurve));
     }
@@ -2196,18 +2225,17 @@ bool TerminalWindow::event(QEvent* e)
         }
         break;
     case QEvent::Close: {
-        if (!m_closeConfirmed && m_settings.settings().confirmClose) {
-            const QList<Pane*> all = panes();
-            if (std::any_of(all.cbegin(), all.cend(), [](Pane* p) {
-                    return !p->foregroundJob().isEmpty() || !inputPane(p)->foregroundJob().isEmpty();
-                })) {
-                e->ignore();
-                confirmClose(all, QStringLiteral("this window"), [this] {
-                    m_closeConfirmed = true;
-                    close();
-                });
-                return true;
-            }
+        // The jobs that the question would name: a name that is all control
+        // characters names nothing, and asks nothing. Read once: a second
+        // read could find none, and close the window inside its own close.
+        const QList<Pane*> all = panes();
+        if (const QStringList jobs = m_closeConfirmed ? QStringList() : closingJobs(all); !jobs.isEmpty()) {
+            e->ignore();
+            confirmClose(jobs, all, QStringLiteral("this window"), [this] {
+                m_closeConfirmed = true;
+                close();
+            });
+            return true;
         }
         qCInfo(lcWindow) << "window close requested";
         const bool handled = QWindow::event(e);
@@ -2345,15 +2373,31 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     // Only a key in a sequence or a table changes what the window shows for
     // it: any other key would cost a frame.
     if (sequenceWasActive || m_keyMode.active()) updateKeyMode();
-    // A held chord moves the pane once: each repeat would find it alone in
-    // its new tab, and show the refusal again.
-    const auto heldMove = [e](Action action) { return action == Action::MovePaneToTab && e->isAutoRepeat(); };
+    // A held chord runs these once: each repeat would open, split, close or
+    // move one more (a moved pane finds itself alone in its new tab, and
+    // shows the refusal again), open the configuration again, or turn a
+    // toggle back. The repeat is taken all the same: it is no key for the
+    // program. Focus, resize, scroll, font size and the tab and prompt
+    // moves repeat.
+    static constexpr std::array onceWhileHeld{Action::NewTab,           Action::NewWindow,      Action::SplitRight,
+                                              Action::SplitDown,        Action::SplitLeft,      Action::SplitUp,
+                                              Action::ClosePane,        Action::CloseTab,       Action::MovePaneToTab,
+                                              Action::MovePaneToWindow, Action::DetachTab,      Action::ShowLastOutput,
+                                              Action::OpenConfig,       Action::ToggleFullscreen, Action::TogglePaneZoom,
+                                              Action::NotifyOnFinish};
+    const auto heldRepeat = [e](Action action) {
+        return e->isAutoRepeat() && std::find(onceWhileHeld.begin(), onceWhileHeld.end(), action) != onceWhileHeld.end();
+    };
+    // Text a binding types, from a key mode or a chord alike.
+    const auto typeText = [this](const QByteArray& text) {
+        Pane* target = inputPane(m_focused);
+        target->clearSelection();
+        restartBlink();
+        target->sendInput(std::string_view(text.constData(), std::size_t(text.size())));
+    };
     if (result.consumed) {
         if (result.target.startsWith(Keybinds::TextPrefix) && m_focused) {
-            const QByteArray bytes = Keybinds::unescape(result.target.mid(Keybinds::TextPrefix.size()));
-            Pane* target = inputPane(m_focused);
-            target->clearSelection();
-            target->sendInput(std::string_view(bytes.constData(), std::size_t(bytes.size())));
+            typeText(Keybinds::unescape(result.target.mid(Keybinds::TextPrefix.size())));
         } else if (result.target.startsWith(Keybinds::ScriptPrefix)) {
             // The sequence took its keys already, so a command that no
             // script has is reported here, not typed. A run is a process
@@ -2363,7 +2407,7 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
         } else {
             for (Action action : Keybinds::allActions()) {
                 if (Keybinds::token(action) == result.target) {
-                    if (!heldMove(action)) performAction(action);
+                    if (!heldRepeat(action)) performAction(action);
                     break;
                 }
             }
@@ -2373,7 +2417,7 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     const Keybinds& kb = m_settings.settings().keybinds;
     const Action action = kb.match(e, bindingBaseKey(e));
     if (action != Action::None) {
-        if (heldMove(action)) return true;
+        if (heldRepeat(action)) return true;
         // These keep their key even when there is nothing to do: the
         // encoded chord would reach the shell as a control byte (the
         // overview's Ctrl+Shift+D as EOF, a rotation's as ESC or GS).
@@ -2386,10 +2430,7 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
         if (!m_focused) {
             return false;
         }
-        Pane* target = inputPane(m_focused);
-        target->clearSelection();
-        restartBlink();
-        target->sendInput(std::string_view(text.constData(), std::size_t(text.size())));
+        typeText(text);
         return true;
     }
     // A key bound to a command that no script has goes to the terminal.
@@ -2568,13 +2609,9 @@ bool TerminalWindow::performAction(Action action)
     case Action::NewWindow:
         Q_EMIT newWindowRequested(focusedDirectory());
         return true;
-    case Action::NewTab: {
-        QString error;
-        if (!newTab(startDirectory(focusedDirectory()), {}, {}, &error)) {
-            NotificationCenter::instance().showNotice(m_focused, tr("Could not open a tab"), error);
-        }
+    case Action::NewTab:
+        openShellTab(m_focused);
         return true;
-    }
     case Action::EndScriptKeyMode:
         // Always ends a script's key mode, so no script can keep the keyboard.
         if (!m_scriptKeyMode) return false;
@@ -2643,6 +2680,9 @@ bool TerminalWindow::performAction(Action action)
         QString error;
         Pane* created = newTab(focusedDirectory(), command, {}, &error);
         if (!created) return fail(tr("Could not show the output"), error);
+        // The file goes with the pane: a project saves the tab as a shell in
+        // its directory, not as a pager of a file that is gone.
+        created->setLaunch(created->launchDirectory(), {});
         file->setParent(created);
         file.release();
         return true;
@@ -3418,8 +3458,7 @@ bool TerminalWindow::revealForAccessibility(Pane* pane)
     revealPane(pane);
     // switchTab leaves the layout to the next frame: the tab's rectangles
     // are from when it last showed.
-    if (m_docksMoved) finishDockMoves();
-    else if (m_layoutSize.isEmpty()) relayout();
+    ensureLayout();
     return true;
 }
 

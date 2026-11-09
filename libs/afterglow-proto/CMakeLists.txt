@@ -3,12 +3,13 @@
 
 # zlib-ng and xxHash are built into the tree from the archives that
 # cmake/AfterglowDependencies.cmake pins, not taken from the system. Every
-# build (the application, afterglow-vt, the tests, the fuzz targets and a
-# static client of this library) then uses the same code. zlib-ng has the
-# SIMD paths that a distribution's zlib-ng has, chosen at run time, so the
-# terminal decodes o=z images as fast as with the system library. A zlib-ng
-# security fix arrives with a new pin. The root CMakeLists.txt includes
-# cmake/AfterglowDependencies.cmake, at the top scope where CPM must load.
+# build (the application, afterglow-vt, afterglow-mux, the tests, the fuzz
+# targets and a static client of this library) then uses the same code.
+# zlib-ng has the SIMD paths that a distribution's zlib-ng has, chosen at run
+# time, so the terminal decodes o=z images as fast as with the system
+# library. A zlib-ng security fix arrives with a new pin. The root
+# CMakeLists.txt includes cmake/AfterglowDependencies.cmake, at the top scope
+# where CPM must load.
 
 # zlib-ng with its own build, in its zlib-compatible API. Its public symbols
 # get the prefix afterglow_ (zlib.h renames the calls), so they can never
@@ -66,9 +67,10 @@ endforeach()
 set(AFTERGLOW_ZLIB_LICENSE "${AFTERGLOW_ZLIB_NG_SOURCE_DIR}/LICENSE.md" PARENT_SCOPE)
 set(AFTERGLOW_XXHASH_LICENSE "${xxhash_SOURCE_DIR}/LICENSE" PARENT_SCOPE)
 
-# Static and PIC: it links into the shared afterglow-vt and into each
-# executable that uses it directly (the application, aglow, the tests). Each of
-# them gets its own copy of the code, with hidden symbols.
+# Static and PIC: it links into the shared afterglow-vt, into
+# afterglow_mux_protocol, and into each executable that uses it directly (the
+# application, afterglow-mux, aglow, the tests). Each of them gets its own copy
+# of the code, with hidden symbols.
 add_library(AfterglowProto STATIC
     src/Clipboard.cpp
     src/Delta.cpp
@@ -80,6 +82,7 @@ add_library(AfterglowProto STATIC
     src/Ipc.cpp
     src/IpcServer.cpp
     src/Json.cpp
+    src/Lock.cpp
     src/Random.cpp
     src/Remote.cpp
     src/Run.cpp

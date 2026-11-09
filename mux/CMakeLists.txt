@@ -20,7 +20,7 @@ target_compile_definitions(afterglow-mux PRIVATE AFTERGLOW_VERSION="${PROJECT_VE
 target_link_libraries(afterglow-mux PRIVATE afterglow_mux_protocol Afterglow::Pty)
 # Next to afterglow, which runs the afterglow-mux of its own directory.
 set_target_properties(afterglow-mux PROPERTIES AUTOMOC OFF AUTOUIC OFF
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/afterglow")
+    RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:afterglow>")
 install(TARGETS afterglow-mux RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 if(BUILD_TESTING)

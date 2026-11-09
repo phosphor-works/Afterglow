@@ -245,10 +245,12 @@ int main(int argc, char** argv)
                                     {QStringLiteral("hold"), parser.isSet(holdOption)},
                                     {QStringLiteral("activationToken"), qEnvironmentVariable("XDG_ACTIVATION_TOKEN")}};
     qunsetenv("XDG_ACTIVATION_TOKEN");
-    // An Afterglow started from a pane of another one must not hand that
-    // pane's identity to its scripts' programs. Its own panes get their own.
+    // An Afterglow started from a pane of another one, or of a mux session,
+    // must not hand that pane's identity to its scripts' programs. Its own
+    // panes get their own, and are in no session.
     qunsetenv("AFTERGLOW_SOCKET");
     qunsetenv("AFTERGLOW_PANE_ID");
+    qunsetenv("AFTERGLOW_SESSION");
 
     QJsonObject overrides;
     for (const QString& assignment : parser.values(overrideOption)) {

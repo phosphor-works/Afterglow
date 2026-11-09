@@ -14,22 +14,46 @@ namespace Json = AfterglowProto::Json;
 
 namespace {
 
-// Each key is read once, and a value of the wrong type is an error, not a
-// default: the client and the daemon come from one build.
+// Each key is read once, and a missing key or a value of the wrong type is
+// an error, not a default: the two ends agree on ProtocolVersion, which
+// changes with the keys.
 class Reader
 {
 public:
-    Reader(const Json::Value& object, std::string* error)
+    /// @p prefix goes before each key in the error: "terminal." for the keys
+    /// of the terminal object.
+    Reader(const Json::Value& object, std::string* error, std::string prefix = {})
         : m_object(object)
         , m_error(error)
+        , m_prefix(std::move(prefix))
     {
     }
 
     bool failed() const { return m_failed; }
 
+    /// A reader of the object at @p key, whose errors are this reader's: the
+    /// first error of either names its key.
+    Reader nested(const Json::Value& object, std::string_view key) const
+    {
+        return Reader(object, m_failed ? nullptr : m_error, m_prefix + std::string(key) + ".");
+    }
+    /// Takes the failure of a reader from nested().
+    bool absorb(const Reader& inner)
+    {
+        m_failed = m_failed || inner.m_failed;
+        return !inner.m_failed;
+    }
+
+    /// The value of @p key, or nullptr. A key that no reader looks up is
+    /// an error of noOtherKeys().
+    const Json::Value* lookup(std::string_view key)
+    {
+        m_seen.emplace_back(key);
+        return m_object.find(key);
+    }
     const Json::Value* get(std::string_view key, Json::Value::Type type)
     {
-        const Json::Value* value = m_object.find(key);
+        const Json::Value* value = lookup(key);
         if (!value) {
             fail(key, "is missing");
             return nullptr;
@@ -74,10 +98,20 @@ public:
         return true;
     }
 
+    /// A key of another protocol version, or of none, is an error: an end
+    /// that dropped it would run the session without it.
+    bool noOtherKeys()
+    {
+        for (const auto& [key, value] : m_object.toObject()) {
+            if (std::find(m_seen.begin(), m_seen.end(), key) == m_seen.end()) return fail(key, "is not a key of this protocol");
+        }
+        return true;
+    }
+
     /// Always false, to return from the readers.
     bool fail(std::string_view key, std::string_view what)
     {
-        if (!m_failed && m_error) *m_error = "'" + std::string(key) + "' " + std::string(what);
+        if (!m_failed && m_error) *m_error = "'" + m_prefix + std::string(key) + "' " + std::string(what);
         m_failed = true;
         return false;
     }
@@ -85,6 +119,8 @@ public:
 private:
     const Json::Value& m_object;
     std::string* m_error;
+    std::string m_prefix;
+    std::vector<std::string> m_seen;
     bool m_failed = false;
 };
 
@@ -111,9 +147,9 @@ std::optional<AfterglowVt::Rgb> readColor(const Json::Value& value)
 }
 
 /// A color that may be null (unset).
-bool optionalColor(Reader& reader, const Json::Value& object, std::string_view key, std::optional<AfterglowVt::Rgb>& out)
+bool optionalColor(Reader& reader, std::string_view key, std::optional<AfterglowVt::Rgb>& out)
 {
-    const Json::Value* value = object.find(key);
+    const Json::Value* value = reader.lookup(key);
     if (!value) return reader.fail(key, "is missing");
     if (value->isNull()) {
         out.reset();
@@ -123,9 +159,9 @@ bool optionalColor(Reader& reader, const Json::Value& object, std::string_view k
     return out ? true : reader.fail(key, "is not a color");
 }
 
-bool requiredColor(Reader& reader, const Json::Value& object, std::string_view key, AfterglowVt::Rgb& out)
+bool requiredColor(Reader& reader, std::string_view key, AfterglowVt::Rgb& out)
 {
-    const Json::Value* value = object.find(key);
+    const Json::Value* value = reader.lookup(key);
     const auto c = value ? readColor(*value) : std::nullopt;
     if (!c) return reader.fail(key, "is not a color");
     out = *c;
@@ -154,18 +190,19 @@ Json::Value toJson(const AfterglowVt::TerminalOptions& t)
         {"bidi", int(t.bidi)},
         {"cursorShape", int(t.cursorShape)},
         {"cursorBlink", t.cursorBlink},
+        {"allowScreenReadback", t.allowScreenReadback},
         {"graphicsQuota", t.graphicsQuota},
         {"graphicsFileTransfer", t.graphicsFileTransfer},
     };
 }
 
-bool readTerminal(Reader& outer, const Json::Value& object, AfterglowVt::TerminalOptions& t, std::string* error)
+bool readTerminal(Reader& outer, const Json::Value& object, AfterglowVt::TerminalOptions& t)
 {
     if (!object.isObject()) return outer.fail("terminal", "is not an object");
-    Reader r(object, error);
-    if (const auto n = r.integer("scrollback", 0, 1000000)) t.maxScrollback = std::size_t(*n);
-    requiredColor(r, object, "foreground", t.defaultForeground);
-    requiredColor(r, object, "background", t.defaultBackground);
+    Reader r = outer.nested(object, "terminal");
+    if (const auto n = r.integer("scrollback", 0, MaxScrollback)) t.maxScrollback = std::size_t(*n);
+    requiredColor(r, "foreground", t.defaultForeground);
+    requiredColor(r, "background", t.defaultBackground);
     if (const Json::Value* palette = r.get("palette", Json::Value::Type::Array)) {
         if (palette->toArray().size() != t.basePalette.size()) {
             r.fail("palette", "does not have 16 colors");
@@ -180,14 +217,14 @@ bool readTerminal(Reader& outer, const Json::Value& object, AfterglowVt::Termina
             }
         }
     }
-    optionalColor(r, object, "cursorColor", t.cursorColor);
-    optionalColor(r, object, "cursorTextColor", t.cursorTextColor);
-    optionalColor(r, object, "selectionForeground", t.selectionForeground);
-    optionalColor(r, object, "selectionBackground", t.selectionBackground);
+    optionalColor(r, "cursorColor", t.cursorColor);
+    optionalColor(r, "cursorTextColor", t.cursorTextColor);
+    optionalColor(r, "selectionForeground", t.selectionForeground);
+    optionalColor(r, "selectionBackground", t.selectionBackground);
     r.boolean("boldIsBright", t.boldIsBright);
     if (const Json::Value* contrast = r.get("minimumContrast", Json::Value::Type::Number)) {
         const double v = contrast->toNumber();
-        if (!std::isfinite(v) || v < 1 || v > 21) r.fail("minimumContrast", "is out of range");
+        if (!std::isfinite(v) || v < MinContrast || v > MaxContrast) r.fail("minimumContrast", "is out of range");
         else t.minimumContrast = v;
     }
     std::string boundaries;
@@ -207,18 +244,18 @@ bool readTerminal(Reader& outer, const Json::Value& object, AfterglowVt::Termina
     if (const auto n = r.integer("bidi", 0, int(AfterglowVt::BidiMode::RightToLeft))) t.bidi = AfterglowVt::BidiMode(*n);
     if (const auto n = r.integer("cursorShape", 0, int(AfterglowVt::CursorShape::Bar))) t.cursorShape = AfterglowVt::CursorShape(*n);
     r.boolean("cursorBlink", t.cursorBlink);
-    // The 4096 MiB limit of Graphics.quota.
-    if (const auto n = r.integer("graphicsQuota", 0, std::int64_t(4096) << 20)) t.graphicsQuota = std::size_t(*n);
+    r.boolean("allowScreenReadback", t.allowScreenReadback);
+    if (const auto n = r.integer("graphicsQuota", 0, MaxGraphicsQuota)) t.graphicsQuota = std::size_t(*n);
     r.boolean("graphicsFileTransfer", t.graphicsFileTransfer);
-    if (r.failed()) return outer.fail("terminal", "is not valid");
-    return true;
+    r.noOtherKeys();
+    return outer.absorb(r);
 }
 
 } // namespace
 
 bool validSessionName(std::string_view name)
 {
-    if (name.empty() || name.size() > MaxSessionName) return false;
+    if (name.empty() || name.size() > MaxSessionName || name.front() == '-') return false;
     return std::all_of(name.begin(), name.end(), [](char c) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
     });
@@ -229,19 +266,19 @@ Json::Value toJson(const SessionOptions& o)
     Json::Array argv(o.launch.argv.begin(), o.launch.argv.end());
     Json::Array environment;
     for (const auto& [name, value] : o.launch.environment) environment.push_back(Json::Array{name, value});
-    Json::Array unset(o.launch.unsetEnvironment.begin(), o.launch.unsetEnvironment.end());
     return Json::Object{
         {"name", o.name},
         {"argv", std::move(argv)},
         {"cwd", o.launch.workingDirectory},
         {"environment", std::move(environment)},
-        {"unset", std::move(unset)},
         {"launchedProgram", o.launch.launchedProgram},
+        {"umask", o.launch.umask},
         {"cols", o.size.cols},
         {"rows", o.size.rows},
         {"cellWidth", o.size.cellWidth},
         {"cellHeight", o.size.cellHeight},
         {"terminal", toJson(o.terminal)},
+        {"notificationCapabilities", o.notificationCapabilities},
     };
 }
 
@@ -254,7 +291,7 @@ std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::stri
     SessionOptions o;
     Reader r(value, error);
     if (r.string("name", o.name) && !o.name.empty() && !validSessionName(o.name)) {
-        r.fail("name", "is not 1 to 64 letters, digits, underscores or hyphens");
+        r.fail("name", std::string("is not ") + SessionNameRule);
     }
     r.strings("argv", o.launch.argv);
     r.string("cwd", o.launch.workingDirectory);
@@ -271,14 +308,16 @@ std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::stri
             o.launch.environment.emplace_back(entry.toArray()[0].toString(), entry.toArray()[1].toString());
         }
     }
-    r.strings("unset", o.launch.unsetEnvironment);
     r.string("launchedProgram", o.launch.launchedProgram);
+    if (const auto n = r.integer("umask", -1, 0777)) o.launch.umask = int(*n);
     if (const auto n = r.integer("cols", 2, 4096)) o.size.cols = int(*n);
     if (const auto n = r.integer("rows", 1, 1048576 / 2)) o.size.rows = int(*n);
     if (const auto n = r.integer("cellWidth", 0, 65535)) o.size.cellWidth = int(*n);
     if (const auto n = r.integer("cellHeight", 0, 65535)) o.size.cellHeight = int(*n);
-    if (const Json::Value* terminal = value.find("terminal")) readTerminal(r, *terminal, o.terminal, error);
+    if (const Json::Value* terminal = r.lookup("terminal")) readTerminal(r, *terminal, o.terminal);
     else r.fail("terminal", "is missing");
+    r.string("notificationCapabilities", o.notificationCapabilities);
+    r.noOtherKeys();
     if (r.failed()) return std::nullopt;
     return o;
 }
@@ -304,6 +343,7 @@ std::optional<SessionInfo> sessionInfo(const Json::Value& value)
     if (const auto n = r.integer("windows", 0, 1 << 20)) info.windows = int(*n);
     if (const auto n = r.integer("panes", 0, 1 << 20)) info.panes = int(*n);
     r.strings("jobs", info.jobs);
+    r.noOtherKeys();
     if (r.failed()) return std::nullopt;
     return info;
 }

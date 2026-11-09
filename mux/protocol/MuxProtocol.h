@@ -6,6 +6,7 @@
 #include <AfterglowProto/Json.h>
 #include <AfterglowVt/Terminal.h>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,13 +15,16 @@
 
 // The calls of the mux daemon's control target, and the values that they
 // carry. The client (afterglow mux) and the daemon (afterglow-mux) share this
-// code, so the two ends read the same format.
+// code. They can still come from two builds: a daemon keeps running while
+// the user installs a new afterglow. ProtocolVersion tells them apart.
 
 namespace AfterglowMux {
 
-/// Changes when a call, its arguments or its result change incompatibly. The
-/// daemon refuses a client with another version, and names both.
-inline constexpr int ProtocolVersion = 1;
+/// Changes when a call, its arguments or its result change. Each end checks
+/// it: the client calls Fn::Version first on each connection, and the daemon
+/// refuses a newSession of another version. MuxProtocolTest pins the keys of
+/// the options to this number, so that a new key changes it too.
+inline constexpr int ProtocolVersion = 2;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -40,24 +44,56 @@ inline constexpr const char* VersionMismatch = "VERSION_MISMATCH";
 inline constexpr const char* SpawnFailed = "SPAWN_FAILED";
 } // namespace Error
 
+/// The environment variable with the descriptor of a pipe that `afterglow
+/// mux` gives a daemon that it starts in a session of its own, whose stderr
+/// is /dev/null. The daemon writes ReportListening there once it listens,
+/// else ReportHeld and why, or only why it cannot start, and closes it. An
+/// end of the pipe with none of them is a daemon that ended before it
+/// listened.
+inline constexpr const char* ReportFdVariable = "AFTERGLOW_MUX_REPORT_FD";
+/// A byte that no message has: the daemon listens.
+inline constexpr char ReportListening = '\0';
+/// A byte that no message has, before the message: another daemon holds
+/// one of the sockets. That one took its lock before it binds, so it may
+/// answer soon: a client waits for it as for a daemon that listens.
+inline constexpr char ReportHeld = '\x01';
+
 /// The longest session name.
 inline constexpr std::size_t MaxSessionName = 64;
+/// The rule of validSessionName(), in the words of a message.
+inline constexpr const char* SessionNameRule =
+    "1 to 64 ASCII letters, digits, '_' or '-', with a letter, a digit or '_' first";
 
-/// 1 to 64 letters, digits, underscores or hyphens.
+/// 1 to 64 ASCII letters, digits, '_' or '-', and the first character is a
+/// letter, a digit or '_': a name never reads as an option of `afterglow mux
+/// kill`.
 bool validSessionName(std::string_view name);
+
+/// The bounds that the daemon takes for the terminal values of a session.
+/// They hold every value of the settings that they come from
+/// (Terminal.scrollback, Colors.minimumContrast, Graphics.quota): the
+/// application's MuxClientTest checks that.
+inline constexpr std::int64_t MaxScrollback = 1000000;
+inline constexpr double MinContrast = 1;
+inline constexpr double MaxContrast = 21;
+inline constexpr std::int64_t MaxGraphicsQuota = std::int64_t(4096) << 20;
 
 /// What runs in a new pane. The client prepares it from its configuration
 /// (the shell, shell integration, TERM and the environment of the launch).
-/// The daemon adds only the variables that name the session and the pane.
+/// The daemon then sets AFTERGLOW_SOCKET, AFTERGLOW_PANE_ID and
+/// AFTERGLOW_SESSION, and removes AFTERGLOW_OVERLAY.
 struct Launch
 {
     std::vector<std::string> argv; ///< empty: the user's login shell
     std::string workingDirectory;
+    /// The whole environment of the programs: the daemon's own is not used.
     std::vector<std::pair<std::string, std::string>> environment;
-    std::vector<std::string> unsetEnvironment;
     /// The program of a command launch, which counts as running while it is
     /// in the foreground. Empty for a shell.
     std::string launchedProgram;
+    /// The file mode creation mask of the client, which the programs get in
+    /// place of the daemon's. -1 keeps the daemon's.
+    int umask = -1;
 };
 
 /// The size of a pane, as the client measures it with its font.
@@ -71,12 +107,15 @@ struct PaneSize
 
 struct SessionOptions
 {
-    std::string name; ///< empty: the smallest free number, from 1
+    std::string name; ///< empty: the daemon's next number
     Launch launch;
     PaneSize size;
     /// The terminal values of the client: scrollback, theme colors and the
     /// rest. The daemon reads no configuration file.
     AfterglowVt::TerminalOptions terminal;
+    /// The answer of a window to an OSC 99 query: what a program may ask of
+    /// the desktop notifications of a window that later shows the session.
+    std::string notificationCapabilities;
 };
 
 AfterglowProto::Json::Value toJson(const SessionOptions& options);

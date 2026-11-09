@@ -8,14 +8,13 @@
 #include "DockArea.h"
 #include "ImageDecode.h"
 #include "PaneLaunch.h"
+#include "PaneDialog.h"
 #include "PaneOverlay.h"
 #include "ShownText.h"
 
 #include "app/InstanceSocket.h"
 #include "app/NotificationCenter.h"
-#include "app/Startup.h"
 
-#include <AfterglowProto/Graphics.h>
 #include <AfterglowVt/Unicode.h>
 
 #include <QByteArray>
@@ -25,9 +24,6 @@
 #include <QFileInfo>
 #include <QSaveFile>
 #include <QStandardPaths>
-#include <QDir>
-#include <QWindow>
-#include <QStringList>
 #include <QTextBoundaryFinder>
 #include <QSysInfo>
 
@@ -90,17 +86,6 @@ Pane::~Pane()
     for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
 }
 
-void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantMap& environment)
-{
-    for (auto it = environment.cbegin(); it != environment.cend(); ++it) {
-        const std::string name = it.key().toStdString();
-        std::erase_if(options.environment, [&name](const auto& entry) { return entry.first == name; });
-        std::erase(options.unsetEnvironment, name);
-        if (it.value().metaType().id() == QMetaType::Bool) options.unsetEnvironment.push_back(name);
-        else options.environment.emplace_back(name, it.value().toString().toStdString());
-    }
-}
-
 bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols, int rows, int cellWidth,
                  int cellHeight, QString* error)
 {
@@ -111,25 +96,19 @@ bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols,
         std::lock_guard lock(m_mutex);
         m_terminal.resize(cols, rows, cellWidth, cellHeight);
     }
-    // Lets `afterglow ctl` run in the pane act on that pane by default: always ours.
-    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_PANE_ID"; });
-    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_PANE_ID"));
-    // An overlay's program acts on the pane it runs over.
-    opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_overlayHost ? m_overlayHost->id() : m_id));
+    // Lets `afterglow ctl` run in the pane act on that pane by default: always
+    // ours. An overlay's program acts on the pane it runs over.
+    AfterglowPty::setVariable(opts, "AFTERGLOW_PANE_ID", std::to_string(m_overlayHost ? m_overlayHost->id() : m_id));
     // Marks the overlay's own terminal: an `afterglow ssh` there gets an
     // OSC 24569 answer of its own, apart from the pane's (RemoteSockets).
-    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_OVERLAY"; });
-    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_OVERLAY"));
-    if (m_overlayHost) opts.environment.emplace_back("AFTERGLOW_OVERLAY", "1");
-    else opts.unsetEnvironment.emplace_back("AFTERGLOW_OVERLAY");
+    if (m_overlayHost) AfterglowPty::setVariable(opts, "AFTERGLOW_OVERLAY", "1");
+    else AfterglowPty::unsetVariable(opts, "AFTERGLOW_OVERLAY");
     // The pane ID means something only to this process: `afterglow ctl` in a
     // second instance's pane must reach that instance, not the first.
-    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_SOCKET"; });
-    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_SOCKET"));
     if (const QString socket = InstanceSocket::processPath(); !socket.isEmpty()) {
-        opts.environment.emplace_back("AFTERGLOW_SOCKET", QFile::encodeName(socket).toStdString());
+        AfterglowPty::setVariable(opts, "AFTERGLOW_SOCKET", QFile::encodeName(socket).toStdString());
     } else {
-        opts.unsetEnvironment.emplace_back("AFTERGLOW_SOCKET");
+        AfterglowPty::unsetVariable(opts, "AFTERGLOW_SOCKET");
     }
     opts.cols = cols;
     opts.rows = rows;
@@ -432,7 +411,7 @@ QString searchError(const AfterglowVt::TextSearchResult& result)
     case SearchError::None:
         return {};
     case SearchError::PatternTooLong:
-        return Pane::tr("Pattern exceeds 4096 characters");
+        return Pane::tr("Pattern exceeds %1 characters").arg(AfterglowVt::MaxSearchPattern);
     case SearchError::NoMemory:
         return Pane::tr("Not enough memory to search");
     case SearchError::TimeLimit:
@@ -502,7 +481,8 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
             m_searchMatches = std::move(result.matches);
             m_searchCurrent = int(m_searchMatches.size()) - 1;
             m_searchNotice = scrolled ? tr("Text moved during the search. Search again") : searchError(result);
-            if (result.truncated) m_searchNotice += tr(" (limited results)");
+            if (result.truncated)
+                m_searchNotice = m_searchNotice.isEmpty() ? tr("Limited results") : tr("%1 (limited results)").arg(m_searchNotice);
             if (m_searchCurrent >= 0) revealRow(m_terminal, std::size_t(m_terminal.screen().absoluteIndexOf(m_searchMatches.back().start.row)));
             ++m_selectionSerial;
         }
@@ -786,7 +766,9 @@ void Pane::commandStarted(std::string_view command)
     // pty thread, terminal locked
     m_command = QString::fromUtf8(command.data(), qsizetype(command.size()));
     m_commandStart = std::chrono::steady_clock::now();
-    queueEvent([this, command = m_command] { Q_EMIT commandBegan(command); }, std::size_t(m_command.size()) * sizeof(QChar));
+    const bool queued = queueEvent([this, command = m_command] { Q_EMIT commandBegan(command); },
+                                   std::size_t(m_command.size()) * sizeof(QChar), m_commandBudget);
+    m_commandStartEvent = queued ? CommandStart::Queued : CommandStart::Dropped;
 }
 
 void Pane::commandFinished(int exitCode)
@@ -794,7 +776,14 @@ void Pane::commandFinished(int exitCode)
     const auto elapsed = std::chrono::steady_clock::now() - m_commandStart;
     const qint64 ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
     const QString command = std::exchange(m_command, QString());
-    queueEvent([this, command, exitCode, ms] { Q_EMIT commandEnded(command, exitCode, ms); }, std::size_t(command.size()) * sizeof(QChar));
+    // An end alone would end a command that, for the receivers, never ran.
+    const CommandStart start = std::exchange(m_commandStartEvent, CommandStart::None);
+    if (start == CommandStart::Dropped) {
+        ++m_commandBudget.dropped;
+        return;
+    }
+    queueEvent([this, command, exitCode, ms] { Q_EMIT commandEnded(command, exitCode, ms); }, std::size_t(command.size()) * sizeof(QChar),
+               m_commandBudget, start == CommandStart::Queued);
 }
 
 QString Pane::foregroundJob() const
@@ -948,17 +937,18 @@ void Pane::queueOnce(std::atomic_bool& queued, std::function<void()> deliver)
     postEvents();
 }
 
-bool Pane::queueEvent(std::function<void()> event, std::size_t bytes)
+bool Pane::queueEvent(std::function<void()> event, std::size_t bytes, EventBudget& budget, bool paired)
 {
     // Each of these events matters on its own, so they are not coalesced as
     // a title is: bounds keep a flood of them (a program that writes OSC 9
     // in a loop, or clipboard writes of 128 MiB each) from growing without end.
-    if (m_queuedEvents >= MaxQueuedEvents || (m_queuedEventBytes > 0 && m_queuedEventBytes + bytes > MaxQueuedEventBytes)) {
-        ++m_droppedEvents;
+    // A paired end goes past them by one at most: each start has one end.
+    if (!paired && (budget.events >= MaxQueuedEvents || (budget.bytes > 0 && budget.bytes + bytes > MaxQueuedEventBytes))) {
+        ++budget.dropped;
         return false;
     }
-    ++m_queuedEvents;
-    m_queuedEventBytes += bytes;
+    ++budget.events;
+    budget.bytes += bytes;
     m_events.push_back(std::move(event));
     postEvents();
     return true;
@@ -973,18 +963,21 @@ void Pane::postEvents()
 void Pane::deliverEvents()
 {
     std::deque<std::function<void()>> events;
-    std::size_t dropped = 0;
+    std::size_t droppedRequests = 0;
+    std::size_t droppedCommands = 0;
     {
         std::lock_guard lock(m_mutex);
         // Cleared under the lock: an event queued after the swap posts
         // another delivery.
         m_eventsPosted = false;
         events.swap(m_events);
-        m_queuedEvents = 0;
-        m_queuedEventBytes = 0;
-        dropped = std::exchange(m_droppedEvents, 0);
+        droppedRequests = std::exchange(m_requestBudget, {}).dropped;
+        droppedCommands = std::exchange(m_commandBudget, {}).dropped;
     }
-    if (dropped > 0) qCWarning(lcPane) << "dropped" << dropped << "notifications, clipboard requests or command events that came faster than the window took them";
+    if (droppedRequests > 0)
+        qCWarning(lcPane) << "dropped" << droppedRequests << "notifications or clipboard requests that came faster than the window took them";
+    if (droppedCommands > 0)
+        qCWarning(lcPane) << "dropped" << droppedCommands << "command events that came faster than the window took them";
     for (const auto& event : events) event();
 }
 
@@ -1251,7 +1244,8 @@ void Pane::notify(std::string_view title, std::string_view body)
     QString heading = QString::fromUtf8(title.data(), qsizetype(title.size()));
     QString text = QString::fromUtf8(body.data(), qsizetype(body.size()));
     const std::size_t bytes = std::size_t(heading.size() + text.size()) * sizeof(QChar);
-    queueEvent([this, heading = std::move(heading), text = std::move(text)] { Q_EMIT notificationRequested(heading, text); }, bytes);
+    queueEvent([this, heading = std::move(heading), text = std::move(text)] { Q_EMIT notificationRequested(heading, text); }, bytes,
+               m_requestBudget);
 }
 
 void Pane::pointerShapeChanged(std::string_view shape)
@@ -1272,7 +1266,7 @@ void Pane::desktopNotification(const AfterglowVt::NotificationRequest& request)
 {
     // The icon data is what can be large.
     queueEvent([this, request] { Q_EMIT desktopNotificationRequested(request); },
-               request.title.size() + request.body.size() + request.iconData.size());
+               request.title.size() + request.body.size() + request.iconData.size(), m_requestBudget);
 }
 
 bool Pane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
@@ -1281,7 +1275,7 @@ bool Pane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
     // with no clipboard support, as the program expects some answer.
     std::size_t bytes = 0;
     for (const auto& [mime, data] : request.data) bytes += mime.size() + data.size();
-    return queueEvent([this, request] { Q_EMIT clipboardRequested(request); }, bytes);
+    return queueEvent([this, request] { Q_EMIT clipboardRequested(request); }, bytes, m_requestBudget);
 }
 
 std::string Pane::notificationCapabilities()
@@ -1371,9 +1365,12 @@ void Pane::ptyClosed(int status)
         std::lock_guard lock(m_mutex);
         m_terminal.programExited();
         if (m_hold.load() || (m_holdOnFailure.load() && code > 0)) {
-            const std::string note = "\r\n\x1b[0;2m[exited with status " + std::to_string(std::max(code, 0))
-                + ". Press any key to close]\x1b[0m\x1b[?25l";
-            m_terminal.feed(note);
+            // What waitpid said: a status that is unknown is not 0, and a
+            // signal is not the status 128 + N of a shell's $?.
+            const QString ending = status == -1 ? tr("The program ended")
+                : WIFSIGNALED(status)           ? tr("The program was killed by signal %1").arg(WTERMSIG(status))
+                                                : tr("The program exited with status %1").arg(WEXITSTATUS(status));
+            m_terminal.feed("\r\n\x1b[0;2m[" + tr("%1. Press any key to close.").arg(ending).toStdString() + "]\x1b[0m\x1b[?25l");
             m_held.store(true);
         }
     }
@@ -1390,7 +1387,8 @@ void Pane::holdStartFailure()
 {
     {
         std::lock_guard lock(m_mutex);
-        m_terminal.feed("\r\n[Unable to start a process. Check the project or the configuration. Press any key to close.]\r\n");
+        m_terminal.feed("\r\n[" + tr("Unable to start a process. Check the project or the configuration. Press any key to close.").toStdString()
+                        + "]\r\n");
         m_held.store(true);
     }
     Q_EMIT contentChanged();
@@ -1443,12 +1441,8 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
         dialog->setDirectory(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
         dialog->selectFile(clean);
         // On Wayland a dialog with no transient parent is not attached to the
-        // window. An overlay's pane is its host's child, in the host's window.
-        const Pane* place = m_overlayHost ? m_overlayHost : this;
-        if (auto* window = qobject_cast<QWindow*>(place->parent())) {
-            dialog->winId();
-            dialog->windowHandle()->setTransientParent(window);
-        }
+        // window. It follows the pane to another window.
+        keepDialogOverPane(dialog, this);
         // Keep the lease until the dialog is destroyed, including on cancellation.
         connect(dialog, &QObject::destroyed, [lease] {});
         connect(this, &QObject::destroyed, dialog, &QDialog::reject);

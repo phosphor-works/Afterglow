@@ -2892,12 +2892,21 @@ TEST_F(ConfigTest, AFileTransferPasswordInAFileOthersCanReadIsReported)
 TEST_F(ConfigTest, EnvironmentNamesThatSettingsOrAfterglowSetAreNotUsed)
 {
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Terminal": {"env": {
-        "TERM": "dumb", "AFTERGLOW_SSH_TERMINFO": "fallback", "AFTERGLOW_SOCKET": "/tmp/x", "EDITOR": "nvim"}}})"));
+        "TERM": "dumb", "AFTERGLOW_SSH_TERMINFO": "fallback", "AFTERGLOW_SOCKET": "/tmp/x", "AFTERGLOW_OVERLAY": "1",
+        "AFTERGLOW_SESSION": "work", "EDITOR": "nvim"}}})"));
     using Environment = std::vector<std::pair<std::string, std::string>>;
     EXPECT_EQ(store.settings().environment, (Environment{{"EDITOR", "nvim"}}));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.TERM is not used. Use Terminal.term")));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.AFTERGLOW_SSH_TERMINFO is not used. Use Terminal.sshTerminfo")));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.AFTERGLOW_SOCKET is not used")));
+    // Afterglow sets AFTERGLOW_OVERLAY only for an overlay's program and
+    // AFTERGLOW_SESSION only in a pane of a mux session, and removes them in
+    // other panes: a value here would make a window pane claim an overlay
+    // (afterglow ssh reads it) or a mux session.
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.AFTERGLOW_OVERLAY is not used. Afterglow sets it for the "
+                                                          "program of an overlay and removes it for other panes")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.AFTERGLOW_SESSION is not used. Afterglow sets it for each "
+                                                          "pane of a mux session")));
 }
 
 TEST_F(ConfigTest, TheDividerWithoutAThemeFollowsTheConfigColors)

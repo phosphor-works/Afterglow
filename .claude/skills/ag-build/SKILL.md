@@ -48,6 +48,23 @@ file, set the new hash there and list the patch at the top of `tools/aglow/StbIm
 `afterglow_native_bench`. Shader previews, `aglow_icat_render` and `afterglow_headless_runner` need it. The renderer
 tests (`Render.*`) do not: `BUILD_TESTING` builds them.
 
+## afterglow-mux
+
+`afterglow-mux` (`mux/`) is the session daemon of `afterglow mux`. It has no Qt and links `afterglow-vt`,
+`afterglow-pty` and `afterglow-proto`. It builds next to `afterglow` (`build/afterglow/afterglow-mux`), because
+`afterglow mux` runs the daemon from its own directory, and building `afterglow` builds it too. A build of `aglow`
+alone (`AFTERGLOW_AGLOW_ONLY`) does not build it. Its tests are `afterglow_mux_tests` (`Mux.*`) and the client
+tests of `afterglow mux` in `afterglow_mux_client_tests` (`MuxClientTest.*`), with the server and socket tests of
+`afterglow-proto`: `ctest -R '^(Proto\.(IpcServer|Socket)|Mux|MuxClientTest)\.' -j4` takes about 10 seconds. Most
+of that time is the start wait of `Mux.MuxDaemon.ADaemonThatNobodyReachesEnds`. Without `-j`, the run takes about 15
+seconds.
+
+`afterglow mux` (every command but `--help`) and `afterglow-mux` (every run but `--help` and `--version`) reach the
+user's mux daemon and its sessions, also from a nested KWin. Run them only with a private `XDG_RUNTIME_DIR` and
+`XDG_STATE_HOME` under `/tmp`, as these tests do (they also give a `HOME` of their own), and kill the sessions that
+you made. Never stop, restart or mask the user's `afterglow-mux.service`, and never remove the files in the user's
+two `afterglow-mux` directories.
+
 ## The Phosphor libraries
 
 `cmake/AfterglowPhosphor.cmake` compiles the Phosphor libraries from `../PlasmaZones/phosphor-libs`
@@ -95,7 +112,7 @@ systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
     ctest --test-dir build --output-on-failure -j6 2>&1 | tail -15
 ```
 
-The suite has about 1,630 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
+The suite has about 1,700 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
 before a commit.
 
 - `aglow_only_build` (label `slow`) configures, builds and installs `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) in

@@ -15,8 +15,11 @@ shells, eval, watch, script -c, tmux, ssh and a shell that reads standard input 
 commands in another command's arguments (find -exec, gdb --args, systemd-run).
 """
 
+import fnmatch
+import glob
 import json
 import os
+import pwd
 import re
 import shlex
 import subprocess
@@ -163,9 +166,9 @@ MSG_PKILL = (
     "user's own windows, and possibly this session. Use `pgrep -a NAME`, then `kill PID` on a build/ process only."
 )
 MSG_PGREP_KILL = (
-    'kill with the PIDs that pgrep or pidof found can match the user\'s own Afterglow, and pgrep -f also matches the '
-    'shell that runs the command, because its command line holds the pattern. List the processes with '
-    '`pgrep -a NAME`. Then run `kill PID` with the numbers in a separate command.'
+    'kill with the PIDs that pgrep, pidof or systemctl show -p MainPID found can match the user\'s own Afterglow or '
+    'mux daemon, and pgrep -f also matches the shell that runs the command, because its command line holds the '
+    'pattern. List the processes with `pgrep -a NAME`. Then run `kill PID` with the numbers in a separate command.'
 )
 MSG_SUDO = ('Do not use sudo, su, doas, pkexec or run0. The user installs system packages. Tell the user what you '
             'need and why.')
@@ -180,6 +183,23 @@ MSG_CTL = (
     'another display '
     '(env -u AFTERGLOW_SOCKET -u AFTERGLOW_PANE_ID WAYLAND_DISPLAY=...). Ask the user before you drive their '
     'instance.'
+)
+MSG_MUX = (
+    "`afterglow mux` and `afterglow-mux` reach the user's mux daemon, which holds the user's terminal sessions. The "
+    'daemon listens in $XDG_RUNTIME_DIR/afterglow-mux and in $XDG_STATE_HOME/afterglow-mux (else '
+    '~/.local/state/afterglow-mux), and with the runtime directory /run/user/UID it starts in the systemd user unit '
+    'afterglow-mux.service. None of these depends on the display, so WAYLAND_DISPLAY does not isolate them. Name a '
+    'private runtime directory and a private state directory under /tmp on the command '
+    '(XDG_RUNTIME_DIR=/tmp/... XDG_STATE_HOME=/tmp/...), and kill the sessions that you made with the same '
+    'variables. Do not run systemctl stop, kill, restart, try-restart, reload-or-restart, try-reload-or-restart, '
+    'condrestart, force-reload, reset-failed, disable, mask, clean or freeze on the unit, on app.slice, which holds '
+    'it, on -.slice, basic.target or default.target. Do not start shutdown.target or exit.target, and do not run '
+    'systemctl isolate, exit, halt, poweroff, reboot, kexec, soft-reboot or switch-root. Do not kill the MainPID of '
+    'the unit. Do not remove, move, trash, shred or link over the files in those two directories of the user, or a '
+    'directory above them (rm, unlink, rmdir, mv, shred, trash, gio, ln, find -delete or -exec, rsync --delete or '
+    '--remove-source-files, and a removal under xargs or parallel on a line that names such a path): that ends or '
+    'strands the sessions. `afterglow mux` alone, `afterglow mux --help` (-h, help), `afterglow mux server --help` '
+    '(-h) and `afterglow-mux --help` (-h, --version) connect to nothing.'
 )
 MSG_LAUNCH = (
     "This starts Afterglow on the user's own Wayland display: it opens a window on the user's desktop, or hands the "
@@ -733,8 +753,9 @@ def display_socket_name(display, runtime):
     return 'afterglow-%s.sock' % (re.sub(rb'[^A-Za-z0-9._-]', b'_', name).decode('ascii') or 'wayland-0')
 
 
-# The variables that decide where a client or a launch of Afterglow connects
-CLIENT_VARIABLES = ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR')
+# The variables that decide where a client or a launch of Afterglow, or a mux command, connects
+CLIENT_VARIABLES = ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'XDG_STATE_HOME',
+                    'HOME')
 
 
 def environment(wrappers):
@@ -748,8 +769,9 @@ def environment(wrappers):
         elif w == 'inherit:?':
             env = dict.fromkeys(CLIENT_VARIABLES, UNKNOWN)
         elif w.startswith('set:'):
-            name, value = w[len('set:'):].split('=', 1)
-            env[name] = UNKNOWN if any(mark in value for mark in '$`{*?[~') else value
+            # flatpak-spawn --env=NAME has no value: what the child gets is not known here
+            name, eq, value = w[len('set:'):].partition('=')
+            env[name] = UNKNOWN if not eq or any(mark in value for mark in '$`{*?[~') else value
         elif w.startswith('unset:'):
             env.pop(w[len('unset:'):], None)
     return env
@@ -817,6 +839,245 @@ def isolated_launch(wrappers):
                                                       os.environ.get('WAYLAND_DISPLAY'))
 
 
+def state_home(env):
+    """The state directory that the mux socket lookup (muxSockets in libs/afterglow-proto/src/Socket.cpp) reads from
+    ENV: an absolute XDG_STATE_HOME, else HOME/.local/state with an absolute HOME, else None (no state socket).
+    UNKNOWN when a value that it reads is UNKNOWN."""
+    state = env.get('XDG_STATE_HOME')
+    if state is UNKNOWN:
+        return UNKNOWN
+    if state and state.startswith('/'):
+        return os.path.realpath(state)
+    home = env.get('HOME')
+    if home is UNKNOWN:
+        return UNKNOWN
+    return os.path.realpath(os.path.join(home, '.local', 'state')) if home and home.startswith('/') else None
+
+
+def user_bases():
+    """The directories that hold the socket directories of the user's own mux daemon, resolved: the user's runtime
+    directory (this session's XDG_RUNTIME_DIR and /run/user/UID) and the user's state directory (this session's, and
+    the default one in the home directory of the user's account)."""
+    bases = {'/run/user/%d' % os.getuid()}
+    if os.environ.get('XDG_RUNTIME_DIR', '').startswith('/'):
+        bases.add(os.environ['XDG_RUNTIME_DIR'])
+    if (state := state_home(os.environ)) not in (None, UNKNOWN):
+        bases.add(state)
+    try:
+        bases.add(os.path.join(pwd.getpwuid(os.getuid()).pw_dir, '.local', 'state'))
+    except KeyError:
+        pass
+    return {os.path.realpath(base) for base in bases}
+
+
+def isolated_mux(wrappers):
+    """Whether an afterglow mux or afterglow-mux command reaches a daemon other than the user's. The daemon listens
+    on a socket in XDG_RUNTIME_DIR and on one in the state directory, and a client tries both, so neither may be one
+    of user_bases(), the directories that mux_directories() protects. With the user's runtime directory the daemon
+    also starts in the user's systemd unit. WAYLAND_DISPLAY plays no part. Only literal values count, as in
+    isolated_client, and the runtime directory must be one."""
+    env = environment(wrappers)
+    runtime = env.get('XDG_RUNTIME_DIR')
+    if runtime is UNKNOWN or not runtime or not runtime.startswith('/'):
+        return False
+    users = user_bases()
+    if os.path.realpath(runtime) in users:
+        return False
+    state = state_home(env)
+    return state is not UNKNOWN and (state is None or state not in users)
+
+
+# The words after afterglow mux that print the usage and connect to nothing (runMux in afterglow/src/control/Mux.cpp)
+MUX_HELP = {'-h', '--help', 'help'}
+# The one argument with which afterglow-mux prints and exits before it listens (main in mux/src/main.cpp)
+MUX_DAEMON_PRINTS = {'--version', '--help', '-h'}
+
+
+def reaches_mux(wrappers, word, args):
+    """Whether WORD ARGS runs afterglow mux or afterglow-mux against the user's mux daemon. afterglow mux alone
+    prints the usage, and so do afterglow mux server --help and afterglow-mux with one of MUX_DAEMON_PRINTS, unless
+    xargs or parallel adds the words of its input. Any other afterglow-mux counts."""
+    appended = appends(wrappers)
+    if word == 'afterglow' or '$' in word or '`' in word:
+        if args[:1] != ['mux'] or args[1:2] and args[1] in MUX_HELP:
+            return False
+        if len(args) == 1 and not appended:
+            return False
+        if args[1:] in (['server', '--help'], ['server', '-h']) and not appended:
+            return False
+    elif word != 'afterglow-mux':
+        return False
+    elif len(args) == 1 and args[0] in MUX_DAEMON_PRINTS and not appended:
+        return False
+    return not isolated_mux(wrappers)
+
+
+def mux_directories():
+    """The socket directories of the user's own mux daemon: afterglow-mux in each of user_bases()."""
+    return {os.path.join(base, 'afterglow-mux') for base in user_bases()}
+
+
+# Known limits of the mux rules. The guard reads one command line as text, so it cannot see:
+# - a path behind a shell variable that the same line sets (D=~/.local/state; rm -rf $D), or behind a command
+#   substitution (rm -rf "$(echo ~/.local/state)"): an expansion counts only when its text names afterglow-mux;
+# - a stop of the unit over D-Bus (busctl or dbus-send with StopUnit, KillUnit or the unit's own object);
+# - loginctl terminate-user or kill-user, which ends every process of the user, the Afterglow of this session too;
+# - a program that removes files itself (python3 -c "shutil.rmtree(...)");
+# - the program that find -exec {} runs, which is a file that find found (find build -name afterglow-mux -exec {} +);
+# - a copy that replaces a socket or a lock file: cp -f, cp --remove-destination, install, tar or another archiver
+#   that extracts over the files (cp -f /tmp/x ~/.local/state/afterglow-mux/ID.sock);
+# - the paths that xargs or parallel reads from a file or a pipe whose contents name them, when the line itself
+#   names no path there or above (cat list | xargs rm).
+
+# The commands that take away each path that they name (shred overwrites it), and gio's subcommands that do
+REMOVES = {'rm', 'unlink', 'rmdir', 'mv', 'shred', 'trash', 'trash-put'}
+GIO_REMOVES = {'trash', 'remove', 'rm', 'move', 'mv'}
+# rsync's options that delete files of the destination, by their exact names: --del is an option of its own, and
+# --delay-updates, which starts the same, removes nothing
+RSYNC_DELETES = {'--del', '--delete', '--delete-before', '--delete-during', '--delete-delay', '--delete-after',
+                 '--delete-excluded', '--delete-missing-args'}
+
+
+def touches_mux(written, places, above=True):
+    """Whether the path WRITTEN, read from any of PLACES, is in one of mux_directories(), is that directory, or, with
+    ABOVE, is a directory above it (rm -r ~/.local/state). The shell expands $VAR and ~ from this environment and
+    globs from the file system. A path that still holds an expansion counts when it names afterglow-mux."""
+    protected = mux_directories()
+    path = os.path.expanduser(os.path.expandvars(written))
+    if '$' in path or '`' in path:
+        return 'afterglow-mux' in path
+    bases = ['/'] if path.startswith('/') else [p for p in places if p is not UNKNOWN]
+    for base in bases:
+        joined = os.path.join(base, path)
+        for found in (glob.glob(joined) if glob.has_magic(joined) else []) or [joined]:
+            # rm takes the link, not its target, and rm -r link/ follows it: check both
+            parent, name = os.path.split(os.path.normpath(found))
+            for real in (os.path.join(os.path.realpath(parent), name), os.path.realpath(found)):
+                if any(real == d or real.startswith(d + '/') or (above and d.startswith(real.rstrip('/') + '/'))
+                       for d in protected):
+                    return True
+    return False
+
+
+def removes_from_input(word, args):
+    """Whether WORD ARGS takes away the paths that xargs or parallel adds after ARGS: a command of REMOVES, ln, gio
+    with one of GIO_REMOVES or with no subcommand yet, and rsync with one of RSYNC_DELETES or
+    --remove-source-files."""
+    if word in REMOVES or word == 'ln':
+        return True
+    if word == 'gio':
+        words = operands(args)[0]
+        return not words or words[0] in GIO_REMOVES
+    return word == 'rsync' and bool((RSYNC_DELETES | {'--remove-source-files'}) & set(args))
+
+
+def names_mux(text, places):
+    """A word of the command line TEXT that touches_mux() finds, a directory above the protected ones included, or
+    None. The input of xargs or parallel comes from another command of the line (find ~/.local/state | xargs rm),
+    or from a file that the line names (xargs -a FILE): every word counts, the values of wrapper options too."""
+    return next((t for t in tokens(text) if not all(ch in SEPARATORS for ch in t) and touches_mux(t, places)), None)
+
+
+def find_starts(args):
+    """The start paths of find ARGS: the words before the first expression (an option such as -name, '(' or '!'),
+    after find's own -H, -L, -P, -D and -O. Without one, find starts in '.'."""
+    k = 0
+    while k < len(args) and (args[k] in ('-H', '-L', '-P') or args[k].startswith(('-D', '-O'))):
+        k += 2 if args[k] in ('-D', '-O') else 1
+    starts = []
+    while k < len(args) and not args[k].startswith('-') and args[k] not in ('(', '!', ','):
+        starts.append(args[k])
+        k += 1
+    return starts or ['.']
+
+
+def removes_mux_files(word, args, places):
+    """The path that WORD ARGS takes away from a socket directory of the user's mux daemon, or None: a command of
+    REMOVES, or gio with one of GIO_REMOVES, with a path that touches_mux() finds; ln with its link there, not above;
+    rsync with one of RSYNC_DELETES and its destination there or above it, or with --remove-source-files and any of
+    its paths there or above it; find with -delete, or with -exec, -execdir, -ok or -okdir of a command of REMOVES
+    or gio, from a start path there or above it. mv counts for its destination as well as for its sources, and so
+    for a directory above (mv /tmp/x ~/.local/state/ is blocked though it removes nothing): a destination inside a
+    protected directory can replace a socket, and a directory above it can be a link to it. The rule stays that
+    cautious. A path in the arguments of find -exec (find . -exec rm PATH ;) is the removal's own, which
+    argument_commands() yields."""
+    words, _ = operands(args)
+    if word == 'gio':
+        if words[:1] and words[0] in GIO_REMOVES:
+            return next((w for w in words[1:] if touches_mux(w, places)), None)
+        return None
+    if word in REMOVES:
+        return next((w for w in words if touches_mux(w, places)), None)
+    if word == 'ln':
+        # The link that ln makes or replaces: the last operand, into -t DIR, or the target's name in this directory
+        links = [a.split('=', 1)[1] for a in args if a.startswith('--target-directory=')]
+        links += [args[k + 1] for k, a in enumerate(args[:-1]) if re.fullmatch(r'-[A-Za-z]*t', a)]
+        if not links and words:
+            links = [words[-1]] if len(words) > 1 else [os.path.basename(words[0].rstrip('/'))]
+        return next((w for w in links if touches_mux(w, places, above=False)), None)
+    if word == 'rsync':
+        if not (RSYNC_DELETES | {'--remove-source-files'}) & set(args) or not words:
+            return None
+        paths = words if '--remove-source-files' in args else words[-1:]
+        return next((w for w in paths if touches_mux(w, places)), None)
+    if word == 'find':
+        actions = {os.path.basename(args[k + 1]) for k, a in enumerate(args[:-1])
+                   if a in ('-exec', '-execdir', '-ok', '-okdir')}
+        if '-delete' in args or actions & (REMOVES | {'gio'}):
+            return next((w for w in find_starts(args) if touches_mux(w, places)), None)
+    return None
+
+
+# The systemctl commands that end, restart or take away the unit of the user's mux daemon
+SYSTEMCTL_ENDS = set('stop kill restart try-restart reload-or-restart try-reload-or-restart condrestart force-reload '
+                     'reset-failed disable mask clean freeze'.split())
+
+
+# The units whose end ends the daemon: its own, the slice that systemd-run --user puts it in, and the root slice.
+# basic.target and default.target count too: the rule stays cautious for the targets that the units of the user
+# manager start after or for.
+MUX_UNITS = ('afterglow-mux.service', 'app.slice', '-.slice', 'basic.target', 'default.target')
+# The systemctl commands that end every unit of the manager
+SYSTEMCTL_ENDS_ALL = {'isolate', 'exit', 'halt', 'poweroff', 'reboot', 'kexec', 'soft-reboot', 'switch-root'}
+# The systemctl commands that start a unit, and the targets whose start ends the daemon: a service conflicts with
+# shutdown.target, and exit.target ends the manager
+SYSTEMCTL_STARTS = {'start', 'restart', 'try-restart', 'reload-or-restart', 'try-reload-or-restart', 'condrestart',
+                    'force-reload'}
+ENDING_TARGETS = ('shutdown.target', 'exit.target')
+
+
+def stops_mux_unit(wrappers, word, args):
+    """Whether WORD ARGS is a systemctl command of SYSTEMCTL_ENDS on one of MUX_UNITS, one of SYSTEMCTL_STARTS on
+    one of ENDING_TARGETS, or one that ends every unit (SYSTEMCTL_ENDS_ALL). A unit without a type is a service, and
+    a pattern counts when it matches the unit. A unit that the shell expands counts, because it can be the
+    daemon's. Every word that is not an option is read as a unit, so the value of an option such as -s KILL is too:
+    it never names one of the units. Through xargs or parallel, the words of the input come after ARGS: an ending
+    or starting command, or one with no command word yet, counts."""
+    if word != 'systemctl':
+        return False
+    words = operands(args)[0]
+    if SYSTEMCTL_ENDS_ALL & set(words):
+        return True
+    ends = SYSTEMCTL_ENDS & set(words)
+    starts = SYSTEMCTL_STARTS & set(words)
+    if appends(wrappers) and (ends or starts or not words):
+        return True
+    units = (MUX_UNITS if ends else ()) + (ENDING_TARGETS if starts else ())
+    if not units:
+        return False
+    for unit in words:
+        if '$' in unit or '`' in unit:
+            return True
+        # systemctl adds .service to a name without a type, but not to a glob pattern, which it matches against
+        # the loaded units as it is.
+        typed = re.search(r'\.(service|socket|target|scope|slice|timer|path|mount|automount|swap|device)$', unit)
+        if not typed and not any(c in unit for c in '*?['):
+            unit += '.service'
+        if any(fnmatch.fnmatchcase(name, unit) for name in units):
+            return True
+    return False
+
+
 def drives_instance(args, program='afterglow', appended=False):
     """Whether PROGRAM ARGS connects to a running Afterglow: afterglow ctl, afterglow run and aglow run do, also
     run --complete. Their help, as afterglow/src/control/Ctl.cpp and libs/afterglow-proto/src/Run.cpp read it,
@@ -839,9 +1100,9 @@ def drives_instance(args, program='afterglow', appended=False):
 # with the help and the version of QCommandLineParser
 LAUNCH_VALUES = {'-d', '--working-directory', '--title', '--config', '-o', '--override', '--class'}
 NO_WINDOW = {'-h', '--help', '-?', '--help-all', '-v', '--version', '--config-reference'}
-# The words after afterglow that run something else than the terminal: ctl, ssh and the aglow commands
+# The words after afterglow that run something else than the terminal: ctl, ssh, mux and the aglow commands
 # (Aglow::Commands in afterglow/src/shell/Aglow.h)
-NO_TERMINAL = {'ctl', 'ssh', 'run', 'transfer', 'dnd', 'icat', 'clipboard'}
+NO_TERMINAL = {'ctl', 'ssh', 'mux', 'run', 'transfer', 'dnd', 'icat', 'clipboard'}
 
 
 def launches_window(args):
@@ -871,11 +1132,18 @@ def launches_window(args):
     return True
 
 
+# The commands that argument_commands() yields after find -exec and parallel: the mux daemon, and the commands of
+# stops_mux_unit() and removes_mux_files()
+ARGUMENT_REMOVES = REMOVES | {'afterglow-mux', 'systemctl', 'ln', 'rsync', 'gio'}
+
+
 def argument_commands(wrappers, word, args):
     """(wrappers, command word, arguments) for each command that may run from the arguments of WORD: find -exec,
     gdb --args, systemd-run, a debugger or a tracer the guard does not list. Only afterglow, aglow, a wrapper, a
-    shell, eval, watch, gdb or VAR=value starts one, so that an argument such as -name stays an argument. A command
-    of TEXT_COMMANDS runs none, and find only after -exec, -execdir, -ok or -okdir."""
+    shell, eval, watch, gdb or VAR=value starts one, so that an argument such as -name stays an argument. After find
+    and parallel, which surely run a command, so do afterglow-mux, systemctl and the commands that take files away
+    (ARGUMENT_REMOVES). A command of TEXT_COMMANDS runs none, and find only after -exec, -execdir, -ok or
+    -okdir."""
     if word in TEXT_COMMANDS:
         return
     if word == 'find':
@@ -887,8 +1155,10 @@ def argument_commands(wrappers, word, args):
     k = 0
     while k < len(args):
         name = os.path.basename(args[k])
+        # afterglow-mux and the others only where a command surely follows: cmake --target afterglow-mux names a
+        # target, and grep rm names a pattern
         if (name in WRAPPERS or name in SHELLS or name in ('afterglow', 'aglow', 'eval', 'watch', 'gdb')
-                or '=' in args[k]):
+                or '=' in args[k] or (name in ARGUMENT_REMOVES and word in ('find', 'parallel'))):
             inner, name, rest = split_wrappers(args[k:])
             yield outer + inner, name, rest
             # Go on after the command word: its env and VAR=value words belong to it
@@ -991,6 +1261,15 @@ def gdb_launches(wrappers, args):
     program, arguments, extra, runs, files = gdb_program(args)
     return (program == 'afterglow' and runs and launches_window([] if files else arguments)
             and not isolated_launch(wrappers + extra))
+
+
+def gdb_mux(wrappers, args):
+    """Whether gdb ARGS runs afterglow mux or afterglow-mux against the user's mux daemon. A command file can give
+    afterglow any arguments."""
+    program, arguments, extra, runs, files = gdb_program(args)
+    if program not in ('afterglow', 'afterglow-mux') or not runs:
+        return False
+    return reaches_mux(wrappers + extra, program, ['mux', ''] if files and program == 'afterglow' else arguments)
 
 
 def appends(wrappers):
@@ -1156,6 +1435,13 @@ def check_bash(command, cwd=None):
         if any(drives(*c) for c in commands):
             return MSG_CTL
         launches = [(wrappers, word, args)] + list(launched_commands(wrappers, word, args))
+        if any(reaches_mux(*c) for c in commands + launches) or (word == 'gdb' and gdb_mux(wrappers, args)):
+            return MSG_MUX
+        if any(stops_mux_unit(*c) or removes_mux_files(c[1], c[2], places) for c in commands + launches):
+            return MSG_MUX
+        if (any(appends(c[0]) and removes_from_input(c[1], c[2]) for c in commands + launches)
+                and names_mux(text, places)):
+            return MSG_MUX
         if any(opens_window(*c) for c in launches) or (word == 'gdb' and gdb_launches(wrappers, args)):
             return MSG_LAUNCH
         if path := edits_plasmazones(word, args, places):
@@ -1174,6 +1460,8 @@ def check_bash(command, cwd=None):
             return message
     # kill $(pgrep ...), pgrep ... | xargs kill, a loop over pgrep -f: kill with PIDs that a name matched
     finders = {w for _, w, a in cmds if w in ('pgrep', 'pidof', 'ps')}
+    if any(w == 'systemctl' and 'show' in operands(a)[0] and any('MainPID' in x for x in a) for _, w, a in cmds):
+        finders.add('systemctl')
     pgrep_f = any(w == 'pgrep' and any(a == '--full' or 'f' in short_flags(a) for a in args) for _, w, args in cmds)
     for wrappers, word, args in cmds:
         # parallel kill takes its PIDs from its input, as xargs kill does
@@ -1202,15 +1490,39 @@ def check_edit(path):
     return None
 
 
-def main():
-    call = json.load(sys.stdin)
+MSG_FAILED = ('The guard could not check this call ({}), so it blocks it. Write the command in a simpler form, or '
+              'ask the user.')
+
+
+def check(call):
+    """The message that blocks the hook input CALL, or None. A malformed input raises ValueError."""
+    if not isinstance(call, dict):
+        raise ValueError('the hook input is not an object')
     tool = call.get('tool_name', '')
     params = call.get('tool_input', {})
-    message = None
+    cwd = call.get('cwd')
+    if not isinstance(tool, str) or not isinstance(params, dict) or not (cwd is None or isinstance(cwd, str)):
+        raise ValueError('the hook input has a field of the wrong type')
     if tool == 'Bash':
-        message = check_bash(params.get('command', ''), call.get('cwd'))
-    elif tool in ('Edit', 'Write', 'MultiEdit', 'NotebookEdit'):
-        message = check_edit(params.get('file_path') or params.get('notebook_path') or '')
+        command = params.get('command', '')
+        if not isinstance(command, str):
+            raise ValueError('the command is not a string')
+        return check_bash(command, cwd)
+    if tool in ('Edit', 'Write', 'MultiEdit', 'NotebookEdit'):
+        path = params.get('file_path') or params.get('notebook_path') or ''
+        if not isinstance(path, str):
+            raise ValueError('the path is not a string')
+        return check_edit(path)
+    return None
+
+
+def main():
+    # A hook that fails with another status than 2 lets the call run: any failure of a check blocks it instead
+    try:
+        message = check(json.load(sys.stdin))
+    except Exception as error:
+        print(MSG_FAILED.format(f'{type(error).__name__}: {error}'[:200]), file=sys.stderr)
+        sys.exit(2)
     if message:
         print(message, file=sys.stderr)
         sys.exit(2)

@@ -52,10 +52,13 @@ struct TextSnapshot
 AFTERGLOWVT_EXPORT bool appendTextRow(TextSnapshot& out, const Screen& screen, std::size_t index,
                                       std::size_t maxCharacters = 4 * 1024 * 1024);
 
+/// The longest pattern that searchText takes, in code points.
+inline constexpr std::size_t MaxSearchPattern = 4096;
+
 /// Why a search stopped. Callers translate this, not the English text.
 enum class SearchError : std::uint8_t {
     None,
-    PatternTooLong, ///< over 4096 characters
+    PatternTooLong, ///< over MaxSearchPattern characters
     NoMemory,
     TimeLimit,
     ComplexityLimit,

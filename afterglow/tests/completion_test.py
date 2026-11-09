@@ -9,8 +9,8 @@ run completes through the aglow that afterglow runs, the one next to its executa
 bash-completion package when it is installed, and without it. A shell that is not installed is skipped. With no shell
 at all, the test exits 77, which CTest reports as skipped. The completions of aglow are checked on their own and
 through afterglow, against the option tables in tools/aglow (the names, and which options take a value), the options
-of aglow run against libs/afterglow-proto/src/Run.cpp, and the keybind actions of ctl action against
-afterglow/src/config/Keybinds.cpp.
+of aglow run against libs/afterglow-proto/src/Run.cpp, the keybind actions of ctl action against
+afterglow/src/config/Keybinds.cpp, and the commands and options of afterglow mux against afterglow/src/control/Mux.cpp.
 """
 import os
 import pty
@@ -27,6 +27,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 COMPLETIONS = ROOT / 'data/completions'
 CTL = ROOT / 'afterglow/src/control/Ctl.cpp'
+MUX = ROOT / 'afterglow/src/control/Mux.cpp'
 KEYBINDS = ROOT / 'afterglow/src/config/Keybinds.cpp'
 AGLOW = ROOT / 'tools/aglow'
 RUN = ROOT / 'libs/afterglow-proto/src/Run.cpp'
@@ -107,6 +108,28 @@ def ctl_options(source, command):
     if not match:
         raise SystemExit(f'FAIL: no {command} branch in {CTL}')
     return set(re.findall(r'take(?:Value|Flag)\(QStringLiteral\("(-[^"]+)"\)\)', match.group(1)))
+
+
+def mux_commands():
+    """(commands, COMMAND -> options) of afterglow mux, as runMux and the command functions in Mux.cpp read them.
+    The options that only say that a feature is not available yet (--ssh) are not completed."""
+    source = MUX.read_text()
+    run = re.search(r'^int runMux\(.*?^\}', source, re.M | re.S)
+    if not run:
+        raise SystemExit(f'FAIL: no runMux in {MUX}')
+    # attach and detach only say that they are not available yet.
+    commands = {c: f for c, f in re.findall(r'command == "([a-z]+)"\) return (\w+)\(', run.group(0)) if f != 'fail'}
+    if not commands:
+        raise SystemExit(f'FAIL: no commands in runMux in {MUX}')
+    options = {}
+    for command, function in commands.items():
+        body = re.search(r'^int %s\(int argc.*?^\}' % function, source, re.M | re.S)
+        if not body:
+            raise SystemExit(f'FAIL: no {function} in {MUX}')
+        found = set(re.findall(r'\barg == "(--[a-z-]+)"', body.group(0)))
+        unavailable = set(re.findall(r'arg == "(--[a-z-]+)"\)\s*\{?\s*return fail\([^;]*not available yet', body.group(0)))
+        options[command] = found - unavailable
+    return list(commands), options
 
 
 def keybind_actions():
@@ -462,7 +485,24 @@ def aglow_cases(options, run):
     yield from command_cases('aglow', options)
 
 
-def cases(ctl_commands, paneless, actions, options, run, overlay):
+def mux_cases(commands, options):
+    """(line, expected) pairs for afterglow mux. COMMANDS and OPTIONS are those of Mux.cpp."""
+    yield 'afterglow mux ', set(commands)
+    yield 'afterglow mux -', {'-h', '--help'}
+    yield 'afterglow mux new -', options['new']
+    yield 'afterglow mux new --detach -', options['new'] - {'--detach'}
+    yield 'afterglow mux new --cwd ', {'adir'}
+    # The word after --name is the name: nothing to offer.
+    yield 'afterglow mux new --name ', set()
+    # As after the options of ctl, the options that are left.
+    yield 'afterglow mux new --name x ', options['new'] - {'--name'}
+    yield 'afterglow mux kill -', options['kill']
+    yield 'afterglow mux kill --force -', set()
+    yield 'afterglow mux ls ', set()
+    yield 'afterglow mux server ', set()
+
+
+def cases(ctl_commands, paneless, actions, options, run, overlay, mux):
     """(line, expected) pairs. A set is the exact result, a callable checks the result."""
     files = FILES
     yield 'afterglow ', {'ctl', 'mux', 'run', 'ssh', 'transfer', 'dnd', 'icat', 'clipboard'}
@@ -481,14 +521,7 @@ def cases(ctl_commands, paneless, actions, options, run, overlay):
     yield 'afterglow -d ', {'adir'}
     yield 'afterglow --config ', files
     yield from run_cases('afterglow', run)
-    yield 'afterglow mux ', {'server', 'new', 'ls', 'kill'}
-    yield 'afterglow mux new -', {'--name', '--cwd', '--detach'}
-    yield 'afterglow mux new --detach -', {'--name', '--cwd'}
-    yield 'afterglow mux new --cwd ', {'adir'}
-    # As after the options of ctl, the options that are left.
-    yield 'afterglow mux new --name x ', {'--cwd', '--detach'}
-    yield 'afterglow mux kill -', {'--force'}
-    yield 'afterglow mux ls ', set()
+    yield from mux_cases(*mux)
     yield 'afterglow ctl ', set(ctl_commands)
     yield 'afterglow ctl -', {'-h', '--help'}
     yield 'afterglow ctl ls ', {'--json'}
@@ -588,7 +621,7 @@ def check_value_options():
 def main():
     source = CTL.read_text()
     sources = (string_list(source, 'Commands'), set(string_list(source, 'Paneless')), keybind_actions(),
-               aglow_options(), run_options(), ctl_options(source, 'overlay'))
+               aglow_options(), run_options(), ctl_options(source, 'overlay'), mux_commands())
     check_value_options()
     with tempfile.TemporaryDirectory(prefix='afterglow-completion-') as tmp:
         shells = Shells(Path(tmp))
