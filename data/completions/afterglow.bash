@@ -10,7 +10,7 @@
 # bash-completion, source aglow.bash as well.
 
 _afterglow_ctl_commands="ls send-text get-text split move-pane detach-tab new-tab new-window focus close set-title
-signal notify scripts open-directory projects save-project open-project action watch overlay"
+signal notify scripts open-directory projects save-project open-project action watch overlay screenshot"
 # The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp).
 _afterglow_actions="swap_left swap_right swap_up swap_down rotate_panes_clockwise rotate_panes_counterclockwise
 pane_overview use_package_shaders move_pane_to_tab move_pane_to_window detach_tab save_project switch_project
@@ -116,14 +116,29 @@ _afterglow_ctl()
             ((i++))
             ;;
         --capture | --title | -w | --width | -h | --height | --position)
-            # The options of overlay. Elsewhere they are no option of ctl.
-            [[ $command == overlay ]] && ((i++))
+            # The options of overlay. Elsewhere they are no option of ctl,
+            # and -w and -h are words, as -x.png is.
+            if [[ $command == overlay ]]; then
+                ((i++))
+            elif [[ ${words[i]} == -[wh] ]]; then
+                ((positional++))
+                text=1
+            fi
             ;;
-        -*) ;;
-        *)
+        # A lone - is a word for every command: the standard output of
+        # screenshot, text for send-text.
+        - | [!-]* | '')
             ((positional++))
             text=1
             ;;
+        -[!-]*)
+            # -x.png is a word too, except where overlay takes -n, -w and -h.
+            if [[ $command != overlay ]]; then
+                ((positional++))
+                text=1
+            fi
+            ;;
+        -*) ;;
         esac
     done
     case $prev in
@@ -154,6 +169,10 @@ _afterglow_ctl()
         case $command:$positional in
         open-directory:0)
             _afterglow_files -d
+            return
+            ;;
+        screenshot:0)
+            _afterglow_files
             return
             ;;
         move-pane:1)
@@ -201,6 +220,7 @@ _afterglow_ctl()
         fi
         ;;
     get-text) _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output" ;;
+    screenshot) _afterglow_unused $pane "--tab|--window" ;;
     split) _afterglow_unused $pane "--left|--right|--up|--down" ;;
     new-tab | new-window) _afterglow_unused $pane --cwd ;;
     overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" ;;
@@ -209,6 +229,45 @@ _afterglow_ctl()
     open-project) _afterglow_unused --new ;;
     watch | scripts | projects) ;;
     *) _afterglow_unused $pane ;;
+    esac
+}
+
+# afterglow mux COMMAND ...: the commands, their options, the directory of
+# new --cwd, and after new -- the program and its arguments.
+_afterglow_mux()
+{
+    if ((cword == 2)); then
+        if [[ $cur == -* ]]; then
+            _afterglow_matching -h --help
+        else
+            _afterglow_matching server new ls kill
+        fi
+        return
+    fi
+    local i start=3
+    case ${words[2]} in
+    new)
+        for ((i = 3; i < cword; i++)); do
+            case ${words[i]} in
+            --)
+                _afterglow_offset $((i + 1))
+                return
+                ;;
+            --name | --cwd) ((i++)) ;;
+            esac
+        done
+        case $prev in
+        --cwd)
+            _afterglow_files -d
+            return
+            ;;
+        --name) return ;;
+        esac
+        _afterglow_unused --name --cwd --detach
+        ;;
+    kill)
+        [[ $cur == -* ]] && _afterglow_unused --force
+        ;;
     esac
 }
 
@@ -257,6 +316,10 @@ _afterglow()
             ;;
         ctl)
             _afterglow_ctl
+            return
+            ;;
+        mux)
+            _afterglow_mux
             return
             ;;
         run | transfer | dnd | icat | clipboard)
@@ -316,7 +379,7 @@ _afterglow()
     --title | -o | --override | --class) return ;;
     esac
     if ((cword == 1)) && [[ $cur != -* ]]; then
-        _afterglow_matching ctl run ssh transfer dnd icat clipboard
+        _afterglow_matching ctl mux run ssh transfer dnd icat clipboard
         return
     fi
     local start=1

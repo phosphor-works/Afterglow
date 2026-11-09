@@ -20,7 +20,7 @@ Run the CTest suite:
 ctest --test-dir build --output-on-failure -j4
 ```
 
-Without a Wayland display or a Vulkan device, the renderer tests and `PopupLook.*` report Skipped.
+Without a Wayland display or a Vulkan device, the renderer tests, `PopupLook.*` and `PointerMap.*` report Skipped.
 On a computer with Vulkan, a device that a test cannot make fails the test, with the reason from the driver.
 The tests that draw with Vulkan take turns (the CTest `RESOURCE_LOCK` `gpu`), and the other tests run beside them.
 Each makes a Vulkan device of its own. Several devices at once can use all the device memory (`VK_ERROR_OUT_OF_DEVICE_MEMORY`) when other programs hold most of it.
@@ -32,6 +32,8 @@ See [compatibility](COMPATIBILITY.md) for protocol test names.
 
 The tests of the pseudo-terminal library start with `PtyLib.`.
 They check the spawn options that overlays use: standard input and output on pipes, apart from `/dev/tty`.
+They also check the spawn options that mux sessions use: a child environment without the environment of the parent.
+Other tests check the signals of a new child, a failed `fork()` and the parser of `/proc/PID/stat`.
 
 ```sh
 ctest --test-dir build --output-on-failure -R '^PtyLib\.'
@@ -70,7 +72,8 @@ They need this software:
 - `kitten`, for the `Kitty*` drag-and-drop tests of the native window suite. Without it, those tests skip.
 
 A drag-and-drop test of the native window suite that uses a client runs two times. It runs one time with `kitten dnd` and one time with `aglow dnd`.
-The Wayland file drop test (`NativeWaylandFileDrop`) uses no client. It runs one time.
+The Wayland file drop test (`NativeWaylandFileDrop`) and the selection drag test
+(`ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn`) use no client. Each runs one time.
 The `Aglow*` tests use the `aglow` of the build. In a build without `aglow`, they skip.
 
 The tests send input to the nested KWin window as synthetic X events. They do not use XTest.
@@ -401,19 +404,19 @@ See [native test dependencies](#native-test-dependencies).
 Run the tests of the control socket, `afterglow ctl`, the `commands` target and `aglow run`:
 
 ```sh
-ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest|CtlOverlayTest|CommandSocketTest|RunBinaryTest|AfterglowRunWithoutAglowTest|RemoteCommandsTest|Proto\.RunClient|Proto\.RunInput|Proto\.RunRemote|Proto\.Socket|Proto\.Remote|Proto\.Ipc)\.|RemoteSocket|aglow_run_pty|aglow_tmux_pty'
+ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest|CtlOverlayTest|CtlScreenshotTest|CommandSocketTest|RunBinaryTest|AfterglowRunWithoutAglowTest|RemoteCommandsTest|Proto\.RunClient|Proto\.RunInput|Proto\.RunRemote|Proto\.Socket|Proto\.Remote|Proto\.Ipc)\.|RemoteSocket|aglow_run_pty|aglow_tmux_pty'
 ```
 
 | Tests | Binary | What they run |
 | --- | --- | --- |
-| `ControlSocketTest.*` | `afterglow_control_tests` | The `control` target: calls and errors, `overlay` and its `overlayInput` parts, the socket lookup, stale sockets and merged events |
-| `CtlBinaryTest.*` and `CtlOverlayTest.*` | `afterglow_command_tests` | `afterglow ctl` against a socket that the test makes: usage errors, and `afterglow ctl overlay` with its options and standard input |
+| `ControlSocketTest.*` | `afterglow_control_tests` | The `control` target: calls and errors, `overlay` and its `overlayInput` parts, the refusals of `screenshot`, the socket lookup, stale sockets and merged events |
+| `CtlBinaryTest.*`, `CtlOverlayTest.*` and `CtlScreenshotTest.*` | `afterglow_command_tests` | `afterglow ctl` against a socket that the test makes: usage errors, `afterglow ctl overlay` with its options and standard input, and `afterglow ctl screenshot` with a `FILE`, `-`, a pipe, a FIFO that a program reads, a socket, a terminal and a directory that takes no new file |
 | `CommandSocketTest.*` | `afterglow_command_tests` | The `commands` target of the socket: the list, runs, standard input, flow control, cancel and the limits |
 | `RunBinaryTest.*` | `afterglow_command_tests` | `aglow run` against a socket that the test makes. They check the exit status, the output, standard input, the pane, signals and the socket lookup. |
 | `AfterglowRunWithoutAglowTest.*` | `afterglow_command_tests` | `afterglow run` in a build without `aglow`. The test checks the error and exit status 127. |
 | `Proto.RunClient.*` and `Proto.RunInput.*` | `afterglow_proto_tests` | The client of `aglow run` against a server that the test plays, and the parts of standard input that it sends |
 | `Proto.RunRemote.*` | `afterglow_proto_tests` | How the client of `aglow run` uses the answer of the terminal to OSC 24569, and its messages when there is no socket |
-| `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run` |
+| `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run`, and the sockets of the mux daemon: their order and the name of the state socket |
 | `Proto.Remote.*` | `afterglow_proto_tests` | OSC 24569, the remote directory and `aglow remote-prune` |
 | `RemoteCommandsTest.*` | `afterglow_remote_tests` | The sockets of remote commands, the probe of `afterglow ssh` with a fake `ssh`, and an acceptance test with `sshd` |
 | `Proto.Ipc.*` | `afterglow_proto_tests` | The phosphor-ipc client of the protocol library |
@@ -421,6 +424,7 @@ ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest
 | `aglow_run_pty` and `aglow_tmux_pty` | Python scripts | The OSC 24569 query of `aglow run` in a pseudo-terminal, also in a private tmux server. See [aglow tests](#aglow-tests) |
 
 `NativeWindow.AnOverlaysProgramGetsTheRemoteSocketOfItsHost` in the [native window suite](#native-window-tests) checks the answer to OSC 24569 in an overlay.
+`NativeWindow.ScreenshotsShowThePaneItsTabAndItsWindow` checks the images of `screenshot` and its refusals in a window.
 
 `RunBinaryTest.AfterglowRunRunsAglowRun` runs `aglow run` through `afterglow run`.
 In a build without `aglow`, the `RunBinaryTest.*` tests and `RemoteCommandsTest.OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThroughIt` report Skipped.
@@ -438,6 +442,33 @@ When the test binary dies first, the kernel stops the `sshd`.
 `RemoteCommandsTest.ARunWhoseHandlerTurnsTheSettingOffEndsWithItsSocket` turns the setting off inside the call of a run.
 A socket that went away inside its own call is a use of freed memory, which a normal build does not always show.
 Run the test in the `debug` preset, which has the sanitizers, to see it every time.
+
+## Mux daemon tests
+
+Run the tests of the [mux daemon](MUX.md), of `afterglow mux` and of the server side of its protocol:
+
+```sh
+ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|MuxClientTest|StateSync)\.' -j4
+```
+
+| Tests | Binary | What they run |
+| --- | --- | --- |
+| `Proto.IpcServer.*` | `afterglow_proto_tests` | The server side of the phosphor-ipc wire format that `afterglow-mux` uses: requests, errors, the listener and long lines |
+| `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run`, and the sockets of the mux daemon: their order and the name of the state socket |
+| `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, session names, and the keys and fields that belong to the protocol version |
+| `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own: sessions, the environment of a pane, the answers to queries and refusals while no window shows a session, and when the daemon exits |
+| `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`): a replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are text, styles, links, wide and combined characters, the long text of a sizing block, also after a resize flattens it, scrolling in small frames, a replica that starts late, a replica that keeps less history, a view scrolled back into the history, the alternate screen, a resize, cleared and dropped history, and 60 runs of random output. A history row larger than a frame still goes, and the link definitions of history rows count in the size of a frame. The reader refuses a damaged frame and a link without a URI, and does not crash. After a refused frame, it takes the first frame of a writer that starts over. |
+| `MuxClientTest.*` | `afterglow_mux_client_tests` | `afterglow mux new`, `ls` and `kill`, with the daemon that `afterglow mux new` starts in a session of its own: usage errors, the start errors of the daemon, a socket that another daemon holds, a daemon of another protocol version, and the largest and smallest values of the settings that a session takes |
+
+Not every test starts a daemon. A `Mux.MuxDaemon.*` or `MuxClientTest.*` test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.
+Thus a test daemon never reaches the mux daemon of the user, and never starts in a systemd user unit.
+The tests get the name of the state socket from `AfterglowProto::muxStateSocketName`, which the daemon uses too (see [sockets](MUX.md#sockets)).
+At its end, each `MuxClientTest.*` test kills the processes that have its `XDG_RUNTIME_DIR`.
+Some `MuxClientTest.*` tests put an `afterglow` with a script as its daemon in `build/afterglow/muxclient-PID-*`.
+The test removes the directory at its end. When a timeout kills the test first, the next `MuxClientTest.*` test removes it.
+Some of the tests need `python3`. Without it, they report Skipped.
+With `-j4`, the tests take about 10 seconds. `Mux.MuxDaemon.ADaemonThatNobodyReachesEnds` waits out the start wait of the daemon, which is 10 seconds.
+Without `-j`, the tests take about 15 seconds.
 
 ## Shell completion tests
 

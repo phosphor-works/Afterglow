@@ -24,6 +24,8 @@
 #include "scripting/ScriptControl.h"
 #include "scripting/ScriptHost.h"
 
+#include <AfterglowProto/IpcServer.h>
+#include <AfterglowProto/Lock.h>
 #include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Version.h>
 
@@ -46,16 +48,19 @@
 #include <QThread>
 #include <QTimer>
 
+#include <atomic>
 #include <csignal>
 #include <cstring>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <pwd.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
@@ -1141,7 +1146,7 @@ TEST_F(RemoteCommandsTest, ALiveSocketHoldsItsLockAndAWaitingForwardAnswersNothi
     RemoteSockets::Opened opened;
     ASSERT_EQ(m_remote->open(request(watched->processId()), opened), QString());
     // Another launch's removeStaleSockets passes it by: the lock is held.
-    EXPECT_EQ(InstanceSocket::lock(opened.socket), -1);
+    EXPECT_EQ(InstanceSocket::lock(opened.socket), AfterglowProto::LockHeld);
     // Until its forward came, the pane does not answer with a path that may not exist.
     EXPECT_EQ(m_answers.value(FakePane), Remote::Answer{});
     EXPECT_EQ(m_remote->forwarded(opened.token), QString());
@@ -1290,6 +1295,59 @@ TEST_F(RemoteCommandsTest, ControlPathNoneOrControlMasterNoKeepsTheUsersChoice)
     auto process = helper({QStringLiteral("-v"), QStringLiteral("prod")}, {{QStringLiteral("FAKE_USER"), QStringLiteral("path-none")}});
     EXPECT_EQ(finish(*process), 7);
     EXPECT_TRUE(m_stderr.contains(QLatin1String("no remote commands in this session: ControlPath is none"))) << qPrintable(m_stderr);
+}
+
+// A server that answers the control call with an error: -v gives its
+// reason, not "does not answer". The mux daemon answers so for a session
+// pane, and an Afterglow with Control.enabled off has no control target.
+TEST_F(RemoteCommandsTest, WithVerboseAControlCallThatFailsSaysWhy)
+{
+    ASSERT_TRUE(start());
+    struct Case
+    {
+        const char* code;
+        std::string message;
+        const char* expected;
+    };
+    const Case cases[] = {
+        // The server's text, safe to print.
+        {AfterglowProto::IpcErrorCode::CallFailed, "a session pane takes no control calls\x1b[2J",
+         "no remote commands in this session: a session pane takes no control calls?[2J\n"},
+        {AfterglowProto::IpcErrorCode::NoSuchTarget, "no target control",
+         "no remote commands in this session: Afterglow has no control target: Control.enabled is off\n"},
+        {AfterglowProto::IpcErrorCode::CallFailed, "", "no remote commands in this session: Afterglow does not answer\n"},
+    };
+    int index = 0;
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.expected);
+        const std::string path = (m_runtime + QStringLiteral("/refuses-%1.sock").arg(index++)).toStdString();
+        AfterglowProto::IpcListener listener;
+        std::string error;
+        ASSERT_EQ(listener.listen(path, &error), AfterglowProto::IpcListener::Listen::Listening) << error;
+        std::atomic<bool> stop{false};
+        std::jthread server([&] {
+            std::vector<std::unique_ptr<AfterglowProto::IpcServerConnection>> connections;
+            while (!stop) {
+                pollfd p{listener.fd(), POLLIN, 0};
+                ::poll(&p, 1, 20);
+                for (int fd = listener.accept(); fd >= 0; fd = listener.accept()) {
+                    connections.push_back(std::make_unique<AfterglowProto::IpcServerConnection>(fd));
+                }
+                for (auto& connection : connections) {
+                    AfterglowProto::IpcRequest request;
+                    while (connection->nextRequest(request) != AfterglowProto::IpcServerConnection::Read::None) {
+                        connection->send(AfterglowProto::ipcError(request.id, c.code, c.message));
+                    }
+                    connection->flush();
+                }
+            }
+        });
+        auto process = helper({QStringLiteral("-v"), QStringLiteral("prod")},
+                              {{QStringLiteral("AFTERGLOW_SOCKET"), QString::fromStdString(path)}});
+        EXPECT_EQ(finish(*process), 7);
+        stop = true;
+        EXPECT_TRUE(m_stderr.contains(QLatin1String(c.expected))) << qPrintable(m_stderr);
+    }
 }
 
 TEST_F(RemoteCommandsTest, AForwardThatAfterglowConfirmsTooLateIsCancelledWithTheReasonForward)

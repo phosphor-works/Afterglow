@@ -70,7 +70,14 @@ if(AFTERGLOW_BUILD_AGLOW)
 endif()
 gtest_discover_tests(afterglow_remote_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
-qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp)
+# afterglow mux against daemons of its own, in directories of the test.
+qt_add_executable(afterglow_mux_client_tests MuxClientTest.cpp)
+target_link_libraries(afterglow_mux_client_tests PRIVATE afterglow_config afterglow_mux_protocol GTest::gtest_main)
+target_compile_definitions(afterglow_mux_client_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>")
+add_dependencies(afterglow_mux_client_tests afterglow afterglow-mux)
+gtest_discover_tests(afterglow_mux_client_tests PROPERTIES TIMEOUT 120)
+
+qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp PaneSelectionTest.cpp NestedLoopTest.cpp PaneLaunchTest.cpp)
 target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
@@ -80,6 +87,14 @@ qt_add_executable(afterglow_popup_tests PopupLookTest.cpp)
 target_include_directories(afterglow_popup_tests PRIVATE ${PROJECT_SOURCE_DIR}/libs/afterglow-render/tests)
 target_link_libraries(afterglow_popup_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_popup_tests DISCOVERY_MODE PRE_TEST PROPERTIES RESOURCE_LOCK gpu TIMEOUT 60)
+
+# The pointer maps of the bundled packs against their pictures, offscreen.
+qt_add_executable(afterglow_pointer_map_tests PointerMapTest.cpp)
+target_include_directories(afterglow_pointer_map_tests PRIVATE ${PROJECT_SOURCE_DIR}/libs/afterglow-render/tests)
+# The pack registry and the renderer: no window, no application.
+target_link_libraries(afterglow_pointer_map_tests PRIVATE afterglow_shaders GTest::gtest)
+target_compile_definitions(afterglow_pointer_map_tests PRIVATE AFTERGLOW_SOURCE_SHADERS="${PROJECT_SOURCE_DIR}/data/shaders")
+gtest_discover_tests(afterglow_pointer_map_tests DISCOVERY_MODE PRE_TEST PROPERTIES RESOURCE_LOCK gpu TIMEOUT 60)
 
 qt_add_executable(afterglow_signal_tests QuitSignalsTest.cpp)
 target_link_libraries(afterglow_signal_tests PRIVATE afterglow_app GTest::gtest)

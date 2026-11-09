@@ -13,6 +13,7 @@ add_library(AfterglowVt SHARED
     src/Search.cpp
     src/Selection.cpp
     src/Sixel.cpp
+    src/StateSync.cpp
     src/Style.cpp
     src/Terminal.cpp
     src/Unicode.cpp

@@ -13,7 +13,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - VT100 to VT500 control sequences, with conformance levels and the `afterglow` terminfo entry.
 - Scrollback with reflow on resize. Rows that still fit keep their cells, styles and graphemes.
 - Unicode graphemes, wide characters, color emoji, font shaping and optional primary-screen bidirectional layout.
-- Box drawing, block elements, Braille, the Powerline separators and the block shapes of Symbols for Legacy Computing (sextants, octants, smooth mosaics, diagonals) are drawn to fill the cell, with no font needed.
+- Afterglow draws box drawing, block elements, Braille and the Powerline separators to fill the cell, with no font. It draws the block shapes of Symbols for Legacy Computing (sextants, octants, smooth mosaics, diagonals) the same way.
 - Text attributes, including curly, dotted and dashed underlines, underline colors, overlines and OSC 8 hyperlinks.
 - Rectangular editing (DECFRA, DECCRA), character repeat (REP) and cursor shapes (DECSCUSR).
 - Status queries: DECRQM, DECRQSS, XTGETTCAP and XTWINOPS size reports.
@@ -30,7 +30,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Keypad keys with Num Lock off, which the Kitty protocol reports as keypad keys, and the function keys F13 to F35.
 - The Kitty mouse-pointer protocol (OSC 22), with separate shape stacks for the main and alternate screens.
 - Pastes keep tab, carriage return and line feed, and drop all other control characters.
-- A prompt before a paste with a line break reaches a program that does not use bracketed paste.
+- Afterglow asks before a paste or a text drop with a line break reaches a program that does not use bracketed paste.
 
 ### Graphics and text sizing
 
@@ -39,7 +39,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Kitty images sent as a file, a temporary file or shared memory, unless `Terminal.graphicsFileTransfer` is `deny`.
 - An image memory limit for the main and the alternate screen of each pane (`Graphics.quota`, 320 MiB each by default). Images without a placement go first: those sent with the transient hint (`N=1`), then the oldest.
 - Sixel images.
-- iTerm2 inline images and file downloads (OSC 1337), with a native Save dialog.
+- iTerm2 inline images and file downloads (OSC 1337), with a native Save dialog. The dialog moves with its pane to another window.
 - Kitty text sizing (OSC 66).
 - The Kitty multiple-cursors protocol, with mixed block and beam layering.
 
@@ -72,7 +72,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99), which `Notifications.enabled` turns on and off.
 - A notification limit for each pane (`Notifications.rateLimit` in `Notifications.rateWindow`, 20 in 10 seconds by default). Notices from Afterglow itself do not count, and neither do `afterglow ctl notify` and script notifications. The notice at the end of a script command that has no client counts.
 - Settings for the shortest time between two bell sounds (`Terminal.bellSoundInterval`) and between two status notifications of a pane (`Notifications.statusInterval`).
-- `Mouse.autoScrollInterval` sets the time between the rows of a selection drag that scrolls.
+- `Mouse.autoScrollInterval` sets the time between the rows that a selection scrolls while you extend it.
 - `Control.eventInterval` sets the shortest time between two control events of one kind for a pane.
 - `Terminal.pasteReadTimeout` sets how long a paste event lets a program read the clipboard.
 - Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates. The approval lists the paths and covers only those paths. They are the files that a program reads, or the destinations of the files that it sends. A file goes only where the approval showed, also when a link changes after it. A file that the approval did not list waits for an approval of its own, and the approved files continue meanwhile.
@@ -82,6 +82,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Afterglow tells the source of a drag the action that the drop took (the `o` key of `t=e:x=4`). `aglow dnd` uses it to delete the files of a remote drag only when the drop was a move. A move to another application is reported as a copy, so the source keeps its files.
 - Received file transfers keep the read, write and execute bits of a mode. Afterglow drops the set-user-ID, set-group-ID and sticky bits.
 - Local file drops, quoted for the shell and sent as bracketed paste.
+- Text drops, pasted with the size limit and the question of a paste, unless the program in the pane accepts drops.
 - `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. Its `transfer`, `dnd`, `icat` and `clipboard` commands take the options of `kitten`, with a few differences that the compatibility document lists.
 - `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard`, which run the `aglow` that is installed with Afterglow.
 - `AFTERGLOW_AGLOW_ONLY` builds `aglow` alone, for a remote host or a package of its own. This build needs no Qt and no Phosphor libraries, and it installs only `aglow`, its completions and its license notices.
@@ -98,7 +99,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - A portal across a pane whose shell moves to another host, user or container, and a colored frame while it is away.
 - Pane and tab moves between tabs and windows. A drag outside the tab bar detaches a tab into a new window.
 - Saved projects that store a window's tabs, splits, directories and launch arguments.
-- A quick terminal on a Wayland layer surface, toggled by a global shortcut. It slides from the top or bottom edge of a chosen screen.
+- Terminal sessions that keep running without a window, in the `afterglow-mux` daemon. `afterglow mux new --detach` starts a session with one pane, and `afterglow mux ls` and `afterglow mux kill` list and end the sessions. A window cannot show a session.
+- A quick terminal on a Wayland layer surface, toggled by a global shortcut. It slides from the top or bottom edge of a chosen screen. It slides away while a file transfer prompt or a Save dialog of one of its panes is open. It comes back when the dialog closes.
 - Optional background blur on KWin, window transparency and a history scrollbar over the pane that fades when idle.
 - `Window.tabBarHeight` sets the height of the tab bar, and `Window.scrollbarWidth` sets the width of the scrollbar.
 
@@ -107,6 +109,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Search with PCRE2 regular expressions, across soft-wrapped lines.
 - Keyboard selection in character, line and rectangle modes.
 - Finger scrolls on a touchpad or a touchscreen go on after the fingers lift (`Mouse.momentumScroll`, 0.96 by default as in kitty). A touchscreen taps, scrolls and selects with one finger.
+- With `Mouse.dragSelection` on (off by default, as in Kitty), selected text drags to another pane or another desktop application.
 - Text hints that copy, open or run commands on regular-expression matches, and URL hints, labeled from `Hints.alphabet`.
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.
 - Keybindings with multi-key sequences, a leader key and named key tables.
@@ -125,7 +128,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - System audio input through CAVA, with its framerate, smoothing and frequency range in `Audio` settings.
 - Scrollback-driven inputs and parameter transitions with Phosphor curves.
 - Time helpers `timeAngle` and `timeCycle` that keep full precision however long the window runs, and `timeSeconds` for the full clock.
-- Bundled packs: Bloom, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Overlay Fade, Pane Deck, Pane Effects, Phosphor Depths and Tab Switch.
+- Bundled packs: Bloom, CRT Curve, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Overlay Fade, Pane Deck, Pane Effects, Phosphor Depths, Tab Switch and Tilt.
+- Packs that move the content can define a pointer map (`pPointerMap`). Clicks, selections and links then reach the cell that the pack draws under the pointer.
 - Pane rectangles, every tab's pane pixels and overview state for window shaders, through `terminal_panes.glsl`.
 - The Phosphor and Glasshouse example scenes.
 
@@ -145,9 +149,10 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - `new_tab(pane)` starts in the directory of that pane and opens its tab after the tab of that pane.
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
 - External control through `afterglow ctl` and a control socket, with access settings and merged state events.
+- `afterglow ctl screenshot` saves a PNG of a pane, its tab or its window as the window shows it, with the shader packs. With `--window` it includes the tab bar. It needs `Control.allowReadText`.
 - Script commands. A script or package declares each command with a summary. A usage text, a palette title and standard input are optional. A script can also change its commands at run time with `afterglow.set_commands`, which takes the same map of names as the package manifest.
 - Commands that a script marks `remote` also run from a remote host, with `aglow run` in an `afterglow ssh` session. They need `Terminal.sshRemoteCommands`, which is off by default, and `Control.enabled` and `Scripts.enabled`. `Terminal.sshIntegration` is not necessary, because you can also run `afterglow ssh` yourself.
-- `afterglow ssh` forwards a socket of Afterglow for each session over the shared ssh connection, and `aglow run` on the host finds it with OSC 24569. Before the session, `aglow remote-prune` removes the sockets of sessions that ended. An `afterglow ssh` in an overlay has a socket of its own, and the pane keeps the socket of its session.
+- `afterglow ssh` forwards a socket of Afterglow for each session over the shared ssh connection. `aglow run` on the host finds it with OSC 24569. Before the session, `aglow remote-prune` removes the sockets of sessions that ended. An `afterglow ssh` in an overlay has a socket of its own, and the pane keeps the socket of its session.
 - A `ControlPath none` or `ControlMaster no` in your SSH configuration stays as you set it. That session then gets no socket for remote commands.
 - A pane has at most 16 sessions with remote commands, and Afterglow at most 256. The socket of a session takes at most 64 connections at the same time.
 - The handler of a remote run gets `ev.source` `"remote"` and the host in `ev.remote.host`. It reads pane text only when `Control.allowRemoteReadText` is on too, which is off by default.
@@ -205,7 +210,8 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 
 - [Documentation index](docs/README.md).
 - [Supported protocols and limits](docs/COMPATIBILITY.md).
-- [Desktop integration](docs/DESKTOP.md) for accessibility, input methods, file drops, Kitty file transfer, Kitty drag and drop, and the `aglow` client.
+- [Desktop integration](docs/DESKTOP.md) for accessibility, input methods, file and text drops, Kitty file transfer, Kitty drag and drop, and the `aglow` client.
 - [Bidirectional text](docs/BIDI.md) for the application-grid policy.
 - [External control](docs/CONTROL.md) for `afterglow ctl`, the control socket and script commands from a shell.
+- [The mux daemon](docs/MUX.md) for `afterglow mux` and the sessions that it keeps.
 - [Testing](docs/TESTING.md) for regression and native desktop test procedures.

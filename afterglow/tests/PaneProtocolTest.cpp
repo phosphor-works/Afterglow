@@ -17,6 +17,7 @@
 #include <cstring>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -375,6 +376,77 @@ TEST_F(PaneProtocol, ADeviceReportAfterACanceledDownloadIsAnswered)
     QThread::msleep(300);
     feed("\x1b[c");
     EXPECT_TRUE(read(DeviceAttributes)) << input.right(200).toStdString();
+}
+
+TEST(PaneEvents, AFloodOfNotificationsDoesNotDropTheCommandEvents)
+{
+    // More notifications than the queue holds, then a command, in one read:
+    // the command's start and end still reach the window, which pairs them.
+    Pane pane { AfterglowVt::TerminalOptions {} };
+    int notifications = 0, began = 0, ended = 0;
+    QObject::connect(&pane, &Pane::notificationRequested, [&](const QString&, const QString&) { ++notifications; });
+    QObject::connect(&pane, &Pane::commandBegan, [&](const QString&) { ++began; });
+    QObject::connect(&pane, &Pane::commandEnded, [&](const QString&, int, qint64) { ++ended; });
+    std::string bytes;
+    for (int i = 0; i < 400; ++i)
+        bytes += "\x1b]9;flood\x07";
+    bytes += "\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\echo test\x1b]133;C\x1b\\result\x1b]133;D;0\x1b\\";
+    pane.withTerminal([&](AfterglowVt::Terminal& terminal) { terminal.feed(bytes); });
+    QCoreApplication::sendPostedEvents(&pane, QEvent::MetaCall);
+    EXPECT_GT(notifications, 0);
+    EXPECT_LT(notifications, 400);
+    EXPECT_EQ(began, 1);
+    EXPECT_EQ(ended, 1);
+}
+
+namespace {
+// Records the command events of @p pane in @p events, as "began:COMMAND"
+// and "ended:COMMAND".
+void recordCommands(Pane& pane, QStringList& events)
+{
+    QObject::connect(&pane, &Pane::commandBegan, [&events](const QString& c) { events.append(QStringLiteral("began:") + c); });
+    QObject::connect(&pane, &Pane::commandEnded, [&events](const QString& c, int, qint64) { events.append(QStringLiteral("ended:") + c); });
+}
+constexpr std::string_view CommandStart = "\x1b]133;C\x1b\\";
+constexpr std::string_view CommandEnd = "\x1b]133;D;0\x1b\\";
+} // namespace
+
+TEST(PaneEvents, ACommandThatStartsInTheLastPlaceOfTheQueueStillEnds)
+{
+    // A start with no end (C C), then commands up to one place short of
+    // the queue's bound: the next command's start takes the last place, and
+    // its end must come too, or the receivers see it run forever.
+    QStringList events;
+    Pane pane { AfterglowVt::TerminalOptions {} };
+    recordCommands(pane, events);
+    std::string bytes(CommandStart);
+    for (int i = 0; i < 127; ++i) (bytes += CommandStart) += CommandEnd;
+    (bytes += "\x1b]133;B\x1b\\last") += CommandStart;
+    bytes += CommandEnd;
+    pane.withTerminal([&](AfterglowVt::Terminal& terminal) { terminal.feed(bytes); });
+    QCoreApplication::sendPostedEvents(&pane, QEvent::MetaCall);
+    ASSERT_GE(events.size(), 2);
+    EXPECT_EQ(events.at(events.size() - 2).toStdString(), "began:last");
+    EXPECT_EQ(events.constLast().toStdString(), "ended:last");
+}
+
+TEST(PaneEvents, TheEndOfACommandWhoseStartWasDroppedIsDroppedToo)
+{
+    // The queue is full when a command starts, and has room again when it
+    // ends: an end alone would end a command that never ran for the
+    // receivers.
+    QStringList events;
+    Pane pane { AfterglowVt::TerminalOptions {} };
+    recordCommands(pane, events);
+    std::string bytes;
+    for (int i = 0; i < 128; ++i) (bytes += CommandStart) += CommandEnd;
+    (bytes += "\x1b]133;B\x1b\\dropped") += CommandStart;
+    pane.withTerminal([&](AfterglowVt::Terminal& terminal) { terminal.feed(bytes); });
+    QCoreApplication::sendPostedEvents(&pane, QEvent::MetaCall);
+    ASSERT_EQ(events.size(), 256);
+    pane.withTerminal([&](AfterglowVt::Terminal& terminal) { terminal.feed(CommandEnd); });
+    QCoreApplication::sendPostedEvents(&pane, QEvent::MetaCall);
+    EXPECT_EQ(events.size(), 256) << events.constLast().toStdString();
 }
 
 TEST(PaneAnimation, AnImageScrolledBackIntoViewShowsItsCurrentFrameAtOnce)

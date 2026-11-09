@@ -47,25 +47,50 @@ Options:
 | `--filter 'NativeWindow.PaneOverview*'` | `NativeWindow.*:KeyMapping.*` | Runs a subset (a `--gtest_filter` pattern). `'*'` also runs `Shaders/NativeRenderer.*`. |
 | `--binary PATH` | `build/afterglow/afterglow_native_tests` | Runs another test binary, such as one from another build directory |
 | `--icd PATH/lvp.json` | The host driver | Uses a software Vulkan driver (lavapipe) in place of the GPU |
+| `--platform-theme kde` | `generic` | Loads the KDE platform theme, so file dialogs are the native KDE ones that Plasma users get. `gtk3` loads the GTK file dialog |
 | `--validation` | Off | Enables the Vulkan validation layer and GPU logging |
 | `--size 1920x1080` | `1100x750` | Changes the virtual output size |
+| `--outputs 2` | `1` | Gives KWin two virtual outputs. The tests that move a window between screens skip with one. The drag tests expect one output: run them without this option. |
 | `--timeout 400` | 400 | Stops the test binary after this many seconds and 10 more, and reports status 124 |
 
 The log is long. Read it with `grep`, never in full.
+
+### Platform themes
+
+The download dialog tests (`NativeWindow.ADownloadsSaveDialog*` and `NativeWindow.ANativeGtk*`) test the native file
+dialog only with a platform theme that makes one:
+
+| Theme | Needs | The tests |
+| --- | --- | --- |
+| `generic` | Nothing | Test the widget dialog of Qt. `ANativeGtk*` skips. |
+| `kde` | plasma-integration (`platformthemes/KDEPlasmaPlatformTheme6.so` in the Qt plugin directory) | Test the native KDE dialog. `ANativeGtk*` skips. |
+| `gtk3` | `platformthemes/libqgtk3.so` and GTK 3 | `ANativeGtk*` tests the GTK dialog. The others skip: the GTK dialog is not a Qt widget. |
+| `xdgdesktopportal` | Do not use it here | The portal starts on the private bus in about 25 s. Qt asks it for its version before that, gets no reply, and uses the KDE dialog. |
+
+Without plasma-integration, Qt loads no KDE theme and gives no message. The tests then fail with "the KDE platform
+theme did not load", because the widget dialog would test no native dialog.
 The memory cap of `systemd-run` keeps systemd-oomd from killing the user's Afterglow (see `ag-build`).
 
 ### Expected skips in the headless run
 
-These five tests need real compositor input, which only the acceptance runner below gives. Headless, they report
-Skipped with "Run through native_window_acceptance.py for real compositor input".
+The tests that start with `REQUIRE_NATIVE_DND` need real compositor input, which only the acceptance runner below
+gives. Headless, they report Skipped with "Run through native_window_acceptance.py for real compositor input".
 
 - `NativeWindow.NativeWaylandFileDrop`
-- `NativeWindow.KittyDragAndDropClient` and `NativeWindow.AglowDragAndDropClient`
-- `NativeWindow.KittyRemoteDragDirectory` and `NativeWindow.AglowRemoteDragDirectory`
+- `NativeWindow.ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn`
+- The `NativeWindow.Kitty*` and `NativeWindow.Aglow*` client tests: `*DragAndDropClient`, `*RemoteDragDirectory`,
+  `*RemoteDragDirectoryMovesBetweenPanes`, `*RemoteDragMoveToWaylandTarget`, `*RemoteDragCopyToWaylandTarget` and
+  `*RemoteDragRefusedByAWaylandTargetKeepsTheFiles`
 
-Each client drag-and-drop test runs two times, with two clients. `NativeWaylandFileDrop` uses no client and runs
-one time. The `Kitty*` tests run `kitten dnd`, and skip when `kitten` is not installed. The `Aglow*` tests run the
-`aglow dnd` of the build, and skip in a build without `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`).
+`NativeWindow.ANativeGtkSaveDialogKeepsItsNameWhenItsWindowCloses` skips with "runs with --platform-theme gtk3"
+(see Platform themes).
+`NativeWindow.AQuickTerminalMovesToTheScreenNamedWhileItShowedAtItsNextShow` skips with "needs two outputs
+(kwin_wayland --output-count 2)". It runs with `--outputs 2`.
+
+Each client test runs two times, with two clients. `NativeWaylandFileDrop` and
+`ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn` use no client and run one time. The `Kitty*` tests run
+`kitten dnd`, and skip when `kitten` is not installed. The `Aglow*` tests run the `aglow dnd` of the build, and
+skip in a build without `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`).
 
 `NativeWindow.APointerThatNeverEnteredAWindowIsOnNoItemOfItsDocks` skips when the compositor's pointer enters its
 new window, because the test needs a window that the pointer never entered.

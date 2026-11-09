@@ -4,6 +4,7 @@
 #include "PaneOverlay.h"
 
 #include "Pane.h"
+#include "PaneLaunch.h"
 #include "scripting/ScriptFiles.h"
 
 #include <QDir>
@@ -38,8 +39,6 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
     const bool local = !cwd.isEmpty() && QDir::isAbsolutePath(cwd) && QFileInfo(cwd).isDir();
     options.workingDirectory = (local ? cwd : QDir::homePath()).toStdString();
     applyLaunchEnvironment(options, spec.env);
-    std::erase_if(options.environment, [](const auto& entry) { return entry.first == "AFTERGLOW_RESULT"; });
-    std::erase(options.unsetEnvironment, std::string("AFTERGLOW_RESULT"));
     if (spec.capture == OverlaySpec::Capture::File) {
         // Created 0600, and removed with the overlay.
         overlay->m_resultFile = std::make_unique<QTemporaryFile>(QDir::tempPath() + QStringLiteral("/afterglow-overlay-XXXXXX"));
@@ -48,9 +47,9 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
             return nullptr;
         }
         overlay->m_resultFile->close();
-        options.environment.emplace_back("AFTERGLOW_RESULT", QFile::encodeName(overlay->m_resultFile->fileName()).toStdString());
+        AfterglowPty::setVariable(options, "AFTERGLOW_RESULT", QFile::encodeName(overlay->m_resultFile->fileName()).toStdString());
     } else {
-        options.unsetEnvironment.emplace_back("AFTERGLOW_RESULT");
+        AfterglowPty::unsetVariable(options, "AFTERGLOW_RESULT");
     }
     if (spec.input) options.input = spec.input->toStdString();
     options.captureOutput = spec.capture == OverlaySpec::Capture::Stdout;
@@ -63,7 +62,7 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
     pane->setRemoteSocket(host.remoteSocketAnswer());
     pane->setOutputLimit(std::size_t(OverlaySpec::MaxOutput) + 1);
     pane->setLaunch(QString::fromStdString(options.workingDirectory), spec.argv);
-    if (!spec.argv.isEmpty()) pane->setLaunchedProgram(QFileInfo(spec.argv.first()).fileName());
+    pane->setLaunchedProgram(launchedProgramName(spec.argv));
     if (!spec.title.isEmpty()) pane->setUserTitle(spec.title);
     // Queued from the pty thread: the reply is set before it arrives.
     connect(pane, &Pane::closed, overlay.get(), &PaneOverlay::programExited);

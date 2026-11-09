@@ -4,7 +4,7 @@
 #pragma once
 
 // The device of a test binary that draws with Vulkan, shared by the
-// renderer's tests and the application's popup test.
+// renderer's tests and the application's popup and pointer map tests.
 
 #include <AfterglowRender/GpuDevice.h>
 

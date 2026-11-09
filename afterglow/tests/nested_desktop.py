@@ -201,6 +201,10 @@ class NestedDesktop:
         for name in ("AFTERGLOW_SOCKET", "AFTERGLOW_PANE_ID"):
             self.env.pop(name, None)
         (root / "kwinrc").write_text(KWINRC)
+        # A Save dialog of a download opens in the download directory: a
+        # private one, so that a test that saves never writes to the user's.
+        (root / "downloads").mkdir(exist_ok=True)
+        (root / "user-dirs.dirs").write_text(f'XDG_DOWNLOAD_DIR="{root / "downloads"}"\n')
         self.log = (root / "kwin.log").open("w")
         self.process = None
         self.display = None

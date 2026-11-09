@@ -847,6 +847,28 @@ TEST_F(DndSource, ACanceledDragNamesNoAction)
     // y=1: no drop. o=0: no action, so a source deletes nothing.
     EXPECT_TRUE(contains("o=0:t=e:x=4:y=1"));
 }
+TEST_F(DndSource, ADragSaysThatItStarts)
+{
+    ASSERT_NO_FATAL_FAILURE(offer(QByteArray::fromStdString(AfterglowProto::dndMachineId()), "text/plain"));
+    data(0, "dragged text");
+    // The window releases the keys that programs hold when it hears this,
+    // before QDrag::exec takes the key events. The offscreen platform ends a
+    // drag at once, with no event loop: this test sees the signal, once,
+    // while the drag runs, but not its order with exec().
+    int starts = 0;
+    bool madeTheDrag = false, dragging = false;
+    QObject::connect(&service, &DragDrop::dragStarting, &service, [&] {
+        ++starts;
+        madeTheDrag = window.findChild<QDrag*>() != nullptr;
+        dragging = service.dragging();
+    });
+    startDrag();
+    ASSERT_TRUE(waitUntil([&] { return contains("x=4"); }));
+    EXPECT_EQ(starts, 1);
+    EXPECT_TRUE(madeTheDrag);
+    EXPECT_TRUE(dragging);
+    EXPECT_FALSE(service.dragging());
+}
 TEST_F(DndSource, ACanceledRemoteDragRemovesItsTreeAtOnce)
 {
     ASSERT_NO_FATAL_FAILURE(offer("1:remote-machine", "text/uri-list"));

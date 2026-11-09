@@ -20,6 +20,9 @@
 //   9 X11 colour specs (parseColorSpec), and the colour read written again
 //  10 OSC 24569 strings (oscPayload, isQuery, parseReply), and the answer
 //     read written again as the pane's reply
+//  11 phosphor-ipc request lines of afterglow-mux: each message parsed as a
+//     request, and the whole input as the stream of one connection, read by
+//     the server side (IpcServerConnection) in parts
 
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/Clipboard.h>
@@ -27,6 +30,8 @@
 #include <AfterglowProto/Delta.h>
 #include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Graphics.h>
+#include <AfterglowProto/Ipc.h>
+#include <AfterglowProto/IpcServer.h>
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Run.h>
@@ -34,6 +39,7 @@
 #include <AfterglowProto/Transfer.h>
 #include <AfterglowProto/Zlib.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -41,6 +47,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace {
 
@@ -467,6 +476,73 @@ void remote(std::string_view input)
     }
 }
 
+/// @p text is one JSON line: its '\n' at the end and nowhere else.
+void checkLine(const std::string& text)
+{
+    if (text.empty() || text.back() != '\n' || text.find('\n') != text.size() - 1
+        || !AfterglowProto::Json::parse(std::string_view(text).substr(0, text.size() - 1))) {
+        __builtin_trap();
+    }
+}
+
+void ipcServer(std::string_view input)
+{
+    for (const std::string_view message : messages(input)) {
+        std::string error;
+        std::optional<std::int64_t> id;
+        const std::optional<AfterglowProto::IpcRequest> request = AfterglowProto::parseIpcRequest(message, &error, &id);
+        if (request) {
+            // What the daemon then reads is there, and the id is the one
+            // that an error would name.
+            if (request->type.empty() || (request->type == "call" && (request->target.empty() || request->fn.empty()))
+                || request->args.size() > 4096 || request->id != id) {
+                __builtin_trap();
+            }
+            checkLine(AfterglowProto::ipcReply(request->id.value_or(0), request->target));
+        } else if (error.empty()) {
+            __builtin_trap();
+        }
+        checkLine(AfterglowProto::ipcError(id, AfterglowProto::IpcErrorCode::MalformedRequest, error));
+    }
+
+    // The input as one connection's stream, sent in parts while the server
+    // reads: each call returns, and the connection ends.
+    int pair[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, pair) != 0) {
+        return;
+    }
+    AfterglowProto::IpcServerConnection server(pair[0]);
+    constexpr std::size_t Part = 4096;
+    const std::size_t newlines = std::size_t(std::count(input.begin(), input.end(), '\n'));
+    const std::size_t bound = newlines + 4 * (input.size() / Part + 1) + 64;
+    std::size_t sent = 0;
+    bool ended = false;
+    char answers[65536];
+    for (std::size_t calls = 0; server.open(); ++calls) {
+        if (calls > bound) {
+            __builtin_trap();
+        }
+        if (sent < input.size()) {
+            const ssize_t n = ::send(pair[1], input.data() + sent, std::min(Part, input.size() - sent), MSG_NOSIGNAL);
+            if (n > 0) {
+                sent += std::size_t(n);
+            }
+        } else if (!ended) {
+            ::shutdown(pair[1], SHUT_WR);
+            ended = true;
+        }
+        AfterglowProto::IpcRequest request;
+        if (server.nextRequest(request) == AfterglowProto::IpcServerConnection::Read::Request) {
+            server.send(AfterglowProto::ipcReply(request.id.value_or(0), nullptr));
+        }
+        // The client reads the answers, so the server's output never waits long.
+        while (::recv(pair[1], answers, sizeof answers, MSG_DONTWAIT) > 0) {
+        }
+        server.flush();
+    }
+    ::close(pair[1]);
+}
+
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
@@ -475,7 +551,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     }
     const std::string_view input(reinterpret_cast<const char*>(data + 1), size - 1);
-    switch (data[0] % 11) {
+    switch (data[0] % 12) {
     case 0:
         transfer(input);
         break;
@@ -508,6 +584,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         break;
     case 10:
         remote(input);
+        break;
+    case 11:
+        ipcServer(input);
         break;
     }
     return 0;

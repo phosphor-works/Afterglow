@@ -15,7 +15,10 @@ qt_add_library(AfterglowRender SHARED
     src/GlyphCache.cpp
     src/GpuDevice.cpp
     src/GridRenderer.cpp
+    src/PointerMap.cpp
+    src/PointerMap.h
     src/PostChain.cpp
+    src/ShaderBindings.h
     src/ShaderProgram.cpp
     src/Snapshot.cpp
     src/Bidi.cpp

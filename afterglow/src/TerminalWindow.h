@@ -13,11 +13,13 @@
 #include "animation/PaneMotion.h"
 #include "app/Services.h"
 #include "config/Settings.h"
+#include "control/Capture.h"
 #include "shaders/ShaderControls.h"
 
 #include <AfterglowRender/GridRenderer.h>
 
 #include <QClipboard>
+#include <QDeadlineTimer>
 #include <QElapsedTimer>
 #include <QPointer>
 #include <QSet>
@@ -32,10 +34,11 @@
 #include <unordered_map>
 #include <vector>
 
-
 namespace AfterglowRender {
 class GpuDevice;
 }
+
+class QDialog;
 
 namespace Afterglow {
 
@@ -119,6 +122,15 @@ public:
     void setGpuTimingEnabled(bool enabled) { m_renderer->setGpuTimingEnabled(enabled); }
     double completedGpuSeconds() const { return m_renderer->completedGpuSeconds(); }
     std::uint64_t submittedFrames() const { return m_renderer->submittedFrames(); }
+    /// The size of the frames that the renderer draws, in device pixels:
+    /// the size of a window screenshot. For the tests.
+    QSize framePixels() const { return m_renderer->pixelSize(); }
+    /// @p pane moves to its place (a split, a resize). For the tests.
+    bool paneMoving(const Pane* pane) const
+    {
+        const auto motion = m_motion.find(pane);
+        return motion != m_motion.end() && motion->second->rect.isAnimating();
+    }
 
     /// Every pane, tab by tab.
     QList<Pane*> panes() const;
@@ -136,6 +148,9 @@ public:
     Pane* focusedPane() const { return m_focused; }
     /// Splits @p pane using @p options (empty command: the shell); returns the new pane.
     Pane* splitPane(Pane* pane, SplitTree::Direction direction, const PaneLaunchOptions& options, QString* error);
+    /// The error of a split that has no room for another pane, as a notice
+    /// shows it: afterglow ctl and scripts give their own text for it.
+    static QString noRoomForPane() { return tr("There is not enough room for another pane."); }
     /// Opens a tab using @p options; returns its pane. With @p from, the tab
     /// opens beside that pane's tab and inherits its directory; otherwise
     /// beside the current tab, from the focused pane.
@@ -194,6 +209,21 @@ public:
     /// How far the overlay of @p pane has faded in, 0 to 1, and whether the
     /// fade still runs. For the tests.
     std::pair<qreal, bool> overlayFade(const Pane* pane) const;
+    /// Draws a frame and reads it back as the window shows it, cut to
+    /// @p scope around @p pane: shader packs, an overlay over the pane and
+    /// the chrome over it are in the image. A translucent background stays
+    /// translucent, without what is behind the window. @p reply gets
+    /// not_shown at once when the window is not on screen, and for the pane
+    /// and tab scopes when the pane is in a tab in the background. In the
+    /// frame, those two scopes are not_shown while the overview shows, and
+    /// for a pane that closed, left the tab or whose tab went to the
+    /// background; the pane scope also for a pane that a zoom hides or that
+    /// has no area. They wait for the end of a tab switch, and the pane
+    /// scope for the end of a move of the pane (a split, a resize), with no
+    /// readback while they wait. A window that leaves the screen or closes
+    /// first gives not_shown. A frame that cannot be read gives failed, and
+    /// so does no frame for CaptureTimeoutMs (each frame of a wait restarts it).
+    void captureFrame(Pane* pane, CaptureScope scope, CaptureReply reply);
     /// Plays effect @p effect over the pane in Shaders.paneEffects.
     QString pulsePane(Pane* pane, int effect, int durationMs, int color);
     /// Where a pane split from, and the edge it shares with that pane
@@ -232,6 +262,8 @@ public:
     std::pair<qreal, qreal> overviewPosition() const { return {m_overview.position.value(), m_overview.positionTarget}; }
     /// Slides the quick terminal in or out (quick windows only).
     void toggleQuick();
+    /// Whether the quick terminal shows or slides in (quick windows only).
+    bool quickShown() const { return m_quickShown; }
 
 Q_SIGNALS:
     /// The tab list, the current tab or a tab title changed.
@@ -317,14 +349,26 @@ private:
     void releasePaneUi(Pane* pane);
     /// Closes the prompts and modes that belong to @p pane, which is going
     /// away: its clipboard and paste prompts, title prompt, menu, URL mode,
-    /// selection drag, reported mouse buttons, a drag on or the pointer over
-    /// its docks, and a close confirmation about it alone. Prompts about
-    /// other panes stay.
+    /// selection drag, held press inside its selection, reported mouse
+    /// buttons, a drag on or the pointer over its docks, and a close
+    /// confirmation about it alone. Prompts about other panes stay.
     void dropPanePrompts(Pane* pane);
     /// Cancels the title prompt and closes the tab menu when they belong to
     /// tab @p tabId, which is going away: they would have nothing to act on.
     void dropTabPrompts(quint32 tabId);
+    /// Gives @p pane, out of its tab already, to @p destination with what
+    /// this window kept for it.
     void reparentPane(Pane* pane, TerminalWindow* destination);
+    /// A dialog of @p pane is about to show over the quick terminal. A
+    /// layer surface is no parent for it: it would open under the quick
+    /// terminal and block its keys. The quick terminal slides out instead
+    /// (settleQuickDialogs).
+    void quickDialogOpened(Pane* pane, QDialog* dialog);
+    /// Forgets the quick terminal's dialogs that closed, or whose pane closed
+    /// or went to another window. A dialog that came since the last look slides the quick
+    /// terminal out. Once none is left, it slides in again when it slid out
+    /// for them, unless a dialog went with its pane to another window.
+    void settleQuickDialogs();
     /// After a swap or rotation: shows every pane again when the tab was
     /// zoomed (@p wasZoomed), or lets the panes ease to their new places.
     void settleRearrangement(bool wasZoomed);
@@ -337,6 +381,10 @@ private:
     Pane* splitFocused(SplitTree::Direction direction, const QStringList& command = {}, const PaneLaunchOptions& options = {}, QString* error = nullptr);
     /// Opens a tab at @p at (beside the current tab when negative).
     Pane* newTab(const QString& workingDirectory, const QStringList& command = {}, const QVariantMap& environment = {}, QString* error = nullptr, int at = -1);
+    /// Opens a shell tab beside @p from's tab, in its directory (beside the
+    /// current tab with none), without showing @p from's tab first: one tab
+    /// switch. A failure is a notice.
+    void openShellTab(Pane* from);
     void switchTab(int index);
     void closeTab(int index);
     /// Closes tabs from the tab bar, menus and keys: asks first where a program runs.
@@ -344,6 +392,11 @@ private:
     /// Runs @p close, first asking when confirmClose is on and a program
     /// runs in one of @p panes. @p what names what closes: "this tab".
     void confirmClose(const QList<Pane*>& panes, const QString& what, std::function<void()> close);
+    /// confirmClose with the @p jobs that closingJobs gave for @p panes.
+    void confirmClose(const QStringList& jobs, const QList<Pane*>& panes, const QString& what, std::function<void()> close);
+    /// The jobs that confirmClose names for @p panes, as it shows them (an
+    /// overlay's program too); empty when confirmClose is off or none runs.
+    QStringList closingJobs(const QList<Pane*>& panes) const;
     /// Where a new tab, split or window starts, given the directory it
     /// would inherit (the workingDirectory setting).
     QString startDirectory(const QString& inherited) const;
@@ -362,6 +415,28 @@ private:
     int tabBarHeight(int tabCount = -1) const;
     /// The window in pixels, before the renderer has a size too.
     QSize windowPixels() const;
+    /// Where the content shown at window logical point @p logical sits in
+    /// the layout, in pixels: through the pointer maps (pPointerMap) of the
+    /// window chain, as the last frames drew them. Without maps, @p logical
+    /// in pixels. The panes, their dividers and the panes' docks are found
+    /// here; the chrome and the window's docks, drawn over the chains, at
+    /// @p logical. Touches no GPU state.
+    QPointF windowContentPixel(const QPointF& logical) const;
+    /// The same, then through the pane chain of @p pane's host: where its
+    /// cells, its docks and a popup over it are found. The pane chain's maps
+    /// are at the rectangle that frames draw the pane at, which a split's
+    /// motion eases. The cells, the docks and the popups are at the layout,
+    /// as without maps: while a split eases, a hit is in between for a pack
+    /// that moves the content.
+    QPointF paneContentPixel(Pane* pane, const QPointF& logical) const;
+    /// The pixel of windowContentPixel() that holds the point: where a
+    /// divider is found.
+    QPoint dividerPixel(const QPointF& logical) const;
+    /// The pane whose content shows at @p logical: none outside the window,
+    /// and none where no pane shows (between panes, over the tab bar's band).
+    /// A window chain's map that sends the point out of the window finds
+    /// the pane at that edge.
+    Pane* paneShownAt(const QPointF& logical) const;
     /// The window below the tab bar, in pixels, with @p tabCount tabs (the
     /// current count when negative): what the docks and panes share.
     QRect windowArea(int tabCount = -1) const;
@@ -375,11 +450,20 @@ private:
     /// @p pane is drawn this frame: visible in the current tab, a card of
     /// the overview, or in the tab a tab switch is leaving.
     bool paneDrawn(const Pane* pane) const;
+    /// @p pane (or the host of an overlay) has a place in the current tab's
+    /// layout: not in another tab, not hidden by a zoom, laid out.
+    bool paneLaidOut(const Pane* pane) const;
     void closePane(Pane* pane);
     void setFocusedPane(Pane* pane);
     void scheduleRender();
     void renderNow();
     void relayout();
+    /// The panes' rectangles are from another window size, scale, font or
+    /// padding than now, or from before a split or a tab switch.
+    bool layoutStale() const;
+    /// Lays the panes out now when a dock moved or the layout is stale, as
+    /// the next frame would: for a caller that measures them before it.
+    void ensureLayout();
     void setPaneZoom(Pane* pane);
     bool resizeFocused(SplitTree::Neighbour direction);
     bool handleShortcut(QKeyEvent* e);
@@ -416,13 +500,18 @@ private:
     QRect placeDocks();
     /// The panes' terminal options, for the docks too.
     void setDockOptions(const AfterglowVt::TerminalOptions& options);
-    /// The dock at @p pixel: a window's dock, or a shown pane's dock.
-    DockArea* dockAt(const QPoint& pixel) const;
-    /// A plain left press at @p pixel grabs a divider whose grab reaches
+    /// The dock at window logical point @p logical: a window's dock there,
+    /// or a dock of the pane that shows there (paneShownAt()), where the
+    /// pane's maps send the point.
+    DockArea* dockAt(const QPointF& logical) const;
+    /// The pixel of @p dock at @p logical, which its items and cells are
+    /// found at: through the maps for a pane's dock (dockAt()).
+    QPoint dockPixelOf(const DockArea& dock, const QPointF& logical) const;
+    /// A plain left press at @p logical grabs a divider whose grab reaches
     /// into a pane's dock there, not the dock.
-    bool dividerTakesDock(const QPoint& pixel) const;
-    /// The pane whose own cells are at window logical point @p logical: not
-    /// one whose dock is there.
+    bool dividerTakesDock(const QPointF& logical) const;
+    /// The pane whose content shows at window logical point @p logical
+    /// (paneShownAt()): not one whose dock is there.
     Pane* paneUnder(const QPointF& logical) const;
     /// How far from a divider a press still grabs it, pixels.
     int dividerTolerance() const;
@@ -510,13 +599,27 @@ private:
     QElapsedTimer m_keyModeClock;
     /// Presses the window took, by physical key, so their releases stay
     /// here too. True when a shortcut took it: its auto-repeats run the
-    /// shortcut again, but for a script command, which runs once for each
-    /// press. A mode or the chrome took the others, and their auto-repeats
-    /// go nowhere once the mode has closed.
+    /// shortcut again, but for a script command and the actions of
+    /// onceWhileHeld (handleShortcut), which run once for each press. A
+    /// mode or the chrome took the others, and their auto-repeats go
+    /// nowhere once the mode has closed.
     QHash<quint32, bool> m_consumedKeys;
+    /// A press that reached a pane's program, with what its release needs.
+    struct SentKey {
+        QPointer<Pane> pane;
+        int key = 0;
+        QString text;
+        quint32 nativeScanCode = 0;
+        std::uint64_t order = 0; ///< later presses have higher numbers
+    };
     /// Presses that reached a pane's program, by physical key: the release
     /// goes to that pane whatever has the keyboard by then.
-    QHash<quint32, QPointer<Pane>> m_sentKeys;
+    QHash<quint32, SentKey> m_sentKeys;
+    std::uint64_t m_sentKeyOrder = 0;
+    /// Sends the release of every key in m_sentKeys to its pane now, and
+    /// takes the keys: a drag takes the keyboard (QDrag::exec), and their
+    /// releases would go to it.
+    void releaseSentKeys();
     /// A mode holds the keyboard: the overview, URL mode, Unicode input,
     /// copy mode or a script's key mode. Input-method text does not reach
     /// the pane meanwhile.
@@ -556,8 +659,9 @@ private:
     /// holds a press). Returns true if the chrome took it.
     bool routePointerToChrome(QEvent* e, const QPointF& pos, bool press, bool release);
     void runSearch(const QString& query, int direction);
-    /// Finds the link under the pointer while the link modifier is held and underlines it.
-    void updateLinkHover();
+    /// Finds the link under the pointer while the link modifier is held and
+    /// underlines it. True when the link changed, which sets the pointer's shape.
+    bool updateLinkHover();
     /// The pointer for where it is: a link hand, the program's shape, or the default.
     void applyPointerShape();
     /// Shows @p pane for an assistive technology's action and lays its tab
@@ -625,13 +729,19 @@ private:
     void applyShaders();
     void applyWindowEffects();
     void setUpQuickTerminal();
-    /// Moves the quick terminal @p offset pixels out from its screen edge
-    /// (negative is off screen).
+    /// Moves the quick terminal @p offset pixels out from its screen edge: 0
+    /// shows all of it, and a negative offset puts that many pixel rows of it
+    /// off screen.
     void setQuickOffset(int offset);
+    /// The offset of the slide's frame now, with one pixel row on screen at least.
+    int slideOffset() const;
     QMetaObject::Connection m_quickScreenWatch; ///< the quick terminal's screen changing size
     /// Encodes @p e for @p pane (the focused pane's input pane when null) and sends it.
     void sendKey(QKeyEvent* e, Pane* pane = nullptr);
     void paste(QClipboard::Mode mode);
+    /// Pastes @p text into @p target, with the size limit and the question
+    /// before an unsafe paste (Terminal.confirmUnsafePaste).
+    void pasteText(Pane* target, const QByteArray& text);
 
     // Clipboard protocol (OSC 5522)
     void clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRequest& request);
@@ -698,14 +808,30 @@ private:
     /// The scroll shift of @p pane's last frame (PaneMotion::scrollShift).
     float drawnScrollShift(const Pane* pane) const;
     /// Where window position @p pos (logical) is on @p pane's grid as the
-    /// last frame drew it, in pixels from the grid's top left corner.
+    /// last frame drew it, in pixels from the grid's top left corner:
+    /// through the pointer maps (paneContentPixel()).
     QPointF gridPixel(Pane* pane, const QPointF& pos) const;
+    /// The same for @p pixel, a layout pixel of the window: no map.
+    QPointF gridPixelAt(Pane* pane, const QPointF& pixel) const;
+    /// @p pos is over @p pane's cells, not around them (the padding, or
+    /// what a pack shows around a pane), where cellAt() clamps.
+    bool overCells(Pane* pane, const QPointF& pos) const;
+    /// The grid pixel that holds @p pos, clamped to the grid: for reports
+    /// in pixels, as cellAt() for reports in cells.
+    QPoint cellPixel(Pane* pane, const QPointF& pos) const;
     /// Cell under a window position, as the last frame drew the cells,
     /// clamped to the pane's grid.
     QPoint cellAt(Pane* pane, const QPointF& pos) const;
+    /// The cell at grid pixel @p px (gridPixel()), clamped to the grid.
+    QPoint cellOf(Pane* pane, const QPointF& px) const;
     /// Cell row under @p pos without clamping; negative above, >= rows below.
     int rawRowAt(Pane* pane, const QPointF& pos) const;
     void updateSelectionDrag();
+    /// Starts a selection at @p pos of @p pane, as a press there does.
+    void beginSelection(Pane* pane, const QPointF& pos, AfterglowVt::SelectionMode mode);
+    /// Drags the selected text of @p pane out (QDrag, text/plain), and returns
+    /// when the drop ends. False, with no drag, when the selection has no text.
+    bool dragSelectionText(Pane* pane);
     void copySelection(bool toClipboard);
     /// Copies @p pane's new selection where Terminal.copyOnSelect says.
     void copyOnSelect(Pane* pane);
@@ -771,8 +897,45 @@ private:
     bool m_effectsApplied = false;
     bool m_quickShown = false;
     int m_quickHeight = 0;
+    /// The dialogs of the quick terminal's panes that are open (keepDialogOverPane),
+    /// with the pane each one asks for.
+    std::vector<std::pair<QPointer<QDialog>, QPointer<Pane>>> m_quickDialogs;
+    bool m_quickOutForDialogs = false; ///< the quick terminal slid out for m_quickDialogs
+    bool m_quickDialogAdded = false; ///< a dialog came to m_quickDialogs since settleQuickDialogs looked
     PhosphorAnimation::AnimatedValue<qreal> m_slide;
     std::unordered_map<const Pane*, std::unique_ptr<PaneMotion>> m_motion;
+    /// A screenshot that waits for its frame (captureFrame).
+    struct PendingCapture
+    {
+        CaptureScope scope = CaptureScope::Pane;
+        QPointer<Pane> target;
+        CaptureReply reply;
+        std::uint64_t ticket = 0; ///< the renderer's, once the frame is asked for
+        QDeadlineTimer deadline; ///< for the next frame
+    };
+    /// A bound on a failure, not a value to tune: a frame takes milliseconds,
+    /// and a window that cannot draw (its surface is lost, the compositor
+    /// sends it no frames) gives an error after this.
+    static constexpr int CaptureTimeoutMs = 2000;
+    std::vector<std::shared_ptr<PendingCapture>> m_pendingCaptures;
+    /// Fires at the first deadline of m_pendingCaptures.
+    QTimer m_captureTimer;
+    /// Before a frame: asks the renderer to read it back for the captures
+    /// that wait no more, and restarts the deadline of those that wait.
+    void prepareCaptures();
+    /// @p capture waits for the end of a tab switch, or of a move of its pane.
+    bool captureWaits(const PendingCapture& capture) const;
+    /// Cuts @p image, the frame drawn for @p capture.
+    void captureDrawn(const std::shared_ptr<PendingCapture>& capture, const QImage& image);
+    /// Gives @p capture its answer and forgets it.
+    void finishCapture(std::shared_ptr<PendingCapture> capture, const QString& error, const QString& code,
+                       const QImage& image = {});
+    /// Answers every pending capture with @p error (not_shown).
+    void abortCaptures(const QString& error);
+    /// Answers the captures whose deadline has passed with failed.
+    void expireCaptures();
+    /// Starts m_captureTimer for the first deadline, or stops it.
+    void armCaptureTimer();
     /// Where a pane just created by a split grows from.
     std::unordered_map<const Pane*, QRectF> m_growFrom;
     /// Rows each pane's history has taken in, at the last frame: a view
@@ -781,7 +944,8 @@ private:
 
     QTimer m_blinkTimer;
     QTimer m_textBlinkTimer; ///< SGR 5 blinking, running only while some shows
-    QTimer m_holdRetry; ///< a frame again once a pane's held frame may have timed out
+    QTimer m_holdRetry; ///< a frame again when a pane's held frame times out
+    qint64 m_holdWait = 0; ///< this frame: the milliseconds until the first held frame times out
     bool m_textBlinkOn = true;
     /// Tells each pane whether it can be seen (mode 2033 reports).
     void updatePaneVisibility();
@@ -824,6 +988,8 @@ private:
     // Links under the pointer (while the link modifier is held). Outside
     // the window, as before the pointer first enters it, it is (-1, -1).
     QPointF m_pointer{-1, -1};
+    /// WindowRenderer::pointerMapSerial() when the pointer was last looked at.
+    std::uint64_t m_pointerMapSerial = 0;
     /// A link on one row: an OSC 8 hyperlink run or a URL in the text.
     struct UrlSpan
     {
@@ -1051,10 +1217,14 @@ private:
     /// Finds the link under the pointer again when @p pane's snapshot is
     /// not the one m_hover was found in. After the pane's refreshSnapshot.
     void refreshLinkHover(Pane* pane);
-    /// The link (OSC 8 or a URL in the text) under @p pos in @p pane, if any.
+    /// The link (OSC 8 or a URL in the text) under @p pos in @p pane, if
+    /// any: only over its cells (overCells()).
     LinkHover linkAt(Pane* pane, const QPointF& pos) const;
-    /// The right-click menu, at @p pos (logical pixels).
-    void openContextMenu(const QPointF& pos);
+    /// The link at @p cell of @p pane, if any.
+    LinkHover linkAtCell(Pane* pane, const QPoint& cell) const;
+    /// The right-click menu, at @p pos (logical pixels), with @p link, the
+    /// link it opens and copies, if any.
+    void openContextMenu(const QPointF& pos, const QString& link);
     /// Opens @p url with Links.openWith, or the desktop's handler.
     void openLink(const QString& url);
     /// The link modifier (Links.modifier) is held, or none is needed.
@@ -1088,6 +1258,13 @@ private:
 
     // Selection dragging.
     QPointer<Pane> m_selectionPane;
+    /// A press inside the selection (Mouse.dragSelection), held back: a move
+    /// drags the text out, a release clicks where the press was.
+    QPointer<Pane> m_textDragPane;
+    QPointF m_textDragFrom;
+    /// The pane whose selection a drag carries while it runs: no drop there.
+    QPointer<Pane> m_textDragSource;
+    bool m_textDragging = false; ///< dragSelectionText() is in QDrag::exec()
     /// The selection's press moved to another cell: its release is no click,
     /// even when output cleared the selection meanwhile.
     bool m_selectionDragged = false;

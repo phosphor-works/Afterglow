@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "DragDrop.h"
 #include "FileDrop.h"
+#include "NestedLoop.h"
 #include "ProtoBytes.h"
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/DragDrop.h>
@@ -894,6 +895,10 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         });
         dropMonitor.start(10);
         g_takenDrag = nullptr;
+        if (owner)
+            Q_EMIT owner->dragStarting();
+        // The window that the drag runs in stays until this function returns.
+        const NestedLoop loop(window);
         auto action = operation->exec(Qt::DropActions(sourceActions), Qt::CopyAction);
         // A move to another client is reported as a copy: the program keeps
         // its files, and a target that refused the drop loses nothing.
@@ -1370,6 +1375,7 @@ void DragDrop::setCommandDelivery(std::function<void(int)> deliver) { d->deliver
 void DragDrop::setAnswerWait(int ms) { d->answerWait = std::max(0, ms); }
 bool DragDrop::acceptsDrops() const { return d->accepting; }
 bool DragDrop::offersDrags() const { return d->offering; }
+bool DragDrop::dragging() const { return d->started; }
 bool DragDrop::acceptsDrag() const { return d->hovering && !d->dropped && d->answered; }
 QByteArray DragDrop::queryReply(const QByteArray& command) { return bytesOf(AfterglowProto::dndQueryReply(view(command))); }
 void DragDrop::handle(const QByteArray& command)

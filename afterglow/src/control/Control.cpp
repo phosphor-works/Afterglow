@@ -428,6 +428,7 @@ QString Control::split(quint32 id, const QString& direction, const QStringList& 
     if (!pane) return noPane(id);
     QString error;
     auto* added = window->splitPane(pane, dir, options, &error);
+    if (!added && error == TerminalWindow::noRoomForPane()) return QStringLiteral("not enough room for another pane");
     if (!added) return error.isEmpty() ? QStringLiteral("cannot split pane") : error;
     created = added->id();
     return {};
@@ -661,6 +662,38 @@ QString Control::scopeName(TextScope scope)
         return QStringLiteral("last-output");
     }
     return {};
+}
+
+QString Control::captureRefusal(QString& code) const
+{
+    if (!m_settings.settings().control.allowReadText) {
+        code = QStringLiteral("denied");
+        return QStringLiteral("screenshots are off (Control.allowReadText)");
+    }
+    return {};
+}
+
+QString Control::capture(quint32 id, CaptureScope scope, CaptureReply reply, QString& code)
+{
+    if (QString refused = captureRefusal(code); !refused.isEmpty()) {
+        return refused;
+    }
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    if (!pane) {
+        code = QStringLiteral("no_pane");
+        return noPane(id);
+    }
+    window->captureFrame(pane, scope, std::move(reply));
+    return {};
+}
+
+std::optional<CaptureScope> Control::captureScopeFromName(const QString& name)
+{
+    if (name == QLatin1String("pane")) return CaptureScope::Pane;
+    if (name == QLatin1String("tab")) return CaptureScope::Tab;
+    if (name == QLatin1String("window")) return CaptureScope::Window;
+    return std::nullopt;
 }
 
 std::optional<Control::TextScope> Control::scopeFromName(const QString& name)

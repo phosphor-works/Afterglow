@@ -42,6 +42,13 @@ public:
     /// last layout rectangle.
     void split(Pane* target, Pane* added, Direction direction, double fraction = 0.5, int dividerWidth = 0,
                const QSize& minimum = {});
+    /// Whether split() of @p target in @p direction leaves both sides at
+    /// least @p minimum: in the target's last layout rectangle, which a zoom
+    /// does not change. With @p leaving, after that pane left the tree: as
+    /// the target's sibling, the target takes their parent's rectangle. A
+    /// tree that was never laid out has no room to measure, and passes.
+    bool canSplit(const Pane* target, Direction direction, int dividerWidth, const QSize& minimum,
+                  const Pane* leaving = nullptr) const;
     /// Removes @p pane; its sibling takes the freed space. Returns false if
     /// the pane was the last one.
     bool remove(Pane* pane);

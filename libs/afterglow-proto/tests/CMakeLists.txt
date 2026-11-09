@@ -12,6 +12,7 @@ add_executable(afterglow_proto_tests
     DndUriTest.cpp
     GraphicsTest.cpp
     HelpersTest.cpp
+    IpcServerTest.cpp
     IpcTest.cpp
     JsonTest.cpp
     RemoteTest.cpp
@@ -26,5 +27,6 @@ set_target_properties(afterglow_proto_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 include(GoogleTest)
 # Suites such as Clipboard and Graphics have the same names in the
-# afterglow-vt tests: the prefix keeps the ctest names apart.
-gtest_discover_tests(afterglow_proto_tests TEST_PREFIX "Proto.")
+# afterglow-vt tests: the prefix keeps the ctest names apart. The timeout
+# ends a test that waits on a socket that never answers.
+gtest_discover_tests(afterglow_proto_tests TEST_PREFIX "Proto." PROPERTIES TIMEOUT 60)

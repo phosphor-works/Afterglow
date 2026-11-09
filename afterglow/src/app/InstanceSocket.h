@@ -61,10 +61,13 @@ public:
     /// Takes the lock on @p socket's PATH.lock for another socket of this
     /// process (the remote sessions' sockets): removeStaleSockets then
     /// passes it by, as it does a listening InstanceSocket. The descriptor,
-    /// -1 while another process holds it, -2 when the file cannot be opened.
+    /// AfterglowProto::LockHeld while another holder has it (this process
+    /// included), AfterglowProto::LockFailed when the file cannot be opened
+    /// or locked.
     static int lock(const QString& socket);
-    /// Lets go of lock(): removes the lock file and closes @p fd. The
-    /// socket file goes first, so that no other process takes the path.
+    /// Lets go of lock(): removes the lock file, when it is still the one of
+    /// @p fd, and closes @p fd. The socket file goes first, so that no other
+    /// process takes the path.
     static void unlock(const QString& socket, int fd);
 
 private:

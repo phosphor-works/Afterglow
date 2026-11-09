@@ -135,7 +135,7 @@ Press a key to close a held pane.
 
 Projects store launch layouts, not running sessions.
 They do not save scrollback, environment snapshots, remote sessions or process state.
-The [mux daemon](MUX.md) design describes running sessions. It is not implemented yet.
+The [mux daemon](MUX.md) keeps running sessions. A project cannot open into a session.
 Examine commands in imported layouts before you open them.
 
 ## Script and control results

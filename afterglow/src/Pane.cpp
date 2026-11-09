@@ -7,14 +7,14 @@
 #include "desktop/Accessibility.h"
 #include "DockArea.h"
 #include "ImageDecode.h"
+#include "PaneLaunch.h"
+#include "PaneDialog.h"
 #include "PaneOverlay.h"
 #include "ShownText.h"
 
 #include "app/InstanceSocket.h"
 #include "app/NotificationCenter.h"
-#include "app/Startup.h"
 
-#include <AfterglowProto/Graphics.h>
 #include <AfterglowVt/Unicode.h>
 
 #include <QByteArray>
@@ -24,9 +24,6 @@
 #include <QFileInfo>
 #include <QSaveFile>
 #include <QStandardPaths>
-#include <QDir>
-#include <QWindow>
-#include <QStringList>
 #include <QTextBoundaryFinder>
 #include <QSysInfo>
 
@@ -57,6 +54,10 @@ constexpr qint64 SyncTimeoutMs = 1000;
 constexpr qint64 SyncHoldLimitMs = 2 * SyncTimeoutMs;
 /// How long to keep the last frame while the shell repaints a resized prompt.
 constexpr qint64 PromptRedrawTimeoutMs = 150;
+/// The longest name that a download suggests, in UTF-8 bytes.
+constexpr qsizetype MaxDownloadNameBytes = 200;
+/// The longest extension that a cut name keeps, its dot included, in code points.
+constexpr qsizetype MaxDownloadExtension = 16;
 } // namespace
 
 namespace {
@@ -89,17 +90,6 @@ Pane::~Pane()
     for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
 }
 
-void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantMap& environment)
-{
-    for (auto it = environment.cbegin(); it != environment.cend(); ++it) {
-        const std::string name = it.key().toStdString();
-        std::erase_if(options.environment, [&name](const auto& entry) { return entry.first == name; });
-        std::erase(options.unsetEnvironment, name);
-        if (it.value().metaType().id() == QMetaType::Bool) options.unsetEnvironment.push_back(name);
-        else options.environment.emplace_back(name, it.value().toString().toStdString());
-    }
-}
-
 bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols, int rows, int cellWidth,
                  int cellHeight, QString* error)
 {
@@ -110,59 +100,25 @@ bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols,
         std::lock_guard lock(m_mutex);
         m_terminal.resize(cols, rows, cellWidth, cellHeight);
     }
-    // The configured and launch values win over afterglow's own, and a name
-    // they unset stays unset; each name appears once.
-    const auto named = [&opts](const std::string& name) {
-        return std::any_of(opts.environment.begin(), opts.environment.end(), [&](const auto& kv) { return kv.first == name; })
-            || std::find(opts.unsetEnvironment.begin(), opts.unsetEnvironment.end(), name) != opts.unsetEnvironment.end();
-    };
-    const auto offer = [&](const std::string& name, const std::string& value) {
-        if (!named(name)) opts.environment.emplace_back(name, value);
-    };
-    // Lets `afterglow ctl` run in the pane act on that pane by default: always ours.
-    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_PANE_ID"; });
-    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_PANE_ID"));
-    // An overlay's program acts on the pane it runs over.
-    opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_overlayHost ? m_overlayHost->id() : m_id));
+    // Lets `afterglow ctl` run in the pane act on that pane by default: always
+    // ours. An overlay's program acts on the pane it runs over.
+    AfterglowPty::setVariable(opts, "AFTERGLOW_PANE_ID", std::to_string(m_overlayHost ? m_overlayHost->id() : m_id));
     // Marks the overlay's own terminal: an `afterglow ssh` there gets an
     // OSC 24569 answer of its own, apart from the pane's (RemoteSockets).
-    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_OVERLAY"; });
-    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_OVERLAY"));
-    if (m_overlayHost) opts.environment.emplace_back("AFTERGLOW_OVERLAY", "1");
-    else opts.unsetEnvironment.emplace_back("AFTERGLOW_OVERLAY");
+    if (m_overlayHost) AfterglowPty::setVariable(opts, "AFTERGLOW_OVERLAY", "1");
+    else AfterglowPty::unsetVariable(opts, "AFTERGLOW_OVERLAY");
     // The pane ID means something only to this process: `afterglow ctl` in a
     // second instance's pane must reach that instance, not the first.
-    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_SOCKET"; });
-    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_SOCKET"));
     if (const QString socket = InstanceSocket::processPath(); !socket.isEmpty()) {
-        opts.environment.emplace_back("AFTERGLOW_SOCKET", QFile::encodeName(socket).toStdString());
+        AfterglowPty::setVariable(opts, "AFTERGLOW_SOCKET", QFile::encodeName(socket).toStdString());
     } else {
-        opts.unsetEnvironment.emplace_back("AFTERGLOW_SOCKET");
+        AfterglowPty::unsetVariable(opts, "AFTERGLOW_SOCKET");
     }
     opts.cols = cols;
     opts.rows = rows;
     opts.pixelWidth = cols * cellWidth;
     opts.pixelHeight = rows * cellHeight;
-    offer("TERM", term.toStdString());
-    if (term == QLatin1String("afterglow")) {
-        // Our own entry: point ncurses at it, ahead of the system databases
-        // (the trailing ':' keeps the defaults).
-        QStringList dirs;
-        for (const char* d : {AFTERGLOW_BUILD_TERMINFO_DIR, AFTERGLOW_INSTALLED_TERMINFO_DIR}) {
-            // The build tree's entry is for the build's own binary.
-            if (d == std::string_view(AFTERGLOW_BUILD_TERMINFO_DIR) && !runningFromBuildTree()) continue;
-            if (QFile::exists(QString::fromUtf8(d) + QStringLiteral("/a/afterglow"))) {
-                dirs << QString::fromUtf8(d);
-            }
-        }
-        if (const QByteArray existing = qgetenv("TERMINFO_DIRS"); !existing.isEmpty()) {
-            dirs << QString::fromLocal8Bit(existing);
-        }
-        offer("TERMINFO_DIRS", (dirs.join(QLatin1Char(':')) + QLatin1Char(':')).toStdString());
-    }
-    offer("COLORTERM", "truecolor");
-    offer("TERM_PROGRAM", "afterglow");
-    offer("TERM_PROGRAM_VERSION", AFTERGLOW_VERSION);
+    offerTerminalEnvironment(opts, term);
     std::string err;
     opts.deferStart = true;
     if (m_pty) m_pty->stop();
@@ -230,6 +186,12 @@ bool Pane::sendInput(std::string_view bytes, bool reportFailure)
     return accepted;
 }
 
+qint64 Pane::holdRemaining() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_holdDeadline.remainingTime(); // 0 once passed, and for the expired default
+}
+
 bool Pane::refreshSnapshot(int extraRows)
 {
     std::lock_guard lock(m_mutex);
@@ -247,6 +209,7 @@ bool Pane::refreshSnapshot(int extraRows)
             m_syncHoldTimer.start();
         }
         if (m_syncTimer.elapsed() < SyncTimeoutMs && m_syncHoldTimer.elapsed() < SyncHoldLimitMs) {
+            m_holdDeadline.setRemainingTime(std::min(SyncTimeoutMs - m_syncTimer.elapsed(), SyncHoldLimitMs - m_syncHoldTimer.elapsed()));
             return false;
         }
     } else {
@@ -261,11 +224,13 @@ bool Pane::refreshSnapshot(int extraRows)
             m_promptTimer.start();
         }
         if (m_promptTimer.elapsed() < PromptRedrawTimeoutMs) {
+            m_holdDeadline.setRemainingTime(PromptRedrawTimeoutMs - m_promptTimer.elapsed());
             return false;
         }
     } else {
         m_promptTimer.invalidate();
     }
+    m_holdDeadline = {};
     // Animations run only for images the viewport draws, and only PTY output
     // ticks them, so a viewport that moves must tick them again. Queued: the
     // tick takes m_mutex.
@@ -306,6 +271,11 @@ AfterglowRender::PaneSnapshot Pane::takeSnapshot()
 AfterglowVt::SelectionPoint Pane::selectionPointAt(int col, int row) const
 {
     std::lock_guard lock(m_mutex);
+    return pointAt(col, row);
+}
+
+AfterglowVt::SelectionPoint Pane::pointAt(int col, int row) const
+{
     const AfterglowVt::Screen& scr = m_terminal.screen();
     return {scr.rowsDropped() + scr.viewportTop() + std::size_t(std::clamp(row, 0, scr.rows() - 1)),
             std::clamp(col, 0, scr.cols() - 1)};
@@ -356,11 +326,32 @@ void Pane::clearSelection()
     }
 }
 
+bool Pane::selectionShown() const
+{
+    // validFor() checks active first.
+    return m_selectionOnAltScreen == m_terminal.modes().altScreen && m_selection.validFor(m_terminal.screen());
+}
+
 bool Pane::hasSelection() const
 {
     std::lock_guard lock(m_mutex);
-    return m_selection.active && m_selectionOnAltScreen == m_terminal.modes().altScreen
-        && m_selection.validFor(m_terminal.screen());
+    return selectionShown();
+}
+
+bool Pane::selectionContains(int col, int row) const
+{
+    // One lock for the cell and the test: a region scroll between them
+    // would move the selection's rows but not the cell's.
+    std::lock_guard lock(m_mutex);
+    // Copy mode draws its cursor as a selection of one cell. A selection
+    // that the mouse made meanwhile is a selection.
+    const bool copyCursor = m_copyMode && !m_copySelecting && m_selection.anchor == m_copyCursor
+        && m_selection.head == m_copyCursor;
+    if (!selectionShown() || copyCursor) {
+        return false;
+    }
+    const AfterglowVt::SelectionPoint point = pointAt(col, row);
+    return m_selection.range(m_terminal.screen(), m_terminal.options().wordBoundaries).contains(point.row, point.col);
 }
 
 QString Pane::selectedText() const
@@ -368,7 +359,7 @@ QString Pane::selectedText() const
     std::string text;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_selection.active || m_selectionOnAltScreen != m_terminal.modes().altScreen) {
+        if (!selectionShown()) {
             return {};
         }
         text = m_selection.text(m_terminal.screen(), m_terminal.options().wordBoundaries);
@@ -446,7 +437,9 @@ void Pane::scrollHistory(double fraction)
 {
     std::lock_guard lock(m_mutex);
     const auto& screen = m_terminal.screen();
-    const long top = long(std::clamp(fraction, 0.0, 1.0) * double(screen.totalRows()));
+    // Rounded: the bottom of the scroll bar is 1 - size, whose product with
+    // the row count can fall just short of the live view's top row.
+    const long top = std::clamp(std::lround(std::clamp(fraction, 0.0, 1.0) * double(screen.totalRows())), 0L, long(screen.historySize()));
     m_terminal.scrollViewport(long(screen.viewportTop()) - top);
 }
 
@@ -459,7 +452,7 @@ QString searchError(const AfterglowVt::TextSearchResult& result)
     case SearchError::None:
         return {};
     case SearchError::PatternTooLong:
-        return Pane::tr("Pattern exceeds 4096 characters");
+        return Pane::tr("Pattern exceeds %1 characters").arg(AfterglowVt::MaxSearchPattern);
     case SearchError::NoMemory:
         return Pane::tr("Not enough memory to search");
     case SearchError::TimeLimit:
@@ -529,7 +522,8 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
             m_searchMatches = std::move(result.matches);
             m_searchCurrent = int(m_searchMatches.size()) - 1;
             m_searchNotice = scrolled ? tr("Text moved during the search. Search again") : searchError(result);
-            if (result.truncated) m_searchNotice += tr(" (limited results)");
+            if (result.truncated)
+                m_searchNotice = m_searchNotice.isEmpty() ? tr("Limited results") : tr("%1 (limited results)").arg(m_searchNotice);
             if (m_searchCurrent >= 0) revealRow(m_terminal, std::size_t(m_terminal.screen().absoluteIndexOf(m_searchMatches.back().start.row)));
             ++m_selectionSerial;
         }
@@ -737,12 +731,14 @@ void Pane::setSignal(int channel, float value)
 
 void Pane::setSignals(const QList<QPair<int, float>>& values, std::chrono::steady_clock::time_point time)
 {
+    bool changed = false;
     for (const auto& [channel, value] : values) {
         if (channel >= 0 && channel < SignalCount) {
             m_signals[std::size_t(channel)] = {value, time};
+            changed = true;
         }
     }
-    Q_EMIT shaderSignalsChanged();
+    if (changed) Q_EMIT shaderSignalsChanged();
 }
 
 void Pane::setSearchColors(std::uint32_t match, std::uint32_t current, std::uint32_t text)
@@ -813,7 +809,9 @@ void Pane::commandStarted(std::string_view command)
     // pty thread, terminal locked
     m_command = QString::fromUtf8(command.data(), qsizetype(command.size()));
     m_commandStart = std::chrono::steady_clock::now();
-    queueEvent([this, command = m_command] { Q_EMIT commandBegan(command); }, std::size_t(m_command.size()) * sizeof(QChar));
+    const bool queued = queueEvent([this, command = m_command] { Q_EMIT commandBegan(command); },
+                                   std::size_t(m_command.size()) * sizeof(QChar), m_commandBudget);
+    m_commandStartEvent = queued ? CommandStart::Queued : CommandStart::Dropped;
 }
 
 void Pane::commandFinished(int exitCode)
@@ -821,7 +819,14 @@ void Pane::commandFinished(int exitCode)
     const auto elapsed = std::chrono::steady_clock::now() - m_commandStart;
     const qint64 ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
     const QString command = std::exchange(m_command, QString());
-    queueEvent([this, command, exitCode, ms] { Q_EMIT commandEnded(command, exitCode, ms); }, std::size_t(command.size()) * sizeof(QChar));
+    // An end alone would end a command that, for the receivers, never ran.
+    const CommandStart start = std::exchange(m_commandStartEvent, CommandStart::None);
+    if (start == CommandStart::Dropped) {
+        ++m_commandBudget.dropped;
+        return;
+    }
+    queueEvent([this, command, exitCode, ms] { Q_EMIT commandEnded(command, exitCode, ms); }, std::size_t(command.size()) * sizeof(QChar),
+               m_commandBudget, start == CommandStart::Queued);
 }
 
 QString Pane::foregroundJob() const
@@ -975,17 +980,18 @@ void Pane::queueOnce(std::atomic_bool& queued, std::function<void()> deliver)
     postEvents();
 }
 
-bool Pane::queueEvent(std::function<void()> event, std::size_t bytes)
+bool Pane::queueEvent(std::function<void()> event, std::size_t bytes, EventBudget& budget, bool paired)
 {
     // Each of these events matters on its own, so they are not coalesced as
     // a title is: bounds keep a flood of them (a program that writes OSC 9
     // in a loop, or clipboard writes of 128 MiB each) from growing without end.
-    if (m_queuedEvents >= MaxQueuedEvents || (m_queuedEventBytes > 0 && m_queuedEventBytes + bytes > MaxQueuedEventBytes)) {
-        ++m_droppedEvents;
+    // A paired end goes past them by one at most: each start has one end.
+    if (!paired && (budget.events >= MaxQueuedEvents || (budget.bytes > 0 && budget.bytes + bytes > MaxQueuedEventBytes))) {
+        ++budget.dropped;
         return false;
     }
-    ++m_queuedEvents;
-    m_queuedEventBytes += bytes;
+    ++budget.events;
+    budget.bytes += bytes;
     m_events.push_back(std::move(event));
     postEvents();
     return true;
@@ -1000,18 +1006,21 @@ void Pane::postEvents()
 void Pane::deliverEvents()
 {
     std::deque<std::function<void()>> events;
-    std::size_t dropped = 0;
+    std::size_t droppedRequests = 0;
+    std::size_t droppedCommands = 0;
     {
         std::lock_guard lock(m_mutex);
         // Cleared under the lock: an event queued after the swap posts
         // another delivery.
         m_eventsPosted = false;
         events.swap(m_events);
-        m_queuedEvents = 0;
-        m_queuedEventBytes = 0;
-        dropped = std::exchange(m_droppedEvents, 0);
+        droppedRequests = std::exchange(m_requestBudget, {}).dropped;
+        droppedCommands = std::exchange(m_commandBudget, {}).dropped;
     }
-    if (dropped > 0) qCWarning(lcPane) << "dropped" << dropped << "notifications, clipboard requests or command events that came faster than the window took them";
+    if (droppedRequests > 0)
+        qCWarning(lcPane) << "dropped" << droppedRequests << "notifications or clipboard requests that came faster than the window took them";
+    if (droppedCommands > 0)
+        qCWarning(lcPane) << "dropped" << droppedCommands << "command events that came faster than the window took them";
     for (const auto& event : events) event();
 }
 
@@ -1278,7 +1287,8 @@ void Pane::notify(std::string_view title, std::string_view body)
     QString heading = QString::fromUtf8(title.data(), qsizetype(title.size()));
     QString text = QString::fromUtf8(body.data(), qsizetype(body.size()));
     const std::size_t bytes = std::size_t(heading.size() + text.size()) * sizeof(QChar);
-    queueEvent([this, heading = std::move(heading), text = std::move(text)] { Q_EMIT notificationRequested(heading, text); }, bytes);
+    queueEvent([this, heading = std::move(heading), text = std::move(text)] { Q_EMIT notificationRequested(heading, text); }, bytes,
+               m_requestBudget);
 }
 
 void Pane::pointerShapeChanged(std::string_view shape)
@@ -1299,7 +1309,7 @@ void Pane::desktopNotification(const AfterglowVt::NotificationRequest& request)
 {
     // The icon data is what can be large.
     queueEvent([this, request] { Q_EMIT desktopNotificationRequested(request); },
-               request.title.size() + request.body.size() + request.iconData.size());
+               request.title.size() + request.body.size() + request.iconData.size(), m_requestBudget);
 }
 
 bool Pane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
@@ -1308,7 +1318,7 @@ bool Pane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
     // with no clipboard support, as the program expects some answer.
     std::size_t bytes = 0;
     for (const auto& [mime, data] : request.data) bytes += mime.size() + data.size();
-    return queueEvent([this, request] { Q_EMIT clipboardRequested(request); }, bytes);
+    return queueEvent([this, request] { Q_EMIT clipboardRequested(request); }, bytes, m_requestBudget);
 }
 
 std::string Pane::notificationCapabilities()
@@ -1398,9 +1408,12 @@ void Pane::ptyClosed(int status)
         std::lock_guard lock(m_mutex);
         m_terminal.programExited();
         if (m_hold.load() || (m_holdOnFailure.load() && code > 0)) {
-            const std::string note = "\r\n\x1b[0;2m[exited with status " + std::to_string(std::max(code, 0))
-                + ". Press any key to close]\x1b[0m\x1b[?25l";
-            m_terminal.feed(note);
+            // What waitpid said: a status that is unknown is not 0, and a
+            // signal is not the status 128 + N of a shell's $?.
+            const QString ending = status == -1 ? tr("The program ended")
+                : WIFSIGNALED(status)           ? tr("The program was killed by signal %1").arg(WTERMSIG(status))
+                                                : tr("The program exited with status %1").arg(WEXITSTATUS(status));
+            m_terminal.feed("\r\n\x1b[0;2m[" + tr("%1. Press any key to close.").arg(ending).toStdString() + "]\x1b[0m\x1b[?25l");
             m_held.store(true);
         }
     }
@@ -1417,7 +1430,8 @@ void Pane::holdStartFailure()
 {
     {
         std::lock_guard lock(m_mutex);
-        m_terminal.feed("\r\n[Unable to start a process. Check the project or the configuration. Press any key to close.]\r\n");
+        m_terminal.feed("\r\n[" + tr("Unable to start a process. Check the project or the configuration. Press any key to close.").toStdString()
+                        + "]\r\n");
         m_held.store(true);
     }
     Q_EMIT contentChanged();
@@ -1458,10 +1472,33 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
     QString suggested = QString::fromUtf8(name.data(), qsizetype(name.size()));
     suggested.replace(QLatin1Char('\\'), QLatin1Char('/'));
     suggested = suggested.section(QLatin1Char('/'), -1);
-    QString clean;
-    for (const QChar c : suggested) if (!c.isNull() && c.isPrint() && c.category() != QChar::Other_Format) clean += c;
+    // By code point: a character outside the BMP is two UTF-16 units, and
+    // neither half of the pair is printable on its own.
+    std::u32string kept;
+    for (const char32_t c : suggested.toUcs4())
+        if (c && QChar::isPrint(c) && QChar::category(c) != QChar::Other_Format) kept += c;
+    QString clean = QString::fromStdU32String(kept);
+    // NAME_MAX is 255 bytes. A long name keeps room for what the user adds,
+    // and keeps its last extension when that is short: the stem is cut at
+    // the end of a whole character (a grapheme, with its combining marks).
+    if (clean.toUtf8().size() > MaxDownloadNameBytes) {
+        const qsizetype dot = clean.lastIndexOf(QLatin1Char('.'));
+        const bool extension = dot > 0 && QStringView(clean).mid(dot).toUcs4().size() <= MaxDownloadExtension;
+        const QString suffix = extension ? clean.mid(dot) : QString();
+        const QString stem = extension ? clean.left(dot) : clean;
+        const qsizetype budget = MaxDownloadNameBytes - suffix.toUtf8().size();
+        QTextBoundaryFinder graphemes(QTextBoundaryFinder::Grapheme, stem);
+        qsizetype end = 0, used = 0;
+        for (qsizetype start = 0, next = graphemes.toNextBoundary(); next > 0; start = next, next = graphemes.toNextBoundary()) {
+            used += QStringView(stem).mid(start, next - start).toUtf8().size();
+            if (used > budget) break;
+            end = next;
+        }
+        // A first character over the budget alone (marks without end) leaves
+        // no stem: the name would be a hidden file.
+        clean = (end > 0 ? stem.left(end) : QStringLiteral("download")) + suffix;
+    }
     if (clean.isEmpty() || clean == QLatin1String(".") || clean == QLatin1String("..")) clean = QStringLiteral("download.bin");
-    clean = clean.left(180);
     QMetaObject::invokeMethod(this, [this, bytes, clean, lease] {
         auto* dialog = new QFileDialog(nullptr, tr("Save file received from %1").arg(sanitizedText(title(), 100)));
         dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -1470,12 +1507,8 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
         dialog->setDirectory(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
         dialog->selectFile(clean);
         // On Wayland a dialog with no transient parent is not attached to the
-        // window. An overlay's pane is its host's child, in the host's window.
-        const Pane* place = m_overlayHost ? m_overlayHost : this;
-        if (auto* window = qobject_cast<QWindow*>(place->parent())) {
-            dialog->winId();
-            dialog->windowHandle()->setTransientParent(window);
-        }
+        // window. It follows the pane to another window.
+        keepDialogOverPane(dialog, this);
         // Keep the lease until the dialog is destroyed, including on cancellation.
         connect(dialog, &QObject::destroyed, [lease] {});
         connect(this, &QObject::destroyed, dialog, &QDialog::reject);
@@ -1532,6 +1565,7 @@ DragDrop* Pane::dragDrop()
         m_dragDrop->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
         m_dragDrop->setCommandDelivery([this](int waitMs) { deliverProtocolCommands(waitMs); });
         m_dragDrop->setAnswerWait(m_dragAnswerWait);
+        connect(m_dragDrop.get(), &DragDrop::dragStarting, this, &Pane::programDragStarting);
         connect(m_dragDrop.get(), &DragDrop::reply, this, [this](const QByteArray& bytes) {
             if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
             // A held pane's program has exited: no input failed, nothing reads it.

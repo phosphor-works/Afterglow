@@ -41,6 +41,28 @@ const QList<PhosphorShaders::EntryCandidate>& fragmentEntry()
     return candidates;
 }
 
+// The pointer map stage: the same source, with a main() that writes where
+// the content shown at each canvas position comes from (pPointerMap).
+const QList<PhosphorShaders::EntryCandidate>& pointerEntry()
+{
+    static const QList<PhosphorShaders::EntryCandidate> candidates{{QStringLiteral("pPointerMap"), QStringLiteral(
+        "void main() {\n"
+        "    depthBuffer = vec4(0.0);\n"
+        "    fragColor = vec4(pPointerMap((gl_FragCoord.xy - uCanvas.xy) / uCanvas.zw), 0.0, 1.0);\n"
+        "}\n")}};
+    return candidates;
+}
+
+/// Whether @p code defines the pointer map, and not its own main(): a
+/// stage with a main() of its own has no generated entry to choose. The
+/// same test as assembleEntryPoint() makes, on the pass's own text with its
+/// comments taken out, so a map is baked exactly when its entry is found.
+bool definesPointerMap(const QByteArray& code)
+{
+    const QString text = QString::fromUtf8(code);
+    return PhosphorShaders::definesFunction(text, QStringLiteral("pPointerMap")) && !PhosphorShaders::definesMain(text);
+}
+
 QString vertexPrologue()
 {
     return QStringLiteral("#version 450\n#define AFTERGLOW_TERMINAL_VERTEX_STAGE 1\n#include <terminal_lib.glsl>\n");
@@ -319,6 +341,13 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compileStage(const ShaderProgramSo
     program->m_shader = bakeStage(source.code, fragmentPrologue(source.depthOutput), fragmentEntry(),
         QShader::FragmentStage, source.directory, source.includeDirs, source.parameterPreamble, source.id, fragment, error);
     if (!program->m_shader.isValid()) return nullptr;
+    if (!bufferPass && definesPointerMap(source.code)) {
+        QString pointer;
+        program->m_pointerShader = bakeStage(source.code, fragmentPrologue(false), pointerEntry(), QShader::FragmentStage,
+            source.directory, source.includeDirs, source.parameterPreamble, source.id + QStringLiteral(" pointer map"),
+            pointer, error);
+        if (!program->m_pointerShader.isValid()) return nullptr;
+    }
     if (!geometry.vertexCode.isEmpty()) {
         program->m_vertexShader = bakeStage(geometry.vertexCode, meshPrologue(!geometry.vertices.empty()), meshEntry(),
             QShader::VertexStage, geometry.directory, source.includeDirs, source.parameterPreamble,

@@ -350,8 +350,7 @@ bool TerminalWindow::openOverview()
     m_overview.open = true;
     // Not laid out since a new tab, a split or the unzoom above: the current
     // tab's cards would have no rectangles, and the focused one none to find.
-    if (m_docksMoved) finishDockMoves();
-    else if (m_layoutSize.isEmpty()) relayout();
+    ensureLayout();
     layoutOtherTabs();
     const auto panes = overviewPanes();
     const auto focused = std::find(panes.begin(), panes.end(), m_focused.data());

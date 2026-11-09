@@ -7,7 +7,7 @@
 #include <AfterglowRender/PostChain.h>
 #include <AfterglowRender/Snapshot.h>
 
-#include <PhosphorShaders/ShaderBindings.h>
+#include "ShaderBindings.h"
 
 #include <QFile>
 #include <QLoggingCategory>
@@ -62,14 +62,6 @@ float age(double now, double when)
 {
     return float(std::clamp(now - when, 0.0, 1e6));
 }
-
-/// uPreviousText in terminal_history.glsl: the first binding above Phosphor's table.
-constexpr int PreviousTextBinding = PhosphorShaders::Bindings::kExtraBase;
-/// TerminalScene in terminal_scene.glsl: object matrices for mesh passes.
-constexpr int SceneBinding = PreviousTextBinding + 1;
-constexpr int PanesBinding = SceneBinding + 1;
-constexpr int TabImageBinding = PanesBinding + 1;
-constexpr int TabAtlasBinding = TabImageBinding + 1;
 
 /// Shrinks the window-sized tab image into an atlas tile: each tile pixel
 /// averages a 3x3 grid across the source pixels it covers.
@@ -615,25 +607,25 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
     }
     // Phosphor's binding table (PhosphorShaders::Bindings), with the canvas in
     // the consumer slot and the previous text in the first free one.
-    namespace Bindings = PhosphorShaders::Bindings;
+    namespace B = PhosphorShaders::Bindings;
     std::vector<QRhiShaderResourceBinding>& entries = m_bindingEntries;
     entries.clear();
     entries.insert(entries.end(), {
-        QRhiShaderResourceBinding::uniformBuffer(Bindings::kUniformBlock, stage, uniformBuffer(ubo)),
-        QRhiShaderResourceBinding::sampledTexture(Bindings::kConsumer, stage, input, m_sampler.get()),
-        QRhiShaderResourceBinding::sampledTexture(Bindings::kAudioSpectrum, stage,
+        QRhiShaderResourceBinding::uniformBuffer(B::kUniformBlock, stage, uniformBuffer(ubo)),
+        QRhiShaderResourceBinding::sampledTexture(B::kConsumer, stage, input, m_sampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(B::kAudioSpectrum, stage,
             audio ? audio : input, m_device.atlasSampler()),
-        QRhiShaderResourceBinding::sampledTexture(PreviousTextBinding, stage, history, m_sampler.get()),
-        QRhiShaderResourceBinding::uniformBuffer(SceneBinding, stage, sceneBuffer(ubo)),
-        QRhiShaderResourceBinding::uniformBuffer(PanesBinding, stage, panesBuffer()),
+        QRhiShaderResourceBinding::sampledTexture(Bindings::PreviousText, stage, history, m_sampler.get()),
+        QRhiShaderResourceBinding::uniformBuffer(Bindings::Scene, stage, sceneBuffer(ubo)),
+        QRhiShaderResourceBinding::uniformBuffer(Bindings::Panes, stage, panesBuffer()),
         // The shrink pass (an explicit source) renders into the atlas, so it binds neither.
-        QRhiShaderResourceBinding::sampledTexture(TabImageBinding, stage,
+        QRhiShaderResourceBinding::sampledTexture(Bindings::TabImage, stage,
             m_tabImage && !source ? m_tabImage.get() : input, m_sampler.get()),
-        QRhiShaderResourceBinding::sampledTexture(TabAtlasBinding, stage,
+        QRhiShaderResourceBinding::sampledTexture(Bindings::TabAtlas, stage,
             m_tabAtlas && !source ? m_tabAtlas.get() : input, m_sampler.get()),
     });
     for (int i = 0; i < MaxShaderBuffers; ++i)
-        entries.push_back(QRhiShaderResourceBinding::sampledTexture(Bindings::kChannelBase + i, stage,
+        entries.push_back(QRhiShaderResourceBinding::sampledTexture(B::kChannelBase + i, stage,
             buffers && buffers->textures[i] ? buffers->textures[i] : input,
             buffers && buffers->samplers[i] ? buffers->samplers[i] : m_sampler.get()));
     const ShaderParameterValues* overrides = nullptr;
@@ -644,9 +636,9 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
     for (int i = 0; i < MaxShaderImages; ++i) {
         QRhiTexture* image = input;
         if (updates) image = parameterTexture(program ? imageFor(*program, overrides, i) : QImage(), updates);
-        entries.push_back(QRhiShaderResourceBinding::sampledTexture(Bindings::kUserTextureBase + i, stage, image, m_sampler.get()));
+        entries.push_back(QRhiShaderResourceBinding::sampledTexture(B::kUserTextureBase + i, stage, image, m_sampler.get()));
     }
-    entries.push_back(QRhiShaderResourceBinding::sampledTexture(Bindings::kDepth, stage,
+    entries.push_back(QRhiShaderResourceBinding::sampledTexture(B::kDepth, stage,
         buffers && buffers->depth ? buffers->depth : (updates ? parameterTexture({}, updates) : input), m_sampler.get()));
     slot->setBindings(entries.begin(), entries.end());
     if (!slot->create()) throw std::runtime_error("shader sampler bindings failed");

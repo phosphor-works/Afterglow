@@ -19,10 +19,12 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaMethod>
+#include <QSaveFile>
 
 #include <algorithm>
 #include <cerrno>
@@ -35,6 +37,7 @@
 #include <string_view>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace Afterglow {
@@ -52,6 +55,9 @@ of the active window or of the window that was active last.
   send-text --stdin                     type standard input (UTF-8 text)
   get-text [--screen|--scrollback|--selection|--last-output]
                                         print pane text (needs Control.allowReadText)
+  screenshot [--tab|--window] FILE      save the pane, its tab or its window as shown, as a
+                                        PNG FILE or on standard output with - (needs
+                                        Control.allowReadText)
   split [--left|--right|--up|--down] [-- CMD...]
                                         split, run CMD or the shell, and print the new pane
   move-pane TARGET PLACEMENT            move beside pane TARGET (left, right, up or down)
@@ -81,7 +87,8 @@ of the active window or of the window that was active last.
                                         top-left, top-right, bottom-left or bottom-right)
   watch                                 print events as JSON lines until interrupted
 
-Put text that starts with -- after a "--": send-text -- --stdin.
+Put text or a command that starts with -- after a "--": send-text -- --stdin.
+Give a FILE or PATH that starts with -- as ./--FILE or ./--PATH.
 )";
 
 // The events that `watch` subscribes to: the signals of ControlApi.
@@ -100,6 +107,9 @@ QStringList events()
 // clients of the socket wait as long as one another. The overlay call waits
 // for the user instead, with no limit.
 constexpr int ReplyTimeoutMs = AfterglowProto::Run::ReplyTimeoutMs;
+// A screenshot waits for a frame (at most 2 seconds), then for the encode of
+// its PNG, which grows with the window and with the noise of its packs.
+constexpr int ScreenshotTimeoutMs = 3 * ReplyTimeoutMs;
 
 int fail(const QString& message, int status = 1)
 {
@@ -118,7 +128,7 @@ public:
         if (!connected()) return std::nullopt;
         IpcClient::Error error;
         auto result = m_client.call(QLatin1String(ControlSocket::Target), fn, args, timeoutMs, &error);
-        if (!result) report(error);
+        if (!result) report(error, timeoutMs);
         return result;
     }
 
@@ -199,7 +209,7 @@ private:
         return m_pane ? QStringLiteral("the Afterglow that runs this pane") : QStringLiteral("the Afterglow at $AFTERGLOW_SOCKET");
     }
 
-    void report(const IpcClient::Error& error) const
+    void report(const IpcClient::Error& error, int timeoutMs = ReplyTimeoutMs) const
     {
         // The socket stays open for launches: the control target is what
         // Control.enabled takes away, also from a running watch.
@@ -209,7 +219,7 @@ private:
             fail(QStringLiteral("the request is over what one call carries (%1 MiB)").arg(IpcClient::MaxLineBytes >> 20));
         } else if (error.timedOut) {
             // A slow afterglow may still do what was asked.
-            fail(QStringLiteral("Afterglow did not answer in %1 seconds").arg(ReplyTimeoutMs / 1000));
+            fail(QStringLiteral("Afterglow did not answer in %1 seconds").arg(timeoutMs / 1000));
         } else if (error.code.isEmpty()) {
             fail(QStringLiteral("lost Afterglow: %1").arg(error.message));
         } else {
@@ -409,7 +419,7 @@ const QStringList Commands = {
     QStringLiteral("focus"), QStringLiteral("close"), QStringLiteral("set-title"), QStringLiteral("signal"),
     QStringLiteral("notify"), QStringLiteral("scripts"), QStringLiteral("open-directory"), QStringLiteral("projects"),
     QStringLiteral("save-project"), QStringLiteral("open-project"), QStringLiteral("action"), QStringLiteral("watch"),
-    QStringLiteral("overlay"),
+    QStringLiteral("overlay"), QStringLiteral("screenshot"),
 };
 
 // The standard input of `overlay`, as much as an overlay takes. It goes in
@@ -693,6 +703,70 @@ int runCtl(int argc, char** argv)
             if (text.toUtf8().size() > CtlMaxText) return fail(tooLong, AfterglowProto::Run::UsageError);
         }
         act = [&sendText, text](qint64 pane) { return sendText(pane, text); };
+    } else if (command == QLatin1String("screenshot")) {
+        const bool tab = takeFlag(QStringLiteral("--tab"));
+        const bool window = takeFlag(QStringLiteral("--window"));
+        if (tab && window) return usage(QStringLiteral("screenshot takes --tab or --window, not both"));
+        if (const auto error = extra(1)) return usage(*error);
+        if (args.size() != 1) return usage(QStringLiteral("screenshot takes FILE (- for standard output)"));
+        // The terminal of the pane would get the bytes of the PNG: as -, or as
+        // a FILE such as /dev/tty. Checked before the window draws the frame.
+        if (args.first() == QLatin1String("-") && isatty(STDOUT_FILENO)) {
+            return usage(QStringLiteral("screenshot - writes a PNG: send standard output to a file or a program"));
+        }
+        // Only a character device can be a terminal: a FIFO or a file is not
+        // opened here, where an open and a close would end a FIFO's reader.
+        const QByteArray encoded = QFile::encodeName(args.first());
+        struct stat st = {};
+        const bool found = args.first() != QLatin1String("-") && ::stat(encoded.constData(), &st) == 0;
+        // A socket (/dev/stdout of a service) cannot be opened by its name.
+        if (found && S_ISSOCK(st.st_mode)) {
+            return fail(QStringLiteral("%1 is a socket: give - to write to standard output").arg(args.first()),
+                        AfterglowProto::Run::UsageError);
+        }
+        if (found && S_ISCHR(st.st_mode)) {
+            const int fd = ::open(encoded.constData(), O_WRONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+            const bool terminal = fd >= 0 && isatty(fd);
+            if (fd >= 0) ::close(fd);
+            if (terminal) {
+                return fail(QStringLiteral("%1 is a terminal: screenshot writes a PNG").arg(args.first()),
+                            AfterglowProto::Run::UsageError);
+            }
+        }
+        const QString scope = window ? QStringLiteral("window") : tab ? QStringLiteral("tab") : QStringLiteral("pane");
+        act = [&client, scope, path = args.first()](qint64 pane) {
+            const auto result = client.call(QStringLiteral("screenshot"), {pane, scope}, ScreenshotTimeoutMs);
+            if (!result) return 1;
+            const QByteArray png = QByteArray::fromBase64(result->toObject().value(QLatin1String("png")).toString().toLatin1(),
+                                                          QByteArray::AbortOnBase64DecodingErrors);
+            if (png.isEmpty()) return fail(QStringLiteral("the reply holds no image"));
+            if (path == QLatin1String("-")) {
+                if (std::fwrite(png.constData(), 1, std::size_t(png.size()), stdout) != std::size_t(png.size())
+                    || std::fflush(stdout) != 0) {
+                    return fail(QStringLiteral("cannot write standard output: %1").arg(QString::fromLocal8Bit(std::strerror(errno))));
+                }
+                return 0;
+            }
+            // A pipe or a device (/dev/fd/N, >(program)) has no file to
+            // replace: it is written as it is.
+            if (const QFileInfo info(path); info.exists() && !info.isFile()) {
+                QFile out(path);
+                if (!out.open(QIODevice::WriteOnly) || out.write(png) != png.size() || !out.flush()) {
+                    return fail(QStringLiteral("cannot write %1: %2").arg(path, out.errorString()));
+                }
+                return 0;
+            }
+            // Through a new file in the same directory, renamed over FILE: a
+            // failed write leaves FILE as it was. In a directory that takes no
+            // new file, an existing FILE is written in place, and a failed
+            // write can leave part of the image.
+            QSaveFile file(path);
+            file.setDirectWriteFallback(true);
+            if (!file.open(QIODevice::WriteOnly) || file.write(png) != png.size() || !file.commit()) {
+                return fail(QStringLiteral("cannot write %1: %2").arg(path, file.errorString()));
+            }
+            return 0;
+        };
     } else if (command == QLatin1String("get-text")) {
         QString scope = QStringLiteral("screen");
         int scopes = 0;
