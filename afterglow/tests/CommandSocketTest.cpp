@@ -48,6 +48,7 @@
 #include <functional>
 #include <optional>
 #include <thread>
+#include <sys/stat.h>
 
 #include <csignal>
 #include <cstdlib>
@@ -1467,6 +1468,16 @@ TEST(CtlBinaryTest, UsageErrorsExitWithTwoBeforeAnyConnection)
           std::pair{QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("-w"), QStringLiteral("060"), QStringLiteral("--"),
                                 QStringLiteral("fzf")},
                     QStringLiteral("width must be a number of cells from 1 to 10000, or a percentage from \"1%\" to \"100%\"")},
+          std::pair{QStringList{ctl, QStringLiteral("screenshot"), QStringLiteral("--tab"), QStringLiteral("--window"),
+                                QStringLiteral("shot.png")},
+                    QStringLiteral("screenshot takes --tab or --window, not both")},
+          std::pair{QStringList{ctl, QStringLiteral("screenshot")}, QStringLiteral("screenshot takes FILE (- for standard output)")},
+          std::pair{QStringList{ctl, QStringLiteral("screenshot"), QStringLiteral("a.png"), QStringLiteral("b.png")},
+                    QStringLiteral("unexpected argument b.png")},
+          std::pair{QStringList{ctl, QStringLiteral("screenshot"), QStringLiteral("--"), QStringLiteral("--a.png")},
+                    QStringLiteral("unexpected argument --a.png")},
+          std::pair{QStringList{ctl, QStringLiteral("screenshot"), QStringLiteral("--full"), QStringLiteral("a.png")},
+                    QStringLiteral("unknown option --full")},
           // The rules of afterglow.overlay, in the words of a usage error.
           std::pair{QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("--title"), QStringLiteral("a\tb"), QStringLiteral("--"),
                                 QStringLiteral("fzf")},
@@ -1582,7 +1593,8 @@ TEST(CtlBinaryTest, SaysThatNoAfterglowListens)
 /// which answers each call with @p reply and the call's id, and the calls
 /// it got. Afterglow's overlay needs a window: the client needs only the
 /// reply. @p input goes to standard input, else @p inputFd is it.
-/// @p started gets ctl's process ID once it runs.
+/// @p started gets ctl's process ID once it runs. @p command is the ctl
+/// command that @p args follow. @p outputFd, if given, is standard output.
 struct AgainstTarget
 {
     Isolated outcome;
@@ -1592,7 +1604,8 @@ struct AgainstTarget
 };
 
 AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, const QByteArray& input = {}, int inputFd = -1,
-                         const std::function<void(qint64)>& started = {})
+                         const std::function<void(qint64)>& started = {}, const QString& command = QStringLiteral("overlay"),
+                         int outputFd = -1)
 {
     AgainstTarget done;
     // Under /tmp: TMPDIR can be too long for a socket path.
@@ -1630,8 +1643,11 @@ AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, cons
     process.setProcessEnvironment(env);
     process.setWorkingDirectory(runtime.path());
     // In the child, over the pipe that QProcess made: only dup2 runs there.
-    if (inputFd >= 0) process.setChildProcessModifier([inputFd] { ::dup2(inputFd, STDIN_FILENO); });
-    process.start(QStringLiteral(AFTERGLOW_BINARY), QStringList{QStringLiteral("ctl"), QStringLiteral("overlay")} + args);
+    process.setChildProcessModifier([inputFd, outputFd] {
+        if (inputFd >= 0) ::dup2(inputFd, STDIN_FILENO);
+        if (outputFd >= 0) ::dup2(outputFd, STDOUT_FILENO);
+    });
+    process.start(QStringLiteral(AFTERGLOW_BINARY), QStringList{QStringLiteral("ctl"), command} + args);
     if (!process.waitForStarted()) {
         ADD_FAILURE() << "cannot start afterglow ctl";
         return done;
@@ -1767,6 +1783,134 @@ TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)
     EXPECT_EQ(r.outcome.status, 1);
     EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: Control.enabled is off\n"));
     EXPECT_TRUE(r.outcome.out.isEmpty()) << qPrintable(r.outcome.out);
+}
+
+// The PNG of a screenshot goes to FILE, to a pipe or device that FILE names,
+// or to standard output, as it came; an error of the call is ctl's.
+TEST(CtlScreenshotTest, WritesTheImageWhereFileSaysAndTheErrorsOfTheCall)
+{
+    const QByteArray png = "PNG bytes of the test";
+    const QJsonObject image = overlayResult({{QStringLiteral("png"), QString::fromLatin1(png.toBase64())},
+                                             {QStringLiteral("width"), 4}, {QStringLiteral("height"), 2}});
+    const QString screenshot = QStringLiteral("screenshot");
+    QTemporaryDir out;
+    ASSERT_TRUE(out.isValid());
+    const QString file = out.filePath(QStringLiteral("shot.png"));
+    AgainstTarget r = ctlAgainst(image, {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--tab"), file}, {}, -1, {},
+                                 screenshot);
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    ASSERT_EQ(r.calls.size(), 1);
+    EXPECT_EQ(r.calls.first().value(QStringLiteral("fn")).toString(), screenshot);
+    EXPECT_EQ(r.calls.first().value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("tab")}));
+    QFile saved(file);
+    ASSERT_TRUE(saved.open(QIODevice::ReadOnly));
+    EXPECT_EQ(saved.readAll(), png);
+
+    // Standard output: with -, and through /dev/stdout, a pipe here.
+    for (const QString& target : {QStringLiteral("-"), QStringLiteral("/dev/stdout")}) {
+        r = ctlAgainst(image, {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--window"), target}, {}, -1, {}, screenshot);
+        EXPECT_EQ(r.outcome.status, 0) << qPrintable(target) << qPrintable(r.outcome.err);
+        EXPECT_EQ(r.outcome.out, QString::fromLatin1(png)) << qPrintable(target);
+        ASSERT_EQ(r.calls.size(), 1);
+        EXPECT_EQ(r.calls.first().value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("window")}));
+    }
+
+    // A failed write names the file and leaves no file.
+    const QString missing = out.filePath(QStringLiteral("no/such/dir/shot.png"));
+    r = ctlAgainst(image, {QStringLiteral("--pane"), QStringLiteral("3"), missing}, {}, -1, {}, screenshot);
+    EXPECT_EQ(r.outcome.status, 1);
+    EXPECT_TRUE(r.outcome.err.startsWith(QStringLiteral("afterglow ctl: cannot write %1: ").arg(missing))) << qPrintable(r.outcome.err);
+    EXPECT_FALSE(QFile::exists(missing));
+
+    // The error of the call, and a reply without an image.
+    r = ctlAgainst({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("code"), QStringLiteral("not_shown")},
+                    {QStringLiteral("message"), QStringLiteral("the pane is not on screen")}},
+                   {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("-")}, {}, -1, {}, screenshot);
+    EXPECT_EQ(r.outcome.status, 1);
+    EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: the pane is not on screen\n"));
+    EXPECT_TRUE(r.outcome.out.isEmpty()) << qPrintable(r.outcome.out);
+    r = ctlAgainst(overlayResult({{QStringLiteral("width"), 4}}), {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("-")}, {}, -1,
+                   {}, screenshot);
+    EXPECT_EQ(r.outcome.status, 1);
+    EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: the reply holds no image\n"));
+
+    // A terminal, as standard output or as FILE, would get the bytes of the
+    // PNG: a usage error, before anything is written.
+    const AfterglowProto::UniqueFd master(posix_openpt(O_RDWR | O_NOCTTY));
+    ASSERT_TRUE(master.valid());
+    ASSERT_EQ(grantpt(master.get()), 0);
+    ASSERT_EQ(unlockpt(master.get()), 0);
+    const char* name = ptsname(master.get());
+    ASSERT_NE(name, nullptr);
+    const QString pts = QString::fromLocal8Bit(name);
+    const AfterglowProto::UniqueFd terminal(::open(name, O_WRONLY | O_NOCTTY | O_CLOEXEC));
+    ASSERT_TRUE(terminal.valid());
+    r = ctlAgainst(image, {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("-")}, {}, -1, {}, screenshot, terminal.get());
+    EXPECT_EQ(r.outcome.status, 2) << qPrintable(r.outcome.err);
+    EXPECT_TRUE(r.calls.isEmpty());
+    r = ctlAgainst(image, {QStringLiteral("--pane"), QStringLiteral("3"), pts}, {}, -1, {}, screenshot);
+    EXPECT_EQ(r.outcome.status, 2) << qPrintable(r.outcome.err);
+    EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: %1 is a terminal: screenshot writes a PNG\n").arg(pts));
+    EXPECT_TRUE(r.calls.isEmpty()) << "checked before the call";
+
+    // A socket cannot be opened by its name: a usage error, before the call.
+    // Under /tmp: TMPDIR can be too long for a socket path.
+    QTemporaryDir sockets(QStringLiteral("/tmp/afterglow-ctl-XXXXXX"));
+    ASSERT_TRUE(sockets.isValid());
+    const QString socketFile = sockets.filePath(QStringLiteral("shot.sock"));
+    QLocalServer listener;
+    ASSERT_TRUE(listener.listen(socketFile));
+    r = ctlAgainst(image, {QStringLiteral("--pane"), QStringLiteral("3"), socketFile}, {}, -1, {}, screenshot);
+    EXPECT_EQ(r.outcome.status, 2) << qPrintable(r.outcome.err);
+    EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: %1 is a socket: give - to write to standard output\n").arg(socketFile));
+    EXPECT_TRUE(r.calls.isEmpty());
+
+    // A FIFO that a program reads gets the whole image: nothing opens it
+    // before the write, which would end the reader.
+    const QString fifo = out.filePath(QStringLiteral("shot.fifo"));
+    ASSERT_EQ(::mkfifo(QFile::encodeName(fifo).constData(), 0600), 0);
+    QByteArray readBack;
+    std::atomic<bool> opened = false;
+    std::thread reader([&fifo, &readBack, &opened] {
+        QFile in(fifo);
+        const bool open = in.open(QIODevice::ReadOnly);
+        opened = true;
+        if (open) readBack = in.readAll();
+    });
+    r = ctlAgainst(image, {QStringLiteral("--pane"), QStringLiteral("3"), fifo}, {}, -1, {}, screenshot);
+    // A ctl that never opened it leaves the reader waiting for a writer:
+    // a writer of the test's own ends that wait, once the reader is in it.
+    QElapsedTimer unblocking;
+    unblocking.start();
+    while (!opened && unblocking.elapsed() < 5000) {
+        if (const int unblock = ::open(QFile::encodeName(fifo).constData(), O_WRONLY | O_NONBLOCK | O_CLOEXEC); unblock >= 0) {
+            ::close(unblock);
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    if (!opened) ADD_FAILURE() << "the reader of the FIFO did not start: the join can wait";
+    reader.join();
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(readBack, png);
+
+    // A directory that takes no new file: the FILE that is there is written in place.
+    if (::geteuid() == 0) GTEST_SKIP() << "root writes in any directory";
+    const QString locked = out.filePath(QStringLiteral("locked"));
+    ASSERT_TRUE(QDir().mkdir(locked));
+    const QString kept = locked + QStringLiteral("/shot.png");
+    {
+        QFile old(kept);
+        ASSERT_TRUE(old.open(QIODevice::WriteOnly));
+        old.write("old image, longer than the new one");
+    }
+    ASSERT_TRUE(QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+    r = ctlAgainst(image, {QStringLiteral("--pane"), QStringLiteral("3"), kept}, {}, -1, {}, screenshot);
+    QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    QFile written(kept);
+    ASSERT_TRUE(written.open(QIODevice::ReadOnly));
+    EXPECT_EQ(written.readAll(), png);
 }
 
 TEST(CtlOverlayTest, SendsAPopupsOptionsInTheirJsonTypes)

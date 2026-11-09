@@ -638,8 +638,9 @@ PhosphorConfig::Schema buildSchema()
                         "socket also when this is off.")},
         {QStringLiteral("allowReadText"), d.control.allowReadText, QMetaType::Bool,
          QStringLiteral("Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands "
-                        "that run and the values of user variables. A script command that runs for a client, such as aglow "
-                        "run or afterglow run, reads pane text only when Scripts.allowReadText is on too.")},
+                        "that run and the values of user variables. It also allows screenshots of panes, tabs and windows. A "
+                        "script command that runs for a client, such as aglow run or afterglow run, reads pane text only when "
+                        "Scripts.allowReadText is on too.")},
         {QStringLiteral("allowRemoteReadText"), d.control.allowRemoteReadText, QMetaType::Bool,
          QStringLiteral("Allow a script command that runs from a remote host, with aglow run in an afterglow ssh session, to "
                         "read pane text. Any process of the remote user, and the remote root user, can run such a "

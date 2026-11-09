@@ -580,6 +580,212 @@ TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
 
 INSTANTIATE_TEST_SUITE_P(Shaders, NativeRenderer, ::testing::Bool());
 
+// A screenshot, as Control::capture answers it.
+struct Shot {
+    bool done = false;
+    QString error, code;
+    QImage image;
+};
+// Asks @p control for a screenshot of @p pane, and waits for the answer.
+Shot captureShot(Control& control, Pane* pane, CaptureScope scope) {
+    auto shot = std::make_shared<Shot>();
+    QString code;
+    const QString error = control.capture(pane->id(), scope,
+        [shot](const QString& e, const QString& c, const QImage& image) { *shot = Shot{true, e, c, image}; }, code);
+    if (!error.isEmpty()) return Shot{true, error, code, {}};
+    // Longer than a default tab switch and the window's bound on a frame
+    // together: an answer always comes.
+    EXPECT_TRUE(waitFor([shot] { return shot->done; }));
+    return *shot;
+}
+// Mostly red, green or blue, whatever a pane effect does to the shade.
+bool reddish(QRgb c) { return qRed(c) > 120 && qRed(c) > 2 * qGreen(c) && qRed(c) > 2 * qBlue(c); }
+bool greenish(QRgb c) { return qGreen(c) > 120 && qGreen(c) > 2 * qRed(c) && qGreen(c) > 2 * qBlue(c); }
+bool bluish(QRgb c) { return qBlue(c) > 120 && qBlue(c) > 2 * qRed(c) && qBlue(c) > 2 * qGreen(c); }
+// The pixel at the fractions @p x and @p y of @p image.
+QRgb pixelAt(const QImage& image, double x, double y) {
+    return image.pixel(int(x * image.width()), int(y * image.height()));
+}
+
+TEST_F(NativeWindow, ScreenshotsShowThePaneItsTabAndItsWindow) {
+    SettingsStore settings(directory.filePath(QStringLiteral("capture.conf")),
+                           QJsonObject{{QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowReadText"), true}}}});
+    Control control(settings, {});
+    control.attachWindow(window);
+    // Two panes side by side, each filled with its own background colour.
+    Pane* left = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+    Pane* right = window->splitPane(left, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    expectIdle(window);
+    left->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;220;20;20m\x1b[2J"); });
+    right->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;20;200;20m\x1b[2J"); });
+    ASSERT_TRUE(nextFrame(window));
+    // From an idle window: the capture asks for its own frame.
+    expectIdle(window);
+    const QSize windowPixels = window->framePixels();
+    ASSERT_FALSE(windowPixels.isEmpty());
+
+    const Shot whole = captureShot(control, left, CaptureScope::Window);
+    ASSERT_TRUE(whole.error.isEmpty()) << qPrintable(whole.error);
+    EXPECT_TRUE(whole.code.isEmpty());
+    EXPECT_EQ(whole.image.size(), windowPixels);
+    EXPECT_TRUE(reddish(pixelAt(whole.image, 0.25, 0.5)));
+    EXPECT_TRUE(greenish(pixelAt(whole.image, 0.75, 0.5)));
+    const Shot tab = captureShot(control, right, CaptureScope::Tab);
+    ASSERT_TRUE(tab.error.isEmpty()) << qPrintable(tab.error);
+    EXPECT_TRUE(tab.code.isEmpty());
+    // One tab: no tab bar (Window.tabBar auto), so the tab is the window.
+    EXPECT_EQ(tab.image.size(), windowPixels);
+    EXPECT_TRUE(reddish(pixelAt(tab.image, 0.25, 0.5)));
+    EXPECT_TRUE(greenish(pixelAt(tab.image, 0.75, 0.5)));
+    const Shot leftShot = captureShot(control, left, CaptureScope::Pane);
+    const Shot rightShot = captureShot(control, right, CaptureScope::Pane);
+    ASSERT_TRUE(leftShot.error.isEmpty()) << qPrintable(leftShot.error);
+    ASSERT_TRUE(rightShot.error.isEmpty()) << qPrintable(rightShot.error);
+    EXPECT_TRUE(leftShot.code.isEmpty());
+    EXPECT_TRUE(rightShot.code.isEmpty());
+    // Each pane as it shows, with its padding: the two side by side fill
+    // the tab, less the divider between them.
+    EXPECT_LT(leftShot.image.width(), tab.image.width() * 3 / 4);
+    EXPECT_LT(rightShot.image.width(), tab.image.width() * 3 / 4);
+    EXPECT_GE(leftShot.image.width() + rightShot.image.width(), tab.image.width() - 16);
+    EXPECT_LE(leftShot.image.width() + rightShot.image.width(), tab.image.width());
+    // The cells: only red in the left pane, only green in the right one.
+    for (const double at : {0.25, 0.5, 0.75}) {
+        EXPECT_TRUE(reddish(pixelAt(leftShot.image, at, at))) << at;
+        EXPECT_TRUE(greenish(pixelAt(rightShot.image, at, at))) << at;
+    }
+    // A capture lets the window go idle again.
+    expectIdle(window);
+
+    // A pane that a split makes is cut once it has grown to its place.
+    Pane* below = window->splitPane(right, SplitTree::Direction::Down, launch, nullptr);
+    ASSERT_NE(below, nullptr);
+    // Blue once its terminal has the size of its place, which the first
+    // frame gives it. The pane then still grows: at the top of its place,
+    // a frame of the way shows the green pane above.
+    ASSERT_TRUE(nextFrame(window));
+    below->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;20;20;220m\x1b[2J"); });
+    const Shot fresh = captureShot(control, below, CaptureScope::Pane);
+    ASSERT_TRUE(fresh.error.isEmpty()) << qPrintable(fresh.error);
+    EXPECT_EQ(fresh.image.width(), rightShot.image.width());
+    EXPECT_LT(fresh.image.height(), rightShot.image.height() * 3 / 4);
+    EXPECT_TRUE(bluish(pixelAt(fresh.image, 0.5, 0.1)));
+    EXPECT_TRUE(bluish(pixelAt(fresh.image, 0.5, 0.5)));
+    // A pane that closes before its frame has no picture: not the window.
+    auto closing = std::make_shared<Shot>();
+    QString code;
+    ASSERT_TRUE(control.capture(below->id(), CaptureScope::Pane,
+        [closing](const QString& e, const QString& c, const QImage& image) { *closing = Shot{true, e, c, image}; }, code).isEmpty());
+    window->requestClosePane(below);
+    ASSERT_TRUE(waitFor([closing] { return closing->done; }));
+    EXPECT_EQ(closing->code, QStringLiteral("not_shown"));
+    EXPECT_TRUE(closing->image.isNull());
+    // The right pane grows back. A zoom that hides it on the way leaves it
+    // a motion that never advances: its picture is not_shown, not a wait.
+    ASSERT_TRUE(window->paneMoving(right));
+    ASSERT_TRUE(window->runAction(left, Action::TogglePaneZoom));
+    EXPECT_EQ(captureShot(control, right, CaptureScope::Pane).code, QStringLiteral("not_shown"));
+    ASSERT_TRUE(window->runAction(left, Action::TogglePaneZoom));
+    expectIdle(window);
+
+    // A zoom hides the other pane: it has no picture, but its tab has, which
+    // shows the zoomed pane.
+    ASSERT_TRUE(window->runAction(left, Action::TogglePaneZoom));
+    expectIdle(window);
+    // Red again at the new size: the columns that the zoom added are blank.
+    left->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[48;2;220;20;20m\x1b[2J"); });
+    ASSERT_TRUE(nextFrame(window));
+    EXPECT_EQ(captureShot(control, right, CaptureScope::Pane).code, QStringLiteral("not_shown"));
+    const Shot zoomed = captureShot(control, right, CaptureScope::Tab);
+    ASSERT_TRUE(zoomed.error.isEmpty()) << qPrintable(zoomed.error);
+    EXPECT_TRUE(reddish(pixelAt(zoomed.image, 0.75, 0.5)));
+    ASSERT_TRUE(window->runAction(left, Action::TogglePaneZoom));
+    expectIdle(window);
+    // The zoom's end reflows the red rows: red again at the old size.
+    left->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[48;2;220;20;20m\x1b[2J"); });
+    ASSERT_TRUE(nextFrame(window));
+
+    // A second tab shows the tab bar, which only the window has.
+    Pane* other = window->openTab(launch, nullptr);
+    ASSERT_NE(other, nullptr);
+    other->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;20;20;220m\x1b[2J"); });
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0 && !window->tabSwitching(); }));
+    expectIdle(window);
+    const int bar = int(std::lround(chrome->tabBarHeight() * window->devicePixelRatio()));
+    const Shot shown = captureShot(control, left, CaptureScope::Window);
+    ASSERT_TRUE(shown.error.isEmpty()) << qPrintable(shown.error);
+    // The window shows its tab, which is not the tab of the pane.
+    EXPECT_EQ(shown.image.size(), windowPixels);
+    EXPECT_TRUE(bluish(shown.image.pixel(shown.image.width() / 2, bar + (shown.image.height() - bar) / 2)));
+    const Shot otherTab = captureShot(control, other, CaptureScope::Tab);
+    ASSERT_TRUE(otherTab.error.isEmpty()) << qPrintable(otherTab.error);
+    EXPECT_EQ(otherTab.image.size(), QSize(windowPixels.width(), windowPixels.height() - bar));
+    EXPECT_TRUE(bluish(pixelAt(otherTab.image, 0.5, 0.5)));
+    // A pane in a tab in the background has no picture, and its tab neither.
+    EXPECT_EQ(captureShot(control, left, CaptureScope::Pane).code, QStringLiteral("not_shown"));
+    EXPECT_EQ(captureShot(control, left, CaptureScope::Tab).code, QStringLiteral("not_shown"));
+
+    // During a tab switch the pane waits for the end of the switch.
+    window->revealPane(left);
+    ASSERT_TRUE(window->tabSwitching());
+    const Shot afterSwitch = captureShot(control, left, CaptureScope::Pane);
+    ASSERT_TRUE(afterSwitch.error.isEmpty()) << qPrintable(afterSwitch.error);
+    EXPECT_FALSE(window->tabSwitching());
+    EXPECT_TRUE(reddish(pixelAt(afterSwitch.image, 0.5, 0.5)));
+    expectIdle(window);
+
+    // The overview draws cards: a pane or a tab has no picture, the window has.
+    ASSERT_TRUE(window->openOverview());
+    EXPECT_EQ(captureShot(control, left, CaptureScope::Pane).code, QStringLiteral("not_shown"));
+    EXPECT_EQ(captureShot(control, left, CaptureScope::Tab).code, QStringLiteral("not_shown"));
+    EXPECT_TRUE(captureShot(control, left, CaptureScope::Window).error.isEmpty());
+
+    // Without Control.allowReadText, a refusal at once, and no answer later.
+    SettingsStore closed(directory.filePath(QStringLiteral("closed.conf")),
+                         QJsonObject{{QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowReadText"), false}}}});
+    Control denied(closed, {});
+    denied.attachWindow(window);
+    bool answered = false;
+    EXPECT_FALSE(denied.capture(left->id(), CaptureScope::Window,
+        [&answered](const QString&, const QString&, const QImage&) { answered = true; }, code).isEmpty());
+    EXPECT_EQ(code, QStringLiteral("denied"));
+    ASSERT_TRUE(nextFrame(window));
+    EXPECT_FALSE(answered);
+
+    // A window that leaves the screen before its frame answers not_shown,
+    // and one off screen answers at once.
+    auto hiding = std::make_shared<Shot>();
+    ASSERT_TRUE(control.capture(left->id(), CaptureScope::Window,
+        [hiding](const QString& e, const QString& c, const QImage& image) { *hiding = Shot{true, e, c, image}; }, code).isEmpty());
+    ASSERT_FALSE(hiding->done) << "the capture waits for its frame";
+    window->hide();
+    ASSERT_TRUE(waitFor([hiding] { return hiding->done; }));
+    EXPECT_EQ(hiding->code, QStringLiteral("not_shown"));
+    auto hidden = std::make_shared<Shot>();
+    ASSERT_TRUE(control.capture(left->id(), CaptureScope::Window,
+        [hidden](const QString& e, const QString& c, const QImage& image) { *hidden = Shot{true, e, c, image}; }, code).isEmpty());
+    EXPECT_TRUE(hidden->done) << "answered at once";
+    EXPECT_EQ(hidden->code, QStringLiteral("not_shown"));
+
+    // Shown again (a new toplevel): one that is minimized before its frame
+    // answers not_shown too.
+    window->show();
+    ASSERT_TRUE(waitFor([&] { return window->isExposed(); }));
+    ASSERT_TRUE(nextFrame(window));
+    auto minimizing = std::make_shared<Shot>();
+    ASSERT_TRUE(control.capture(left->id(), CaptureScope::Window,
+        [minimizing](const QString& e, const QString& c, const QImage& image) { *minimizing = Shot{true, e, c, image}; }, code).isEmpty());
+    ASSERT_FALSE(minimizing->done) << "the capture waits for its frame";
+    window->showMinimized();
+    ASSERT_TRUE(waitFor([minimizing] { return minimizing->done; }));
+    EXPECT_EQ(minimizing->code, QStringLiteral("not_shown"));
+}
+
 TEST_F(NativeWindow, FailedLaunchDoesNotAddPaneOrTab) {
     const int panes = window->panes().size(), tabs = window->tabs().size();
     PaneLaunchOptions options; options.command = {QStringLiteral("/nonexistent/afterglow-test-program")};
@@ -6336,9 +6542,13 @@ public:
     SettingsStore& settings() { return m_settings; }
     // The overlay call of afterglow ctl overlay: it answers when it ends.
     void overlay(quint32 pane, const QStringList& argv, const QJsonObject& options = {}) {
+        call(QStringLiteral("overlay"), QJsonArray{double(pane), QJsonArray::fromStringList(argv), options});
+    }
+    // Sends the call @p fn of the control target, with @p args.
+    void call(const QString& fn, const QJsonArray& args) {
         const QJsonObject frame{{QStringLiteral("type"), QStringLiteral("call")}, {QStringLiteral("id"), ++m_id},
-                                {QStringLiteral("target"), QStringLiteral("control")}, {QStringLiteral("fn"), QStringLiteral("overlay")},
-                                {QStringLiteral("args"), QJsonArray{double(pane), QJsonArray::fromStringList(argv), options}}};
+                                {QStringLiteral("target"), QStringLiteral("control")}, {QStringLiteral("fn"), fn},
+                                {QStringLiteral("args"), args}};
         client.write(QJsonDocument(frame).toJson(QJsonDocument::Compact) + '\n');
         client.flush();
     }
@@ -6403,6 +6613,69 @@ TEST_F(NativeWindow, AControlClientGetsAnOverlaysOutputOnlyWithReadAccess) {
         }
         EXPECT_TRUE(waitFor([&] { return pane->overlay() == nullptr; }));
     }
+}
+
+TEST_F(NativeWindow, AControlClientGetsAScreenshotAsAPngWhileReadAccessHolds) {
+    // A tab switch longer than the bound on a frame (2 s): a screenshot waits
+    // for its end all the same, and the wait is long enough to change a
+    // setting in.
+    restartApplication(QStringLiteral("long-switch.conf"),
+        testSettings({{QStringLiteral("Animation"), QJsonObject{{QStringLiteral("tabCurve"), QStringLiteral("0.2,0,0,1")},
+                                                                 {QStringLiteral("tabDuration"), 3000}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    ControlConnection ctl(directory.filePath(QStringLiteral("shot.sock")), window);
+    ASSERT_TRUE(ctl.connected());
+    ASSERT_TRUE(ctl.settings().write(QStringLiteral("Control"), QStringLiteral("allowReadText"), true));
+    Pane* pane = window->focusedPane();
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?25l\x1b[48;2;220;20;20m\x1b[2J"); });
+    ASSERT_TRUE(nextFrame(window));
+    ctl.call(QStringLiteral("screenshot"), {double(pane->id()), QStringLiteral("pane")});
+    const auto reply = ctl.next(5000);
+    ASSERT_TRUE(reply.has_value());
+    ASSERT_EQ(reply->value(QStringLiteral("type")).toString(), QStringLiteral("reply")) << qPrintable(reply->value(QStringLiteral("message")).toString());
+    const QJsonObject result = reply->value(QStringLiteral("result")).toObject();
+    const QImage image = QImage::fromData(QByteArray::fromBase64(result.value(QStringLiteral("png")).toString().toLatin1()), "PNG");
+    ASSERT_FALSE(image.isNull());
+    EXPECT_EQ(image.size(), QSize(result.value(QStringLiteral("width")).toInt(), result.value(QStringLiteral("height")).toInt()));
+    // An opaque window gives an opaque picture.
+    EXPECT_FALSE(image.hasAlphaChannel());
+    EXPECT_TRUE(reddish(pixelAt(image, 0.5, 0.5)));
+
+    // During the switch: the answer comes when it ends, past 2 s.
+    Pane* other = window->openTab({}, nullptr);
+    ASSERT_NE(other, nullptr);
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }, 6000));
+    window->revealPane(pane);
+    ASSERT_TRUE(window->tabSwitching());
+    QElapsedTimer waited;
+    waited.start();
+    ctl.call(QStringLiteral("screenshot"), {double(pane->id()), QStringLiteral("pane")});
+    const auto switched = ctl.next(6000);
+    ASSERT_TRUE(switched.has_value());
+    EXPECT_EQ(switched->value(QStringLiteral("type")).toString(), QStringLiteral("reply"))
+        << qPrintable(switched->value(QStringLiteral("message")).toString());
+    EXPECT_GT(waited.elapsed(), 2000);
+    EXPECT_FALSE(window->tabSwitching());
+
+    // Read access that goes while the screenshot waits for its frame.
+    window->revealPane(other);
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }, 6000));
+    window->revealPane(pane);
+    ASSERT_TRUE(window->tabSwitching());
+    ctl.call(QStringLiteral("screenshot"), {double(pane->id()), QStringLiteral("pane")});
+    // Its reply comes once the call before it has gone on to wait.
+    ctl.call(QStringLiteral("focusedPane"), {});
+    const auto focused = ctl.next();
+    ASSERT_TRUE(focused.has_value());
+    ASSERT_EQ(focused->value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
+    ASSERT_TRUE(window->tabSwitching()) << "the switch ended before the screenshot could wait for it";
+    ASSERT_TRUE(ctl.settings().write(QStringLiteral("Control"), QStringLiteral("allowReadText"), false));
+    const auto late = ctl.next(6000);
+    ASSERT_TRUE(late.has_value());
+    EXPECT_EQ(late->value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+    EXPECT_EQ(late->value(QStringLiteral("code")).toString(), QStringLiteral("denied"));
+    expectIdle(window);
 }
 
 TEST_F(NativeWindow, AControlClientsInputPartsJoinAsTheOverlaysStdin) {

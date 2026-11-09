@@ -51,6 +51,7 @@ qt_add_library(afterglow_app STATIC
     src/desktop/DragDrop.cpp
     src/desktop/DragDrop.h
     src/desktop/ProtoBytes.h
+    src/control/Capture.h
     src/control/ControlProject.cpp
     src/control/Control.cpp
     src/control/Control.h

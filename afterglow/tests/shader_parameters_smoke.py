@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Native Luau -> control -> shader uniform acceptance, isolated from user terminals.
+"""Native Luau -> control -> shader uniform acceptance, isolated from user terminals,
+with the PNGs of afterglow ctl screenshot.
 
 Requires the nested_desktop dependencies, dbus-run-session, and the aglow of
 the build next to afterglow. Logs and screenshots stay in the artifacts
@@ -10,6 +11,7 @@ directory.
 import argparse
 import json
 import shutil
+import struct
 from pathlib import Path
 import subprocess
 import sys
@@ -133,6 +135,24 @@ return {
             before = until(first, lambda shaders: len(shaders) == 3)
             check(len({s["instance"] for s in before}) == 3, before)
             desktop.screenshot(artifacts / "baseline.png")
+            # afterglow ctl screenshot: a PNG of the pane as its window draws it,
+            # of its window, and of its tab on standard output. Past the 30 s
+            # of ctl itself, so that ctl reports its own errors.
+            sizes = {}
+            for name, scope in [("pane", ()), ("window", ("--window",))]:
+                path = artifacts / f"ctl-{name}.png"
+                ctl("screenshot", "--pane", first, *scope, path, timeout=40)
+                data = path.read_bytes()
+                check(data[:8] == b"\x89PNG\r\n\x1a\n", f"ctl screenshot {name} is no PNG")
+                sizes[name] = struct.unpack(">II", data[16:24])
+            check(0 < sizes["pane"][0] < sizes["window"][0] and 0 < sizes["pane"][1] <= sizes["window"][1], sizes)
+            piped = subprocess.run([binary, "ctl", "screenshot", "--pane", str(first), "--tab", "-"], env=session.env,
+                                   capture_output=True, timeout=40)
+            check(piped.returncode == 0 and piped.stdout[:8] == b"\x89PNG\r\n\x1a\n", piped.stderr)
+            # The panes of the tab. One tab shows no tab bar (Window.tabBar
+            # auto), so the tab is the whole window.
+            tab = struct.unpack(">II", piped.stdout[16:24])
+            check(sizes["pane"][0] < tab[0] and tab == sizes["window"], (sizes, tab))
             command(first, "pane")
             near(inspect(first)[0]["values"]["strength"], 1.2)
             near(inspect(first)[1]["values"]["strength"], 0.1)
@@ -224,6 +244,7 @@ return {
             settles(first, 0, 0.8)
             print("PASS: current-tab-only history, unavailable audio, native preset picker/apply/save/reset, restart persistence")
             print("PASS: native discovery, duplicate instances, pane/tab/window updates, invalid atomic rejection, focus independence, reset, reload/stale ID rejection, script uninstall cleanup")
+            print("PASS: ctl screenshot of the pane, the window and the tab on standard output")
         except Exception:
             print((artifacts / "application.log").read_text(errors="replace")[-5000:], file=sys.stderr)
             raise

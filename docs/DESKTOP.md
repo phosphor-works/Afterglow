@@ -572,6 +572,7 @@ The suite also checks these behaviors:
 - Notifications and script text permissions.
 - Kitty drag and drop with `aglow dnd`: a text drag between two panes, and a remote directory drag. The same tests run with `kitten dnd` when it is installed.
 - Overlays: standard input that a control client sends in parts, and the OSC 24569 answer to the program of an overlay.
+- Screenshots: the images of a pane, its tab and its window, and the refusals `not_shown` and `denied`.
 - Pane and tab ends: the panes of the last tab close before their window, and the end of a pane alone in its tab is announced once. A window can be deleted while it shows.
 - Terminal events that reach the GUI thread in their order, with a bound on the events that wait.
 - Focus and keys: the palette closes when the focus moves, and a held key that closes a pane does not repeat into the next pane.
