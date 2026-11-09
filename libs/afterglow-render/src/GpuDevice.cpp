@@ -140,10 +140,18 @@ QRhiTexture* GpuDevice::imageTexture(const AfterglowVt::FramePtr& frame, QRhiRes
         delete it->second.texture;
         m_imageTextures.erase(it);
     }
+    // Only whole RGBA frames reach the GPU: the snapshot colours indexed ones.
+    if (frame->indexed() || frame->width == 0 || frame->height == 0
+        || frame->rgba.size() != std::size_t(frame->width) * frame->height * 4) {
+        if (!std::exchange(m_imageFormatWarned, true))
+            qCWarning(lcGpu) << "An image frame of" << frame->width << "x" << frame->height
+                             << "pixels has no whole RGBA data; it is not drawn";
+        return nullptr;
+    }
     const QSize size(int(frame->width), int(frame->height));
     const int limit = m_rhi->resourceLimit(QRhi::TextureSizeMax);
     std::unique_ptr<QRhiTexture> created;
-    if (!size.isEmpty() && size.width() <= limit && size.height() <= limit) {
+    if (size.width() <= limit && size.height() <= limit) {
         created.reset(m_rhi->newTexture(QRhiTexture::RGBA8, size));
         if (!created->create()) created.reset();
     }

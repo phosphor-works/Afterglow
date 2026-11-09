@@ -1319,6 +1319,20 @@ TEST(Terminal, OutOfRangeColoursAreIgnored)
     }
 }
 
+TEST(Terminal, MalformedPrivateCsiLeavesTheNextSgrIntact)
+{
+    // In kitty before 0.49.0, ESC [ ? : left the parser in a state where
+    // later SGR colours were ignored.
+    for (std::string_view bad : {"\x1b[?:", "\x1b[?:m", "\x1b[?:;:5h", "\x1b[?::::::::::::::::::::::::::::::::m",
+                                 "\x1b[?:\x1b[?:"}) {
+        Term t(10, 2);
+        t.feed(std::string(bad) + "\x1b[31mA");
+        const auto& s = t.t.screen();
+        EXPECT_EQ(rowText(t.t, 0), "A") << bad;
+        EXPECT_EQ(s.styles().get(s.row(0).at(0).styleId()).fg, Color::palette(1)) << bad;
+    }
+}
+
 TEST(Terminal, ResetClearsKeyboardStacksAndImagesOfBothScreens)
 {
     Term t(10, 3);

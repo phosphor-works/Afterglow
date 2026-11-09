@@ -381,8 +381,9 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Column-width multiplier relative to font metrics.")),
         {QStringLiteral("symbolMap"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Preferred families for codepoint ranges, such as { \"U+E000-U+F8FF,U+F0000-U+FFFFD\": \"Symbols Nerd "
-                        "Font Mono\" }. Afterglow draws box drawing, block elements, Braille and the Powerline separators "
-                        "U+E0B0 to U+E0BF itself, so this setting does not change them.")},
+                        "Font Mono\" }. Afterglow draws box drawing, block elements, Braille, the Powerline separators "
+                        "U+E0B0 to U+E0BF and the block shapes of Symbols for Legacy Computing itself, so this setting "
+                        "does not change them.")},
         enumKey(QStringLiteral("hinting"), HintingChoices, font.hinting,
                 QStringLiteral("How glyph outlines align to the pixel grid. The none value keeps the outlines as designed. The light "
                                "value aligns vertical positions only. The full value aligns both axes.")),
@@ -525,8 +526,8 @@ PhosphorConfig::Schema buildSchema()
                         "AFTERGLOW_OVERLAY and AFTERGLOW_SESSION, which it sets or removes for each pane. New panes and "
                         "new mux sessions use this value.")},
         {QStringLiteral("confirmUnsafePaste"), d.confirmUnsafePaste, QMetaType::Bool,
-         QStringLiteral("Ask before pasting text that holds a line break, unless the program uses bracketed paste. A line "
-                        "break could run a command.")},
+         QStringLiteral("Ask before pasting or dropping text that holds a line break, unless the program uses bracketed "
+                        "paste. A line break could run a command.")},
         stringKey(QStringLiteral("fileTransferPassword"), {},
                   QStringLiteral("Shared secret for Kitty file-transfer approval. An empty value always asks for approval.")),
         intKey(QStringLiteral("fileTransferDeltaLimit"), int(d.fileTransferDeltaLimit >> 30), 0, 1048576,
@@ -604,8 +605,12 @@ PhosphorConfig::Schema buildSchema()
         enumKey(QStringLiteral("middleClick"), MiddleClickChoices, d.mouse.middleClick,
                 QStringLiteral("What a middle click pastes. The none value turns middle-click paste off.")),
         intKey(QStringLiteral("autoScrollInterval"), d.mouse.autoScrollInterval, 10, 1000,
-               QStringLiteral("Milliseconds between the rows that a selection scrolls while you drag it past the top or bottom "
-                              "of a pane.")),
+               QStringLiteral("Milliseconds between the rows that a selection scrolls while you extend it past the top or "
+                              "bottom of a pane.")),
+        {QStringLiteral("dragSelection"), d.mouse.dragSelection, QMetaType::Bool,
+         QStringLiteral("Allow a single press without Alt inside the selection to drag its text to another pane or "
+                        "another desktop application. A click there without a move clears the selection, and other presses "
+                        "there select as they do elsewhere.")},
     };
     schema.groups[LinksGroup] = {
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,
@@ -643,8 +648,9 @@ PhosphorConfig::Schema buildSchema()
                         "socket also when this is off.")},
         {QStringLiteral("allowReadText"), d.control.allowReadText, QMetaType::Bool,
          QStringLiteral("Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands "
-                        "that run and the values of user variables. A script command that runs for a client, such as aglow "
-                        "run or afterglow run, reads pane text only when Scripts.allowReadText is on too.")},
+                        "that run and the values of user variables. It also allows screenshots of panes, tabs and windows. A "
+                        "script command that runs for a client, such as aglow run or afterglow run, reads pane text only when "
+                        "Scripts.allowReadText is on too.")},
         {QStringLiteral("allowRemoteReadText"), d.control.allowRemoteReadText, QMetaType::Bool,
          QStringLiteral("Allow a script command that runs from a remote host, with aglow run in an afterglow ssh session, to "
                         "read pane text. Any process of the remote user, and the remote root user, can run such a "
@@ -758,8 +764,9 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[GraphicsGroup] = {
         intKey(QStringLiteral("quota"), int(term.graphicsQuota >> 20), 16, 4096,
-               QStringLiteral("Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps. A pane has "
-                              "a main and an alternate screen. The oldest images go first when a screen is full.")),
+               QStringLiteral("Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 "
+                              "bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images "
+                              "without a placement go first: those sent with the transient hint (N=1), then the oldest.")),
     };
     schema.groups[NotificationsGroup] = {
         {QStringLiteral("enabled"), d.notifications, QMetaType::Bool,
@@ -1698,7 +1705,11 @@ Settings SettingsStore::read()
                                       t.graphicsFileTransfer ? Settings::Permission::Allow : Settings::Permission::Deny)
         != Settings::Permission::Deny;
     t.allowScreenReadback = st.read<bool>(Terminal, QStringLiteral("allowScreenReadback"));
+
+    // Graphics
     t.graphicsQuota = std::size_t(st.read<int>(GraphicsGroup, QStringLiteral("quota"))) << 20;
+
+    // Notifications
     s.notifications = st.read<bool>(NotificationsGroup, QStringLiteral("enabled"));
     s.notificationRateLimit = st.read<int>(NotificationsGroup, QStringLiteral("rateLimit"));
     s.notificationRateWindow = st.read<int>(NotificationsGroup, QStringLiteral("rateWindow"));
@@ -1729,9 +1740,14 @@ Settings SettingsStore::read()
     s.window.scrollbar = readEnum(st, Window, QStringLiteral("scrollbar"), ScrollbarChoices, s.window.scrollbar);
     s.window.scrollbarHideDelay = st.read<int>(Window, QStringLiteral("scrollbarHideDelay"));
     s.window.scrollbarWidth = st.read<int>(Window, QStringLiteral("scrollbarWidth"));
+
+    // Mouse
     s.mouse.rightClick = readEnum(st, MouseGroup, QStringLiteral("rightClick"), RightClickChoices, s.mouse.rightClick);
     s.mouse.middleClick = readEnum(st, MouseGroup, QStringLiteral("middleClick"), MiddleClickChoices, s.mouse.middleClick);
     s.mouse.autoScrollInterval = st.read<int>(MouseGroup, QStringLiteral("autoScrollInterval"));
+    s.mouse.dragSelection = st.read<bool>(MouseGroup, QStringLiteral("dragSelection"));
+
+    // Links
     s.links.detectUrls = st.read<bool>(LinksGroup, QStringLiteral("detectUrls"));
     s.links.openWith = st.read<QString>(LinksGroup, QStringLiteral("openWith")).trimmed();
     s.links.modifier = readEnum(st, LinksGroup, QStringLiteral("modifier"), ModifierChoices, s.links.modifier);
@@ -1746,6 +1762,8 @@ Settings SettingsStore::read()
             s.links.schemes.append(scheme);
         }
     }
+
+    // Quick terminal
     s.quickTerminal.height = st.read<double>(Quick, QStringLiteral("height"));
     // The shortcut backend gets the sequence that this text parses to: one
     // that does not parse would bind nothing, with no word of it.
@@ -1766,10 +1784,14 @@ Settings SettingsStore::read()
     s.quickTerminal.duration = st.read<int>(Quick, QStringLiteral("duration"));
     s.quickTerminal.position = readEnum(st, Quick, QStringLiteral("position"), QuickPositionChoices, s.quickTerminal.position);
     s.quickTerminal.screen = st.read<QString>(Quick, QStringLiteral("screen")).trimmed();
+
+    // Control
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));
     s.control.allowReadText = st.read<bool>(ControlGroup, QStringLiteral("allowReadText"));
     s.control.allowRemoteReadText = st.read<bool>(ControlGroup, QStringLiteral("allowRemoteReadText"));
     s.control.eventInterval = st.read<int>(ControlGroup, QStringLiteral("eventInterval"));
+
+    // Scripts
     s.scripts = st.read<bool>(ScriptsGroup, QStringLiteral("enabled"));
     s.scriptsAllowReadText = st.read<bool>(ScriptsGroup, QStringLiteral("allowReadText"));
     s.scriptCommandTimeout = st.read<int>(ScriptsGroup, QStringLiteral("commandTimeout"));
@@ -1778,6 +1800,7 @@ Settings SettingsStore::read()
     s.scriptCommandOutputLimit = qint64(st.read<int>(ScriptsGroup, QStringLiteral("commandOutputLimit"))) << 10;
     s.scriptCpuBudget = st.read<int>(ScriptsGroup, QStringLiteral("cpuBudget"));
 
+    // Audio
     s.audio.enabled = st.read<bool>(AudioGroup, QStringLiteral("enabled"));
     s.audio.inputMethod = st.read<QString>(AudioGroup, QStringLiteral("inputMethod"));
     s.audio.inputSource = st.read<QString>(AudioGroup, QStringLiteral("inputSource")).trimmed();

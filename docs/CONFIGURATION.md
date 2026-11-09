@@ -71,7 +71,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `allowReadText` | `false` |  | Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands that run and the values of user variables. A script command that runs for a client, such as aglow run or afterglow run, reads pane text only when Scripts.allowReadText is on too. |
+| `allowReadText` | `false` |  | Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands that run and the values of user variables. It also allows screenshots of panes, tabs and windows. A script command that runs for a client, such as aglow run or afterglow run, reads pane text only when Scripts.allowReadText is on too. |
 | `allowRemoteReadText` | `false` |  | Allow a script command that runs from a remote host, with aglow run in an afterglow ssh session, to read pane text. Any process of the remote user, and the remote root user, can run such a command and read its output. Scripts.allowReadText and Control.allowReadText must be on too. While this is off, only the handler of the run writes to its output. |
 | `enabled` | `true` |  | Allow other programs, such as afterglow ctl and aglow run, to control Afterglow through its socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the socket also when this is off. |
 | `eventInterval` | `100` | 0–10000 | Shortest time in milliseconds between two events of one kind for one pane, for titles, status, context, bells and each user variable. A newer event replaces one that waits, and the bells in between become one. A value of 0 sends every event. |
@@ -95,7 +95,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `italicSlant` | `-11` | -90–90 | Slant of italic text in degrees, for variable fonts with a slant axis. |
 | `size` | `0` | 4–96 | Size in points. A value of 0 or less uses the size of the desktop's fixed-width font. Afterglow clamps other values to 4–96. |
 | `sizeStep` | `1` | 0.1–12 | Points that the font_bigger and font_smaller actions add or remove. |
-| `symbolMap` | `{}` |  | Preferred families for codepoint ranges, such as { "U+E000-U+F8FF,U+F0000-U+FFFFD": "Symbols Nerd Font Mono" }. Afterglow draws box drawing, block elements, Braille and the Powerline separators U+E0B0 to U+E0BF itself, so this setting does not change them. |
+| `symbolMap` | `{}` |  | Preferred families for codepoint ranges, such as { "U+E000-U+F8FF,U+F0000-U+FFFFD": "Symbols Nerd Font Mono" }. Afterglow draws box drawing, block elements, Braille, the Powerline separators U+E0B0 to U+E0BF and the block shapes of Symbols for Legacy Computing itself, so this setting does not change them. |
 | `weight` | `400` | 100–900 | Weight of regular text. It selects a static font and sets the weight axis of a variable font. |
 | `width` | `100` | 50–200 | Width axis of variable fonts. A value of 100 is the normal width. Each font limits it to its own range. |
 
@@ -103,7 +103,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `quota` | `320` | 16–4096 | Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps. A pane has a main and an alternate screen. The oldest images go first when a screen is full. |
+| `quota` | `320` | 16–4096 | Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images without a placement go first: those sent with the transient hint (N=1), then the oldest. |
 
 ## Hints
 
@@ -135,7 +135,8 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `autoScrollInterval` | `50` | 10–1000 | Milliseconds between the rows that a selection scrolls while you drag it past the top or bottom of a pane. |
+| `autoScrollInterval` | `50` | 10–1000 | Milliseconds between the rows that a selection scrolls while you extend it past the top or bottom of a pane. |
+| `dragSelection` | `false` |  | Allow a single press without Alt inside the selection to drag its text to another pane or another desktop application. A click there without a move clears the selection, and other presses there select as they do elsewhere. |
 | `middleClick` | `"primary"` | `"primary"`, `"clipboard"`, `"none"` | What a middle click pastes. The none value turns middle-click paste off. |
 | `rightClick` | `"menu"` | `"menu"`, `"paste"`, `"copy-or-paste"`, `"extend"` | What a right click does. The menu value opens the context menu. The paste value pastes the clipboard. The copy-or-paste value copies an existing selection, or else pastes. The extend value extends the selection. |
 
@@ -200,7 +201,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `clipboardRead` | `"ask"` | `"allow"`, `"ask"`, `"deny"` | Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read. |
 | `clipboardWrite` | `"allow"` | `"allow"`, `"ask"`, `"deny"` | Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write. |
 | `confirmClose` | `true` |  | Ask before closing a pane, tab or window where a program is running. The command afterglow mux kill asks too, before it ends a session where a program is running. |
-| `confirmUnsafePaste` | `true` |  | Ask before pasting text that holds a line break, unless the program uses bracketed paste. A line break could run a command. |
+| `confirmUnsafePaste` | `true` |  | Ask before pasting or dropping text that holds a line break, unless the program uses bracketed paste. A line break could run a command. |
 | `copyOnSelect` | `"primary"` | `"primary"`, `"clipboard"`, `"off"` | Where Afterglow copies a new selection. The primary value copies it to the primary selection. The clipboard value copies it to the clipboard too. The off value does not copy it. |
 | `cursorBlink` | `true` |  | Make the cursor blink. |
 | `cursorBlinkInterval` | `530` | 100–5000 | Duration in milliseconds for each visible and hidden cursor phase. |

@@ -13,6 +13,7 @@ qt_add_library(afterglow_app STATIC
     src/desktop/Accessibility.cpp
     src/DockArea.cpp
     src/DockArea.h
+    src/NestedLoop.h
     src/Pane.cpp
     src/PaneDialog.cpp
     src/PaneDialog.h
@@ -55,6 +56,7 @@ qt_add_library(afterglow_app STATIC
     src/desktop/DragDrop.cpp
     src/desktop/DragDrop.h
     src/desktop/ProtoBytes.h
+    src/control/Capture.h
     src/control/ControlProject.cpp
     src/control/Control.cpp
     src/control/Control.h

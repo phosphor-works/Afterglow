@@ -847,6 +847,28 @@ TEST_F(DndSource, ACanceledDragNamesNoAction)
     // y=1: no drop. o=0: no action, so a source deletes nothing.
     EXPECT_TRUE(contains("o=0:t=e:x=4:y=1"));
 }
+TEST_F(DndSource, ADragSaysThatItStarts)
+{
+    ASSERT_NO_FATAL_FAILURE(offer(QByteArray::fromStdString(AfterglowProto::dndMachineId()), "text/plain"));
+    data(0, "dragged text");
+    // The window releases the keys that programs hold when it hears this,
+    // before QDrag::exec takes the key events. The offscreen platform ends a
+    // drag at once, with no event loop: this test sees the signal, once,
+    // while the drag runs, but not its order with exec().
+    int starts = 0;
+    bool madeTheDrag = false, dragging = false;
+    QObject::connect(&service, &DragDrop::dragStarting, &service, [&] {
+        ++starts;
+        madeTheDrag = window.findChild<QDrag*>() != nullptr;
+        dragging = service.dragging();
+    });
+    startDrag();
+    ASSERT_TRUE(waitUntil([&] { return contains("x=4"); }));
+    EXPECT_EQ(starts, 1);
+    EXPECT_TRUE(madeTheDrag);
+    EXPECT_TRUE(dragging);
+    EXPECT_FALSE(service.dragging());
+}
 TEST_F(DndSource, ACanceledRemoteDragRemovesItsTreeAtOnce)
 {
     ASSERT_NO_FATAL_FAILURE(offer("1:remote-machine", "text/uri-list"));
@@ -866,6 +888,41 @@ TEST_F(DndSource, ACanceledRemoteDragRemovesItsTreeAtOnce)
     EXPECT_TRUE(made);
     EXPECT_TRUE(contains("o=0:t=e:x=4:y=1"));
     EXPECT_TRUE(tempEmpty());
+}
+TEST_F(DndSource, AnEntryStoppedInTheMiddleLeavesNoTree)
+{
+    // kitty 0.49.0 used freed memory when a drag source item was aborted
+    // in the middle of its data. Each way to stop: the program cancels,
+    // the terminal resets, packets are lost.
+    for (int way = 0; way < 3; ++way) {
+        SCOPED_TRACE(way);
+        replies.clear();
+        ASSERT_NO_FATAL_FAILURE(offer("1:remote-machine", "text/uri-list"));
+        data(0, "file:///home/someone/notes.txt\r\n");
+        bool stopped = false;
+        auto connection = QObject::connect(&service, &DragDrop::reply, &service, [&](const QByteArray& b) {
+            if (!b.contains("t=k") || stopped)
+                return;
+            stopped = true;
+            QTimer::singleShot(0, &service, [&, way] {
+                // The first part of the file, and not its end.
+                service.handle("t=k:x=1:X=0;" + QByteArray("first part ").toBase64());
+                if (way == 0)
+                    service.handle("t=E;");
+                else if (way == 1)
+                    service.reset();
+                else
+                    service.abort(DragDrop::Lost::Packets);
+                // Data for the entry after the stop goes nowhere.
+                service.handle("t=k:x=1:X=0;" + QByteArray("rest").toBase64());
+                service.handle("t=k:x=1:X=0;");
+            });
+        });
+        startDrag();
+        ASSERT_TRUE(waitUntil([&] { return stopped && tempEmpty(); }));
+        QObject::disconnect(connection);
+        service.reset();
+    }
 }
 TEST_F(DndSource, ATreeRemainsWhenTheReplyToItsDropCannotBeWritten)
 {

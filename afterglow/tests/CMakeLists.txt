@@ -75,7 +75,7 @@ target_compile_definitions(afterglow_mux_client_tests PRIVATE AFTERGLOW_BINARY="
 add_dependencies(afterglow_mux_client_tests afterglow afterglow-mux)
 gtest_discover_tests(afterglow_mux_client_tests PROPERTIES TIMEOUT 120)
 
-qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp PaneLaunchTest.cpp)
+qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp PaneSelectionTest.cpp NestedLoopTest.cpp PaneLaunchTest.cpp)
 target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 

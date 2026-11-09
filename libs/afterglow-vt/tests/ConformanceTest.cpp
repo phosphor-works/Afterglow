@@ -610,6 +610,34 @@ TEST(Conformance, CursorRestoreKeepsOriginModeInsideTheMargins)
     EXPECT_EQ(t.take(), "\x1b[1;1R");
 }
 
+TEST(Conformance, CursorReportsInOriginModeCountFromTheMargins)
+{
+    // kitty 0.50.0 fixed its reports in origin mode. With left and right
+    // margins (DECLRMM, DECSLRM) the column counts from the left margin too.
+    Term t(20, 12);
+    t.feed("\x1b[5;10r\x1b[?69h\x1b[4;15s\x1b[?6h\x1b[2;3H\x1b[6n");
+    EXPECT_EQ(t.take(), "\x1b[2;3R");
+    t.feed("\x1b[?6n");
+    EXPECT_TRUE(t.take().starts_with("\x1b[?2;3")) << "DECXCPR";
+    t.feed("\x1b[99;99H\x1b[6n"); // clamped to the bottom right of the margins
+    EXPECT_EQ(t.take(), "\x1b[6;12R");
+    t.feed("\x1b[?6l\x1b[6n"); // origin mode off: the page origin again
+    EXPECT_EQ(t.take(), "\x1b[1;1R");
+}
+
+TEST(Conformance, Decst8cResetsTheTabStopsToEveryEightColumns)
+{
+    Term t(40, 2);
+    t.feed("\x1b[3g\x1b[4G\x1bH"); // only one stop, at column 4
+    t.feed("\r\tA");
+    EXPECT_EQ(t.t.screen().cursor.x, 4);
+    t.feed("\x1b[?5W\r\tB\tC");
+    EXPECT_EQ(rowText(t.t, 0), "   A    B       C");
+    // Another parameter is not DECST8C: the stops stay.
+    t.feed("\x1b[3g\x1b[?4W\r\tD");
+    EXPECT_EQ(t.t.screen().cursor.x, 39);
+}
+
 TEST(Conformance, CursorRestoreWithNothingSavedResetsCharsets)
 {
     Term t(10, 2);

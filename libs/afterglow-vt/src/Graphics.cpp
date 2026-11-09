@@ -38,6 +38,43 @@ constexpr std::uint32_t DefaultFrameGap = 40;
 /// cannot read exists, what kind it is or how long it is.
 constexpr std::string_view FileError = "EBADF:failed to read image file";
 
+/// The palette indices of f=8 (index) and f=16 (index and alpha).
+constexpr bool isIndexedFormat(std::uint32_t format)
+{
+    return format == 8 || format == 16;
+}
+
+/// Pixels that the command gives byte by byte, with s and v: RGB, RGBA, and
+/// the indexed formats.
+constexpr bool isRawFormat(std::uint32_t format)
+{
+    return format == 24 || format == 32 || isIndexedFormat(format);
+}
+
+/// The bytes that a transfer in chunks keeps. decodePixels() uses only the
+/// s by v pixels of uncompressed raw data, so the buffer stops there, not at
+/// the payload limit. Other data has the payload limit.
+std::size_t chunkedKeep(const AfterglowProto::GraphicsCommand& cmd)
+{
+    if (cmd.medium != 'd' || cmd.compression != 0 || !isRawFormat(cmd.format) || cmd.s == 0 || cmd.v == 0
+        || cmd.s > MaxDimension || cmd.v > MaxDimension) {
+        return MaxPayload;
+    }
+    return std::min(MaxPayload, std::size_t(cmd.s) * cmd.v * (cmd.format / 8));
+}
+
+/// Cuts @p data to @p keep bytes. resize() keeps the capacity, so a chunk
+/// far longer than the image gives its memory back, which would otherwise
+/// stay until the transfer ends. Shorter cuts keep it: a copy on every
+/// chunk of a large image would cost more than it saves. GraphicsChunk
+/// base64 bytes decode to fewer, so one chunk of slack never copies.
+void keepOnly(std::string& data, std::size_t keep)
+{
+    if (data.size() <= keep) return;
+    data.resize(keep);
+    if (data.capacity() > 2 * keep + AfterglowProto::GraphicsChunk) std::string(data).swap(data);
+}
+
 /// The answer to a command over the work budget. It asks for a retry only
 /// when the command can be sent again as it was: not when the refusal
 /// deleted its medium (@p released), the temporary file of a t=t command or
@@ -73,6 +110,10 @@ void blendOver(std::uint8_t* dst, const std::uint8_t* src)
 /// height of 0 reaches the edge of @p src.
 void blit(ImageFrame& dst, const ImageFrame& src, int sx, int sy, int w, int h, int dx, int dy, bool overwrite)
 {
+    // frame() and compose() refuse indexed images: they have no RGBA to copy.
+    if (dst.indexed() || src.indexed()) {
+        return;
+    }
     const auto width = w > 0 ? std::int64_t(w) : std::int64_t(src.width) - sx;
     const auto height = h > 0 ? std::int64_t(h) : std::int64_t(src.height) - sy;
     const auto firstRow = std::max({std::int64_t(0), -std::int64_t(sy), -std::int64_t(dy)});
@@ -251,7 +292,7 @@ std::size_t Image::byteSize() const
 {
     std::size_t total = 0;
     for (const FramePtr& f : frames) {
-        total += f->rgba.size();
+        total += f->byteSize();
     }
     return total;
 }
@@ -473,17 +514,24 @@ bool GraphicsStore::dispatch(std::string_view payload, Context& ctx)
             if (cmd.quiet) m_pending.first.quiet = cmd.quiet;
             const Command first{m_pending.first};
             // Reject the entire transmission, including tails after an oversized chunk.
+            const std::size_t keep = chunkedKeep(first);
             if (!m_pending.failed) {
-                if (data.size() > ((MaxPayload - m_pending.data.size() + 2) / 3) * 4) {
+                if (data.size() > ((MaxPayload - m_pending.received + 2) / 3) * 4) {
                     m_pending.failed = true;
-                    m_pending.data.clear();
+                    std::string().swap(m_pending.data);
                     respond(first, ctx, "EFBIG:image payload too large", true);
                 } else {
+                    // The payload limit counts every byte sent, also those
+                    // past what the buffer keeps.
+                    const std::size_t before = m_pending.data.size();
                     AfterglowProto::base64DecodeAppend(m_pending.data, data, AfterglowProto::Base64Check::Lenient);
-                    if (m_pending.data.size() > MaxPayload) {
+                    m_pending.received += m_pending.data.size() - before;
+                    if (m_pending.received > MaxPayload) {
                         m_pending.failed = true;
-                        m_pending.data.clear();
+                        std::string().swap(m_pending.data);
                         respond(first, ctx, "EFBIG:image payload too large", true);
+                    } else {
+                        keepOnly(m_pending.data, keep);
                     }
                 }
             }
@@ -525,6 +573,8 @@ bool GraphicsStore::dispatch(std::string_view payload, Context& ctx)
     if (chunked) {
         m_pending.first = cmd;
         m_pending.data = std::move(decoded);
+        m_pending.received = m_pending.data.size();
+        keepOnly(m_pending.data, chunkedKeep(cmd));
         m_pending.active = true;
         return true;
     }
@@ -579,9 +629,10 @@ void GraphicsStore::respond(const Command& cmd, Context& ctx, std::string_view s
 
 void GraphicsStore::featureQuery(const Command& cmd, Context& ctx)
 {
-    // The keys kitty's supported_keys_for_query() lists for each action,
-    // less what this store does not do: the indexed formats f=8 and f=16 and
-    // the usage hints of N=. Keys with their default value are left out.
+    // The keys kitty's supported_keys_for_query() lists for each action.
+    // Usage hints (N=) and the indexed formats (f=8, f=16) belong to the
+    // transmission, so frames do not report them. Keys with their default
+    // value are left out.
     if (!cmd.id || cmd.quiet >= 1) {
         return; // a query names its id; quiet leaves nothing to say about an OK
     }
@@ -620,11 +671,14 @@ void GraphicsStore::featureQuery(const Command& cmd, Context& ctx)
         add('e', e);
         if (cmd.medium == 'f' || cmd.medium == 't' || cmd.medium == 's') add('t', cmd.medium);
         if (cmd.compression == 'z') add('o', 'z');
-        if (cmd.format == 24 || cmd.format == 100) add('f', cmd.format);
+        if (cmd.format == 24 || cmd.format == 100 || (e != 'f' && isIndexedFormat(cmd.format))) {
+            add('f', cmd.format);
+        }
         if (cmd.s && cmd.s <= MaxDimension) add('s', cmd.s);
         if (cmd.v && cmd.v <= MaxDimension) add('v', cmd.v);
         if (cmd.size) add('S', cmd.size);
         if (cmd.offset) add('O', cmd.offset);
+        if (e != 'f' && cmd.hints == 1) add('N', 1);
         if (e == 'f') {
             if (cmd.ux) add('x', cmd.ux);
             if (cmd.uy) add('y', cmd.uy);
@@ -683,7 +737,7 @@ void GraphicsStore::featureQuery(const Command& cmd, Context& ctx)
 bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size_t readLimit, std::size_t inflateLimit,
                                 std::string& error)
 {
-    const bool cut = cmd.compression == 0 && (cmd.format == 24 || cmd.format == 32);
+    const bool cut = cmd.compression == 0 && isRawFormat(cmd.format);
     const bool fromFile = cmd.medium == 'f' || cmd.medium == 't' || cmd.medium == 's';
     if (fromFile && !m_fileTransfer) {
         error = "EPERM:file transmission is turned off";
@@ -813,7 +867,10 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
     // PNG and o=z bytes have the limit of inline data in every medium. The
     // quota applies to the decoded image (transmit() checks it), so a PNG
     // file longer than the quota whose pixels fit is kept.
-    const bool raw = cmd.format == 24 || cmd.format == 32;
+    //
+    // The size limits count 4 bytes for each pixel, also for an indexed
+    // image, which keeps 1 or 2: a renderer draws every image as RGBA.
+    const bool raw = isRawFormat(cmd.format);
     const std::size_t bpp = cmd.format / 8;
     std::size_t readLimit = MaxPayload;
     std::size_t inflateLimit = std::min(m_quota, MaxPayload);
@@ -854,7 +911,10 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
         }
         out.width = cmd.s;
         out.height = cmd.v;
-        if (bpp == 4) {
+        if (isIndexedFormat(cmd.format)) {
+            out.format = cmd.format == 8 ? PixelFormat::Indexed : PixelFormat::IndexedAlpha;
+            out.indices.assign(data.begin(), data.begin() + std::ptrdiff_t(expected));
+        } else if (bpp == 4) {
             out.rgba.assign(data.begin(), data.begin() + std::ptrdiff_t(expected));
         } else {
             out.rgba.resize(std::size_t(cmd.s) * cmd.v * 4);
@@ -870,8 +930,9 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
         error = "EINVAL:invalid image dimensions";
         return false;
     }
-    const auto expectedBytes = std::size_t(out.width) * out.height * 4;
-    if (expectedBytes > MaxPayload || out.rgba.size() != expectedBytes) {
+    const std::size_t pixels = std::size_t(out.width) * out.height;
+    const std::size_t kept = out.indexed() ? out.indices.size() : out.rgba.size();
+    if (pixels * 4 > MaxPayload || kept != pixels * bytesPerPixel(out.format)) {
         error = "EINVAL:invalid decoded image extent";
         return false;
     }
@@ -887,7 +948,7 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
         respond(cmd, ctx, error, true);
         return;
     }
-    if (frame.rgba.size() > m_quota) {
+    if (frame.byteSize() > m_quota) {
         respond(cmd, ctx, "ENOSPC:image larger than the storage quota", true);
         return;
     }
@@ -941,6 +1002,7 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
     img.id = id;
     img.number = cmd.number;
     img.anonymous = cmdIn.id == 0 && cmdIn.number == 0;
+    img.transient = (cmd.hints & 1) != 0;
     img.width = frame.width;
     img.height = frame.height;
     img.frames.push_back(std::make_shared<const ImageFrame>(std::move(frame)));
@@ -1129,7 +1191,7 @@ void GraphicsStore::addSixel(ImageFrame frame, const Screen& screen, int row, in
         return;
     }
     // Kept, it would evict every other image and still not fit.
-    if (frame.rgba.size() > m_quota) {
+    if (frame.byteSize() > m_quota) {
         return;
     }
     pruneDead(screen, cellWidth, cellHeight);
@@ -1382,6 +1444,14 @@ void GraphicsStore::frame(const Command& cmdIn, std::string data, Context& ctx)
     const int base = cmd.c;
     cmd.r = edits ? cmd.r : int(std::min<std::size_t>(img->frames.size() + 1, INT_MAX));
 
+    // Indexed images have no animation in the protocol: their colours
+    // come from the palette when drawn, which frame composition cannot use.
+    if (img->frames.front()->indexed() || isIndexedFormat(cmd.format)) {
+        releaseMedium(cmd, data);
+        respond(cmd, ctx, "EINVAL:indexed images have no frames", true);
+        return;
+    }
+
     // Limits first, so a refused frame reads and decodes nothing.
     if (!edits && base > 0 && std::size_t(base) > img->frames.size()) {
         releaseMedium(cmd, data);
@@ -1496,6 +1566,10 @@ void GraphicsStore::compose(const Command& cmdIn, Context& ctx)
     }
     Command cmd = cmdIn;
     cmd.id = img->id;
+    if (img->frames.front()->indexed()) {
+        respond(cmd, ctx, "EINVAL:indexed images have no frames", true);
+        return;
+    }
     const std::size_t n = img->frames.size();
     if (cmd.r < 1 || cmd.c < 1 || std::size_t(cmd.r) > n || std::size_t(cmd.c) > n) {
         respond(cmd, ctx, "ENOENT:no such frame", true);
@@ -2014,8 +2088,9 @@ void GraphicsStore::enforceQuota(std::uint32_t keep)
     if (total <= m_quota && m_images.size() <= MaxImages) {
         return;
     }
-    // One pass: rank every image once, unused before used and older before
-    // newer, and take victims from the front until the limits hold.
+    // One pass: rank every image once, unused before used, transient before
+    // the rest among the unused, older before newer, and take victims from
+    // the front until the limits hold.
     std::unordered_set<std::uint32_t> used;
     for (const Placement& p : m_placements) {
         used.insert(p.imageId);
@@ -2023,6 +2098,7 @@ void GraphicsStore::enforceQuota(std::uint32_t keep)
     struct Candidate
     {
         bool used;
+        bool transient;
         std::uint64_t sequence;
         std::uint32_t id;
         std::size_t bytes;
@@ -2030,10 +2106,12 @@ void GraphicsStore::enforceQuota(std::uint32_t keep)
     std::vector<Candidate> order;
     order.reserve(m_images.size());
     for (const auto& [id, img] : m_images) {
-        if (id != keep) order.push_back({used.contains(id), img.sequence, id, img.byteSize()});
+        if (id != keep) order.push_back({used.contains(id), img.transient, img.sequence, id, img.byteSize()});
     }
     std::sort(order.begin(), order.end(), [](const Candidate& a, const Candidate& b) {
-        return a.used != b.used ? !a.used : a.sequence < b.sequence;
+        if (a.used != b.used) return !a.used;
+        if (!a.used && a.transient != b.transient) return a.transient;
+        return a.sequence < b.sequence;
     });
     std::unordered_set<std::uint32_t> evicted;
     std::size_t count = m_images.size();
@@ -2061,7 +2139,11 @@ bool GraphicsStore::evictUnusedImage()
     }
     auto victim = m_images.end();
     for (auto it = m_images.begin(); it != m_images.end(); ++it) {
-        if (!used.contains(it->first) && (victim == m_images.end() || it->second.sequence < victim->second.sequence)) {
+        if (used.contains(it->first)) {
+            continue;
+        }
+        if (victim == m_images.end() || it->second.transient > victim->second.transient
+            || (it->second.transient == victim->second.transient && it->second.sequence < victim->second.sequence)) {
             victim = it;
         }
     }

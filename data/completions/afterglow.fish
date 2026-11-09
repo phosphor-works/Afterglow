@@ -121,7 +121,8 @@ function __afterglow_ctl
                 scripts\t'Show script diagnostics' open-directory\t'Open a directory' \
                 projects\t'List saved projects' save-project\t'Save the window layout' \
                 open-project\t'Open a saved project' action\t'Run a keybind action or start a script command' \
-                watch\t'Print events' overlay\t'Run a command over the pane and print its result'
+                watch\t'Print events' overlay\t'Run a command over the pane and print its result' \
+                screenshot\t'Save the pane, its tab or its window as PNG'
         end
         return
     end
@@ -151,8 +152,18 @@ function __afterglow_ctl
                         return
                     end
                     set i (math $i + 1)
+                else if contains -- $argv[$i] -w -h
+                    # Words outside overlay, as -x.png is.
+                    set positional (math $positional + 1)
                 end
+            case '-'
+                # A lone - is a word for every command: the standard output of
+                # screenshot, text for send-text.
+                set positional (math $positional + 1)
+            case '--*'
             case '-*'
+                # -x.png is a word too, except where overlay takes -n, -w and -h.
+                test $command != overlay; and set positional (math $positional + 1)
             case '*'
                 set positional (math $positional + 1)
         end
@@ -162,6 +173,9 @@ function __afterglow_ctl
         switch $command:$positional
             case open-directory:0
                 __fish_complete_directories "$cur"
+                return
+            case screenshot:0
+                __fish_complete_path "$cur"
                 return
             case move-pane:1
                 __afterglow_print left right up down new-tab new-window
@@ -206,6 +220,9 @@ function __afterglow_ctl
             string match -q -r -- '^--(screen|scrollback|selection|last-output)$' $argv
             or set -a offer --screen\t'The screen' --scrollback\t'The scrollback' --selection\t'The selection' \
                 --last-output\t'The output of the last command'
+        case screenshot
+            string match -q -r -- '^--(tab|window)$' $argv
+            or set -a offer --tab\t'The panes of its tab' --window\t'The whole window'
         case split
             string match -q -r -- '^--(left|right|up|down)$' $argv
             or set -a offer --left --right --up --down

@@ -50,7 +50,7 @@ Options:
 | `--platform-theme kde` | `generic` | Loads the KDE platform theme, so file dialogs are the native KDE ones that Plasma users get. `gtk3` loads the GTK file dialog |
 | `--validation` | Off | Enables the Vulkan validation layer and GPU logging |
 | `--size 1920x1080` | `1100x750` | Changes the virtual output size |
-| `--outputs 2` | `1` | Gives KWin two virtual outputs. The tests that move a window between screens skip with one. |
+| `--outputs 2` | `1` | Gives KWin two virtual outputs. The tests that move a window between screens skip with one. The drag tests expect one output: run them without this option. |
 | `--timeout 400` | 400 | Stops the test binary after this many seconds and 10 more, and reports status 124 |
 
 The log is long. Read it with `grep`, never in full.
@@ -73,21 +73,24 @@ The memory cap of `systemd-run` keeps systemd-oomd from killing the user's After
 
 ### Expected skips in the headless run
 
-These 13 tests need real compositor input, which only the acceptance runner below gives. Headless, they report
-Skipped with "Run through native_window_acceptance.py for real compositor input".
+The tests that start with `REQUIRE_NATIVE_DND` need real compositor input, which only the acceptance runner below
+gives. Headless, they report Skipped with "Run through native_window_acceptance.py for real compositor input".
 
 - `NativeWindow.NativeWaylandFileDrop`
-- `NativeWindow.KittyDragAndDropClient` and `NativeWindow.AglowDragAndDropClient`
-- `NativeWindow.KittyRemoteDrag*` and `NativeWindow.AglowRemoteDrag*` (10 tests)
+- `NativeWindow.ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn`
+- The `NativeWindow.Kitty*` and `NativeWindow.Aglow*` client tests: `*DragAndDropClient`, `*RemoteDragDirectory`,
+  `*RemoteDragDirectoryMovesBetweenPanes`, `*RemoteDragMoveToWaylandTarget`, `*RemoteDragCopyToWaylandTarget` and
+  `*RemoteDragRefusedByAWaylandTargetKeepsTheFiles`
 
 `NativeWindow.ANativeGtkSaveDialogKeepsItsNameWhenItsWindowCloses` skips with "runs with --platform-theme gtk3"
 (see Platform themes).
 `NativeWindow.AQuickTerminalMovesToTheScreenNamedWhileItShowedAtItsNextShow` skips with "needs two outputs
 (kwin_wayland --output-count 2)". It runs with `--outputs 2`.
 
-Each client drag-and-drop test runs two times, with two clients. `NativeWaylandFileDrop` uses no client and runs
-one time. The `Kitty*` tests run `kitten dnd`, and skip when `kitten` is not installed. The `Aglow*` tests run the
-`aglow dnd` of the build, and skip in a build without `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`).
+Each client test runs two times, with two clients. `NativeWaylandFileDrop` and
+`ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn` use no client and run one time. The `Kitty*` tests run
+`kitten dnd`, and skip when `kitten` is not installed. The `Aglow*` tests run the `aglow dnd` of the build, and
+skip in a build without `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`).
 
 `NativeWindow.APointerThatNeverEnteredAWindowIsOnNoItemOfItsDocks` skips when the compositor's pointer enters its
 new window, because the test needs a window that the pointer never entered.

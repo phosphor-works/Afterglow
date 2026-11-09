@@ -166,6 +166,7 @@ _afterglow_ctl() {
         'action:run a keybind action or start a script command'
         'watch:print events'
         'overlay:run a command over the pane and print its result'
+        'screenshot:save the pane, its tab or its window as PNG'
     )
     if (( CURRENT == 2 )); then
         if [[ $PREFIX == -* ]]; then
@@ -198,6 +199,8 @@ _afterglow_ctl() {
     get-text)
         _arguments $pane \
             '(--screen --scrollback --selection --last-output)'{--screen,--scrollback,--selection,--last-output} ;;
+    screenshot) _arguments $pane '(--tab --window)--tab[the panes of its tab]' '(--tab --window)--window[the whole window]' \
+            '1:PNG file (- for standard output):_files' ;;
     split) _arguments $pane '(--left --right --up --down)'{--left,--right,--up,--down} ;;
     move-pane)
         _arguments $pane '1:target pane ID (0 for new-tab and new-window):' \

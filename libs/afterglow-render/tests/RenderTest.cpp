@@ -5,6 +5,7 @@
 
 #include "GpuTestDevice.h"
 
+#include <AfterglowProto/Base64.h>
 #include <AfterglowRender/GpuDevice.h>
 #include <AfterglowRender/GridRenderer.h>
 #include <AfterglowRender/Snapshot.h>
@@ -17,6 +18,8 @@
 #include <QImage>
 
 #include <QMatrix4x4>
+#include <QFloat16>
+#include <rhi/qrhi.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -85,6 +88,13 @@ protected:
     {
         terminal->feed(bytes);
         snapshot.capture(*terminal);
+        return draw(focused, backgroundAlpha, clearColor);
+    }
+
+    /// Draws the snapshot again without a new capture, as a pane that holds
+    /// its frame during synchronized output does.
+    QImage draw(bool focused = true, std::uint8_t backgroundAlpha = 255, std::optional<std::uint32_t> clearColor = std::nullopt)
+    {
         const QSize size(Cols * cw, Rows * ch);
         WindowRenderer::Pane pane;
         pane.snapshot = &snapshot;
@@ -329,6 +339,123 @@ TEST(Fonts, HintingChoosesLoadFlags)
     EXPECT_NE(none, full);
     EXPECT_NE(full, light);
     EXPECT_NE(none, light);
+}
+
+namespace {
+
+/// A readback of @p format, @p width x @p height, with @p bytes as its data.
+QRhiReadbackResult readbackOf(QRhiTexture::Format format, int width, int height, QByteArray bytes)
+{
+    QRhiReadbackResult readback;
+    readback.format = format;
+    readback.pixelSize = QSize(width, height);
+    readback.data = std::move(bytes);
+    return readback;
+}
+
+/// The premultiplied ARGB word of @p image at (@p x, @p y).
+QRgb word(const QImage& image, int x, int y)
+{
+    return image.convertToFormat(QImage::Format_ARGB32_Premultiplied).pixel(x, y);
+}
+
+} // namespace
+
+TEST(Readback, EightBitFormatsKeepTheirPremultipliedBytes)
+{
+    // Two pixels: an opaque red, and a blue at half alpha (premultiplied).
+    const char rgba[] = {char(200), 10, 20, char(255), 0, 0, 64, char(128)};
+    const char bgra[] = {20, 10, char(200), char(255), 64, 0, 0, char(128)};
+    for (auto [format, bytes] : {std::pair{QRhiTexture::RGBA8, rgba}, std::pair{QRhiTexture::BGRA8, bgra}}) {
+        QRhiReadbackResult readback = readbackOf(format, 2, 1, QByteArray(bytes, 8));
+        const QImage image = WindowRenderer::readbackImage(readback, false, false);
+        if (image.isNull()) {
+            ADD_FAILURE() << "no image for format " << int(format);
+            continue;
+        }
+        EXPECT_TRUE(readback.data.isEmpty()) << "the image takes the bytes";
+        EXPECT_EQ(image.size(), QSize(2, 1));
+        EXPECT_EQ(word(image, 0, 0), qRgba(200, 10, 20, 255)) << int(format);
+        EXPECT_EQ(word(image, 1, 0), qRgba(0, 0, 64, 128)) << int(format);
+    }
+}
+
+TEST(Readback, OpaqueSetsAlphaAndKeepsTheShownColours)
+{
+    // A surface without alpha shows the stored (premultiplied) colour. The
+    // bytes are checked as they are: a conversion would set alpha by itself.
+    const char bgra[] = {64, 0, 0, char(128)};
+    QRhiReadbackResult words = readbackOf(QRhiTexture::BGRA8, 1, 1, QByteArray(bgra, 4));
+    const QImage wordImage = WindowRenderer::readbackImage(words, false, true);
+    ASSERT_FALSE(wordImage.isNull());
+    EXPECT_FALSE(wordImage.hasAlphaChannel());
+    if (Q_BYTE_ORDER == Q_LITTLE_ENDIAN) {
+        EXPECT_EQ(wordImage.format(), QImage::Format_RGB32);
+        EXPECT_EQ(reinterpret_cast<const quint32*>(wordImage.constScanLine(0))[0], 0xff000040u);
+    }
+    const char rgba[] = {64, 0, 0, char(128)};
+    QRhiReadbackResult bytes = readbackOf(QRhiTexture::RGBA8, 1, 1, QByteArray(rgba, 4));
+    const QImage byteImage = WindowRenderer::readbackImage(bytes, false, true);
+    ASSERT_FALSE(byteImage.isNull());
+    EXPECT_EQ(byteImage.format(), QImage::Format_RGBX8888);
+    const uchar* pixel = byteImage.constScanLine(0);
+    EXPECT_EQ(pixel[0], 64);
+    EXPECT_EQ(pixel[1], 0);
+    EXPECT_EQ(pixel[2], 0);
+    EXPECT_EQ(pixel[3], 0xff);
+}
+
+TEST(Readback, YUpFlipsTheRows)
+{
+    const char rgba[] = {char(255), 0, 0, char(255), 0, char(255), 0, char(255)};
+    QRhiReadbackResult readback = readbackOf(QRhiTexture::RGBA8, 1, 2, QByteArray(rgba, 8));
+    const QImage image = WindowRenderer::readbackImage(readback, true, false);
+    ASSERT_FALSE(image.isNull());
+    EXPECT_EQ(word(image, 0, 0), qRgba(0, 255, 0, 255));
+    EXPECT_EQ(word(image, 0, 1), qRgba(255, 0, 0, 255));
+}
+
+TEST(Readback, TenBitAndFloatFormatsBecomeEightBit)
+{
+    // A2B10G10R10: R in the low bits.
+    const quint32 packed = 1023u | (0u << 10) | (512u << 20) | (3u << 30);
+    QRhiReadbackResult tenBit = readbackOf(QRhiTexture::RGB10A2, 1, 1,
+                                           QByteArray(reinterpret_cast<const char*>(&packed), sizeof packed));
+    const QImage ten = WindowRenderer::readbackImage(tenBit, false, false);
+    ASSERT_FALSE(ten.isNull());
+    EXPECT_EQ(ten.format(), QImage::Format_ARGB32_Premultiplied);
+    EXPECT_EQ(qRed(word(ten, 0, 0)), 255);
+    EXPECT_EQ(qGreen(word(ten, 0, 0)), 0);
+    EXPECT_NEAR(qBlue(word(ten, 0, 0)), 128, 1);
+    EXPECT_EQ(qAlpha(word(ten, 0, 0)), 255);
+
+    const std::array<qfloat16, 4> halves = {qfloat16(1.0f), qfloat16(0.5f), qfloat16(0.0f), qfloat16(1.0f)};
+    QRhiReadbackResult half = readbackOf(QRhiTexture::RGBA16F, 1, 1,
+                                         QByteArray(reinterpret_cast<const char*>(halves.data()), sizeof halves));
+    const QImage floats = WindowRenderer::readbackImage(half, false, false);
+    ASSERT_FALSE(floats.isNull());
+    EXPECT_EQ(qRed(word(floats, 0, 0)), 255);
+    EXPECT_NEAR(qGreen(word(floats, 0, 0)), 128, 1);
+    EXPECT_EQ(qBlue(word(floats, 0, 0)), 0);
+
+    const std::array<float, 4> singles = {0.0f, 0.5f, 1.0f, 1.0f};
+    QRhiReadbackResult single = readbackOf(QRhiTexture::RGBA32F, 1, 1,
+                                           QByteArray(reinterpret_cast<const char*>(singles.data()), sizeof singles));
+    const QImage wide = WindowRenderer::readbackImage(single, false, false);
+    ASSERT_FALSE(wide.isNull());
+    EXPECT_EQ(qRed(word(wide, 0, 0)), 0);
+    EXPECT_NEAR(qGreen(word(wide, 0, 0)), 128, 1);
+    EXPECT_EQ(qBlue(word(wide, 0, 0)), 255);
+}
+
+TEST(Readback, OtherFormatsAndShortDataGiveANullImage)
+{
+    QRhiReadbackResult red = readbackOf(QRhiTexture::R8, 2, 2, QByteArray(4, char(255)));
+    EXPECT_TRUE(WindowRenderer::readbackImage(red, false, false).isNull());
+    QRhiReadbackResult shortData = readbackOf(QRhiTexture::RGBA8, 2, 2, QByteArray(12, char(255)));
+    EXPECT_TRUE(WindowRenderer::readbackImage(shortData, false, false).isNull());
+    QRhiReadbackResult empty = readbackOf(QRhiTexture::RGBA8, 0, 0, {});
+    EXPECT_TRUE(WindowRenderer::readbackImage(empty, false, false).isNull());
 }
 
 class FontRendering : public Render
@@ -729,6 +856,120 @@ TEST_F(Render, BlockSpritesCoverTheirCell)
     EXPECT_PIXEL(img, QPoint(2 * cw + cw / 2, ch - 2), fg);
 }
 
+TEST_F(Render, LegacyComputingSpritesFillTheirParts)
+{
+    // Symbols for Legacy Computing and its Supplement, drawn to the cell:
+    // a sample of each family, checked at the centres of its parts.
+    const QRgb fg = qRgb(240, 240, 240);
+    std::u32string text = U"\U0001FB00\U0001FB3B\U0001CD00\U0001CDE5\U0001FB3C\U0001FB41\U0001FB6C\U0001FB68"
+                          U"\U0001CEA0\U0001CE95\U0001FB82\U0001CC2F\U0001FB8C\U0001FBA2\U0001FB70\U0001FBE6";
+    std::string utf8;
+    for (char32_t cp : text) {
+        utf8 += QString::fromUcs4(&cp, 1).toStdString();
+    }
+    const QImage img = render("\x1b[?25l\x1b[38;2;240;240;240m" + utf8);
+    const QRgb bg = rgb(snapshot.defaultBg);
+    // fx and fy are fractions of the cell. Lit: nearer the foreground.
+    auto lit = [&](int cell, double fx, double fy) {
+        const QRgb p = img.pixel(int(cell * cw + fx * cw), int(fy * ch));
+        auto dist = [&](QRgb q) { return std::abs(qRed(p) - qRed(q)) + std::abs(qGreen(p) - qGreen(q)) + std::abs(qBlue(p) - qBlue(q)); };
+        return dist(fg) < dist(bg);
+    };
+    // A grid's part centres, bit 0 at the upper left, row by row.
+    auto expectGrid = [&](int cell, unsigned mask, int cols, int rows) {
+        for (int i = 0; i < cols * rows; ++i) {
+            EXPECT_EQ(lit(cell, (i % cols + 0.5) / cols, (i / cols + 0.5) / rows), bool(mask & (1u << i)))
+                << "cell " << cell << " part " << i;
+        }
+    };
+    expectGrid(0, 0b000001, 2, 3); // U+1FB00 BLOCK SEXTANT-1
+    expectGrid(1, 0b111110, 2, 3); // U+1FB3B BLOCK SEXTANT-23456
+    expectGrid(2, 0b00000100, 2, 4); // U+1CD00 BLOCK OCTANT-3
+    expectGrid(3, 0b11111110, 2, 4); // U+1CDE5 BLOCK OCTANT-2345678
+    // U+1FB3C: lower left, from the lower third of the left edge to the
+    // centre of the bottom edge.
+    EXPECT_TRUE(lit(4, 0.05, 0.95));
+    EXPECT_FALSE(lit(4, 0.5, 0.5));
+    EXPECT_FALSE(lit(4, 0.45, 0.75));
+    // U+1FB41: lower right, cut off from the upper third of the left edge to
+    // the centre of the top edge.
+    EXPECT_FALSE(lit(5, 0.05, 0.05));
+    EXPECT_TRUE(lit(5, 0.5, 0.5));
+    EXPECT_TRUE(lit(5, 0.6, 0.05));
+    // U+1FB6C left triangle to the centre; U+1FB68 the three others.
+    EXPECT_TRUE(lit(6, 0.1, 0.5));
+    EXPECT_FALSE(lit(6, 0.9, 0.5));
+    EXPECT_FALSE(lit(6, 0.5, 0.1));
+    EXPECT_FALSE(lit(7, 0.1, 0.5));
+    EXPECT_TRUE(lit(7, 0.9, 0.5));
+    EXPECT_TRUE(lit(7, 0.5, 0.1));
+    EXPECT_TRUE(lit(7, 0.5, 0.9));
+    expectGrid(8, 0b1100000000000000, 4, 4); // U+1CEA0 right half, lower quarter
+    expectGrid(9, 0b0000000000100000, 4, 4); // U+1CE95 a sixteenth
+    expectGrid(10, 0b00000011, 2, 4); // U+1FB82 UPPER ONE QUARTER BLOCK: the first of four rows
+    // U+1CC2F separated quadrants: all four parts, with gaps between them
+    // and at the edges of the cell.
+    expectGrid(11, 0b1111, 2, 2);
+    EXPECT_FALSE(lit(11, 0.5, 0.5));
+    EXPECT_FALSE(lit(11, 0.0, 0.25));
+    // U+1FB8C left half medium shade: half coverage.
+    EXPECT_PIXEL_NEAR(img, QPoint(12 * cw + cw / 4, ch / 2),
+                      qRgb((qRed(fg) + qRed(bg)) / 2, (qGreen(fg) + qGreen(bg)) / 2, (qBlue(fg) + qBlue(bg)) / 2), 60);
+    EXPECT_FALSE(lit(12, 0.75, 0.5));
+    // U+1FBA2 a line from the middle of the left edge to the centre of the
+    // bottom edge.
+    EXPECT_FALSE(lit(13, 0.75, 0.25));
+    EXPECT_FALSE(lit(13, 0.1, 0.1));
+    // U+1FB70 VERTICAL ONE EIGHTH BLOCK-2: the second of eight columns.
+    {
+        const int x0 = int(std::lround(cw / 8.0));
+        const int x1 = int(std::lround(cw * 2 / 8.0));
+        ASSERT_GT(x1, x0);
+        EXPECT_PIXEL(img, QPoint(13 * cw + cw + x0, ch / 2), fg);
+        EXPECT_PIXEL(img, QPoint(13 * cw + cw + x1, ch / 2), bg);
+    }
+    // U+1FBE6 middle left quarter.
+    EXPECT_TRUE(lit(15, 0.25, 0.5));
+    EXPECT_FALSE(lit(15, 0.25, 0.1));
+    EXPECT_FALSE(lit(15, 0.75, 0.5));
+}
+
+TEST_F(Render, LegacyComputingDiagonalsMeetTheBoxDrawingLines)
+{
+    // U+2500, then U+1FBA2 and U+1FBA3, then U+2500: the diagonals start at
+    // the middle of the edge, where the horizontal line ends.
+    const QImage img = render("\x1b[?25l\x1b[38;2;240;240;240m─\U0001FBA2\U0001FBA3─");
+    const QRgb fg = qRgb(240, 240, 240);
+    int row = -1;
+    for (int y = 0; y < ch && row < 0; ++y) {
+        if (img.pixel(cw / 2, y) == fg) row = y;
+    }
+    ASSERT_GE(row, 0);
+    // At the edge, each diagonal covers the row of the horizontal line (in
+    // part: the steep line is antialiased) and nothing above it.
+    const int bg = qGray(rgb(snapshot.defaultBg));
+    for (const int x : {cw, 3 * cw - 1}) {
+        EXPECT_GT(qGray(img.pixel(x, row)), bg + 40) << "column " << x;
+        EXPECT_LE(qGray(img.pixel(x, row - 2)), bg + 6) << "column " << x;
+    }
+}
+
+TEST_F(Render, ScaledLegacyComputingSpritesKeepTheirParts)
+{
+    // A 2x2 OSC 66 block draws the sprite at twice the size.
+    const QImage img = render("\x1b[?25l\x1b[38;2;240;240;240m\x1b]66;s=2;\U0001FB00\U0001CD00\x07");
+    const QRgb fg = qRgb(240, 240, 240);
+    const QRgb bg = rgb(snapshot.defaultBg);
+    // fx and fy are fractions of the 2x2 block.
+    auto at = [&](int block, double fx, double fy) { return QPoint(int((2 * block + 2 * fx) * cw), int(2 * fy * ch)); };
+    EXPECT_PIXEL(img, at(0, 0.25, 1 / 6.0), fg); // U+1FB00 BLOCK SEXTANT-1: the upper left part
+    EXPECT_PIXEL(img, at(0, 0.75, 1 / 6.0), bg);
+    EXPECT_PIXEL(img, at(0, 0.25, 0.5), bg);
+    EXPECT_PIXEL(img, at(1, 0.25, 3 / 8.0), fg); // U+1CD00 BLOCK OCTANT-3: second row, left
+    EXPECT_PIXEL(img, at(1, 0.25, 1 / 8.0), bg);
+    EXPECT_PIXEL(img, at(1, 0.75, 3 / 8.0), bg);
+}
+
 TEST_F(Render, InverseSwapsColours)
 {
     const QImage img = render("\x1b[?25l\x1b[7m \x1b[0m");
@@ -797,21 +1038,7 @@ TEST_F(Render, KittyImageIsTopDown)
     // A 2x2 image: red, green / blue, white, scaled over 2x2 cells. Its first
     // row must land at the top (an earlier bug drew images upside down).
     const std::string rgba("\xff\x00\x00\xff\x00\xff\x00\xff\x00\x00\xff\xff\xff\xff\xff\xff", 16);
-    static const char* b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string enc;
-    for (std::size_t i = 0; i < rgba.size(); i += 3) {
-        std::uint32_t v = std::uint8_t(rgba[i]) << 16;
-        if (i + 1 < rgba.size()) {
-            v |= std::uint8_t(rgba[i + 1]) << 8;
-        }
-        if (i + 2 < rgba.size()) {
-            v |= std::uint8_t(rgba[i + 2]);
-        }
-        enc += b64[(v >> 18) & 63];
-        enc += b64[(v >> 12) & 63];
-        enc += i + 1 < rgba.size() ? b64[(v >> 6) & 63] : '=';
-        enc += i + 2 < rgba.size() ? b64[v & 63] : '=';
-    }
+    const std::string enc = AfterglowProto::base64Encode(rgba);
     const QImage img = render("\x1b[?25l\x1b[2;2H\x1b_Ga=T,f=32,s=2,v=2,c=2,r=2,q=2;" + enc + "\x1b\\");
     // Each image pixel covers one cell of the 2x2-cell placement at (1, 1).
     // The image is filtered, so cell centres off texel centres blend a little.
@@ -820,6 +1047,80 @@ TEST_F(Render, KittyImageIsTopDown)
     EXPECT_PIXEL_NEAR(img, cellCenter(1, 2), qRgb(0, 0, 255), 40);
     EXPECT_PIXEL_NEAR(img, cellCenter(2, 2), qRgb(255, 255, 255), 40);
     EXPECT_PIXEL(img, cellCenter(0, 0), rgb(snapshot.defaultBg));
+}
+
+TEST_F(Render, IndexedImagesTakeTheColoursOfThePane)
+{
+    // kitty f=8 and f=16: palette indices, drawn in the pane's colours.
+    using AfterglowProto::base64Encode;
+    const std::string red = "\x1b]4;1;rgb:ff/00/00\x1b\\";
+    // Four 1x1 images, one cell each, side by side: palette 1, the cursor
+    // colour (252), palette 1 at alpha 0 (f=16), the default background (248).
+    std::string bytes = "\x1b[?25l" + red + "\x1b]12;rgb:12/34/56\x1b\\\x1b[1;1H";
+    // Selection and cursor text colours of their own, so that 250, 251 and
+    // 253 differ from the defaults and from each other.
+    bytes += "\x1b]17;rgb:20/40/60\x1b\\\x1b]19;rgb:60/40/20\x1b\\\x1b]21;cursor_text=#0a141e\x1b\\";
+    bytes += "\x1b_Ga=T,f=8,s=1,v=1,c=1,r=1,q=2;" + base64Encode(std::string("\x01", 1)) + "\x1b\\";
+    bytes += "\x1b[1;2H\x1b_Ga=T,f=8,s=1,v=1,c=1,r=1,q=2;" + base64Encode(std::string("\xfc", 1)) + "\x1b\\";
+    bytes += "\x1b[1;3H\x1b_Ga=T,f=16,s=1,v=1,c=1,r=1,q=2;" + base64Encode(std::string("\x01\x00", 2)) + "\x1b\\";
+    bytes += "\x1b[1;4H\x1b_Ga=T,f=8,s=1,v=1,c=1,r=1,q=2;" + base64Encode(std::string("\xf8", 1)) + "\x1b\\";
+    // Palette 1 at half alpha (f=16).
+    bytes += "\x1b[1;5H\x1b_Ga=T,f=16,s=1,v=1,c=1,r=1,q=2;" + base64Encode(std::string("\x01\x80", 2)) + "\x1b\\";
+    // The other special entries, one cell each on the second row: the
+    // default foreground (249), the selection colours (250, 251), the
+    // cursor text (253), link hover (254) and the reserved entry (255).
+    const std::string special("\xf9\xfa\xfb\xfd\xfe\xff", 6);
+    for (std::size_t i = 0; i < special.size(); ++i) {
+        bytes += "\x1b[2;" + std::to_string(i + 1) + "H\x1b_Ga=T,f=8,s=1,v=1,c=1,r=1,q=2;"
+            + base64Encode(special.substr(i, 1)) + "\x1b\\";
+    }
+    // A pane at half opacity: the default background of the image stays opaque.
+    QImage img = render(bytes, true, 128, 0x00000000u);
+    const QRgb pane = img.pixel(cellCenter(10, 0)); // no image there
+    EXPECT_LT(qAlpha(pane), 255);
+    EXPECT_PIXEL_NEAR(img, cellCenter(0, 0), qRgb(255, 0, 0), 12);
+    EXPECT_PIXEL_NEAR(img, cellCenter(1, 0), qRgb(0x12, 0x34, 0x56), 12);
+    EXPECT_PIXEL_NEAR(img, cellCenter(2, 0), pane, 6); // alpha 0: only the pane shows
+    EXPECT_EQ(qAlpha(img.pixel(cellCenter(3, 0))), 255);
+    EXPECT_PIXEL_NEAR(img, cellCenter(3, 0), rgb(snapshot.defaultBg), 12);
+    // Half alpha over the half-transparent pane: 0.5 + 0.5 x 0.5 of coverage.
+    const QRgb half = img.pixel(cellCenter(4, 0));
+    EXPECT_NEAR(qAlpha(half), 191, 8);
+    EXPECT_GT(qRed(half), qRed(pane) + 40);
+    ASSERT_EQ(snapshot.selectionBackgroundColor, packRgba(0x20, 0x40, 0x60));
+    ASSERT_EQ(snapshot.selectionForegroundColor, packRgba(0x60, 0x40, 0x20));
+    ASSERT_EQ(snapshot.cursorTextColor, packRgba(0x0a, 0x14, 0x1e));
+    const std::uint32_t expected[] = {snapshot.defaultFg,      snapshot.selectionBackgroundColor,
+                                      snapshot.selectionForegroundColor, snapshot.cursorTextColor,
+                                      snapshot.defaultFg,      snapshot.defaultFg};
+    for (int i = 0; i < 6; ++i) {
+        SCOPED_TRACE(int(std::uint8_t(special[std::size_t(i)])));
+        EXPECT_PIXEL_NEAR(img, cellCenter(i, 1), rgb(expected[i]), 12);
+    }
+    // A new palette entry redraws the image in the new colour.
+    img = render("\x1b]4;1;rgb:00/ff/00\x1b\\", true, 128, 0x00000000u);
+    EXPECT_PIXEL_NEAR(img, cellCenter(0, 0), qRgb(0, 255, 0), 12);
+    // Reverse video swaps the default colours, and 248 and 249 with them.
+    const std::uint32_t foreground = snapshot.defaultFg;
+    img = render("\x1b[?5h", true, 128, 0x00000000u);
+    ASSERT_EQ(snapshot.defaultBg, foreground);
+    EXPECT_PIXEL_NEAR(img, cellCenter(3, 0), rgb(foreground), 12);
+}
+
+TEST_F(Render, AHeldFrameKeepsTheImageThatASynchronizedUpdateReplaces)
+{
+    // kitty 0.49.2: an image replaced during a synchronized update vanished
+    // for a frame. The pane draws its held snapshot until the update ends.
+    const std::string place = "\x1b[2;2H\x1b_Ga=T,f=24,s=1,v=1,i=1,c=2,r=1,q=2;";
+    QImage img = render("\x1b[?25l" + place + "/wAA\x1b\\"); // red
+    EXPECT_PIXEL_NEAR(img, cellCenter(1, 1), qRgb(255, 0, 0), 40);
+    terminal->feed("\x1b[?2026h" + place + "AAD/\x1b\\"); // blue, inside the update
+    img = draw();
+    EXPECT_PIXEL_NEAR(img, cellCenter(1, 1), qRgb(255, 0, 0), 40);
+    EXPECT_PIXEL_NEAR(img, cellCenter(2, 1), qRgb(255, 0, 0), 40);
+    img = render("\x1b[?2026l");
+    EXPECT_PIXEL_NEAR(img, cellCenter(1, 1), qRgb(0, 0, 255), 40);
+    EXPECT_PIXEL_NEAR(img, cellCenter(2, 1), qRgb(0, 0, 255), 40);
 }
 
 } // namespace
@@ -3163,6 +3464,51 @@ TEST(Snapshot, MovesKeepTheIdentityAndLeaveANewOne)
     EXPECT_NE(b.identity.value(), a.identity.value());
 }
 
+TEST(SnapshotImages, IndexedFramesKeepTheirColoursUntilTheColoursChange)
+{
+    NullHost host;
+    AfterglowVt::Terminal terminal(10, 4, host);
+    terminal.resize(10, 4, 8, 16);
+    terminal.feed("\x1b_Ga=T,f=8,s=2,v=1,i=1,q=2;" + AfterglowProto::base64Encode(std::string("\x01\x02", 2)) + "\x1b\\");
+    PaneSnapshot snap;
+    snap.capture(terminal);
+    ASSERT_EQ(snap.images.size(), 1u);
+    const AfterglowVt::FramePtr first = snap.images[0].frame;
+    ASSERT_FALSE(first->indexed());
+    ASSERT_EQ(first->rgba.size(), 8u);
+    EXPECT_EQ(first->rgba[0], terminal.paletteColor(1).r);
+    EXPECT_EQ(first->rgba[3], 255);
+    // Text changes, the colours do not: the same RGBA frame, so the same texture.
+    terminal.feed("hello");
+    snap.capture(terminal);
+    EXPECT_EQ(snap.images[0].frame, first);
+    terminal.feed("\x1b]4;2;rgb:01/02/03\x1b\\");
+    snap.capture(terminal);
+    ASSERT_NE(snap.images[0].frame, first);
+    EXPECT_EQ(snap.images[0].frame->rgba[4], 1);
+    EXPECT_EQ(snap.images[0].frame->rgba[6], 3);
+    // A second image: when one of the two goes, only its colours go, and
+    // the other keeps its RGBA frame.
+    terminal.feed("\x1b[3;1H\x1b_Ga=T,f=8,s=1,v=1,i=2,q=2;" + AfterglowProto::base64Encode(std::string("\x03", 1))
+                  + "\x1b\\");
+    snap.capture(terminal);
+    ASSERT_EQ(snap.images.size(), 2u);
+    EXPECT_EQ(snap.coloredFrames.size(), 2u);
+    const auto second = std::find_if(snap.images.begin(), snap.images.end(),
+                                     [](const AfterglowVt::VisiblePlacement& image) { return image.imageId == 2; });
+    ASSERT_NE(second, snap.images.end());
+    const AfterglowVt::FramePtr kept = second->frame;
+    terminal.feed("\x1b_Ga=d,d=I,i=1\x1b\\");
+    snap.capture(terminal);
+    ASSERT_EQ(snap.images.size(), 1u);
+    EXPECT_EQ(snap.images[0].frame, kept);
+    EXPECT_EQ(snap.coloredFrames.size(), 1u);
+    // When nothing shows the image, its colours go.
+    terminal.feed("\x1b_Ga=d,d=A\x1b\\");
+    snap.capture(terminal);
+    EXPECT_TRUE(snap.coloredFrames.empty());
+}
+
 TEST(GlyphCache, OversizedSpritesDrawNothingInsteadOfThrowing)
 {
     FontSet fonts(FontSpec{}, 1.0);
@@ -3176,6 +3522,35 @@ TEST(GlyphCache, OversizedSpritesDrawNothingInsteadOfThrowing)
     const GlyphEntry* small = cache.sprite(fonts, U'\u2588');
     ASSERT_NE(small, nullptr);
     EXPECT_FALSE(small->empty);
+}
+
+TEST(GlyphCache, LegacyComputingSpritesAreTheFamiliesThatFillCells)
+{
+    // Every character that the sprites take is drawn, and every other one
+    // in the two blocks goes to the font: a sprite has no font fallback.
+    auto drawn = [](char32_t cp) {
+        return (cp >= 0x1FB00 && cp <= 0x1FB92) || cp == 0x1FB94 || (cp >= 0x1FB9A && cp <= 0x1FBAE)
+            || cp == 0x1FBCE || cp == 0x1FBCF || (cp >= 0x1FBD0 && cp <= 0x1FBDF) || (cp >= 0x1FBE4 && cp <= 0x1FBE7)
+            || (cp >= 0x1CC21 && cp <= 0x1CC2F) || (cp >= 0x1CD00 && cp <= 0x1CDE5) || (cp >= 0x1CE51 && cp <= 0x1CEAF);
+    };
+    FontSet fonts(FontSpec{}, 1.0);
+    GlyphCache cache;
+    cache.beginFrame(1000, 8192);
+    std::vector<char32_t> blocks;
+    for (char32_t cp = 0x1FB00; cp <= 0x1FBFF; ++cp) blocks.push_back(cp);
+    for (char32_t cp = 0x1CC00; cp <= 0x1CEBF; ++cp) blocks.push_back(cp);
+    for (char32_t cp : blocks) {
+        const GlyphEntry* e = cache.sprite(fonts, cp);
+        ASSERT_NE(e, nullptr);
+        EXPECT_EQ(!e->empty, drawn(cp)) << std::hex << std::uint32_t(cp);
+        if (e->empty) continue;
+        const QImage& page = cache.grayPage(e->page).image();
+        int coverage = 0;
+        for (int y = e->v; y < e->v + e->height; ++y) {
+            for (int x = e->u; x < e->u + e->width; ++x) coverage += qAlpha(page.pixel(x, y)) > 0;
+        }
+        EXPECT_GT(coverage, 0) << std::hex << std::uint32_t(cp);
+    }
 }
 
 TEST(GlyphCache, OverBudgetOnlyAPageUnusedForStaleAfterDiscardsTheCache)
@@ -3273,6 +3648,33 @@ TEST_F(Render, OversizedImagesAreNotUploaded)
     QRhiResourceUpdateBatch* updates = s_device->rhi()->nextResourceUpdateBatch();
     std::uint64_t serial = 0;
     EXPECT_EQ(s_device->imageTexture(frame, updates, serial), nullptr);
+    updates->release();
+}
+
+TEST_F(Render, FramesWithoutWholeRgbaAreNotUploaded)
+{
+    // An indexed frame the snapshot did not colour, and an RGBA frame shorter
+    // than its size: neither is read past its data.
+    auto indexed = std::make_shared<AfterglowVt::ImageFrame>();
+    indexed->width = 2;
+    indexed->height = 2;
+    indexed->format = AfterglowVt::PixelFormat::Indexed;
+    indexed->indices.assign(4, 1);
+    auto shortFrame = std::make_shared<AfterglowVt::ImageFrame>();
+    shortFrame->width = 2;
+    shortFrame->height = 2;
+    shortFrame->rgba.assign(4, 0xFF);
+    // An indexed frame is refused for its format, even with RGBA of the
+    // right length, and an empty frame for its size.
+    auto indexedWithRgba = std::make_shared<AfterglowVt::ImageFrame>(*indexed);
+    indexedWithRgba->rgba.assign(16, 0xFF);
+    auto empty = std::make_shared<AfterglowVt::ImageFrame>();
+    QRhiResourceUpdateBatch* updates = s_device->rhi()->nextResourceUpdateBatch();
+    std::uint64_t serial = 0;
+    EXPECT_EQ(s_device->imageTexture(indexed, updates, serial), nullptr);
+    EXPECT_EQ(s_device->imageTexture(shortFrame, updates, serial), nullptr);
+    EXPECT_EQ(s_device->imageTexture(indexedWithRgba, updates, serial), nullptr);
+    EXPECT_EQ(s_device->imageTexture(empty, updates, serial), nullptr);
     updates->release();
 }
 

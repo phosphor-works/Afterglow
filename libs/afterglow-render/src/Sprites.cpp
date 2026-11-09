@@ -7,7 +7,9 @@
 #include <QPainterPath>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 
 namespace AfterglowRender::Sprites {
 
@@ -404,11 +406,375 @@ void drawBraille(Canvas& c, char32_t cp)
     }
 }
 
+// --- Symbols for Legacy Computing (U+1FB00) and its Supplement (U+1CC00) ---
+
+// Pixel edge @p k of @p n equal parts of @p size. Neighbouring parts share
+// their edge, so a mosaic has no gaps or overlaps.
+int edge(int size, int k, int n)
+{
+    return int(std::lround(double(size) * k / n));
+}
+
+// Fills the parts of a grid of @p cols x @p rows that @p mask names, bit 0
+// at the upper left, row by row. @p inset shrinks each part on every side:
+// the separated mosaics.
+void drawGrid(Canvas& c, unsigned mask, int cols, int rows, int inset = 0)
+{
+    for (int i = 0; i < cols * rows; ++i) {
+        if (!(mask & (1u << i))) {
+            continue;
+        }
+        const int col = i % cols;
+        const int row = i / cols;
+        c.fill(edge(c.w, col, cols) + inset, edge(c.h, row, rows) + inset, edge(c.w, col + 1, cols) - inset,
+               edge(c.h, row + 1, rows) - inset);
+    }
+}
+
+// Fills a rectangle given in @p n parts of the cell on each axis.
+void fillParts(Canvas& c, int x0, int y0, int x1, int y1, int n, int alpha = 255)
+{
+    c.fill(edge(c.w, x0, n), edge(c.h, y0, n), edge(c.w, x1, n), edge(c.h, y1, n), alpha);
+}
+
+// Sextants U+1FB00-1FB3B go up in bit order and leave out the three that
+// exist as other blocks: the left half (21), the right half (42) and the
+// full block (63).
+unsigned sextantMask(char32_t cp)
+{
+    unsigned m = unsigned(cp - 0x1FB00) + 1;
+    if (m >= 21) ++m;
+    if (m >= 42) ++m;
+    return m;
+}
+
+// Octants U+1CD00-1CDE5 go up in bit order and leave out the 25 patterns
+// that exist as other blocks (halves, quadrants, eighths and the like).
+unsigned octantMask(char32_t cp)
+{
+    static constexpr auto Masks = [] {
+        constexpr unsigned Elsewhere[] = {1,   2,   3,   5,   10,  15,  20,  40,  63,  64,  80,  85, 90,
+                                          95,  128, 160, 165, 170, 175, 192, 240, 245, 250, 252, 255};
+        std::array<std::uint8_t, 230> out{};
+        std::size_t n = 0;
+        for (unsigned m = 1; m < 256; ++m) {
+            if (std::find(std::begin(Elsewhere), std::end(Elsewhere), m) == std::end(Elsewhere)) {
+                out[n++] = std::uint8_t(m);
+            }
+        }
+        return out;
+    }();
+    return Masks[cp - 0x1CD00];
+}
+
+// The smooth mosaics U+1FB3C-1FB67: the part of the cell on the side of a
+// line that holds a corner. Points are in halves across (0-2) and sixths
+// down (0-6): the line ends sit on the edges, the centre and the thirds.
+struct Wedge
+{
+    std::int8_t cornerX, cornerY, ax, ay, bx, by;
+};
+constexpr Wedge Wedges[] = {
+    {0, 6, 0, 4, 1, 6}, // 1FB3C lower left, lower middle left to lower centre
+    {0, 6, 0, 4, 2, 6}, // 1FB3D lower left, lower middle left to lower right
+    {0, 6, 0, 2, 1, 6}, // 1FB3E lower left, upper middle left to lower centre
+    {0, 6, 0, 2, 2, 6}, // 1FB3F lower left, upper middle left to lower right
+    {0, 6, 0, 0, 1, 6}, // 1FB40 lower left, upper left to lower centre
+    {2, 6, 0, 2, 1, 0}, // 1FB41 lower right, upper middle left to upper centre
+    {2, 6, 0, 2, 2, 0}, // 1FB42 lower right, upper middle left to upper right
+    {2, 6, 0, 4, 1, 0}, // 1FB43 lower right, lower middle left to upper centre
+    {2, 6, 0, 4, 2, 0}, // 1FB44 lower right, lower middle left to upper right
+    {2, 6, 0, 6, 1, 0}, // 1FB45 lower right, lower left to upper centre
+    {2, 6, 0, 4, 2, 2}, // 1FB46 lower right, lower middle left to upper middle right
+    {2, 6, 1, 6, 2, 4}, // 1FB47 lower right, lower centre to lower middle right
+    {2, 6, 0, 6, 2, 4}, // 1FB48 lower right, lower left to lower middle right
+    {2, 6, 1, 6, 2, 2}, // 1FB49 lower right, lower centre to upper middle right
+    {2, 6, 0, 6, 2, 2}, // 1FB4A lower right, lower left to upper middle right
+    {2, 6, 1, 6, 2, 0}, // 1FB4B lower right, lower centre to upper right
+    {0, 6, 1, 0, 2, 2}, // 1FB4C lower left, upper centre to upper middle right
+    {0, 6, 0, 0, 2, 2}, // 1FB4D lower left, upper left to upper middle right
+    {0, 6, 1, 0, 2, 4}, // 1FB4E lower left, upper centre to lower middle right
+    {0, 6, 0, 0, 2, 4}, // 1FB4F lower left, upper left to lower middle right
+    {0, 6, 1, 0, 2, 6}, // 1FB50 lower left, upper centre to lower right
+    {0, 6, 0, 2, 2, 4}, // 1FB51 lower left, upper middle left to lower middle right
+    {2, 0, 0, 4, 1, 6}, // 1FB52 upper right, lower middle left to lower centre
+    {2, 0, 0, 4, 2, 6}, // 1FB53 upper right, lower middle left to lower right
+    {2, 0, 0, 2, 1, 6}, // 1FB54 upper right, upper middle left to lower centre
+    {2, 0, 0, 2, 2, 6}, // 1FB55 upper right, upper middle left to lower right
+    {2, 0, 0, 0, 1, 6}, // 1FB56 upper right, upper left to lower centre
+    {0, 0, 0, 2, 1, 0}, // 1FB57 upper left, upper middle left to upper centre
+    {0, 0, 0, 2, 2, 0}, // 1FB58 upper left, upper middle left to upper right
+    {0, 0, 0, 4, 1, 0}, // 1FB59 upper left, lower middle left to upper centre
+    {0, 0, 0, 4, 2, 0}, // 1FB5A upper left, lower middle left to upper right
+    {0, 0, 0, 6, 1, 0}, // 1FB5B upper left, lower left to upper centre
+    {0, 0, 0, 4, 2, 2}, // 1FB5C upper left, lower middle left to upper middle right
+    {0, 0, 1, 6, 2, 4}, // 1FB5D upper left, lower centre to lower middle right
+    {0, 0, 0, 6, 2, 4}, // 1FB5E upper left, lower left to lower middle right
+    {0, 0, 1, 6, 2, 2}, // 1FB5F upper left, lower centre to upper middle right
+    {0, 0, 0, 6, 2, 2}, // 1FB60 upper left, lower left to upper middle right
+    {0, 0, 1, 6, 2, 0}, // 1FB61 upper left, lower centre to upper right
+    {2, 0, 1, 0, 2, 2}, // 1FB62 upper right, upper centre to upper middle right
+    {2, 0, 0, 0, 2, 2}, // 1FB63 upper right, upper left to upper middle right
+    {2, 0, 1, 0, 2, 4}, // 1FB64 upper right, upper centre to lower middle right
+    {2, 0, 0, 0, 2, 4}, // 1FB65 upper right, upper left to lower middle right
+    {2, 0, 1, 0, 2, 6}, // 1FB66 upper right, upper centre to lower right
+    {2, 0, 0, 2, 2, 4}, // 1FB67 upper right, upper middle left to lower middle right
+};
+
+void fillPolygon(Canvas& c, const QPolygonF& polygon, int alpha = 255)
+{
+    QPainter p(&c.img);
+    prepare(p);
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);
+    path.addPolygon(polygon);
+    path.closeSubpath();
+    p.fillPath(path, QColor(0, 0, 0, alpha));
+}
+
+void drawWedge(Canvas& c, const Wedge& wedge)
+{
+    auto at = [&](int x, int y) { return QPointF(c.w * x / 2.0, c.h * y / 6.0); };
+    const QPointF a = at(wedge.ax, wedge.ay);
+    const QPointF b = at(wedge.bx, wedge.by);
+    auto side = [&](QPointF q) { return (b.x() - a.x()) * (q.y() - a.y()) - (b.y() - a.y()) * (q.x() - a.x()); };
+    const bool positive = side(at(wedge.cornerX, wedge.cornerY)) > 0;
+    // The cell's rectangle cut by the line (one Sutherland-Hodgman step).
+    const QPointF corners[4] = {at(0, 0), at(2, 0), at(2, 6), at(0, 6)};
+    QPolygonF out;
+    for (int i = 0; i < 4; ++i) {
+        const QPointF p = corners[i];
+        const QPointF q = corners[(i + 1) % 4];
+        const double sp = side(p);
+        const double sq = side(q);
+        const bool inP = positive ? sp >= 0 : sp <= 0;
+        const bool inQ = positive ? sq >= 0 : sq <= 0;
+        if (inP) out << p;
+        if (inP != inQ) out << p + (q - p) * (sp / (sp - sq));
+    }
+    fillPolygon(c, out);
+}
+
+// Triangles from the centre to one edge: left, upper, right, lower.
+enum : unsigned { TriLeft = 1, TriUpper = 2, TriRight = 4, TriLower = 8 };
+
+void drawTriangles(Canvas& c, unsigned edges, int alpha = 255)
+{
+    const QPointF centre(c.w / 2.0, c.h / 2.0);
+    const QPointF ul(0, 0), ur(c.w, 0), lr(c.w, c.h), ll(0, c.h);
+    QPainter p(&c.img);
+    prepare(p);
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);
+    // One path, so the shared edges of two triangles leave no seam.
+    if (edges & TriLeft) path.addPolygon(QPolygonF({ul, centre, ll}));
+    if (edges & TriUpper) path.addPolygon(QPolygonF({ul, ur, centre}));
+    if (edges & TriRight) path.addPolygon(QPolygonF({ur, lr, centre}));
+    if (edges & TriLower) path.addPolygon(QPolygonF({ll, centre, lr}));
+    p.fillPath(path, QColor(0, 0, 0, alpha));
+}
+
+// The diagonal box drawings U+1FBA0-1FBAE and U+1FBD0-1FBDF: lines through
+// the corners, the centres of the edges and the middle of the cell.
+//   a b c
+//   d e f
+//   g h i
+// A space starts a new line.
+constexpr const char* DiagonalsA0[] = {
+    "bd", "bf", "dh", "fh", "bdh", "bfh", "dhf", "dbf", "bd fh", "bf dh", "bfhd", "bdhf", "dbfh", "fbdh", "bfhdb",
+};
+constexpr const char* DiagonalsD0[] = {
+    "fg", "cd", "af", "di", "ah", "bi", "ch", "bg", "aec", "cei", "gei", "aeg", "ahc", "cdi", "gbi", "afg",
+};
+
+void drawDiagonalLines(Canvas& c, const char* lines, int t)
+{
+    QPainter p(&c.img);
+    prepare(p);
+    // Square caps run past the cell edge and are cut there, so a line meets
+    // its neighbour in the next cell without a notch.
+    p.setPen(QPen(Qt::black, t, Qt::SolidLine, Qt::SquareCap, Qt::RoundJoin));
+    // The centre of the straight strokes of drawBox(), as drawArc() uses.
+    const int strokeX = c.w / 2 - t / 2;
+    const int strokeY = c.h / 2 - t / 2;
+    const qreal cx = strokeX + t / 2.0;
+    const qreal cy = strokeY + t / 2.0;
+    const qreal xs[3] = {0, cx, qreal(c.w)};
+    const qreal ys[3] = {0, cy, qreal(c.h)};
+    QPainterPath path;
+    bool start = true;
+    for (const char* s = lines; *s; ++s) {
+        if (*s == ' ') {
+            start = true;
+            continue;
+        }
+        const int i = *s - 'a';
+        const QPointF point(xs[i % 3], ys[i / 3]);
+        if (start) path.moveTo(point);
+        else path.lineTo(point);
+        start = false;
+    }
+    p.drawPath(path);
+}
+
+// A rectangle in quarters of the cell: x0, y0, x1, y1.
+struct Quarters
+{
+    std::int8_t x0, y0, x1, y1;
+};
+// U+1CEA0-1CEAF: one quarter of the cell across part of one edge.
+constexpr Quarters EdgeQuarters[] = {
+    {2, 3, 4, 4}, {1, 3, 4, 4}, {0, 3, 3, 4}, {0, 3, 2, 4}, // lower: right half, right 3/4, left 3/4, left half
+    {0, 2, 1, 4}, {0, 1, 1, 4}, {0, 0, 1, 3}, {0, 0, 1, 2}, // left: lower half, lower 3/4, upper 3/4, upper half
+    {0, 0, 2, 1}, {0, 0, 3, 1}, {1, 0, 4, 1}, {2, 0, 4, 1}, // upper: left half, left 3/4, right 3/4, right half
+    {3, 0, 4, 2}, {3, 0, 4, 3}, {3, 1, 4, 4}, {3, 2, 4, 4}, // right: upper half, upper 3/4, lower 3/4, lower half
+};
+// U+1FBE4-1FBE7: upper centre, lower centre, middle left, middle right.
+constexpr Quarters CentreQuarters[] = {{1, 0, 3, 2}, {1, 2, 3, 4}, {0, 1, 2, 3}, {2, 1, 4, 3}};
+
+enum class Legacy : std::uint8_t {
+    None,
+    Sextant,
+    Wedge,
+    Triangles,
+    Eighths,
+    Shade,
+    TriangleShade,
+    Diagonals,
+    Thirds,
+    CentreQuarter,
+    SeparatedQuadrant,
+    Octant,
+    SeparatedSextant,
+    Sixteenth,
+    EdgeQuarter,
+};
+
+// The family of @p cp, or None when the font draws it. One table for
+// isSprite() and draw(), so a character that is a sprite is always drawn.
+Legacy legacyShape(char32_t cp)
+{
+    if (cp >= 0x1FB00 && cp <= 0x1FB3B) return Legacy::Sextant;
+    if (cp >= 0x1FB3C && cp <= 0x1FB67) return Legacy::Wedge;
+    if ((cp >= 0x1FB68 && cp <= 0x1FB6F) || cp == 0x1FB9A || cp == 0x1FB9B) return Legacy::Triangles;
+    if (cp >= 0x1FB70 && cp <= 0x1FB8B) return Legacy::Eighths;
+    if ((cp >= 0x1FB8C && cp <= 0x1FB92) || cp == 0x1FB94) return Legacy::Shade;
+    if (cp >= 0x1FB9C && cp <= 0x1FB9F) return Legacy::TriangleShade;
+    if ((cp >= 0x1FBA0 && cp <= 0x1FBAE) || (cp >= 0x1FBD0 && cp <= 0x1FBDF)) return Legacy::Diagonals;
+    if (cp == 0x1FBCE || cp == 0x1FBCF) return Legacy::Thirds;
+    if (cp >= 0x1FBE4 && cp <= 0x1FBE7) return Legacy::CentreQuarter;
+    if (cp >= 0x1CC21 && cp <= 0x1CC2F) return Legacy::SeparatedQuadrant;
+    if (cp >= 0x1CD00 && cp <= 0x1CDE5) return Legacy::Octant;
+    if (cp >= 0x1CE51 && cp <= 0x1CE8F) return Legacy::SeparatedSextant;
+    if (cp >= 0x1CE90 && cp <= 0x1CE9F) return Legacy::Sixteenth;
+    if (cp >= 0x1CEA0 && cp <= 0x1CEAF) return Legacy::EdgeQuarter;
+    return Legacy::None;
+}
+
+void drawEighths(Canvas& c, char32_t cp)
+{
+    auto column = [&](int k) { fillParts(c, k, 0, k + 1, 8, 8); }; // k from 0, left to right
+    auto row = [&](int k) { fillParts(c, 0, k, 8, k + 1, 8); };   // k from 0, top to bottom
+    if (cp <= 0x1FB75) {
+        column(int(cp - 0x1FB70) + 1); // VERTICAL ONE EIGHTH BLOCK-2 to -7
+        return;
+    }
+    if (cp <= 0x1FB7B) {
+        row(int(cp - 0x1FB76) + 1); // HORIZONTAL ONE EIGHTH BLOCK-2 to -7
+        return;
+    }
+    static constexpr int Upper[] = {2, 3, 5, 6, 7}; // eighths of U+1FB82-1FB86 and U+1FB87-1FB8B
+    switch (cp) {
+    case 0x1FB7C: column(0); row(7); return; // left and lower
+    case 0x1FB7D: column(0); row(0); return; // left and upper
+    case 0x1FB7E: column(7); row(0); return; // right and upper
+    case 0x1FB7F: column(7); row(7); return; // right and lower
+    case 0x1FB80: row(0); row(7); return; // upper and lower
+    case 0x1FB81: row(0); row(2); row(4); row(7); return; // HORIZONTAL ONE EIGHTH BLOCK-1358
+    default: break;
+    }
+    if (cp <= 0x1FB86) {
+        fillParts(c, 0, 0, 8, Upper[cp - 0x1FB82], 8);
+    } else {
+        fillParts(c, 8 - Upper[cp - 0x1FB87], 0, 8, 8, 8);
+    }
+}
+
+void drawShade(Canvas& c, char32_t cp)
+{
+    // A medium shade is half coverage, as U+2592 draws it. Its inverse
+    // covers the other half of each spot, so it draws the same.
+    constexpr int Medium = 128;
+    switch (cp) {
+    case 0x1FB8C: fillParts(c, 0, 0, 1, 2, 2, Medium); return; // left half
+    case 0x1FB8D: fillParts(c, 1, 0, 2, 2, 2, Medium); return; // right half
+    case 0x1FB8E: fillParts(c, 0, 0, 2, 1, 2, Medium); return; // upper half
+    case 0x1FB8F: fillParts(c, 0, 1, 2, 2, 2, Medium); return; // lower half
+    case 0x1FB90: fillParts(c, 0, 0, 1, 1, 1, Medium); return; // inverse medium shade
+    case 0x1FB91: fillParts(c, 0, 0, 2, 1, 2); fillParts(c, 0, 1, 2, 2, 2, Medium); return;
+    case 0x1FB92: fillParts(c, 0, 0, 2, 1, 2, Medium); fillParts(c, 0, 1, 2, 2, 2); return;
+    default: fillParts(c, 0, 0, 1, 2, 2, Medium); fillParts(c, 1, 0, 2, 2, 2); return; // 1FB94
+    }
+}
+
+void drawTriangleShade(Canvas& c, char32_t cp)
+{
+    const QPointF ul(0, 0), ur(c.w, 0), lr(c.w, c.h), ll(0, c.h);
+    static constexpr int Medium = 128;
+    switch (cp) {
+    case 0x1FB9C: fillPolygon(c, QPolygonF({ul, ur, ll}), Medium); return;
+    case 0x1FB9D: fillPolygon(c, QPolygonF({ul, ur, lr}), Medium); return;
+    case 0x1FB9E: fillPolygon(c, QPolygonF({ur, lr, ll}), Medium); return;
+    default: fillPolygon(c, QPolygonF({ul, lr, ll}), Medium); return; // 1FB9F
+    }
+}
+
+void drawLegacy(Canvas& c, char32_t cp, Legacy shape, int t)
+{
+    // The separated mosaics leave a gap of about a line width between parts.
+    const int inset = std::max(1, (t + 1) / 2);
+    switch (shape) {
+    case Legacy::Sextant: drawGrid(c, sextantMask(cp), 2, 3); return;
+    case Legacy::Wedge: drawWedge(c, Wedges[cp - 0x1FB3C]); return;
+    case Legacy::Triangles: {
+        static constexpr unsigned Edges[] = {
+            TriUpper | TriRight | TriLower, TriLeft | TriLower | TriRight, TriUpper | TriLeft | TriLower,
+            TriLeft | TriUpper | TriRight, TriLeft, TriUpper, TriRight, TriLower,
+        };
+        drawTriangles(c, cp == 0x1FB9A ? TriUpper | TriLower : cp == 0x1FB9B ? TriLeft | TriRight : Edges[cp - 0x1FB68]);
+        return;
+    }
+    case Legacy::Eighths: drawEighths(c, cp); return;
+    case Legacy::Shade: drawShade(c, cp); return;
+    case Legacy::TriangleShade: drawTriangleShade(c, cp); return;
+    case Legacy::Diagonals:
+        drawDiagonalLines(c, cp <= 0x1FBAE ? DiagonalsA0[cp - 0x1FBA0] : DiagonalsD0[cp - 0x1FBD0], t);
+        return;
+    case Legacy::Thirds: fillParts(c, 0, 0, cp == 0x1FBCE ? 2 : 1, 3, 3); return;
+    case Legacy::CentreQuarter: {
+        const Quarters& q = CentreQuarters[cp - 0x1FBE4];
+        fillParts(c, q.x0, q.y0, q.x1, q.y1, 4);
+        return;
+    }
+    case Legacy::SeparatedQuadrant: drawGrid(c, unsigned(cp - 0x1CC20), 2, 2, inset); return;
+    case Legacy::Octant: drawGrid(c, octantMask(cp), 2, 4); return;
+    case Legacy::SeparatedSextant: drawGrid(c, unsigned(cp - 0x1CE50), 2, 3, inset); return;
+    case Legacy::Sixteenth: drawGrid(c, 1u << (cp - 0x1CE90), 4, 4); return;
+    case Legacy::EdgeQuarter: {
+        const Quarters& q = EdgeQuarters[cp - 0x1CEA0];
+        fillParts(c, q.x0, q.y0, q.x1, q.y1, 4);
+        return;
+    }
+    case Legacy::None: return;
+    }
+}
+
 } // namespace
 
 bool isSprite(char32_t cp)
 {
-    return (cp >= 0x2500 && cp <= 0x259F) || (cp >= 0x2800 && cp <= 0x28FF) || (cp >= 0xE0B0 && cp <= 0xE0BF);
+    return (cp >= 0x2500 && cp <= 0x259F) || (cp >= 0x2800 && cp <= 0x28FF) || (cp >= 0xE0B0 && cp <= 0xE0BF)
+        || legacyShape(cp) != Legacy::None;
 }
 
 bool draw(char32_t cp, QImage& canvas, int thickness)
@@ -477,6 +843,10 @@ bool draw(char32_t cp, QImage& canvas, int thickness)
     }
     if (cp >= 0xE0B0 && cp <= 0xE0BF) {
         drawPowerline(c, cp, t);
+        return true;
+    }
+    if (const Legacy shape = legacyShape(cp); shape != Legacy::None) {
+        drawLegacy(c, cp, shape, t);
         return true;
     }
     return false;

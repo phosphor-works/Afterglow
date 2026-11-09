@@ -242,16 +242,46 @@ Afterglow opens OSC 8 links and plain-text URLs with a click while you hold the 
 
 ## Mouse
 
-| Setting | Default | Choices |
+| Setting | Default | Range or choices |
 | --- | --- | --- |
 | `Mouse.rightClick` | `menu` | `menu`, `paste`, `copy-or-paste`, `extend` |
 | `Mouse.middleClick` | `primary` | `primary`, `clipboard`, `none` |
+| `Mouse.autoScrollInterval` | `50` | 10 to 1000 milliseconds |
+| `Mouse.dragSelection` | `false` | `true`, `false` |
 
 `copy-or-paste` copies a selection, or pastes when there is no selection.
 `extend` extends the selection to the click.
 
-A selection that you drag past the top or bottom of a pane scrolls one row each `Mouse.autoScrollInterval`
-milliseconds (50 by default).
+A selection that you extend past the top or bottom of a pane scrolls one row each `Mouse.autoScrollInterval`
+milliseconds.
+
+When the program in a pane reports the mouse, hold Shift to select. The program does not get a press with Shift.
+
+### Drag selected text out of a pane
+
+Set `Mouse.dragSelection` to `true` to drag selected text to another pane or another desktop application.
+The setting is off by default, as in Kitty.
+While it is off, a press inside the selection starts a new selection.
+
+1. Select text with the mouse.
+2. Press the left button inside the selection.
+3. Move the pointer to another pane or another desktop application.
+4. Release the button.
+
+The target gets the text, and the selection stays.
+The drag starts when the pointer moves the system drag distance.
+A pane that gets the text pastes it, unless its program accepts drops (see [text drops](DESKTOP.md#drop-files-and-text-into-a-pane)).
+The pane that the text comes from does not paste it.
+A pane pastes text that you drop on it also while `Mouse.dragSelection` is off.
+
+Only a single press with the left button and no Alt can drag:
+
+- A click inside the selection without a move clears the selection. A release on another cell is a short drag that selects nothing.
+- To select again from a point inside the selection, click once to clear the selection, then drag.
+  A press on the same cell within the double-click time is a double click, and its drag selects whole words.
+- A double click or a triple click inside the selection selects a word or a line. An Alt press starts a block selection.
+- A touch or a pen selects. It does not drag.
+- When the program in the pane offers a drag of its own ([Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop)), a move starts the program's drag.
 
 ## Quick terminal
 
@@ -273,7 +303,13 @@ A change to `QuickTerminal.screen` applies after the quick terminal hides and sh
 
 Afterglow removes control characters from pasted text, in bracketed and plain paste mode.
 It keeps tab, carriage return and line feed. It removes DEL and the C1 controls.
-`Terminal.confirmUnsafePaste` asks before a paste of several lines into a program that would run them.
+`Terminal.confirmUnsafePaste` asks before a paste with a line break (carriage return or line feed) into a program
+that does not use bracketed paste.
+A paste into a program that does not use paste events (OSC 5522), and each drop of text that pastes, have this limit:
+
+| Item | Limit | At the limit |
+| --- | --- | --- |
+| Text of one paste | 16 MiB | Afterglow pastes nothing and shows a notice. |
 
 ## Clipboard requests
 

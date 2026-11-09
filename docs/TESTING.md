@@ -72,7 +72,8 @@ They need this software:
 - `kitten`, for the `Kitty*` drag-and-drop tests of the native window suite. Without it, those tests skip.
 
 A drag-and-drop test of the native window suite that uses a client runs two times. It runs one time with `kitten dnd` and one time with `aglow dnd`.
-The Wayland file drop test (`NativeWaylandFileDrop`) uses no client. It runs one time.
+The Wayland file drop test (`NativeWaylandFileDrop`) and the selection drag test
+(`ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn`) use no client. Each runs one time.
 The `Aglow*` tests use the `aglow` of the build. In a build without `aglow`, they skip.
 
 The tests send input to the nested KWin window as synthetic X events. They do not use XTest.
@@ -403,13 +404,13 @@ See [native test dependencies](#native-test-dependencies).
 Run the tests of the control socket, `afterglow ctl`, the `commands` target and `aglow run`:
 
 ```sh
-ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest|CtlOverlayTest|CommandSocketTest|RunBinaryTest|AfterglowRunWithoutAglowTest|RemoteCommandsTest|Proto\.RunClient|Proto\.RunInput|Proto\.RunRemote|Proto\.Socket|Proto\.Remote|Proto\.Ipc)\.|RemoteSocket|aglow_run_pty|aglow_tmux_pty'
+ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest|CtlOverlayTest|CtlScreenshotTest|CommandSocketTest|RunBinaryTest|AfterglowRunWithoutAglowTest|RemoteCommandsTest|Proto\.RunClient|Proto\.RunInput|Proto\.RunRemote|Proto\.Socket|Proto\.Remote|Proto\.Ipc)\.|RemoteSocket|aglow_run_pty|aglow_tmux_pty'
 ```
 
 | Tests | Binary | What they run |
 | --- | --- | --- |
-| `ControlSocketTest.*` | `afterglow_control_tests` | The `control` target: calls and errors, `overlay` and its `overlayInput` parts, the socket lookup, stale sockets and merged events |
-| `CtlBinaryTest.*` and `CtlOverlayTest.*` | `afterglow_command_tests` | `afterglow ctl` against a socket that the test makes: usage errors, and `afterglow ctl overlay` with its options and standard input |
+| `ControlSocketTest.*` | `afterglow_control_tests` | The `control` target: calls and errors, `overlay` and its `overlayInput` parts, the refusals of `screenshot`, the socket lookup, stale sockets and merged events |
+| `CtlBinaryTest.*`, `CtlOverlayTest.*` and `CtlScreenshotTest.*` | `afterglow_command_tests` | `afterglow ctl` against a socket that the test makes: usage errors, `afterglow ctl overlay` with its options and standard input, and `afterglow ctl screenshot` with a `FILE`, `-`, a pipe, a FIFO that a program reads, a socket, a terminal and a directory that takes no new file |
 | `CommandSocketTest.*` | `afterglow_command_tests` | The `commands` target of the socket: the list, runs, standard input, flow control, cancel and the limits |
 | `RunBinaryTest.*` | `afterglow_command_tests` | `aglow run` against a socket that the test makes. They check the exit status, the output, standard input, the pane, signals and the socket lookup. |
 | `AfterglowRunWithoutAglowTest.*` | `afterglow_command_tests` | `afterglow run` in a build without `aglow`. The test checks the error and exit status 127. |
@@ -423,6 +424,7 @@ ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest
 | `aglow_run_pty` and `aglow_tmux_pty` | Python scripts | The OSC 24569 query of `aglow run` in a pseudo-terminal, also in a private tmux server. See [aglow tests](#aglow-tests) |
 
 `NativeWindow.AnOverlaysProgramGetsTheRemoteSocketOfItsHost` in the [native window suite](#native-window-tests) checks the answer to OSC 24569 in an overlay.
+`NativeWindow.ScreenshotsShowThePaneItsTabAndItsWindow` checks the images of `screenshot` and its refusals in a window.
 
 `RunBinaryTest.AfterglowRunRunsAglowRun` runs `aglow run` through `afterglow run`.
 In a build without `aglow`, the `RunBinaryTest.*` tests and `RemoteCommandsTest.OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThroughIt` report Skipped.

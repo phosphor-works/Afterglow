@@ -441,6 +441,7 @@ private:
     void lineFeed();
     void backspace();
     void horizontalTab(int count);
+    void resetTabStops(); ///< a stop every 8 columns (RIS, DECST8C)
     void backTab(int count);
     void setCursor(int row, int col);
     void moveCursorRelative(int dx, int dy);

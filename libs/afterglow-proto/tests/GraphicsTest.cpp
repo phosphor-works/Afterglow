@@ -71,12 +71,15 @@ TEST(Graphics, KeysRoundTrip)
 {
     for (std::string_view keys : {"a=T,f=100,t=f,i=31,I=7,p=2,q=2,x=-5,y=3,w=10,h=20,X=1,Y=4294967295,c=80,r=24,C=1,z=-1073741825,U=1",
                                   "a=d,d=r,x=4000000000,y=4294967295", "a=a,s=3,v=2,r=1,z=40", "a=c,r=2,c=1,x=0,Y=-1,H=-3,V=4,P=9,Q=8",
-                                  "a=f,s=4,v=4,S=64,O=8,o=z,i=1", "i=0", "m=1,q=1", "a=q,i=31,e=T,U=1,C=1"}) {
+                                  "a=f,s=4,v=4,S=64,O=8,o=z,i=1", "i=0", "m=1,q=1", "a=q,i=31,e=T,U=1,C=1",
+                                  "a=t,i=2,N=1", "a=t,f=0", "a=t,f=-1"}) {
         const auto cmd = GraphicsCommand::parse(keys);
         EXPECT_EQ(GraphicsCommand::parse(cmd.keys()), cmd) << keys << " -> " << cmd.keys();
     }
     // Defaults are not written.
     EXPECT_EQ(GraphicsCommand{}.keys(), "");
+    EXPECT_EQ(GraphicsCommand::parse("f=0").format, 32u);
+    EXPECT_EQ(GraphicsCommand::parse("f=-1").format, 0xFFFFFFFFu);
     GraphicsCommand place;
     place.action = 'p';
     place.id = 5;

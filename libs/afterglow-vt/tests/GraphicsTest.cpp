@@ -196,6 +196,33 @@ TEST(Graphics, ChunkedTransmission)
     EXPECT_EQ(t.host.written, "\x1b_Gi=3;OK\x1b\\");
 }
 
+TEST(Graphics, ChunksPastTheImageStillCountForThePayloadLimit)
+{
+    // A 1x1 image keeps 4 bytes of its chunks, but a transmission longer
+    // than the payload limit still fails.
+    Term t(20, 10);
+    const std::string chunk = base64Encode(std::string(3072, '\x01'));
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=1,m=1", chunk));
+    for (std::size_t sent = 3072; sent <= GraphicsStore::DefaultQuota; sent += 3072) {
+        t.t.feed(apc("m=1", chunk));
+    }
+    t.t.feed(apc("m=0"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;EFBIG:image payload too large\x1b\\");
+    EXPECT_TRUE(t.g().images().empty());
+    // One that ends at the limit exactly is kept. Its chunks of 6 MiB each
+    // go far past the image.
+    t.host.written.clear();
+    const std::size_t large = std::size_t(6) << 20;
+    const std::string big = base64Encode(std::string(large, '\x01'));
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=2,m=1", big));
+    std::size_t sent = large;
+    for (; sent + large <= GraphicsStore::DefaultQuota; sent += large) {
+        t.t.feed(apc("m=1", big));
+    }
+    t.t.feed(apc("m=0", base64Encode(std::string(GraphicsStore::DefaultQuota - sent, '\x01'))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=2;OK\x1b\\");
+}
+
 TEST(Graphics, ZlibCompressed)
 {
     Term t(20, 10);
@@ -1267,6 +1294,168 @@ TEST(Graphics, QuotaEvictsOlderImagesNotTheOneBeingAdded)
     EXPECT_EQ(t.g().images().count(2), 1u);
 }
 
+TEST(Graphics, TransientImagesGoFirstWhenTheQuotaIsFull)
+{
+    TerminalOptions o;
+    o.graphicsQuota = 5000;
+    Term t(20, 10, o);
+    t.t.feed(apc("a=t,f=32,s=20,v=20,i=1,q=2", base64Encode(rgba(20, 20, 1, 1, 1)))); // 1,600 bytes each
+    t.t.feed(apc("a=t,f=32,s=20,v=20,i=2,N=1,q=2", base64Encode(rgba(20, 20, 2, 2, 2))));
+    t.t.feed(apc("a=T,f=32,s=20,v=20,i=3,N=1,C=1,q=2", base64Encode(rgba(20, 20, 3, 3, 3)))); // shown
+    ASSERT_EQ(t.g().images().size(), 3u);
+    EXPECT_FALSE(t.g().images().at(1).transient);
+    EXPECT_TRUE(t.g().images().at(2).transient);
+    // Room for a fourth: the transient image that nothing shows goes, not
+    // the older image without the hint, and not the shown transient one.
+    t.t.feed(apc("a=t,f=32,s=20,v=20,i=4,q=2", base64Encode(rgba(20, 20, 4, 4, 4))));
+    EXPECT_EQ(t.g().images().count(1), 1u);
+    EXPECT_EQ(t.g().images().count(2), 0u);
+    EXPECT_EQ(t.g().images().count(3), 1u);
+    EXPECT_EQ(t.g().images().count(4), 1u);
+    // A frame does not set the hint, and sending the image again without it
+    // clears it.
+    t.t.feed(apc("a=f,i=1,N=1,q=2", base64Encode(rgba(20, 20, 5, 5, 5))));
+    EXPECT_FALSE(t.g().images().at(1).transient);
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=3,q=2", base64Encode(rgba(1, 1, 6, 6, 6))));
+    EXPECT_FALSE(t.g().images().at(3).transient);
+}
+
+TEST(Graphics, TransientImagesGoFirstAtTheImageLimit)
+{
+    Term t(20, 10);
+    for (std::uint32_t id = 1; id <= GraphicsStore::MaxImages; ++id) {
+        const std::string hint = id == 7 ? ",N=1" : "";
+        t.t.feed(apc("a=t,f=32,s=1,v=1,q=2,i=" + std::to_string(id) + hint, base64Encode(rgba(1, 1, 0, 0, 0))));
+    }
+    ASSERT_EQ(t.g().images().size(), std::size_t(GraphicsStore::MaxImages));
+    t.t.feed(apc("a=t,f=32,s=1,v=1,q=2,i=99999", base64Encode(rgba(1, 1, 0, 0, 0))));
+    EXPECT_EQ(t.g().images().count(99999), 1u);
+    EXPECT_EQ(t.g().images().count(7), 0u);
+    EXPECT_EQ(t.g().images().count(1), 1u); // the oldest stays: it has no hint
+}
+
+TEST(Graphics, IndexedFormatsKeepTheirIndices)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=8,s=2,v=1,i=1", base64Encode(std::string("\x01\xf8", 2))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;OK\x1b\\");
+    const ImageFrame& opaque = *t.g().images().at(1).frames.front();
+    EXPECT_EQ(opaque.format, PixelFormat::Indexed);
+    EXPECT_EQ(opaque.indices, (std::vector<std::uint8_t>{1, 248}));
+    EXPECT_TRUE(opaque.rgba.empty());
+    EXPECT_EQ(opaque.byteSize(), 8u); // the quota counts the RGBA that is drawn
+    // f=16: an index and an alpha for each pixel, here compressed.
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=16,s=1,v=2,o=z,i=2", base64Encode(zlibCompress(std::string("\x05\x80\xfc\xff", 4)))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=2;OK\x1b\\");
+    const ImageFrame& alpha = *t.g().images().at(2).frames.front();
+    EXPECT_EQ(alpha.format, PixelFormat::IndexedAlpha);
+    EXPECT_EQ(alpha.indices, (std::vector<std::uint8_t>{5, 0x80, 0xfc, 0xff}));
+    // A query checks support and stores nothing.
+    t.host.written.clear();
+    t.t.feed(apc("a=q,f=8,s=1,v=1,i=3", base64Encode(std::string("\x07", 1))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=3;OK\x1b\\");
+    EXPECT_EQ(t.g().images().count(3), 0u);
+    // In chunks, with data past the image: the image takes its 7 indices.
+    t.host.written.clear();
+    const std::string data = base64Encode(std::string("\x01\x02\x03\x04\x05\x06\x07\x08\x09", 9));
+    t.t.feed(apc("a=t,f=8,s=7,v=1,i=4,m=1", data.substr(0, 4)));
+    t.t.feed(apc("m=1", data.substr(4, 4)));
+    t.t.feed(apc("m=1", data.substr(8)));
+    t.t.feed(apc("m=0", base64Encode("tail")));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=4;OK\x1b\\");
+    EXPECT_EQ(t.g().images().at(4).frames.front()->indices, (std::vector<std::uint8_t>{1, 2, 3, 4, 5, 6, 7}));
+}
+
+TEST(Graphics, IndexedFormatsAreCheckedLikeRawPixels)
+{
+    TerminalOptions o;
+    o.graphicsQuota = 36;
+    Term t(20, 10, o);
+    t.t.feed(apc("a=t,f=8,i=1", base64Encode("abc")));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;EINVAL:missing or invalid image size\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=16,s=2,v=1,i=2", base64Encode("abc"))); // 3 bytes of 4
+    EXPECT_EQ(t.host.written, "\x1b_Gi=2;ENODATA:insufficient image data\x1b\\");
+    // The quota counts 4 bytes for each pixel, the RGBA that is drawn:
+    // 3x3 fits in 36 bytes for both formats.
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=8,s=3,v=3,i=3", base64Encode(std::string(9, '\x01'))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=3;OK\x1b\\");
+    EXPECT_EQ(t.g().totalBytes(), 36u);
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=16,s=3,v=3,i=4", base64Encode(std::string(18, '\x01'))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=4;OK\x1b\\");
+    EXPECT_EQ(t.g().totalBytes(), 36u); // image 3 had no placement: it went
+    // 10 pixels do not fit. The size is checked before anything inflates:
+    // data that is not zlib gets the quota's error, not the stream's.
+    for (const char* keys : {"a=t,f=8,s=2,v=5,o=z,i=5", "a=t,f=16,s=2,v=5,o=z,i=5"}) {
+        t.host.written.clear();
+        t.t.feed(apc(keys, base64Encode("not zlib")));
+        EXPECT_EQ(t.host.written, "\x1b_Gi=5;ENOSPC:image larger than the storage quota\x1b\\") << keys;
+    }
+    // A stream inflates to the size of the indices and no further.
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=8,s=1,v=1,o=z,i=6", base64Encode(zlibCompress("ab"))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=6;EINVAL:zlib decompression failed\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=16,s=1,v=1,o=z,i=6", base64Encode(zlibCompress("ab"))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=6;OK\x1b\\");
+    // An unknown format still fails.
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=12,s=1,v=1,i=7", base64Encode("ab")));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=7;EINVAL:unknown format\x1b\\");
+    // f=0 is the default format, as in kitty.
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=0,s=1,v=1,i=8", base64Encode(rgba(1, 1, 1, 2, 3))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=8;OK\x1b\\");
+    EXPECT_EQ(t.g().images().at(8).frames.front()->format, PixelFormat::Rgba);
+}
+
+TEST(Graphics, IndexedFileIsReadOnlyAsFarAsTheImage)
+{
+    // 2x1 at f=16 is 4 bytes. A work budget of 4 bytes with no refill
+    // refuses a read of any more, so the OK shows that no more was read.
+    TempFile file("afterglow-graphics-indexed-");
+    ASSERT_TRUE(file.write(std::string("\x01\x80\x02\xff" "more", 8)));
+    Store s(20, 5);
+    s.g.setWorkBudget(4, 0);
+    s.apc("a=t,t=f,f=16,s=2,v=1,i=1", base64Encode(file.path));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=1;OK\x1b\\");
+    ASSERT_EQ(s.g.images().count(1), 1u);
+    EXPECT_EQ(s.g.images().at(1).frames.front()->indices, (std::vector<std::uint8_t>{1, 0x80, 2, 0xff}));
+}
+
+TEST(Graphics, IndexedImagesHaveNoFrames)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=8,s=1,v=1,i=1,q=2", base64Encode(std::string("\x01", 1))));
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=2,q=2", base64Encode(rgba(1, 1, 1, 2, 3))));
+    t.t.feed(apc("a=f,i=1,f=32,s=1,v=1", base64Encode(rgba(1, 1, 1, 2, 3))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1,r=2;EINVAL:indexed images have no frames\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=f,i=2,f=8,s=1,v=1", base64Encode(std::string("\x01", 1))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=2,r=2;EINVAL:indexed images have no frames\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=c,i=1,r=1,c=1"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;EINVAL:indexed images have no frames\x1b\\");
+    EXPECT_EQ(t.g().images().at(1).frames.size(), 1u);
+    EXPECT_EQ(t.g().images().at(2).frames.size(), 1u);
+    // A frame by image number names the image, and its temporary file goes.
+    t.t.feed(apc("a=t,f=8,s=1,v=1,I=13,q=2", base64Encode(std::string("\x01", 1))));
+    ASSERT_EQ(t.g().images().size(), 3u);
+    std::uint32_t id = 0;
+    for (const auto& [key, image] : t.g().images()) {
+        if (key != 1 && key != 2) id = key;
+    }
+    TempFile file("afterglow-tty-graphics-protocol-indexed-");
+    ASSERT_TRUE(file.write("RGBA"));
+    t.host.written.clear();
+    t.t.feed(apc("a=f,I=13,t=t,f=32,s=1,v=1", base64Encode(file.path)));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=" + std::to_string(id) + ",I=13,r=2;EINVAL:indexed images have no frames\x1b\\");
+    EXPECT_FALSE(std::filesystem::exists(file.path));
+}
+
 TEST(Graphics, LowerQuotaEvictsAtOnce)
 {
     Term t(20, 10);
@@ -2169,12 +2358,21 @@ TEST(Graphics, FeatureQueryEchoesWhatIsSupported)
     t.t.feed(apc("a=q,i=31,e=T,U=1,C=1"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=31,e=T,C=1,U=1;OK\x1b\\");
     t.host.written.clear();
-    // Indexed colour (f=8) is not supported: f is left out.
+    // A frame takes no indexed colour (f=8): f is left out.
     t.t.feed(apc("a=q,i=32,e=f,r=1,X=1,f=8"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=32,e=f,r=1,X=1;OK\x1b\\");
     t.host.written.clear();
+    t.t.feed(apc("a=q,i=37,e=T,f=16"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=37,e=T,f=16;OK\x1b\\");
+    t.host.written.clear();
     t.t.feed(apc("a=q,i=33,e=d,d=F"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=33,e=d,d=F;OK\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=q,i=35,e=t,N=1"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=35,e=t,N=1;OK\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=q,i=36,e=f,N=1")); // a hint belongs to the transmission, not to a frame
+    EXPECT_EQ(t.host.written, "\x1b_Gi=36,e=f;OK\x1b\\");
     t.host.written.clear();
     t.t.feed(apc("a=q,i=34,e=Z"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=34;OK\x1b\\"); // no such action: no e

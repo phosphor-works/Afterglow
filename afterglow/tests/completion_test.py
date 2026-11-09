@@ -502,7 +502,7 @@ def mux_cases(commands, options):
     yield 'afterglow mux server ', set()
 
 
-def cases(ctl_commands, paneless, actions, options, run, overlay, mux):
+def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mux):
     """(line, expected) pairs. A set is the exact result, a callable checks the result."""
     files = FILES
     yield 'afterglow ', {'ctl', 'mux', 'run', 'ssh', 'transfer', 'dnd', 'icat', 'clipboard'}
@@ -534,6 +534,17 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, mux):
     yield 'afterglow ctl focus ', {'--pane'}
     yield 'afterglow ctl focus --pane ', set()
     yield 'afterglow ctl get-text --screen ', {'--pane'}
+    yield 'afterglow ctl screenshot -', {'--pane', *screenshot}
+    yield 'afterglow ctl screenshot --window -', {'--pane'}
+    yield 'afterglow ctl screenshot --tab -', {'--pane'}
+    # FILE: a path, after the scope or before it. After FILE (also -, for
+    # standard output), only the options.
+    yield 'afterglow ctl screenshot ', files
+    yield 'afterglow ctl screenshot --tab ', files
+    yield 'afterglow ctl screenshot shot.png ', {'--pane', *screenshot}
+    yield 'afterglow ctl screenshot - ', {'--pane', *screenshot}
+    yield 'afterglow ctl screenshot -x.png ', {'--pane', *screenshot}
+    yield 'afterglow ctl screenshot -w ', {'--pane', *screenshot}
     yield 'afterglow ctl split --left -', {'--pane'}
     yield 'afterglow ctl send-text -', {'--pane', '--raw', '--stdin'}
     yield 'afterglow ctl send-text --stdin -', {'--pane'}
@@ -621,7 +632,8 @@ def check_value_options():
 def main():
     source = CTL.read_text()
     sources = (string_list(source, 'Commands'), set(string_list(source, 'Paneless')), keybind_actions(),
-               aglow_options(), run_options(), ctl_options(source, 'overlay'), mux_commands())
+               aglow_options(), run_options(), ctl_options(source, 'overlay'), ctl_options(source, 'screenshot'),
+               mux_commands())
     check_value_options()
     with tempfile.TemporaryDirectory(prefix='afterglow-completion-') as tmp:
         shells = Shells(Path(tmp))
