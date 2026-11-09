@@ -179,6 +179,9 @@ public:
     }
 
 private:
+    // The mux reader installs rows and history rows in a replica (StateSync.h).
+    friend class StateReader;
+
     /// Turns blocks into plain text at their top-left cell (before reflow).
     void flattenMulticells();
     void releaseRow(Row& row) noexcept;

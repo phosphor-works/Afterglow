@@ -17,6 +17,7 @@ add_executable(afterglow_vt_tests
     SearchTest.cpp
     SelectionTest.cpp
     SixelTest.cpp
+    StateSyncTest.cpp
     TerminalTest.cpp
     TextSizingTest.cpp
     UnicodeTest.cpp
