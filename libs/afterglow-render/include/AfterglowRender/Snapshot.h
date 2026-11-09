@@ -135,15 +135,17 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     /// Their frames are RGBA: capture() gives indexed frames their colours.
     std::vector<AfterglowVt::VisiblePlacement> images;
 
-    /// An indexed frame in the colours of the last capture that showed it.
-    /// A frame keeps its texture until the colours change.
+    /// An indexed frame in indexColors. A frame keeps its RGBA frame, and so
+    /// its texture, until the colours change or no placement shows it.
     struct ColoredFrame
     {
         std::weak_ptr<const AfterglowVt::ImageFrame> source;
-        std::uint64_t colors = 0;
         AfterglowVt::FramePtr rgba;
+        std::uint64_t seen = 0; ///< the version of the last capture that showed it
     };
     std::unordered_map<const AfterglowVt::ImageFrame*, ColoredFrame> coloredFrames;
+    /// The colours of the 256 indices that coloredFrames are in.
+    std::array<std::uint32_t, 256> indexColors{};
 
     /// DEC line size per captured row.
     std::vector<AfterglowVt::LineSize> lineSizes;

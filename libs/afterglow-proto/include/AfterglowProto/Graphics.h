@@ -74,6 +74,8 @@ struct GraphicsCommand
     /// first other character and clamped to its field: a negative value of
     /// an unsigned field reads as 0. A number outside the range of a 64-bit
     /// integer is skipped. a, t, d, o and e take the first character.
+    /// f=0 reads as the default, 32, as in kitty, and a negative f as
+    /// 0xFFFFFFFF, a format that no terminal knows.
     static GraphicsCommand parse(std::string_view keys);
     /// True when each of a, t, d, o and e that keys() writes is an ASCII
     /// letter. Any other character could end the command, or the keys.

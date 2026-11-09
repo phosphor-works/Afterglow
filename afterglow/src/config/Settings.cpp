@@ -752,8 +752,9 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[GraphicsGroup] = {
         intKey(QStringLiteral("quota"), int(term.graphicsQuota >> 20), 16, 4096,
-               QStringLiteral("Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps. A pane has "
-                              "a main and an alternate screen. The oldest images go first when a screen is full.")),
+               QStringLiteral("Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 "
+                              "bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images "
+                              "without a placement go first: those sent with the transient hint (N=1), then the oldest.")),
     };
     schema.groups[NotificationsGroup] = {
         {QStringLiteral("enabled"), d.notifications, QMetaType::Bool,
