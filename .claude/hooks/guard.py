@@ -1332,7 +1332,8 @@ def parallel_jobs(args):
         if a in PARALLEL_LISTS:
             lists.append([] if a.startswith(':::') and len(a.rstrip('+')) == 3 else None)
         elif lists[-1] is not None:
-            lists[-1].append(a)
+            # parallel splits a word of a ::: list at each newline: 'x\nmain' is the two jobs x and main
+            lists[-1].extend(a.split('\n'))
     files |= not lists or None in lists
     lists = [words for words in lists if words]
     if k == end:
@@ -1973,8 +1974,10 @@ def check(call):
 def out_of_time(signum, frame):
     # Ends the hook here, not with an exception: a handler of the check could catch one (TimeoutError is an
     # OSError), and one raised during another exception could leave main with status 1, which lets the call run.
-    print(MSG_FAILED.format('the command takes longer to check than the guard allows'), file=sys.stderr, flush=True)
-    os._exit(2)
+    try:
+        print(MSG_FAILED.format('the command takes longer to check than the guard allows'), file=sys.stderr, flush=True)
+    finally:
+        os._exit(2)
 
 
 def main():
