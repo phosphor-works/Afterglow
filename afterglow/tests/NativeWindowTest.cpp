@@ -2146,7 +2146,13 @@ QPointF cellCentre(TerminalWindow* window, Pane* pane, int col, int row) {
     const QRectF grid = gridOf(window, pane);
     return grid.topLeft() + QPointF((col + 0.5) * grid.width() / pane->cols(), (row + 0.5) * grid.height() / pane->rows());
 }
+// The fixture's application again, with Mouse.dragSelection on.
+#define WITH_DRAG_SELECTION()                                                                                         \
+    restartApplication(QStringLiteral("drag.conf"),                                                               \
+        testSettings({{QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("dragSelection"), true}}}}),          \
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")})
 TEST_F(NativeWindow, APressInsideTheSelectionWaitsForAMoveOrClicks) {
+    WITH_DRAG_SELECTION();
     Pane* pane = window->focusedPane();
     selectWholeScreen(pane, "select me here");
     ASSERT_TRUE(pane->hasSelection());
@@ -2173,8 +2179,7 @@ TEST_F(NativeWindow, APressInsideTheSelectionWaitsForAMoveOrClicks) {
     EXPECT_EQ(pane->selectedText(), QStringLiteral("me"));
 }
 TEST_F(NativeWindow, WithoutDragSelectionAPressInsideTheSelectionSelectsAgain) {
-    QJsonObject settings = testSettings({{QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("dragSelection"), false}}}});
-    restartApplication(QStringLiteral("nodrag.conf"), settings, {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    // The default, as in kitty.
     Pane* pane = window->focusedPane();
     selectWholeScreen(pane, "select me here");
     // A press and a move select from the press: no drag, which would wait
@@ -2209,6 +2214,7 @@ void selectRow(Pane* pane, int row) {
 // pastes, back onto its own pane it does not.
 TEST_F(NativeWindow, ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn) {
     REQUIRE_NATIVE_DND(ready);
+    WITH_DRAG_SELECTION();
     const QString received = directory.filePath(QStringLiteral("received.txt"));
     Pane* left = window->focusedPane();
     PaneLaunchOptions launch;

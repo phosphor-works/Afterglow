@@ -90,7 +90,8 @@ struct MouseSettings
     int autoScrollInterval = 50;
     /// A press inside the selection and a move drag its text out, to
     /// another pane or another application. A click there still selects.
-    bool dragSelection = true;
+    /// Off, as in kitty: a press always starts a new selection.
+    bool dragSelection = false;
     bool operator==(const MouseSettings&) const = default;
 };
 

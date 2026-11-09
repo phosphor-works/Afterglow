@@ -105,7 +105,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 - Search with PCRE2 regular expressions, across soft-wrapped lines.
 - Keyboard selection in character, line and rectangle modes.
-- A selection can be dragged to another pane or another application (`Mouse.dragSelection`). Text dropped on a pane is pasted, with the checks of a paste.
+- A selection can be dragged to another pane or another application when `Mouse.dragSelection` is on (off by default, as in kitty). Text dropped on a pane is pasted, with the checks of a paste.
 - Text hints that copy, open or run commands on regular-expression matches, and URL hints, labeled from `Hints.alphabet`.
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.
 - Keybindings with multi-key sequences, a leader key and named key tables.

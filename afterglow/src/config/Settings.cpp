@@ -603,7 +603,8 @@ PhosphorConfig::Schema buildSchema()
                               "of a pane.")),
         {QStringLiteral("dragSelection"), d.mouse.dragSelection, QMetaType::Bool,
          QStringLiteral("Drag the selected text to another pane or application. Press inside the selection and move the "
-                        "pointer. A click inside the selection without a move selects as before.")},
+                        "pointer. A click inside the selection without a move selects as before. When off, a press inside "
+                        "the selection starts a new selection.")},
     };
     schema.groups[LinksGroup] = {
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,

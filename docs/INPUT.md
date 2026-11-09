@@ -233,7 +233,8 @@ milliseconds (50 by default).
 
 ### Drag the selection
 
-With `Mouse.dragSelection` (on by default), you can drag the selected text out of a pane.
+With `Mouse.dragSelection` set to `true`, you can drag the selected text out of a pane.
+It is off by default, as in kitty: a press inside the selection then starts a new selection.
 
 1. Press the left button inside the selection.
 2. Move the pointer to another pane or another application.
@@ -243,7 +244,6 @@ A pane that gets the text pastes it, as a paste from the clipboard does (see [pa
 The pane that the text comes from does not paste it.
 A click inside the selection without a move still clears the selection.
 A double click or a triple click inside it still selects a word or a line.
-Set `Mouse.dragSelection` to `false` to start a new selection with a press inside the old one.
 
 ## Quick terminal
 
