@@ -122,14 +122,14 @@ struct QuickTerminalSettings
     bool operator==(const QuickTerminalSettings&) const = default;
 };
 
-/// What closing the last window of a mux session does.
-enum class MuxClose : std::uint8_t { Kill, Detach };
-
 struct MuxSettings
 {
+    /// What closing the window, tab or pane that shows a mux session does.
+    enum class Close { Kill, Detach };
     /// Kill ends the session and its programs, as a window that is not in a
-    /// session ends its programs. Detach keeps the session running.
-    MuxClose closeOnLastWindow = MuxClose::Kill;
+    /// session ends its programs. Detach keeps the session running. A quit
+    /// of Afterglow always detaches.
+    Close onClose = Close::Kill;
     bool operator==(const MuxSettings&) const = default;
 };
 

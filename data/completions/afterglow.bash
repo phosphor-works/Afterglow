@@ -84,7 +84,8 @@ _afterglow_unused()
         given=""
         for option in ${group//|/ }; do
             for ((j = start; j < cword; j++)); do
-                [[ ${words[j]} == "$option" ]] && given=1
+                # --title=x gives --title as well.
+                [[ ${words[j]%%=*} == "$option" ]] && given=1
             done
         done
         [[ $given ]] || _afterglow_matching ${group//|/ }

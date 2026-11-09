@@ -8,6 +8,7 @@
 #include "MuxConnect.h"
 #include "MuxStream.h"
 
+#include <AfterglowProto/Text.h>
 #include <AfterglowVt/StateSync.h>
 #include <PhosphorChannel/Stream.h>
 
@@ -15,6 +16,7 @@
 #include <QSocketNotifier>
 
 #include <chrono>
+#include <cerrno>
 #include <cstring>
 
 #include <sys/socket.h>
@@ -26,27 +28,67 @@ Q_LOGGING_CATEGORY(lcMux, "afterglow.mux")
 namespace Afterglow {
 
 namespace Json = AfterglowProto::Json;
+namespace Attach = AfterglowMux::Attach;
 using PhosphorChannel::ReadResult;
 using PhosphorChannel::WriteResult;
 
 namespace {
 
-int connectTo(const std::string& path)
+/// How long a window that lets a session go waits for its input to leave.
+constexpr int ReleaseWaitMs = 200;
+
+/// Connects to the attach socket @p path that the daemon named. It must be
+/// in the directory of one of the daemon's sockets, which only the user
+/// opens: another path could be anyone's.
+int connectTo(const std::string& path, const AfterglowProto::MuxSockets& sockets, QString* error)
 {
-    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return -1;
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    if (path.size() >= sizeof address.sun_path) {
-        ::close(fd);
+    bool inDirectory = false;
+    for (const AfterglowProto::MuxSocket& socket : sockets.candidates) {
+        inDirectory = inDirectory || (path.size() > socket.directory.size() + 1 && path.starts_with(socket.directory)
+                                      && path[socket.directory.size()] == '/'
+                                      && path.find('/', socket.directory.size() + 1) == std::string::npos);
+    }
+    if (!inDirectory) {
+        *error = QStringLiteral("the daemon named an attach socket outside its directory: '%1'").arg(QString::fromStdString(path));
         return -1;
     }
+    if (const std::string reason = AfterglowProto::socketPathError(path); !reason.empty()) {
+        *error = QString::fromStdString(reason);
+        return -1;
+    }
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        *error = QString::fromUtf8(std::strerror(errno));
+        return -1;
+    }
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
     std::memcpy(address.sun_path, path.data(), path.size());
-    if (::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof address) != 0) {
+    int result;
+    do {
+        result = ::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof address);
+    } while (result != 0 && errno == EINTR);
+    if (result != 0) {
+        *error = QStringLiteral("cannot connect to %1: %2").arg(QString::fromStdString(path), QString::fromUtf8(std::strerror(errno)));
         ::close(fd);
         return -1;
     }
     return fd;
+}
+
+QString lossText(MuxClient::Loss loss, const QString& name)
+{
+    switch (loss) {
+    case MuxClient::Loss::Ended:
+        return QStringLiteral("session '%1' ended").arg(name);
+    case MuxClient::Loss::Detached:
+        return QStringLiteral("session '%1' was detached").arg(name);
+    case MuxClient::Loss::TakenOver:
+        return QStringLiteral("another window took session '%1'").arg(name);
+    case MuxClient::Loss::Broken:
+        break;
+    }
+    return QStringLiteral("the connection to session '%1' broke").arg(name);
 }
 
 } // namespace
@@ -58,41 +100,50 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
         if (error) *error = text;
         return nullptr;
     };
+    if (sockets.candidates.empty()) return fail(QString::fromStdString(sockets.error));
     std::string reason;
     AfterglowMux::Reached reached = AfterglowMux::connectAny(sockets, &reason);
     if (!reached.connection) {
         return fail(reason.empty() ? QStringLiteral("no mux daemon runs, so there is no session '%1'").arg(name)
-                                   : QString::fromStdString(reason));
+                                   : QString::fromStdString(AfterglowProto::printable(reason)));
     }
     AfterglowProto::IpcConnection::Error callError;
     const auto result = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::Attach,
                                                  Json::Array{AfterglowMux::ProtocolVersion, name.toStdString(),
                                                              Json::Object{{"takeover", takeover}}},
                                                  AfterglowMux::CallTimeoutMs, &callError);
-    if (!result) return fail(QString::fromStdString(callError.message));
-    const int fd = connectTo((*result)["socket"].toString());
-    if (fd < 0) return fail(QStringLiteral("cannot connect to the attach socket of session '%1'").arg(name));
+    // The daemon's words, which the user reads in a terminal.
+    if (!result) return fail(QString::fromStdString(AfterglowProto::printable(callError.message)));
+    QString connectError;
+    const int fd = connectTo((*result)["socket"].toString(), sockets, &connectError);
+    if (fd < 0) return fail(QStringLiteral("cannot show session '%1': %2").arg(name, connectError));
 
     std::shared_ptr<MuxClient> client(new MuxClient);
     client->m_session = name;
     client->m_sockets = sockets;
-    client->m_stream = std::make_unique<PhosphorChannel::Stream>(fd);
+    PhosphorChannel::Stream::Options options;
+    options.maxChannelId = Attach::MaxChannelId;
+    client->m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
     std::string streamError;
-    client->m_input = client->m_stream->openWriter(AfterglowMux::Attach::ControlChannel, AfterglowMux::Attach::InputCodec, &streamError);
+    client->m_input = client->m_stream->openWriter(Attach::ControlChannel, Attach::InputCodec, &streamError);
     if (!client->m_input) return fail(QString::fromStdString(streamError));
 
     // The daemon names the panes first: the window shows them once it knows them.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(AfterglowMux::Attach::ConnectWaitMs);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(Attach::ConnectWaitMs);
     while (client->m_paneIds.empty() && !client->m_ended) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
         if (left.count() <= 0) return fail(QStringLiteral("session '%1' did not answer").arg(name));
-        if (!client->m_stream->pump(int(left.count()))) {
-            return fail(QStringLiteral("session '%1' closed the connection: %2")
-                            .arg(name, QString::fromStdString(client->m_stream->error())));
-        }
+        // The event that ends the stream comes before its end: read it first.
+        const bool open = client->m_stream->pump(int(left.count()));
         client->handleFrames();
+        if (client->m_ended) break;
+        if (!open) {
+            const std::string& why = client->m_stream->error();
+            return fail(why.empty() ? QStringLiteral("session '%1' closed the connection").arg(name)
+                                    : QStringLiteral("session '%1' closed the connection: %2").arg(name, QString::fromStdString(AfterglowProto::printable(why))));
+        }
     }
-    if (client->m_ended) return fail(QStringLiteral("session '%1' ended").arg(name));
+    if (client->m_ended) return fail(lossText(client->m_loss, name));
 
     client->m_readNotifier = new QSocketNotifier(client->m_stream->readFd(), QSocketNotifier::Read, client.get());
     connect(client->m_readNotifier, &QSocketNotifier::activated, client.get(), &MuxClient::readable);
@@ -110,66 +161,109 @@ void MuxClient::bind(std::uint32_t id, Pane* pane)
     m_panes[id] = pane;
     // Frames that came before the pane existed wait in the stream's reader.
     handleFrames();
+    // A pane that the session lost before it existed closes at once.
+    if (m_ended && pane) pane->sessionLost(m_loss);
 }
 
 void MuxClient::release(std::uint32_t id, bool kill)
 {
     m_panes.erase(id);
     if (!m_panes.empty() || !m_stream) return;
-    if (kill && !m_ended) {
-        std::string reason;
-        AfterglowMux::Reached reached = AfterglowMux::connectAny(m_sockets, &reason);
-        AfterglowProto::IpcConnection::Error callError;
-        if (!reached.connection
-            || !reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::KillSession, Json::Array{m_session.toStdString()},
-                                         AfterglowMux::CallTimeoutMs, &callError)) {
-            const std::string why = !reached.connection ? (reason.empty() ? std::string("no daemon answers") : reason) : callError.message;
-            qCWarning(lcMux) << "cannot end session" << m_session << QString::fromStdString(why);
-        }
+    if (kill && showing()) {
+        Attach::Input input;
+        input.type = Attach::InputType::Kill;
+        // The kill goes whatever waits: the session ends anyway.
+        queueInput(Attach::encode(input), false);
     }
-    // The input that waits goes before the window detaches.
-    m_stream->flush(200);
+    // The input that waits goes before the window lets the session go, for a
+    // short time: the GUI thread waits here. What a slow program or daemon
+    // has no room for by then is lost, as the input of a closed window is.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ReleaseWaitMs);
+    const auto left = [&deadline] {
+        return int(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
+    };
+    while (showing() && !m_waitingInput.empty() && left() > 0 && m_stream->open()) {
+        if (!m_stream->pump(left())) break;
+        sendWaitingInput();
+    }
+    if (showing() && left() > 0) m_stream->flush(left());
     delete m_readNotifier;
     delete m_writeNotifier;
     m_readNotifier = m_writeNotifier = nullptr;
     m_stream.reset();
+    m_input = nullptr;
+    m_waitingInput.clear();
+    m_waitingBytes.store(0, std::memory_order_relaxed);
 }
 
 bool MuxClient::sendInput(std::uint32_t id, std::string_view bytes)
 {
-    if (!m_stream || m_ended) return false;
-    AfterglowMux::Attach::Input input;
+    if (!showing()) return false;
+    Attach::Input input;
     input.pane = id;
     // Large input goes in parts that fit the window of the channel.
     constexpr std::size_t Part = 64 * 1024;
     std::vector<std::string> frames;
     for (std::size_t at = 0; at < bytes.size() || frames.empty(); at += Part) {
         input.bytes.assign(bytes.substr(at, Part));
-        frames.push_back(AfterglowMux::Attach::encode(input));
+        frames.push_back(Attach::encode(input));
         if (at + Part >= bytes.size()) break;
     }
     std::size_t total = 0;
     for (const auto& f : frames) total += f.size();
-    if (m_waitingBytes + total > MaxWaitingInput) return false;
-    for (auto& f : frames) {
-        m_waitingBytes += f.size();
-        m_waitingInput.push_back(std::move(f));
-    }
+    if (m_waitingBytes.load(std::memory_order_relaxed) + total > MaxWaitingInput) return false;
+    for (auto& f : frames) queueInput(std::move(f), false);
     sendWaitingInput();
     return true;
 }
 
+void MuxClient::queueInput(std::string frame, bool resize)
+{
+    m_waitingBytes.fetch_add(frame.size(), std::memory_order_relaxed);
+    m_waitingInput.push_back(std::move(frame));
+    if (!resize) m_waitingResizeOf.reset();
+}
+
 void MuxClient::sendResize(std::uint32_t id, const AfterglowMux::PaneSize& size)
 {
-    if (!m_stream || m_ended) return;
-    AfterglowMux::Attach::Input input;
-    input.type = AfterglowMux::Attach::InputType::Resize;
+    if (!showing()) return;
+    Attach::Input input;
+    input.type = Attach::InputType::Resize;
     input.pane = id;
     input.size = size;
-    // In order with the input: the program sees the keys of the old size first.
-    std::string frame = AfterglowMux::Attach::encode(input);
-    m_waitingBytes += frame.size();
-    m_waitingInput.push_back(std::move(frame));
+    std::string frame = Attach::encode(input);
+    // In order with the input: the program sees the keys of the old size
+    // first. A size that still waits with nothing after it is old: the new
+    // one takes its place.
+    if (m_waitingResizeOf == id && !m_waitingInput.empty()) {
+        std::string& last = m_waitingInput.back();
+        m_waitingBytes.fetch_sub(last.size(), std::memory_order_relaxed);
+        m_waitingBytes.fetch_add(frame.size(), std::memory_order_relaxed);
+        last = std::move(frame);
+    } else {
+        queueInput(std::move(frame), true);
+        m_waitingResizeOf = id;
+    }
+    sendWaitingInput();
+}
+
+void MuxClient::sendReset(std::uint32_t id)
+{
+    if (!showing()) return;
+    Attach::Input input;
+    input.type = Attach::InputType::Reset;
+    input.pane = id;
+    queueInput(Attach::encode(input), false);
+    sendWaitingInput();
+}
+
+void MuxClient::sendClear(std::uint32_t id)
+{
+    if (!showing()) return;
+    Attach::Input input;
+    input.type = Attach::InputType::Clear;
+    input.pane = id;
+    queueInput(Attach::encode(input), false);
     sendWaitingInput();
 }
 
@@ -177,9 +271,10 @@ void MuxClient::sendWaitingInput()
 {
     while (m_stream && m_input && !m_waitingInput.empty()) {
         if (m_input->tryWrite(m_waitingInput.front()) != WriteResult::Written) break;
-        m_waitingBytes -= m_waitingInput.front().size();
+        m_waitingBytes.fetch_sub(m_waitingInput.front().size(), std::memory_order_relaxed);
         m_waitingInput.pop_front();
     }
+    if (m_waitingInput.empty()) m_waitingResizeOf.reset();
     updateNotifiers();
 }
 
@@ -219,75 +314,133 @@ void MuxClient::writable()
 
 void MuxClient::updateNotifiers()
 {
-    if (m_writeNotifier) m_writeNotifier->setEnabled(m_stream && m_stream->wantsWrite());
+    if (m_writeNotifier) m_writeNotifier->setEnabled(m_stream && m_stream->open() && m_stream->wantsWrite());
 }
 
 void MuxClient::handleFrames()
 {
     if (!m_stream) return;
     std::string frame;
-    if (PhosphorChannel::StreamReader* events = m_stream->reader(AfterglowMux::Attach::ControlChannel)) {
-        while (events->read(frame) == ReadResult::Frame) {
-            const auto event = AfterglowMux::Attach::decodeEvent(frame);
-            if (!event) continue;
-            using AfterglowMux::Attach::EventType;
-            switch (event->type) {
-            case EventType::PaneOpened:
-                m_paneIds.push_back(event->pane);
-                break;
-            case EventType::PaneClosed:
-                if (const auto it = m_panes.find(event->pane); it != m_panes.end() && it->second) {
-                    it->second->sessionPaneExited(event->status);
-                }
-                break;
-            case EventType::SessionEnded:
-            case EventType::TakenOver:
-            case EventType::Detached: {
-                m_ended = true;
-                // A copy: a pane that goes releases itself from the map.
-                const std::vector<QPointer<Pane>> panes = shownPanes();
-                for (const QPointer<Pane>& pane : panes) {
-                    if (pane) pane->sessionLost(event->type == EventType::TakenOver);
-                }
-                break;
-            }
-            }
+    std::optional<Loss> ending;
+    if (PhosphorChannel::StreamReader* events = m_stream->reader(Attach::ControlChannel)) {
+        if (events->codec() != Attach::EventCodec) {
+            qCWarning(lcMux) << "session" << m_session << "sends events of another kind:" << QString::fromStdString(events->codec());
+            lost();
+            return;
         }
-    }
-    for (const auto& [id, pane] : m_panes) {
-        PhosphorChannel::StreamReader* state = m_stream ? m_stream->reader(id) : nullptr;
-        if (!state || !pane) continue;
-        while (state->read(frame) == ReadResult::Frame) {
-            if (!pane->applySessionFrame(frame)) {
-                // The replica no longer matches what the daemon sends: the
-                // window cannot show the session any more, and detaches.
-                qCWarning(lcMux) << "session" << m_session << "sent a frame that pane" << id << "cannot apply";
+        while (events->read(frame) == ReadResult::Frame) {
+            const auto event = Attach::decodeEvent(frame);
+            bool bad = !event;
+            if (event && event->type == Attach::EventType::PaneOpened) {
+                for (const auto& [pane, channel] : m_channels) bad = bad || pane == event->pane || channel == event->channel;
+                if (!bad) {
+                    m_channels[event->pane] = event->channel;
+                    m_paneIds.push_back(event->pane);
+                }
+            } else if (event && event->type == Attach::EventType::PaneClosed) {
+                bad = !m_channels.contains(event->pane) || m_exits.contains(event->pane);
+                if (!bad) {
+                    m_exits[event->pane] = event->status;
+                    paneExited(event->pane);
+                }
+            } else if (event) {
+                ending = event->type == Attach::EventType::SessionEnded ? Loss::Ended
+                    : event->type == Attach::EventType::TakenOver      ? Loss::TakenOver
+                                                                       : Loss::Detached;
+            }
+            if (bad) {
+                qCWarning(lcMux) << "session" << m_session << "sent an event that the window cannot take";
                 lost();
                 return;
             }
         }
     }
+    // A copy: a pane whose program exited leaves the map.
+    const std::map<std::uint32_t, std::uint32_t> channels = m_channels;
+    for (const auto& [id, channel] : channels) {
+        if (m_panes.contains(id) && !readState(id)) return;
+    }
+    if (ending) end(*ending);
+    updateNotifiers();
+}
+
+bool MuxClient::readState(std::uint32_t id)
+{
+    PhosphorChannel::StreamReader* state = m_stream->reader(m_channels[id]);
+    if (!state) return true;
+    if (state->codec() != AfterglowVt::StateCodec) {
+        qCWarning(lcMux) << "session" << m_session << "sends the state of pane" << id << "in another kind:"
+                         << QString::fromStdString(state->codec());
+        lost();
+        return false;
+    }
+    const QPointer<Pane> pane = m_panes[id];
+    std::string frame;
+    while (true) {
+        const ReadResult result = state->read(frame);
+        if (result == ReadResult::Frame) {
+            // The replica no longer matches what the daemon sends: the
+            // window cannot show the session any more (Pane says why).
+            if (pane && !pane->applySessionFrame(frame)) {
+                lost();
+                return false;
+            }
+            continue;
+        }
+        if (result == ReadResult::Closed) {
+            m_closedChannels.insert(id);
+            paneExited(id);
+        } else if (result != ReadResult::Empty) {
+            lost();
+            return false;
+        }
+        return true;
+    }
+}
+
+void MuxClient::paneExited(std::uint32_t id)
+{
+    const auto exit = m_exits.find(id);
+    if (exit == m_exits.end() || !m_closedChannels.contains(id)) return;
+    const int status = exit->second;
+    m_exits.erase(exit);
+    m_closedChannels.erase(id);
+    m_channels.erase(id);
+    if (const auto it = m_panes.find(id); it != m_panes.end() && it->second) it->second->sessionPaneExited(status);
+}
+
+void MuxClient::end(Loss loss)
+{
+    if (!m_ended) {
+        m_ended = true;
+        m_loss = loss;
+    }
+    // A pane whose exit is half known waits for the rest: its last frame or
+    // its status still comes, and it closes as a pane whose program
+    // exited. A copy: a pane that goes releases itself from the map.
+    const std::map<std::uint32_t, QPointer<Pane>> panes = m_panes;
+    for (const auto& [id, pane] : panes) {
+        if (!pane || m_exits.contains(id) || m_closedChannels.contains(id)) continue;
+        pane->sessionLost(m_loss);
+    }
 }
 
 void MuxClient::lost()
 {
-    if (m_ended) return;
-    // The daemon ended, or the stream broke: the session may still run, the
-    // window no longer shows it.
-    m_ended = true;
-    qCWarning(lcMux) << "the connection to session" << m_session << "ended"
-                     << (m_stream ? QString::fromStdString(m_stream->error()) : QString());
-    const std::vector<QPointer<Pane>> panes = shownPanes();
-    for (const QPointer<Pane>& pane : panes) {
-        if (pane) pane->sessionLost(false);
+    // The daemon ended, or the stream broke or ended after the end event:
+    // the session may still run, the window no longer shows it. Nothing
+    // more comes, so the exits that wait for their other half end too.
+    if (!m_ended) {
+        qCWarning(lcMux) << "the connection to session" << m_session << "ended"
+                         << (m_stream ? QString::fromStdString(m_stream->error()) : QString());
     }
-}
-
-std::vector<QPointer<Pane>> MuxClient::shownPanes() const
-{
-    std::vector<QPointer<Pane>> panes;
-    for (const auto& [id, pane] : m_panes) panes.push_back(pane);
-    return panes;
+    // The stream stays readable at its end: the notifier would fire on each
+    // pass of the event loop until the last pane goes.
+    if (m_readNotifier) m_readNotifier->setEnabled(false);
+    if (m_writeNotifier) m_writeNotifier->setEnabled(false);
+    m_exits.clear();
+    m_closedChannels.clear();
+    end(Loss::Broken);
 }
 
 } // namespace Afterglow

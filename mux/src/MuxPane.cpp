@@ -105,8 +105,8 @@ void MuxPane::desktopNotification(const AfterglowVt::NotificationRequest& reques
 bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
 {
     using AfterglowVt::ClipboardAssembler;
-    // No client means no clipboard and no user to ask: the request gets the
-    // answer of a denial. A write is dropped.
+    // The daemon has no clipboard, and the attach stream carries none yet:
+    // the request gets the answer of a denial. A write is dropped.
     if (request.kind == AfterglowVt::ClipboardRequest::Kind::Write) {
         writeToPty(ClipboardAssembler::writeStatus("EPERM", request.id));
     } else if (request.osc52) {
@@ -127,8 +127,8 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
             return;
         }
         // A drag starts from an offer (t=o without x=1 or x=2) while the
-        // user holds the mouse button: with no window, the user holds none,
-        // and the offer gets the window's EPERM. A drop never arrives, so
+        // user holds the mouse button. The attach stream carries no drag
+        // yet, so the offer gets the window's EPERM. A drop never arrives, so
         // the other commands need no answer. A chunked offer is answered
         // once, at its last chunk.
         const std::string_view raw = AfterglowProto::splitDnd(payload).first;
@@ -144,7 +144,8 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
     }
     if (code != 5113 || payload.size() > AfterglowProto::TransferMaxCommand) return;
     // A transfer starts with ac=send or ac=receive and waits for the user's
-    // answer: without a client, it is the answer of a denial. A session with
+    // answer. The attach stream carries no transfer yet: it is the answer of
+    // a denial. A session with
     // q=2 asked for no status, errors included.
     const auto fields = AfterglowProto::decodeTransfer(payload);
     if (!fields) return;
@@ -177,9 +178,35 @@ void MuxPane::ptyClosed(int status)
     m_wake();
 }
 
-bool MuxPane::input(std::string_view bytes)
+MuxPane::Input MuxPane::input(std::string_view bytes)
 {
-    return m_pty && !m_exited && m_pty->write(bytes);
+    if (!m_pty || m_exited) return Input::Gone;
+    if (m_pty->write(bytes)) return Input::Written;
+    // The write refused it for a full queue, or the child side is gone and
+    // its exit follows.
+    return m_exited ? Input::Gone : Input::Full;
+}
+
+void MuxPane::reset()
+{
+    {
+        std::lock_guard lock(m_mutex);
+        m_terminal.reset();
+    }
+    if (!m_changed.exchange(true)) m_wake();
+}
+
+void MuxPane::clear()
+{
+    bool atPrompt = false;
+    {
+        std::lock_guard lock(m_mutex);
+        m_terminal.clearScreenAndHistory();
+        atPrompt = m_terminal.atShellPrompt() && !m_terminal.modes().altScreen;
+    }
+    // At a prompt the shell redraws it on the cleared screen, as in a window.
+    if (atPrompt) writeToPty("\x0c");
+    if (!m_changed.exchange(true)) m_wake();
 }
 
 void MuxPane::resize(const PaneSize& size)

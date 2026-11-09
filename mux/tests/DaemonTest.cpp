@@ -95,20 +95,27 @@ TEST(MuxDaemon, ControlAndCommandCallsFailWithAReason)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string message = "a session pane takes no control calls: the mux daemon answers only mux calls";
     for (const std::string target : {"control", AfterglowProto::Run::Target}) {
+        SCOPED_TRACE(target);
         IpcConnection::Error error;
-        EXPECT_FALSE(daemon.call("listPanes", {}, &error, target)) << target;
-        EXPECT_EQ(error.code, IpcErrorCode::CallFailed) << target;
-        EXPECT_EQ(error.message, "a session pane takes no control calls until a window shows the session") << target;
+        EXPECT_FALSE(daemon.call("listPanes", {}, &error, target));
+        EXPECT_EQ(error.code, IpcErrorCode::CallFailed);
+        EXPECT_EQ(error.message, message);
         // Not only calls: `afterglow ctl watch` subscribes.
         RawClient raw(daemon.socket());
-        ASSERT_TRUE(raw.connected());
-        ASSERT_TRUE(raw.send(R"({"type":"subscribe","id":3,"target":")" + target + R"(","signal":"x"})" "\n"));
+        EXPECT_TRUE(raw.connected());
+        if (!raw.connected() || !raw.send(R"({"type":"subscribe","id":3,"target":")" + target + R"(","signal":"x"})" "\n")) {
+            ADD_FAILURE() << "cannot subscribe";
+            continue;
+        }
         const auto reply = Json::parse(raw.line());
-        ASSERT_TRUE(reply) << target;
+        if (!reply) {
+            ADD_FAILURE() << "no reply";
+            continue;
+        }
         EXPECT_EQ((*reply)["code"].toString(), IpcErrorCode::CallFailed) << Json::write(*reply);
-        EXPECT_EQ((*reply)["message"].toString(), "a session pane takes no control calls until a window shows the session")
-            << Json::write(*reply);
+        EXPECT_EQ((*reply)["message"].toString(), message) << Json::write(*reply);
     }
 }
 
@@ -335,7 +342,10 @@ TEST(MuxDaemon, ListensOnTheStateDirectoryToo)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     for (const std::string& directory : {daemon.runtime() + "/afterglow-mux", daemon.stateDirectory(), daemon.dir() + "/state"}) {
         struct stat info{};
-        ASSERT_EQ(::lstat(directory.c_str(), &info), 0) << directory;
+        if (::lstat(directory.c_str(), &info) != 0) {
+            ADD_FAILURE() << "no " << directory;
+            continue;
+        }
         EXPECT_TRUE(S_ISDIR(info.st_mode)) << directory;
         EXPECT_EQ(info.st_mode & 0777, 0700u) << directory;
     }
@@ -351,9 +361,13 @@ TEST(MuxDaemon, ListensOnTheStateDirectoryToo)
 
 // A directory that is open to others, or a link, is no directory for the
 // socket: the daemon says why and serves on the other.
-TEST(MuxDaemon, SkipsADirectoryThatIsNotPrivate)
+namespace {
+
+/// One case of SkipsADirectoryThatIsNotPrivate: a failed check ends this
+/// case only.
+void skipsDirectory(bool link)
 {
-    for (const bool link : {false, true}) {
+    {
         TestDaemon daemon;
         const std::string directory = daemon.runtime() + "/afterglow-mux";
         if (link) {
@@ -374,6 +388,16 @@ TEST(MuxDaemon, SkipsADirectoryThatIsNotPrivate)
         ASSERT_TRUE(daemon.newSession(daemon.options(writesEnvironment(out)))) << daemon.lastError();
         ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
         EXPECT_NE(readFile(out).find("\nAFTERGLOW_SOCKET=" + daemon.stateSocket() + "\n"), std::string::npos) << readFile(out);
+    }
+}
+
+} // namespace
+
+TEST(MuxDaemon, SkipsADirectoryThatIsNotPrivate)
+{
+    for (const bool link : {false, true}) {
+        SCOPED_TRACE(link ? "a link" : "a directory open to others");
+        skipsDirectory(link);
     }
 }
 
@@ -405,10 +429,10 @@ TEST(MuxDaemon, APipeliningClientDoesNotStarveTheOthers)
     IpcConnection connection;
     IpcConnection::Error error;
     ASSERT_TRUE(connection.connect(daemon.socket(), &error, 1000)) << error.message;
-    const auto before = std::chrono::steady_clock::now();
+    // The call's own wait bounds it: a daemon that answered the flood first
+    // would leave it without an answer.
     const auto list = connection.call(Target, Fn::ListSessions, {}, 1000, &error);
     EXPECT_TRUE(list) << error.message;
-    EXPECT_LT(std::chrono::steady_clock::now() - before, 1s);
     writer.join();
     // Each call gets its answer, in order: the lines that wait in the
     // daemon's buffer after the socket went quiet are answered too.

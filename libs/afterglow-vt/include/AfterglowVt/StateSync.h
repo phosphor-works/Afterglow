@@ -39,15 +39,15 @@ class AFTERGLOWVT_EXPORT StateWriter
 {
 public:
     /// The next frame for @p terminal: what changed since the last frame,
-    /// everything for the first one. Empty when nothing changed. History
-    /// rows past about @p maxBytes wait for the next frames, though each
-    /// frame carries at least one; the rest of a frame (the visible rows and
-    /// the small sections) always goes.
+    /// everything for the first one. Empty when nothing changed. Visible
+    /// rows, then history rows, past about @p maxBytes wait for the next
+    /// frames, though each frame carries at least one row of each; the
+    /// small sections always go.
     std::string update(const Terminal& terminal, std::size_t maxBytes);
     /// The next frame carries everything again, as the first one does: for
     /// a new replica.
     void reset();
-    /// History rows that wait for a later frame.
+    /// Visible or history rows that wait for a later frame.
     bool pending() const;
 
 private:
@@ -67,11 +67,13 @@ private:
         std::unordered_map<std::uint32_t, Style> styles; ///< the definitions that the replica has
         std::unordered_map<std::uint32_t, std::pair<std::string, std::string>> links;
         bool historyPending = false;
+        bool rowsPending = false; ///< changed visible rows wait for a later frame
     };
 
-    /// The visible rows of screen @p which that changed. True when the
-    /// screen started over (a reset section).
-    bool writeRows(std::string& out, const Terminal& terminal, int which, ScreenState& state);
+    /// The visible rows of screen @p which that changed, while @p out stays
+    /// within about @p maxBytes. True when the screen started over (a reset
+    /// section).
+    bool writeRows(std::string& out, const Terminal& terminal, int which, ScreenState& state, std::size_t maxBytes);
     /// The history rows that the replica lacks, while @p out stays within
     /// about @p maxBytes.
     void writeHistory(std::string& out, const Terminal& terminal, int which, ScreenState& state, std::size_t maxBytes);

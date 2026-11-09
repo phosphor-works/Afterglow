@@ -68,6 +68,13 @@ struct Listener : IPtyListener
         status = exitStatus;
         changed.notify_all();
     }
+    void ptyWritable() override
+    {
+        std::lock_guard lock(mutex);
+        ++writable;
+        changed.notify_all();
+    }
+    int writable = 0;
     bool waitClosed()
     {
         std::unique_lock lock(mutex);
@@ -347,6 +354,31 @@ TEST(Pty, AChildThatClosesItsInputEarlyDoesNotStopThePty)
     EXPECT_EQ(listener.output, "done");
     ASSERT_TRUE(WIFEXITED(listener.status));
     EXPECT_EQ(WEXITSTATUS(listener.status), 0);
+}
+
+// A writer that the full queue refused hears when there is room again, and
+// only then: the mux daemon holds the input of a window until it fits.
+TEST(Pty, AWriteThatTheFullQueueRefusedHearsOfRoom)
+{
+    // The child reads nothing for a while, then everything.
+    Listener listener;
+    auto pty = Pty::spawn(shell("stty raw -echo; sleep 1; exec cat > /dev/null"), listener);
+    ASSERT_TRUE(pty);
+    const std::string part(64 * 1024, 'x');
+    ASSERT_TRUE(pty->write(part));
+    std::this_thread::sleep_for(100ms);
+    {
+        std::lock_guard lock(listener.mutex);
+        EXPECT_EQ(listener.writable, 0) << "room without a refusal";
+    }
+    bool refused = false;
+    for (std::size_t sent = 0; sent <= 2 * Pty::MaxPendingInput && !refused; sent += part.size()) refused = !pty->write(part);
+    ASSERT_TRUE(refused);
+    std::unique_lock lock(listener.mutex);
+    ASSERT_TRUE(listener.changed.wait_for(lock, 20s, [&] { return listener.writable > 0; }));
+    lock.unlock();
+    EXPECT_LE(pty->pendingInput(), Pty::MaxPendingInput / 2);
+    EXPECT_TRUE(pty->write(part));
 }
 
 TEST(Pty, TheExitStatusComesAfterTheOutput)

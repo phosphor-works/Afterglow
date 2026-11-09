@@ -8,10 +8,10 @@
 #include "DockArea.h"
 #include "ImageDecode.h"
 #include "PaneLaunch.h"
-#include "mux/MuxClient.h"
 #include "PaneDialog.h"
 #include "PaneOverlay.h"
 #include "ShownText.h"
+#include "mux/MuxClient.h"
 
 #include "app/InstanceSocket.h"
 #include "app/NotificationCenter.h"
@@ -89,7 +89,7 @@ Pane::~Pane()
     m_fileTransfers.reset();
     m_pty.reset();
     // A session pane that the user closes ends its session, or leaves it
-    // running (Mux.closeOnLastWindow). One that the session left ends nothing.
+    // running (Mux.onClose). One that the session left ends nothing.
     if (m_session) m_session->release(m_sessionPane, m_killSessionOnClose && !m_sessionGone);
     for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
 }
@@ -149,12 +149,10 @@ void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
         // The daemon resizes the session's terminal and its PTY. The replica
         // takes the new size with the next frame, so it never shows rows
         // that the program has not drawn for that size.
-        if (cols == m_sentSize.cols && rows == m_sentSize.rows && cellWidth == m_sentSize.cellWidth
-            && cellHeight == m_sentSize.cellHeight) {
-            return;
-        }
-        m_sentSize = {cols, rows, cellWidth, cellHeight};
-        m_session->sendResize(m_sessionPane, m_sentSize);
+        const std::array<int, 4> size{cols, rows, cellWidth, cellHeight};
+        if (size == m_sentSize) return;
+        m_sentSize = size;
+        m_session->sendResize(m_sessionPane, AfterglowMux::PaneSize{cols, rows, cellWidth, cellHeight});
         return;
     }
     {
@@ -847,7 +845,8 @@ void Pane::commandFinished(int exitCode)
 
 QString Pane::foregroundJob() const
 {
-    if (m_session) return m_sessionGone || m_held.load() ? QString() : m_session->foregroundJob();
+    // A session pane that closing leaves running ends nothing.
+    if (m_session) return m_sessionGone || m_held.load() || !m_killSessionOnClose ? QString() : m_session->foregroundJob();
     if (!m_pty || m_held.load()) {
         return {};
     }
@@ -958,6 +957,11 @@ bool Pane::writeProgram(std::string_view bytes)
     return m_pty && m_pty->write(bytes);
 }
 
+bool Pane::showsSession(const QString& name) const
+{
+    return m_session && !m_sessionGone && m_session->showing() && m_session->session() == name;
+}
+
 void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, bool killOnClose)
 {
     m_session = std::move(session);
@@ -974,9 +978,12 @@ bool Pane::applySessionFrame(std::string_view frame)
         const std::string title = m_terminal.title();
         const std::string directory = m_terminal.workingDirectory();
         if (!m_stateReader.apply(m_terminal, frame, &error)) {
-            qCWarning(lcPane) << "a frame of the session does not apply:" << QString::fromStdString(error);
+            qCWarning(lcPane) << "a frame of the session does not apply, so the window lets the session go:"
+                              << QString::fromStdString(error);
             return false;
         }
+        // As for output of a program of its own: the frame is that output.
+        if (m_scrollOnOutput.load(std::memory_order_relaxed)) m_terminal.resetViewport();
         // The replica takes them as they are: the pane hears of a change
         // as it does from a program of its own.
         if (m_terminal.title() != title) titleChanged(m_terminal.title());
@@ -988,16 +995,49 @@ bool Pane::applySessionFrame(std::string_view frame)
 
 void Pane::sessionPaneExited(int status)
 {
-    m_sessionGone = true;
+    // Once: the pane may have heard of the end of its session already.
+    if (m_sessionGone.exchange(true)) return;
     ptyClosed(status);
 }
 
-void Pane::sessionLost(bool takenOver)
+void Pane::sessionLost(MuxLoss loss)
 {
-    if (m_sessionGone) return;
-    m_sessionGone = true;
-    if (takenOver) qCInfo(lcPane) << "another window shows the session now";
+    if (m_sessionGone.exchange(true)) return;
+    // A detach or a kill that the user asked for closes the pane as asked.
+    // The others close it without a word from the user: say why.
+    const QString name = m_session ? m_session->session() : QString();
+    if (loss == MuxLoss::TakenOver) {
+        NotificationCenter::instance().showNotice(this, tr("Session %1 moved").arg(name), tr("Another window shows session %1 now.").arg(name));
+    } else if (loss == MuxLoss::Broken) {
+        NotificationCenter::instance().showNotice(this, tr("Session %1 is gone from this window").arg(name),
+                                                  tr("The connection to the mux daemon ended. Run afterglow mux ls to see whether the session still runs."));
+    }
     QMetaObject::invokeMethod(this, [this] { Q_EMIT closed(); }, Qt::QueuedConnection);
+}
+
+void Pane::clearScreen()
+{
+    clearSelection();
+    if (m_session) {
+        if (!m_sessionGone) m_session->sendClear(m_sessionPane);
+        return;
+    }
+    // At a prompt the shell redraws it on the cleared screen.
+    const bool atPrompt = withTerminal([](AfterglowVt::Terminal& t) {
+        t.clearScreenAndHistory();
+        return t.atShellPrompt() && !t.modes().altScreen;
+    });
+    if (atPrompt) sendInput("\x0c");
+}
+
+void Pane::resetTerminal()
+{
+    clearSelection();
+    if (m_session) {
+        if (!m_sessionGone) m_session->sendReset(m_sessionPane);
+        return;
+    }
+    withTerminal([](AfterglowVt::Terminal& t) { t.reset(); });
 }
 
 void Pane::titleChanged(std::string_view title)
@@ -1604,7 +1644,9 @@ FileTransfer* Pane::fileTransfers()
         m_fileTransfers = std::make_unique<FileTransfer>();
         // A program that reads slowly holds the transfer back before the
         // input queue fills and a refused reply ends it.
-        m_fileTransfers->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
+        m_fileTransfers->setInputBacklog([this] {
+            return m_session ? m_session->pendingInput() : m_pty ? m_pty->pendingInput() : std::size_t(0);
+        });
         connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
         // The worker writes the replies of a command after its command
         // closure returned. Until then the reports after it wait.
@@ -1632,7 +1674,9 @@ DragDrop* Pane::dragDrop()
 {
     if (!m_dragDrop) {
         m_dragDrop = std::make_unique<DragDrop>();
-        m_dragDrop->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
+        m_dragDrop->setInputBacklog([this] {
+            return m_session ? m_session->pendingInput() : m_pty ? m_pty->pendingInput() : std::size_t(0);
+        });
         m_dragDrop->setCommandDelivery([this](int waitMs) { deliverProtocolCommands(waitMs); });
         m_dragDrop->setAnswerWait(m_dragAnswerWait);
         connect(m_dragDrop.get(), &DragDrop::dragStarting, this, &Pane::programDragStarting);

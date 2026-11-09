@@ -399,7 +399,7 @@ void StateWriter::reset()
 
 bool StateWriter::pending() const
 {
-    return m_screens[0].historyPending || m_screens[1].historyPending;
+    return m_screens[0].historyPending || m_screens[1].historyPending || m_screens[0].rowsPending || m_screens[1].rowsPending;
 }
 
 std::string StateWriter::update(const Terminal& t, std::size_t maxBytes)
@@ -409,6 +409,9 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes)
     m_started = true;
 
     std::string payload = encodeModes(t.m_modes);
+    // The updates that programs began (mode 2026): a renderer gives each its
+    // own timeout, also one that begins right after another ended.
+    Out(payload).varint(t.m_synchronizedOutputSerial);
     if (first || payload != m_modes) {
         section(out, ModesTag, payload);
         m_modes = std::move(payload);
@@ -455,8 +458,8 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes)
     }
     // The visible rows of both screens first, then their history in the
     // bytes that are left.
-    bool reset = writeRows(out, t, 0, m_screens[0]);
-    reset = writeRows(out, t, 1, m_screens[1]) || reset;
+    bool reset = writeRows(out, t, 0, m_screens[0], maxBytes);
+    reset = writeRows(out, t, 1, m_screens[1], maxBytes) || reset;
     writeHistory(out, t, 0, m_screens[0], maxBytes);
     writeHistory(out, t, 1, m_screens[1], maxBytes);
     // The cursors go after the rows, which the reader checks them against.
@@ -468,7 +471,7 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes)
     return out.size() == 1 ? std::string() : out;
 }
 
-bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, ScreenState& st)
+bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, ScreenState& st, std::size_t maxBytes)
 {
     bool reset = false;
     const Screen& s = which == 0 ? *t.m_primary : *t.m_alternate;
@@ -493,9 +496,15 @@ bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, Scre
         reset = true;
     }
 
-    // The rows that changed, with the styles and links that they use.
+    // The rows that changed, with the styles and links that they use. Rows
+    // past about maxBytes keep their old hash and go in the next frames, as
+    // history does: a screen of rows that are long to encode (many
+    // combining marks, links) never makes a frame too large for its
+    // channel. Each frame carries at least one row.
     std::vector<std::pair<int, std::string>> changed;
     std::set<std::uint32_t> used;
+    std::size_t bytes = out.size();
+    st.rowsPending = false;
     for (int y = 0; y < s.rows(); ++y) {
         std::string row;
         std::set<std::uint32_t> rowStyles;
@@ -515,6 +524,13 @@ bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, Scre
         }
         const std::uint64_t h = fnv(meaning) | 1; // never 0, the mark of a missing row
         if (st.rowHashes[std::size_t(y)] == h) continue;
+        // The meaning holds the row and its definitions: about what the row
+        // adds to the frame.
+        if (!changed.empty() && bytes + meaning.size() > maxBytes) {
+            st.rowsPending = true;
+            continue;
+        }
+        bytes += meaning.size();
         st.rowHashes[std::size_t(y)] = h;
         used.insert(rowStyles.begin(), rowStyles.end());
         changed.emplace_back(y, std::move(row));
@@ -726,10 +742,14 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         if (!in.ok()) return fail("the state frame is cut short");
         In p(payload);
         switch (tag) {
-        case ModesTag:
-            if (!decodeModes(p, t.m_modes) || !p.done()) return fail("the state frame has bad modes");
+        case ModesTag: {
+            if (!decodeModes(p, t.m_modes)) return fail("the state frame has bad modes");
+            const std::uint64_t serial = p.varint();
+            if (!p.ok() || !p.done()) return fail("the state frame has bad modes");
+            t.m_synchronizedOutputSerial = serial;
             t.m_active = t.m_modes.altScreen ? t.m_alternate.get() : t.m_primary.get();
             break;
+        }
         case ColorsTag: {
             std::array<Rgb, 256> palette;
             for (Rgb& c : palette) c = p.rgb();

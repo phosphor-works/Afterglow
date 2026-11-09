@@ -161,8 +161,9 @@ public:
     Pane* openTab(const PaneLaunchOptions& options, QString* error, Pane* from = nullptr);
     void requestClosePane(Pane* pane) { closePane(pane); }
     /// Runs a keybind action as if it were pressed in @p pane. The tab
-    /// actions of a pane in another tab (close, rename, move, detach) act on
-    /// that tab without showing it, as its tab menu does. False, and nothing
+    /// actions of a pane in another tab (close, rename, move, detach, and a
+    /// new tab beside it) act on that tab without showing it, as its tab menu
+    /// does. False, and nothing
     /// done, while a prompt, a menu, the palette, the search or a script
     /// dialog has the keyboard.
     bool runAction(Pane* pane, Action action);
@@ -388,7 +389,8 @@ private:
     Pane* splitFocused(SplitTree::Direction direction, const QStringList& command = {}, const PaneLaunchOptions& options = {}, QString* error = nullptr);
     /// Opens a tab at @p at (beside the current tab when negative).
     Pane* newTab(const QString& workingDirectory, const QStringList& command = {}, const QVariantMap& environment = {}, QString* error = nullptr, int at = -1);
-    /// A tab that shows the first pane of @p session.
+    /// A tab that shows the first pane of @p session. Null when the session
+    /// names no pane: the window then has no tab, and Application deletes it.
     Pane* newSessionTab(const std::shared_ptr<MuxClient>& session);
     /// Opens a shell tab beside @p from's tab, in its directory (beside the
     /// current tab with none), without showing @p from's tab first: one tab

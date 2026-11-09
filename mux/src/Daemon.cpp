@@ -12,8 +12,11 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <string_view>
 #include <exception>
+#include <functional>
 
+#include <dirent.h>
 #include <poll.h>
 #include <sys/eventfd.h>
 #include <sys/signalfd.h>
@@ -61,6 +64,21 @@ bool privateDirectory(const std::string& directory, std::string* error)
         return false;
     }
     return true;
+}
+
+/// Removes the files named as Attachment::listen() names its sockets in
+/// @p directory.
+void removeAttachSockets(const std::string& directory)
+{
+    DIR* dir = ::opendir(directory.c_str());
+    if (!dir) return;
+    while (const dirent* entry = ::readdir(dir)) {
+        const std::string_view name = entry->d_name;
+        if (name.size() == 28 && name.starts_with("attach-") && name.ends_with(".sock")) {
+            ::unlinkat(::dirfd(dir), entry->d_name, 0);
+        }
+    }
+    ::closedir(dir);
 }
 
 } // namespace
@@ -140,6 +158,10 @@ Daemon::Listen Daemon::listen(const std::vector<AfterglowProto::MuxSocket>& sock
         if (error) *error = "no socket to listen on: " + reasons;
         return Listen::Failed;
     }
+    // The attach sockets that a daemon before this one left when it was
+    // killed: this one holds the lock of every socket of the user, so no
+    // other daemon waits for a window on them.
+    for (const auto& listener : m_listeners) removeAttachSockets(listener->path().substr(0, listener->path().rfind('/')));
     return Listen::Listening;
 }
 
@@ -167,10 +189,10 @@ Daemon::Exit Daemon::run()
         }
         const std::size_t firstAttachment = fds.size();
         int connectWait = -1;
-        for (const auto& [name, attachment] : m_attachments) {
+        for (const auto& attachment : m_attachments) {
             fds.push_back(attachment->pollFd());
             pending = pending || attachment->busy();
-            if (const int left = attachment->connectTimeoutMs(); left >= 0 && (connectWait < 0 || left < connectWait)) {
+            if (const int left = attachment->timeoutMs(); left >= 0 && (connectWait < 0 || left < connectWait)) {
                 connectWait = left;
             }
         }
@@ -185,13 +207,20 @@ Daemon::Exit Daemon::run()
             const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(startDeadline - std::chrono::steady_clock::now());
             if (left.count() >= 0) timeout = int(left.count()) + 1;
         }
-        // A window that does not connect to its attach socket in time loses it.
+        // A window that does not connect to its attach socket in time loses
+        // it, and a finished one that cannot send what waits is let go.
         if (connectWait >= 0 && (timeout < 0 || connectWait + 1 < timeout)) timeout = connectWait + 1;
         const int ready = ::poll(fds.data(), fds.size(), timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
             std::fprintf(stderr, "afterglow-mux: poll failed: %s\n", std::strerror(errno));
             return {1, 0};
+        }
+        // Paired with what the poll saw before anything below adds, finishes
+        // or removes one: reap() only finishes them, and the objects stay.
+        std::vector<std::pair<Attachment*, short>> attached;
+        for (std::size_t i = 0; i < m_attachments.size(); ++i) {
+            attached.emplace_back(m_attachments[i].get(), fds[firstAttachment + i].revents);
         }
         if (fds[signalIndex].revents & POLLIN) {
             signalfd_siginfo info{};
@@ -206,20 +235,19 @@ Daemon::Exit Daemon::run()
             (void)!::read(m_wakeFd, &count, sizeof count);
             reap();
         }
-        // The attachments in the order of the poll: a call below can add or
-        // remove one, so their names are taken first.
-        std::vector<std::pair<std::string, short>> attached;
-        {
-            std::size_t i = firstAttachment;
-            for (const auto& [name, attachment] : m_attachments) attached.emplace_back(name, fds[i++].revents);
-        }
-        for (const auto& [name, revents] : attached) {
-            const auto it = m_attachments.find(name);
-            const auto session = find(name);
-            if (it == m_attachments.end() || session == m_sessions.end()) continue;
+        std::vector<Attachment*> over;
+        for (const auto& [attachment, revents] : attached) {
+            const auto session = attachment->finishing() ? m_sessions.end() : find(attachment->session());
+            Session* const shown = session == m_sessions.end() ? nullptr : session->get();
             // A window that left detaches: the session keeps running.
-            if (!it->second->handle(revents, **session)) m_attachments.erase(it);
+            const bool keep = guarded(*attachment, [&] { return attachment->handle(revents, shown); });
+            if (!keep) over.push_back(attachment);
+            // The window closed and Mux.onClose is kill. Its own window
+            // sends it, so a window that another took the session from
+            // cannot end it.
+            if (attachment->takeKill() && shown) endSession(session);
         }
+        std::erase_if(m_attachments, [&over](const auto& a) { return std::find(over.begin(), over.end(), a.get()) != over.end(); });
         pumpAttachments();
         for (std::size_t i = firstConnection; i < firstAttachment; ++i) {
             auto& connection = *m_connections[i - firstConnection];
@@ -271,7 +299,7 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller)
     // Before the type: a client of a session pane hears why, whatever it
     // sends (`afterglow ctl` subscribes to events, for one).
     if (request.target == ControlTarget || request.target == AfterglowProto::Run::Target) {
-        return ipcError(request.id, IpcErrorCode::CallFailed, "a session pane takes no control calls until a window shows the session");
+        return ipcError(request.id, IpcErrorCode::CallFailed, "a session pane takes no control calls: the mux daemon answers only mux calls");
     }
     if (request.type != "call") {
         return ipcError(request.id, IpcErrorCode::MalformedRequest, "the mux daemon answers only calls, not '" + request.type + "'");
@@ -290,15 +318,19 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller)
     return ipcError(request.id, IpcErrorCode::NoSuchFn, "no function '" + request.fn + "' on target '" + request.target + "'");
 }
 
+std::optional<std::string> Daemon::versionError(const IpcRequest& request)
+{
+    const auto protocol = request.args.empty() ? std::nullopt : request.args[0].toInteger();
+    if (protocol && *protocol == ProtocolVersion) return std::nullopt;
+    return ipcError(request.id, Error::VersionMismatch,
+                    "the client speaks mux protocol " + (protocol ? std::to_string(*protocol) : std::string("?"))
+                        + ", and the daemon speaks " + std::to_string(ProtocolVersion));
+}
+
 std::string Daemon::newSession(const IpcRequest& request)
 {
     if (request.args.size() != 2) return ipcError(request.id, IpcErrorCode::InvalidArg, "newSession takes (protocol, options)");
-    const auto protocol = request.args[0].toInteger();
-    if (!protocol || *protocol != ProtocolVersion) {
-        return ipcError(request.id, Error::VersionMismatch,
-                        "the client speaks mux protocol " + (protocol ? std::to_string(*protocol) : std::string("?"))
-                            + ", and the daemon speaks " + std::to_string(ProtocolVersion));
-    }
+    if (auto error = versionError(request)) return *error;
     std::string error;
     auto options = sessionOptions(request.args[1], &error);
     if (!options) return ipcError(request.id, IpcErrorCode::InvalidArg, error);
@@ -306,7 +338,7 @@ std::string Daemon::newSession(const IpcRequest& request)
     if (find(name) != m_sessions.end()) return ipcError(request.id, Error::SessionExists, "a session named '" + name + "' exists");
     auto session = std::make_unique<Session>(name, std::move(*options), m_fileLimit);
     const int wake = m_wakeFd;
-    const auto exited = [wake] {
+    const auto wakeDaemon = [wake] {
         const std::uint64_t one = 1;
         (void)!::write(wake, &one, sizeof one);
     };
@@ -314,7 +346,7 @@ std::string Daemon::newSession(const IpcRequest& request)
     // (2 s), and the other connections wait with it. Only a program or a
     // directory on a mount that does not answer takes that long; past the
     // wait, the PTY reports a late failure as the exit of the pane.
-    if (!session->addPane(m_nextPane++, paneSocket(), exited, &error)) {
+    if (!session->addPane(m_nextPane++, paneSocket(), wakeDaemon, &error)) {
         return ipcError(request.id, Error::SpawnFailed, "cannot start the program of session '" + name + "': " + error);
     }
     m_sessions.push_back(std::move(session));
@@ -327,7 +359,10 @@ std::string Daemon::listSessions(const IpcRequest& request, pid_t caller)
     Json::Array sessions;
     for (const auto& session : m_sessions) {
         SessionInfo info = session->info(caller);
-        info.attached = m_attachments.count(session->name()) != 0;
+        // A window that the daemon still waits for may never come: until it
+        // connects, `attach --no-takeover` may take the session.
+        const Attachment* attachment = shown(session->name());
+        info.attached = attachment && attachment->connected();
         sessions.push_back(toJson(info));
     }
     return ipcReply(request.id.value_or(0), std::move(sessions));
@@ -341,13 +376,20 @@ std::string Daemon::killSession(const IpcRequest& request)
     const std::string& name = request.args[0].toString();
     const auto it = find(name);
     if (it == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
-    if (const auto attached = m_attachments.find(name); attached != m_attachments.end()) {
-        attached->second->finish(Attach::EventType::SessionEnded, nullptr);
-        m_attachments.erase(attached);
-    }
-    (*it)->kill();
-    m_sessions.erase(it);
+    endSession(it);
     return ipcReply(request.id.value_or(0), nullptr);
+}
+
+void Daemon::endSession(std::vector<std::unique_ptr<Session>>::iterator session)
+{
+    if (Attachment* attachment = shown((*session)->name())) {
+        guarded(*attachment, [&] {
+            attachment->finish(Attach::EventType::SessionEnded);
+            return true;
+        });
+    }
+    (*session)->kill();
+    m_sessions.erase(session);
 }
 
 std::string Daemon::attach(const IpcRequest& request, pid_t caller)
@@ -355,12 +397,7 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     if (request.args.size() != 3 || !request.args[1].isString() || !request.args[2].isObject()) {
         return ipcError(request.id, IpcErrorCode::InvalidArg, "attach takes (protocol, name, options)");
     }
-    const auto protocol = request.args[0].toInteger();
-    if (!protocol || *protocol != ProtocolVersion) {
-        return ipcError(request.id, Error::VersionMismatch,
-                        "the client speaks mux protocol " + (protocol ? std::to_string(*protocol) : std::string("?"))
-                            + ", and the daemon speaks " + std::to_string(ProtocolVersion));
-    }
+    if (auto error = versionError(request)) return *error;
     const std::string& name = request.args[1].toString();
     const auto session = find(name);
     if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
@@ -369,21 +406,26 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     if (caller <= 0) return ipcError(request.id, IpcErrorCode::CallFailed, "the daemon cannot tell which process called");
     const Json::Value* takeover = request.args[2].find("takeover");
     if (takeover && !takeover->isBool()) return ipcError(request.id, IpcErrorCode::InvalidArg, "'takeover' is not a boolean");
-    const auto attached = m_attachments.find(name);
-    if (attached != m_attachments.end()) {
-        if (!takeover || !takeover->toBool()) {
-            return ipcError(request.id, Error::Attached, "another window shows session '" + name + "'");
-        }
-        attached->second->finish(Attach::EventType::TakenOver, session->get());
-        m_attachments.erase(attached);
+    Attachment* const previous = shown(name);
+    if (previous && (!takeover || !takeover->toBool())) {
+        return ipcError(request.id, Error::Attached, "another window shows session '" + name + "'");
     }
-    // Next to the daemon's socket, in the directory that only the user opens.
+    // Next to the daemon's socket, in the directory that only the user
+    // opens. Made before the takeover: a socket that cannot be made leaves
+    // the session in the window that shows it.
     const std::string& socket = paneSocket();
     std::string error;
-    auto attachment = Attachment::listen(socket.substr(0, socket.rfind('/')), caller, &error);
+    auto attachment = Attachment::listen(socket.substr(0, socket.rfind('/')), name, caller, &error);
     if (!attachment) return ipcError(request.id, IpcErrorCode::CallFailed, error);
+    if (previous) {
+        guarded(*previous, [&] {
+            previous->pump(session->get());
+            previous->finish(Attach::EventType::TakenOver);
+            return true;
+        });
+    }
     const std::string path = attachment->path();
-    m_attachments[name] = std::move(attachment);
+    m_attachments.push_back(std::move(attachment));
     return ipcReply(request.id.value_or(0), Json::Object{{"name", name}, {"socket", path}});
 }
 
@@ -395,17 +437,47 @@ std::string Daemon::detach(const IpcRequest& request)
     const std::string& name = request.args[0].toString();
     const auto session = find(name);
     if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
-    const auto attached = m_attachments.find(name);
-    if (attached == m_attachments.end()) return ipcError(request.id, Error::NotAttached, "no window shows session '" + name + "'");
-    attached->second->finish(Attach::EventType::Detached, session->get());
-    m_attachments.erase(attached);
+    Attachment* const attachment = shown(name);
+    if (!attachment) return ipcError(request.id, Error::NotAttached, "no window shows session '" + name + "'");
+    // A window that did not connect yet hears it when it does.
+    guarded(*attachment, [&] {
+        attachment->pump(session->get());
+        attachment->finish(Attach::EventType::Detached);
+        return true;
+    });
     return ipcReply(request.id.value_or(0), nullptr);
 }
 
 void Daemon::pumpAttachments()
 {
-    for (auto& [name, attachment] : m_attachments) {
-        if (const auto session = find(name); session != m_sessions.end()) attachment->pump(**session);
+    for (const auto& attachment : m_attachments) {
+        const auto session = attachment->finishing() ? m_sessions.end() : find(attachment->session());
+        guarded(*attachment, [&] {
+            attachment->pump(session == m_sessions.end() ? nullptr : session->get());
+            return true;
+        });
+    }
+}
+
+Attachment* Daemon::shown(const std::string& name) const
+{
+    for (const auto& attachment : m_attachments) {
+        if (attachment->session() == name && !attachment->finishing()) return attachment.get();
+    }
+    return nullptr;
+}
+
+bool Daemon::guarded(Attachment& attachment, const std::function<bool()>& work)
+{
+    try {
+        return work();
+    } catch (const std::exception& e) {
+        // As for a call: one window that fails (out of memory for a frame)
+        // must not end the sessions of all the others. That window loses
+        // its session, which keeps running.
+        std::fprintf(stderr, "afterglow-mux: the window of session %s failed: %s\n", attachment.session().c_str(), e.what());
+        attachment.finish(Attach::EventType::Detached);
+        return false;
     }
 }
 
@@ -436,23 +508,48 @@ std::string Daemon::freeName()
 
 void Daemon::reap()
 {
-    std::erase_if(m_sessions, [this](const auto& session) {
-        std::vector<std::pair<std::uint32_t, int>> closed;
-        const bool ended = session->reap(&closed);
-        const auto attached = m_attachments.find(session->name());
-        if (attached == m_attachments.end()) return ended;
-        for (const auto& [pane, status] : closed) attached->second->paneClosed(pane, status);
-        if (ended) {
-            attached->second->finish(Attach::EventType::SessionEnded, nullptr);
-            m_attachments.erase(attached);
+    for (auto it = m_sessions.begin(); it != m_sessions.end();) {
+        Session& session = **it;
+        Attachment* const attachment = shown(session.name());
+        bool exited = false;
+        for (const auto& pane : session.panes()) exited = exited || pane->exited();
+        if (!exited) {
+            ++it;
+            continue;
         }
-        return ended;
-    });
+        if (attachment) {
+            // The output that came before an exit goes in a frame while the
+            // pane is still in the session, then the pane's last frames.
+            guarded(*attachment, [&] {
+                attachment->pump(&session);
+                return true;
+            });
+        }
+        for (auto& pane : session.reap()) {
+            if (!attachment) continue;
+            guarded(*attachment, [&] {
+                attachment->paneClosed(std::move(pane));
+                return true;
+            });
+        }
+        if (!session.empty()) {
+            ++it;
+            continue;
+        }
+        if (attachment) {
+            guarded(*attachment, [&] {
+                attachment->finish(Attach::EventType::SessionEnded);
+                return true;
+            });
+        }
+        it = m_sessions.erase(it);
+    }
 }
 
 bool Daemon::idle() const
 {
-    return m_sessions.empty() && m_connections.empty();
+    // A finished window still gets its last frames and event.
+    return m_sessions.empty() && m_connections.empty() && m_attachments.empty();
 }
 
 } // namespace AfterglowMux

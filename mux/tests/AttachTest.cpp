@@ -13,6 +13,8 @@
 #include <AfterglowVt/Terminal.h>
 #include <PhosphorChannel/Stream.h>
 
+#include <algorithm>
+
 using namespace MuxTest;
 
 namespace {
@@ -43,10 +45,23 @@ public:
     /// else the error code of the call.
     std::string attach(TestDaemon& daemon, const std::string& name, bool takeover = true)
     {
+        if (std::string error = call(daemon, name, takeover); !error.empty()) return error;
+        return connect();
+    }
+
+    /// The attach call alone. Empty on success, else the error code.
+    std::string call(TestDaemon& daemon, const std::string& name, bool takeover = true)
+    {
         IpcConnection::Error error;
         const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, name, Json::Object{{"takeover", takeover}}}, &error);
         if (!result) return error.code.empty() ? error.message : error.code;
         socket = (*result)["socket"].toString();
+        return {};
+    }
+
+    /// The connection to the socket of the call.
+    std::string connect()
+    {
         const int fd = connectTo(socket);
         if (fd < 0) return "no connection";
         stream = std::make_unique<PhosphorChannel::Stream>(fd);
@@ -61,7 +76,7 @@ public:
         const auto deadline = std::chrono::steady_clock::now() + 5s;
         while (std::chrono::steady_clock::now() < deadline) {
             if (done()) return true;
-            stream->pump(20);
+            if (!stream->pump(20)) ended = true;
             read();
         }
         return done();
@@ -72,16 +87,33 @@ public:
         std::string frame;
         if (auto* events = stream->reader(Attach::ControlChannel)) {
             while (events->read(frame) == PhosphorChannel::ReadResult::Frame) {
-                if (auto event = Attach::decodeEvent(frame)) {
-                    this->events.push_back(*event);
-                    if (event->type == Attach::EventType::PaneOpened) pane = event->pane;
+                const auto event = Attach::decodeEvent(frame);
+                if (!event) {
+                    ADD_FAILURE() << "an event does not decode";
+                    continue;
                 }
+                this->events.push_back(*event);
+                if (event->type == Attach::EventType::PaneOpened) {
+                    pane = event->pane;
+                    channel = event->channel;
+                }
+                if (event->type == Attach::EventType::PaneClosed && channelClosed && !screenAtExit) screenAtExit = screen();
             }
         }
-        if (auto* state = pane ? stream->reader(pane) : nullptr) {
-            while (state->read(frame) == PhosphorChannel::ReadResult::Frame) {
-                std::string error;
-                if (!reader.apply(replica, frame, &error)) ADD_FAILURE() << "a frame does not apply: " << error;
+        if (auto* state = channel && !channelClosed ? stream->reader(channel) : nullptr) {
+            while (true) {
+                const PhosphorChannel::ReadResult result = state->read(frame);
+                if (result == PhosphorChannel::ReadResult::Frame) {
+                    ++frames;
+                    std::string error;
+                    if (!reader.apply(replica, frame, &error)) ADD_FAILURE() << "a frame does not apply: " << error;
+                    continue;
+                }
+                if (result == PhosphorChannel::ReadResult::Closed) {
+                    channelClosed = true;
+                    if (got(Attach::EventType::PaneClosed) && !screenAtExit) screenAtExit = screen();
+                }
+                break;
             }
         }
     }
@@ -108,41 +140,51 @@ public:
         return text;
     }
 
-    void type(std::string_view bytes)
+    [[nodiscard]] bool send(const Attach::Input& message)
+    {
+        return input->tryWrite(Attach::encode(message)) == PhosphorChannel::WriteResult::Written;
+    }
+
+    [[nodiscard]] bool type(std::string_view bytes)
     {
         Attach::Input message;
         message.pane = pane;
         message.bytes = bytes;
-        ASSERT_EQ(input->tryWrite(Attach::encode(message)), PhosphorChannel::WriteResult::Written);
+        return send(message);
     }
 
-    void resize(int cols, int rows)
+    [[nodiscard]] bool resize(int cols, int rows)
     {
         Attach::Input message;
         message.type = Attach::InputType::Resize;
         message.pane = pane;
         message.size = {cols, rows, 8, 16};
-        ASSERT_EQ(input->tryWrite(Attach::encode(message)), PhosphorChannel::WriteResult::Written);
+        return send(message);
+    }
+
+    [[nodiscard]] bool action(Attach::InputType type)
+    {
+        Attach::Input message;
+        message.type = type;
+        message.pane = pane;
+        return send(message);
     }
 
     std::string socket;
     std::unique_ptr<PhosphorChannel::Stream> stream;
     PhosphorChannel::StreamWriter* input = nullptr;
     std::uint32_t pane = 0;
+    std::uint32_t channel = 0;
+    bool channelClosed = false;
+    bool ended = false;
+    /// What the window showed once it had both halves of the pane's exit.
+    std::optional<std::string> screenAtExit;
+    int frames = 0;
     std::vector<Attach::Event> events;
     NullHost host;
     AfterglowVt::Terminal replica{20, 5, host};
     AfterglowVt::StateReader reader;
 };
-
-/// A session that runs an interactive sh, with a plain prompt.
-bool shellSession(TestDaemon& daemon, const std::string& name)
-{
-    SessionOptions o = daemon.options({"/bin/sh"}, name);
-    o.launch.environment.emplace_back("PS1", "$ ");
-    o.launch.environment.emplace_back("ENV", "/dev/null");
-    return bool(daemon.newSession(o));
-}
 
 bool contains(const std::string& text, std::string_view part)
 {
@@ -159,14 +201,28 @@ TEST(MuxAttach, AWindowSeesTheScreenAndTypes)
     Window w;
     ASSERT_EQ(w.attach(daemon, "sh"), "");
     ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
-    w.type("echo hel''lo\n");
+    ASSERT_TRUE(w.type("echo hel''lo\n"));
     ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nhello"); })) << w.screen();
     // The socket of the attach is gone once the window connected.
     EXPECT_NE(::access(w.socket.c_str(), F_OK), 0);
-    const auto sessions = daemon.sessions();
-    const auto it = std::find_if(sessions.begin(), sessions.end(), [](const SessionInfo& s) { return s.name == "sh"; });
-    ASSERT_NE(it, sessions.end());
-    EXPECT_TRUE(it->attached);
+    const auto info = sessionNamed(daemon, "sh");
+    ASSERT_TRUE(info);
+    EXPECT_TRUE(info->attached);
+}
+
+TEST(MuxAttach, APaneTakesTheLowestFreeChannel)
+{
+    // The daemon's "keep" session has pane 1, so this session's pane is 2 or
+    // later: its channel is the first one all the same, and stays below the
+    // limit of the window's stream however many panes the daemon ran.
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    EXPECT_GT(w.pane, 1u);
+    EXPECT_EQ(w.channel, Attach::ControlChannel + 1);
 }
 
 TEST(MuxAttach, TheWindowsSizeReachesTheProgram)
@@ -177,10 +233,30 @@ TEST(MuxAttach, TheWindowsSizeReachesTheProgram)
     Window w;
     ASSERT_EQ(w.attach(daemon, "sh"), "");
     ASSERT_TRUE(w.until([&] { return contains(w.screen(), "$ "); })) << w.screen();
-    w.resize(97, 31);
+    ASSERT_TRUE(w.resize(97, 31));
     ASSERT_TRUE(w.until([&] { return w.replica.cols() == 97 && w.replica.rows() == 31; }));
-    w.type("stty size\n");
+    ASSERT_TRUE(w.type("stty size\n"));
     ASSERT_TRUE(w.until([&] { return contains(w.screen(), "31 97"); })) << w.screen();
+    // A size past what a terminal takes is clamped, not refused.
+    ASSERT_TRUE(w.resize(100000, 3));
+    ASSERT_TRUE(w.until([&] { return w.replica.cols() == 4096 && w.replica.rows() == 3; })) << w.replica.cols();
+    EXPECT_FALSE(w.ended);
+}
+
+TEST(MuxAttach, ResetAndClearActOnTheSessionsTerminal)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "$ "); }));
+    ASSERT_TRUE(w.type("printf '\\033[?2004h'; echo mark\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nmark") && w.replica.modes().bracketedPaste; })) << w.screen();
+    ASSERT_TRUE(w.action(Attach::InputType::Reset));
+    ASSERT_TRUE(w.until([&] { return !w.replica.modes().bracketedPaste; }));
+    ASSERT_TRUE(w.action(Attach::InputType::Clear));
+    ASSERT_TRUE(w.until([&] { return !contains(w.screen(), "mark"); })) << w.screen();
 }
 
 TEST(MuxAttach, ASecondWindowTakesTheSessionOver)
@@ -191,15 +267,27 @@ TEST(MuxAttach, ASecondWindowTakesTheSessionOver)
     Window first;
     ASSERT_EQ(first.attach(daemon, "sh"), "");
     ASSERT_TRUE(first.until([&] { return contains(first.screen(), "$ "); }));
-    first.type("echo before\n");
+    ASSERT_TRUE(first.type("echo before\n"));
     ASSERT_TRUE(first.until([&] { return contains(first.screen(), "\nbefore"); }));
     Window refused;
     EXPECT_EQ(refused.attach(daemon, "sh", false), Error::Attached);
     Window second;
     ASSERT_EQ(second.attach(daemon, "sh"), "");
-    ASSERT_TRUE(first.until([&] { return first.got(Attach::EventType::TakenOver); }));
+    ASSERT_TRUE(first.until([&] { return first.got(Attach::EventType::TakenOver) && first.ended; }));
     // The second window gets the whole screen, the first one's output too.
     ASSERT_TRUE(second.until([&] { return contains(second.screen(), "\nbefore"); })) << second.screen();
+    // The first window gets nothing more, and its kill ends nothing: only
+    // the window that shows the session may.
+    ASSERT_TRUE(second.type("echo after\n"));
+    ASSERT_TRUE(second.until([&] { return contains(second.screen(), "\nafter"); }));
+    // A frame that the daemon made before the takeover may be read after its
+    // event (two channels keep no order): none shows the second window's
+    // output.
+    EXPECT_FALSE(contains(first.screen(), "\nafter")) << first.screen();
+    if (first.action(Attach::InputType::Kill)) (void)first.stream->flush(500);
+    ASSERT_TRUE(second.type("echo still\n"));
+    ASSERT_TRUE(second.until([&] { return contains(second.screen(), "\nstill"); }));
+    EXPECT_TRUE(sessionNamed(daemon, "sh"));
 }
 
 TEST(MuxAttach, DetachKeepsTheSessionForTheNextWindow)
@@ -211,18 +299,38 @@ TEST(MuxAttach, DetachKeepsTheSessionForTheNextWindow)
         Window w;
         ASSERT_EQ(w.attach(daemon, "sh"), "");
         ASSERT_TRUE(w.until([&] { return contains(w.screen(), "$ "); }));
-        w.type("echo kept\n");
+        // Output that comes while no window shows the session.
+        ASSERT_TRUE(w.type("echo kept; (sleep 1; echo la''ter) &\n"));
         ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nkept"); }));
         ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"sh"})) << daemon.lastError();
         ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
+        // The command line has la''ter: only the job's output has "later".
+        EXPECT_FALSE(contains(w.screen(), "later")) << w.screen();
     }
     IpcConnection::Error error;
     EXPECT_FALSE(daemon.call(Fn::Detach, Json::Array{"sh"}, &error));
     EXPECT_EQ(error.code, Error::NotAttached);
-    // Output while no window shows the session is there for the next one.
+    // The output while no window showed the session is there for the next one.
+    ASSERT_TRUE(waitFor([&] { return !sessionNamed(daemon, "sh")->attached; }));
+    std::this_thread::sleep_for(1500ms);
     Window again;
     ASSERT_EQ(again.attach(daemon, "sh"), "");
-    ASSERT_TRUE(again.until([&] { return contains(again.screen(), "\nkept"); })) << again.screen();
+    ASSERT_TRUE(again.until([&] { return contains(again.screen(), "\nkept") && contains(again.screen(), "later"); }))
+        << again.screen();
+}
+
+TEST(MuxAttach, ADetachBeforeTheWindowConnectsReachesIt)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.call(daemon, "sh"), "");
+    // The window did not connect yet: no window shows the session.
+    EXPECT_FALSE(sessionNamed(daemon, "sh")->attached);
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"sh"})) << daemon.lastError();
+    ASSERT_EQ(w.connect(), "");
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
 }
 
 TEST(MuxAttach, AWindowThatLeavesDetaches)
@@ -242,7 +350,7 @@ TEST(MuxAttach, AWindowThatLeavesDetaches)
     }));
 }
 
-TEST(MuxAttach, TheEndOfTheProgramEndsTheSessionForTheWindow)
+TEST(MuxAttach, TheWindowSeesTheLastOutputBeforeTheExit)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
@@ -250,13 +358,65 @@ TEST(MuxAttach, TheEndOfTheProgramEndsTheSessionForTheWindow)
     Window w;
     ASSERT_EQ(w.attach(daemon, "sh"), "");
     ASSERT_TRUE(w.until([&] { return contains(w.screen(), "$ "); }));
-    w.type("exit 3\n");
-    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::SessionEnded); }));
+    // The output and the exit come together: the last frame still goes,
+    // before the window learns of the exit.
+    ASSERT_TRUE(w.type("echo good''bye; exit 3\n"));
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::SessionEnded) && w.screenAtExit; }));
+    EXPECT_TRUE(contains(*w.screenAtExit, "\ngoodbye")) << *w.screenAtExit;
     const auto closed = std::find_if(w.events.begin(), w.events.end(),
                                      [](const Attach::Event& e) { return e.type == Attach::EventType::PaneClosed; });
     ASSERT_NE(closed, w.events.end());
     EXPECT_EQ(closed->pane, w.pane);
     EXPECT_TRUE(WIFEXITED(closed->status) && WEXITSTATUS(closed->status) == 3);
+    // SessionEnded is the last event, after the pane's.
+    EXPECT_EQ(w.events.back().type, Attach::EventType::SessionEnded);
+}
+
+TEST(MuxAttach, AKillEndsTheSessionForTheWindow)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "$ "); }));
+    ASSERT_TRUE(daemon.call(Fn::KillSession, Json::Array{"sh"})) << daemon.lastError();
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::SessionEnded) && w.ended; }));
+    EXPECT_FALSE(sessionNamed(daemon, "sh"));
+}
+
+TEST(MuxAttach, TheWindowsKillEndsTheSession)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "$ "); }));
+    ASSERT_TRUE(w.action(Attach::InputType::Kill));
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::SessionEnded); }));
+    EXPECT_TRUE(waitFor([&] { return !sessionNamed(daemon, "sh"); }));
+}
+
+TEST(MuxAttach, ASlowWindowGetsFewerFramesAndMissesNothing)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "$ "); }));
+    // The window reads nothing while the program writes much more than the
+    // window of a channel: the daemon's frame waits, and newer output goes
+    // in the next one.
+    ASSERT_TRUE(w.type("i=0; while [ $i -lt 30000 ]; do echo \"line $i of the output that fills the channel\"; i=$((i+1)); done; echo E''ND\n"));
+    ASSERT_TRUE(w.stream->flush(2000));
+    std::this_thread::sleep_for(3s);
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nEND"); })) << w.screen();
+    // Far fewer frames than lines, and every one applied (Window::read),
+    // up to the last line.
+    EXPECT_LT(w.frames, 3000);
+    EXPECT_TRUE(contains(w.screen(), "line 29999 of the output")) << w.screen();
 }
 
 TEST(MuxAttach, OnlyTheCallerMayConnect)
@@ -270,6 +430,7 @@ TEST(MuxAttach, OnlyTheCallerMayConnect)
     const std::string socket = (*result)["socket"].toString();
     // Another process of the user: the daemon closes its connection.
     const pid_t child = ::fork();
+    ASSERT_GE(child, 0) << std::strerror(errno);
     if (child == 0) {
         const int fd = connectTo(socket);
         if (fd < 0) ::_exit(2);
@@ -299,13 +460,34 @@ TEST(MuxAttach, AWindowThatDoesNotConnectLosesItsSocket)
     const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "sh", Json::Object{{"takeover", false}}}, &error);
     ASSERT_TRUE(result) << error.message;
     const std::string socket = (*result)["socket"].toString();
+    const auto made = std::chrono::steady_clock::now();
     EXPECT_EQ(::access(socket.c_str(), F_OK), 0);
-    // The connect wait of the daemon, and a margin.
-    std::this_thread::sleep_for(std::chrono::milliseconds(Attach::ConnectWaitMs + 500));
-    EXPECT_NE(::access(socket.c_str(), F_OK), 0);
+    // The socket stays for the connect wait of the daemon, then goes.
+    const auto gone = [&] {
+        const auto deadline = made + std::chrono::milliseconds(Attach::ConnectWaitMs + 5000);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (::access(socket.c_str(), F_OK) != 0) return true;
+            std::this_thread::sleep_for(50ms);
+        }
+        return false;
+    };
+    ASSERT_TRUE(gone());
+    EXPECT_GE(std::chrono::steady_clock::now() - made, std::chrono::milliseconds(Attach::ConnectWaitMs - 200));
     // The session is free for a window that asks for no takeover.
     Window w;
     EXPECT_EQ(w.attach(daemon, "sh", false), "");
+}
+
+TEST(MuxAttach, ADaemonRemovesTheAttachSocketsThatItsPredecessorLeft)
+{
+    TestDaemon daemon;
+    // A socket of a daemon that was killed while a window did not connect.
+    const std::string stale = daemon.runtime() + "/afterglow-mux/attach-0123456789abcdef.sock";
+    ASSERT_EQ(::mkdir((daemon.runtime() + "/afterglow-mux").c_str(), 0700), 0);
+    std::ofstream(stale).put('x');
+    ASSERT_TRUE(exists(stale));
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    EXPECT_FALSE(exists(stale));
 }
 
 TEST(MuxAttach, RefusesBadAttachCalls)
@@ -318,7 +500,13 @@ TEST(MuxAttach, RefusesBadAttachCalls)
     EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion + 1, "keep", Json::Object{}}, &error));
     EXPECT_EQ(error.code, Error::VersionMismatch);
     EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep", Json::Object{{"takeover", 1}}}, &error));
-    EXPECT_EQ(error.code, "INVALID_ARG");
+    EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
+    EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep"}, &error));
+    EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
     EXPECT_FALSE(daemon.call(Fn::Detach, Json::Array{"none"}, &error));
     EXPECT_EQ(error.code, Error::NoSuchSession);
+    for (const Json::Array& args : {Json::Array{}, Json::Array{1}, Json::Array{"a", "b"}}) {
+        EXPECT_FALSE(daemon.call(Fn::Detach, args, &error));
+        EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
+    }
 }

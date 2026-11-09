@@ -17,6 +17,10 @@ namespace AfterglowMux {
 /// How long a client waits to connect to a socket, and for the answer to a call.
 inline constexpr int ConnectTimeoutMs = 1000;
 inline constexpr int CallTimeoutMs = 5000;
+/// The wait for newSession: the daemon waits up to the PTY's exec wait (2 s)
+/// for the program to start, and a client may call while it waits for
+/// another session's.
+inline constexpr int NewSessionTimeoutMs = 10000;
 
 struct Reached
 {

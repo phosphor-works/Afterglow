@@ -131,7 +131,7 @@ The `run` calls that wait fail.
 The overlays that control clients opened close, and their `overlay` calls fail with the code `cancelled`.
 The sockets of the ssh sessions for [remote commands](#remote-commands) close, and their runs fail.
 The socket stays open with the `launch` target, because later launches of Afterglow use it.
-Any program of the same user can call `launch.newWindow`, and that window can run a command.
+Any program of the same user can call `launch.newWindow`, and that window can run a command or show a mux session.
 
 ## Protocol
 
@@ -219,10 +219,18 @@ Start Afterglow with `-o`, `--config` or `--class` when a window needs the envir
 
 | Call | Arguments | Result |
 | --- | --- | --- |
-| `newWindow` | working directory, command, options | None. Fails with `CALL_FAILED` when the program cannot start. |
+| `newWindow` | working directory, command, options | None. Fails with `CALL_FAILED` when the program cannot start, or when the session cannot show. |
 | `toggleQuickTerminal` | None | None. Fails with `CALL_FAILED` when the quick terminal's shell cannot start. |
 
-The `newWindow` options are `directoryGiven` (boolean), `title` (string), `hold` (boolean) and `activationToken` (string).
+| Option | Type | Function |
+| --- | --- | --- |
+| `directoryGiven` | boolean | Start in the working directory, whatever `Window.workingDirectory` says |
+| `title` | string | The title of the window |
+| `hold` | boolean | Keep the pane open after its program exits |
+| `activationToken` | string | The launcher's `XDG_ACTIVATION_TOKEN`, which lets the window take the focus |
+| `session` | string | Show this [mux session](MUX.md#windows-of-a-session) in place of a program. A window of this process that shows it already comes to the front. |
+| `takeover` | boolean | With `session`: take the session from another window that shows it. The default is true. With false, the call fails when another window shows the session. |
+
 When `directoryGiven` is false or missing, the `Window.workingDirectory` setting can replace the working directory.
 An empty command runs the shell.
 

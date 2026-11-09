@@ -142,6 +142,11 @@ Application::~Application()
     // No new windows while the others close.
     m_socket.router().unregisterTarget(QLatin1String(LaunchApi::Target), &m_launch);
     m_controlSocket.setRemoteSockets(nullptr);
+    // A quit (logout, a signal) is not the user closing a session's window:
+    // every session keeps running, whatever Mux.onClose says.
+    for (TerminalWindow* window : TerminalWindow::windows()) {
+        for (Pane* pane : window->findChildren<Pane*>()) pane->setKillSessionOnClose(false);
+    }
     // Windows render on the device and the chrome uses the QML engine.
     qDeleteAll(TerminalWindow::windows());
     // The scripts go before Control: its callbacks into them must not outlive them.
@@ -198,13 +203,25 @@ QString Application::openLaunch(const QString& workingDirectory, const QStringLi
     WindowOptions window{workingDirectory, command, false, options.value(QStringLiteral("directoryGiven")).toBool(),
                          options.value(QStringLiteral("title")).toString(), options.value(QStringLiteral("hold")).toBool()};
     // afterglow mux attach: the window shows a session of the mux daemon.
-    if (const QString session = options.value(QStringLiteral("session")).toString(); !session.isEmpty()) {
+    const QString session = options.value(QStringLiteral("session")).toString();
+    if (!session.isEmpty()) {
+        // A window of this process shows it already: the attach would take
+        // the session from it, while this thread, the only reader of its
+        // stream, waits for the daemon. The window comes to the front.
+        for (TerminalWindow* shown : TerminalWindow::windows()) {
+            for (Pane* pane : shown->findChildren<Pane*>()) {
+                if (pane->showsSession(session)) {
+                    shown->requestActivate();
+                    return {};
+                }
+            }
+        }
         QString error;
         window.session = MuxClient::attach(session, options.value(QStringLiteral("takeover"), true).toBool(), &error);
         if (!window.session) return error;
     }
     TerminalWindow* w = newWindow(window);
-    if (!w && window.session) return QStringLiteral("cannot show session %1").arg(options.value(QStringLiteral("session")).toString());
+    if (!w && window.session) return QStringLiteral("cannot show session '%1'").arg(session);
     if (!w) return QStringLiteral("cannot start %1").arg(command.isEmpty() ? QStringLiteral("the shell") : command.first());
     // Qt reads the token from the environment when the window asks for focus.
     const QByteArray token = options.value(QStringLiteral("activationToken")).toString().toUtf8();

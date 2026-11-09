@@ -98,6 +98,10 @@ public:
     /// the waitpid() status, or -1 when it is unknown: the child was reaped
     /// elsewhere, or still ran when the terminal failed.
     virtual void ptyClosed(int status) = 0;
+    /// Pty::write() refused bytes because its queue was full, and the queue
+    /// has room again: at most half of Pty::MaxPendingInput waits. On the
+    /// I/O thread, without a lock of the Pty.
+    virtual void ptyWritable() {}
 };
 
 /// A child process on a pseudo-terminal, with a dedicated I/O thread that
@@ -123,8 +127,13 @@ public:
     Pty(const Pty&) = delete;
     Pty& operator=(const Pty&) = delete;
 
+    /// The most input that waits for the child, in bytes.
+    static constexpr std::size_t MaxPendingInput = std::size_t(32) << 20;
+
     /// Queues bytes for the child. Thread-safe; never blocks on the child.
-    /// Entire writes are accepted atomically, up to 32 MiB pending.
+    /// Entire writes are accepted atomically, up to MaxPendingInput pending.
+    /// After a refusal for a full queue, the listener's ptyWritable() says
+    /// when there is room again.
     [[nodiscard]] bool write(std::string_view bytes);
     /// Lifecycle operations belong to the owner thread. Cannot restart after stop.
     [[nodiscard]] bool start(std::string* error = nullptr);
@@ -170,6 +179,7 @@ private:
     std::deque<std::string> m_pending;
     std::size_t m_pendingOffset = 0;
     std::size_t m_pendingBytes = 0;
+    bool m_refused = false; ///< write() refused bytes since the queue last had room
     std::atomic<bool> m_accepting{true};
 
     std::atomic<bool> m_stop{false};

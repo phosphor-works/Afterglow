@@ -16,7 +16,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -81,7 +83,7 @@ inline bool exists(const std::string& path)
 }
 
 /// A program that keeps its session open until the test ends it.
-const std::vector<std::string> Waiting = {"/bin/sh", "-c", "exec sleep 60"};
+inline const std::vector<std::string> Waiting = {"/bin/sh", "-c", "exec sleep 60"};
 
 /// A program that writes its environment to @p file, then waits.
 inline std::vector<std::string> writesEnvironment(const std::string& file)
@@ -101,8 +103,9 @@ public:
             return;
         }
         m_dir = dir;
-        ::mkdir(runtime().c_str(), 0700);
-        ::mkdir((m_dir + "/home").c_str(), 0700);
+        for (const std::string& sub : {runtime(), m_dir + "/home"}) {
+            if (::mkdir(sub.c_str(), 0700) != 0) ADD_FAILURE() << "cannot create " << sub << ": " << std::strerror(errno);
+        }
         m_environment = cleanEnvironment();
         m_callSocket = socket();
     }
@@ -135,7 +138,8 @@ public:
             const std::string entry(*e);
             const auto eq = entry.find('=');
             const std::string name = entry.substr(0, eq);
-            if (name.starts_with("AFTERGLOW_") || name == "XDG_RUNTIME_DIR" || name == "XDG_STATE_HOME" || name == "HOME" || name == "TMUX") {
+            if (name.starts_with("AFTERGLOW_") || name == "XDG_RUNTIME_DIR" || name == "XDG_STATE_HOME" || name == "HOME" || name == "TMUX"
+                || name == "TMUX_PANE") {
                 continue;
             }
             env.emplace_back(name, eq == std::string::npos ? "" : entry.substr(eq + 1));
@@ -234,6 +238,11 @@ public:
     std::optional<int> waitExit(std::chrono::milliseconds timeout = 5s, bool other = false)
     {
         pid_t& pid = other ? m_other : m_pid;
+        // No daemon: waitpid(-1) would reap any child of the test.
+        if (pid <= 0) {
+            ADD_FAILURE() << "no daemon to wait for";
+            return std::nullopt;
+        }
         int status = 0;
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (::waitpid(pid, &status, WNOHANG) != pid) {
@@ -371,6 +380,24 @@ inline std::vector<std::string> names(const std::vector<SessionInfo>& sessions)
     std::vector<std::string> list;
     for (const auto& s : sessions) list.push_back(s.name);
     return list;
+}
+
+/// A session that runs an interactive sh, with a plain prompt.
+inline bool shellSession(TestDaemon& daemon, const std::string& name)
+{
+    SessionOptions o = daemon.options({"/bin/sh"}, name);
+    o.launch.environment.emplace_back("PS1", "$ ");
+    o.launch.environment.emplace_back("ENV", "/dev/null");
+    return bool(daemon.newSession(o));
+}
+
+/// The session @p name of the daemon, if it has one.
+inline std::optional<SessionInfo> sessionNamed(TestDaemon& daemon, const std::string& name)
+{
+    for (SessionInfo& s : daemon.sessions()) {
+        if (s.name == name) return std::move(s);
+    }
+    return std::nullopt;
 }
 
 /// A Python program that puts the terminal in raw mode, writes @p query

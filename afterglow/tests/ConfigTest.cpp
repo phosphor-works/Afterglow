@@ -325,13 +325,23 @@ TEST(Themes, BundledThemesLoad)
     for (const QString& file : names) {
         const QString name = QFileInfo(file).completeBaseName();
         const QString path = Themes::locate(name, {QStringLiteral(AFTERGLOW_THEME_DIR)});
-        ASSERT_FALSE(path.isEmpty()) << name.toStdString();
+        // A broken theme fails its own row: the others are still checked.
+        if (path.isEmpty()) {
+            ADD_FAILURE() << name.toStdString() << ": not found";
+            continue;
+        }
         QFile f(path);
-        ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+        if (!f.open(QIODevice::ReadOnly)) {
+            ADD_FAILURE() << name.toStdString() << ": cannot open";
+            continue;
+        }
         QStringList ignored;
         QStringList invalid;
         const auto theme = Themes::parse(f.readAll(), nullptr, &ignored, &invalid);
-        ASSERT_TRUE(theme) << name.toStdString();
+        if (!theme) {
+            ADD_FAILURE() << name.toStdString() << ": does not parse";
+            continue;
+        }
         // A misspelt key would be dropped without a word.
         EXPECT_TRUE(ignored.isEmpty()) << name.toStdString() << ": " << ignored.join(QLatin1Char(' ')).toStdString();
         EXPECT_TRUE(invalid.isEmpty()) << name.toStdString() << ": " << invalid.join(QLatin1Char(' ')).toStdString();
@@ -708,16 +718,47 @@ TEST(Keybinds, TextBindingsSendTheirBytes)
     EXPECT_EQ(kb.match(&press), Action::None);
 }
 
-TEST_F(ConfigTest, ReadsWhatClosingTheLastWindowOfASessionDoes)
+TEST_F(ConfigTest, ReadsWhatClosingTheWindowOfASessionDoes)
 {
-    EXPECT_EQ(MuxSettings{}.closeOnLastWindow, MuxClose::Kill);
+    EXPECT_EQ(MuxSettings{}.onClose, MuxSettings::Close::Kill);
     {
-        SettingsStore store(write(QStringLiteral("detach.json"), R"({"Mux": {"closeOnLastWindow": "detach"}})"));
-        EXPECT_EQ(store.settings().mux.closeOnLastWindow, MuxClose::Detach);
+        SettingsStore store(write(QStringLiteral("detach.json"), R"({"Mux": {"onClose": "detach"}})"));
+        EXPECT_EQ(store.settings().mux.onClose, MuxSettings::Close::Detach);
+        EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
     }
-    // Not a choice: the default.
-    SettingsStore store(write(QStringLiteral("other.json"), R"({"Mux": {"closeOnLastWindow": "keep"}})"));
-    EXPECT_EQ(store.settings().mux.closeOnLastWindow, MuxClose::Kill);
+    // Not a choice: the default, and the problem says so.
+    SettingsStore store(write(QStringLiteral("other.json"), R"({"Mux": {"onClose": "keep"}})"));
+    EXPECT_EQ(store.settings().mux.onClose, MuxSettings::Close::Kill);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Mux.onClose must be one of"))) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// A file that means to turn scripts or the control socket off, and says it
+// wrongly, turns them off: they fail closed.
+TEST_F(ConfigTest, ScriptsAndControlStayOffForAValueThatIsNotABoolean)
+{
+    for (const char* json : {R"({"Scripts": {"enabled": "disabled"}, "Control": {"enabled": "False "}})",
+                             R"({"Scripts": false, "Control": 0})"}) {
+        SCOPED_TRACE(json);
+        SettingsStore store(write(QStringLiteral("off.json"), json));
+        EXPECT_FALSE(store.settings().scripts);
+        EXPECT_FALSE(store.settings().control.enabled);
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Scripts"))) << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    // A command-line override still wins.
+    SettingsStore store(write(QStringLiteral("off.json"), R"({"Scripts": {"enabled": "no way"}})"),
+                        QJsonObject{{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}}});
+    EXPECT_TRUE(store.settings().scripts);
+}
+
+TEST_F(ConfigTest, LinkSchemesThatAreNoSchemeAreReported)
+{
+    SettingsStore store(write(QStringLiteral("schemes.json"), R"({"Links": {"schemes": ["HTTPS:", "https://", "mailto:x", "git+ssh"]}})"));
+    const QStringList& schemes = store.settings().links.schemes;
+    EXPECT_TRUE(schemes.contains(QStringLiteral("https")));
+    EXPECT_TRUE(schemes.contains(QStringLiteral("git+ssh")));
+    for (const QString& scheme : schemes) EXPECT_FALSE(scheme.contains(QLatin1Char('/')) || scheme.contains(QLatin1Char(':'))) << scheme.toStdString();
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("https://"))) << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("mailto:x")));
 }
 
 TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
@@ -1581,6 +1622,7 @@ TEST_F(ConfigTest, StructDefaultsAgreeWithTheSchema)
     EXPECT_TRUE(read.audio == expected.audio);
     EXPECT_TRUE(read.quickTerminal == expected.quickTerminal);
     EXPECT_TRUE(read.control == expected.control);
+    EXPECT_TRUE(read.mux == expected.mux);
     EXPECT_TRUE(read.mouse == expected.mouse);
     EXPECT_TRUE(read.links == expected.links);
     EXPECT_TRUE(read.colors == expected.colors);
@@ -2527,7 +2569,10 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
             } else {
                 value = QStringLiteral("afterglow-test");
             }
-            ASSERT_FALSE(value.isUndefined()) << name.toStdString();
+            if (value.isUndefined()) {
+                ADD_FAILURE() << name.toStdString() << " has no test value";
+                continue;
+            }
             SettingsStore store(path, QJsonObject{{group.key(), QJsonObject{{def.key, value}}}});
             EXPECT_FALSE(store.settings() == defaults) << name.toStdString();
             // A value that a check refused would reach the settings as the
@@ -3011,9 +3056,10 @@ TEST_F(ConfigTest, AConfigLinkOrALinkedDirectoryThatIsRetargetedReloads)
         ASSERT_TRUE(QFile::link(target, next));
         ASSERT_EQ(::rename(QFile::encodeName(next).constData(), QFile::encodeName(path).constData()), 0);
     };
-    retarget(linked, m_home.filePath(QStringLiteral("two")));
+    // A failed ASSERT in the lambda returns from the lambda only.
+    ASSERT_NO_FATAL_FAILURE(retarget(linked, m_home.filePath(QStringLiteral("two"))));
     EXPECT_TRUE(waitUntil([&] { return store.settings().window.padding == 12; }));
-    retarget(link, m_home.filePath(QStringLiteral("three/config.json")));
+    ASSERT_NO_FATAL_FAILURE(retarget(link, m_home.filePath(QStringLiteral("three/config.json"))));
     EXPECT_TRUE(waitUntil([&] { return store.settings().window.padding == 15; }));
     // The new target is watched: an edit of it reloads.
     write(QStringLiteral("three/config.json"), R"({"Window": {"padding": 18}})");

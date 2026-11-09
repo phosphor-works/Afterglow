@@ -35,6 +35,8 @@ Reached connectAny(const AfterglowProto::MuxSockets& sockets, std::string* error
                 + ": end its sessions with the afterglow that started it, or wait until they end";
             return {};
         }
+        // A first socket that failed does not matter once one answers.
+        error->clear();
         return {std::move(connection), socket.path};
     }
     return {};

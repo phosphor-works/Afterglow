@@ -22,7 +22,8 @@ namespace AfterglowMux {
 
 /// Changes when a call, its arguments or its result change. Each end checks
 /// it: the client calls Fn::Version first on each connection, and the daemon
-/// refuses a newSession of another version. MuxProtocolTest pins the keys of
+/// refuses a newSession or an attach of another version. The codecs of the
+/// attach stream (MuxStream.h) change with it. MuxProtocolTest pins the keys of
 /// the options to this number, so that a new key changes it too.
 inline constexpr int ProtocolVersion = 4;
 
@@ -81,7 +82,7 @@ bool validSessionName(std::string_view name);
 /// The bounds that the daemon takes for the terminal values of a session.
 /// They hold every value of the settings that they come from
 /// (Terminal.scrollback, Colors.minimumContrast, Graphics.quota): the
-/// application's MuxClientTest checks that.
+/// application's MuxCommandTest checks that.
 inline constexpr std::int64_t MaxScrollback = 1000000;
 inline constexpr double MinContrast = 1;
 inline constexpr double MaxContrast = 21;

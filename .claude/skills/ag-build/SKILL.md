@@ -54,10 +54,11 @@ tests (`Render.*`) do not: `BUILD_TESTING` builds them.
 `afterglow-pty` and `afterglow-proto`. It builds next to `afterglow` (`build/afterglow/afterglow-mux`), because
 `afterglow mux` runs the daemon from its own directory, and building `afterglow` builds it too. A build of `aglow`
 alone (`AFTERGLOW_AGLOW_ONLY`) does not build it. Its tests are `afterglow_mux_tests` (`Mux.*`) and the client
-tests of `afterglow mux` in `afterglow_mux_client_tests` (`MuxClientTest.*`), with the server and socket tests of
-`afterglow-proto`: `ctest -R '^(Proto\.(IpcServer|Socket)|Mux|MuxClientTest)\.' -j4` takes about 10 seconds. Most
-of that time is the start wait of `Mux.MuxDaemon.ADaemonThatNobodyReachesEnds`. Without `-j`, the run takes about 15
-seconds.
+tests of `afterglow mux` in `afterglow_mux_command_tests` (`MuxCommandTest.*`), with the server and socket tests of
+`afterglow-proto`: `ctest -R '^(Proto\.(IpcServer|Socket)|Mux|MuxCommandTest)\.' -j4` takes about 10 seconds. Most
+of that time is the start wait of `Mux.MuxDaemon.ADaemonThatNobodyReachesEnds`. Without `-j`, the run takes about 30
+seconds. `afterglow mux new` without `--detach`, `afterglow mux attach` and `afterglow --mux-attach` also open a window:
+the native tests show sessions with a daemon of their own (`mux/tests/TestDaemon.h`).
 
 `afterglow mux` (every command but `--help`) and `afterglow-mux` (every run but `--help` and `--version`) reach the
 user's mux daemon and its sessions, also from a nested KWin. Run them only with a private `XDG_RUNTIME_DIR` and

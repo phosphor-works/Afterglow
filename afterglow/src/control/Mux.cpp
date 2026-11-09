@@ -50,7 +50,6 @@ namespace {
 
 namespace Json = AfterglowProto::Json;
 using AfterglowMux::CallTimeoutMs;
-using AfterglowMux::ConnectTimeoutMs;
 using AfterglowMux::Reached;
 using AfterglowMux::connectAny;
 using AfterglowProto::IpcConnection;
@@ -173,8 +172,12 @@ int run(const std::vector<std::string>& argv, std::string* output = nullptr)
         ::close(pipe[0]);
     }
     if (spawned != 0) return -1;
+    // A SIGCHLD that this process got as ignored reaps the child itself:
+    // waitpid() fails then, and the status is unknown, not 0.
     int status = 0;
-    while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
+    pid_t reaped;
+    while ((reaped = ::waitpid(pid, &status, 0)) < 0 && errno == EINTR) { }
+    if (reaped != pid) return -1;
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
@@ -246,8 +249,11 @@ bool startDetached(const std::string& daemon, int reportFd, std::string* error)
         ::_exit(127);
     }
     int status = 0;
-    while (::waitpid(child, &status, 0) < 0 && errno == EINTR) { }
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    pid_t reaped;
+    while ((reaped = ::waitpid(child, &status, 0)) < 0 && errno == EINTR) { }
+    // A child that the kernel reaped (SIGCHLD ignored) tells nothing: the
+    // report pipe says whether the daemon started.
+    if (reaped == child && (!WIFEXITED(status) || WEXITSTATUS(status) != 0)) {
         *error = "cannot start afterglow-mux: the second fork failed";
         return false;
     }
@@ -304,7 +310,7 @@ Report readReport(int fd, std::chrono::steady_clock::time_point deadline)
     return report;
 }
 
-/// A connection that answered the version call, and its socket.
+/// The paths of @p sockets, for a message.
 std::string paths(const AfterglowProto::MuxSockets& sockets)
 {
     std::string list;
@@ -335,9 +341,15 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, std::string* e
     }
     const auto deadline = std::chrono::steady_clock::now() + StartWait;
     if (userManager()) {
-        const std::vector<std::string> start = {"systemd-run", "--user", "--quiet", "--collect",
-                                                std::string("--unit=") + Unit, "--description=Afterglow terminal sessions",
-                                                daemon};
+        std::vector<std::string> start = {"systemd-run", "--user", "--quiet", "--collect",
+                                          std::string("--unit=") + Unit, "--description=Afterglow terminal sessions"};
+        // The daemon runs in the user manager's environment, and finds its
+        // state directory's socket from these: the one that this command and
+        // later clients look for.
+        for (const char* name : {"XDG_STATE_HOME", "HOME"}) {
+            if (const char* value = std::getenv(name); value && *value) start.push_back(std::string("--setenv=") + name + "=" + value);
+        }
+        start.push_back(daemon);
         // systemd-run fails too when the unit exists: another command
         // started the daemon at the same time, or the daemon of the unit
         // ends. Then a second daemon would run outside the user manager.
@@ -351,16 +363,23 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, std::string* e
             // another command started outside the user manager. The holder
             // keeps its lock file from before it binds until it ends.
             bool retried = false;
+            // Each look at the unit runs systemctl: a few times a second,
+            // while the connects try every 20 ms.
+            auto nextLook = std::chrono::steady_clock::now();
             while (true) {
                 Reached reached = connectAny(sockets, error);
                 if (reached.connection || !error->empty()) return reached;
-                if (std::chrono::steady_clock::now() >= deadline) break;
-                if (!unitLoaded()) {
-                    if (!ours && !retried) {
-                        retried = true;
-                        ours = run(start) == 0;
-                    } else if (!lockHeldElsewhere(sockets)) {
-                        break;
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= deadline) break;
+                if (now >= nextLook) {
+                    nextLook = now + std::chrono::milliseconds(250);
+                    if (!unitLoaded()) {
+                        if (!ours && !retried) {
+                            retried = true;
+                            ours = run(start) == 0;
+                        } else if (!lockHeldElsewhere(sockets)) {
+                            break;
+                        }
                     }
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -480,20 +499,33 @@ struct NewOptions
     QStringList command;
 };
 
-/// Afterglow shows windows only on Wayland: without a display, a window of
-/// a session would fail after the session was made.
-bool hasDisplay()
+/// Why a window could not open here, or empty. Afterglow shows windows only
+/// on Wayland: without a display, a window of a session would fail after the
+/// session was made. The display is libwayland's: WAYLAND_DISPLAY, else
+/// wayland-0, in XDG_RUNTIME_DIR unless it is a path.
+std::string displayProblem()
 {
-    const char* display = std::getenv("WAYLAND_DISPLAY");
-    return display && *display;
+    if (const char* platform = std::getenv("QT_QPA_PLATFORM"); platform && *platform && !std::string_view(platform).starts_with("wayland")) {
+        return std::string("QT_QPA_PLATFORM is ") + printable(platform) + ", and Afterglow shows windows only on Wayland";
+    }
+    const char* named = std::getenv("WAYLAND_DISPLAY");
+    std::string display = named && *named ? named : "wayland-0";
+    if (!display.starts_with('/')) {
+        const char* runtime = std::getenv("XDG_RUNTIME_DIR");
+        if (!runtime || *runtime != '/') return "no Wayland display shows a window here: XDG_RUNTIME_DIR is not set";
+        display = std::string(runtime) + "/" + display;
+    }
+    struct stat info{};
+    if (::stat(display.c_str(), &info) != 0 || !S_ISSOCK(info.st_mode)) {
+        return "no Wayland display shows a window here: " + printable(display) + " is no socket";
+    }
+    return {};
 }
-
-constexpr const char* NoDisplay = "no Wayland display shows a window here";
 
 /// Shows @p name in a window: afterglow runs with --mux-attach, and hands the
 /// window to the main process of the display as any launch does. Returns
 /// only on a failure.
-int openWindow(const char* command, const std::string& name, bool takeover)
+int openWindow(const std::string& command, const std::string& name, bool takeover)
 {
     std::vector<std::string> args{"afterglow", "--mux-attach", name};
     if (!takeover) args.emplace_back("--mux-no-takeover");
@@ -506,7 +538,9 @@ int openWindow(const char* command, const std::string& name, bool takeover)
     return failure == ENOENT ? 127 : 126;
 }
 
-int newSession(int argc, char** argv)
+/// `afterglow mux new`, also for `attach` when no session runs: @p command
+/// names the command in messages.
+int newSession(int argc, char** argv, const std::string& command = "new")
 {
     NewOptions o;
     for (int i = 1; i < argc; ++i) {
@@ -522,17 +556,19 @@ int newSession(int argc, char** argv)
         } else if (arg == "--detach") {
             o.detach = true;
         } else if (arg == "--ssh") {
-            return fail("new", "sessions on other hosts are not available yet");
+            return fail(command, "sessions on other hosts are not available yet");
         } else {
             return usage("unknown option of new: " + printable(arg));
         }
     }
     if (!o.name.empty() && !AfterglowMux::validSessionName(o.name)) {
-        return fail("new", std::string("the name must be ") + AfterglowMux::SessionNameRule, 2);
+        return fail(command, std::string("the name must be ") + AfterglowMux::SessionNameRule, 2);
     }
-    if (!o.detach && !hasDisplay()) return fail("new", std::string(NoDisplay) + ": give --detach");
+    if (!o.detach) {
+        if (const std::string problem = displayProblem(); !problem.empty()) return fail(command, problem + ": give --detach");
+    }
     const auto sockets = AfterglowProto::muxSockets();
-    if (sockets.candidates.empty()) return fail("new", sockets.error);
+    if (sockets.candidates.empty()) return fail(command, sockets.error);
 
     int qtArgc = 1;
     char* qtArgv[] = {argv[0], nullptr};
@@ -542,8 +578,8 @@ int newSession(int argc, char** argv)
     SettingsStore store;
     const Settings& settings = store.settings();
     const auto cwd = absolute(o.cwd);
-    if (!cwd) return fail("new", "the current directory was removed, so give an absolute directory with --cwd");
-    if (!QFileInfo(*cwd).isDir()) return fail("new", "no directory " + printable(cwd->toStdString()));
+    if (!cwd) return fail(command, "the current directory was removed, so give an absolute directory with --cwd");
+    if (!QFileInfo(*cwd).isDir()) return fail(command, "no directory " + printable(cwd->toStdString()));
 
     AfterglowPty::SpawnOptions launch = prepareLaunch(settings, *cwd, o.command, {});
     offerTerminalEnvironment(launch, settings.term);
@@ -554,23 +590,32 @@ int newSession(int argc, char** argv)
     session.launch.environment = sessionEnvironment(launch);
     session.launch.launchedProgram = launchedProgramName(o.command).toStdString();
     session.launch.umask = currentUmask();
-    // No window measured the panes: the size of a new window, in cells.
-    session.size = {std::clamp(settings.window.initialColumns, 2, 4096), std::clamp(settings.window.initialRows, 1, 4096), 0, 0};
+    // No window measured the panes: the size of a new window, in cells,
+    // which the schema keeps within what a terminal takes.
+    session.size = {settings.window.initialColumns, settings.window.initialRows, 0, 0};
     session.terminal = settings.terminal;
     session.notificationCapabilities = NotificationCenter::capabilities();
 
     std::string error;
     Reached reached = connectOrStart(sockets, &error);
-    if (!reached.connection) return fail("new", error);
+    if (!reached.connection) return fail(command, error);
     IpcConnection::Error callError;
     const auto result = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::NewSession,
-                                                 Json::Array{AfterglowMux::ProtocolVersion, AfterglowMux::toJson(session)}, 10000,
-                                                 &callError);
-    if (!result) return fail("new", callError.message);
+                                                 Json::Array{AfterglowMux::ProtocolVersion, AfterglowMux::toJson(session)},
+                                                 AfterglowMux::NewSessionTimeoutMs, &callError);
+    if (!result) return fail(command, printable(callError.message));
     const std::string name = (*result)["name"].toString();
-    if (!o.detach) return openWindow("new", name, true);
-    std::printf("%s\n", printable(name).c_str());
-    return 0;
+    if (!AfterglowMux::validSessionName(name)) return fail(command, "the daemon sent a session name that is not valid");
+    if (o.detach) {
+        std::printf("%s\n", name.c_str());
+        return 0;
+    }
+    const int status = openWindow(command, name, true);
+    // afterglow did not run, so no window will show the session: it ends,
+    // as the session of a window that fails to open.
+    IpcConnection::Error killError;
+    (void)reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::KillSession, Json::Array{name}, CallTimeoutMs, &killError);
+    return status;
 }
 
 /// The sessions of the daemon on @p connection, or nullopt with @p error.
@@ -579,7 +624,7 @@ std::optional<std::vector<AfterglowMux::SessionInfo>> sessions(IpcConnection& co
     IpcConnection::Error callError;
     const auto result = connection.call(AfterglowMux::Target, AfterglowMux::Fn::ListSessions, {}, CallTimeoutMs, &callError);
     if (!result) {
-        *error = callError.message;
+        *error = printable(callError.message);
         return std::nullopt;
     }
     if (!result->isArray()) {
@@ -589,7 +634,7 @@ std::optional<std::vector<AfterglowMux::SessionInfo>> sessions(IpcConnection& co
     std::vector<AfterglowMux::SessionInfo> list;
     for (const Json::Value& item : result->toArray()) {
         auto info = AfterglowMux::sessionInfo(item);
-        if (!info) {
+        if (!info || !AfterglowMux::validSessionName(info->name)) {
             *error = "the daemon sent a session that this afterglow cannot read";
             return std::nullopt;
         }
@@ -640,7 +685,10 @@ int attachSession(int argc, char** argv)
         else if (name.empty() && !arg.starts_with('-')) name = arg;
         else return usage("unknown argument of attach: " + printable(arg));
     }
-    if (!hasDisplay()) return fail("attach", NoDisplay);
+    if (!name.empty() && !AfterglowMux::validSessionName(name)) {
+        return fail("attach", std::string("the name must be ") + AfterglowMux::SessionNameRule, 2);
+    }
+    if (const std::string problem = displayProblem(); !problem.empty()) return fail("attach", problem);
     if (name.empty()) {
         const auto sockets = AfterglowProto::muxSockets();
         if (sockets.candidates.empty()) return fail("attach", sockets.error);
@@ -656,7 +704,7 @@ int attachSession(int argc, char** argv)
         if (!list || list->empty()) {
             char newArg[] = "new";
             char* newArgv[] = {newArg, nullptr};
-            return newSession(1, newArgv);
+            return newSession(1, newArgv, "attach");
         }
         if (list->size() > 1) {
             std::string names;
@@ -673,6 +721,7 @@ int detachSession(int argc, char** argv)
     std::string name;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
+        if (arg == "--ssh") return fail("detach", "sessions on other hosts are not available yet");
         if (name.empty() && !arg.starts_with('-')) name = arg;
         else return usage("unknown argument of detach: " + printable(arg));
     }
@@ -681,6 +730,7 @@ int detachSession(int argc, char** argv)
         if (const char* own = std::getenv("AFTERGLOW_SESSION"); own && *own) name = own;
     }
     if (name.empty()) return usage("detach takes the name of a session, outside a session pane");
+    if (!AfterglowMux::validSessionName(name)) return fail("detach", std::string("the name must be ") + AfterglowMux::SessionNameRule, 2);
     const auto sockets = AfterglowProto::muxSockets();
     if (sockets.candidates.empty()) return fail("detach", sockets.error);
     std::string error;
@@ -688,7 +738,7 @@ int detachSession(int argc, char** argv)
     if (!reached.connection) return fail("detach", error.empty() ? std::string("no sessions") : error);
     IpcConnection::Error callError;
     if (!reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::Detach, Json::Array{name}, CallTimeoutMs, &callError)) {
-        return fail("detach", callError.message);
+        return fail("detach", printable(callError.message));
     }
     return 0;
 }
@@ -734,7 +784,7 @@ int killSession(int argc, char** argv)
     }
     IpcConnection::Error callError;
     if (!reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::KillSession, Json::Array{name}, CallTimeoutMs, &callError)) {
-        return fail("kill", callError.message);
+        return fail("kill", printable(callError.message));
     }
     return 0;
 }

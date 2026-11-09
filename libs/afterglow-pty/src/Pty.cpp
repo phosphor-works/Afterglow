@@ -566,10 +566,13 @@ Pty::~Pty()
 
 bool Pty::write(std::string_view bytes)
 {
-    constexpr std::size_t MaxPending = 32u * 1024 * 1024;
     {
         std::lock_guard lock(m_writeMutex);
-        if (!m_accepting.load() || bytes.size() > MaxPending - m_pendingBytes) return false;
+        if (!m_accepting.load()) return false;
+        if (bytes.size() > MaxPendingInput - m_pendingBytes) {
+            m_refused = true;
+            return false;
+        }
         if (bytes.empty()) return true;
         if (!m_pending.empty() && m_pending.back().size() + bytes.size() <= 65536)
             m_pending.back().append(bytes);
@@ -624,30 +627,42 @@ void Pty::wake()
 
 bool Pty::flushPending()
 {
-    std::lock_guard lock(m_writeMutex);
-    // Bound work per poll tick so shutdown and output remain responsive.
-    for (int attempts = 0; attempts < 16 && !m_pending.empty() && !m_stop.load(); ++attempts) {
-        const auto& front = m_pending.front();
-        const std::size_t amount = std::min<std::size_t>(65536, front.size() - m_pendingOffset);
-        const ssize_t n = ::write(m_master, front.data() + m_pendingOffset, amount);
-        if (n > 0) {
-            m_pendingOffset += std::size_t(n);
-            m_pendingBytes -= std::size_t(n);
-            if (m_pendingOffset == front.size()) { m_pending.pop_front(); m_pendingOffset = 0; }
-        } else if (n < 0 && errno == EINTR) {
-            continue;
-        } else {
-            if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                // The child side is gone (EIO). Input stops here; output the
-                // child wrote before it left can still be read.
-                m_accepting.store(false);
-                m_pending.clear();
-                m_pendingBytes = m_pendingOffset = 0;
+    bool pending = false;
+    bool room = false;
+    {
+        std::lock_guard lock(m_writeMutex);
+        // Bound work per poll tick so shutdown and output remain responsive.
+        for (int attempts = 0; attempts < 16 && !m_pending.empty() && !m_stop.load(); ++attempts) {
+            const auto& front = m_pending.front();
+            const std::size_t amount = std::min<std::size_t>(65536, front.size() - m_pendingOffset);
+            const ssize_t n = ::write(m_master, front.data() + m_pendingOffset, amount);
+            if (n > 0) {
+                m_pendingOffset += std::size_t(n);
+                m_pendingBytes -= std::size_t(n);
+                if (m_pendingOffset == front.size()) { m_pending.pop_front(); m_pendingOffset = 0; }
+            } else if (n < 0 && errno == EINTR) {
+                continue;
+            } else {
+                if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    // The child side is gone (EIO). Input stops here; output the
+                    // child wrote before it left can still be read.
+                    m_accepting.store(false);
+                    m_pending.clear();
+                    m_pendingBytes = m_pendingOffset = 0;
+                }
+                break;
             }
-            break;
+        }
+        pending = !m_pending.empty();
+        // Half the queue, not one byte: a writer that waits for room sends
+        // its next part into a queue that can take it.
+        if (m_refused && m_accepting.load() && m_pendingBytes <= MaxPendingInput / 2) {
+            m_refused = false;
+            room = true;
         }
     }
-    return !m_pending.empty();
+    if (room) m_listener.ptyWritable();
+    return pending;
 }
 
 void Pty::feedInput()

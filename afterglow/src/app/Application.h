@@ -51,9 +51,12 @@ public:
 
     /// A window for another launch, started from @p workingDirectory.
     /// @p options: directoryGiven (afterglow -d: start in it, whatever the
-    /// workingDirectory setting), title, hold, and activationToken (the
-    /// launcher's XDG_ACTIVATION_TOKEN, which lets the window take focus).
-    /// Fails when the window's program cannot start.
+    /// workingDirectory setting), title, hold, activationToken (the
+    /// launcher's XDG_ACTIVATION_TOKEN, which lets the window take focus),
+    /// session (afterglow mux attach: show that mux session) and takeover
+    /// (true by default: take the session from a window that shows it).
+    /// Fails when the window's program cannot start, or the session cannot
+    /// show.
     Q_INVOKABLE void newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
     /// Fails when the quick terminal's shell cannot start.
     Q_INVOKABLE void toggleQuickTerminal();

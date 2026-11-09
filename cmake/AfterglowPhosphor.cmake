@@ -44,6 +44,13 @@ function(afterglow_add_phosphor_libs)
     set(BUILD_TESTING OFF)
     set(AFTERGLOW_INSIDE_PHOSPHOR ON)
     foreach(lib IN LISTS ARGN)
+        # A checkout older than a library that Afterglow needs: say which
+        # commit to take, not only that a directory is missing.
+        if(NOT EXISTS "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/${lib}/CMakeLists.txt")
+            message(FATAL_ERROR
+                "${AFTERGLOW_PHOSPHOR_LIBS_DIR} has no ${lib}. This PlasmaZones checkout is too old. Check out "
+                "the PlasmaZones commit that docs/BUILD.md names in its Build steps.")
+        endif()
         add_subdirectory("${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/${lib}"
                          "${CMAKE_BINARY_DIR}/phosphor/${lib}" EXCLUDE_FROM_ALL)
     endforeach()

@@ -80,7 +80,8 @@ qt_add_library(afterglow_app STATIC
 
 qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h src/control/Mux.cpp src/control/Mux.h
     src/shell/Aglow.cpp src/shell/Aglow.h)
-target_link_libraries(afterglow PRIVATE afterglow_app afterglow_mux_protocol)
+# afterglow_app brings afterglow_mux_protocol, which Mux.cpp uses too.
+target_link_libraries(afterglow PRIVATE afterglow_app)
 # afterglow mux runs the afterglow-mux of its own directory.
 add_dependencies(afterglow afterglow-mux)
 # Without aglow, afterglow run, transfer, dnd, icat and clipboard say that it is not built.
@@ -239,7 +240,8 @@ target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afte
     Qt6::DBus Qt6::Network KF6::WindowSystem
     # Control.h, CommandSocket.h and RemoteSockets.h include its headers.
     Afterglow::Proto
-    # Pane.h: a pane can show a pane of a mux session (MuxClient).
+    # mux/MuxClient.h, which a window and its tests include: a pane can show a
+    # pane of a mux session.
     afterglow_mux_protocol)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

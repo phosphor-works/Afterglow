@@ -10,7 +10,8 @@
 #include <AfterglowProto/Socket.h>
 
 #include <cstdint>
-#include <map>
+#include <functional>
+#include <optional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -18,9 +19,10 @@
 namespace AfterglowMux {
 
 /// The headless process that owns the sessions. One thread runs the sockets
-/// of the daemon and the lifetimes of sessions and panes. Each pane's PTY
-/// has its reader thread, which wakes this one through an eventfd when its
-/// program exits.
+/// of the daemon, the windows that show sessions and the lifetimes of
+/// sessions and panes. Each pane's PTY has its reader thread, which wakes
+/// this one through an eventfd after output, a resize, room in the PTY's
+/// input queue, and when its program exits.
 class Daemon
 {
 public:
@@ -71,15 +73,27 @@ private:
     std::string killSession(const AfterglowProto::IpcRequest& request);
     std::string attach(const AfterglowProto::IpcRequest& request, pid_t caller);
     std::string detach(const AfterglowProto::IpcRequest& request);
+    /// The error of a call whose first argument is not this daemon's
+    /// protocol version.
+    static std::optional<std::string> versionError(const AfterglowProto::IpcRequest& request);
+    /// Ends the programs of @p session and the session: its window hears it.
+    void endSession(std::vector<std::unique_ptr<Session>>::iterator session);
     /// Sends what changed in each attached session.
     void pumpAttachments();
+    /// The attachment that shows the session @p name, connected or not;
+    /// not one that finishes.
+    Attachment* shown(const std::string& name) const;
+    /// Runs @p work for @p attachment. An exception finishes the attachment
+    /// and returns false.
+    static bool guarded(Attachment& attachment, const std::function<bool()>& work);
     std::string listSessions(const AfterglowProto::IpcRequest& request, pid_t caller);
     /// The socket that session panes name in AFTERGLOW_SOCKET.
     const std::string& paneSocket() const;
     std::vector<std::unique_ptr<Session>>::iterator find(const std::string& name);
     std::string freeName();
     void reap();
-    /// No session and no connection: nothing can need the daemon now.
+    /// No session, no connection and no window: nothing can need the daemon
+    /// now.
     bool idle() const;
 
     const long m_fileLimit;
@@ -89,9 +103,10 @@ private:
     std::string m_setupError; ///< why the event descriptors are missing
     std::vector<std::unique_ptr<AfterglowProto::IpcServerConnection>> m_connections;
     std::vector<std::unique_ptr<Session>> m_sessions;
-    /// The window that shows a session, by the session's name. It goes
-    /// before its session.
-    std::map<std::string, std::unique_ptr<Attachment>> m_attachments;
+    /// The windows of sessions: at most one that is not finishing for each
+    /// session, and those that finish while they send what waits. An
+    /// attachment holds no session: it may outlive its session.
+    std::vector<std::unique_ptr<Attachment>> m_attachments;
     std::uint32_t m_nextPane = 1;
     /// The number of the next session without a name of its client.
     std::uint64_t m_nextName = 1;
