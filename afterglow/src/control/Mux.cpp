@@ -26,7 +26,6 @@
 #include <cstring>
 #include <exception>
 #include <fstream>
-#include <sstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -395,7 +394,9 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, std::string* e
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
-            if (lockHeldElsewhere(sockets)) {
+            // The daemon of a unit that this command started and that still
+            // runs holds its own locks: its error is in the journal.
+            if (!(ours && unitLoaded()) && lockHeldElsewhere(sockets)) {
                 *error = "afterglow-mux did not start: another afterglow-mux holds a socket and does not answer";
             } else if (unitProperty("ActiveState") == "deactivating") {
                 *error = std::string("afterglow-mux did not start: the daemon of ") + Unit

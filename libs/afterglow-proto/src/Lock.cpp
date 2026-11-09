@@ -65,15 +65,49 @@ void unlockFile(const std::string& path, int fd)
     ::close(fd);
 }
 
+namespace {
+
+/// The device of the file at @p path as /proc/locks names it, "MAJ:MIN:" in
+/// hexadecimal: the device of the file system's superblock. stat() gives
+/// another one on a btrfs subvolume (an anonymous device per subvolume),
+/// so the device comes from the mount of the file in /proc/self/mountinfo,
+/// whose third field is the superblock's, in decimal.
+std::string lockDevice(const std::string& path, const struct stat& file)
+{
+    unsigned int major = ::major(file.st_dev);
+    unsigned int minor = ::minor(file.st_dev);
+    struct statx mount{};
+    if (::statx(AT_FDCWD, path.c_str(), AT_SYMLINK_NOFOLLOW, STATX_MNT_ID, &mount) == 0
+        && (mount.stx_mask & STATX_MNT_ID) != 0) {
+        std::ifstream mounts("/proc/self/mountinfo");
+        for (std::string line; std::getline(mounts, line);) {
+            // "26 1 0:32 /@home /home rw,relatime ...": the mount ID, its
+            // parent's, then the device.
+            std::istringstream fields(line);
+            unsigned long long id = 0, parent = 0;
+            unsigned int devMajor = 0, devMinor = 0;
+            char colon = 0;
+            if (fields >> id >> parent >> devMajor >> colon >> devMinor && colon == ':' && id == mount.stx_mnt_id) {
+                major = devMajor;
+                minor = devMinor;
+                break;
+            }
+        }
+    }
+    char device[32];
+    std::snprintf(device, sizeof device, "%02x:%02x:", major, minor);
+    return device;
+}
+
+} // namespace
+
 bool lockFileHeld(const std::string& path)
 {
     struct stat file{};
     if (::lstat(path.c_str(), &file) != 0) return false;
     std::ifstream locks("/proc/locks");
     if (!locks) return true;
-    char device[32];
-    std::snprintf(device, sizeof device, "%02x:%02x:", ::major(file.st_dev), ::minor(file.st_dev));
-    const std::string where = device + std::to_string(file.st_ino);
+    const std::string where = lockDevice(path, file) + std::to_string(file.st_ino);
     for (std::string line; std::getline(locks, line);) {
         // "1: FLOCK  ADVISORY  WRITE 1234 00:49:9071 0 EOF". A waiter has
         // "->" after the number.

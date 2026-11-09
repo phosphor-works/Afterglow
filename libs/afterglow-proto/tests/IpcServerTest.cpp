@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <thread>
 
 #include <fcntl.h>
@@ -311,6 +312,25 @@ TEST(IpcServer, ALockFileIsHeldOnlyWhileAHolderHasItsLock)
     EXPECT_EQ(AfterglowProto::lockFile(dir.lock(), &error), AfterglowProto::LockHeld);
     AfterglowProto::unlockFile(dir.lock(), held);
     EXPECT_FALSE(AfterglowProto::lockFileHeld(dir.lock()));
+}
+
+TEST(IpcServer, ALockFileIsHeldOnTheFileSystemOfTheTests)
+{
+    // /proc/locks names the device of the file system, which stat() does not
+    // give on a btrfs subvolume. /tmp is often tmpfs, where the two agree:
+    // this test makes its file where ctest runs it, in the build directory.
+    std::string dir = (std::filesystem::current_path() / "lockheld-XXXXXX").string();
+    ASSERT_NE(::mkdtemp(dir.data()), nullptr);
+    const std::string lock = dir + "/s.sock.lock";
+    std::string error;
+    const int held = AfterglowProto::lockFile(lock, &error);
+    EXPECT_GE(held, 0) << error;
+    if (held >= 0) {
+        EXPECT_TRUE(AfterglowProto::lockFileHeld(lock));
+        AfterglowProto::unlockFile(lock, held);
+    }
+    EXPECT_FALSE(AfterglowProto::lockFileHeld(lock));
+    ::rmdir(dir.c_str());
 }
 
 TEST(IpcServer, ACloseRemovesOnlyTheFilesOfItsOwnListener)

@@ -26,6 +26,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 # Local state that never goes into git: another tool's workspace, Python caches, build trees (build/, build-asan/)
 # and .cache. A file whose name starts with "build" is a source file (build-inspector.luau).
@@ -1277,6 +1278,19 @@ PARALLEL_PLUS = re.compile(r'\{(\d*)[^{}\s]*\}')
 MAX_PARALLEL_JOBS = 64
 
 
+def parallel_change(word, how):
+    """WORD as parallel's {.} {/} {//} {/.} give it (HOW is '.', '/', '//' or '/.'), or as it is."""
+    if how == '.':
+        return os.path.splitext(word)[0]
+    if how == '/':
+        return os.path.basename(word)
+    if how == '//':
+        return os.path.dirname(word) or '.'
+    if how == '/.':
+        return os.path.splitext(os.path.basename(word))[0]
+    return word
+
+
 def parallel_jobs(args):
     """(the shell commands that parallel ARGS runs, whether parallel adds words of its input or of files to them).
     The command is the words after parallel's options, up to the first of PARALLEL_LISTS, as one line (parallel
@@ -1322,13 +1336,21 @@ def parallel_jobs(args):
             break
 
     pattern = PARALLEL_PLUS if plus else PARALLEL_REPLACE
+    unknown = []
 
     def job_line(job):
         quoted = [shlex.quote(w) for w in job]
 
-        def value(m):  # {3} is the word of the third list, any other string all of them
+        def value(m):
+            # {} and {3} are the words (of the third list), and {.} {/} {//} {/.} change them as parallel does. The
+            # guard does not compute other strings (--plus, {= perl =}): such a job counts as unknown input.
             n = next((g for g in m.groups() if g), '')
-            return quoted[int(n) - 1] if n and 0 < int(n) <= len(quoted) else ' '.join(quoted)
+            change = re.fullmatch(r'\{\d*(\.|/|//|/\.)?\}', m.group(0))
+            if change is None:
+                unknown.append(m.group(0))
+            picked = [job[int(n) - 1]] if n and 0 < int(n) <= len(job) else list(job)
+            how = change.group(1) if change else None
+            return ' '.join(shlex.quote(parallel_change(w, how)) for w in picked)
 
         if replace is not None and replace in command:
             return command.replace(replace, ' '.join(quoted))
@@ -1336,7 +1358,8 @@ def parallel_jobs(args):
             return pattern.sub(value, command)
         return command + ' ' + ' '.join(quoted)
 
-    return list(dict.fromkeys(job_line(job) for job in jobs)), files
+    lines = list(dict.fromkeys(job_line(job) for job in jobs))
+    return lines, files or bool(unknown)
 
 
 def argument_commands(wrappers, word, args):
@@ -1678,6 +1701,8 @@ def started_commands(wrappers, word, args):
     runs in the directory of each file that find finds ('cwd:?')."""
     found, pending = [], [(wrappers, word, args)]
     while pending:
+        if time.monotonic() > deadline:
+            raise ValueError('the command takes longer to check than the guard allows')
         outer, name, rest = pending.pop()
         if name == 'find':
             nested = []
@@ -1772,6 +1797,10 @@ def script_environment(inherited, script, cmds):
 # that doubles with each level. A hook that runs out of time lets the call run, so more checks than MAX_CHECKS, or
 # more text than MAX_CHECKED_TEXT, fail closed.
 CHECKED = {}
+# A check that runs past this many seconds fails closed: the hook gets 10 (settings.json), and a hook that runs out
+# of time lets the call run.
+CHECK_SECONDS = 5
+deadline = float('inf')
 checked_text = 0
 MAX_CHECKS = 512
 MAX_CHECKED_TEXT = 16 << 20
@@ -1785,6 +1814,8 @@ def check_bash(command, cwd=None, inherited=()):
     if key in CHECKED:
         return CHECKED[key]
     checked_text += len(command)
+    if time.monotonic() > deadline:
+        raise ValueError('the command takes longer to check than the guard allows')
     if len(CHECKED) >= MAX_CHECKS or checked_text > MAX_CHECKED_TEXT:
         raise ValueError('the command nests more scripts than the guard checks in one call')
     CHECKED[key] = message = check_script(command, cwd, inherited)
@@ -1841,7 +1872,7 @@ def check_script(command, cwd, inherited):
         if any(stops_mux_unit(*c) or removes_mux_files(c[1], c[2], command_places(wrappers, c[0], places))
                for c in every):
             return MSG_MUX
-        if any(appends(c[0]) and removes_input(c[1], c[2]) for c in every) and names_mux(text, places):
+        if names_mux(text, places) and any(appends(c[0]) and removes_input(c[1], c[2]) for c in every):
             return MSG_MUX
         if any(opens_window(*c) for c in launches + started) or (word == 'gdb' and gdb_launches(wrappers, args)):
             return MSG_LAUNCH
@@ -1901,7 +1932,7 @@ MSG_FAILED = ('The guard could not check this call ({}), so it blocks it. Write 
 
 def check(call):
     """The message that blocks the hook input CALL, or None. A malformed input raises ValueError."""
-    global checked_text
+    global checked_text, deadline
     if not isinstance(call, dict):
         raise ValueError('the hook input is not an object')
     tool = call.get('tool_name', '')
@@ -1915,6 +1946,7 @@ def check(call):
             raise ValueError('the command is not a string')
         CHECKED.clear()
         checked_text = 0
+        deadline = time.monotonic() + CHECK_SECONDS
         return check_bash(command, cwd)
     if tool in ('Edit', 'Write', 'MultiEdit', 'NotebookEdit'):
         path = params.get('file_path') or params.get('notebook_path') or ''

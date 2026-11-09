@@ -31,7 +31,9 @@ int lockFile(const std::string& path, std::string* error);
 /// LockHeld. A file that a holder left when it was killed, or when the
 /// computer stopped, exists with no lock on it. Reads /proc/locks, which
 /// names each flock by device and inode. Without /proc/locks, a file that
-/// exists counts as held.
+/// exists counts as held. /proc/locks shows only the locks of processes in
+/// the pid namespace of the reader's /proc: from a sandbox with a pid
+/// namespace of its own, a lock that a process outside holds does not show.
 bool lockFileHeld(const std::string& path);
 
 /// Lets go of a lock of lockFile(): removes the file at @p path when it is
