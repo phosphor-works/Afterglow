@@ -428,6 +428,7 @@ QString Control::split(quint32 id, const QString& direction, const QStringList& 
     if (!pane) return noPane(id);
     QString error;
     auto* added = window->splitPane(pane, dir, options, &error);
+    if (!added && error == TerminalWindow::noRoomForPane()) return QStringLiteral("not enough room for another pane");
     if (!added) return error.isEmpty() ? QStringLiteral("cannot split pane") : error;
     created = added->id();
     return {};

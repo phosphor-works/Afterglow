@@ -72,7 +72,8 @@ function __afterglow_window
         set i (math $i + 1)
     end
     if test $n -eq 0; and not string match -q -- '-*' "$cur"
-        __afterglow_print ctl\t'Drive a running Afterglow' run\t'Run a command of a script' \
+        __afterglow_print ctl\t'Drive a running Afterglow' mux\t'Keep terminal sessions running without a window' \
+            run\t'Run a command of a script' \
             ssh\t'ssh with the remote side prepared' \
             transfer\t'Copy files to and from the computer of the terminal' \
             dnd\t'Drag files and data out of the terminal, and drop them in' \
@@ -251,6 +252,56 @@ function __afterglow_ctl
     __afterglow_print $offer
 end
 
+function __afterglow_mux
+    set -l cur (commandline -ct)
+    if not set -q argv[1]
+        if string match -q -- '-*' "$cur"
+            __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
+        else
+            __afterglow_print server\t'Run afterglow-mux in the foreground' new\t'Create a session' \
+                ls\t'List the sessions' kill\t'End a session and its programs'
+        end
+        return
+    end
+    set -l command $argv[1]
+    set -e argv[1]
+    set -l n (count $argv)
+    set -l i 1
+    while test $i -le $n
+        switch $argv[$i]
+            case --
+                if test $command = new
+                    set -l rest (string escape -- $argv[(math $i + 1)..])
+                    complete -C (string join ' ' -- $rest "$cur")
+                end
+                return
+            case --name --cwd
+                if test $command = new
+                    if test $i -eq $n
+                        # The cursor is at the option's value.
+                        test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
+                        return
+                    end
+                    set i (math $i + 1)
+                end
+        end
+        set i (math $i + 1)
+    end
+    set -l offer
+    switch $command
+        case new
+            contains -- --name $argv; or set -a offer --name\t'The session name'
+            contains -- --cwd $argv; or set -a offer --cwd\t'Start in the directory'
+            contains -- --detach $argv; or set -a offer --detach\t'Create the session without a window'
+        case kill
+            # An empty word is the name of the session.
+            string match -q -- '-*' "$cur"
+            and not contains -- --force $argv
+            and set -a offer --force\t'End it without a question'
+    end
+    __afterglow_print $offer
+end
+
 function __afterglow_complete
     set -l words (commandline -xpc)[2..]
     switch "$words[1]"
@@ -259,6 +310,8 @@ function __afterglow_complete
             __fish_complete_subcommand
         case ctl
             __afterglow_ctl $words[2..]
+        case mux
+            __afterglow_mux $words[2..]
         case run transfer dnd icat clipboard
             # These run aglow, which completes the same arguments. Fish loads
             # the completion of aglow only when aglow is on PATH, and afterglow

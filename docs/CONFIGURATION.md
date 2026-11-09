@@ -200,7 +200,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `bidi` | `"off"` | `"off"`, `"auto"`, `"ltr"`, `"rtl"` | Bidirectional layout of the primary screen. The off value keeps text in logical order. The auto value finds the direction of each paragraph. The ltr and rtl values set it. Application grids keep logical order. |
 | `clipboardRead` | `"ask"` | `"allow"`, `"ask"`, `"deny"` | Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read. |
 | `clipboardWrite` | `"allow"` | `"allow"`, `"ask"`, `"deny"` | Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write. |
-| `confirmClose` | `true` |  | Ask before closing a pane, tab or window where a program is running. |
+| `confirmClose` | `true` |  | Ask before closing a pane, tab or window where a program is running. The command afterglow mux kill asks too, before it ends a session where a program is running. |
 | `confirmUnsafePaste` | `true` |  | Ask before pasting or dropping text that holds a line break, unless the program uses bracketed paste. A line break could run a command. |
 | `copyOnSelect` | `"primary"` | `"primary"`, `"clipboard"`, `"off"` | Where Afterglow copies a new selection. The primary value copies it to the primary selection. The clipboard value copies it to the clipboard too. The off value does not copy it. |
 | `cursorBlink` | `true` |  | Make the cursor blink. |
@@ -208,7 +208,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `cursorShape` | `"block"` | `"block"`, `"underline"`, `"bar"` | Shape of the cursor until a program sets another one with DECSCUSR. |
 | `dragAnswerWait` | `100` | 0–1000 | Milliseconds that Afterglow waits for the answer of a program that uses Kitty drag and drop. It waits when a drag over the pane shows the program new types. The window does not draw while it waits. A value of 0 does not wait. |
 | `dragTreeLifetime` | `10` | 1–1440 | Minutes that Afterglow keeps the files of a Kitty drag from another host after the drop. A drop target such as a file manager can copy them after the drag ends. A change applies to the drops that come after it. |
-| `env` | `{}` |  | Variables added to the shell's environment, such as { "EDITOR": "nvim" }. Each value must be a string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow ignores TERM, AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO here, which Terminal.term, Terminal.sshIntegration and Terminal.sshTerminfo set, and AFTERGLOW_PANE_ID and AFTERGLOW_SOCKET, which it always sets. New panes use this value. |
+| `env` | `{}` |  | Variables added to the shell's environment, such as { "EDITOR": "nvim" }. Each value must be a string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow ignores TERM, AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO here, which Terminal.term, Terminal.sshIntegration and Terminal.sshTerminfo set, and AFTERGLOW_PANE_ID, AFTERGLOW_SOCKET, AFTERGLOW_OVERLAY and AFTERGLOW_SESSION, which it sets or removes for each pane. New panes and new mux sessions use this value. |
 | `fileTransferDeltaLimit` | `64` | 0–1048576 | Gibibytes that a Kitty delta or compressed file transfer can write when the program does not give the file size. A larger file fails with EFBIG. A value of 0 sets no limit. |
 | `fileTransferPassword` | `""` |  | Shared secret for Kitty file-transfer approval. An empty value always asks for approval. |
 | `graphicsFileTransfer` | `"allow"` | `"allow"`, `"deny"` | Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared memory. Images sent inline always work. |
@@ -237,8 +237,8 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `balancePadding` | `false` |  | Distribute unused cell space between opposite edges. Otherwise, space remains at the right and bottom. |
 | `blur` | `false` |  | Blur content behind translucent backgrounds with KWin. |
 | `decorations` | `true` |  | Show the compositor's title bar and borders on new windows. |
-| `initialColumns` | `100` | 10–1000 | Columns of a new window. |
-| `initialRows` | `30` | 4–500 | Rows of a new window. |
+| `initialColumns` | `100` | 10–1000 | Columns of a new window, and of a session that afterglow mux new starts. |
+| `initialRows` | `30` | 4–500 | Rows of a new window, and of a session that afterglow mux new starts. |
 | `padding` | `6` | 0–200 | Space around the grid in logical pixels. |
 | `paneTitles` | `false` |  | Show pane titles in tabs with two or more panes. |
 | `popupCorners` | `"rounded"` | `"rounded"`, `"square"` | Corners of the border around a popup overlay. The rounded value curves each corner. The square value makes each corner a right angle. |

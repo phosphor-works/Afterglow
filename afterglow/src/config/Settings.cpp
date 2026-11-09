@@ -280,6 +280,8 @@ const QHash<QString, QString>& reservedVariables()
         {QStringLiteral("AFTERGLOW_SSH_TERMINFO"), QStringLiteral("Use Terminal.sshTerminfo")},
         {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("Afterglow sets it for each pane")},
         {QStringLiteral("AFTERGLOW_SOCKET"), QStringLiteral("Afterglow sets it for each pane")},
+        {QStringLiteral("AFTERGLOW_OVERLAY"), QStringLiteral("Afterglow sets it for the program of an overlay and removes it for other panes")},
+        {QStringLiteral("AFTERGLOW_SESSION"), QStringLiteral("Afterglow sets it for each pane of a mux session")},
     };
     return Names;
 }
@@ -492,7 +494,8 @@ PhosphorConfig::Schema buildSchema()
                 QStringLiteral("Response to the bell. The none value does nothing. The attention value marks the window urgent. "
                                "The visual value flashes the pane. The both value does both.")),
         {QStringLiteral("confirmClose"), d.confirmClose, QMetaType::Bool,
-         QStringLiteral("Ask before closing a pane, tab or window where a program is running.")},
+         QStringLiteral("Ask before closing a pane, tab or window where a program is running. The command afterglow mux "
+                        "kill asks too, before it ends a session where a program is running.")},
         {QStringLiteral("hideMouseWhileTyping"), d.hideMouseWhileTyping, QMetaType::Bool,
          QStringLiteral("Hide the pointer while typing. Pointer movement shows it again.")},
         intKey(QStringLiteral("scrollLines"), d.scrollLines, 1, 50, QStringLiteral("Number of rows scrolled for each mouse-wheel notch.")),
@@ -519,8 +522,9 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Variables added to the shell's environment, such as { \"EDITOR\": \"nvim\" }. Each value must be a "
                         "string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow "
                         "ignores TERM, AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO here, which Terminal.term, "
-                        "Terminal.sshIntegration and Terminal.sshTerminfo set, and AFTERGLOW_PANE_ID and AFTERGLOW_SOCKET, "
-                        "which it always sets. New panes use this value.")},
+                        "Terminal.sshIntegration and Terminal.sshTerminfo set, and AFTERGLOW_PANE_ID, AFTERGLOW_SOCKET, "
+                        "AFTERGLOW_OVERLAY and AFTERGLOW_SESSION, which it sets or removes for each pane. New panes and "
+                        "new mux sessions use this value.")},
         {QStringLiteral("confirmUnsafePaste"), d.confirmUnsafePaste, QMetaType::Bool,
          QStringLiteral("Ask before pasting or dropping text that holds a line break, unless the program uses bracketed "
                         "paste. A line break could run a command.")},
@@ -553,8 +557,10 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[Window] = {
         intKey(QStringLiteral("padding"), d.window.padding, 0, 200, QStringLiteral("Space around the grid in logical pixels.")),
-        intKey(QStringLiteral("initialColumns"), d.window.initialColumns, 10, 1000, QStringLiteral("Columns of a new window.")),
-        intKey(QStringLiteral("initialRows"), d.window.initialRows, 4, 500, QStringLiteral("Rows of a new window.")),
+        intKey(QStringLiteral("initialColumns"), d.window.initialColumns, 10, 1000,
+               QStringLiteral("Columns of a new window, and of a session that afterglow mux new starts.")),
+        intKey(QStringLiteral("initialRows"), d.window.initialRows, 4, 500,
+               QStringLiteral("Rows of a new window, and of a session that afterglow mux new starts.")),
         doubleKey(QStringLiteral("backgroundOpacity"), d.window.backgroundOpacity, 0.05, 1.0,
                   QStringLiteral("Opacity of the default background. Text stays opaque.")),
         {QStringLiteral("blur"), d.window.blur, QMetaType::Bool,

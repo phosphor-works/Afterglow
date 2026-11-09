@@ -15,6 +15,10 @@ qt_add_library(afterglow_app STATIC
     src/DockArea.h
     src/NestedLoop.h
     src/Pane.cpp
+    src/PaneDialog.cpp
+    src/PaneDialog.h
+    src/PaneLaunch.cpp
+    src/PaneLaunch.h
     src/PaneText.cpp
     src/Pane.h
     src/PaneOverlay.cpp
@@ -72,8 +76,11 @@ qt_add_library(afterglow_app STATIC
     src/app/Services.h
 )
 
-qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h src/shell/Aglow.cpp src/shell/Aglow.h)
-target_link_libraries(afterglow PRIVATE afterglow_app)
+qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h src/control/Mux.cpp src/control/Mux.h
+    src/shell/Aglow.cpp src/shell/Aglow.h)
+target_link_libraries(afterglow PRIVATE afterglow_app afterglow_mux_protocol)
+# afterglow mux runs the afterglow-mux of its own directory.
+add_dependencies(afterglow afterglow-mux)
 # Without aglow, afterglow run, transfer, dnd, icat and clipboard say that it is not built.
 if(AFTERGLOW_BUILD_AGLOW)
     target_compile_definitions(afterglow PRIVATE AFTERGLOW_HAS_AGLOW)

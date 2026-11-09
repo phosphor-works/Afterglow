@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include <AfterglowProto/Ipc.h>
+#include <AfterglowProto/Socket.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -78,8 +79,8 @@ bool IpcConnection::connect(const std::string& path, Error* error, int timeoutMs
     close();
     sockaddr_un address{};
     address.sun_family = AF_UNIX;
-    if (path.empty() || path.size() >= sizeof address.sun_path) {
-        set(error, {}, "the socket path is empty or too long");
+    if (std::string reason = socketPathError(path); !reason.empty()) {
+        set(error, {}, std::move(reason));
         return false;
     }
     std::memcpy(address.sun_path, path.data(), path.size());

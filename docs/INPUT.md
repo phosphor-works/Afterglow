@@ -72,6 +72,28 @@ Afterglow rejects ambiguous sequences and prefixes that overlap single-key short
 Remove the original binding before you use its key as a prefix.
 Tables and sequences accept built-in actions, text bindings and script commands.
 A held key starts a script command once. Its repeats do not start it again.
+A held key also runs these actions once:
+
+- `new_tab`
+- `new_window`
+- `split_right`
+- `split_down`
+- `split_left`
+- `split_up`
+- `close_pane`
+- `close_tab`
+- `move_pane_to_tab`
+- `move_pane_to_window`
+- `detach_tab`
+- `show_last_output`
+- `open_config`
+- `reload_config`
+- `toggle_fullscreen`
+- `toggle_pane_zoom`
+- `notify_on_finish`
+
+`toggle_fullscreen` does nothing in a quick terminal. There, its key goes to the program, with the repeats of a held key.
+The other actions, such as focus, resize, scroll and font size, repeat while the key is held.
 A table or sequence that names a command no script has shows a notification.
 A single binding to such a command sends the key to the terminal.
 
@@ -273,6 +295,9 @@ Its global shortcut shows and hides it. `afterglow --quick-terminal` does the sa
 | `QuickTerminal.position` | `top` | Screen edge, `top` or `bottom` |
 | `QuickTerminal.screen` | empty | Output name, such as `DP-1`. Empty uses the primary screen. |
 | `QuickTerminal.animate` | `true` | Slides the window in and out |
+
+A shown quick terminal stays on its output.
+A change to `QuickTerminal.screen` applies after the quick terminal hides and shows again.
 
 ## Paste
 

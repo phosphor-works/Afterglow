@@ -10,6 +10,7 @@
 #include "app/QuitSignals.h"
 #include "app/Startup.h"
 #include "control/Ctl.h"
+#include "control/Mux.h"
 #include "control/IpcClient.h"
 #include "shell/Aglow.h"
 #include "shell/Ssh.h"
@@ -133,6 +134,10 @@ int main(int argc, char** argv)
     if (argc >= 2 && std::strcmp(argv[1], "ctl") == 0) {
         return Afterglow::runCtl(argc - 1, argv + 1);
     }
+    // afterglow mux ...: the sessions of the mux daemon, no GUI.
+    if (argc >= 2 && std::strcmp(argv[1], "mux") == 0) {
+        return Afterglow::runMux(argc - 1, argv + 1);
+    }
     // afterglow COMMAND ... for each of Aglow::Commands: the aglow next to this executable, no GUI.
     if (argc >= 2 && Afterglow::Aglow::handles(argv[1])) {
         return Afterglow::Aglow::run(argc, argv);
@@ -151,6 +156,7 @@ int main(int argc, char** argv)
         "A GPU accelerated terminal\n\n"
         "Commands that open no window:\n"
         "  afterglow ctl ...       Control a running Afterglow.\n"
+        "  afterglow mux ...       Keep terminal sessions running without a window.\n"
         "  afterglow ssh ...       Run ssh with shell integration on the remote computer.\n");
     if (Afterglow::Aglow::built()) {
         for (const Afterglow::Aglow::Command& command : Afterglow::Aglow::Commands) {
@@ -239,10 +245,12 @@ int main(int argc, char** argv)
                                     {QStringLiteral("hold"), parser.isSet(holdOption)},
                                     {QStringLiteral("activationToken"), qEnvironmentVariable("XDG_ACTIVATION_TOKEN")}};
     qunsetenv("XDG_ACTIVATION_TOKEN");
-    // An Afterglow started from a pane of another one must not hand that
-    // pane's identity to its scripts' programs. Its own panes get their own.
+    // An Afterglow started from a pane of another one, or of a mux session,
+    // must not hand that pane's identity to its scripts' programs. Its own
+    // panes get their own, and are in no session.
     qunsetenv("AFTERGLOW_SOCKET");
     qunsetenv("AFTERGLOW_PANE_ID");
+    qunsetenv("AFTERGLOW_SESSION");
 
     QJsonObject overrides;
     for (const QString& assignment : parser.values(overrideOption)) {

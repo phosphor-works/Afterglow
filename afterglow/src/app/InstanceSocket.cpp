@@ -3,6 +3,7 @@
 
 #include "InstanceSocket.h"
 
+#include <AfterglowProto/Lock.h>
 #include <AfterglowProto/Socket.h>
 #include <PhosphorIpc/IpcRouter.h>
 
@@ -13,10 +14,8 @@
 #include <QLoggingCategory>
 #include <QSet>
 
-#include <cerrno>
+#include <string>
 
-#include <fcntl.h>
-#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -28,43 +27,25 @@ namespace {
 
 QString g_processPath;
 
-
-QByteArray lockPath(const QString& socket)
+std::string lockPath(const QString& socket)
 {
-    return QFile::encodeName(socket + QStringLiteral(".lock"));
+    return QFile::encodeName(socket + QStringLiteral(".lock")).toStdString();
 }
 
-// The lock on @p socket's lock file. -1 while another process holds it, -2
-// when the file cannot be opened.
+// The lock on @p socket's lock file, as afterglow-mux takes the lock of its
+// sockets: AfterglowProto::LockHeld while another holder has it,
+// AfterglowProto::LockFailed when the file cannot be opened or locked.
 int lockSocket(const QString& socket)
 {
-    const QByteArray path = lockPath(socket);
-    // A holder that lets go removes the file. A lock taken on the removed
-    // file guards nothing, so take it again on the file that is there.
-    for (int attempt = 0; attempt < 8; ++attempt) {
-        const int fd = ::open(path.constData(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
-        if (fd < 0) {
-            qCWarning(lcApp) << "cannot open" << QFile::decodeName(path) << "-" << qt_error_string(errno);
-            return -2;
-        }
-        if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
-            ::close(fd);
-            return -1;
-        }
-        struct stat held{}, named{};
-        if (::fstat(fd, &held) == 0 && ::stat(path.constData(), &named) == 0 && held.st_dev == named.st_dev
-            && held.st_ino == named.st_ino) {
-            return fd;
-        }
-        ::close(fd);
-    }
-    return -1;
+    std::string error;
+    const int fd = AfterglowProto::lockFile(lockPath(socket), &error);
+    if (fd == AfterglowProto::LockFailed) qCWarning(lcApp).noquote() << QString::fromStdString(error);
+    return fd;
 }
 
 void unlockSocket(const QString& socket, int fd)
 {
-    ::unlink(lockPath(socket).constData());
-    ::close(fd);
+    AfterglowProto::unlockFile(lockPath(socket), fd);
 }
 
 enum class SocketFile { None, Ours, Other };
@@ -109,8 +90,8 @@ InstanceSocket::Listen InstanceSocket::listen(const QString& path)
 {
     if (path.isEmpty() || listening()) return Listen::Failed;
     const int lock = lockSocket(path);
-    if (lock == -1) return Listen::Held;
-    if (lock < 0) return Listen::Failed;
+    if (lock == AfterglowProto::LockHeld) return Listen::Held;
+    if (lock == AfterglowProto::LockFailed) return Listen::Failed;
     // The last holder of the lock is gone. What it left is removed.
     switch (socketFile(path)) {
     case SocketFile::None:

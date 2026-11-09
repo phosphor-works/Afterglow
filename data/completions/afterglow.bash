@@ -232,6 +232,45 @@ _afterglow_ctl()
     esac
 }
 
+# afterglow mux COMMAND ...: the commands, their options, the directory of
+# new --cwd, and after new -- the program and its arguments.
+_afterglow_mux()
+{
+    if ((cword == 2)); then
+        if [[ $cur == -* ]]; then
+            _afterglow_matching -h --help
+        else
+            _afterglow_matching server new ls kill
+        fi
+        return
+    fi
+    local i start=3
+    case ${words[2]} in
+    new)
+        for ((i = 3; i < cword; i++)); do
+            case ${words[i]} in
+            --)
+                _afterglow_offset $((i + 1))
+                return
+                ;;
+            --name | --cwd) ((i++)) ;;
+            esac
+        done
+        case $prev in
+        --cwd)
+            _afterglow_files -d
+            return
+            ;;
+        --name) return ;;
+        esac
+        _afterglow_unused --name --cwd --detach
+        ;;
+    kill)
+        [[ $cur == -* ]] && _afterglow_unused --force
+        ;;
+    esac
+}
+
 # Whether the option $1 is on the command line before the cursor.
 _afterglow_given()
 {
@@ -277,6 +316,10 @@ _afterglow()
             ;;
         ctl)
             _afterglow_ctl
+            return
+            ;;
+        mux)
+            _afterglow_mux
             return
             ;;
         run | transfer | dnd | icat | clipboard)
@@ -336,7 +379,7 @@ _afterglow()
     --title | -o | --override | --class) return ;;
     esac
     if ((cword == 1)) && [[ $cur != -* ]]; then
-        _afterglow_matching ctl run ssh transfer dnd icat clipboard
+        _afterglow_matching ctl mux run ssh transfer dnd icat clipboard
         return
     fi
     local start=1

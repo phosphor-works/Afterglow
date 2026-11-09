@@ -33,7 +33,6 @@
 #include <unordered_map>
 #include <vector>
 
-
 namespace AfterglowRender {
 class GpuDevice;
 }
@@ -146,6 +145,9 @@ public:
     Pane* focusedPane() const { return m_focused; }
     /// Splits @p pane using @p options (empty command: the shell); returns the new pane.
     Pane* splitPane(Pane* pane, SplitTree::Direction direction, const PaneLaunchOptions& options, QString* error);
+    /// The error of a split that has no room for another pane, as a notice
+    /// shows it: afterglow ctl and scripts give their own text for it.
+    static QString noRoomForPane() { return tr("There is not enough room for another pane."); }
     /// Opens a tab using @p options; returns its pane. With @p from, the tab
     /// opens beside that pane's tab and inherits its directory; otherwise
     /// beside the current tab, from the focused pane.
@@ -361,6 +363,10 @@ private:
     Pane* splitFocused(SplitTree::Direction direction, const QStringList& command = {}, const PaneLaunchOptions& options = {}, QString* error = nullptr);
     /// Opens a tab at @p at (beside the current tab when negative).
     Pane* newTab(const QString& workingDirectory, const QStringList& command = {}, const QVariantMap& environment = {}, QString* error = nullptr, int at = -1);
+    /// Opens a shell tab beside @p from's tab, in its directory (beside the
+    /// current tab with none), without showing @p from's tab first: one tab
+    /// switch. A failure is a notice.
+    void openShellTab(Pane* from);
     void switchTab(int index);
     void closeTab(int index);
     /// Closes tabs from the tab bar, menus and keys: asks first where a program runs.
@@ -368,6 +374,11 @@ private:
     /// Runs @p close, first asking when confirmClose is on and a program
     /// runs in one of @p panes. @p what names what closes: "this tab".
     void confirmClose(const QList<Pane*>& panes, const QString& what, std::function<void()> close);
+    /// confirmClose with the @p jobs that closingJobs gave for @p panes.
+    void confirmClose(const QStringList& jobs, const QList<Pane*>& panes, const QString& what, std::function<void()> close);
+    /// The jobs that confirmClose names for @p panes, as it shows them (an
+    /// overlay's program too); empty when confirmClose is off or none runs.
+    QStringList closingJobs(const QList<Pane*>& panes) const;
     /// Where a new tab, split or window starts, given the directory it
     /// would inherit (the workingDirectory setting).
     QString startDirectory(const QString& inherited) const;
@@ -407,6 +418,12 @@ private:
     void scheduleRender();
     void renderNow();
     void relayout();
+    /// The panes' rectangles are from another window size, scale, font or
+    /// padding than now, or from before a split or a tab switch.
+    bool layoutStale() const;
+    /// Lays the panes out now when a dock moved or the layout is stale, as
+    /// the next frame would: for a caller that measures them before it.
+    void ensureLayout();
     void setPaneZoom(Pane* pane);
     bool resizeFocused(SplitTree::Neighbour direction);
     bool handleShortcut(QKeyEvent* e);
@@ -537,9 +554,10 @@ private:
     QElapsedTimer m_keyModeClock;
     /// Presses the window took, by physical key, so their releases stay
     /// here too. True when a shortcut took it: its auto-repeats run the
-    /// shortcut again, but for a script command, which runs once for each
-    /// press. A mode or the chrome took the others, and their auto-repeats
-    /// go nowhere once the mode has closed.
+    /// shortcut again, but for a script command and the actions of
+    /// onceWhileHeld (handleShortcut), which run once for each press. A
+    /// mode or the chrome took the others, and their auto-repeats go
+    /// nowhere once the mode has closed.
     QHash<quint32, bool> m_consumedKeys;
     /// A press that reached a pane's program, with what its release needs.
     struct SentKey {
@@ -665,9 +683,12 @@ private:
     void applyShaders();
     void applyWindowEffects();
     void setUpQuickTerminal();
-    /// Moves the quick terminal @p offset pixels out from its screen edge
-    /// (negative is off screen).
+    /// Moves the quick terminal @p offset pixels out from its screen edge: 0
+    /// shows all of it, and a negative offset puts that many pixel rows of it
+    /// off screen.
     void setQuickOffset(int offset);
+    /// The offset of the slide's frame now, with one pixel row on screen at least.
+    int slideOffset() const;
     QMetaObject::Connection m_quickScreenWatch; ///< the quick terminal's screen changing size
     /// Encodes @p e for @p pane (the focused pane's input pane when null) and sends it.
     void sendKey(QKeyEvent* e, Pane* pane = nullptr);
