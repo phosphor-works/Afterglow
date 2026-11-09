@@ -57,6 +57,10 @@ constexpr qint64 SyncTimeoutMs = 1000;
 constexpr qint64 SyncHoldLimitMs = 2 * SyncTimeoutMs;
 /// How long to keep the last frame while the shell repaints a resized prompt.
 constexpr qint64 PromptRedrawTimeoutMs = 150;
+/// The longest name that a download suggests, in UTF-8 bytes.
+constexpr qsizetype MaxDownloadNameBytes = 200;
+/// The longest extension that a cut name keeps, its dot included, in code points.
+constexpr qsizetype MaxDownloadExtension = 16;
 } // namespace
 
 namespace {
@@ -230,6 +234,12 @@ bool Pane::sendInput(std::string_view bytes, bool reportFailure)
     return accepted;
 }
 
+qint64 Pane::holdRemaining() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_holdDeadline.remainingTime(); // 0 once passed, and for the expired default
+}
+
 bool Pane::refreshSnapshot(int extraRows)
 {
     std::lock_guard lock(m_mutex);
@@ -247,6 +257,7 @@ bool Pane::refreshSnapshot(int extraRows)
             m_syncHoldTimer.start();
         }
         if (m_syncTimer.elapsed() < SyncTimeoutMs && m_syncHoldTimer.elapsed() < SyncHoldLimitMs) {
+            m_holdDeadline.setRemainingTime(std::min(SyncTimeoutMs - m_syncTimer.elapsed(), SyncHoldLimitMs - m_syncHoldTimer.elapsed()));
             return false;
         }
     } else {
@@ -261,11 +272,13 @@ bool Pane::refreshSnapshot(int extraRows)
             m_promptTimer.start();
         }
         if (m_promptTimer.elapsed() < PromptRedrawTimeoutMs) {
+            m_holdDeadline.setRemainingTime(PromptRedrawTimeoutMs - m_promptTimer.elapsed());
             return false;
         }
     } else {
         m_promptTimer.invalidate();
     }
+    m_holdDeadline = {};
     // Animations run only for images the viewport draws, and only PTY output
     // ticks them, so a viewport that moves must tick them again. Queued: the
     // tick takes m_mutex.
@@ -446,7 +459,9 @@ void Pane::scrollHistory(double fraction)
 {
     std::lock_guard lock(m_mutex);
     const auto& screen = m_terminal.screen();
-    const long top = long(std::clamp(fraction, 0.0, 1.0) * double(screen.totalRows()));
+    // Rounded: the bottom of the scroll bar is 1 - size, whose product with
+    // the row count can fall just short of the live view's top row.
+    const long top = std::clamp(std::lround(std::clamp(fraction, 0.0, 1.0) * double(screen.totalRows())), 0L, long(screen.historySize()));
     m_terminal.scrollViewport(long(screen.viewportTop()) - top);
 }
 
@@ -459,7 +474,7 @@ QString searchError(const AfterglowVt::TextSearchResult& result)
     case SearchError::None:
         return {};
     case SearchError::PatternTooLong:
-        return Pane::tr("Pattern exceeds 4096 characters");
+        return Pane::tr("Pattern exceeds %1 characters").arg(AfterglowVt::MaxSearchPattern);
     case SearchError::NoMemory:
         return Pane::tr("Not enough memory to search");
     case SearchError::TimeLimit:
@@ -737,12 +752,14 @@ void Pane::setSignal(int channel, float value)
 
 void Pane::setSignals(const QList<QPair<int, float>>& values, std::chrono::steady_clock::time_point time)
 {
+    bool changed = false;
     for (const auto& [channel, value] : values) {
         if (channel >= 0 && channel < SignalCount) {
             m_signals[std::size_t(channel)] = {value, time};
+            changed = true;
         }
     }
-    Q_EMIT shaderSignalsChanged();
+    if (changed) Q_EMIT shaderSignalsChanged();
 }
 
 void Pane::setSearchColors(std::uint32_t match, std::uint32_t current, std::uint32_t text)
@@ -1435,6 +1452,34 @@ TerminalText Pane::accessibleText(bool cursorRow) const
 }
 
 namespace Afterglow {
+void Pane::attachDialog(QDialog* dialog)
+{
+    // An overlay's pane is a child of its overlay, which is its host's child.
+    Pane* place = m_overlayHost ? m_overlayHost : this;
+    dialog->winId();
+    if (auto* window = qobject_cast<QWindow*>(place->parent())) dialog->windowHandle()->setTransientParent(window);
+    Q_EMIT place->dialogOpened(dialog);
+    connect(place, &Pane::movedToWindow, dialog, [place, dialog](QWindow* window) {
+        // A new transient parent moves a shown dialog in Qt only: the
+        // compositor keeps the parent that the dialog opened over. A native
+        // dialog (Plasma's file dialog) is a window of its own, which took
+        // its parent when it opened. Shown again, the dialog opens over the
+        // new window, in the directory the user left. A native dialog tells
+        // no selection before an answer: it keeps the name it opened with.
+        const bool shown = dialog->isVisible();
+        auto* files = qobject_cast<QFileDialog*>(dialog);
+        const QUrl directory = files ? files->directoryUrl() : QUrl();
+        const QList<QUrl> selected = files ? files->selectedUrls() : QList<QUrl>();
+        if (shown) dialog->hide();
+        dialog->windowHandle()->setTransientParent(window);
+        if (!shown) return;
+        Q_EMIT place->dialogOpened(dialog);
+        if (files && directory.isValid()) files->setDirectoryUrl(directory);
+        if (files) for (const QUrl& url : selected) files->selectUrl(url);
+        dialog->open();
+    });
+}
+
 void Pane::downloadFile(std::string_view name, std::string_view data)
 {
     // Bound the entire application's pending payloads, including queued GUI work.
@@ -1458,10 +1503,33 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
     QString suggested = QString::fromUtf8(name.data(), qsizetype(name.size()));
     suggested.replace(QLatin1Char('\\'), QLatin1Char('/'));
     suggested = suggested.section(QLatin1Char('/'), -1);
-    QString clean;
-    for (const QChar c : suggested) if (!c.isNull() && c.isPrint() && c.category() != QChar::Other_Format) clean += c;
+    // By code point: a character outside the BMP is two UTF-16 units, and
+    // neither half of the pair is printable on its own.
+    std::u32string kept;
+    for (const char32_t c : suggested.toUcs4())
+        if (c && QChar::isPrint(c) && QChar::category(c) != QChar::Other_Format) kept += c;
+    QString clean = QString::fromStdU32String(kept);
+    // NAME_MAX is 255 bytes. A long name keeps room for what the user adds,
+    // and keeps its last extension when that is short: the stem is cut at
+    // the end of a whole character (a grapheme, with its combining marks).
+    if (clean.toUtf8().size() > MaxDownloadNameBytes) {
+        const qsizetype dot = clean.lastIndexOf(QLatin1Char('.'));
+        const bool extension = dot > 0 && QStringView(clean).mid(dot).toUcs4().size() <= MaxDownloadExtension;
+        const QString suffix = extension ? clean.mid(dot) : QString();
+        const QString stem = extension ? clean.left(dot) : clean;
+        const qsizetype budget = MaxDownloadNameBytes - suffix.toUtf8().size();
+        QTextBoundaryFinder graphemes(QTextBoundaryFinder::Grapheme, stem);
+        qsizetype end = 0, used = 0;
+        for (qsizetype start = 0, next = graphemes.toNextBoundary(); next > 0; start = next, next = graphemes.toNextBoundary()) {
+            used += QStringView(stem).mid(start, next - start).toUtf8().size();
+            if (used > budget) break;
+            end = next;
+        }
+        // A first character over the budget alone (marks without end) leaves
+        // no stem: the name would be a hidden file.
+        clean = (end > 0 ? stem.left(end) : QStringLiteral("download")) + suffix;
+    }
     if (clean.isEmpty() || clean == QLatin1String(".") || clean == QLatin1String("..")) clean = QStringLiteral("download.bin");
-    clean = clean.left(180);
     QMetaObject::invokeMethod(this, [this, bytes, clean, lease] {
         auto* dialog = new QFileDialog(nullptr, tr("Save file received from %1").arg(sanitizedText(title(), 100)));
         dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -1469,20 +1537,7 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
         dialog->setFileMode(QFileDialog::AnyFile);
         dialog->setDirectory(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
         dialog->selectFile(clean);
-        // On Wayland a dialog with no transient parent is not attached to the
-        // window. An overlay's pane is its host's child, in the host's window.
-        Pane* place = m_overlayHost ? m_overlayHost : this;
-        if (auto* window = qobject_cast<QWindow*>(place->parent())) {
-            dialog->winId();
-            dialog->windowHandle()->setTransientParent(window);
-        }
-        // It follows the pane to another window before the old one goes,
-        // which would take the dialog with it (TerminalWindow's file
-        // transfer prompt does the same).
-        connect(place, &Pane::movedToWindow, dialog, [dialog](QWindow* window) {
-            dialog->winId();
-            dialog->windowHandle()->setTransientParent(window);
-        });
+        attachDialog(dialog);
         // Keep the lease until the dialog is destroyed, including on cancellation.
         connect(dialog, &QObject::destroyed, [lease] {});
         connect(this, &QObject::destroyed, dialog, &QDialog::reject);

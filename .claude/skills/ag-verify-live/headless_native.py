@@ -5,6 +5,7 @@
 
 Usage:
   python3 .claude/skills/ag-verify-live/headless_native.py [--filter 'NativeWindow.*:KeyMapping.*'] [--icd lvp.json]
+                                                          [--platform-theme generic|kde]
 
 --icd selects a Vulkan driver manifest, such as a lavapipe build for software rendering. Without it the tests use
 the host driver. On a failure, the last KWin log lines are printed. The runner starts itself again under
@@ -29,6 +30,9 @@ parser.add_argument('--filter', default='NativeWindow.*:KeyMapping.*', help='--g
 parser.add_argument('--icd', help='Vulkan ICD manifest (for example a lavapipe lvp.json)')
 parser.add_argument('--timeout', type=int, default=400, help='seconds for the whole test binary')
 parser.add_argument('--size', default='1100x750', help='virtual output size')
+parser.add_argument('--platform-theme', default='generic', choices=('generic', 'kde'),
+                    help='QT_QPA_PLATFORMTHEME of the tests: kde runs the dialog tests against the native file dialog '
+                         'of Plasma (the other tests expect generic)')
 parser.add_argument('--validation', action='store_true', help='enable the Vulkan validation layer')
 parser.add_argument('--private-bus', action='store_true', help=argparse.SUPPRESS)
 args = parser.parse_args()
@@ -56,11 +60,14 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
         XDG_CONFIG_HOME=str(config),
         # Scripts, packs and state under the user's own data directory must not reach the tests.
         XDG_DATA_HOME=str(root / 'data'),
+        # Plasma's file dialog and KIO keep recent places and caches in the state and cache of the application.
+        XDG_STATE_HOME=str(root / 'state'),
+        XDG_CACHE_HOME=str(root / 'cache'),
         QT_FORCE_STDERR_LOGGING='1',
         QT_QPA_PLATFORM='offscreen',
         WAYLAND_DISPLAY='',
         QT_QUICK_CONTROLS_STYLE='Basic',
-        QT_QPA_PLATFORMTHEME='generic',
+        QT_QPA_PLATFORMTHEME=args.platform_theme,
     )
     # A run from an Afterglow pane must not hand the tests that pane's socket.
     for name in ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID'):

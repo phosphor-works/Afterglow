@@ -12,6 +12,7 @@
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
 
+#include <QDeadlineTimer>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QList>
@@ -31,6 +32,9 @@
 #include <optional>
 #include <utility>
 #include <vector>
+
+class QDialog;
+class QWindow;
 
 namespace Afterglow {
 
@@ -109,6 +113,10 @@ public:
     /// host's AFTERGLOW_PANE_ID. Set before start().
     Pane* overlayHost() const noexcept { return m_overlayHost; }
     void setOverlayHost(Pane* host) noexcept { m_overlayHost = host; }
+    /// Shows @p dialog over the window this pane is in (its host's, for an
+    /// overlay's pane), and over the next window when the pane moves. On
+    /// Wayland a dialog with no transient parent is not attached to a window.
+    void attachDialog(QDialog* dialog);
     /// Keeps at most @p limit bytes of what the program writes to a
     /// captured standard output (SpawnOptions::captureOutput). Set before start().
     void setOutputLimit(std::size_t limit) { m_outputLimit = limit; }
@@ -139,6 +147,10 @@ public:
     /// prompt the shell has not repainted yet.
     /// @p extraRows below the viewport are captured for fractional scrolling.
     bool refreshSnapshot(int extraRows = 0);
+    /// While refreshSnapshot holds the previous frame: the milliseconds until
+    /// that hold times out, when a frame must be drawn whatever the program
+    /// does. 0 when the last refresh held nothing.
+    qint64 holdRemaining() const;
     const AfterglowRender::PaneSnapshot& snapshot() const noexcept { return m_snapshot; }
     /// Hands the snapshot out with its identity, for the last frame of a
     /// pane that draws no more (an overlay that ended, fading out). The next
@@ -252,10 +264,16 @@ public:
     TerminalText accessibleText(bool cursorRow = false) const;
 
 Q_SIGNALS:
-    /// The pane went to another window, which is its parent now. Emitted
-    /// while the window it left still exists: a dialog over that window must
-    /// move before the window's surface goes, or the compositor closes it.
+    /// The pane in a tab went to another window, which is its parent now.
+    /// An overlay's pane goes with its host and has no signal of its own.
+    /// Emitted while the window it left still exists: Qt's Wayland platform
+    /// hides the transient children of a window whose surface it destroys,
+    /// so a dialog over that window must move first (attachDialog).
     void movedToWindow(QWindow* window);
+    /// attachDialog put @p dialog over this pane's window, which it is about
+    /// to show over: when it opens, and again after a move. The window can
+    /// change how the dialog shows (the quick terminal does).
+    void dialogOpened(QDialog* dialog);
     /// The terminal changed. Emitted on the GUI thread, coalesced.
     void contentChanged();
     void searchStatusChanged(const QString& status);
@@ -488,8 +506,9 @@ private:
     std::u32string m_searchQuery;
     int m_searchCurrent = -1;
     bool m_searchActive = false;
-    /// Set by the window from the Colors.search* settings when it creates
-    /// the pane (setSearchColors), so the defaults live in one place.
+    /// Set by the window from the Colors.search* settings (setSearchColors),
+    /// when it creates the pane and when the settings change, so the
+    /// defaults live in one place.
     struct SearchColors
     {
         std::uint32_t match = 0;
@@ -509,6 +528,7 @@ private:
     std::uint64_t m_syncSerial = 0; ///< the synchronized update m_syncTimer times
     QElapsedTimer m_syncHoldTimer; ///< since synchronized updates began to hold the frames
     QElapsedTimer m_promptTimer;
+    QDeadlineTimer m_holdDeadline; ///< when the frame refreshSnapshot holds is drawn anyway
 
     std::atomic<bool> m_notifyPending{false};
     QTimer m_animationTimer;

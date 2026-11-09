@@ -50,6 +50,7 @@ Options:
 | `--validation` | Off | Enables the Vulkan validation layer and GPU logging |
 | `--size 1920x1080` | `1100x750` | Changes the virtual output size |
 | `--timeout 400` | 400 | Stops the test binary after this many seconds and 10 more, and reports status 124 |
+| `--platform-theme kde` | `generic` | Uses the native file dialog of Plasma (`plasma-integration`). Run only the dialog tests with it (`--filter 'NativeWindow.*Dialog*'`): the other tests expect `generic`. |
 
 The log is long. Read it with `grep`, never in full.
 The memory cap of `systemd-run` keeps systemd-oomd from killing the user's Afterglow (see `ag-build`).
