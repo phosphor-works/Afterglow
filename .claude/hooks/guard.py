@@ -29,7 +29,6 @@ import subprocess
 import sys
 import time
 import math
-import warnings
 
 # Local state that never goes into git: another tool's workspace, Python caches, build trees (build/, build-asan/)
 # and .cache. A file whose name starts with "build" is a source file (build-inspector.luau).
@@ -1307,17 +1306,20 @@ def parallel_change(word, how):
     return {'.': no_extension(word), '/': base, '//': dirname(word), '/.': no_extension(base)}.get(how, word)
 
 
-def parallel_delimiter(value):
-    """The -d VALUE of parallel as its unquote_printf reads it: \\t \\n \\r, then \\xNN (two hexadecimal digits,
-    and the rest as it is), then three octal digits, then one digit (8 and 9 stand for themselves)."""
-    def octal(digits):
-        n = len(digits) - len(digits.lstrip('01234567'))
-        return chr(int(digits[:n], 8)) + digits[n:] if n else digits[1:] if digits[0] in '89' else digits
+# The -d values of parallel that the guard reads, as parallel reads them. parallel expands others with Perl escapes
+# and sprintf, on bytes; the guard does not copy that, and blocks a command that gives another -d value.
+PARALLEL_DELIMITERS = {'\\t': '\t', '\\n': '\n', '\\r': '\r', '\\0': '\0'}
 
-    value = value.replace('\\t', '\t').replace('\\n', '\n').replace('\\r', '\r')
-    value = re.sub(r'\\x([0-9a-fA-F]+)', lambda m: chr(int(m.group(1)[:2], 16)) + m.group(1)[2:], value)
-    value = re.sub(r'\\(\d\d\d)', lambda m: octal(m.group(1)), value)
-    return re.sub(r'\\(\d)', lambda m: octal(m.group(1)) if m.group(1) in '01234567' else m.group(1), value)
+
+def parallel_delimiter(value):
+    """The delimiter that parallel's -d VALUE gives: one ASCII character, or \\t \\n \\r \\0. Raises ValueError for
+    any other value, so the guard blocks the call."""
+    if value in PARALLEL_DELIMITERS:
+        return PARALLEL_DELIMITERS[value]
+    if len(value) == 1 and value.isascii() and value != '\\':
+        return value
+    raise ValueError('the guard does not read the parallel delimiter %r: use one ASCII character, or \\t \\n \\r \\0'
+                     % value)
 
 
 def parallel_jobs(args):
@@ -1341,16 +1343,8 @@ def parallel_jobs(args):
             replace = value or '{}'
         plus |= args[k] == '--plus'
         files |= flag in ('-a', '--arg-file')
-        if flag in ('-d', '--delimiter') and value:
-            # parallel reads escapes such as \0, \t and \x2c in the delimiter, and keeps other characters as they are
-            delimiters.add(value)
+        if flag in ('-d', '--delimiter'):
             delimiters.add(parallel_delimiter(value))
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    delimiters.add(value.encode('latin-1', 'backslashreplace').decode('unicode_escape'))
-            except UnicodeDecodeError:
-                pass
         k = after
     end = next((j for j in range(k, len(args)) if args[j] in PARALLEL_LISTS), len(args))
     lists = []
