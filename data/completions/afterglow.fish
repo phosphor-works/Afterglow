@@ -259,6 +259,7 @@ function __afterglow_mux
             __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
         else
             __afterglow_print server\t'Run afterglow-mux in the foreground' new\t'Create a session' \
+                attach\t'Show a session in a window' detach\t'Close the window of a session and keep it' \
                 ls\t'List the sessions' kill\t'End a session and its programs'
         end
         return
@@ -293,6 +294,10 @@ function __afterglow_mux
             contains -- --name $argv; or set -a offer --name\t'The session name'
             contains -- --cwd $argv; or set -a offer --cwd\t'Start in the directory'
             contains -- --detach $argv; or set -a offer --detach\t'Create the session without a window'
+        case attach
+            string match -q -- '-*' "$cur"
+            and not contains -- --no-takeover $argv
+            and set -a offer --no-takeover\t'Refuse when another window shows the session'
         case kill
             # An empty word is the name of the session.
             string match -q -- '-*' "$cur"

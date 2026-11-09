@@ -9,6 +9,7 @@
 #include "WindowStart.h"
 #include "../chrome/ChromeLayer.h"
 #include "../desktop/DragDrop.h"
+#include "../mux/MuxClient.h"
 
 #include <QIcon>
 #include <QStandardPaths>
@@ -194,9 +195,16 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
 
 QString Application::openLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
 {
-    TerminalWindow* w = newWindow({workingDirectory, command, false, options.value(QStringLiteral("directoryGiven")).toBool(),
-                                   options.value(QStringLiteral("title")).toString(),
-                                   options.value(QStringLiteral("hold")).toBool()});
+    WindowOptions window{workingDirectory, command, false, options.value(QStringLiteral("directoryGiven")).toBool(),
+                         options.value(QStringLiteral("title")).toString(), options.value(QStringLiteral("hold")).toBool()};
+    // afterglow mux attach: the window shows a session of the mux daemon.
+    if (const QString session = options.value(QStringLiteral("session")).toString(); !session.isEmpty()) {
+        QString error;
+        window.session = MuxClient::attach(session, options.value(QStringLiteral("takeover"), true).toBool(), &error);
+        if (!window.session) return error;
+    }
+    TerminalWindow* w = newWindow(window);
+    if (!w && window.session) return QStringLiteral("cannot show session %1").arg(options.value(QStringLiteral("session")).toString());
     if (!w) return QStringLiteral("cannot start %1").arg(command.isEmpty() ? QStringLiteral("the shell") : command.first());
     // Qt reads the token from the environment when the window asks for focus.
     const QByteArray token = options.value(QStringLiteral("activationToken")).toString().toUtf8();

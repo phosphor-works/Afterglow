@@ -33,15 +33,19 @@ bool Session::addPane(std::uint32_t id, const std::string& daemonSocket, std::fu
     AfterglowPty::setVariable(spawn, "AFTERGLOW_PANE_ID", std::to_string(id));
     AfterglowPty::setVariable(spawn, "AFTERGLOW_SESSION", m_name);
     AfterglowPty::unsetVariable(spawn, "AFTERGLOW_OVERLAY");
-    auto pane = std::make_unique<MuxPane>(m_options.terminal, m_options.size, m_options.notificationCapabilities, std::move(exited));
+    auto pane = std::make_unique<MuxPane>(id, m_options.terminal, m_options.size, m_options.notificationCapabilities, std::move(exited));
     if (!pane->start(std::move(spawn), m_options.launch.launchedProgram, error)) return false;
     m_panes.push_back(std::move(pane));
     return true;
 }
 
-bool Session::reap()
+bool Session::reap(std::vector<std::pair<std::uint32_t, int>>* closed)
 {
-    std::erase_if(m_panes, [](const auto& pane) { return pane->exited(); });
+    std::erase_if(m_panes, [closed](const auto& pane) {
+        if (!pane->exited()) return false;
+        if (closed) closed->emplace_back(pane->id(), pane->exitStatus());
+        return true;
+    });
     return m_panes.empty();
 }
 

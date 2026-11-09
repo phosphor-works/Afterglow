@@ -117,7 +117,6 @@ def mux_commands():
     run = re.search(r'^int runMux\(.*?^\}', source, re.M | re.S)
     if not run:
         raise SystemExit(f'FAIL: no runMux in {MUX}')
-    # attach and detach only say that they are not available yet.
     commands = {c: f for c, f in re.findall(r'command == "([a-z]+)"\) return (\w+)\(', run.group(0)) if f != 'fail'}
     if not commands:
         raise SystemExit(f'FAIL: no commands in runMux in {MUX}')
@@ -498,6 +497,9 @@ def mux_cases(commands, options):
     yield 'afterglow mux new --name x ', options['new'] - {'--name'}
     yield 'afterglow mux kill -', options['kill']
     yield 'afterglow mux kill --force -', set()
+    yield 'afterglow mux attach -', options['attach']
+    yield 'afterglow mux attach --no-takeover -', set()
+    yield 'afterglow mux detach -', options['detach']
     yield 'afterglow mux ls ', set()
     yield 'afterglow mux server ', set()
 

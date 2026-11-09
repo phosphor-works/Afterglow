@@ -15,6 +15,8 @@ qt_add_library(afterglow_app STATIC
     src/DockArea.h
     src/NestedLoop.h
     src/Pane.cpp
+    src/mux/MuxClient.cpp
+    src/mux/MuxClient.h
     src/PaneDialog.cpp
     src/PaneDialog.h
     src/PaneLaunch.cpp
@@ -204,6 +206,10 @@ if(BUILD_TESTING)
     find_package(GTest REQUIRED)
     qt_add_executable(afterglow_native_tests tests/NativeWindowTest.cpp)
     target_link_libraries(afterglow_native_tests PRIVATE afterglow_app GTest::gtest)
+    # The mux tests run a daemon of their own (mux/tests/TestDaemon.h).
+    target_include_directories(afterglow_native_tests PRIVATE ${PROJECT_SOURCE_DIR}/mux/tests)
+    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:afterglow-mux>")
+    add_dependencies(afterglow_native_tests afterglow-mux)
     # The aglow dnd twins of the kitten dnd tests run the aglow of this build.
     if(AFTERGLOW_BUILD_AGLOW)
         target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
@@ -232,7 +238,9 @@ target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afte
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland
     Qt6::DBus Qt6::Network KF6::WindowSystem
     # Control.h, CommandSocket.h and RemoteSockets.h include its headers.
-    Afterglow::Proto)
+    Afterglow::Proto
+    # Pane.h: a pane can show a pane of a mux session (MuxClient).
+    afterglow_mux_protocol)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # Private libraries: afterglow's own and the phosphor ones it was built with.
@@ -241,7 +249,7 @@ install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 set(AFTERGLOW_PRIVATE_LIBS AfterglowVt AfterglowRender AfterglowPty
     PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
     PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
-    PhosphorDBus PhosphorIpc PhosphorScripting PhosphorAudio)
+    PhosphorDBus PhosphorIpc PhosphorScripting PhosphorAudio PhosphorChannel)
 set_target_properties(${AFTERGLOW_PRIVATE_LIBS} PROPERTIES INSTALL_RPATH "$ORIGIN")
 set_target_properties(phosphorwayland-qpa PROPERTIES INSTALL_RPATH "$ORIGIN/../..")
 install(TARGETS ${AFTERGLOW_PRIVATE_LIBS} LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)

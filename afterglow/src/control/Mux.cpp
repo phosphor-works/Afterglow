@@ -8,6 +8,7 @@
 #include "config/Settings.h"
 #include "shell/Aglow.h"
 
+#include "MuxConnect.h"
 #include "MuxProtocol.h"
 
 #include <AfterglowProto/Ipc.h>
@@ -48,6 +49,10 @@ namespace Afterglow {
 namespace {
 
 namespace Json = AfterglowProto::Json;
+using AfterglowMux::CallTimeoutMs;
+using AfterglowMux::ConnectTimeoutMs;
+using AfterglowMux::Reached;
+using AfterglowMux::connectAny;
 using AfterglowProto::IpcConnection;
 
 const char* const Usage = R"(Usage: afterglow mux <command> [options]
@@ -57,13 +62,22 @@ Keeps terminal sessions running while no window shows them. The daemon
 
 Commands:
   server                      Run afterglow-mux in the foreground.
-  new [options] [-- COMMAND]  Create a session and print its name. Options:
+  new [options] [-- COMMAND]  Create a session and show it in a window. Options:
         --name NAME           The session name: 1 to 64 ASCII letters,
                               digits, '_' or '-', with a letter, a digit or
                               '_' first. By default the daemon gives a
                               number that it did not give before.
         --cwd DIR             Start in DIR, not in the current directory.
-        --detach              Create the session without a window.
+        --detach              Create the session without a window, and
+                              print its name.
+  attach [NAME] [--no-takeover]
+                              Show a session in a window. Without NAME, the
+                              only session, or a new one when none runs.
+                              Another window that shows the session closes,
+                              unless --no-takeover refuses the attach.
+  detach [NAME]               Close the window of a session and keep the
+                              session. In a session pane, NAME defaults to
+                              that session.
   ls                          List the sessions.
   kill NAME [--force]         End a session and its programs. With
                               Terminal.confirmClose on, it asks first when a
@@ -72,8 +86,6 @@ Commands:
 
 // The daemon of a client that just started it listens within this time.
 constexpr auto StartWait = std::chrono::seconds(5);
-constexpr int ConnectTimeoutMs = 1000;
-constexpr int CallTimeoutMs = 5000;
 // The unit of a daemon that the systemd user manager runs.
 constexpr const char* Unit = "afterglow-mux";
 
@@ -293,47 +305,6 @@ Report readReport(int fd, std::chrono::steady_clock::time_point deadline)
 }
 
 /// A connection that answered the version call, and its socket.
-struct Reached
-{
-    std::unique_ptr<IpcConnection> connection;
-    std::string socket;
-};
-
-/// The first candidate whose daemon answers the version call, in the order
-/// of muxSockets(). Without one, no connection: @p error is empty when no
-/// daemon listens on any, and says why when one cannot be used (another
-/// protocol, no answer, a socket of another user).
-Reached connectAny(const AfterglowProto::MuxSockets& sockets, std::string* error)
-{
-    error->clear();
-    for (const AfterglowProto::MuxSocket& socket : sockets.candidates) {
-        auto connection = std::make_unique<IpcConnection>();
-        IpcConnection::Error connectError;
-        if (!connection->connect(socket.path, &connectError, ConnectTimeoutMs)) {
-            if (!connectError.noServer && error->empty()) *error = connectError.message;
-            continue;
-        }
-        IpcConnection::Error callError;
-        const auto version = connection->call(AfterglowMux::Target, AfterglowMux::Fn::Version, {}, CallTimeoutMs, &callError);
-        if (!version) {
-            // A daemon that closed the connection without an answer was
-            // ending: as no daemon there.
-            if (callError.code.empty() && !callError.timedOut) continue;
-            *error = callError.message;
-            return {};
-        }
-        const auto protocol = (*version)["protocol"].toInteger();
-        if (protocol != AfterglowMux::ProtocolVersion) {
-            *error = "afterglow-mux speaks protocol " + (protocol ? std::to_string(*protocol) : std::string("?"))
-                + " and this afterglow speaks " + std::to_string(AfterglowMux::ProtocolVersion)
-                + ": end its sessions with the afterglow that started it, or wait until they end";
-            return {};
-        }
-        return {std::move(connection), socket.path};
-    }
-    return {};
-}
-
 std::string paths(const AfterglowProto::MuxSockets& sockets)
 {
     std::string list;
@@ -509,6 +480,32 @@ struct NewOptions
     QStringList command;
 };
 
+/// Afterglow shows windows only on Wayland: without a display, a window of
+/// a session would fail after the session was made.
+bool hasDisplay()
+{
+    const char* display = std::getenv("WAYLAND_DISPLAY");
+    return display && *display;
+}
+
+constexpr const char* NoDisplay = "no Wayland display shows a window here";
+
+/// Shows @p name in a window: afterglow runs with --mux-attach, and hands the
+/// window to the main process of the display as any launch does. Returns
+/// only on a failure.
+int openWindow(const char* command, const std::string& name, bool takeover)
+{
+    std::vector<std::string> args{"afterglow", "--mux-attach", name};
+    if (!takeover) args.emplace_back("--mux-no-takeover");
+    std::vector<char*> argv;
+    for (auto& arg : args) argv.push_back(arg.data());
+    argv.push_back(nullptr);
+    ::execv("/proc/self/exe", argv.data());
+    const int failure = errno;
+    fail(command, std::string("cannot run afterglow: ") + std::strerror(failure));
+    return failure == ENOENT ? 127 : 126;
+}
+
 int newSession(int argc, char** argv)
 {
     NewOptions o;
@@ -530,10 +527,10 @@ int newSession(int argc, char** argv)
             return usage("unknown option of new: " + printable(arg));
         }
     }
-    if (!o.detach) return fail("new", "a window cannot show a session yet: give --detach");
     if (!o.name.empty() && !AfterglowMux::validSessionName(o.name)) {
         return fail("new", std::string("the name must be ") + AfterglowMux::SessionNameRule, 2);
     }
+    if (!o.detach && !hasDisplay()) return fail("new", std::string(NoDisplay) + ": give --detach");
     const auto sockets = AfterglowProto::muxSockets();
     if (sockets.candidates.empty()) return fail("new", sockets.error);
 
@@ -570,7 +567,9 @@ int newSession(int argc, char** argv)
                                                  Json::Array{AfterglowMux::ProtocolVersion, AfterglowMux::toJson(session)}, 10000,
                                                  &callError);
     if (!result) return fail("new", callError.message);
-    std::printf("%s\n", printable((*result)["name"].toString()).c_str());
+    const std::string name = (*result)["name"].toString();
+    if (!o.detach) return openWindow("new", name, true);
+    std::printf("%s\n", printable(name).c_str());
     return 0;
 }
 
@@ -626,6 +625,70 @@ int listSessions(int argc, char** argv)
     for (const auto& s : list) {
         std::printf("%-*s  %-8s  %5d\n", int(width), printable(s.name).c_str(), s.attached ? "attached" : "detached",
                     s.panes);
+    }
+    return 0;
+}
+
+int attachSession(int argc, char** argv)
+{
+    std::string name;
+    bool takeover = true;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--no-takeover") takeover = false;
+        else if (arg == "--ssh") return fail("attach", "sessions on other hosts are not available yet");
+        else if (name.empty() && !arg.starts_with('-')) name = arg;
+        else return usage("unknown argument of attach: " + printable(arg));
+    }
+    if (!hasDisplay()) return fail("attach", NoDisplay);
+    if (name.empty()) {
+        const auto sockets = AfterglowProto::muxSockets();
+        if (sockets.candidates.empty()) return fail("attach", sockets.error);
+        std::string error;
+        Reached reached = connectAny(sockets, &error);
+        if (!reached.connection && !error.empty()) return fail("attach", error);
+        std::optional<std::vector<AfterglowMux::SessionInfo>> list;
+        if (reached.connection) {
+            list = sessions(*reached.connection, &error);
+            if (!list) return fail("attach", error);
+        }
+        // No session: a new one, in a window.
+        if (!list || list->empty()) {
+            char newArg[] = "new";
+            char* newArgv[] = {newArg, nullptr};
+            return newSession(1, newArgv);
+        }
+        if (list->size() > 1) {
+            std::string names;
+            for (const auto& s : *list) names += (names.empty() ? "" : ", ") + printable(s.name);
+            return fail("attach", "more than one session runs: name one of " + names);
+        }
+        name = list->front().name;
+    }
+    return openWindow("attach", name, takeover);
+}
+
+int detachSession(int argc, char** argv)
+{
+    std::string name;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (name.empty() && !arg.starts_with('-')) name = arg;
+        else return usage("unknown argument of detach: " + printable(arg));
+    }
+    // In a session pane: that session.
+    if (name.empty()) {
+        if (const char* own = std::getenv("AFTERGLOW_SESSION"); own && *own) name = own;
+    }
+    if (name.empty()) return usage("detach takes the name of a session, outside a session pane");
+    const auto sockets = AfterglowProto::muxSockets();
+    if (sockets.candidates.empty()) return fail("detach", sockets.error);
+    std::string error;
+    Reached reached = connectAny(sockets, &error);
+    if (!reached.connection) return fail("detach", error.empty() ? std::string("no sessions") : error);
+    IpcConnection::Error callError;
+    if (!reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::Detach, Json::Array{name}, CallTimeoutMs, &callError)) {
+        return fail("detach", callError.message);
     }
     return 0;
 }
@@ -703,7 +766,8 @@ int runMux(int argc, char** argv)
     if (command == "new") return newSession(argc - 1, argv + 1);
     if (command == "ls") return listSessions(argc - 1, argv + 1);
     if (command == "kill") return killSession(argc - 1, argv + 1);
-    if (command == "attach" || command == "detach") return fail(command, "a window cannot show a session yet");
+    if (command == "attach") return attachSession(argc - 1, argv + 1);
+    if (command == "detach") return detachSession(argc - 1, argv + 1);
     return usage("unknown command: " + printable(command));
 }
 

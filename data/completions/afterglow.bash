@@ -240,7 +240,7 @@ _afterglow_mux()
         if [[ $cur == -* ]]; then
             _afterglow_matching -h --help
         else
-            _afterglow_matching server new ls kill
+            _afterglow_matching server new attach detach ls kill
         fi
         return
     fi
@@ -267,6 +267,9 @@ _afterglow_mux()
         ;;
     kill)
         [[ $cur == -* ]] && _afterglow_unused --force
+        ;;
+    attach)
+        [[ $cur == -* ]] && _afterglow_unused --no-takeover
         ;;
     esac
 }

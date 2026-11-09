@@ -8,6 +8,7 @@
 #include "DockArea.h"
 #include "ImageDecode.h"
 #include "PaneLaunch.h"
+#include "mux/MuxClient.h"
 #include "PaneDialog.h"
 #include "PaneOverlay.h"
 #include "ShownText.h"
@@ -87,6 +88,9 @@ Pane::~Pane()
     m_dragDrop.reset();
     m_fileTransfers.reset();
     m_pty.reset();
+    // A session pane that the user closes ends its session, or leaves it
+    // running (Mux.closeOnLastWindow). One that the session left ends nothing.
+    if (m_session) m_session->release(m_sessionPane, m_killSessionOnClose && !m_sessionGone);
     for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
 }
 
@@ -141,6 +145,18 @@ void Pane::setOptions(const AfterglowVt::TerminalOptions& options)
 
 void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
 {
+    if (m_session) {
+        // The daemon resizes the session's terminal and its PTY. The replica
+        // takes the new size with the next frame, so it never shows rows
+        // that the program has not drawn for that size.
+        if (cols == m_sentSize.cols && rows == m_sentSize.rows && cellWidth == m_sentSize.cellWidth
+            && cellHeight == m_sentSize.cellHeight) {
+            return;
+        }
+        m_sentSize = {cols, rows, cellWidth, cellHeight};
+        m_session->sendResize(m_sessionPane, m_sentSize);
+        return;
+    }
     {
         std::lock_guard lock(m_mutex);
         if (cols == m_terminal.cols() && rows == m_terminal.rows() && cellWidth == m_terminal.cellWidth()
@@ -168,7 +184,7 @@ int Pane::rows() const
 
 bool Pane::sendInput(std::string_view bytes, bool reportFailure)
 {
-    if (bytes.empty() || !m_pty || m_held.load()) {
+    if (bytes.empty() || !hasProgram() || m_held.load()) {
         return bytes.empty();
     }
     if (m_scrollOnInput) {
@@ -180,7 +196,7 @@ bool Pane::sendInput(std::string_view bytes, bool reportFailure)
             QMetaObject::invokeMethod(this, [this] { Q_EMIT contentChanged(); }, Qt::QueuedConnection);
         }
     }
-    const bool accepted = m_pty->write(bytes);
+    const bool accepted = writeProgram(bytes);
     if (accepted) m_inputFailureReported.store(false);
     else if (reportFailure) reportInputFailure();
     return accepted;
@@ -831,6 +847,7 @@ void Pane::commandFinished(int exitCode)
 
 QString Pane::foregroundJob() const
 {
+    if (m_session) return m_sessionGone || m_held.load() ? QString() : m_session->foregroundJob();
     if (!m_pty || m_held.load()) {
         return {};
     }
@@ -912,22 +929,75 @@ void Pane::writeToPty(std::string_view bytes)
         m_openReports->append(bytes);
         return;
     }
-    if (!m_pty) return;
-    if (m_pty->write(bytes)) m_inputFailureReported.store(false);
+    if (!hasProgram()) return;
+    if (writeProgram(bytes)) m_inputFailureReported.store(false);
     else reportInputFailure();
 }
 
 void Pane::writeReports(const std::string& reports)
 {
     m_protocolBytes.fetch_sub(qsizetype(reports.size()));
-    if (m_pty && !m_pty->write(reports)) reportInputFailure();
+    if (hasProgram() && !writeProgram(reports)) reportInputFailure();
 }
 
 bool Pane::sendReply(std::string_view bytes)
 {
     if (bytes.empty()) return true;
-    if (!m_pty || m_held.load()) return false;
-    return m_pty->write(bytes);
+    if (!hasProgram() || m_held.load()) return false;
+    return writeProgram(bytes);
+}
+
+bool Pane::hasProgram() const
+{
+    return m_session ? !m_sessionGone : m_pty != nullptr;
+}
+
+bool Pane::writeProgram(std::string_view bytes)
+{
+    if (m_session) return !m_sessionGone && m_session->sendInput(m_sessionPane, bytes);
+    return m_pty && m_pty->write(bytes);
+}
+
+void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, bool killOnClose)
+{
+    m_session = std::move(session);
+    m_sessionPane = id;
+    m_killSessionOnClose = killOnClose;
+    m_session->bind(id, this);
+}
+
+bool Pane::applySessionFrame(std::string_view frame)
+{
+    std::string error;
+    {
+        std::lock_guard lock(m_mutex);
+        const std::string title = m_terminal.title();
+        const std::string directory = m_terminal.workingDirectory();
+        if (!m_stateReader.apply(m_terminal, frame, &error)) {
+            qCWarning(lcPane) << "a frame of the session does not apply:" << QString::fromStdString(error);
+            return false;
+        }
+        // The replica takes them as they are: the pane hears of a change
+        // as it does from a program of its own.
+        if (m_terminal.title() != title) titleChanged(m_terminal.title());
+        if (m_terminal.workingDirectory() != directory) workingDirectoryChanged(m_terminal.workingDirectory());
+    }
+    Q_EMIT contentChanged();
+    return true;
+}
+
+void Pane::sessionPaneExited(int status)
+{
+    m_sessionGone = true;
+    ptyClosed(status);
+}
+
+void Pane::sessionLost(bool takenOver)
+{
+    if (m_sessionGone) return;
+    m_sessionGone = true;
+    if (takenOver) qCInfo(lcPane) << "another window shows the session now";
+    QMetaObject::invokeMethod(this, [this] { Q_EMIT closed(); }, Qt::QueuedConnection);
 }
 
 void Pane::titleChanged(std::string_view title)

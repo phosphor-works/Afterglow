@@ -188,7 +188,16 @@ int main(int argc, char** argv)
     const QCommandLineOption classOption(QStringLiteral("class"),
                                          QStringLiteral("Wayland app id for window rules (starts a separate Afterglow)."),
                                          QStringLiteral("id"));
-    parser.addOptions({cwdOption, quickOption, execOption, titleOption, holdOption, configOption, overrideOption, classOption});
+    // afterglow mux attach runs afterglow with these: the window of a session
+    // opens in the main process of the display, as the window of any launch.
+    QCommandLineOption muxAttachOption(QStringLiteral("mux-attach"), QStringLiteral("Show the mux session <name>."),
+                                       QStringLiteral("name"));
+    muxAttachOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    QCommandLineOption muxNoTakeoverOption(QStringLiteral("mux-no-takeover"),
+                                           QStringLiteral("Refuse when another window shows the session."));
+    muxNoTakeoverOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    parser.addOptions({cwdOption, quickOption, execOption, titleOption, holdOption, configOption, overrideOption, classOption,
+                       muxAttachOption, muxNoTakeoverOption});
     // Everything after the program -e runs is its own, options included.
     parser.setOptionsAfterPositionalArgumentsMode(QCommandLineParser::ParseAsPositionalArguments);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("With -e: the program and its arguments."),
@@ -243,7 +252,9 @@ int main(int argc, char** argv)
     const QVariantMap windowOptions{{QStringLiteral("directoryGiven"), cwdGiven},
                                     {QStringLiteral("title"), parser.value(titleOption)},
                                     {QStringLiteral("hold"), parser.isSet(holdOption)},
-                                    {QStringLiteral("activationToken"), qEnvironmentVariable("XDG_ACTIVATION_TOKEN")}};
+                                    {QStringLiteral("activationToken"), qEnvironmentVariable("XDG_ACTIVATION_TOKEN")},
+                                    {QStringLiteral("session"), parser.value(muxAttachOption)},
+                                    {QStringLiteral("takeover"), !parser.isSet(muxNoTakeoverOption)}};
     qunsetenv("XDG_ACTIVATION_TOKEN");
     // An Afterglow started from a pane of another one, or of a mux session,
     // must not hand that pane's identity to its scripts' programs. Its own

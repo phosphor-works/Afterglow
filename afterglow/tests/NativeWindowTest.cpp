@@ -80,6 +80,8 @@
 #include <utility>
 #include "QStringPrinter.h"
 #include "SavedEnvironment.h"
+#include "TestDaemon.h"
+#include "mux/MuxClient.h"
 #include <gtest/gtest.h>
 using namespace Afterglow;
 using Afterglow::Test::Saved;
@@ -9336,6 +9338,87 @@ TEST_F(NativeWindow, QueuedClipboardWritesAreBoundedByTheirSize) {
 }
 
 } // namespace
+
+namespace {
+
+/// A session of an interactive sh with a plain prompt, in @p daemon.
+bool shellSession(MuxTest::TestDaemon& daemon, const std::string& name) {
+    AfterglowMux::SessionOptions o = daemon.options({"/bin/sh"}, name);
+    o.launch.environment.emplace_back("PS1", "$ ");
+    o.launch.environment.emplace_back("ENV", "/dev/null");
+    return bool(daemon.newSession(o));
+}
+
+std::optional<AfterglowMux::SessionInfo> sessionNamed(MuxTest::TestDaemon& daemon, const std::string& name) {
+    for (auto& info : daemon.sessions()) {
+        if (info.name == name) return info;
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+// A window shows a session of a daemon of the test's own (never the user's):
+// the shell's screen, typed input, the window's own size, and the end of the
+// session when the window closes (Mux.closeOnLastWindow kill, the default).
+TEST_F(NativeWindow, AMuxSessionShowsInAWindowAndEndsWithIt) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "live")) << daemon.lastError();
+    QString error;
+    WindowOptions options;
+    options.session = MuxClient::attach(QStringLiteral("live"), true, &error, daemon.sockets());
+    ASSERT_TRUE(options.session) << error.toStdString();
+    QPointer<TerminalWindow> shown = application->newWindow(options);
+    ASSERT_NE(shown, nullptr);
+    shown->resize(700, 420);
+    shown->show();
+    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    EXPECT_TRUE(pane->isSessionPane());
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    // The window measured the pane, and the program got that size.
+    pane->sendInput("stty size\n");
+    ASSERT_TRUE(waitFor([&] {
+        return screenOf(pane).contains(QStringLiteral("%1 %2").arg(pane->rows()).arg(pane->cols())) && pane->cols() != 80;
+    }, 5000)) << screenOf(pane).toStdString();
+    // A key typed into the window reaches the program, and its output the window.
+    const auto frames = shown->submittedFrames();
+    pane->sendInput("echo li''ve\n");
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("\nlive")); }, 5000)) << screenOf(pane).toStdString();
+    EXPECT_TRUE(waitFor([&] { return shown->submittedFrames() > frames; }));
+    ASSERT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "live");
+        return info && info->attached;
+    }));
+    delete shown;
+    EXPECT_TRUE(waitFor([&] { return !sessionNamed(daemon, "live"); }, 5000));
+}
+
+// With Mux.closeOnLastWindow detach, the session outlives its window.
+TEST_F(NativeWindow, AMuxSessionCanOutliveItsWindow) {
+    restartApplication(QStringLiteral("mux.conf"),
+                       testSettings({{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("closeOnLastWindow"), QStringLiteral("detach")}}}}),
+                       {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "kept")) << daemon.lastError();
+    QString error;
+    WindowOptions options;
+    options.session = MuxClient::attach(QStringLiteral("kept"), true, &error, daemon.sockets());
+    ASSERT_TRUE(options.session) << error.toStdString();
+    QPointer<TerminalWindow> shown = application->newWindow(options);
+    ASSERT_NE(shown, nullptr);
+    shown->show();
+    Pane* pane = shown->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    delete shown;
+    ASSERT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "kept");
+        return info && !info->attached;
+    }, 5000));
+}
 
 int main(int argc, char** argv)
 {

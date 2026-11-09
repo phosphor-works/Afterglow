@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace AfterglowMux {
@@ -32,7 +33,16 @@ public:
     bool addPane(std::uint32_t id, const std::string& daemonSocket, std::function<void()> exited, std::string* error);
     /// Removes the panes whose programs exited. True when none is left: the
     /// last program of a session ended, and so does the session.
-    bool reap();
+    /// @p closed gets the id and wait status of each pane removed.
+    bool reap(std::vector<std::pair<std::uint32_t, int>>* closed = nullptr);
+    const std::vector<std::unique_ptr<MuxPane>>& panes() const { return m_panes; }
+    MuxPane* pane(std::uint32_t id) const
+    {
+        for (const auto& p : m_panes) {
+            if (p->id() == id) return p.get();
+        }
+        return nullptr;
+    }
     /// Ends every program of the session.
     void kill();
 

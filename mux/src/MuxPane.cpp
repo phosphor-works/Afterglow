@@ -37,9 +37,10 @@ bool leadsForeground(pid_t pid, pid_t session)
 
 } // namespace
 
-MuxPane::MuxPane(const AfterglowVt::TerminalOptions& options, const PaneSize& size, std::string notificationCapabilities,
-                 std::function<void()> exited)
-    : m_exitedCallback(std::move(exited))
+MuxPane::MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, const PaneSize& size,
+                 std::string notificationCapabilities, std::function<void()> wake)
+    : m_id(id)
+    , m_wake(std::move(wake))
     , m_notificationCapabilities(std::move(notificationCapabilities))
     , m_terminal(size.cols, size.rows, *this, options)
 {
@@ -161,14 +162,39 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
 
 void MuxPane::ptyData(std::string_view bytes)
 {
-    std::lock_guard lock(m_mutex);
-    m_terminal.feed(bytes);
+    {
+        std::lock_guard lock(m_mutex);
+        m_terminal.feed(bytes);
+    }
+    // One wake for each burst: the daemon takes the flag when it sends.
+    if (!m_changed.exchange(true)) m_wake();
 }
 
-void MuxPane::ptyClosed(int)
+void MuxPane::ptyClosed(int status)
 {
+    m_exitStatus = status;
     m_exited = true;
-    m_exitedCallback();
+    m_wake();
+}
+
+bool MuxPane::input(std::string_view bytes)
+{
+    return m_pty && !m_exited && m_pty->write(bytes);
+}
+
+void MuxPane::resize(const PaneSize& size)
+{
+    int cols = 0;
+    int rows = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        m_terminal.resize(size.cols, size.rows, size.cellWidth, size.cellHeight);
+        cols = m_terminal.cols();
+        rows = m_terminal.rows();
+    }
+    if (m_pty) m_pty->resize(cols, rows, pixels(cols, size.cellWidth), pixels(rows, size.cellHeight));
+    // The window needs the frame of the new size.
+    if (!m_changed.exchange(true)) m_wake();
 }
 
 } // namespace AfterglowMux

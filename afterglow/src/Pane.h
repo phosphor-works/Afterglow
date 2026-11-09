@@ -10,7 +10,10 @@
 #include <AfterglowRender/Snapshot.h>
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
+#include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
+
+#include "MuxProtocol.h"
 
 #include <QDeadlineTimer>
 #include <QElapsedTimer>
@@ -37,6 +40,8 @@ class QDialog;
 class QWindow;
 
 namespace Afterglow {
+
+class MuxClient;
 
 /// A program status record (OSC 7501) as the GUI uses it.
 struct PaneStatusRecord
@@ -76,6 +81,20 @@ public:
     void setOptions(const AfterglowVt::TerminalOptions& options);
 
     void resize(int cols, int rows, int cellWidth, int cellHeight);
+
+    /// Shows pane @p id of a mux session in place of a program of its own:
+    /// the terminal becomes a replica of the session's, and input goes to the
+    /// daemon. With @p killOnClose, closing the pane ends the session.
+    void showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, bool killOnClose);
+    bool isSessionPane() const { return m_session != nullptr; }
+    void setKillSessionOnClose(bool kill) { m_killSessionOnClose = kill; }
+    /// A state frame of the session (MuxClient, GUI thread). False when it
+    /// does not apply: the replica no longer matches the daemon's terminal.
+    bool applySessionFrame(std::string_view frame);
+    /// The program of the session pane exited, with @p status as waitpid gives it.
+    void sessionPaneExited(int status);
+    /// The session ended, or another window took it: the pane closes.
+    void sessionLost(bool takenOver);
     int cols() const;
     int rows() const;
 
@@ -554,6 +573,17 @@ private:
     QTimer m_animationTimer;
     // Declared last so it is destroyed first: its thread calls into the terminal.
     std::unique_ptr<AfterglowPty::Pty> m_pty;
+    // A session pane (showSession): no PTY of its own.
+    std::shared_ptr<MuxClient> m_session;
+    std::uint32_t m_sessionPane = 0;
+    bool m_killSessionOnClose = false;
+    std::atomic<bool> m_sessionGone{false};
+    AfterglowMux::PaneSize m_sentSize{0, 0, 0, 0};
+    AfterglowVt::StateReader m_stateReader;
+
+    bool hasProgram() const;
+    /// The program's input: its PTY, or the daemon of a session pane.
+    bool writeProgram(std::string_view bytes);
 };
 
 } // namespace Afterglow

@@ -55,7 +55,11 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 3) << "a new protocol version: update the key lists of this test";
+    ASSERT_EQ(ProtocolVersion, 4) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 4 added attach and detach.
+    for (const char* fn : {Fn::Version, Fn::NewSession, Fn::ListSessions, Fn::KillSession, Fn::Attach, Fn::Detach}) {
+        EXPECT_TRUE(fn && *fn) << "a call without a name";
+    }
     // A new field that toJson leaves out would still pass the key lists. The
     // bindings name every field, so a new field stops this test compiling
     // until it has its key, its place in the round trip and a new version.

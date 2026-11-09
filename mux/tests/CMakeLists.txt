@@ -3,7 +3,7 @@
 
 find_package(GTest REQUIRED)
 
-add_executable(afterglow_mux_tests DaemonTest.cpp MuxProtocolTest.cpp)
+add_executable(afterglow_mux_tests AttachTest.cpp DaemonTest.cpp MuxProtocolTest.cpp)
 target_link_libraries(afterglow_mux_tests PRIVATE afterglow_mux_protocol GTest::gtest_main)
 # A test that runs a daemon gives it a runtime directory, a state directory and a
 # home directory of its own, so that it never reaches the user's daemon.

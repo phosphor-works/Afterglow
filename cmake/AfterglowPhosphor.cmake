@@ -51,6 +51,7 @@ endfunction()
 
 afterglow_add_phosphor_libs(
     phosphor-audio
+    phosphor-channel
     phosphor-dbus
     phosphor-ipc
     phosphor-scripting

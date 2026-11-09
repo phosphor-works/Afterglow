@@ -3,12 +3,14 @@
 
 #pragma once
 
+#include "Attach.h"
 #include "Session.h"
 
 #include <AfterglowProto/IpcServer.h>
 #include <AfterglowProto/Socket.h>
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -67,6 +69,10 @@ private:
     std::string answer(const AfterglowProto::IpcRequest& request, pid_t caller);
     std::string newSession(const AfterglowProto::IpcRequest& request);
     std::string killSession(const AfterglowProto::IpcRequest& request);
+    std::string attach(const AfterglowProto::IpcRequest& request, pid_t caller);
+    std::string detach(const AfterglowProto::IpcRequest& request);
+    /// Sends what changed in each attached session.
+    void pumpAttachments();
     std::string listSessions(const AfterglowProto::IpcRequest& request, pid_t caller);
     /// The socket that session panes name in AFTERGLOW_SOCKET.
     const std::string& paneSocket() const;
@@ -83,6 +89,9 @@ private:
     std::string m_setupError; ///< why the event descriptors are missing
     std::vector<std::unique_ptr<AfterglowProto::IpcServerConnection>> m_connections;
     std::vector<std::unique_ptr<Session>> m_sessions;
+    /// The window that shows a session, by the session's name. It goes
+    /// before its session.
+    std::map<std::string, std::unique_ptr<Attachment>> m_attachments;
     std::uint32_t m_nextPane = 1;
     /// The number of the next session without a name of its client.
     std::uint64_t m_nextName = 1;

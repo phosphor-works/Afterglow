@@ -122,6 +122,17 @@ struct QuickTerminalSettings
     bool operator==(const QuickTerminalSettings&) const = default;
 };
 
+/// What closing the last window of a mux session does.
+enum class MuxClose : std::uint8_t { Kill, Detach };
+
+struct MuxSettings
+{
+    /// Kill ends the session and its programs, as a window that is not in a
+    /// session ends its programs. Detach keeps the session running.
+    MuxClose closeOnLastWindow = MuxClose::Kill;
+    bool operator==(const MuxSettings&) const = default;
+};
+
 struct ControlSettings
 {
     /// The "control" target on the process's socket (afterglow ctl) and,
@@ -202,6 +213,7 @@ struct Settings
     AudioSettings audio;
     QuickTerminalSettings quickTerminal;
     ControlSettings control;
+    MuxSettings mux;
     MouseSettings mouse;
     LinkSettings links;
     HighlightColors colors;

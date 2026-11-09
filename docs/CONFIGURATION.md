@@ -140,6 +140,12 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `middleClick` | `"primary"` | `"primary"`, `"clipboard"`, `"none"` | What a middle click pastes. The none value turns middle-click paste off. |
 | `rightClick` | `"menu"` | `"menu"`, `"paste"`, `"copy-or-paste"`, `"extend"` | What a right click does. The menu value opens the context menu. The paste value pastes the clipboard. The copy-or-paste value copies an existing selection, or else pastes. The extend value extends the selection. |
 
+## Mux
+
+| Key | Default | Range or choices | Meaning |
+| --- | --- | --- | --- |
+| `closeOnLastWindow` | `"kill"` | `"kill"`, `"detach"` | What closing the last window of a mux session does. With kill, the session and its programs end, as in a window outside a session. With detach, the session keeps running, and afterglow mux attach shows it again. A window that crashes or loses its connection always leaves the session running. |
+
 ## Notifications
 
 | Key | Default | Range or choices | Meaning |

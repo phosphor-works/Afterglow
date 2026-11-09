@@ -16,6 +16,7 @@
 #include <QDragEnterEvent>
 #include "PaneDialog.h"
 #include "PaneLaunch.h"
+#include "mux/MuxClient.h"
 
 #include "app/NotificationCenter.h"
 #include "control/Control.h"
@@ -369,7 +370,8 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
 
     m_fixedTitle = options.title;
     m_holdNextPane = options.hold;
-    if (!options.empty) newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command, options.environment);
+    if (options.session) newSessionTab(options.session);
+    else if (!options.empty) newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command, options.environment);
     updateTitle();
     // QWindow tells nobody of a new title but its own signal.
     connect(this, &QWindow::windowTitleChanged, this, [this] {
@@ -733,6 +735,18 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     return pane;
 }
 
+Pane* TerminalWindow::createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id)
+{
+    auto* pane = new Pane(m_settings.settings().terminal, this);
+    bindPane(pane);
+    applySearchColors(pane);
+    pane->setScrollPolicy(m_settings.settings().scrollOnOutput, m_settings.settings().scrollOnInput);
+    // The size goes to the daemon with the first layout of the pane.
+    pane->showSession(session, id, m_settings.settings().mux.closeOnLastWindow == MuxClose::Kill);
+    Q_EMIT paneCreated(pane);
+    return pane;
+}
+
 Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QStringList& command, const PaneLaunchOptions& options, QString* error)
 {
     if (!m_focused) {
@@ -1027,6 +1041,19 @@ Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList&
     if (!first) {
         return nullptr;
     }
+    return addTab(first, at);
+}
+
+Pane* TerminalWindow::newSessionTab(const std::shared_ptr<MuxClient>& session)
+{
+    // One pane for each session until the daemon keeps a layout.
+    if (session->panes().empty()) return nullptr;
+    return addTab(createSessionPane(session, session->panes().front()), -1);
+}
+
+Pane* TerminalWindow::addTab(Pane* first, int at)
+{
+    if (at < 0 || at > int(m_tabs.size())) at = m_tabs.empty() ? 0 : m_currentTab + 1;
     auto created = std::make_unique<Tab>();
     created->splits = std::make_unique<SplitTree>(first);
     created->focused = first;
@@ -4165,8 +4192,14 @@ void TerminalWindow::applySettings(const Settings& previous)
     if (now.shaders != previous.shaders || now.shaderParams != previous.shaderParams) {
         applyShaders();
     }
+    if (now.mux.closeOnLastWindow != previous.mux.closeOnLastWindow) {
+        for (Pane* p : findChildren<Pane*>()) p->setKillSessionOnClose(now.mux.closeOnLastWindow == MuxClose::Kill);
+    }
     if (now.terminal != previous.terminal) {
         for (Pane* p : findChildren<Pane*>()) {
+            // A session pane shows the daemon's terminal, with the values
+            // that the session got from the window that made it.
+            if (p->isSessionPane()) continue;
             p->setOptions(now.terminal);
         }
         setDockOptions(now.terminal);

@@ -49,6 +49,7 @@ const QString Shaders = QStringLiteral("Shaders");
 const QString Animation = QStringLiteral("Animation");
 const QString Quick = QStringLiteral("QuickTerminal");
 const QString ControlGroup = QStringLiteral("Control");
+const QString MuxGroup = QStringLiteral("Mux");
 const QString AudioGroup = QStringLiteral("Audio");
 const QString ScriptsGroup = QStringLiteral("Scripts");
 const QString MouseGroup = QStringLiteral("Mouse");
@@ -74,6 +75,7 @@ struct Choice
 using AfterglowRender::Antialiasing;
 using AfterglowRender::Hinting;
 
+const Choice<MuxClose> MuxCloseChoices[] = {{"kill", MuxClose::Kill}, {"detach", MuxClose::Detach}};
 const Choice<Hinting> HintingChoices[] = {{"none", Hinting::None}, {"light", Hinting::Light}, {"full", Hinting::Full}};
 const Choice<Antialiasing> AntialiasingChoices[] = {{"grayscale", Antialiasing::Grayscale},
                                                     {"none", Antialiasing::None},
@@ -640,6 +642,13 @@ PhosphorConfig::Schema buildSchema()
         stringKey(QStringLiteral("screen"), {},
                   QStringLiteral("Screen that shows the quick terminal, by its output name such as DP-1. An empty or unknown name "
                                  "uses the primary screen.")),
+    };
+    schema.groups[MuxGroup] = {
+        enumKey(QStringLiteral("closeOnLastWindow"), MuxCloseChoices, d.mux.closeOnLastWindow,
+                QStringLiteral("What closing the last window of a mux session does. With kill, the session and its programs "
+                               "end, as in a window outside a session. With detach, the session keeps running, and "
+                               "afterglow mux attach shows it again. A window that crashes or loses its connection always "
+                               "leaves the session running.")),
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
@@ -1786,6 +1795,7 @@ Settings SettingsStore::read()
     s.quickTerminal.screen = st.read<QString>(Quick, QStringLiteral("screen")).trimmed();
 
     // Control
+    s.mux.closeOnLastWindow = readEnum(st, MuxGroup, QStringLiteral("closeOnLastWindow"), MuxCloseChoices, s.mux.closeOnLastWindow);
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));
     s.control.allowReadText = st.read<bool>(ControlGroup, QStringLiteral("allowReadText"));
     s.control.allowRemoteReadText = st.read<bool>(ControlGroup, QStringLiteral("allowRemoteReadText"));

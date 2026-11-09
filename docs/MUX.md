@@ -5,8 +5,8 @@
 
 The mux daemon, `afterglow-mux`, keeps terminal sessions running while no window shows them.
 A session is a set of panes with running programs. A session that `afterglow mux new` creates has one pane.
-The `afterglow mux` commands create, list and end sessions.
-A window cannot show a session.
+The `afterglow mux` commands create, list and end sessions, and show a session in a window.
+One window at a time shows a session.
 
 The mux is opt-in. A normal launch of Afterglow does not use it.
 A mux session and a normal `afterglow` launch can run at the same time.
@@ -76,13 +76,15 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 
 | Command | Function |
 | --- | --- |
-| `afterglow mux new --detach` | Creates a session and prints its name. Options: `--name NAME`, `--cwd DIR`, `-- COMMAND...`. |
+| `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `-- COMMAND...`. |
+| `afterglow mux attach [NAME]` | Shows a session in a window. Option: `--no-takeover`. |
+| `afterglow mux detach [NAME]` | Closes the window of a session. The session keeps running. |
 | `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES` |
 | `afterglow mux kill NAME` | Ends a session and its programs. Option: `--force`. |
 | `afterglow mux server` | Runs `afterglow-mux` in the foreground |
 | `afterglow mux --help` | Prints the usage |
 
-`afterglow mux new --detach` creates the session without a window.
+`afterglow mux new` shows the new session in a window. With `--detach`, it creates the session without a window and prints its name.
 The session starts in `DIR`, or in the current directory without `--cwd`. A directory that does not exist stops the command.
 Without `COMMAND`, the session runs the program of a new pane in a window: `Terminal.shell`, else your login shell.
 The pane has the size of a new window: `Window.initialColumns` by `Window.initialRows` cells.
@@ -90,7 +92,7 @@ Without `--name`, the daemon gives the session a number as its name, from `1`.
 The daemon does not give the same number two times while it runs. A number that a session name has is skipped.
 A name that a session has already is refused.
 
-`afterglow mux ls` shows `detached` in the `STATE` column, because no window shows a session.
+`afterglow mux ls` shows `attached` in the `STATE` column when a window shows the session, else `detached`.
 The `PANES` column shows the number of panes of the session.
 Without a daemon, `afterglow mux ls` and `afterglow mux kill` report that there are no sessions.
 
@@ -100,14 +102,38 @@ Without a terminal, it refuses and names `--force`.
 The command itself is not a running program when it runs in the foreground of a pane of that session.
 `--force` ends the session without a question.
 
+### Windows of a session
+
+`afterglow mux attach NAME` opens a window that shows session `NAME`.
+The window opens in the Afterglow that runs on your display, as the window of any launch.
+Without `NAME`, the command shows the only session. When no session runs, it creates one, as `afterglow mux new` does.
+When more than one session runs, it stops and names them.
+
+One window at a time shows a session.
+When another window shows the session, that window closes, and the session moves to the new window.
+With `--no-takeover`, the command refuses instead, with exit status 1.
+Without a Wayland display, `afterglow mux attach` and `afterglow mux new` without `--detach` stop with exit status 1, and create no session.
+
+The window shows the screen and the scrollback of the session, and sends what you type to its programs.
+The window measures the pane with its own font, and the daemon resizes the pane to that size.
+The session keeps the terminal settings and the colors of the window that created it.
+
+| Event | Result |
+| --- | --- |
+| You close the window, or its pane | `Mux.closeOnLastWindow`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running. |
+| `afterglow mux detach NAME` | The window closes. The session keeps running. In a pane of a session, `NAME` defaults to that session. |
+| The window crashes, or its connection to the daemon breaks | The session keeps running |
+| The program of the pane exits | The session ends, and the pane closes as a pane does in a window outside a session |
+| `afterglow mux kill NAME` | The session ends, and its window closes |
+
+A new tab or a split in the window of a session runs a program of the window, not of the session.
+These programs end with the window.
+
 These commands and options are not available. Each stops with exit status 1 and writes this message on standard error:
 
 | Command | Message |
 | --- | --- |
-| `afterglow mux new` without `--detach` | `afterglow mux new: a window cannot show a session yet: give --detach` |
-| `afterglow mux attach` | `afterglow mux attach: a window cannot show a session yet` |
-| `afterglow mux detach` | `afterglow mux detach: a window cannot show a session yet` |
-| `afterglow mux new --ssh`, `afterglow mux ls --ssh` and `afterglow mux kill --ssh` | `afterglow mux COMMAND: sessions on other hosts are not available yet` |
+| `--ssh` of `afterglow mux new`, `attach`, `ls` and `kill` | `afterglow mux COMMAND: sessions on other hosts are not available yet` |
 
 ### Exit status
 

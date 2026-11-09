@@ -41,6 +41,8 @@ class QDialog;
 
 namespace Afterglow {
 
+class MuxClient;
+
 struct WindowOptions
 {
     QString workingDirectory;
@@ -57,6 +59,9 @@ struct WindowOptions
     bool hold = false;
     bool empty = false; ///< Internal: receive live panes or a restored project before showing.
     QVariantMap environment = {};
+    /// A mux session that the window shows in its first tab, in place of a
+    /// program of its own (afterglow mux attach).
+    std::shared_ptr<MuxClient> session = {};
 };
 
 class ChromeController;
@@ -304,6 +309,10 @@ private:
     struct Tab;
     /// Creates a pane and starts its shell sized for @p area (pane rect, pixels).
     Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
+    /// A pane that shows pane @p id of @p session: no program of its own.
+    Pane* createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id);
+    /// Puts @p first in a new tab at @p at (-1: beside the current one).
+    Pane* addTab(Pane* first, int at);
     void bindPane(Pane* pane);
     /// Connects the overlay that runs over @p host (bindPane does it).
     void bindOverlay(Pane* host);
@@ -379,6 +388,8 @@ private:
     Pane* splitFocused(SplitTree::Direction direction, const QStringList& command = {}, const PaneLaunchOptions& options = {}, QString* error = nullptr);
     /// Opens a tab at @p at (beside the current tab when negative).
     Pane* newTab(const QString& workingDirectory, const QStringList& command = {}, const QVariantMap& environment = {}, QString* error = nullptr, int at = -1);
+    /// A tab that shows the first pane of @p session.
+    Pane* newSessionTab(const std::shared_ptr<MuxClient>& session);
     /// Opens a shell tab beside @p from's tab, in its directory (beside the
     /// current tab with none), without showing @p from's tab first: one tab
     /// switch. A failure is a notice.

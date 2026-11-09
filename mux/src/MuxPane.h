@@ -36,14 +36,37 @@ namespace AfterglowMux {
 class MuxPane final : public AfterglowVt::ITerminalHost, public AfterglowPty::IPtyListener
 {
 public:
-    MuxPane(const AfterglowVt::TerminalOptions& options, const PaneSize& size, std::string notificationCapabilities,
-            std::function<void()> exited);
+    /// @p wake runs when the program exits, and after output when the
+    /// pane was not changed() already: on the reader thread, so it must be
+    /// safe to call from any thread.
+    MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, const PaneSize& size,
+            std::string notificationCapabilities, std::function<void()> wake);
     /// Hangs up the program: the PTY's reaper kills it when it stays.
     ~MuxPane() override;
     MuxPane(const MuxPane&) = delete;
     MuxPane& operator=(const MuxPane&) = delete;
 
+    std::uint32_t id() const { return m_id; }
     bool start(AfterglowPty::SpawnOptions options, std::string launchedProgram, std::string* error);
+    /// The wait status of the program, once exited().
+    int exitStatus() const { return m_exitStatus.load(); }
+    /// Whether output came since the last call. No call, as while no window
+    /// is attached, wakes the daemon no more: the next window's first frame
+    /// carries everything.
+    bool takeChanged() { return m_changed.exchange(false); }
+    /// Input of an attached window for the program. False when the PTY's
+    /// queue refuses it.
+    bool input(std::string_view bytes);
+    /// The size that an attached window measured.
+    void resize(const PaneSize& size);
+    /// Runs @p fn with the terminal, under the lock that the reader thread
+    /// takes to feed it.
+    template<typename F>
+    auto withTerminal(F&& fn) const
+    {
+        std::lock_guard lock(m_mutex);
+        return fn(m_terminal);
+    }
     /// The program exited, or start() failed.
     bool exited() const { return m_exited.load(); }
 
@@ -66,7 +89,10 @@ public:
     void ptyClosed(int status) override;
 
 private:
-    std::function<void()> m_exitedCallback;
+    const std::uint32_t m_id;
+    std::function<void()> m_wake;
+    std::atomic<bool> m_changed{false};
+    std::atomic<int> m_exitStatus{0};
     const std::string m_notificationCapabilities;
     mutable std::mutex m_mutex; ///< guards m_terminal, which the reader thread feeds
     AfterglowVt::Terminal m_terminal;

@@ -165,6 +165,15 @@ Daemon::Exit Daemon::run()
             fds.push_back({connection->fd(), events, 0});
             pending = pending || connection->pending();
         }
+        const std::size_t firstAttachment = fds.size();
+        int connectWait = -1;
+        for (const auto& [name, attachment] : m_attachments) {
+            fds.push_back(attachment->pollFd());
+            pending = pending || attachment->busy();
+            if (const int left = attachment->connectTimeoutMs(); left >= 0 && (connectWait < 0 || left < connectWait)) {
+                connectWait = left;
+            }
+        }
         // Lines that wait in a buffer get their turn at once. Until the
         // first session, the start wait bounds the poll: then an idle daemon
         // ends even when nothing wakes it. After the wait, only a connection
@@ -176,6 +185,8 @@ Daemon::Exit Daemon::run()
             const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(startDeadline - std::chrono::steady_clock::now());
             if (left.count() >= 0) timeout = int(left.count()) + 1;
         }
+        // A window that does not connect to its attach socket in time loses it.
+        if (connectWait >= 0 && (timeout < 0 || connectWait + 1 < timeout)) timeout = connectWait + 1;
         const int ready = ::poll(fds.data(), fds.size(), timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
@@ -195,7 +206,22 @@ Daemon::Exit Daemon::run()
             (void)!::read(m_wakeFd, &count, sizeof count);
             reap();
         }
-        for (std::size_t i = firstConnection; i < fds.size(); ++i) {
+        // The attachments in the order of the poll: a call below can add or
+        // remove one, so their names are taken first.
+        std::vector<std::pair<std::string, short>> attached;
+        {
+            std::size_t i = firstAttachment;
+            for (const auto& [name, attachment] : m_attachments) attached.emplace_back(name, fds[i++].revents);
+        }
+        for (const auto& [name, revents] : attached) {
+            const auto it = m_attachments.find(name);
+            const auto session = find(name);
+            if (it == m_attachments.end() || session == m_sessions.end()) continue;
+            // A window that left detaches: the session keeps running.
+            if (!it->second->handle(revents, **session)) m_attachments.erase(it);
+        }
+        pumpAttachments();
+        for (std::size_t i = firstConnection; i < firstAttachment; ++i) {
             auto& connection = *m_connections[i - firstConnection];
             if (fds[i].revents & POLLOUT) connection.flush();
             if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) || connection.pending()) read(connection);
@@ -259,6 +285,8 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller)
     if (request.fn == Fn::NewSession) return newSession(request);
     if (request.fn == Fn::ListSessions) return listSessions(request, caller);
     if (request.fn == Fn::KillSession) return killSession(request);
+    if (request.fn == Fn::Attach) return attach(request, caller);
+    if (request.fn == Fn::Detach) return detach(request);
     return ipcError(request.id, IpcErrorCode::NoSuchFn, "no function '" + request.fn + "' on target '" + request.target + "'");
 }
 
@@ -297,7 +325,11 @@ std::string Daemon::newSession(const IpcRequest& request)
 std::string Daemon::listSessions(const IpcRequest& request, pid_t caller)
 {
     Json::Array sessions;
-    for (const auto& session : m_sessions) sessions.push_back(toJson(session->info(caller)));
+    for (const auto& session : m_sessions) {
+        SessionInfo info = session->info(caller);
+        info.attached = m_attachments.count(session->name()) != 0;
+        sessions.push_back(toJson(info));
+    }
     return ipcReply(request.id.value_or(0), std::move(sessions));
 }
 
@@ -309,9 +341,72 @@ std::string Daemon::killSession(const IpcRequest& request)
     const std::string& name = request.args[0].toString();
     const auto it = find(name);
     if (it == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    if (const auto attached = m_attachments.find(name); attached != m_attachments.end()) {
+        attached->second->finish(Attach::EventType::SessionEnded, nullptr);
+        m_attachments.erase(attached);
+    }
     (*it)->kill();
     m_sessions.erase(it);
     return ipcReply(request.id.value_or(0), nullptr);
+}
+
+std::string Daemon::attach(const IpcRequest& request, pid_t caller)
+{
+    if (request.args.size() != 3 || !request.args[1].isString() || !request.args[2].isObject()) {
+        return ipcError(request.id, IpcErrorCode::InvalidArg, "attach takes (protocol, name, options)");
+    }
+    const auto protocol = request.args[0].toInteger();
+    if (!protocol || *protocol != ProtocolVersion) {
+        return ipcError(request.id, Error::VersionMismatch,
+                        "the client speaks mux protocol " + (protocol ? std::to_string(*protocol) : std::string("?"))
+                            + ", and the daemon speaks " + std::to_string(ProtocolVersion));
+    }
+    const std::string& name = request.args[1].toString();
+    const auto session = find(name);
+    if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    // Only the process that calls may connect to the socket: a caller that
+    // the kernel did not name could be anyone of the user.
+    if (caller <= 0) return ipcError(request.id, IpcErrorCode::CallFailed, "the daemon cannot tell which process called");
+    const Json::Value* takeover = request.args[2].find("takeover");
+    if (takeover && !takeover->isBool()) return ipcError(request.id, IpcErrorCode::InvalidArg, "'takeover' is not a boolean");
+    const auto attached = m_attachments.find(name);
+    if (attached != m_attachments.end()) {
+        if (!takeover || !takeover->toBool()) {
+            return ipcError(request.id, Error::Attached, "another window shows session '" + name + "'");
+        }
+        attached->second->finish(Attach::EventType::TakenOver, session->get());
+        m_attachments.erase(attached);
+    }
+    // Next to the daemon's socket, in the directory that only the user opens.
+    const std::string& socket = paneSocket();
+    std::string error;
+    auto attachment = Attachment::listen(socket.substr(0, socket.rfind('/')), caller, &error);
+    if (!attachment) return ipcError(request.id, IpcErrorCode::CallFailed, error);
+    const std::string path = attachment->path();
+    m_attachments[name] = std::move(attachment);
+    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}, {"socket", path}});
+}
+
+std::string Daemon::detach(const IpcRequest& request)
+{
+    if (request.args.size() != 1 || !request.args[0].isString()) {
+        return ipcError(request.id, IpcErrorCode::InvalidArg, "detach takes (name)");
+    }
+    const std::string& name = request.args[0].toString();
+    const auto session = find(name);
+    if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    const auto attached = m_attachments.find(name);
+    if (attached == m_attachments.end()) return ipcError(request.id, Error::NotAttached, "no window shows session '" + name + "'");
+    attached->second->finish(Attach::EventType::Detached, session->get());
+    m_attachments.erase(attached);
+    return ipcReply(request.id.value_or(0), nullptr);
+}
+
+void Daemon::pumpAttachments()
+{
+    for (auto& [name, attachment] : m_attachments) {
+        if (const auto session = find(name); session != m_sessions.end()) attachment->pump(**session);
+    }
 }
 
 const std::string& Daemon::paneSocket() const
@@ -341,7 +436,18 @@ std::string Daemon::freeName()
 
 void Daemon::reap()
 {
-    std::erase_if(m_sessions, [](const auto& session) { return session->reap(); });
+    std::erase_if(m_sessions, [this](const auto& session) {
+        std::vector<std::pair<std::uint32_t, int>> closed;
+        const bool ended = session->reap(&closed);
+        const auto attached = m_attachments.find(session->name());
+        if (attached == m_attachments.end()) return ended;
+        for (const auto& [pane, status] : closed) attached->second->paneClosed(pane, status);
+        if (ended) {
+            attached->second->finish(Attach::EventType::SessionEnded, nullptr);
+            m_attachments.erase(attached);
+        }
+        return ended;
+    });
 }
 
 bool Daemon::idle() const

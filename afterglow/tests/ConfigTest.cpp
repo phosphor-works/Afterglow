@@ -708,6 +708,18 @@ TEST(Keybinds, TextBindingsSendTheirBytes)
     EXPECT_EQ(kb.match(&press), Action::None);
 }
 
+TEST_F(ConfigTest, ReadsWhatClosingTheLastWindowOfASessionDoes)
+{
+    EXPECT_EQ(MuxSettings{}.closeOnLastWindow, MuxClose::Kill);
+    {
+        SettingsStore store(write(QStringLiteral("detach.json"), R"({"Mux": {"closeOnLastWindow": "detach"}})"));
+        EXPECT_EQ(store.settings().mux.closeOnLastWindow, MuxClose::Detach);
+    }
+    // Not a choice: the default.
+    SettingsStore store(write(QStringLiteral("other.json"), R"({"Mux": {"closeOnLastWindow": "keep"}})"));
+    EXPECT_EQ(store.settings().mux.closeOnLastWindow, MuxClose::Kill);
+}
+
 TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
 {
     const QString config = write(QStringLiteral("config.json"), R"({
