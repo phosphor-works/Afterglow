@@ -137,6 +137,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | --- | --- | --- | --- |
 | `autoScrollInterval` | `50` | 10–1000 | Milliseconds between the rows that a selection scrolls while you drag it past the top or bottom of a pane. |
 | `middleClick` | `"primary"` | `"primary"`, `"clipboard"`, `"none"` | What a middle click pastes. The none value turns middle-click paste off. |
+| `momentumScroll` | `0.96` | 0–1 | How long a finger scroll on a touchpad or a touchscreen goes on after the fingers lift. It is the part of the speed kept each 8 milliseconds. A higher value coasts further. A value of 0 stops at once, and a value of 1 does not slow down. |
 | `rightClick` | `"menu"` | `"menu"`, `"paste"`, `"copy-or-paste"`, `"extend"` | What a right click does. The menu value opens the context menu. The paste value pastes the clipboard. The copy-or-paste value copies an existing selection, or else pastes. The extend value extends the selection. |
 
 ## Notifications

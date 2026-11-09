@@ -88,6 +88,10 @@ struct MouseSettings
     /// Milliseconds between the rows a selection scrolls while it is
     /// dragged past the top or bottom of its pane.
     int autoScrollInterval = 50;
+    /// The friction of the coast after a finger scroll on a touchpad or a
+    /// touchscreen: the part of the speed kept each 8 ms. 0 turns the coast
+    /// off. kitty's default.
+    double momentumScroll = 0.96;
     bool operator==(const MouseSettings&) const = default;
 };
 

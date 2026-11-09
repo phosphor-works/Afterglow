@@ -598,6 +598,10 @@ PhosphorConfig::Schema buildSchema()
                                "value extends the selection.")),
         enumKey(QStringLiteral("middleClick"), MiddleClickChoices, d.mouse.middleClick,
                 QStringLiteral("What a middle click pastes. The none value turns middle-click paste off.")),
+        doubleKey(QStringLiteral("momentumScroll"), d.mouse.momentumScroll, 0.0, 1.0,
+                  QStringLiteral("How long a finger scroll on a touchpad or a touchscreen goes on after the fingers lift. It is "
+                                 "the part of the speed kept each 8 milliseconds. A higher value coasts further. A value of 0 "
+                                 "stops at once, and a value of 1 does not slow down.")),
         intKey(QStringLiteral("autoScrollInterval"), d.mouse.autoScrollInterval, 10, 1000,
                QStringLiteral("Milliseconds between the rows that a selection scrolls while you drag it past the top or bottom "
                               "of a pane.")),
@@ -1728,6 +1732,7 @@ Settings SettingsStore::read()
     s.mouse.rightClick = readEnum(st, MouseGroup, QStringLiteral("rightClick"), RightClickChoices, s.mouse.rightClick);
     s.mouse.middleClick = readEnum(st, MouseGroup, QStringLiteral("middleClick"), MiddleClickChoices, s.mouse.middleClick);
     s.mouse.autoScrollInterval = st.read<int>(MouseGroup, QStringLiteral("autoScrollInterval"));
+    s.mouse.momentumScroll = st.read<double>(MouseGroup, QStringLiteral("momentumScroll"));
     s.links.detectUrls = st.read<bool>(LinksGroup, QStringLiteral("detectUrls"));
     s.links.openWith = st.read<QString>(LinksGroup, QStringLiteral("openWith")).trimmed();
     s.links.modifier = readEnum(st, LinksGroup, QStringLiteral("modifier"), ModifierChoices, s.links.modifier);

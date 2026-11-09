@@ -9,6 +9,7 @@
 #include "SplitTree.h"
 #include "ShownText.h"
 #include "animation/FrameClock.h"
+#include "animation/MomentumScroll.h"
 #include "animation/PaneMotion.h"
 #include "app/Services.h"
 #include "config/Settings.h"
@@ -265,6 +266,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
+    void touchEvent(QTouchEvent* e) override;
     void focusInEvent(QFocusEvent* e) override;
     void focusOutEvent(QFocusEvent* e) override;
 
@@ -786,6 +788,35 @@ private:
     bool m_blinkOn = true;
     double m_wheelAccumulator = 0;
     QPointer<Pane> m_wheelPane; ///< the pane m_wheelAccumulator belongs to
+    /// Scrolls @p pixels (logical, as a touchpad reports them) in @p pane:
+    /// its history by pixels, or wheel steps of one row to its program.
+    void scrollPixels(Pane* pane, double pixels, const QPointF& at, Qt::KeyboardModifiers modifiers);
+    /// Wheel steps (120 units each) to @p pane: its program's wheel reports,
+    /// arrow keys on the alternate screen, or its history.
+    void scrollNotches(Pane* pane, double notches, const QPointF& at, Qt::KeyboardModifiers modifiers);
+    /// The coast after a finger scroll (Mouse.momentumScroll), stepped by
+    /// m_momentumTimer until it ends.
+    MomentumScroll m_momentum;
+    QTimer m_momentumTimer;
+    QPointer<Pane> m_momentumPane;
+    QPointF m_momentumAt;
+    Qt::KeyboardModifiers m_momentumModifiers;
+    void stopMomentum();
+    /// One finger on a touchscreen, as kitty reads it: a tap clicks, a move
+    /// scrolls (through the finger scroll path, so it coasts), and a finger
+    /// held still for 400 ms and then moved selects.
+    struct TouchGesture
+    {
+        enum class State { Idle, Pending, Scrolling, Selecting, Ignored };
+        State state = State::Idle;
+        int id = -1;
+        QPointF start;
+        QPointF last;
+        std::int64_t downAt = 0;
+        double pixelRest = 0; ///< below one pixel, for the next wheel event
+    };
+    TouchGesture m_touch;
+    void touchScroll(const QPointF& at, double dy, Qt::ScrollPhase phase, Qt::KeyboardModifiers modifiers);
     Qt::MouseButtons m_reportedButtons;
     QPointer<Pane> m_reportedPane; ///< the pane whose program got the reported press
     Qt::MouseButtons m_overviewButtons; ///< the overview took their presses: it takes their releases

@@ -15,6 +15,8 @@ qt_add_executable(afterglow_app_tests
     ../src/SplitTree.cpp
     DockAreaTest.cpp
     ../src/DockArea.cpp
+    MomentumScrollTest.cpp
+    ../src/animation/MomentumScroll.cpp
 )
 target_include_directories(afterglow_app_tests PRIVATE ../src)
 target_link_libraries(afterglow_app_tests PRIVATE Qt6::Core Afterglow::Vt Afterglow::Render GTest::gtest_main)

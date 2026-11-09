@@ -106,6 +106,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 - Search with PCRE2 regular expressions, across soft-wrapped lines.
 - Keyboard selection in character, line and rectangle modes.
+- Finger scrolls on a touchpad or a touchscreen go on after the fingers lift (`Mouse.momentumScroll`, 0.96 by default as in kitty). A touchscreen taps, scrolls and selects with one finger.
 - Text hints that copy, open or run commands on regular-expression matches, and URL hints, labeled from `Hints.alphabet`.
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.
 - Keybindings with multi-key sequences, a leader key and named key tables.

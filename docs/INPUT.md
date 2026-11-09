@@ -224,12 +224,31 @@ Afterglow opens OSC 8 links and plain-text URLs with a click while you hold the 
 | --- | --- | --- |
 | `Mouse.rightClick` | `menu` | `menu`, `paste`, `copy-or-paste`, `extend` |
 | `Mouse.middleClick` | `primary` | `primary`, `clipboard`, `none` |
+| `Mouse.momentumScroll` | `0.96` | 0 to 1 |
 
 `copy-or-paste` copies a selection, or pastes when there is no selection.
 `extend` extends the selection to the click.
 
 A selection that you drag past the top or bottom of a pane scrolls one row each `Mouse.autoScrollInterval`
 milliseconds (50 by default).
+
+### Touchpads and touchscreens
+
+A scroll with fingers on a touchpad goes on after the fingers lift, and slows down until it stops.
+`Mouse.momentumScroll` sets how much of the speed stays each 8 milliseconds. The default is kitty's.
+A value of 0 stops the scroll when the fingers lift.
+A click, a key, a wheel turn or another window that takes the focus stops it at once.
+
+A touchscreen works with one finger. Afterglow reads it as kitty does.
+
+| Gesture | Result |
+| --- | --- |
+| Touch and lift within 8 pixels | A left click where the finger touched |
+| Touch and move at once | A scroll that follows the finger, and goes on after the finger lifts |
+| Touch, hold still for 400 milliseconds, then move | A selection from where the finger touched |
+| Two fingers or more at once | Nothing |
+
+In a program that reads the mouse or uses the alternate screen, each row of scroll distance is one wheel step.
 
 ## Quick terminal
 

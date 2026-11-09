@@ -39,6 +39,8 @@ qt_add_library(afterglow_app STATIC
     src/chrome/ChromeLayer.h
     src/animation/FrameClock.cpp
     src/animation/FrameClock.h
+    src/animation/MomentumScroll.cpp
+    src/animation/MomentumScroll.h
     src/animation/PaneMotion.h
     src/app/Application.cpp
     src/app/InstanceSocket.cpp

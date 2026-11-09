@@ -1367,12 +1367,13 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(defaults.settings().statusNotificationInterval, 3000);
     EXPECT_EQ(defaults.settings().pasteReadTimeout, 10);
     EXPECT_EQ(defaults.settings().mouse.autoScrollInterval, 50);
+    EXPECT_DOUBLE_EQ(defaults.settings().mouse.momentumScroll, 0.96);
     EXPECT_EQ(defaults.settings().control.eventInterval, 100);
 
     SettingsStore custom(write(QStringLiteral("custom.json"), R"({
         "Terminal": {"bellSoundInterval": 0, "pasteReadTimeout": 30},
         "Notifications": {"statusInterval": 0},
-        "Mouse": {"autoScrollInterval": 120},
+        "Mouse": {"autoScrollInterval": 120, "momentumScroll": 0},
         "Control": {"eventInterval": 0}
     })"));
     EXPECT_EQ(custom.settings().control.eventInterval, 0);
@@ -1380,11 +1381,12 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(custom.settings().statusNotificationInterval, 0);
     EXPECT_EQ(custom.settings().pasteReadTimeout, 30);
     EXPECT_EQ(custom.settings().mouse.autoScrollInterval, 120);
+    EXPECT_DOUBLE_EQ(custom.settings().mouse.momentumScroll, 0.0);
 
     SettingsStore clamped(write(QStringLiteral("clamped.json"), R"({
         "Terminal": {"bellSoundInterval": 99999, "pasteReadTimeout": 0},
         "Notifications": {"statusInterval": -5},
-        "Mouse": {"autoScrollInterval": 1},
+        "Mouse": {"autoScrollInterval": 1, "momentumScroll": 3},
         "Control": {"eventInterval": 99999}
     })"));
     EXPECT_EQ(clamped.settings().control.eventInterval, 10000);
@@ -1393,6 +1395,7 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(clamped.settings().bellSoundInterval, 10000);
     EXPECT_EQ(clamped.settings().statusNotificationInterval, 0);
     EXPECT_EQ(clamped.settings().pasteReadTimeout, 1);
+    EXPECT_DOUBLE_EQ(clamped.settings().mouse.momentumScroll, 1.0);
     EXPECT_EQ(clamped.settings().mouse.autoScrollInterval, 10);
 }
 
