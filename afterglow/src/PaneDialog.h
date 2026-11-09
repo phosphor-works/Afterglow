@@ -13,7 +13,8 @@ class Pane;
 /// that the pane moved to, or is rejected when the pane goes with it. Call
 /// it before the dialog shows (open(), not exec(): the native KDE dialog
 /// moves by a hide and a show, which would end the loop of exec()). Nothing
-/// happens when no window shows the pane.
-void keepDialogOverPane(QDialog* dialog, const Pane* pane);
+/// happens when no window shows the pane. Before the dialog shows over a
+/// window, the pane that the window shows emits Pane::dialogOpened.
+void keepDialogOverPane(QDialog* dialog, Pane* pane);
 
 } // namespace Afterglow

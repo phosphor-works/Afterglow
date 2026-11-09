@@ -37,6 +37,8 @@ namespace AfterglowRender {
 class GpuDevice;
 }
 
+class QDialog;
+
 namespace Afterglow {
 
 struct WindowOptions
@@ -259,6 +261,8 @@ public:
     std::pair<qreal, qreal> overviewPosition() const { return {m_overview.position.value(), m_overview.positionTarget}; }
     /// Slides the quick terminal in or out (quick windows only).
     void toggleQuick();
+    /// Whether the quick terminal shows or slides in (quick windows only).
+    bool quickShown() const { return m_quickShown; }
 
 Q_SIGNALS:
     /// The tab list, the current tab or a tab title changed.
@@ -350,7 +354,19 @@ private:
     /// Cancels the title prompt and closes the tab menu when they belong to
     /// tab @p tabId, which is going away: they would have nothing to act on.
     void dropTabPrompts(quint32 tabId);
+    /// Gives @p pane, out of its tab already, to @p destination with what
+    /// this window kept for it.
     void reparentPane(Pane* pane, TerminalWindow* destination);
+    /// A dialog of @p pane is about to show over the quick terminal. A
+    /// layer surface is no parent for it: it would open under the quick
+    /// terminal and block its keys. The quick terminal slides out instead
+    /// (settleQuickDialogs).
+    void quickDialogOpened(Pane* pane, QDialog* dialog);
+    /// Forgets the quick terminal's dialogs that closed, or whose pane closed
+    /// or went to another window. A dialog that came since the last look slides the quick
+    /// terminal out. Once none is left, it slides in again when it slid out
+    /// for them, unless a dialog went with its pane to another window.
+    void settleQuickDialogs();
     /// After a swap or rotation: shows every pane again when the tab was
     /// zoomed (@p wasZoomed), or lets the panes ease to their new places.
     void settleRearrangement(bool wasZoomed);
@@ -840,6 +856,11 @@ private:
     bool m_effectsApplied = false;
     bool m_quickShown = false;
     int m_quickHeight = 0;
+    /// The dialogs of the quick terminal's panes that are open (keepDialogOverPane),
+    /// with the pane each one asks for.
+    std::vector<std::pair<QPointer<QDialog>, QPointer<Pane>>> m_quickDialogs;
+    bool m_quickOutForDialogs = false; ///< the quick terminal slid out for m_quickDialogs
+    bool m_quickDialogAdded = false; ///< a dialog came to m_quickDialogs since settleQuickDialogs looked
     PhosphorAnimation::AnimatedValue<qreal> m_slide;
     std::unordered_map<const Pane*, std::unique_ptr<PaneMotion>> m_motion;
     /// A screenshot that waits for its frame (captureFrame).
@@ -882,7 +903,8 @@ private:
 
     QTimer m_blinkTimer;
     QTimer m_textBlinkTimer; ///< SGR 5 blinking, running only while some shows
-    QTimer m_holdRetry; ///< a frame again once a pane's held frame may have timed out
+    QTimer m_holdRetry; ///< a frame again when a pane's held frame times out
+    qint64 m_holdWait = 0; ///< this frame: the milliseconds until the first held frame times out
     bool m_textBlinkOn = true;
     /// Tells each pane whether it can be seen (mode 2033 reports).
     void updatePaneVisibility();

@@ -68,6 +68,15 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
         destination->motion(pane).pointerShape = it->second->pointerShape;
     m_motion.erase(pane); // motion objects reference the source window's clock
     m_growFrom.erase(pane);
+    // A key held over the pane or its overlay releases in the destination,
+    // which takes the keyboard. This window would drop the release: the
+    // pane is in none of its tabs.
+    const Pane* overlayProgram = pane->overlay() ? pane->overlay()->pane() : nullptr;
+    for (auto it = m_sentKeys.begin(); it != m_sentKeys.end();) {
+        if (it->pane.data() != pane && (!overlayProgram || it->pane.data() != overlayProgram)) { ++it; continue; }
+        destination->m_sentKeys.insert(it.key(), *it);
+        it = m_sentKeys.erase(it);
+    }
     // Its overlay comes along, without its fade: the fade's clock is this window's.
     m_overlayFades.erase(pane);
     if (PaneOverlay* overlay = pane->overlay()) {
@@ -88,6 +97,9 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
     if (!pane->docks().empty()) windowAccessibilityChanged(this);
     pane->setParent(destination);
     destination->bindPane(pane);
+    // Its dialogs went with it: the quick terminal forgets them, and does not
+    // slide in for them (settleQuickDialogs). Queued: once the transfer is over.
+    if (m_quick) QMetaObject::invokeMethod(this, &TerminalWindow::settleQuickDialogs, Qt::QueuedConnection);
 }
 
 std::unique_ptr<TerminalWindow::Tab> TerminalWindow::removeTabShell(int index)
@@ -145,6 +157,12 @@ QString TerminalWindow::movePaneTo(Pane* pane, TerminalWindow* destination, Pane
     };
     const quint32 sourceTab = current(this), destinationTab = current(destination);
     const int sourceIndex = m_currentTab, destinationIndex = destination->m_currentTab;
+    // As for a split (splitFocused): both panes keep the least size, or the
+    // move is refused before anything changes. The pane's own room counts
+    // when it is the target's sibling, which takes it (SplitTree::canSplit).
+    if (beside && !destination->m_tabs[std::size_t(destination->tabOf(beside))]->splits->canSplit(
+                      beside, direction, destination->dividerPixels(), destination->minimumPaneSize(), pane))
+        return QStringLiteral("There is not enough room beside that pane");
     const bool wasFocused = pane == m_focused;
     releasePaneUi(pane);
     auto& tab = *m_tabs[std::size_t(index)];
@@ -161,7 +179,7 @@ QString TerminalWindow::movePaneTo(Pane* pane, TerminalWindow* destination, Pane
     if (beside) {
         auto& target = *destination->m_tabs[std::size_t(destination->tabOf(beside))];
         target.splits->setZoomedPane(nullptr);
-        target.splits->split(beside, pane, direction);
+        target.splits->split(beside, pane, direction, 0.5, destination->dividerPixels(), destination->minimumPaneSize());
         target.focused = pane;
         destination->m_currentTab = destination->tabOf(beside);
     } else {

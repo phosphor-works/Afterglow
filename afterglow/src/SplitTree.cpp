@@ -59,6 +59,20 @@ void SplitTree::split(Pane* target, Pane* added, Direction direction, double fra
     leaf->second = std::move(second);
 }
 
+bool SplitTree::canSplit(const Pane* target, Direction direction, int dividerWidth, const QSize& minimum,
+                         const Pane* leaving) const
+{
+    const Node* leaf = find(m_root.get(), target);
+    if (!leaf) return false;
+    QRect room = leaf->rect;
+    if (const Node* gone = leaving ? find(m_root.get(), leaving) : nullptr; gone && gone->parent && gone->parent == leaf->parent)
+        room = leaf->parent->rect;
+    if (room.isEmpty()) return true;
+    const bool vertical = direction == Direction::Down || direction == Direction::Up;
+    const int least = vertical ? minimum.height() : minimum.width();
+    return least <= 0 || (vertical ? room.height() : room.width()) - dividerWidth >= 2 * least;
+}
+
 bool SplitTree::remove(Pane* pane)
 {
     Node* leaf = find(m_root.get(), pane);

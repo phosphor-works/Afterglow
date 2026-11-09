@@ -39,7 +39,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Kitty images sent as a file, a temporary file or shared memory, unless `Terminal.graphicsFileTransfer` is `deny`.
 - An image memory limit for the main and the alternate screen of each pane (`Graphics.quota`, 320 MiB each by default). Images without a placement go first: those sent with the transient hint (`N=1`), then the oldest.
 - Sixel images.
-- iTerm2 inline images and file downloads (OSC 1337), with a native Save dialog.
+- iTerm2 inline images and file downloads (OSC 1337), with a native Save dialog. The dialog moves with its pane to another window.
 - Kitty text sizing (OSC 66).
 - The Kitty multiple-cursors protocol, with mixed block and beam layering.
 
@@ -100,7 +100,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Pane and tab moves between tabs and windows. A drag outside the tab bar detaches a tab into a new window.
 - Saved projects that store a window's tabs, splits, directories and launch arguments.
 - Terminal sessions that keep running without a window, in the `afterglow-mux` daemon. `afterglow mux new --detach` starts a session with one pane, and `afterglow mux ls` and `afterglow mux kill` list and end the sessions. A window cannot show a session.
-- A quick terminal on a Wayland layer surface, toggled by a global shortcut. It slides from the top or bottom edge of a chosen screen.
+- A quick terminal on a Wayland layer surface, toggled by a global shortcut. It slides from the top or bottom edge of a chosen screen. It slides away while a file transfer prompt or a Save dialog of one of its panes is open, and comes back when the dialog closes.
 - Optional background blur on KWin, window transparency and a history scrollbar over the pane that fades when idle.
 - `Window.tabBarHeight` sets the height of the tab bar, and `Window.scrollbarWidth` sets the width of the scrollbar.
 

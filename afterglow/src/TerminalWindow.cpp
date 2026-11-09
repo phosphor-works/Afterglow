@@ -416,7 +416,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     m_autoScroll.setInterval(m_settings.settings().mouse.autoScrollInterval);
     connect(&m_autoScroll, &QTimer::timeout, this, &TerminalWindow::updateSelectionDrag);
     m_holdRetry.setSingleShot(true);
-    m_holdRetry.setInterval(50);
+    m_holdRetry.setTimerType(Qt::PreciseTimer);
     connect(&m_holdRetry, &QTimer::timeout, this, &TerminalWindow::scheduleRender);
 
     s_windows.append(this);
@@ -555,6 +555,8 @@ void TerminalWindow::bindPane(Pane* pane)
         }
     });
     connect(pane, &Pane::clipboardWriteRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& text, bool primary) {
+        // As for clipboardRequested: a write that the pane sent before its
+        // tab or its overlay closed would ask for a program that is ending.
         if (!guard || !takesInput(guard)) return;
         AfterglowVt::ClipboardRequest write;
         write.kind = AfterglowVt::ClipboardRequest::Kind::Write;
@@ -600,7 +602,7 @@ void TerminalWindow::bindPane(Pane* pane)
                     // An overlay's program is on its host, which shows it.
                     Pane* const place = hostOf(guard);
                     const bool focused = isActive() && place == m_focused;
-                    const bool visible = isExposed() && windowState() != Qt::WindowMinimized && tabOf(place) == m_currentTab && m_splits->isVisible(place);
+                    const bool visible = isExposed() && windowState() != Qt::WindowMinimized && tabOf(place) == m_currentTab && m_splits && m_splits->isVisible(place);
                     if ((request.occasion == Occasion::Unfocused && focused)
                         || (request.occasion == Occasion::Invisible && visible)) {
                         return;
@@ -648,12 +650,22 @@ void TerminalWindow::bindPane(Pane* pane)
         if (!pane) return;
         // Asked by the transfer itself, so the worker exists already.
         const QPointer<FileTransfer> guard = pane->fileTransfers();
+        // A request that the pane sent before its tab or its overlay closed:
+        // nobody is left to answer it.
+        if (!takesInput(pane)) {
+            guard->approve(token, false);
+            return;
+        }
         // The dialog keeps the paths that it shows: a Yes approves those, and
         // the files that come later get a dialog of their own, unless the
         // worker refuses them.
         const FileTransfer::Question question = FileTransfer::question(writing, paths, total, othersRefused, clipboardAsker(pane));
         auto* dialog = new QMessageBox(QMessageBox::Question, tr("File transfer"), question.text, QMessageBox::Yes | QMessageBox::No);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
+        // A native message box (Plasma's) is a second box that this one
+        // opens later, and that adds its buttons again each time it shows:
+        // keepDialogOverPane moves a native dialog by a hide and a show.
+        dialog->setOption(QMessageBox::Option::DontUseNativeDialog);
         dialog->setTextFormat(Qt::PlainText);
         dialog->setDefaultButton(QMessageBox::No);
         if (!question.detail.isEmpty()) dialog->setDetailedText(question.detail);
@@ -667,6 +679,10 @@ void TerminalWindow::bindPane(Pane* pane)
             connect(guard, &FileTransfer::sessionClosed, dialog, [dialog, token](const QString& closed) { if (closed == token) dialog->reject(); });
         }
         dialog->open();
+    });
+    // Direct: the window changes the dialog before it shows.
+    connect(pane, &Pane::dialogOpened, this, [this, guard = QPointer<Pane>(pane)](QDialog* dialog) {
+        if (guard && m_quick) quickDialogOpened(guard, dialog);
     });
     connect(pane, &Pane::pointerShapeRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& shape) {
         if (guard) {
@@ -1850,6 +1866,7 @@ void TerminalWindow::renderNow()
     std::vector<std::pair<QRect, std::uint32_t>> shading;
     const bool multiple = m_splits->paneCount() > 1;
     bool holding = false;
+    m_holdWait = std::numeric_limits<qint64>::max();
     bool animating = m_shaderControls.advance();
     const auto backgroundAlpha = std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255));
     bool anyBlinkingText = false;
@@ -2053,11 +2070,11 @@ void TerminalWindow::renderNow()
         scheduleRender(); // something is moving: keep frames coming
     }
 
-    if (holding && !m_holdRetry.isActive()) {
-        // A pane is holding its previous frame; look again once the hold may
-        // have timed out. New output re-renders sooner on its own. One look
+    if (holding && (!m_holdRetry.isActive() || m_holdRetry.remainingTime() > m_holdWait)) {
+        // A pane is holding its previous frame: look again when the first
+        // hold times out. New output re-renders sooner on its own. One look
         // at a time, however many held frames come before it.
-        m_holdRetry.start();
+        m_holdRetry.start(int(std::clamp<qint64>(m_holdWait, 1, std::numeric_limits<int>::max())));
     }
 }
 
@@ -2120,6 +2137,7 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     }
     if (!applyScroll(pane, m)) {
         holding = true;
+        m_holdWait = std::min(m_holdWait, pane->holdRemaining());
     }
     const float shift = m.scrollShift;
 
@@ -2946,6 +2964,8 @@ bool TerminalWindow::performAction(Action action)
     case Action::FocusDown:
         return focus(SplitTree::Neighbour::Down);
     case Action::EqualizeSplits:
+        // A window that gave its last tab away has no tree until it closes.
+        if (!m_splits) return false;
         m_splits->equalize();
         m_layoutSize = QSize();
         scheduleRender();
@@ -3936,13 +3956,16 @@ void TerminalWindow::showUrlHints()
     const auto& m = m_renderer->fonts().fonts->metrics();
     const QPoint origin = contentRect(m_urlMode.pane, m_splits->rectOf(hostOf(m_urlMode.pane))).topLeft();
     const qreal dpr = devicePixelRatio();
+    const auto& snap = m_urlMode.pane->snapshot();
     QVariantList list;
     for (const UrlHint& h : m_urlMode.hints) {
         if (!h.label.startsWith(m_urlMode.typed)) {
             continue;
         }
-        // On the rows as drawn: up by the scroll shift.
-        list.append(QVariantMap{{QStringLiteral("x"), (origin.x() + m_urlMode.pane->snapshot().visualColumn(h.col, h.row) * m.cellWidth) / dpr},
+        // On the rows as drawn: up by the scroll shift, with double-width
+        // cells on a double-size line (cellAt).
+        const int scale = snap.lineSize(h.row) != AfterglowVt::LineSize::Single ? 2 : 1;
+        list.append(QVariantMap{{QStringLiteral("x"), (origin.x() + snap.visualColumn(h.col, h.row) * m.cellWidth * scale) / dpr},
                                 {QStringLiteral("y"), (origin.y() + h.row * m.cellHeight - drawnScrollShift(m_urlMode.pane)) / dpr},
                                 {QStringLiteral("label"), h.label},
                                 {QStringLiteral("typed"), int(m_urlMode.typed.size())}});
@@ -4249,6 +4272,54 @@ void TerminalWindow::setQuickOffset(int offset)
     PhosphorWayland::LayerSurface::get(this)->setMargins(bottom ? QMargins(0, 0, 0, offset) : QMargins(0, offset, 0, 0));
 }
 
+void TerminalWindow::quickDialogOpened(Pane* pane, QDialog* dialog)
+{
+    dialog->windowHandle()->setTransientParent(nullptr);
+    const bool known = std::any_of(m_quickDialogs.begin(), m_quickDialogs.end(), [dialog](const auto& entry) { return entry.first == dialog; });
+    if (!known) {
+        m_quickDialogs.emplace_back(dialog, pane);
+        m_quickDialogAdded = true;
+    }
+    // Queued: the quick terminal does not slide in the middle of a pane's
+    // transfer.
+    const auto queued = Qt::ConnectionType(Qt::QueuedConnection | Qt::UniqueConnection);
+    connect(dialog, &QDialog::finished, this, &TerminalWindow::settleQuickDialogs, queued);
+    connect(dialog, &QObject::destroyed, this, &TerminalWindow::settleQuickDialogs, queued);
+    QMetaObject::invokeMethod(this, &TerminalWindow::settleQuickDialogs, Qt::QueuedConnection);
+}
+
+void TerminalWindow::settleQuickDialogs()
+{
+    // A quick terminal that gave its last tab away closes: it shows again
+    // for nothing.
+    if (m_tabs.empty()) {
+        m_quickDialogs.clear();
+        m_quickDialogAdded = m_quickOutForDialogs = false;
+        return;
+    }
+    // A pane that went to another window has that window as its parent: one
+    // that closed is gone, or is this window's until it is deleted.
+    bool paneLeft = false;
+    std::erase_if(m_quickDialogs, [this, &paneLeft](const auto& entry) {
+        paneLeft |= entry.second && entry.second->parent() != this;
+        return !entry.second || tabOf(entry.second) < 0 || !entry.first || !entry.first->isVisible();
+    });
+    // Only a dialog that came since the last look slides the quick terminal
+    // out: one that the user toggled it in over stays behind it.
+    if (!m_quickDialogs.empty()) {
+        if (std::exchange(m_quickDialogAdded, false) && m_quickShown) {
+            toggleQuick();
+            m_quickOutForDialogs = true;
+        }
+        return;
+    }
+    m_quickDialogAdded = false;
+    // A dialog that went with its pane to another window asks there: the
+    // quick terminal would take the keyboard from that window.
+    if (!std::exchange(m_quickOutForDialogs, false) || paneLeft) return;
+    if (!m_quickShown) toggleQuick();
+}
+
 int TerminalWindow::slideOffset() const
 {
     // The compositor sends no frame callback to a surface that is on no
@@ -4263,6 +4334,8 @@ void TerminalWindow::toggleQuick()
     if (!m_quick) {
         return;
     }
+    // The user's toggle wins over the slide out for dialogs.
+    m_quickOutForDialogs = m_quickDialogAdded = false;
     const QuickTerminalSettings& quick = m_settings.settings().quickTerminal;
     const bool animate = quick.animate;
     const auto spec = motionSpec(quick.curve, quick.duration, m_quickCurve, "QuickTerminal.curve", QuickTerminalSettings{}.curve);
@@ -4934,7 +5007,7 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     const bool divider = e->button() == Qt::LeftButton && !(e->modifiers() & Qt::ControlModifier)
         && dividerTakesDock(dockPixel(e->position()));
     if (!divider && pressDock(e)) return;
-    Pane* p = m_splits->paneAt((e->position() * devicePixelRatio()).toPoint());
+    Pane* p = m_splits->paneAt(dockPixel(e->position()));
     if (p && p != m_focused) {
         setFocusedPane(p);
     }
@@ -5289,7 +5362,7 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         applyPointerShape();
         return;
     }
-    const QPoint px = (e->position() * devicePixelRatio()).toPoint();
+    const QPoint px = dockPixel(e->position());
     m_dockButtons &= e->buttons(); // a release that went elsewhere
     m_reportedButtons &= e->buttons();
     if (m_reportedButtons == Qt::NoButton) m_reportedPane = nullptr;
@@ -5422,7 +5495,7 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
         wheelDock(*overDock, overPixel, e);
         return;
     }
-    Pane* p = m_splits->paneAt((e->position() * devicePixelRatio()).toPoint());
+    Pane* p = m_splits->paneAt(dockPixel(e->position()));
     if (!p) {
         p = m_focused;
     }

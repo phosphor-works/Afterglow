@@ -18,9 +18,14 @@ namespace {
 
 /// The window that shows @p pane: the one that shows its host, for an
 /// overlay's program. A pane in a tab is a child of its window.
-QWindow* windowOf(const Pane* pane)
+Pane* shownPane(Pane* pane)
 {
-    const Pane* const shown = pane && pane->overlayHost() ? pane->overlayHost() : pane;
+    return pane && pane->overlayHost() ? pane->overlayHost() : pane;
+}
+
+QWindow* windowOf(Pane* pane)
+{
+    Pane* const shown = shownPane(pane);
     return shown ? qobject_cast<QWindow*>(shown->parent()) : nullptr;
 }
 
@@ -32,7 +37,7 @@ QWindow* windowOf(const Pane* pane)
 class DialogKeeper final : public QObject
 {
 public:
-    DialogKeeper(QDialog* dialog, const Pane* pane) : QObject(dialog), m_dialog(dialog), m_pane(pane) {}
+    DialogKeeper(QDialog* dialog, Pane* pane) : QObject(dialog), m_dialog(dialog), m_pane(pane) {}
 
     void attach(QWindow* window)
     {
@@ -46,6 +51,7 @@ public:
             // or chose in it: only its surface goes.
             m_dialog->hide();
             own->setTransientParent(window);
+            if (m_pane) Q_EMIT shownPane(m_pane)->dialogOpened(m_dialog);
             m_dialog->show();
         } else {
             // The dialog's own window takes the new one. A native dialog
@@ -55,6 +61,7 @@ public:
             // would take back the first name, and the portal would open a
             // second chooser.
             own->setTransientParent(window);
+            if (m_pane) Q_EMIT shownPane(m_pane)->dialogOpened(m_dialog);
         }
         window->installEventFilter(this);
     }
@@ -88,12 +95,12 @@ private:
     }
 
     QDialog* m_dialog;
-    QPointer<const Pane> m_pane;
+    QPointer<Pane> m_pane;
 };
 
 } // namespace
 
-void keepDialogOverPane(QDialog* dialog, const Pane* pane)
+void keepDialogOverPane(QDialog* dialog, Pane* pane)
 {
     QWindow* const window = windowOf(pane);
     if (!window) return;

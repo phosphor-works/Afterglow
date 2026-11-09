@@ -12,6 +12,7 @@
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
 
+#include <QDeadlineTimer>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QList>
@@ -31,6 +32,9 @@
 #include <optional>
 #include <utility>
 #include <vector>
+
+class QDialog;
+class QWindow;
 
 namespace Afterglow {
 
@@ -134,6 +138,10 @@ public:
     /// prompt the shell has not repainted yet.
     /// @p extraRows below the viewport are captured for fractional scrolling.
     bool refreshSnapshot(int extraRows = 0);
+    /// While refreshSnapshot holds the previous frame: the milliseconds until
+    /// that hold times out, when a frame must be drawn whatever the program
+    /// does. 0 when the last refresh held nothing.
+    qint64 holdRemaining() const;
     const AfterglowRender::PaneSnapshot& snapshot() const noexcept { return m_snapshot; }
     /// Hands the snapshot out with its identity, for the last frame of a
     /// pane that draws no more (an overlay that ended, fading out). The next
@@ -256,6 +264,12 @@ public:
     TerminalText accessibleText(bool cursorRow = false) const;
 
 Q_SIGNALS:
+    /// keepDialogOverPane put @p dialog over this pane's window, and the
+    /// dialog is about to show there: when it opens, and when it moves to
+    /// the window that the pane went to. Emitted on the pane in the tab, also
+    /// for an overlay's dialog. The window can change how the dialog shows
+    /// (the quick terminal does).
+    void dialogOpened(QDialog* dialog);
     /// The terminal changed. Emitted on the GUI thread, coalesced.
     void contentChanged();
     /// The program's drag offer (OSC 72) starts as a drag of the desktop.
@@ -512,8 +526,9 @@ private:
     std::u32string m_searchQuery;
     int m_searchCurrent = -1;
     bool m_searchActive = false;
-    /// Set by the window from the Colors.search* settings when it creates
-    /// the pane (setSearchColors), so the defaults live in one place.
+    /// Set by the window from the Colors.search* settings (setSearchColors),
+    /// when it creates the pane and when the settings change, so the
+    /// defaults live in one place.
     struct SearchColors
     {
         std::uint32_t match = 0;
@@ -533,6 +548,7 @@ private:
     std::uint64_t m_syncSerial = 0; ///< the synchronized update m_syncTimer times
     QElapsedTimer m_syncHoldTimer; ///< since synchronized updates began to hold the frames
     QElapsedTimer m_promptTimer;
+    QDeadlineTimer m_holdDeadline; ///< when the frame refreshSnapshot holds is drawn anyway
 
     std::atomic<bool> m_notifyPending{false};
     QTimer m_animationTimer;
