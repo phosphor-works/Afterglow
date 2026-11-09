@@ -1280,23 +1280,29 @@ MAX_PARALLEL_JOBS = 64
 
 
 def parallel_change(word, how):
-    """WORD as parallel's {.} {/} {//} {/.} give it (HOW is '.', '/', '//' or '/.'), or as it is. parallel uses
-    Perl's File::Basename, which drops a slash at the end first, and its {.} removes the last .EXT even of a
-    dotfile, as the Perl s:[.][^/.]*$:: does)."""
+    """WORD as parallel's {.} {/} {//} {/.} give it (HOW is '.', '/', '//' or '/.'), or as it is. These follow
+    the definitions in parallel itself: {.} is s:[.][^/.]*$::, {/} is s:.*/::, {/.} is both, and {//} is Perl's
+    File::Basename::dirname, the only one that drops slashes at the end."""
     def no_extension(w):
-        return re.sub(r'\.[^/.]*$', '', w)
+        return re.sub(r'[.][^/.]*$', '', w, count=1)
 
-    path = word.rstrip('/') or word[:1]
-    base = path.rsplit('/', 1)[-1] or path
-    if how == '.':
-        return no_extension(word)
-    if how == '/':
-        return base
-    if how == '//':
-        return (path.rsplit('/', 1)[0] or '/') if '/' in path else '.'
-    if how == '/.':
-        return no_extension(base)
-    return word
+    def strip_separators(d):
+        return re.sub(r'(.)/*\Z', r'\1', d, count=1, flags=re.S)
+
+    def fileparse(p):
+        i = p.rfind('/')
+        return p[: i + 1] or './', p[i + 1 :]
+
+    def dirname(p):
+        d, b = fileparse(p)
+        d = strip_separators(d)
+        if not b:
+            d, _ = fileparse(d)
+            d = strip_separators(d)
+        return d
+
+    base = re.sub(r'.*/', '', word, count=1)
+    return {'.': no_extension(word), '/': base, '//': dirname(word), '/.': no_extension(base)}.get(how, word)
 
 
 def parallel_jobs(args):
@@ -1965,7 +1971,10 @@ def check(call):
 
 
 def out_of_time(signum, frame):
-    raise TimeoutError('the command takes longer to check than the guard allows')
+    # Ends the hook here, not with an exception: a handler of the check could catch one (TimeoutError is an
+    # OSError), and one raised during another exception could leave main with status 1, which lets the call run.
+    print(MSG_FAILED.format('the command takes longer to check than the guard allows'), file=sys.stderr, flush=True)
+    os._exit(2)
 
 
 def main():
