@@ -185,6 +185,7 @@ public:
     PostChain& operator=(const PostChain&) = delete;
 
     void setChains(ShaderChains chains);
+    const ShaderChains& chains() const noexcept { return m_chains; }
     /// Audio capture feeds a chain that runs this frame.
     bool audioReactive() const;
     bool readsScrollback() const { return m_chains.readsScrollback(); }

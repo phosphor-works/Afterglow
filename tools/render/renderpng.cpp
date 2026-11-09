@@ -217,6 +217,8 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("previous-context"), QStringLiteral("Its context before that change, 0 to 3 (default 0)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("pulse"), QStringLiteral("A pulse on the last pane: EFFECT:PROGRESS[:COLOR], effect 1 portal, 2 flash, 3 shake, or 4 to 255 for a package's pulse."), QStringLiteral("spec")});
     parser.addOption({QStringLiteral("close-progress"), QStringLiteral("The last pane has closed, 0 to 1, leaving its frame on a blue background. Needs --split or --grid."), QStringLiteral("f")});
+    parser.addOption({QStringLiteral("pointer"), QStringLiteral("Print where a click at X,Y (pixels of the image) lands through the packs' pointer maps (repeatable)."),
+                      QStringLiteral("x,y")});
     parser.addOption({QStringLiteral("overview-position"), QStringLiteral("The highlight's position, a fractional card index (default the highlighted card)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("tabs"), QStringLiteral("With --overview: N tabs with the same panes, the first current (default 1)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("current-tab"), QStringLiteral("With --tabs: the current tab (default 0)."), QStringLiteral("n")});
@@ -762,6 +764,8 @@ int run(QGuiApplication& app)
             }
         }
     }
+    // Names for the pointer maps' lookups (--pointer).
+    for (std::size_t i = 0; i < panes.size(); ++i) panes[i].params.id = std::uint32_t(i + 1);
     // The shading the window puts over several panes (addPaneShading): a
     // black layer over each unfocused pane, which fades as the overview
     // opens, and a divider in the theme's colour right of and below each
@@ -1167,6 +1171,35 @@ int run(QGuiApplication& app)
             renderMs += samples.back();
             pngMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - renderEnd).count();
         }
+    }
+    // A click goes through the window chain's maps to the pane drawn there,
+    // then through that pane's chain to its cell, as the window finds it.
+    const auto& cellMetrics = renderer.fonts().fonts->metrics();
+    for (const QString& value : parser.values(QStringLiteral("pointer"))) {
+        const QStringList xy = value.split(QLatin1Char(','));
+        bool okX = false, okY = false;
+        const QPointF at(xy.value(0).toDouble(&okX), xy.value(1).toDouble(&okY));
+        if (xy.size() != 2 || !okX || !okY) {
+            std::fprintf(stderr, "--pointer takes x,y: %s\n", qPrintable(value));
+            return 1;
+        }
+        const QPointF window = renderer.windowContentPoint(at);
+        const auto pane = std::find_if(panes.begin(), panes.end(), [&](const auto& p) {
+            return QRectF(p.params.rect).contains(window);
+        });
+        if (pane == panes.end()) {
+            std::printf("pointer %g,%g: window %.2f,%.2f, in no pane\n", at.x(), at.y(), window.x(), window.y());
+            continue;
+        }
+        const QPointF content = renderer.paneContentPoint(window, pane->params.id);
+        const QPointF grid = content - QPointF(pane->params.contentOrigin);
+        // Outside the cells, the window takes the nearest cell at the edge.
+        const int col = int(std::floor(grid.x() / cellMetrics.cellWidth)), row = int(std::floor(grid.y() / cellMetrics.cellHeight));
+        const int nearestCol = std::clamp(col, 0, std::max(0, pane->snapshot->cols - 1));
+        const int nearestRow = std::clamp(row, 0, std::max(0, pane->snapshot->rows - 1));
+        std::printf("pointer %g,%g: window %.2f,%.2f, pane %u at %.2f,%.2f, cell %d,%d%s\n", at.x(), at.y(), window.x(),
+                    window.y(), pane->params.id, content.x(), content.y(), nearestCol, nearestRow,
+                    nearestCol != col || nearestRow != row ? " (outside the cells: the nearest one)" : "");
     }
     if (parser.isSet(QStringLiteral("timings"))) {
         std::sort(samples.begin(), samples.end());

@@ -9,6 +9,7 @@
 #include <AfterglowRender/PostChain.h>
 #include <AfterglowRender/Snapshot.h>
 
+#include "PointerMap.h"
 #include "Sprites.h"
 #include <AfterglowRender/RenderFrame.h>
 
@@ -780,7 +781,40 @@ WindowRenderer::WindowRenderer(GpuDevice& device, QWindow* window)
 
 WindowRenderer::~WindowRenderer()
 {
+    // Before the frames of this window are released: a map's readback in
+    // flight finishes, or is left to Qt, while the device can still end it.
+    m_pointerMaps.reset();
     releaseSwapChain();
+}
+
+bool WindowRenderer::hasPointerMaps() const
+{
+    if (!m_post) return false;
+    const ShaderChains& chains = m_post->chains();
+    auto mapped = [](const ShaderProgramPtr& p) { return p && p->hasPointerMap(); };
+    return std::any_of(chains.pane.begin(), chains.pane.end(), mapped)
+        || std::any_of(chains.window.begin(), chains.window.end(), mapped);
+}
+
+QPointF WindowRenderer::windowContentPoint(const QPointF& windowPixel)
+{
+    if (!m_pointerMaps) return windowPixel;
+    // A readback of an offscreen frame (renderToImage) completes when the
+    // frame ends, with no later frame to take it.
+    m_pointerMaps->collect();
+    return m_pointerMaps->unwarp(std::nullopt, windowPixel);
+}
+
+QPointF WindowRenderer::paneContentPoint(const QPointF& windowPixel, std::uint32_t pane)
+{
+    if (!m_pointerMaps || pane == 0) return windowPixel;
+    m_pointerMaps->collect();
+    return m_pointerMaps->unwarp(pane, windowPixel);
+}
+
+std::uint64_t WindowRenderer::pointerMapSerial() const
+{
+    return m_pointerMaps ? m_pointerMaps->serial() : 0;
 }
 
 FontResources& WindowRenderer::fonts()
@@ -939,6 +973,8 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
         m_scrollbackInitialized = false;
         m_scrollbackSettling = false;
     }
+    // Maps of the old chains, and pipelines made for their programs.
+    if (m_pointerMaps) m_pointerMaps->clear();
     if (chains.empty()) {
         m_post.reset();
         m_postWasActive = false;
@@ -952,8 +988,10 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
 
 bool WindowRenderer::animating() const
 {
+    // A pointer map is read back when a later frame begins: frames come
+    // until it has arrived, and stop then.
     return (m_post && (m_post->animated() || m_scrollbackSettling)) || overviewShowing() || transitionShowing()
-        || (paneEffectsShowing() && m_effects.moving);
+        || (paneEffectsShowing() && m_effects.moving) || (m_pointerMaps && m_pointerMaps->pending());
 }
 
 bool WindowRenderer::overviewShowing() const
@@ -1549,6 +1587,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         return;
     }
     RenderFrame frame(cb, target.end);
+    // Readbacks of pointer maps complete when a frame begins: take them in
+    // every frame, also one whose chains have no map any more, so that the
+    // maps stop asking for frames (animating()).
+    if (m_pointerMaps) m_pointerMaps->collect();
     FontResources& res = fonts();
     if (m_fontEpoch != m_device.fontEpoch()) {
         m_builder.clearShapeCache();
@@ -2127,6 +2169,13 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             st.shaderParameters = pane.params.shaderParameters;
             return st;
         };
+        // The pointer maps of what this frame draws: each pane at its
+        // rectangle with its values, and the window with the window chain's.
+        PointerMaps* maps = nullptr;
+        if (hasPointerMaps()) {
+            if (!m_pointerMaps) m_pointerMaps = std::make_unique<PointerMaps>(m_device);
+            maps = m_pointerMaps.get();
+        }
         // The hosts are in the order of their panes, and have their rectangles.
         auto nextHost = overlayHosts.cbegin();
         for (std::size_t index = 0; index < panes.size(); ++index) {
@@ -2144,6 +2193,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
                              pane.params.context, pane.params.previousContext, pane.params.contextProgress,
                              pane.params.pulseProgress, pane.params.pulseEffect, pane.params.pulseColor});
             regions.push_back(st);
+            if (maps && pane.params.id != 0) maps->show(pane.params.id, st.rect, m_post->chains().pane, st.shaderParameters);
             if (under) {
                 hostRegions.push_back(*under);
                 ShaderRegionState fading = st;
@@ -2158,6 +2208,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
                 windowState.overlayHost = false;
                 windowState.rect = whole;
             }
+        }
+        if (maps) {
+            maps->show(std::nullopt, windowState.rect, m_post->chains().window, windowState.shaderParameters);
+            maps->endRegions();
         }
         std::erase_if(m_cursorTracks, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
         for (const TabSlice& slice : slices) {
@@ -2444,6 +2498,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     if (post) {
         m_post->finishFrame(cb);
     }
+    // After the frame's passes: grids that this frame asked for.
+    if (m_pointerMaps) m_pointerMaps->record(frame);
     frame.finish();
 
     // Panes not drawn this frame (closed, or in another tab) drop their cache.

@@ -2047,6 +2047,13 @@ void TerminalWindow::renderNow()
     const FrameResult frame = m_renderer->render(panes, shading, clear, chrome, m_chrome->serial());
     if (frame == FrameResult::Retry)
         scheduleRender();
+    // Pointer maps arrive frames after their pack, size or values change:
+    // what is under a pointer that stays still moves then.
+    if (const std::uint64_t serial = m_renderer->pointerMapSerial(); serial != m_pointerMapSerial) {
+        m_pointerMapSerial = serial;
+        // A link that changed sets the shape itself.
+        if (m_pointer.x() < 0 || m_overview.open || !updateLinkHover()) applyPointerShape();
+    }
     updateAudioCapture();
     if (anyBlinkingText && !m_textBlinkTimer.isActive()) {
         m_textBlinkTimer.start();
@@ -2174,6 +2181,7 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     params.scrollShift = shift;
     params.signals = pane->shaderSignals();
     params.shaderParameters = m_shaderControls.values(pane->id());
+    params.id = pane->id();
 }
 
 void TerminalWindow::followViewport(Pane* pane, PaneMotion& m)
@@ -2366,7 +2374,7 @@ bool TerminalWindow::event(QEvent* e)
             return true;
         }
         if (target && target->hasDragDrop() && !target->isHeld() && !m_controller->wantsKeyboard() && target->dragDrop()->acceptsDrops()) {
-            const QPoint pixel = gridPixel(target, drop->position()).toPoint();
+            const QPoint pixel = cellPixel(target, drop->position());
             // The drop waits while the program reads it, in an event loop.
             const NestedLoop receiving(this);
             target->dragDrop()->drop(drop, e->type() == QEvent::Drop, cellAt(target, drop->position()), pixel);
@@ -2432,7 +2440,8 @@ bool TerminalWindow::event(QEvent* e)
         // on shows now.
         m_pointer = static_cast<QEnterEvent*>(e)->position();
         m_renderer->setMousePosition(m_pointer * devicePixelRatio());
-        updateLinkHover();
+        // No link over the overview's cards, as no move finds one there.
+        if (!m_overview.open) updateLinkHover();
         applyPointerShape();
         if (m_readsMouse) scheduleRender();
         break;
@@ -2442,6 +2451,15 @@ bool TerminalWindow::event(QEvent* e)
         m_hover = {};
         m_pointer = QPointF(-1, -1);
         updateDockHover();
+        if (chromeVisible() && !m_chromeGrab) {
+            // The chrome hears of the pointer only through deliver(): as a
+            // move out of the window does, this one ends its hover (a tab,
+            // the scrollbar that hides when the pointer leaves it). Not
+            // during a press that the chrome took: its drag goes on.
+            QMouseEvent outside(QEvent::MouseMove, QPointF(-1, -1), QPointF(-1, -1), Qt::NoButton, Qt::NoButton,
+                                QGuiApplication::keyboardModifiers());
+            m_chrome->deliver(&outside);
+        }
         scheduleRender();
         break;
     case QEvent::PlatformSurface:
@@ -3546,17 +3564,16 @@ void TerminalWindow::applyPointerShape()
         setCursor(m_chrome->cursorAt(m_pointer));
         return;
     }
-    // The same pixel as a press: dockPixel for the docks and the dividers.
-    const QPoint px = dockPixel(m_pointer);
-    if (const DockArea* dock = dockAt(px); dock && !dividerTakesDock(px)) {
-        setCursor(dock->itemAt(px).isEmpty() ? Qt::ArrowCursor : Qt::PointingHandCursor);
+    // The same pixels as a press finds the docks and the dividers at.
+    if (const DockArea* dock = dockAt(m_pointer); dock && !dividerTakesDock(m_pointer)) {
+        setCursor(dock->itemAt(dockPixelOf(*dock, m_pointer)).isEmpty() ? Qt::ArrowCursor : Qt::PointingHandCursor);
         return;
     }
     if (m_overview.open) {
         setCursor(Qt::ArrowCursor);
         return;
     }
-    if (const auto divider = m_splits ? m_splits->dividerAt(px, dividerTolerance()) : std::nullopt) {
+    if (const auto divider = m_splits ? m_splits->dividerAt(dividerPixel(m_pointer), dividerTolerance()) : std::nullopt) {
         setCursor(divider->vertical ? Qt::SplitVCursor : Qt::SplitHCursor);
         return;
     }
@@ -3564,18 +3581,22 @@ void TerminalWindow::applyPointerShape()
         setCursor(Qt::PointingHandCursor);
         return;
     }
-    Pane* pane = m_splits ? pointerTarget(m_splits->paneAt(px), m_pointer) : nullptr;
+    Pane* pane = m_splits ? pointerTarget(paneShownAt(m_pointer), m_pointer) : nullptr;
     const QString shape = pane ? motion(pane).pointerShape : QString();
     setCursor(protocolPointer(shape, devicePixelRatio()));
 }
 
 TerminalWindow::LinkHover TerminalWindow::linkAt(Pane* pane, const QPointF& pos) const
 {
+    // Only over the cells: not from around them, where the cell clamps to
+    // the grid's edge (the padding, or what a pack shows around a pane).
+    if (!pane || !overCells(pane, pos)) return {};
+    return linkAtCell(pane, cellAt(pane, pos));
+}
+
+TerminalWindow::LinkHover TerminalWindow::linkAtCell(Pane* pane, const QPoint& cell) const
+{
     LinkHover found;
-    if (!pane) {
-        return found;
-    }
-    const QPoint cell = cellAt(pane, pos);
     const AfterglowRender::PaneSnapshot& snap = pane->snapshot();
     found.version = snap.version;
     if (cell.x() < snap.cols && cell.y() < snap.rows) {
@@ -3601,7 +3622,7 @@ TerminalWindow::LinkHover TerminalWindow::linkAt(Pane* pane, const QPointF& pos)
     return found;
 }
 
-void TerminalWindow::openContextMenu(const QPointF& pos)
+void TerminalWindow::openContextMenu(const QPointF& pos, const QString& link)
 {
     auto entry = [](int id, const QString& title, const char* icon, const QString& shortcut = {}, bool enabled = true) {
         return QVariant(QVariantMap{{QStringLiteral("id"), id},
@@ -3624,10 +3645,7 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
     m_menuTab = 0; // a pane menu has no tab items
 
     QVariantList items;
-    // Only a link under the pointer: not one at the focused pane's edge,
-    // where a click on a divider would clamp to.
-    Pane* under = paneUnder(pos);
-    m_menuLink = under == m_focused ? linkAt(inputPane(m_focused), pos).url : QString();
+    m_menuLink = link;
     if (!m_menuLink.isEmpty()) {
         items << entry(MenuOpenLink, QStringLiteral("Open Link"), "internet-web-browser")
               << entry(MenuCopyLink, QStringLiteral("Copy Link Address"), "insert-link") << separator;
@@ -3721,12 +3739,13 @@ void TerminalWindow::openPaneMenu(Pane* pane)
     // overlay's while one runs over the pane.
     Pane* shown = inputPane(pane);
     shown->refreshSnapshot();
-    // The middle of the cell: a link under the cursor is the menu's, as it
-    // is under a pointer.
-    openContextMenu(cursorCellRect(shown).center());
+    // A link under the cursor is the menu's, as one under a pointer is. The
+    // cursor's cell is in the layout, not where a pack draws it.
+    const QPointF cursor = cursorCellRect(shown).center();
+    openContextMenu(cursor, linkAtCell(shown, cellOf(shown, gridPixelAt(shown, cursor * devicePixelRatio()))).url);
 }
 
-void TerminalWindow::updateLinkHover()
+bool TerminalWindow::updateLinkHover()
 {
     // Not over a pane's dock, where the cell would clamp to the grid's edge.
     Pane* pane = linkModifierHeld() ? pointerTarget(paneUnder(m_pointer), m_pointer) : nullptr;
@@ -3738,6 +3757,7 @@ void TerminalWindow::updateLinkHover()
         applyPointerShape();
         scheduleRender();
     }
+    return changed;
 }
 
 void TerminalWindow::refreshLinkHover(Pane* pane)
@@ -4476,9 +4496,11 @@ void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
         || (e->key() == Qt::Key_Shift && linkModifier == Qt::ShiftModifier)
         || (e->key() == Qt::Key_Alt && linkModifier == Qt::AltModifier)) {
         // queryKeyboardModifiers() still reports the key during its own release.
-        m_hover = {};
-        applyPointerShape();
-        scheduleRender();
+        if (!m_hover.url.isEmpty() || m_hover.pane) {
+            m_hover = {};
+            applyPointerShape();
+            scheduleRender();
+        }
     }
     // The press reached a program: so does its release, whatever has the
     // keyboard now and whichever pane has the focus. Auto-repeat comes as
@@ -4861,17 +4883,71 @@ float TerminalWindow::drawnScrollShift(const Pane* pane) const
     return found == m_motion.end() ? 0.0f : found->second->scrollShift;
 }
 
-QPointF TerminalWindow::gridPixel(Pane* pane, const QPointF& pos) const
+QPointF TerminalWindow::windowContentPixel(const QPointF& logical) const
+{
+    // The window chain draws over the composed panes, so its maps come first.
+    return m_renderer->windowContentPoint(logical * devicePixelRatio());
+}
+
+QPointF TerminalWindow::paneContentPixel(Pane* pane, const QPointF& logical) const
+{
+    return m_renderer->paneContentPoint(windowContentPixel(logical), hostOf(pane)->id());
+}
+
+QPoint TerminalWindow::dividerPixel(const QPointF& logical) const
+{
+    const QPointF px = windowContentPixel(logical);
+    return QPoint(int(std::floor(px.x())), int(std::floor(px.y())));
+}
+
+Pane* TerminalWindow::paneShownAt(const QPointF& logical) const
+{
+    if (!m_splits || !QRectF(QPointF(0, 0), QSizeF(size())).contains(logical)) return nullptr;
+    // A map that sends the point out of the window shows the window's edge
+    // there: the pane at that edge.
+    const QSize window = windowPixels();
+    const QPoint px = dividerPixel(logical);
+    return m_splits->paneAt(QPoint(std::clamp(px.x(), 0, std::max(0, window.width() - 1)),
+                                   std::clamp(px.y(), 0, std::max(0, window.height() - 1))));
+}
+
+QPointF TerminalWindow::gridPixelAt(Pane* pane, const QPointF& pixel) const
 {
     const QPoint origin = contentRect(pane, m_splits->rectOf(hostOf(pane))).topLeft();
     // The rows were drawn higher by the scroll shift.
-    return pos * devicePixelRatio() - QPointF(origin) + QPointF(0, drawnScrollShift(pane));
+    return pixel - QPointF(origin) + QPointF(0, drawnScrollShift(pane));
+}
+
+QPointF TerminalWindow::gridPixel(Pane* pane, const QPointF& pos) const
+{
+    return gridPixelAt(pane, paneContentPixel(pane, pos));
+}
+
+bool TerminalWindow::overCells(Pane* pane, const QPointF& pos) const
+{
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const QPointF px = gridPixel(pane, pos);
+    return px.x() >= 0 && px.y() >= 0 && px.x() < double(pane->cols()) * m.cellWidth
+        && px.y() < double(pane->rows()) * m.cellHeight;
+}
+
+QPoint TerminalWindow::cellPixel(Pane* pane, const QPointF& pos) const
+{
+    // The pixel the point is in, as cellAt() finds its cell, on the grid.
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const QPointF px = gridPixel(pane, pos);
+    return QPoint(std::clamp(int(std::floor(px.x())), 0, std::max(0, pane->cols() * m.cellWidth - 1)),
+                  std::clamp(int(std::floor(px.y())), 0, std::max(0, pane->rows() * m.cellHeight - 1)));
 }
 
 QPoint TerminalWindow::cellAt(Pane* pane, const QPointF& pos) const
 {
+    return cellOf(pane, gridPixel(pane, pos));
+}
+
+QPoint TerminalWindow::cellOf(Pane* pane, const QPointF& px) const
+{
     const auto& m = m_renderer->fonts().fonts->metrics();
-    const QPointF px = gridPixel(pane, pos);
     const int col = std::clamp(int(std::floor(px.x() / m.cellWidth)), 0, std::max(0, pane->cols() - 1));
     const int row = std::clamp(int(std::floor(px.y() / m.cellHeight)), 0, std::max(0, pane->rows() - 1));
     // On a double-size line each cell is drawn twice as wide.
@@ -4911,9 +4987,9 @@ bool TerminalWindow::sendMouse(Pane* pane, const QPointF& pos, int button, int a
     ev.col = cell.x();
     ev.row = cell.y();
     const auto& metrics = m_renderer->fonts().fonts->metrics();
-    const QPointF px = shown ? gridPixel(pane, pos) : QPointF(cell.x() * metrics.cellWidth, cell.y() * metrics.cellHeight);
-    ev.pixelX = std::max(0, int(px.x()));
-    ev.pixelY = std::max(0, int(px.y()));
+    const QPoint px = shown ? cellPixel(pane, pos) : QPoint(cell.x() * metrics.cellWidth, cell.y() * metrics.cellHeight);
+    ev.pixelX = px.x();
+    ev.pixelY = px.y();
     ev.buttonHeld = m_reportedButtons != Qt::NoButton;
     const std::string bytes = AfterglowVt::encodeMouse(ev, modes);
     if (!bytes.empty()) {
@@ -4925,8 +5001,7 @@ bool TerminalWindow::sendMouse(Pane* pane, const QPointF& pos, int button, int a
 int TerminalWindow::rawRowAt(Pane* pane, const QPointF& pos) const
 {
     const auto& m = m_renderer->fonts().fonts->metrics();
-    const QPoint origin = contentRect(pane, m_splits->rectOf(hostOf(pane))).topLeft();
-    return int(std::floor((pos.y() * devicePixelRatio() - origin.y() + drawnScrollShift(pane)) / m.cellHeight));
+    return int(std::floor(gridPixel(pane, pos).y() / m.cellHeight));
 }
 
 void TerminalWindow::emitDockEvent(const DockArea& dock, const QString& handler, QVariantMap event, bool limited)
@@ -4947,9 +5022,9 @@ void TerminalWindow::emitDockClick(const DockArea& dock, const QString& item, co
 
 bool TerminalWindow::pressDock(QMouseEvent* e)
 {
-    const QPoint px = dockPixel(e->position());
-    DockArea* dock = dockAt(px);
+    DockArea* dock = dockAt(e->position());
     if (!dock) return false;
+    const QPoint px = dockPixelOf(*dock, e->position());
     // A dock is its script's: the panes under it get nothing.
     m_dockButtons |= e->button();
     const QString item = dock->itemAt(px);
@@ -5005,9 +5080,9 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     // A plain left press in a divider's grab takes the divider, also where
     // the grab reaches into a pane's dock.
     const bool divider = e->button() == Qt::LeftButton && !(e->modifiers() & Qt::ControlModifier)
-        && dividerTakesDock(dockPixel(e->position()));
+        && dividerTakesDock(e->position());
     if (!divider && pressDock(e)) return;
-    Pane* p = m_splits->paneAt(dockPixel(e->position()));
+    Pane* p = paneShownAt(e->position());
     if (p && p != m_focused) {
         setFocusedPane(p);
     }
@@ -5019,11 +5094,16 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     m_pointer = e->position();
     updateLinkHover();
     if (e->button() == Qt::LeftButton && !(e->modifiers() & Qt::ControlModifier)) {
-        if (auto divider = m_splits->dividerAt(dockPixel(e->position()), dividerTolerance())) {
+        if (auto divider = m_splits->dividerAt(dividerPixel(e->position()), dividerTolerance())) {
             m_dividerDrag = divider;
             return;
         }
     }
+    // A left press where no pane shows (between panes, over the tab bar's
+    // band) starts no selection. No press there reaches a program. The menu
+    // and a middle paste are the focused pane's, wherever the press is, but
+    // not around a popup (below).
+    if (!p && e->button() == Qt::LeftButton) return;
     // Around a popup the pane only shows: the press reaches nothing.
     if (!pointerTarget(m_focused, e->position())) return;
     const Qt::KeyboardModifiers linkModifier = m_settings.settings().links.modifier;
@@ -5041,7 +5121,9 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     }
     if (e->button() == Qt::LeftButton && target->hasDragDrop()) target->dragDrop()->press(e->position().toPoint());
     const int code = mouseButtonCode(e->button());
-    if (code >= 0 && sendMouse(target, e->position(), code, int(AfterglowVt::MouseAction::Press), e->modifiers())) {
+    // A program hears only of presses on its pane: not of one in a gap,
+    // which would come to it at a clamped cell nobody pointed at.
+    if (p && code >= 0 && sendMouse(target, e->position(), code, int(AfterglowVt::MouseAction::Press), e->modifiers())) {
         // Its motion and release go to this pane even if the focus moves meanwhile.
         if (m_reportedButtons == Qt::NoButton) m_reportedPane = target;
         m_reportedButtons |= e->button();
@@ -5057,9 +5139,13 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     }
     if (e->button() == Qt::RightButton) {
         switch (mouse.rightClick) {
-        case MouseSettings::RightClick::Menu:
-            openContextMenu(e->position());
+        case MouseSettings::RightClick::Menu: {
+            // Only a link under the pointer: not one at the focused pane's
+            // edge, where a click on a divider would clamp to.
+            Pane* under = paneUnder(e->position());
+            openContextMenu(e->position(), under == m_focused ? linkAt(inputPane(m_focused), e->position()).url : QString());
             break;
+        }
         case MouseSettings::RightClick::Paste:
             paste(QClipboard::Clipboard);
             break;
@@ -5259,7 +5345,8 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
             m_selectionPane->clearSelection();
             // A click ends where it began: let go elsewhere (over the tab
             // bar), it opens no link and moves no cursor.
-            const bool inside = pointerTarget(paneUnder(e->position()), e->position()) == m_selectionPane;
+            const bool inside = pointerTarget(paneUnder(e->position()), e->position()) == m_selectionPane
+                && overCells(m_selectionPane, e->position());
             const bool plain = inside && !(e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier));
             if (m_clickCount == 1 && plain && m_settings.settings().links.modifier == Qt::NoModifier
                 && !m_hover.url.isEmpty()) {
@@ -5362,7 +5449,6 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         applyPointerShape();
         return;
     }
-    const QPoint px = dockPixel(e->position());
     m_dockButtons &= e->buttons(); // a release that went elsewhere
     m_reportedButtons &= e->buttons();
     if (m_reportedButtons == Qt::NoButton) m_reportedPane = nullptr;
@@ -5379,7 +5465,7 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         m_dividerDrag.reset(); // its release went elsewhere
     }
     if (m_dividerDrag) {
-        m_splits->dragDivider(*m_dividerDrag, px, dividerPixels(), minimumPaneSize());
+        m_splits->dragDivider(*m_dividerDrag, dividerPixel(e->position()), dividerPixels(), minimumPaneSize());
         m_layoutSize = QSize();
         scheduleRender();
         return;
@@ -5392,7 +5478,7 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         // any press.
         if (pane->hasDragDrop()
             && pane->dragDrop()->move(this, e->position().toPoint(), cellAt(pane, e->position()),
-                                      gridPixel(pane, e->position()).toPoint())) {
+                                      cellPixel(pane, e->position()))) {
             m_textDragPane = nullptr;
             return;
         }
@@ -5418,14 +5504,14 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     }
     // Over a dock, after the chrome and the link under the pointer have
     // seen it leave: no divider, shape or hover report of a pane.
-    if (e->buttons() == Qt::NoButton && dockAt(px)) {
+    if (e->buttons() == Qt::NoButton && dockAt(e->position())) {
         applyPointerShape();
         return;
     }
     // After the chrome has seen the pointer leave, which may reset the cursor.
     applyPointerShape();
     if (Pane* target = inputPane(m_focused); target && (e->buttons() & Qt::LeftButton)) {
-        const QPoint pixel = gridPixel(target, e->position()).toPoint();
+        const QPoint pixel = cellPixel(target, e->position());
         if (target->hasDragDrop() && target->dragDrop()->move(this, e->position().toPoint(), cellAt(target, e->position()), pixel)) {
             m_autoScroll.stop();
             if (m_selectionPane) m_selectionPane->clearSelection();
@@ -5458,10 +5544,10 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         }
         return;
     }
-    // Hover reports only over the focused pane itself, not clamped from
-    // another, and over a popup's own cells.
+    // Hover reports only over the focused pane's own cells, not clamped
+    // from another or from around them, and over a popup's own cells.
     if (paneUnder(e->position()) == m_focused) {
-        if (Pane* target = pointerTarget(m_focused, e->position()))
+        if (Pane* target = pointerTarget(m_focused, e->position()); target && overCells(target, e->position()))
             sendMouse(target, e->position(), code, int(AfterglowVt::MouseAction::Motion), e->modifiers());
     }
 }
@@ -5471,11 +5557,10 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
     if (!m_splits) return;
     // A dock is its script's: the wheel over it scrolls no pane and moves
     // no card. The chrome draws over docks, so it comes first.
-    const QPoint overPixel = dockPixel(e->position());
-    DockArea* overDock = dockAt(overPixel);
+    DockArea* overDock = dockAt(e->position());
     if (m_overview.open && m_controller->wantsKeyboard() && routePointerToChrome(e, e->position(), false, false)) return;
     if (m_overview.open && overDock) {
-        wheelDock(*overDock, overPixel, e);
+        wheelDock(*overDock, dockPixelOf(*overDock, e->position()), e);
         return;
     }
     if (m_overview.open) {
@@ -5492,13 +5577,13 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
         return;
     }
     if (overDock) {
-        wheelDock(*overDock, overPixel, e);
+        wheelDock(*overDock, dockPixelOf(*overDock, e->position()), e);
         return;
     }
-    Pane* p = m_splits->paneAt(dockPixel(e->position()));
-    if (!p) {
-        p = m_focused;
-    }
+    // Where no pane shows, the wheel scrolls the focused pane's history.
+    Pane* shown = paneShownAt(e->position());
+    const bool overPane = shown != nullptr;
+    Pane* p = overPane ? shown : m_focused.data();
     // An overlay's program, or its history, while one runs over the pane:
     // nothing around a popup.
     p = pointerTarget(p, e->position());
@@ -5528,6 +5613,9 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
 
     const AfterglowVt::Modes modes = p->withTerminal([](Terminal& t) { return t.modes(); });
     if (modes.mouseTracking != AfterglowVt::MouseTracking::None && !(e->modifiers() & Qt::ShiftModifier)) {
+        // A program hears only of a wheel over its pane, as of a press: not
+        // at a clamped cell nobody pointed at.
+        if (!overPane) return;
         const int button = int(steps > 0 ? AfterglowVt::MouseButton::WheelUp : AfterglowVt::MouseButton::WheelDown);
         for (int i = 0; i < std::abs(steps); ++i) {
             sendMouse(p, e->position(), button, int(AfterglowVt::MouseAction::Press), e->modifiers());
@@ -5571,7 +5659,9 @@ QRect TerminalWindow::accessiblePaneRect(Pane* pane) const
 std::optional<AfterglowVt::SelectionPoint> TerminalWindow::accessibleCellAt(Pane* pane, const QPoint& global) const
 {
     if (!accessiblePaneRect(pane).contains(global)) return std::nullopt;
-    const QPoint cell = cellAt(pane, QPointF(mapFromGlobal(global)));
+    // In the layout, as accessibleCellRect() gives the cells: the two are
+    // each other's inverse, whatever a pack draws.
+    const QPoint cell = cellOf(pane, gridPixelAt(pane, QPointF(mapFromGlobal(global)) * devicePixelRatio()));
     return pane->selectionPointAt(cell.x(), cell.y());
 }
 QRect TerminalWindow::accessibleCellRect(Pane* pane, AfterglowVt::SelectionPoint point) const

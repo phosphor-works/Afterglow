@@ -394,9 +394,11 @@ private:
 // The settings of a test's Application, with @p overrides over them by
 // group. No cursor blink, so a window with nothing moving renders no frames.
 // No scripts, so that the scripts installed for the user do not run in the
-// tests: a test that needs scripts turns them on.
+// tests: a test that needs scripts turns them on. A pane with no command
+// runs /bin/sh, not the developer's login shell with its startup files.
 QJsonObject testSettings(const QJsonObject& overrides = {}) {
-    QJsonObject settings{{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("cursorBlink"), false}}},
+    QJsonObject settings{{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("cursorBlink"), false},
+                                                                  {QStringLiteral("shell"), QStringLiteral("/bin/sh")}}},
                          {QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), false}}}};
     for (auto group = overrides.begin(); group != overrides.end(); ++group) {
         QJsonObject merged = settings.value(group.key()).toObject();
@@ -517,7 +519,8 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
     EXPECT_EQ(split->parent(), detached);
     EXPECT_EQ(detached->tabIdOf(original), tabId);
     EXPECT_EQ(window->panes(), QList<Pane*>{other});
-    original->sendInput("printf 'detached-process-alive\\n'\n");
+    // The pane runs cat with no echo: only the program's output shows.
+    original->sendInput("detached-process-alive\n");
     EXPECT_TRUE(waitFor([&] {
         return original->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("detached-process-alive"));
     }));
@@ -600,8 +603,6 @@ TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
     ASSERT_TRUE(waitFor([&] { return destination->submittedFrames() > 0; }));
     EXPECT_TRUE(destination->isExposed());
     EXPECT_TRUE(survivor->isExposed());
-    const auto before = survivor->submittedFrames();
-    const auto destinationBefore = destination->submittedFrames();
     for (int i = 0; i < 8; ++i) {
         destination->resize(i % 2 ? QSize(500, 350) : QSize(300, 200));
         QEvent update(QEvent::UpdateRequest);
@@ -609,8 +610,10 @@ TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
         QCoreApplication::sendEvent(survivor, &update);
         drain(50);
     }
-    EXPECT_TRUE(waitFor([&] { return destination->submittedFrames() > destinationBefore; }));
-    EXPECT_TRUE(waitFor([&] { return survivor->submittedFrames() > before; }));
+    // Both windows still render after the resizes: a frame that each one
+    // is asked for now is submitted. A frame of the loop would not count.
+    EXPECT_TRUE(nextFrame(destination));
+    EXPECT_TRUE(nextFrame(survivor));
 }
 
 INSTANTIATE_TEST_SUITE_P(Shaders, NativeRenderer, ::testing::Bool());
@@ -1759,6 +1762,10 @@ TEST_F(NativeWindow, AccessiblePaneRunsThePaneActionsOfThePalette) {
         << QGuiApplication::clipboard()->text().toStdString();
     EXPECT_EQ(window->focusedPane(), original);
 
+    // The pane's focus state below follows the window's: only an active
+    // window gives one.
+    window->requestActivate();
+    if (!waitFor([&] { return window->isActive(); }, 2000)) GTEST_SKIP() << "the compositor did not activate the window";
     // The menu opens at the pane's cursor, which a pointer need not be near.
     window->revealPane(other);
     ASSERT_TRUE(nextFrame(window));
@@ -1771,9 +1778,13 @@ TEST_F(NativeWindow, AccessiblePaneRunsThePaneActionsOfThePalette) {
     // menu, not a split, not a focus change. Another menu would open at the
     // other pane's cursor, with items of its own.
     const QVariantMap menu = chrome->contextMenu();
-    QAccessible::queryAccessibleInterface(other)->actionInterface()->doAction(QAccessibleActionInterface::showMenuAction());
-    QAccessible::queryAccessibleInterface(other)->actionInterface()->doAction(QStringLiteral("Split Down"));
-    QAccessible::queryAccessibleInterface(other)->actionInterface()->doAction(QAccessibleActionInterface::setFocusAction());
+    auto* otherAccessible = QAccessible::queryAccessibleInterface(other);
+    ASSERT_NE(otherAccessible, nullptr);
+    auto* otherActions = otherAccessible->actionInterface();
+    ASSERT_NE(otherActions, nullptr);
+    otherActions->doAction(QAccessibleActionInterface::showMenuAction());
+    otherActions->doAction(QStringLiteral("Split Down"));
+    otherActions->doAction(QAccessibleActionInterface::setFocusAction());
     ASSERT_TRUE(settleQueued());
     EXPECT_TRUE(chrome->contextMenuOpen());
     EXPECT_TRUE(chrome->contextMenu() == menu);
@@ -1784,7 +1795,7 @@ TEST_F(NativeWindow, AccessiblePaneRunsThePaneActionsOfThePalette) {
     // The open menu answers the input method itself.
     ASSERT_TRUE(waitFor([&] { return !chrome->wantsKeyboard(); }));
     // The pane has the focus again: it was the menu that held it.
-    EXPECT_EQ(accessible->state().focused, window->isActive());
+    EXPECT_TRUE(accessible->state().focused);
     QInputMethodQueryEvent query(Qt::ImCursorRectangle);
     QCoreApplication::sendEvent(window, &query);
     const QRectF cursor = query.value(Qt::ImCursorRectangle).toRectF();
@@ -1792,7 +1803,7 @@ TEST_F(NativeWindow, AccessiblePaneRunsThePaneActionsOfThePalette) {
                                      << cursor.width() << "x" << cursor.height();
 
     // The focus action moves the keyboard to the pane.
-    QAccessible::queryAccessibleInterface(other)->actionInterface()->doAction(QAccessibleActionInterface::setFocusAction());
+    otherActions->doAction(QAccessibleActionInterface::setFocusAction());
     EXPECT_EQ(window->focusedPane(), other);
 
     // Tokens and the palette's other titles run nothing: not the window's
@@ -1834,6 +1845,7 @@ TEST_F(NativeWindow, AccessibleDockItemsAreButtonsThatSendTheirClick) {
     // The dock shows from the next frame's layout.
     ASSERT_TRUE(waitFor([&] { return findDock() != nullptr; }));
     QAccessibleInterface* area = findDock();
+    ASSERT_NE(area, nullptr);
     // An area with buttons is a toolbar, which screen readers look inside.
     EXPECT_EQ(area->role(), QAccessible::ToolBar);
     ASSERT_EQ(area->childCount(), 2);
@@ -1905,7 +1917,9 @@ TEST_F(NativeWindow, AccessibleDockItemsAreButtonsThatSendTheirClick) {
     EXPECT_EQ(heard.count(QAccessible::ObjectReorder, area), 1);
     ASSERT_EQ(area->childCount(), 1);
     deploy = area->child(0);
+    ASSERT_NE(deploy, nullptr);
     EXPECT_EQ(deploy->text(QAccessible::Name), QStringLiteral("Deploy"));
+    ASSERT_NE(deploy->actionInterface(), nullptr);
     deploy->actionInterface()->doAction(QAccessibleActionInterface::pressAction());
     ASSERT_EQ(clicks.size(), 2);
     EXPECT_EQ(clicks[1].click[QStringLiteral("item")], QStringLiteral("deploy"));
@@ -2082,6 +2096,7 @@ TEST_F(NativeWindow, FileTransferPermissionFollowsMovedPane) {
         return !prompts.isEmpty();
     });
     ASSERT_EQ(prompts.size(), 1);
+    ASSERT_NE(prompts.front()->windowHandle(), nullptr);
     EXPECT_EQ(prompts.front()->windowHandle()->transientParent(), destination);
     EXPECT_TRUE(prompts.front()->text().contains(destinationPath)) << qPrintable(prompts.front()->text());
     drain(50);
@@ -2164,6 +2179,165 @@ void NativeWindow::runClientDrag(const QString& ready, ClientDrag& drag, const s
 QByteArray fileContent(const QString& path) {
     QFile file(path);
     return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+// CRT Curve's bend at curvature @p k, as its effect.frag has it: where the
+// content shown at @p at on @p canvas comes from (both logical pixels).
+QPointF crtSource(const QRectF& canvas, const QPointF& at, double k) {
+    const double cx = (at.x() - canvas.left()) / canvas.width() * 2 - 1, cy = (at.y() - canvas.top()) / canvas.height() * 2 - 1;
+    const double f = 1 + k * (cx * cx + cy * cy);
+    return {canvas.left() + (cx * f * 0.5 + 0.5) * canvas.width(), canvas.top() + (cy * f * 0.5 + 0.5) * canvas.height()};
+}
+// A program that turns on SGR mouse reports and writes what it gets to @p file.
+QStringList mouseReporter(const QString& file) {
+    return {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+            QStringLiteral("stty raw -echo; printf '\\033[?1000h\\033[?1006h'; exec cat > \"$0\""), file};
+}
+bool reportsMouse(Pane* pane) {
+    return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.modes().mouseTracking != AfterglowVt::MouseTracking::None; });
+}
+// A left click at @p at, and the 1-based column of the press that the
+// program writing @p reports got: after its release has come too, so that
+// the next click's reports start after both.
+int reportedColumn(QWindow* window, const QString& reports, const QPointF& at) {
+    const qsizetype before = fileContent(reports).size();
+    clickLeft(window, at);
+    const bool released = waitFor([&] { return fileContent(reports).mid(before).endsWith('m'); });
+    EXPECT_TRUE(released) << "no release report";
+    const QByteArray got = fileContent(reports).mid(before);
+    const qsizetype press = got.indexOf("\x1b[<0;");
+    if (press < 0) return -1;
+    const auto parts = got.mid(press + 4).split(';');
+    return parts.size() >= 2 ? parts[1].toInt() : -1;
+}
+
+TEST_F(NativeWindow, AClickOnABentPaneReachesTheCellDrawnThere) {
+    // CRT Curve bends each pane: content near the edges is drawn closer to
+    // the centre, so a click there must reach a column further out. Its
+    // pointer map (pPointerMap) moves the click the same way.
+    constexpr double Curvature = 0.3;
+    const QString reports = directory.filePath(QStringLiteral("reports"));
+    restartApplication(QStringLiteral("crt.conf"),
+        testSettings({{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("pane"), QJsonArray{QStringLiteral("crt-curve")}},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("crt-curve"), QJsonObject{{QStringLiteral("curvature"), Curvature}}}}}}}}),
+        mouseReporter(reports));
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor([&] { return reportsMouse(pane); }));
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    // One pane fills the panes' area: the pane chain's canvas.
+    expectIdle(window);
+    const QRectF canvas = chrome->paneArea();
+    const QRectF grid = gridOf(window, pane);
+    const QRectF cell = window->accessibleCellRect(pane, {0, 0});
+    ASSERT_GT(cell.width(), 0);
+    auto column = [&](double x) { return int(std::floor((x - grid.left()) / cell.width())) + 1; };
+    // The centre does not move. Towards the right edge, the drawn column is
+    // the bent one, well past the one that the layout has there.
+    for (const double share : {0.5, 0.8, 0.88}) {
+        const QPointF at(grid.left() + grid.width() * share, grid.center().y());
+        const int drawn = reportedColumn(window, reports, at);
+        const int expected = std::min(column(crtSource(canvas, at, Curvature).x()), pane->cols());
+        EXPECT_NEAR(drawn, expected, 1) << "at " << share;
+        if (share > 0.8) {
+            EXPECT_GT(drawn, column(at.x()) + 2);
+        }
+    }
+}
+
+// Where CRT Curve at curvature @p k draws the content of @p source on
+// @p canvas: the inverse of crtSource(), by fixed-point iteration.
+QPointF crtShown(const QRectF& canvas, const QPointF& source, double k) {
+    const double sx = (source.x() - canvas.left()) / canvas.width() * 2 - 1, sy = (source.y() - canvas.top()) / canvas.height() * 2 - 1;
+    double cx = sx, cy = sy;
+    for (int i = 0; i < 100; ++i) {
+        const double f = 1 + k * (cx * cx + cy * cy);
+        cx = sx / f;
+        cy = sy / f;
+    }
+    return {canvas.left() + (cx * 0.5 + 0.5) * canvas.width(), canvas.top() + (cy * 0.5 + 0.5) * canvas.height()};
+}
+
+TEST_F(NativeWindow, AClickThroughABentWindowReachesThePaneDrawnThere) {
+    // CRT Curve over the whole window (the window chain) bends the panes
+    // together: a pane's content can show where the layout has its
+    // neighbour. A click goes to the pane drawn under it, at the drawn cell.
+    constexpr double Curvature = 0.3;
+    const QString leftReports = directory.filePath(QStringLiteral("left"));
+    restartApplication(QStringLiteral("crt-window.conf"),
+        testSettings({{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("window"), QJsonArray{QStringLiteral("crt-curve")}},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("crt-curve"), QJsonObject{{QStringLiteral("curvature"), Curvature}}}}}}}}),
+        mouseReporter(leftReports));
+    if (HasFatalFailure()) return;
+    Pane* left = window->focusedPane();
+    ASSERT_NE(left, nullptr);
+    // Three panes: the left half, and two quarters at the right, so the
+    // middle divider is off the centre, where the bend moves it.
+    const QString middleReports = directory.filePath(QStringLiteral("middle"));
+    const QString rightReports = directory.filePath(QStringLiteral("right"));
+    PaneLaunchOptions launch;
+    launch.command = mouseReporter(middleReports);
+    Pane* middle = window->splitPane(left, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(middle, nullptr);
+    launch.command = mouseReporter(rightReports);
+    Pane* right = window->splitPane(middle, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    ASSERT_TRUE(waitFor([&] { return reportsMouse(left) && reportsMouse(middle) && reportsMouse(right); }));
+    expectIdle(window);
+    // The window chain's canvas is the whole window.
+    const QRectF canvas(QPointF(0, 0), QSizeF(window->size()));
+    const QRectF middleGrid = gridOf(window, middle), rightGrid = gridOf(window, right);
+    const QRectF cell = window->accessibleCellRect(right, {0, 0});
+    ASSERT_GT(cell.width(), 0);
+    // In the middle pane's layout, near the divider, high up: the bend
+    // shows the right pane's left columns there.
+    const QPointF at(middleGrid.right() - cell.width(), canvas.top() + canvas.height() * 0.2);
+    const QPointF source = crtSource(canvas, at, Curvature);
+    ASSERT_GT(source.x(), rightGrid.left() + cell.width()) << "the bend must reach past the divider";
+    const qsizetype middleBefore = fileContent(middleReports).size();
+    const int drawn = reportedColumn(window, rightReports, at);
+    EXPECT_NEAR(drawn, int(std::floor((source.x() - rightGrid.left()) / cell.width())) + 1, 1);
+    EXPECT_EQ(window->focusedPane(), right);
+    // The middle pane got nothing: its program echoes a marker afterwards.
+    middle->sendInput("\x1b[<0;0;0Mdone");
+    ASSERT_TRUE(waitFor([&] { return fileContent(middleReports).mid(middleBefore).contains("done"); }));
+    EXPECT_EQ(fileContent(middleReports).mid(middleBefore), QByteArray("\x1b[<0;0;0Mdone"));
+}
+
+TEST_F(NativeWindow, APaneDockIsClickedWhereTheWindowChainDrawsIt) {
+    // A pane's dock is drawn through the window chain: under CRT Curve, the
+    // dock at the top of the pane shows well inside the window, and a click
+    // there reaches its item.
+    constexpr double Curvature = 0.3;
+    restartApplication(QStringLiteral("crt-dock.conf"),
+        testSettings({{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("window"), QJsonArray{QStringLiteral("crt-curve")}},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("crt-curve"), QJsonObject{{QStringLiteral("curvature"), Curvature}}}}}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    DockEvents events(window);
+    ASSERT_TRUE(window->setScriptDock(QStringLiteral("a@1"),
+        dockEffect(QStringLiteral("title"), QStringLiteral("top"), 1, {dockRun(QStringLiteral("title"), QStringLiteral("t"))},
+                   QStringLiteral("pane")), pane).isEmpty());
+    const DockArea* title = nullptr;
+    ASSERT_TRUE(waitFor([&] {
+        title = shownDock(window, "title", pane->id());
+        return title && !title->items().empty();
+    }));
+    expectIdle(window);
+    const qreal dpr = window->devicePixelRatio();
+    const QRectF canvas(QPointF(0, 0), QSizeF(window->size()));
+    const QPointF item = QRectF(title->itemRect(0)).center() / dpr;
+    const QPointF drawn = crtShown(canvas, item, Curvature);
+    // Far from the layout's place: the layout has the pane's text there.
+    ASSERT_FALSE(QRectF(title->rect()).contains(drawn * dpr)) << "the bend must move the dock out of its own place";
+    clickLeft(window, drawn);
+    ASSERT_EQ(events.of("on_dock_click").size(), 1);
+    EXPECT_EQ(events.of("on_dock_click")[0].event[QStringLiteral("item")], QStringLiteral("t"));
+    EXPECT_FALSE(pane->hasSelection());
 }
 
 // One notch of the wheel at @p at (logical), away from the user.
@@ -2696,8 +2870,9 @@ TEST_F(NativeWindow, ASelectionDropsOnAnotherPaneAndNotOnItsOwn) {
     // drop event finds the drag's source through Qt.
     bool dragging = false, ownTaken = true, otherTaken = false;
     QByteArray toProgram;
+    // The timer's context dies with the locals that it writes, before them.
     QObject context;
-    QTimer::singleShot(0, window, [&] {
+    QTimer::singleShot(0, &context, [&] {
         auto* drag = window->findChild<QDrag*>();
         dragging = drag;
         if (drag) {
@@ -2775,7 +2950,9 @@ TEST_F(NativeWindow, AKeyHeldIntoASelectionDragIsReleasedToItsProgram) {
     // The key comes up during the drag, which takes the key events: the
     // program has its release from when the drag started, and only that one.
     bool dragging = false;
-    QTimer::singleShot(0, window, [&] {
+    // The timer's context dies with the locals that it writes, before them.
+    QObject context;
+    QTimer::singleShot(0, &context, [&] {
         dragging = window->findChild<QDrag*>();
         QKeyEvent up(QEvent::KeyRelease, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
         QCoreApplication::sendEvent(window, &up);
@@ -2935,12 +3112,21 @@ TEST_F(NativeWindow, DropsThatAPaneRefusesPasteNothing) {
     QDropEvent onHeld(gridOf(window, held).center(), Qt::CopyAction, &moved, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
     QCoreApplication::sendEvent(window, &onHeld);
     EXPECT_FALSE(onHeld.isAccepted());
-    // The program accepts drops (OSC 72): it gets the text, not as a paste.
+    // The program accepts drops (OSC 72): the drop is the program's, not a
+    // paste. It chose no action for the drop's types, so the drop is
+    // refused and the program hears the drag leave (t=m, x=-1).
     right->dragDrop()->handle("t=a;");
     ASSERT_TRUE(right->dragDrop()->acceptsDrops());
+    QList<QByteArray> toProgram;
+    QObject listener;
+    QObject::connect(right->dragDrop(), &DragDrop::reply, &listener, [&](const QByteArray& bytes) { toProgram.append(bytes); });
     QMimeData forProgram;
     forProgram.setText(QStringLiteral("for the program"));
-    dropOnRight(forProgram, Qt::CopyAction);
+    EXPECT_FALSE(dropOnRight(forProgram, Qt::CopyAction));
+    EXPECT_TRUE(std::any_of(toProgram.cbegin(), toProgram.cend(), [](const QByteArray& packet) {
+        const auto keys = dndKeys(packet);
+        return keys.contains("t=m") && keys.contains("x=-1");
+    })) << toProgram.join('|').toStdString();
     right->dragDrop()->reset();
     // A drop that pastes, after them: only its text arrives.
     QMimeData marker;
@@ -3214,13 +3400,23 @@ TEST_F(NativeWindow, PaneOverviewSpansTabsAndSwitchesToTheChosenTab) {
     ASSERT_TRUE(pressKey(window, Qt::Key_Down));
     EXPECT_EQ(window->overviewHighlight(), second);
     ASSERT_TRUE(pressKey(window, Qt::Key_Up));
+    // The chosen tab shows while the close runs: the cards close onto its
+    // layout, and the current tab never changes back first. Every switch
+    // until the close has settled goes to it.
+    const quint32 chosen = window->tabIdOf(first);
+    QObject listener;
+    std::vector<quint32> switches;
+    QObject::connect(window, &TerminalWindow::tabSwitched, &listener,
+                     [&switches](quint32, quint32 to, int) { switches.push_back(to); });
     ASSERT_TRUE(pressKey(window, Qt::Key_Return));
     EXPECT_FALSE(window->overviewOpen());
-    // The chosen tab shows while the close runs: the cards close onto its
-    // layout, and the current tab never changes back first.
+    EXPECT_EQ(window->activeTabId(), chosen);
     EXPECT_TRUE(waitFor([&] { return window->focusedPane() == first; }));
     EXPECT_FALSE(window->accessiblePaneRect(first).isEmpty());
     expectIdle(window);
+    EXPECT_EQ(window->activeTabId(), chosen);
+    ASSERT_FALSE(switches.empty());
+    for (const quint32 to : switches) EXPECT_EQ(to, chosen);
 }
 
 TEST_F(NativeWindow, TabSwitchAnimatesAndSettles) {
@@ -3703,8 +3899,8 @@ TEST_F(NativeWindow, FocusStaysWhenAnUnfocusedPaneExitsOrABackgroundTabLeaves) {
     auto* third = window->splitPane(second, SplitTree::Direction::Down, launch, nullptr);
     ASSERT_NE(third, nullptr);
     ASSERT_EQ(window->focusedPane(), third);
-    // The first pane's program ends: the tab entered with it focused, but
-    // the focus is on the third now and stays there.
+    // The first pane closes: the tab entered with it focused, but the
+    // focus is on the third now and stays there.
     window->requestClosePane(first);
     ASSERT_TRUE(waitFor([&] { return window->panes().size() == 2; }));
     ASSERT_TRUE(settleQueued());
@@ -3785,11 +3981,17 @@ TEST_F(NativeWindow, SearchDropsMatchesOfTextThatMovedAndStartsAgain) {
 TEST_F(NativeWindow, KeyRepeatsStayWithThePaneThatGotThePress) {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+    // The word shows once echo is off: a key sent before would echo. It
+    // holds none of the letters typed below.
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; printf started; exec cat")};
     auto* middle = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(middle, nullptr);
     auto* right = window->splitPane(middle, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(right, nullptr);
+    for (Pane* pane : {middle, right}) {
+        const auto screen = [pane] { return pane->text(AfterglowVt::Terminal::TextScope::Screen); };
+        ASSERT_TRUE(waitFor([&] { return screen().contains(QStringLiteral("started")); })) << screen().toStdString();
+    }
     window->revealPane(middle);
     ASSERT_TRUE(settleQueued());
     QKeyEvent down(QEvent::KeyPress, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"));
@@ -4007,7 +4209,10 @@ TEST_F(NativeWindow, SplitsKeepTheMinimumSizeAndStartShellsAtTheirSizeBeforeAFra
     // The next frame lays the splits out. The chrome scene is made in the
     // background and may not be ready yet, which takes longer than a fixed wait.
     ASSERT_TRUE(waitFor([&] { return !window->accessiblePaneRect(second).isEmpty(); }));
-    EXPECT_GE(window->accessiblePaneRect(second).width(), 4);
+    // The rectangle is in pixels: the minimum is in cells.
+    ASSERT_TRUE(nextFrame(window));
+    EXPECT_GE(second->cols(), 4);
+    EXPECT_GE(third->cols(), 4);
 }
 
 TEST_F(NativeWindow, ContextMenuActsOnThePaneItOpenedOn) {
@@ -4342,6 +4547,7 @@ TEST_F(NativeWindow, DocksTellTheirScriptOfTheirCellsTheHoveredItemAndTheWheel) 
                     .isEmpty());
     ASSERT_TRUE(waitFor([&] { return dockOf("upper") && !dockOf("upper")->rect().isEmpty(); }));
     expectIdle(window);
+    ASSERT_NE(dockOf("bar"), nullptr);
     const QRect barNow = dockOf("bar")->itemRect(0);
     const QRect upperNow = dockOf("upper")->itemRect(0);
     ASSERT_FALSE(barNow.isEmpty());
@@ -4620,6 +4826,9 @@ TEST_F(NativeWindow, ADragOnADockItemTellsItsScriptOfEachNewItemOrCell) {
     hoverAt(window, onPane);
     // A move with no button held: SGR button code 35.
     ASSERT_TRUE(waitFor([&] { return screen().contains(QLatin1String("^[[<35;")); }));
+    // A second marker: a later copy of the report would show before it.
+    ASSERT_TRUE(reporting->sendInput("@marker2@"));
+    ASSERT_TRUE(waitFor([&] { return screen().contains(QLatin1String("@marker2@")); }));
     EXPECT_EQ(screen().count(QStringLiteral("^[[<")), 1) << screen().toStdString();
     window->clearScriptOwner(QStringLiteral("a@1"));
 }
@@ -4977,7 +5186,11 @@ TEST_F(NativeWindow, PaneDocksInABackgroundTabLayOutAtOnce) {
     ASSERT_TRUE(dock(QStringLiteral("bottom"), 2).isEmpty());
     EXPECT_EQ(first->rows(), rows - 2);
     window->revealPane(first);
-    ASSERT_TRUE(waitFor([&] { return first->rows() == second->rows() - 2; })) << first->rows() << " " << second->rows();
+    // After the switch, in a frame of the tab that shows.
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }));
+    ASSERT_TRUE(nextFrame(window));
+    EXPECT_EQ(first->rows(), rows - 2);
+    EXPECT_EQ(second->rows(), rows);
     window->clearScriptOwner(QStringLiteral("a@1"));
 }
 
@@ -5569,6 +5782,9 @@ TEST_F(NativeWindow, TabActionsOfAPaneActOnItsTabWithoutShowingItAndScriptsOpenI
     expectIdle(window);
     const QPointF onItem(6, window->height() - 4);
     clickRight(window, onItem);
+    // The pointer moves on before the script answers: the menu opens at the
+    // click, not at the pointer.
+    hoverAt(window, QPointF(window->width() / 2.0, window->height() / 2.0));
     const auto opened = tabMenu(third->id());
     ASSERT_TRUE(opened.error.isEmpty()) << opened.error.toStdString();
     ASSERT_TRUE(chrome->contextMenuOpen());
@@ -5646,6 +5862,8 @@ TEST_F(NativeWindow, ControlUndocksThroughAPaneThatMovedOrClosed) {
     EXPECT_TRUE(control.scriptDock(QStringLiteral("a@1"), moving->id(), undock).isEmpty());
     EXPECT_TRUE(waitFor([&] { return destinationChrome->paneArea().height() == destinationHeight; }))
         << destinationChrome->paneArea().height();
+    // A frame after the undock: an area that it removed here would be gone.
+    ASSERT_TRUE(nextFrame(window));
     EXPECT_LT(chrome->paneArea().height(), height);
     EXPECT_TRUE(control.scriptDock(QStringLiteral("a@1"), moving->id(), undock).isEmpty());
     EXPECT_TRUE(waitFor([&] { return chrome->paneArea().height() == height; })) << chrome->paneArea().height();
@@ -5653,6 +5871,7 @@ TEST_F(NativeWindow, ControlUndocksThroughAPaneThatMovedOrClosed) {
     // The pane closes: the undock through its id still finds the area.
     quint32 created = 0;
     auto* first = window->focusedPane();
+    ASSERT_NE(first, nullptr);
     ASSERT_TRUE(control.split(first->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")}, {}, created).isEmpty());
     Pane* closing = nullptr;
     for (auto* pane : window->panes())
@@ -5663,6 +5882,9 @@ TEST_F(NativeWindow, ControlUndocksThroughAPaneThatMovedOrClosed) {
     QPointer<Pane> gone(closing);
     closing->sendInput("\x04"); // its cat ends, and the pane with it
     ASSERT_TRUE(waitDeleted(gone));
+    // The area stays with its pane gone, until the undock.
+    ASSERT_TRUE(nextFrame(window));
+    EXPECT_LT(chrome->paneArea().height(), height);
     EXPECT_TRUE(control.scriptDock(QStringLiteral("a@1"), created, undock).isEmpty());
     EXPECT_TRUE(waitFor([&] { return chrome->paneArea().height() == height; })) << chrome->paneArea().height();
     // An id that never docked is still not a pane.
@@ -6126,11 +6348,12 @@ TEST_F(NativeWindow, AnOverlayOverOnePaneTakesItsInputAndReturnsItsResult) {
     ASSERT_TRUE(overlaySettled(window, pane));
     EXPECT_EQ(window->overlayFade(pane).first, 0.0);
     expectIdle(window);
-    // The host got none of the overlay's keys, and has the input again.
-    EXPECT_FALSE(screenOf(pane).contains(QStringLiteral("ab"))) << screenOf(pane).toStdString();
+    // The host has the input again, and got none of the overlay's keys:
+    // they would show before its own.
     EXPECT_NE(window->title(), QStringLiteral("Pick a line"));
     typeText(window, QStringLiteral("zz\r"));
-    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("zz")); })) << screenOf(pane).toStdString();
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("zz")); })) << screenOf(pane).toStdString();
+    EXPECT_FALSE(screenOf(pane).contains(QStringLiteral("ab"))) << screenOf(pane).toStdString();
 }
 
 TEST_F(NativeWindow, AnOverlayOverOneOfTwoPanesFollowsTheFocus) {
@@ -6158,6 +6381,12 @@ TEST_F(NativeWindow, AnOverlayOverOneOfTwoPanesFollowsTheFocus) {
     ASSERT_TRUE(waitFor([&] { return answer->done; }));
     EXPECT_EQ(answer->result.value(QStringLiteral("stdout")).toString(), QStringLiteral("one-two"));
     EXPECT_EQ(window->focusedPane(), first);
+    // A marker goes through each pane's input after the keys: a key that
+    // reached a pane shows before it.
+    for (Pane* pane : {first, second}) {
+        ASSERT_TRUE(pane->sendInput("@marker@\n"));
+        ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("@marker@")); })) << screenOf(pane).toStdString();
+    }
     EXPECT_FALSE(screenOf(first).contains(QStringLiteral("one"))) << screenOf(first).toStdString();
     EXPECT_FALSE(screenOf(second).contains(QStringLiteral("two"))) << screenOf(second).toStdString();
     ASSERT_TRUE(overlaySettled(window, first));
@@ -6239,6 +6468,10 @@ TEST_F(NativeWindow, MovingAPaneOrItsTabKeepsItsOverlay) {
     typeText(moved, QStringLiteral("there\r"));
     ASSERT_TRUE(waitFor([&] { return answer->done; }));
     EXPECT_EQ(answer->result.value(QStringLiteral("stdout")).toString(), QStringLiteral("here-there"));
+    // A marker goes through the host's input after the keys: a key that
+    // reached it shows before it.
+    ASSERT_TRUE(second->sendInput("@marker@\n"));
+    ASSERT_TRUE(waitFor([&] { return screenOf(second).contains(QStringLiteral("@marker@")); })) << screenOf(second).toStdString();
     EXPECT_FALSE(screenOf(second).contains(QStringLiteral("here"))) << screenOf(second).toStdString();
     expectIdle(moved);
 }
@@ -6321,6 +6554,12 @@ TEST_F(NativeWindow, AnOverlayOnAPaneInAnotherTabShowsThatTabAndOpensAtOnce) {
     typeText(window, QStringLiteral("yes\r"));
     ASSERT_TRUE(waitFor([&] { return answer->done; }));
     EXPECT_EQ(answer->result.value(QStringLiteral("stdout")).toString(), QStringLiteral("got:yes"));
+    // A marker goes through each pane's input after the keys: a key that
+    // reached a pane shows before it.
+    for (Pane* pane : {background, first}) {
+        ASSERT_TRUE(pane->sendInput("@marker@\n"));
+        ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("@marker@")); })) << screenOf(pane).toStdString();
+    }
     EXPECT_FALSE(screenOf(background).contains(QStringLiteral("yes"))) << screenOf(background).toStdString();
     EXPECT_FALSE(screenOf(first).contains(QStringLiteral("yes"))) << screenOf(first).toStdString();
     // In a tab that has settled, the end fades out and stops.
@@ -6455,7 +6694,8 @@ TEST_F(NativeWindow, OverlaysAndScriptDialogsRefuseEachOther) {
     EXPECT_EQ(pane->overlay(), nullptr);
     window->closeRunWaits(QStringLiteral("a@1"), QStringLiteral("afterglow.await:2:"));
     // Nor while the command palette is open, where an action would answer
-    // for it.
+    // for it. The dialog is gone first: it alone would refuse.
+    ASSERT_TRUE(waitFor([&] { return !chrome->scriptDialog().value(QStringLiteral("open")).toBool(); }));
     chrome->setPaletteOpen(true);
     runOverlay(window, pane, {QStringLiteral("/bin/true")}, {}, &refusal, &code);
     EXPECT_EQ(code, QStringLiteral("busy"));
@@ -6557,8 +6797,8 @@ return {
 }
 
 // An overlay with Shaders.overlayTransition set to @p transition, which
-// draws no fade (as Shaders.tabTransition): it switches at once, never shows
-// a blank pane, and asks for no frames after.
+// draws no fade (as Shaders.tabTransition): it switches at once, in and out,
+// and asks for no frames after.
 void NativeWindow::overlaySwitchesAtOnce(const QString& transition) {
     restartApplication(QStringLiteral("no-fade.conf"),
         testSettings({{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("overlayTransition"), transition}}}}),
@@ -6622,6 +6862,10 @@ TEST_F(NativeWindow, AFileDroppedOnAnOverlayFocusesItsHostAndReachesItsProgram) 
     // With the overlay gone, the keys reach its host.
     typeText(window, QStringLiteral("zz\r"));
     EXPECT_TRUE(waitFor([&] { return screenOf(first).contains(QStringLiteral("zz")); })) << screenOf(first).toStdString();
+    // A marker goes through the other pane's input after the keys: a key
+    // that reached it shows before it.
+    ASSERT_TRUE(second->sendInput("@marker@\n"));
+    ASSERT_TRUE(waitFor([&] { return screenOf(second).contains(QStringLiteral("@marker@")); })) << screenOf(second).toStdString();
     EXPECT_FALSE(screenOf(second).contains(QStringLiteral("zz"))) << screenOf(second).toStdString();
 }
 TEST_F(NativeWindow, TextDroppedOnAnOverlayReachesItsProgram) {
@@ -6666,6 +6910,10 @@ TEST_F(NativeWindow, AConfirmedPasteReachesTheOverlaysProgram) {
     chrome->answerPaste(true);
     ASSERT_TRUE(waitFor([&] { return answer->done; }));
     EXPECT_EQ(answer->result.value(QStringLiteral("stdout")).toString(), QStringLiteral("first-second"));
+    // A marker goes through the host's input after the paste: a paste that
+    // reached it shows before it.
+    ASSERT_TRUE(pane->sendInput("@marker@\n"));
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("@marker@")); })) << screenOf(pane).toStdString();
     EXPECT_FALSE(screenOf(pane).contains(QStringLiteral("first"))) << screenOf(pane).toStdString();
 }
 
@@ -6753,21 +7001,37 @@ TEST_F(NativeWindow, ClosingATabClosesThePromptOfItsOverlaysProgram) {
 }
 
 TEST_F(NativeWindow, AnOverlaysBellFlashesItsHost) {
+    // A red flash at full strength that fades slowly and evenly: a
+    // screenshot soon after the bell shows it.
     restartApplication(QStringLiteral("bell.conf"),
-        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("bell"), QStringLiteral("visual")}}}}),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("bell"), QStringLiteral("visual")}}},
+                      {QStringLiteral("Animation"), QJsonObject{{QStringLiteral("bellCurve"), QStringLiteral("0,0,1,1")},
+                                                                {QStringLiteral("bellDuration"), 3000}}},
+                      {QStringLiteral("Colors"), QJsonObject{{QStringLiteral("visualBell"), QStringLiteral("#ff0000")},
+                                                             {QStringLiteral("visualBellIntensity"), 1.0}}}}),
         {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
     if (HasFatalFailure()) return;
+    SettingsStore settings(directory.filePath(QStringLiteral("bell-capture.conf")),
+                           QJsonObject{{QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowReadText"), true}}}});
+    Control control(settings, {});
+    control.attachWindow(window);
     Pane* pane = window->focusedPane();
     auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sleep"), QStringLiteral("30")}, {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(pane->overlay(), nullptr);
     Pane* program = pane->overlay()->pane();
     ASSERT_TRUE(overlaySettled(window, pane));
     expectIdle(window);
+    const Shot before = captureShot(control, pane, CaptureScope::Window);
+    ASSERT_FALSE(before.image.isNull()) << qPrintable(before.error);
+    EXPECT_FALSE(reddish(pixelAt(before.image, 0.5, 0.5)));
     // The flash is drawn over the pane in the tab: it animates, for frames
     // of its own, and then stops. A bell's text changes nothing to draw.
     const auto frames = window->submittedFrames();
     program->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\a"); });
     EXPECT_TRUE(waitFor([&] { return window->submittedFrames() >= frames + 3; })) << window->submittedFrames() - frames;
+    const Shot flashed = captureShot(control, pane, CaptureScope::Window);
+    ASSERT_FALSE(flashed.image.isNull()) << qPrintable(flashed.error);
+    EXPECT_TRUE(reddish(pixelAt(flashed.image, 0.5, 0.5))) << std::hex << pixelAt(flashed.image, 0.5, 0.5);
     expectIdle(window);
     EXPECT_FALSE(answer->done);
 }
@@ -7044,8 +7308,11 @@ TEST_F(NativeWindow, AResultFileThatIsNoPlainFileGivesNoAnswer) {
     ASSERT_TRUE(file.open(QIODevice::WriteOnly));
     file.write("secret");
     file.close();
+    // The program tells the test where its result path is.
+    const QString named = directory.filePath(QStringLiteral("result-path"));
     auto link = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
-                                          QStringLiteral("rm -f \"$AFTERGLOW_RESULT\" && ln -s '%1' \"$AFTERGLOW_RESULT\"").arg(secret)},
+                                          QStringLiteral("printf %s \"$AFTERGLOW_RESULT\" > '%2' && "
+                                                         "rm -f \"$AFTERGLOW_RESULT\" && ln -s '%1' \"$AFTERGLOW_RESULT\"").arg(secret, named)},
                            {{QStringLiteral("capture"), QStringLiteral("file")}});
     ASSERT_TRUE(waitFor([&] { return link->done; }));
     EXPECT_EQ(link->result.value(QStringLiteral("exit_code")).toInt(), 0);
@@ -7053,7 +7320,10 @@ TEST_F(NativeWindow, AResultFileThatIsNoPlainFileGivesNoAnswer) {
         << link->result.value(QStringLiteral("stdout")).toString().toStdString();
     // The overlay removes its result path when it goes: the link, not what
     // it names.
-    drainDeferredDeletes();
+    const QString resultLink = QString::fromLocal8Bit(fileContent(named));
+    ASSERT_FALSE(resultLink.isEmpty());
+    EXPECT_TRUE(waitDeleting([&] { return !QFileInfo(resultLink).isSymLink() && !QFileInfo::exists(resultLink); }))
+        << "the result link stays";
     EXPECT_EQ(fileContent(secret), QByteArray("secret"));
 }
 
@@ -7114,6 +7384,7 @@ TEST_F(NativeWindow, ClosingAFocusedHostSendsItNoFocusAndLeavesNoFade) {
     ASSERT_NE(host->overlay(), nullptr);
     // The window tells the host that the overlay took the focus.
     ASSERT_TRUE(waitFor([&] { return fileContent(reports).contains("^[[O"); })) << fileContent(reports).toStdString();
+    const qsizetype beforeClose = fileContent(reports).size();
     QPointer<Pane> gone(host);
     window->requestClosePane(host);
     ASSERT_TRUE(answer->done);
@@ -7126,10 +7397,12 @@ TEST_F(NativeWindow, ClosingAFocusedHostSendsItNoFocusAndLeavesNoFade) {
     ASSERT_TRUE(host->sendInput("@marker@"));
     ASSERT_TRUE(waitFor([&] { return fileContent(reports).contains("@marker@"); })) << fileContent(reports).toStdString();
     // The window can have reported a focus-in before the overlay took
-    // the focus: only what came after that focus-out counts.
+    // the focus. The overlay's focus-out is the last report: the close
+    // added none, not even a focus-in that a focus-out followed.
     const QByteArray got = fileContent(reports);
-    const QByteArray afterOverlay = got.mid(got.lastIndexOf("^[[O"));
-    EXPECT_FALSE(afterOverlay.contains("^[[I")) << got.toStdString();
+    const QByteArray reported = got.left(got.indexOf("@marker@"));
+    EXPECT_TRUE(reported.endsWith("^[[O")) << got.toStdString();
+    EXPECT_EQ(reported.size(), beforeClose) << got.toStdString();
     ASSERT_TRUE(waitDeleted(gone));
     EXPECT_EQ(window->focusedPane(), first);
     expectIdle(window);
@@ -7299,7 +7572,9 @@ TEST_F(NativeWindow, AControlClientGetsAScreenshotAsAPngWhileReadAccessHolds) {
     EXPECT_TRUE(reddish(pixelAt(image, 0.5, 0.5)));
 
     // During the switch: the answer comes when it ends, past 2 s.
-    Pane* other = window->openTab({}, nullptr);
+    PaneLaunchOptions idle;
+    idle.command = {QStringLiteral("/bin/cat")};
+    Pane* other = window->openTab(idle, nullptr);
     ASSERT_NE(other, nullptr);
     ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }, 6000));
     window->revealPane(pane);
@@ -7446,9 +7721,12 @@ TEST_F(NativeWindow, AFadeOutGoesOnWhileATabSwitchOrTheOverviewStillShowsItsHost
     ASSERT_FALSE(window->overviewOpen());
     ASSERT_TRUE(nextFrame(window));
     EXPECT_TRUE(window->overlayFade(host).second);
-    // The close takes far less than what is left of the fade: an end this
-    // soon is the switch, not the fade's own.
-    EXPECT_TRUE(waitFor([&] { return window->overlayFade(host) == std::make_pair(qreal(0), false); }, 1500));
+    // The close takes far less than what is left of the fade: the fade
+    // ends with it, from well above zero, and does not run out on its own.
+    const QList<qreal> closing = followWhile([&] { return window->overlayFade(host).second; });
+    ASSERT_FALSE(closing.isEmpty());
+    EXPECT_GT(closing.last(), 0.1) << "the fade ran out after " << closing.size() << " frames";
+    EXPECT_EQ(window->overlayFade(host), std::make_pair(qreal(0), false));
     EXPECT_EQ(window->focusedPane(), other);
     expectIdle(window);
 }
@@ -7513,8 +7791,9 @@ TEST_F(NativeWindow, APressWaitsForTheButtonsThatAnotherPanesProgramHolds) {
     releaseLeft(window, at);
     // Markers go through the same inputs after what the gesture sent.
     const auto marked = [](Pane* pane) {
+        const qsizetype before = screenOf(pane).count(QStringLiteral("@marker@"));
         if (!pane->sendInput("@marker@")) return false;
-        return waitFor([pane] { return screenOf(pane).count(QStringLiteral("@marker@")) == 1; });
+        return waitFor([pane, before] { return screenOf(pane).count(QStringLiteral("@marker@")) == before + 1; });
     };
     ASSERT_TRUE(marked(host));
     ASSERT_TRUE(marked(program));
@@ -7532,6 +7811,7 @@ TEST_F(NativeWindow, APressWaitsForTheButtonsThatAnotherPanesProgramHolds) {
     clickRight(window, at);
     EXPECT_TRUE(waitFor([&] { return count(program, "\\^\\[\\[<2;\\d+;\\d+M") == 1 && count(program, "\\^\\[\\[<2;\\d+;\\d+m") == 1; }))
         << screenOf(program).toStdString();
+    ASSERT_TRUE(marked(host));
     EXPECT_EQ(count(host, "\\^\\[\\[<2;"), 0) << screenOf(host).toStdString();
     window->closeRunWaits(QStringLiteral("test@1"), QStringLiteral("afterglow.await:1:"));
     EXPECT_TRUE(answer->done);
@@ -8081,6 +8361,8 @@ void openPaneDialogs(Pane* asking, const QString& sent, PaneDialogs& dialogs) {
                                + QByteArray("hello").toBase64().toStdString() + "\x07");
     dialogs.prompt = waitForDialog<QMessageBox>(QStringLiteral("File transfer"));
     dialogs.save = waitForDialog<QFileDialog>(QStringLiteral("Save file received from"));
+    // A save that should not happen would land beside the directory.
+    if (dialogs.save) dialogs.save->setDirectory(QFileInfo(sent).absolutePath());
 }
 // A window on the screen with a title that starts with @p title, over
 // @p window: what the user sees of a dialog. A native dialog (Plasma's file
@@ -8212,6 +8494,7 @@ TEST_F(NativeWindow, APanesDialogsCloseWithTheWindowItIsIn) {
     // is not saved.
     restartApplication(QStringLiteral("close-dialogs.conf"),
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}}}}), {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
     PaneDialogs dialogs;
     openPaneDialogs(window->focusedPane(), directory.filePath(QStringLiteral("sent-closed")), dialogs);
     ASSERT_TRUE(dialogs.prompt && dialogs.save);
@@ -8220,8 +8503,9 @@ TEST_F(NativeWindow, APanesDialogsCloseWithTheWindowItIsIn) {
     ASSERT_TRUE(waitDeleted(closing));
     window = nullptr;
     ASSERT_TRUE(waitDeleting([&] { return dialogs.prompt.isNull() && dialogs.save.isNull(); }));
-    drain(50);
+    ASSERT_TRUE(settleQueued());
     EXPECT_FALSE(QFileInfo::exists(dialogs.sent));
+    EXPECT_FALSE(QFileInfo::exists(QFileInfo(dialogs.sent).absolutePath() + QStringLiteral("/notes.txt")));
 }
 
 TEST_F(NativeWindow, TheQuickTerminalSlidesOutForItsPanesDialogs) {
@@ -8290,6 +8574,7 @@ TEST_F(NativeWindow, ARequestFromAClosedPaneOpensNoDialog) {
     restartApplication(QStringLiteral("closed-requests.conf"),
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("clipboardWrite"), QStringLiteral("ask")}}}}),
         {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
     PaneLaunchOptions launch; launch.command = {QStringLiteral("/bin/cat")};
     Pane* first = window->focusedPane();
     QPointer<Pane> closing = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr); ASSERT_TRUE(closing);
@@ -8499,8 +8784,10 @@ QPointer<QFileDialog> downloadDialog(const std::function<bool(QFileDialog*)>& re
 }
 // A window whose program sends a file (OSC 1337 File, named moved.txt), and
 // the save dialog that the download opens over it, once its name field
-// shows the name. With @p quick, the window is a quick terminal, slid in.
-QPointer<QFileDialog> openDownloadDialog(Application& application, QPointer<TerminalWindow>& source,
+// shows the name. The dialog then shows @p folder, where a save that should
+// not happen would land. With @p quick, the window is a quick terminal,
+// slid in.
+QPointer<QFileDialog> openDownloadDialog(Application& application, QPointer<TerminalWindow>& source, const QString& folder,
                                          const std::function<bool(QFileDialog*)>& ready = {}, bool quick = false) {
     WindowOptions options; options.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
         QStringLiteral("printf '\\033]1337;File=name=bW92ZWQudHh0;size=2:aGk=\\007'; exec cat")};
@@ -8509,8 +8796,15 @@ QPointer<QFileDialog> openDownloadDialog(Application& application, QPointer<Term
     if (!source) return {};
     if (quick) source->toggleQuick();
     else source->show();
-    if (ready) return downloadDialog(ready);
-    return downloadDialog([](QFileDialog* dialog) {
+    // The dialog moves to @p folder once, before its name is checked: a
+    // native dialog could answer the move with another name.
+    QPointer<QFileDialog> moved;
+    return downloadDialog([&](QFileDialog* dialog) {
+        if (moved != dialog) {
+            dialog->setDirectory(folder);
+            moved = dialog;
+        }
+        if (ready) return ready(dialog);
         return shownDialog(dialog) && editHolding(shownDialog(dialog), QStringLiteral("moved.txt"));
     });
 }
@@ -8535,7 +8829,7 @@ TEST_F(NativeWindow, ADownloadsSaveDialogMovesWithItsPaneWhenItsWindowCloses) {
     // hide and a show.
     if (const std::string why = untypableDialog(); !why.empty()) GTEST_SKIP() << why;
     QPointer<TerminalWindow> source;
-    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source);
+    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source, directory.path());
     const auto rejectAll = qScopeGuard([&dialog] {
         if (dialog) dialog->reject();
         drainDeferredDeletes();
@@ -8563,7 +8857,7 @@ TEST_F(NativeWindow, ADownloadsSaveDialogMovesWithItsPaneWhenItsWindowCloses) {
     EXPECT_EQ(shown->windowHandle()->transientParent(), destination);
     EXPECT_NE(editHolding(shown, QStringLiteral("typed.txt")), nullptr) << "the typed name is lost";
     const QString saved = directory.filePath(QStringLiteral("typed.txt"));
-    saveThrough(dialog, QStringLiteral("typed.txt"), directory.path(), QStringLiteral("typed.txt"));
+    ASSERT_NO_FATAL_FAILURE(saveThrough(dialog, QStringLiteral("typed.txt"), directory.path(), QStringLiteral("typed.txt")));
     EXPECT_TRUE(waitFor([&] { return QFileInfo(saved).size() == 2; }));
 }
 
@@ -8576,7 +8870,7 @@ TEST_F(NativeWindow, ADownloadsSaveDialogMovesWithItsPaneTwice) {
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}}}}), {QStringLiteral("/bin/cat")});
     if (HasFatalFailure()) return;
     QPointer<TerminalWindow> source;
-    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source);
+    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source, directory.path());
     const auto rejectAll = qScopeGuard([&dialog] {
         if (dialog) dialog->reject();
         drainDeferredDeletes();
@@ -8603,7 +8897,7 @@ TEST_F(NativeWindow, ADownloadsSaveDialogMovesWithItsPaneTwice) {
     EXPECT_TRUE(shownDialog(dialog)->isVisible());
     EXPECT_EQ(shownDialog(dialog)->windowHandle()->transientParent(), destination);
     const QString saved = directory.filePath(QStringLiteral("moved.txt"));
-    saveThrough(dialog, QStringLiteral("moved.txt"), directory.path(), QStringLiteral("moved.txt"));
+    ASSERT_NO_FATAL_FAILURE(saveThrough(dialog, QStringLiteral("moved.txt"), directory.path(), QStringLiteral("moved.txt")));
     EXPECT_TRUE(waitFor([&] { return QFileInfo(saved).size() == 2; }));
 }
 
@@ -8618,7 +8912,7 @@ TEST_F(NativeWindow, ADownloadsSaveDialogGoesWithItsPanesWindow) {
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}}}}), {QStringLiteral("/bin/cat")});
     if (HasFatalFailure()) return;
     QPointer<TerminalWindow> source;
-    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source);
+    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source, directory.path());
     const auto rejectAll = qScopeGuard([&dialog] {
         if (dialog) dialog->reject();
         drainDeferredDeletes();
@@ -8646,7 +8940,7 @@ TEST_F(NativeWindow, ADownloadsSaveDialogStaysWhileItsWindowHides) {
     for (const bool quick : {false, true}) {
         SCOPED_TRACE(quick ? "quick terminal" : "window");
         QPointer<TerminalWindow> source;
-        QPointer<QFileDialog> dialog = openDownloadDialog(*application, source, {}, quick);
+        QPointer<QFileDialog> dialog = openDownloadDialog(*application, source, directory.path(), {}, quick);
         const auto rejectAll = qScopeGuard([&dialog] {
             if (dialog) dialog->reject();
             drainDeferredDeletes();
@@ -8676,7 +8970,7 @@ TEST_F(NativeWindow, ADownloadsSaveDialogStaysWhileItsWindowHides) {
         EXPECT_EQ(shownDialog(dialog), shown.data());
         EXPECT_EQ(shown->windowHandle()->transientParent(), quick ? nullptr : source.data());
         const QString saved = directory.filePath(quick ? QStringLiteral("quick.txt") : QStringLiteral("window.txt"));
-        saveThrough(dialog, QStringLiteral("typed.txt"), directory.path(), QFileInfo(saved).fileName());
+        ASSERT_NO_FATAL_FAILURE(saveThrough(dialog, QStringLiteral("typed.txt"), directory.path(), QFileInfo(saved).fileName()));
         EXPECT_TRUE(waitFor([&] { return QFileInfo(saved).size() == 2; }));
         if (quick) {
             EXPECT_TRUE(waitFor([&] { return source && source->quickShown() && source->isExposed(); }, 5000));
@@ -8700,6 +8994,12 @@ TEST_F(NativeWindow, AQuickTerminalToggledBackMidSlideEndsWhereItWasSent) {
     const auto slidOut = [](const QPointer<TerminalWindow>& quick) {
         return waitFor([&] { return quick && !quick->isVisible(); }, 5000);
     };
+    // Each scenario's window goes before the next one opens, also one that
+    // slid out: the delete needs no surface, as a close does.
+    const auto gone = [](const QPointer<TerminalWindow>& quick) {
+        if (quick) quick->deleteLater();
+        return waitDeleted(quick);
+    };
     {
         SCOPED_TRACE("out before any frame");
         QPointer<TerminalWindow> quick = openQuick();
@@ -8707,6 +9007,7 @@ TEST_F(NativeWindow, AQuickTerminalToggledBackMidSlideEndsWhereItWasSent) {
         quick->toggleQuick();
         quick->toggleQuick();
         EXPECT_TRUE(slidOut(quick)) << "the quick terminal stays shown";
+        EXPECT_TRUE(gone(quick));
     }
     {
         SCOPED_TRACE("out after the first frame");
@@ -8716,6 +9017,7 @@ TEST_F(NativeWindow, AQuickTerminalToggledBackMidSlideEndsWhereItWasSent) {
         ASSERT_TRUE(waitFor([&] { return quick && quick->isExposed() && quick->submittedFrames() > 0; }));
         quick->toggleQuick();
         EXPECT_TRUE(slidOut(quick)) << "the quick terminal stays shown";
+        EXPECT_TRUE(gone(quick));
     }
     {
         SCOPED_TRACE("out while it slides in");
@@ -8728,6 +9030,7 @@ TEST_F(NativeWindow, AQuickTerminalToggledBackMidSlideEndsWhereItWasSent) {
             << "the slide in stays at " << LayerSurface::get(quick)->margins().top();
         quick->toggleQuick();
         EXPECT_TRUE(slidOut(quick)) << "the quick terminal stays shown";
+        EXPECT_TRUE(gone(quick));
     }
     {
         SCOPED_TRACE("in again before its slide out moved");
@@ -8741,6 +9044,7 @@ TEST_F(NativeWindow, AQuickTerminalToggledBackMidSlideEndsWhereItWasSent) {
         expectIdle(quick);
         EXPECT_TRUE(quick->isVisible());
         EXPECT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+        EXPECT_TRUE(gone(quick));
     }
     {
         // With no slide to go in, the slide out stops where it is: the
@@ -8763,6 +9067,7 @@ TEST_F(NativeWindow, AQuickTerminalToggledBackMidSlideEndsWhereItWasSent) {
         expectIdle(quick);
         EXPECT_TRUE(quick->isVisible());
         EXPECT_EQ(LayerSurface::get(quick)->margins().top(), 0);
+        EXPECT_TRUE(gone(quick));
     }
 }
 
@@ -8790,7 +9095,10 @@ TEST_F(NativeWindow, AHeldChordWithNothingToDoRepeatsIntoTheProgram) {
     ASSERT_TRUE(settleQueued());
     const QString key = QStringLiteral("^[[23~");
     EXPECT_TRUE(waitFor([&] { return screenOf(pane).count(key) >= 4; })) << screenOf(pane).toStdString();
-    drain(200);
+    // A marker goes through the same input after the keys: a fifth F11
+    // shows before it.
+    ASSERT_TRUE(pane->sendInput("@marker@"));
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("@marker@")); })) << screenOf(pane).toStdString();
     EXPECT_EQ(screenOf(pane).count(key), 4) << screenOf(pane).toStdString();
     EXPECT_FALSE(quick->windowStates().testFlag(Qt::WindowFullScreen));
 }
@@ -8905,7 +9213,7 @@ TEST_F(NativeWindow, ANativeGtkSaveDialogKeepsItsNameWhenItsWindowCloses) {
     if (platformTheme() != "gtk3") GTEST_SKIP() << "runs with --platform-theme gtk3";
     const GtkChooser gtk;
     QPointer<TerminalWindow> source;
-    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source, [&](QFileDialog*) {
+    QPointer<QFileDialog> dialog = openDownloadDialog(*application, source, directory.path(), [&](QFileDialog*) {
         const auto shown = gtk.shown();
         return shown.size() == 1 && gtk.name(shown.front()) == QStringLiteral("moved.txt");
     });
@@ -8983,7 +9291,7 @@ TEST_F(NativeWindow, AProgramWhoseTabClosedShowsAndWritesNothing) {
     {
         QFile player(bin + QStringLiteral("/pw-play"));
         ASSERT_TRUE(player.open(QIODevice::WriteOnly));
-        player.write(QStringLiteral("#!/bin/sh\necho \"$1\" >> '%1'\n").arg(bells).toUtf8());
+        player.write(QStringLiteral("#!/bin/sh\necho \"${AFTERGLOW_TEST_BELL:-closed}\" >> '%1'\n").arg(bells).toUtf8());
     }
     ASSERT_TRUE(QFile::setPermissions(bin + QStringLiteral("/pw-play"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
     const QByteArray path = qgetenv("PATH");
@@ -8991,7 +9299,7 @@ TEST_F(NativeWindow, AProgramWhoseTabClosedShowsAndWritesNothing) {
     const auto restorePath = qScopeGuard([path] { qputenv("PATH", path); });
     const auto played = [&] {
         QFile file(bells);
-        return file.open(QIODevice::ReadOnly) ? file.readAll().count('\n') : 0;
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
     };
     restartApplication(QStringLiteral("closed-tab.conf"),
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false},
@@ -9019,17 +9327,26 @@ TEST_F(NativeWindow, AProgramWhoseTabClosedShowsAndWritesNothing) {
                           "\x1b]52;c;bGF0ZQ==\x07" "\x1b]99;i=shown:p=close;\x1b\\");
     EXPECT_TRUE(waitFor([&] { return notices.server.closes == 1; })) << "the close of the notice did not arrive";
     ASSERT_TRUE(settleQueued());
-    drain(100);
-    EXPECT_EQ(notices.server.count, 1) << notices.server.bodies.join(QLatin1Char('|')).toStdString();
+    // The notices arrive in the order sent: a notice of the closed tab
+    // arrives before a marker sent after it.
+    NotificationCenter::instance().showNotice(nullptr, QStringLiteral("Test"), QStringLiteral("last"));
+    ASSERT_TRUE(waitFor([&] { return notices.server.bodies.contains(QStringLiteral("last")); }));
+    EXPECT_EQ(notices.server.count, 2) << notices.server.bodies.join(QLatin1Char('|')).toStdString();
     EXPECT_FALSE(chrome->clipboardPromptOpen());
     // The same write and bell from a program in a tab ask and ring. The
-    // bell of the closed tab would have played first.
+    // bell of the closed tab would have started first, with no
+    // AFTERGLOW_TEST_BELL: each bell's player writes the value that it
+    // inherited.
+    qputenv("AFTERGLOW_TEST_BELL", "open");
+    const auto unsetBell = qScopeGuard([] { qunsetenv("AFTERGLOW_TEST_BELL"); });
     feedFromReader(second, "\a");
-    EXPECT_TRUE(waitFor([&] { return played() >= 1; })) << "no bell plays";
-    drain(200);
-    EXPECT_EQ(played(), 1) << "the bell of the closed tab played";
+    EXPECT_TRUE(waitFor([&] { return played().contains("open"); })) << "no bell plays";
+    EXPECT_EQ(played(), QByteArray("open\n")) << "the bell of the closed tab played";
     feedFromReader(second, "\x1b]52;c;bGF0ZQ==\x07");
     EXPECT_TRUE(waitFor([&] { return chrome->clipboardPromptOpen(); }));
+    // A player of the closed tab is a process of its own: by now, after the
+    // prompt's round trip, it would have written too.
+    EXPECT_FALSE(played().contains("closed"));
 }
 
 TEST_F(NativeWindow, AHeldChordSplitsOpensAndClosesOnce) {
@@ -9066,8 +9383,16 @@ TEST_F(NativeWindow, AHeldChordSplitsOpensAndClosesOnce) {
             return true;
         });
     };
+    // A marker goes through each pane's input after the keys: a key that
+    // reached a program shows before it.
+    int markers = 0;
     const auto noKeyReached = [&] {
-        for (Pane* pane : window->panes()) EXPECT_FALSE(screenOf(pane).contains(QLatin1Char('^'))) << screenOf(pane).toStdString();
+        const QString marker = QStringLiteral("@marker%1@").arg(++markers);
+        for (Pane* pane : window->panes()) {
+            ASSERT_TRUE(pane->sendInput(marker.toStdString()));
+            ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(marker); })) << screenOf(pane).toStdString();
+            EXPECT_FALSE(screenOf(pane).contains(QLatin1Char('^'))) << screenOf(pane).toStdString();
+        }
     };
     ASSERT_TRUE(ready());
     holdKey(window, Qt::Key_R, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("r"), 4);
@@ -9091,23 +9416,28 @@ TEST_F(NativeWindow, AHeldChordSplitsOpensAndClosesOnce) {
     ASSERT_TRUE(settleQueued());
     EXPECT_TRUE(waitFor([&] { return window->accessiblePaneRect(other).isEmpty() && !window->accessiblePaneRect(zoomed).isEmpty(); }))
         << "the zoom turned back";
-    drain(100);
     noKeyReached();
-    // A held reload shows the problems once.
-    drain(300);
+    // A held reload shows the problems once. The notices arrive in the
+    // order sent: all of them are in once a marker sent after them is.
+    const auto noticesIn = [&](const QString& marker) {
+        NotificationCenter::instance().showNotice(nullptr, QStringLiteral("Test"), marker);
+        return waitFor([&] { return notices.server.bodies.contains(marker); });
+    };
+    ASSERT_TRUE(noticesIn(QStringLiteral("before")));
     const int shown = notices.server.count;
     holdKey(window, Qt::Key_L, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("l"), 3);
     ASSERT_TRUE(settleQueued());
     EXPECT_TRUE(waitFor([&] { return notices.server.count > shown; })) << "the reload showed no problems";
-    drain(300);
-    EXPECT_EQ(notices.server.count, shown + 1);
+    ASSERT_TRUE(noticesIn(QStringLiteral("after")));
+    // The problems once, and the marker.
+    EXPECT_EQ(notices.server.count, shown + 2) << notices.server.bodies.join(QLatin1Char('|')).toStdString();
     noKeyReached();
 }
 
 TEST_F(NativeWindow, ASplitFromAfterglowCtlDoesNotShowItsWindow) {
     // afterglow ctl and scripts split a pane where it is: its tab shows and
-    // the new pane takes the focus, and the window is neither shown,
-    // raised nor activated.
+    // the new pane takes the focus, and the window is not shown (so it is
+    // not active either).
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
     launch.command = {QStringLiteral("/bin/cat")};
@@ -9228,11 +9558,13 @@ TEST_F(NativeWindow, AnOverlaysProgramGetsTheRemoteSocketOfItsHost) {
     ASSERT_NE(reply.find("path="), std::string::npos) << reply;
     pane->setRemoteSocket(before);
     const QString file = directory.filePath(QStringLiteral("remote-reply"));
-    // The program asks once it gets a byte, which the test sends after the
-    // answer changed, and keeps the reply.
+    const QString id = directory.filePath(QStringLiteral("remote-pane-id"));
+    // The program keeps its AFTERGLOW_PANE_ID, asks once it gets a byte,
+    // which the test sends after the answer changed, and keeps the reply.
     auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
-        QStringLiteral("stty raw -echo; head -c 1 > /dev/null; printf '\\033]24569;q=remote\\033\\\\'; head -c %1 > '%2'")
-            .arg(reply.size()).arg(file)},
+        QStringLiteral("printf %s \"$AFTERGLOW_PANE_ID\" > '%3'; "
+                       "stty raw -echo; head -c 1 > /dev/null; printf '\\033]24569;q=remote\\033\\\\'; head -c %1 > '%2'")
+            .arg(reply.size()).arg(file, id)},
         {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(pane->overlay(), nullptr);
     Pane* program = pane->overlay()->pane();
@@ -9248,6 +9580,7 @@ TEST_F(NativeWindow, AnOverlaysProgramGetsTheRemoteSocketOfItsHost) {
     ASSERT_TRUE(program->sendInput("g"));
     ASSERT_TRUE(waitFor([&] { return answer->done; }, 5000));
     EXPECT_EQ(fileContent(file).toStdString(), reply);
+    EXPECT_EQ(QString::fromLatin1(fileContent(id)), QString::number(pane->id()));
 }
 
 TEST_F(NativeWindow, ARefusedMoveToANewTabKeepsItsKeyAndSaysWhy) {
@@ -9346,6 +9679,12 @@ int main(int argc, char** argv)
                              "headless_native.py runner, which isolate the compositor and the session bus.\n");
         return 2;
     }
+    // A runner started from a pane of the user's Afterglow, a mux session or
+    // tmux hands down their identity: the tests' panes, overlays and dialogs
+    // must not reach the user's terminal through it. main.cpp unsets the
+    // same, and TMUX would make aglow ask the user's tmux.
+    for (const char* name : {"AFTERGLOW_SOCKET", "AFTERGLOW_PANE_ID", "AFTERGLOW_SESSION", "TMUX", "XDG_ACTIVATION_TOKEN"})
+        qunsetenv(name);
     previousHandler = qInstallMessageHandler(recordQmlErrors);
     // The plugin paths, the layer-shell integration and the names, as afterglow sets them.
     prepareApplication();

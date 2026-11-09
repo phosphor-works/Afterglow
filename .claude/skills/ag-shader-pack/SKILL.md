@@ -24,6 +24,10 @@ stages) and an optional `README.md`.
 - Each GLSL file starts with the SPDX header. New packs are `LGPL-2.1-or-later`. Keep the license of an existing file.
 - A stage defines `vec4 pTerminal(vec2 uv)` and returns premultiplied colour. Afterglow adds `main()`, the
   parameters as `p_<id>`, and `terminal_lib.glsl`.
+- A final pass that moves the content (a bend, a lens, a perspective) also defines `vec2 pPointerMap(vec2 uv)`,
+  through the same helper as `pTerminal`, so clicks reach the cell drawn under the pointer
+  (docs/SHADER-API.md#pointer-maps). Add the pack to `PointerMapTest`, with parameter values that move its
+  content. `afterglow_renderpng --pointer X,Y` prints where a click lands.
 - Coordinates are top-down. `uv` (0, 0) is the top-left corner of the canvas.
 - A pack in a script package must declare the id `<package>.<pack>`. The registry rejects other ids.
 - The event chains (`Shaders.overview`, `tabTransition`, `paneEffects`, `overlayTransition`) take one pack id, not a
