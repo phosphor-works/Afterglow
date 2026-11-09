@@ -230,8 +230,9 @@ public:
     /// Returns false when there is none that way.
     bool jumpToPrompt(int direction);
 
-    // Selection (GUI thread). Points are absolute rows (history included);
-    // selectionPointAt turns a cell of the current viewport into one.
+    // Selection (GUI thread). Points are stable row ids (Screen::rowsDropped()
+    // plus the row's index in history and screen); selectionPointAt turns a
+    // cell of the current viewport into one.
     AfterglowVt::SelectionPoint selectionPointAt(int col, int row) const;
     void startSelection(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow);
     void extendSelection(AfterglowVt::SelectionPoint head);
@@ -245,9 +246,10 @@ public:
     QVariantMap historyPosition() const;
     void scrollHistory(double fraction);
     bool hasSelection() const;
-    /// Whether the selection holds @p point (from selectionPointAt()), with
-    /// its words and lines expanded as they are drawn.
-    bool selectionContains(AfterglowVt::SelectionPoint point) const;
+    /// Whether the cell at @p col, @p row of the viewport (as selectionPointAt()
+    /// takes it) is in the selection, with its words and lines expanded as
+    /// they are drawn. The copy cursor of copy mode is not a selection here.
+    bool selectionContains(int col, int row) const;
     QString selectedText() const;
     QVariantMap readSelection(std::size_t limit) const;
     QVariantMap semanticRegions() const;
@@ -257,6 +259,8 @@ public:
 Q_SIGNALS:
     /// The terminal changed. Emitted on the GUI thread, coalesced.
     void contentChanged();
+    /// The program's drag offer (OSC 72) starts as a drag of the desktop.
+    void programDragStarting();
     void searchStatusChanged(const QString& status);
     void titleUpdated(const QString& title);
     void contextUpdated();
@@ -462,6 +466,11 @@ private:
     AfterglowVt::SelectionPoint m_copyCursor;
     AfterglowVt::Selection m_selection;
     bool m_selectionOnAltScreen = false;
+    /// The selection is drawn: active, made on the screen shown, and valid
+    /// for its rows. m_mutex held.
+    bool selectionShown() const;
+    /// selectionPointAt() with m_mutex held.
+    AfterglowVt::SelectionPoint pointAt(int col, int row) const;
     std::uint64_t m_selectionSerial = 0;
 
     struct SearchJob {

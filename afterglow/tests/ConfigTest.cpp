@@ -1346,6 +1346,15 @@ TEST_F(ConfigTest, RemoteCommandsOverSshAreOffByDefault)
     EXPECT_TRUE(on.settings().sshRemoteCommands);
 }
 
+TEST_F(ConfigTest, DragSelectionIsOffByDefault)
+{
+    // As in Kitty: a press inside the selection starts a new selection.
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_FALSE(defaults.settings().mouse.dragSelection);
+    SettingsStore on(write(QStringLiteral("on.json"), R"({"Mouse": {"dragSelection": true}})"));
+    EXPECT_TRUE(on.settings().mouse.dragSelection);
+}
+
 TEST_F(ConfigTest, DragTreeLifetimeIsMinutesWithAClamp)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
@@ -1367,13 +1376,12 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(defaults.settings().statusNotificationInterval, 3000);
     EXPECT_EQ(defaults.settings().pasteReadTimeout, 10);
     EXPECT_EQ(defaults.settings().mouse.autoScrollInterval, 50);
-    EXPECT_FALSE(defaults.settings().mouse.dragSelection);
     EXPECT_EQ(defaults.settings().control.eventInterval, 100);
 
     SettingsStore custom(write(QStringLiteral("custom.json"), R"({
         "Terminal": {"bellSoundInterval": 0, "pasteReadTimeout": 30},
         "Notifications": {"statusInterval": 0},
-        "Mouse": {"autoScrollInterval": 120, "dragSelection": true},
+        "Mouse": {"autoScrollInterval": 120},
         "Control": {"eventInterval": 0}
     })"));
     EXPECT_EQ(custom.settings().control.eventInterval, 0);
@@ -1381,7 +1389,6 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(custom.settings().statusNotificationInterval, 0);
     EXPECT_EQ(custom.settings().pasteReadTimeout, 30);
     EXPECT_EQ(custom.settings().mouse.autoScrollInterval, 120);
-    EXPECT_TRUE(custom.settings().mouse.dragSelection);
 
     SettingsStore clamped(write(QStringLiteral("clamped.json"), R"({
         "Terminal": {"bellSoundInterval": 99999, "pasteReadTimeout": 0},

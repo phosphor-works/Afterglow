@@ -9,8 +9,7 @@ namespace Afterglow {
 QVariantMap Pane::readSelection(std::size_t limit) const
 {
     std::lock_guard lock(m_mutex);
-    const bool available = m_selection.active && m_selectionOnAltScreen == m_terminal.modes().altScreen
-        && m_selection.validFor(m_terminal.screen());
+    const bool available = selectionShown();
     bool truncated = false;
     const auto text = available ? m_selection.text(m_terminal.screen(), m_terminal.options().wordBoundaries,
         // ScriptHost::MaxReadTextBytes checks the effect first: this only bounds a direct caller.

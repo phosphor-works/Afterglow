@@ -56,16 +56,19 @@ The memory cap of `systemd-run` keeps systemd-oomd from killing the user's After
 
 ### Expected skips in the headless run
 
-These five tests need real compositor input, which only the acceptance runner below gives. Headless, they report
-Skipped with "Run through native_window_acceptance.py for real compositor input".
+The tests that start with `REQUIRE_NATIVE_DND` need real compositor input, which only the acceptance runner below
+gives. Headless, they report Skipped with "Run through native_window_acceptance.py for real compositor input".
 
 - `NativeWindow.NativeWaylandFileDrop`
-- `NativeWindow.KittyDragAndDropClient` and `NativeWindow.AglowDragAndDropClient`
-- `NativeWindow.KittyRemoteDragDirectory` and `NativeWindow.AglowRemoteDragDirectory`
+- `NativeWindow.ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn`
+- The `NativeWindow.Kitty*` and `NativeWindow.Aglow*` client tests: `*DragAndDropClient`, `*RemoteDragDirectory`,
+  `*RemoteDragDirectoryMovesBetweenPanes`, `*RemoteDragMoveToWaylandTarget`, `*RemoteDragCopyToWaylandTarget` and
+  `*RemoteDragRefusedByAWaylandTargetKeepsTheFiles`
 
-Each client drag-and-drop test runs two times, with two clients. `NativeWaylandFileDrop` uses no client and runs
-one time. The `Kitty*` tests run `kitten dnd`, and skip when `kitten` is not installed. The `Aglow*` tests run the
-`aglow dnd` of the build, and skip in a build without `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`).
+Each client test runs two times, with two clients. `NativeWaylandFileDrop` and
+`ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn` use no client and run one time. The `Kitty*` tests run
+`kitten dnd`, and skip when `kitten` is not installed. The `Aglow*` tests run the `aglow dnd` of the build, and
+skip in a build without `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`).
 
 `NativeWindow.APointerThatNeverEnteredAWindowIsOnNoItemOfItsDocks` skips when the compositor's pointer enters its
 new window, because the test needs a window that the pointer never entered.

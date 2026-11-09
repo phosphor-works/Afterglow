@@ -86,6 +86,7 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
         m_selectionPane = nullptr;
         m_autoScroll.stop();
     }
+    if (m_textDragPane == pane) m_textDragPane = nullptr;
     // A button held on the pane keeps its report there: the program that
     // got the press hears its release (mouseReleaseEvent).
     if (m_hover.pane == pane) m_hover = {};

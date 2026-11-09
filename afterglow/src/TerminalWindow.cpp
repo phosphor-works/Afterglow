@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "TerminalWindow.h"
+#include "NestedLoop.h"
 #include "DockArea.h"
 #include <QQuickWindow>
 #include <QQuickItem>
@@ -108,7 +109,8 @@ QList<TerminalWindow*> s_windows;
 constexpr std::size_t MaxHints = 1000;
 /// A clipboard reply (OSC 52, or each type of an OSC 5522 read) carries at most this much.
 constexpr qsizetype MaxClipboardReply = 8 * 1024 * 1024;
-/// A paste larger than this would not fit the PTY's input queue (32 MiB).
+/// Half the PTY's input queue (32 MiB): a paste fits behind input that the
+/// program has not read yet.
 constexpr qsizetype MaxPaste = 16 * 1024 * 1024;
 
 /// The same motion for another value type.
@@ -453,6 +455,8 @@ QList<TerminalWindow*> TerminalWindow::windows()
 
 void TerminalWindow::bindPane(Pane* pane)
 {
+    // The program's drag takes the keyboard, as a selection's drag does.
+    connect(pane, &Pane::programDragStarting, this, &TerminalWindow::releaseSentKeys);
     connect(pane, &Pane::inputRejected, this, [this, pane] {
         NotificationCenter::instance().showNotice(pane, tr("Terminal input rejected"),
             tr("The program closed or its input queue is full."));
@@ -930,6 +934,7 @@ void TerminalWindow::dropPanePrompts(Pane* pane)
         m_selectionPane = nullptr;
         m_autoScroll.stop();
     }
+    if (m_textDragPane == pane) m_textDragPane = nullptr;
     if (m_reportedPane == pane) {
         m_reportedPane = nullptr;
         m_reportedButtons = Qt::NoButton;
@@ -1285,6 +1290,7 @@ void TerminalWindow::switchTab(int index)
     });
     QTimer::singleShot(0, this, &TerminalWindow::updatePaneVisibility);
     m_selectionPane = nullptr;
+    m_textDragPane = nullptr;
     // The link under the pointer was in the tab that went: its underline
     // and its pointer shape go with it.
     if (m_hover.pane) {
@@ -1575,6 +1581,7 @@ void TerminalWindow::setPaneZoom(Pane* pane)
     m_dividerDrag.reset();
     m_hover = {};
     m_selectionPane = nullptr;
+    m_textDragPane = nullptr;
     stopUrlMode();
     // An overlay's grid moves with its host's.
     m_splits->forEachPane([this](Pane* p, const QRect&) { motion(p).rectKnown = motion(inputPane(p)).rectKnown = false; });
@@ -2170,37 +2177,70 @@ bool TerminalWindow::event(QEvent* e)
         // Only the handlers a program started (OSC 72): a pane that never
         // asked for drag and drop accepts and offers nothing.
         for (auto* pane : terminalPanes()) if (pane != target && pane->hasDragDrop()) pane->dragDrop()->leave();
+        // A selection dragged back onto its own pane came back to where it
+        // started: neither its program nor a paste gets it. The source is the
+        // window that runs the drag, which need not be this one.
+        const auto* from = qobject_cast<const TerminalWindow*>(drop->source());
+        if (target && from && from->m_textDragSource && hostOf(target) == from->m_textDragSource) {
+            if (target->hasDragDrop()) target->dragDrop()->leave();
+            drop->ignore();
+            return true;
+        }
         if (target && target->hasDragDrop() && !target->isHeld() && !m_controller->wantsKeyboard() && target->dragDrop()->acceptsDrops()) {
             const QPoint pixel = gridPixel(target, drop->position()).toPoint();
+            // The drop waits while the program reads it, in an event loop.
+            const NestedLoop receiving(this);
             target->dragDrop()->drop(drop, e->type() == QEvent::Drop, cellAt(target, drop->position()), pixel);
             return true;
         }
         // The pane's program does not get this event: it is not over the pane now.
         if (target && target->hasDragDrop()) target->dragDrop()->leave();
-        // Files paste as their quoted paths. Text (a selection dragged from
-        // another pane or another application) pastes as a paste from the
-        // clipboard does, with its checks. A selection dropped back on its
-        // own pane is no paste: it was a drag meant to select.
-        const QString paths = droppedFiles(drop->mimeData());
-        const QString text = paths.isEmpty() && drop->mimeData()->hasText() ? drop->mimeData()->text() : QString();
-        const bool ownSelection = target && m_textDragSource && hostOf(target) == m_textDragSource;
-        if (!target || target->isHeld() || m_controller->wantsKeyboard() || (paths.isEmpty() && text.isEmpty())
-            || ownSelection || !(drop->possibleActions() & Qt::CopyAction)) {
+        // Files paste as their quoted paths. A drop with a file URL is a file
+        // drop whatever else it holds: Qt gives the URLs as its text, and a
+        // file list that droppedFiles() refuses pastes nothing. Other text,
+        // links from a browser too, pastes with the size limit and the
+        // question of a paste, as in Kitty. The types decide first: reading
+        // the data costs. A drag of this process is read only at the drop: a
+        // program's offer (OSC 72) asks the program for its data each time
+        // it is read, and the offer's own pane takes none of it. Text is read
+        // only at the drop, as it waits for the source.
+        const QMimeData* mime = drop->mimeData();
+        const bool dropping = e->type() == QEvent::Drop;
+        if (!target || target->isHeld() || m_controller->wantsKeyboard() || !mime->hasText()
+            || (target->hasDragDrop() && target->dragDrop()->dragging()) || !(drop->possibleActions() & Qt::CopyAction)) {
+            drop->ignore();
+            return true;
+        }
+        const QPointer<Pane> pane(target);
+        bool fileDrop = false;
+        QString paste;
+        {
+            // Reading a program's offer runs an event loop until the program
+            // sends its data: the pane can go meanwhile, and the window only
+            // after the loop.
+            const NestedLoop reading(this);
+            if (dropping || !drop->source()) {
+                const QList<QUrl> urls = mime->hasUrls() ? mime->urls() : QList<QUrl>();
+                fileDrop = std::any_of(urls.cbegin(), urls.cend(), [](const QUrl& url) { return url.isLocalFile(); });
+                if (fileDrop) paste = droppedFiles(urls);
+            }
+            if (dropping && !fileDrop) paste = mime->text();
+        }
+        // The read may have run an event loop: what decided the drop is checked again.
+        if (!pane || !terminalPanes().contains(pane.data()) || !m_splits || !m_splits->contains(hostOf(pane.data()))
+            || pane->isHeld() || m_controller->wantsKeyboard()
+            || overviewShowing() || (paste.isEmpty() && (fileDrop || dropping))) {
             drop->ignore();
             return true;
         }
         drop->setDropAction(Qt::CopyAction);
         drop->accept();
-        if (e->type() == QEvent::Drop) {
+        if (dropping) {
             // The pane in the tab takes the focus; its overlay gets the paste.
-            setFocusedPane(hostOf(target));
-            if (paths.isEmpty()) {
-                pasteText(target, text.toUtf8());
-                return true;
-            }
-            const auto bytes = paths.toUtf8();
-            const AfterglowVt::Modes modes = target->withTerminal([](Terminal& t) { return t.modes(); });
-            target->sendInput(AfterglowVt::encodePaste(std::string_view(bytes.constData(), std::size_t(bytes.size())), modes));
+            setFocusedPane(hostOf(pane));
+            pasteText(pane, paste.toUtf8());
+            // The keys that answer the paste question must come to this window.
+            if (m_controller->pasteConfirmOpen() && !isActive()) requestActivate();
         }
         return true;
     }
@@ -2246,11 +2286,20 @@ bool TerminalWindow::event(QEvent* e)
             }
         }
         qCInfo(lcWindow) << "window close requested";
+        // A drag of this window (a selection, or a program's offer) ends first.
+        const auto terminals = terminalPanes();
+        if (m_textDragging || std::any_of(terminals.cbegin(), terminals.cend(), [](Pane* p) {
+                return p->hasDragDrop() && p->dragDrop()->dragging();
+            })) {
+            QDrag::cancel();
+        }
         const bool handled = QWindow::event(e);
         // The scripts still run: a drag on a dock ends, and the item under
         // the pointer is left.
         dropDockPointer(nullptr);
-        deleteLater();
+        // A drag or a drop may run this event in its event loop, from a
+        // handler of this window: the window goes once that handler returns.
+        NestedLoop::deleteWhenIdle(this);
         return handled;
     }
     default:
@@ -4166,7 +4215,7 @@ void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
     // release/press pairs; only the real release counts.
     if (const auto sent = m_sentKeys.constFind(physicalKey); sent != m_sentKeys.constEnd()) {
         if (!e->isAutoRepeat()) {
-            const QPointer<Pane> pane = *sent;
+            const QPointer<Pane> pane = sent->pane;
             m_sentKeys.erase(sent);
             if (takesInput(pane)) sendKey(e, pane);
         }
@@ -4184,6 +4233,23 @@ void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
     }
 }
 
+void TerminalWindow::releaseSentKeys()
+{
+    // A key that comes up during the drag sends nothing: Qt's drag takes
+    // the key events. The keys come up here, the last pressed first, with
+    // the modifiers held now. Each one is taken from now on: its later
+    // repeats and its release go to no program.
+    auto sent = std::exchange(m_sentKeys, {}).asKeyValueRange();
+    std::vector<std::pair<quint32, SentKey>> keys(sent.begin(), sent.end());
+    std::sort(keys.begin(), keys.end(), [](const auto& a, const auto& b) { return a.second.order > b.second.order; });
+    const Qt::KeyboardModifiers modifiers = QGuiApplication::queryKeyboardModifiers();
+    for (const auto& [physicalKey, key] : keys) {
+        m_consumedKeys.insert(physicalKey, false);
+        QKeyEvent release(QEvent::KeyRelease, key.key, modifiers, key.nativeScanCode, 0, 0, key.text);
+        if (takesInput(key.pane)) sendKey(&release, key.pane);
+    }
+}
+
 void TerminalWindow::sendKey(QKeyEvent* e, Pane* pane)
 {
     Pane* target = pane ? pane : inputPane(m_focused);
@@ -4194,7 +4260,7 @@ void TerminalWindow::sendKey(QKeyEvent* e, Pane* pane)
         // A held key repeats only into the pane that got its press, which
         // gets its release too: a pane focused since gets no stray repeats.
         const auto sent = m_sentKeys.constFind(physicalKeyOf(e));
-        if (sent != m_sentKeys.constEnd() && sent->data() != target) return;
+        if (sent != m_sentKeys.constEnd() && sent->pane.data() != target) return;
     }
     QByteArray storage;
     const AfterglowVt::KeyEvent ev = mapKeyEvent(e, storage);
@@ -4213,7 +4279,7 @@ void TerminalWindow::sendKey(QKeyEvent* e, Pane* pane)
     if (ev.action != AfterglowVt::KeyAction::Release) {
         target->clearSelection();
         noteTyping();
-        m_sentKeys.insert(physicalKeyOf(e), target);
+        m_sentKeys.insert(physicalKeyOf(e), {target, e->key(), e->text(), e->nativeScanCode(), ++m_sentKeyOrder});
     }
     target->sendInput(bytes);
 }
@@ -4485,7 +4551,6 @@ void TerminalWindow::pasteText(Pane* target, const QByteArray& text)
         return;
     }
     if (text.size() > MaxPaste) {
-        // The PTY would refuse it whole, with a message about a full queue.
         NotificationCenter::instance().showNotice(target, tr("Paste too large"),
             tr("The text is %1, and a paste holds at most %2.")
                 .arg(QLocale().formattedDataSize(text.size()), QLocale().formattedDataSize(MaxPaste)));
@@ -4647,6 +4712,7 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
         m_reportedButtons = Qt::NoButton;
         m_reportedPane = nullptr;
         m_selectionPane = nullptr;
+        m_textDragPane = nullptr;
         m_autoScroll.stop();
         // A dock click is where a tab menu opens only until the next click.
         m_dockClickAt.reset();
@@ -4754,11 +4820,9 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     // Count clicks on the same cell for word (2) and line (3) selection.
     const QPoint cell = cellAt(target, e->position());
     const int interval = QGuiApplication::styleHints()->mouseDoubleClickInterval();
-    if (m_lastClick.isValid() && m_lastClick.elapsed() < interval && cell == m_lastClickCell && target == m_lastClickPane) {
-        m_clickCount = m_clickCount % 3 + 1;
-    } else {
-        m_clickCount = 1;
-    }
+    const bool series = m_lastClick.isValid() && m_lastClick.elapsed() < interval && cell == m_lastClickCell
+        && target == m_lastClickPane;
+    m_clickCount = series ? m_clickCount % 3 + 1 : 1;
     m_lastClick.start();
     m_lastClickCell = cell;
     m_lastClickPane = target;
@@ -4771,39 +4835,56 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     } else if (e->modifiers() & Qt::AltModifier) {
         mode = AfterglowVt::SelectionMode::Block;
     }
-    // A single press inside the selection waits: a move drags the text out,
-    // a release clicks (mouseReleaseEvent). Word, line and block presses
-    // select as before.
-    m_textDragPane = nullptr;
-    if (m_clickCount == 1 && mode == AfterglowVt::SelectionMode::Normal && m_settings.settings().mouse.dragSelection
-        && target->selectionContains(target->selectionPointAt(cell.x(), cell.y()))) {
+    // A single plain press inside the selection waits: a move drags the text
+    // out, a release clicks (mouseReleaseEvent). Only a mouse drags: Qt turns
+    // the touch and tablet input that the window does not handle into
+    // presses, and a finger that strokes over the selection selects. The
+    // fourth click of a series counts as one again, inside the line that the
+    // third selected: it selects too.
+    if (!series && mode == AfterglowVt::SelectionMode::Normal && e->source() == Qt::MouseEventNotSynthesized
+        && m_settings.settings().mouse.dragSelection && target->selectionContains(cell.x(), cell.y())) {
         m_textDragPane = target;
         m_textDragFrom = e->position();
         return;
     }
-    m_selectionPane = target;
+    beginSelection(target, e->position(), mode);
+}
+
+void TerminalWindow::beginSelection(Pane* pane, const QPointF& pos, AfterglowVt::SelectionMode mode)
+{
+    m_selectionPane = pane;
     m_selectionDragged = false;
-    m_dragPos = e->position();
-    target->startSelection(target->selectionPointAt(cell.x(), cell.y()), mode,
-                              mode == AfterglowVt::SelectionMode::Word || mode == AfterglowVt::SelectionMode::Line);
+    m_dragPos = pos;
+    const QPoint cell = cellAt(pane, pos);
+    pane->startSelection(pane->selectionPointAt(cell.x(), cell.y()), mode,
+                         mode == AfterglowVt::SelectionMode::Word || mode == AfterglowVt::SelectionMode::Line);
     scheduleRender();
 }
 
-void TerminalWindow::dragSelectionText()
+bool TerminalWindow::dragSelectionText(Pane* pane)
 {
-    const QPointer<Pane> pane = std::exchange(m_textDragPane, nullptr);
-    const QString text = pane ? pane->selectedText() : QString();
-    if (text.isEmpty()) return;
+    const QString text = pane->selectedText();
+    if (text.isEmpty()) return false;
     auto* mime = new QMimeData;
     mime->setText(text);
     const QPointer<QDrag> drag = new QDrag(this);
     drag->setMimeData(mime);
+    releaseSentKeys();
     // The selection stays: the text is copied, not moved out of the pane.
-    // exec() returns when the drop ends, and events go on meanwhile.
+    // exec() returns when the drop ends, and events go on meanwhile: the
+    // window that closes in that time goes after it (QEvent::Close).
     m_textDragSource = hostOf(pane);
+    m_textDragging = true;
+    const NestedLoop loop(this);
     drag->exec(Qt::CopyAction, Qt::CopyAction);
+    m_textDragging = false;
     m_textDragSource = nullptr;
     if (drag) drag->deleteLater();
+    // The drag took the button's release: the drags that programs offer
+    // (OSC 72) see it here, and the next press starts no double click.
+    for (auto* p : terminalPanes()) if (p->hasDragDrop()) p->dragDrop()->release();
+    m_lastClick.invalidate();
+    return true;
 }
 
 void TerminalWindow::updateSelectionDrag()
@@ -4863,20 +4944,20 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
         applyPointerShape();
         return;
     }
+    if (e->button() == Qt::LeftButton && m_textDragPane) {
+        // A press inside the selection that did not drag: the click that it
+        // held back, which clears the selection as any click does. Released
+        // on another cell, it counts as a drag: it selects nothing, opens no
+        // link and moves no cursor.
+        Pane* pane = std::exchange(m_textDragPane, nullptr);
+        beginSelection(pane, m_textDragFrom, AfterglowVt::SelectionMode::Normal);
+        m_selectionDragged = cellAt(pane, e->position()) != cellAt(pane, m_textDragFrom);
+    }
     // A press that a pane took has its release there too, over the chrome
     // as well: a selection dragged up to the tab bar ends, and a program
     // hears its button go up.
     // The chrome may hold another button's press meanwhile: that grab is
     // not this button's.
-    if (e->button() == Qt::LeftButton && m_textDragPane) {
-        // A press inside the selection that did not move: the click that it
-        // held back, which clears the selection as any click does.
-        Pane* pane = std::exchange(m_textDragPane, nullptr);
-        const QPoint cell = cellAt(pane, m_textDragFrom);
-        m_selectionPane = pane;
-        m_selectionDragged = false;
-        pane->startSelection(pane->selectionPointAt(cell.x(), cell.y()), AfterglowVt::SelectionMode::Normal, false);
-    }
     const bool paneGesture = (m_reportedButtons & e->button()) || (e->button() == Qt::LeftButton && m_selectionPane);
     if (!paneGesture && routePointerToChrome(e, e->position(), false, true)) {
         return;
@@ -5036,11 +5117,23 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     if (m_textDragPane && !(e->buttons() & Qt::LeftButton)) {
         m_textDragPane = nullptr; // its release went elsewhere
     }
-    if (m_textDragPane) {
-        if ((e->position() - m_textDragFrom).manhattanLength() >= QGuiApplication::styleHints()->startDragDistance()) {
-            dragSelectionText();
+    if (Pane* pane = m_textDragPane) {
+        // A drag that the pane's program offers (OSC 72) comes first, as for
+        // any press.
+        if (pane->hasDragDrop()
+            && pane->dragDrop()->move(this, e->position().toPoint(), cellAt(pane, e->position()),
+                                      gridPixel(pane, e->position()).toPoint())) {
+            m_textDragPane = nullptr;
+            return;
         }
-        return;
+        if ((e->position() - m_textDragFrom).manhattanLength() < QGuiApplication::styleHints()->startDragDistance()) {
+            return;
+        }
+        m_textDragPane = nullptr;
+        if (dragSelectionText(pane)) return;
+        // No text to drag (blanks only, or output cleared the selection
+        // meanwhile): the press selects, as any press does.
+        beginSelection(pane, m_textDragFrom, AfterglowVt::SelectionMode::Normal);
     }
     updateLinkHover();
     if (!m_selectionPane && routePointerToChrome(e, e->position(), false, false)) {

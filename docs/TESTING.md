@@ -70,7 +70,8 @@ They need this software:
 - `kitten`, for the `Kitty*` drag-and-drop tests of the native window suite. Without it, those tests skip.
 
 A drag-and-drop test of the native window suite that uses a client runs two times. It runs one time with `kitten dnd` and one time with `aglow dnd`.
-The Wayland file drop test (`NativeWaylandFileDrop`) uses no client. It runs one time.
+The Wayland file drop test (`NativeWaylandFileDrop`) and the selection drag test
+(`ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn`) use no client. Each runs one time.
 The `Aglow*` tests use the `aglow` of the build. In a build without `aglow`, they skip.
 
 The tests send input to the nested KWin window as synthetic X events. They do not use XTest.

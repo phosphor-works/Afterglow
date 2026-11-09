@@ -232,6 +232,12 @@ void clickLeft(QWindow* window, const QPointF& at) {
     pressLeft(window, at);
     releaseLeft(window, at);
 }
+// Where @p pane's grid is drawn, in @p window's logical pixels: a popup's
+// own cells for an overlay's pane.
+QRectF gridOf(TerminalWindow* window, Pane* pane) {
+    const QRect global = window->accessiblePaneRect(pane);
+    return QRectF(window->mapFromGlobal(global.topLeft()), global.size());
+}
 void clickRight(QWindow* window, const QPointF& at) {
     mouseAt(window, QEvent::MouseButtonPress, at, Qt::RightButton, Qt::RightButton);
     mouseAt(window, QEvent::MouseButtonRelease, at, Qt::RightButton, Qt::NoButton);
@@ -423,6 +429,19 @@ protected:
         drainDeferredDeletes();
         application = std::make_unique<Application>(testSocket(), directory.filePath(config), settings);
         openWindow(command);
+    }
+    // The fixture's settings with Mouse.dragSelection on, and @p overrides
+    // over them by group, in a new application whose window runs @p command.
+    void restartWithDragSelection(QJsonObject overrides = {},
+                                  const QStringList& command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                                                QStringLiteral("stty -echo; cat")}) {
+        QJsonObject mouse = overrides.value(QStringLiteral("Mouse")).toObject();
+        mouse.insert(QStringLiteral("dragSelection"), true);
+        overrides.insert(QStringLiteral("Mouse"), mouse);
+        QJsonObject windowSettings = overrides.value(QStringLiteral("Window")).toObject();
+        windowSettings.insert(QStringLiteral("paneTitles"), true);
+        overrides.insert(QStringLiteral("Window"), windowSettings);
+        restartApplication(QStringLiteral("drag.conf"), testSettings(overrides), command);
     }
     void openWindow(const QStringList& command) {
         WindowOptions options;
@@ -1734,6 +1753,32 @@ TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
     drain(250);
     EXPECT_EQ(server.closes, 0);
 }
+// Shows @p window full screen for the runner's compositor input, whose
+// pointer goes to screen positions: a Wayland client does not know where its
+// window is. The first drag of a process lists the image formats that Qt can
+// convert, and that loads every image plugin: seconds with a cold page cache,
+// on the GUI thread, while the drag runs. They load here, before it.
+[[nodiscard]] bool showFullScreenForDrag(QWindow* window) {
+    window->showFullScreen();
+    if (!waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); })) return false;
+    QImageReader::supportedMimeTypes();
+    QImageWriter::supportedMimeTypes();
+    return true;
+}
+// Asks the runner (native_window_acceptance.py) for a drag from @p from to
+// @p to, positions in @p window. With @p awaitHover, the runner releases
+// only once the test creates @p ready + ".hovered", as a person waits for
+// the cursor: a slow first frame must not race the release.
+[[nodiscard]] bool writeDragMarker(const QString& ready, QWindow* window, QPointF from, QPointF to, bool awaitHover) {
+    // The runner's pointer goes to screen positions: the window must fill the screen.
+    if (window->size() != window->screen()->size()) return false;
+    QFile marker(ready);
+    if (!marker.open(QIODevice::WriteOnly)) return false;
+    const QPoint a = window->mapToGlobal(from.toPoint()), b = window->mapToGlobal(to.toPoint());
+    marker.write(QByteArray::number(a.x()) + " " + QByteArray::number(a.y()) + " " + QByteArray::number(b.x()) + " "
+                 + QByteArray::number(b.y()) + (awaitHover ? " 1" : ""));
+    return true;
+}
 class DragSender : public QObject {
 public:
     QUrl url;
@@ -1758,20 +1803,14 @@ public:
 };
 TEST_F(NativeWindow, NativeWaylandFileDrop) {
     REQUIRE_NATIVE_DND(ready);
-    window->showFullScreen();
-    // The marker below holds positions in the full-screen window.
-    ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
+    ASSERT_TRUE(showFullScreenForDrag(window));
     const QString path = directory.filePath(QString::fromUtf8("drag's café.txt"));
     QFile file(path); ASSERT_TRUE(file.open(QIODevice::WriteOnly)); file.close();
     DragSender sender; sender.url = QUrl::fromLocalFile(path);
     sender.pressedMarker = ready + QStringLiteral(".pressed");
     window->installEventFilter(&sender);
-    QFile marker(ready); ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
-    const QPoint from = window->mapToGlobal(QPoint(window->width() / 4, window->height() / 3));
-    const QPoint to = window->mapToGlobal(QPoint(window->width() * 3 / 4, window->height() * 2 / 3));
-    marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " "
-                 + QByteArray::number(to.x()) + " " + QByteArray::number(to.y()));
-    marker.close();
+    ASSERT_TRUE(writeDragMarker(ready, window, QPointF(window->width() / 4, window->height() / 3),
+                                QPointF(window->width() * 3 / 4, window->height() * 2 / 3), false));
     waitFor([&] { return sender.completed; }, 15000);
     window->removeEventFilter(&sender);
     EXPECT_TRUE(sender.started);
@@ -1853,13 +1892,7 @@ void NativeWindow::openDragClients(const QStringList& sourceCommand, const QStri
     QObject::connect(drag.receiver, &Pane::terminalProtocolRequested, &drag.listener, [&drag](int code, const QByteArray& bytes) {
         if (code == 72) drag.dropped += "RECEIVER: " + bytes + "\n";
     });
-    window->showFullScreen();
-    ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
-    // The first drag of a process lists the image formats that Qt can
-    // convert, and that loads every image plugin: seconds with a cold page
-    // cache, on the GUI thread, while the drag runs. Load them before it.
-    QImageReader::supportedMimeTypes();
-    QImageWriter::supportedMimeTypes();
+    ASSERT_TRUE(showFullScreenForDrag(window));
     // Both clients start at once: wait for each one's command.
     waitFor([&] { return drag.source->dragDrop()->offersDrags() && drag.receiver->dragDrop()->acceptsDrops(); }, 5000);
     ASSERT_TRUE(drag.source->dragDrop()->offersDrags()) << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
@@ -1886,12 +1919,9 @@ void NativeWindow::runClientDrag(const QString& ready, ClientDrag& drag, const s
     });
     PressMarker input; input.path = ready + QStringLiteral(".pressed"); window->installEventFilter(&input);
     const auto removeInput = qScopeGuard([&] { window->removeEventFilter(&input); });
-    QFile marker(ready); ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
-    const QPoint from = window->mapToGlobal(QPoint(window->width() / 4, window->height() / 3));
-    const QPoint to = window->mapToGlobal(QPoint(window->width() * 3 / 4, window->height() * 2 / 3));
-    // The fifth token asks the runner to release only after the receiver's
-    // program has accepted the drag, as a person waits for the cursor.
-    marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " " + QByteArray::number(to.x()) + " " + QByteArray::number(to.y()) + " 1"); marker.close();
+    // The runner releases only after the receiver's program has accepted the drag.
+    ASSERT_TRUE(writeDragMarker(ready, window, QPointF(window->width() / 4, window->height() / 3),
+                                QPointF(window->width() * 3 / 4, window->height() * 2 / 3), true));
     // A timer, because the drag runs in QDrag::exec's own event loop.
     QTimer hover;
     QObject::connect(&hover, &QTimer::timeout, &drag.listener, [&] {
@@ -2098,11 +2128,7 @@ void NativeWindow::remoteDragToWaylandTarget(const QString& client, const QStrin
     options.cwd = directory.path();
     drag.source = window->openTab(options, nullptr);
     ASSERT_NE(drag.source, nullptr);
-    window->showFullScreen();
-    ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
-    // See openDragClients: the image plugins load before the drag.
-    QImageReader::supportedMimeTypes();
-    QImageWriter::supportedMimeTypes();
+    ASSERT_TRUE(showFullScreenForDrag(window));
     waitFor([&] { return drag.source->dragDrop()->offersDrags(); }, 5000);
     ASSERT_TRUE(drag.source->dragDrop()->offersDrags()) << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
     // A machine id that is not this computer's: the source is remote.
@@ -2131,142 +2157,6 @@ void NativeWindow::remoteDragToWaylandTarget(const QString& client, const QStrin
     ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(exited); }, 5000))
         << drag.protocol.toStdString() << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
     EXPECT_EQ(fileContent(source + QStringLiteral("/nested/file")), data) << "the client removed its files";
-}
-QRectF gridOf(TerminalWindow* window, Pane* pane); // the pane's cells, in window logical pixels
-// The text of every row of @p pane, all of it selected.
-void selectWholeScreen(Pane* pane, const QByteArray& line) {
-    QByteArray text = "\x1b[2J\x1b[H";
-    for (int row = 0; row < pane->rows(); ++row) text += line + (row + 1 < pane->rows() ? "\r\n" : "");
-    pane->withTerminal([&text](AfterglowVt::Terminal& t) { t.feed(std::string_view(text.constData(), std::size_t(text.size()))); });
-    pane->startSelection(pane->selectionPointAt(0, 0), AfterglowVt::SelectionMode::Normal, true);
-    pane->extendSelection(pane->selectionPointAt(pane->cols() - 1, pane->rows() - 1));
-}
-// The centre of cell (@p col, @p row) of @p pane, in window logical pixels.
-QPointF cellCentre(TerminalWindow* window, Pane* pane, int col, int row) {
-    const QRectF grid = gridOf(window, pane);
-    return grid.topLeft() + QPointF((col + 0.5) * grid.width() / pane->cols(), (row + 0.5) * grid.height() / pane->rows());
-}
-// The fixture's application again, with Mouse.dragSelection on.
-#define WITH_DRAG_SELECTION()                                                                                         \
-    restartApplication(QStringLiteral("drag.conf"),                                                               \
-        testSettings({{QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("dragSelection"), true}}}}),          \
-        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")})
-TEST_F(NativeWindow, APressInsideTheSelectionWaitsForAMoveOrClicks) {
-    WITH_DRAG_SELECTION();
-    Pane* pane = window->focusedPane();
-    selectWholeScreen(pane, "select me here");
-    ASSERT_TRUE(pane->hasSelection());
-    // A click inside the selection, and one that moves less than the drag
-    // distance: each clears the selection, as any click does.
-    const QPointF at = cellCentre(window, pane, 3, 0);
-    pressLeft(window, at);
-    EXPECT_TRUE(pane->hasSelection()); // the press only waits
-    releaseLeft(window, at);
-    EXPECT_FALSE(pane->hasSelection());
-    // Another cell, so that this press is no double click.
-    selectWholeScreen(pane, "select me here");
-    const QPointF other = cellCentre(window, pane, 4, 2);
-    pressLeft(window, other);
-    dragLeft(window, other + QPointF(1, 0));
-    EXPECT_TRUE(pane->hasSelection());
-    releaseLeft(window, other + QPointF(1, 0));
-    EXPECT_FALSE(pane->hasSelection());
-    // A double click inside the selection still selects a word.
-    selectWholeScreen(pane, "select me here");
-    clickLeft(window, cellCentre(window, pane, 8, 1));
-    pressLeft(window, cellCentre(window, pane, 8, 1));
-    releaseLeft(window, cellCentre(window, pane, 8, 1));
-    EXPECT_EQ(pane->selectedText(), QStringLiteral("me"));
-}
-TEST_F(NativeWindow, WithoutDragSelectionAPressInsideTheSelectionSelectsAgain) {
-    // The default, as in kitty.
-    Pane* pane = window->focusedPane();
-    selectWholeScreen(pane, "select me here");
-    // A press and a move select from the press: no drag, which would wait
-    // in QDrag::exec here.
-    pressLeft(window, cellCentre(window, pane, 0, 0));
-    dragLeft(window, cellCentre(window, pane, 5, 0));
-    dragLeft(window, cellCentre(window, pane, 5, 0));
-    releaseLeft(window, cellCentre(window, pane, 5, 0));
-    EXPECT_EQ(pane->selectedText(), QStringLiteral("select"));
-}
-TEST_F(NativeWindow, DroppedTextPastesIntoThePane) {
-    const QString received = directory.filePath(QStringLiteral("received.txt"));
-    PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty raw -echo; exec cat > \"$0\""), received};
-    Pane* right = window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr);
-    ASSERT_NE(right, nullptr);
-    ASSERT_TRUE(waitFor([&] { return !gridOf(window, right).isEmpty() && QFileInfo::exists(received); }));
-    QMimeData mime;
-    mime.setText(QStringLiteral("dropped words"));
-    QDropEvent drop(gridOf(window, right).center(), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
-    QCoreApplication::sendEvent(window, &drop);
-    EXPECT_TRUE(drop.isAccepted());
-    EXPECT_TRUE(waitFor([&] { return fileContent(received) == "dropped words"; })) << fileContent(received).toStdString();
-    EXPECT_EQ(window->focusedPane(), right);
-}
-// Selects row @p row of @p pane, one line: no paste question on a drop.
-void selectRow(Pane* pane, int row) {
-    pane->startSelection(pane->selectionPointAt(0, row), AfterglowVt::SelectionMode::Normal, true);
-    pane->extendSelection(pane->selectionPointAt(pane->cols() - 1, row));
-}
-// A selection dragged with real compositor input: into another pane it
-// pastes, back onto its own pane it does not.
-TEST_F(NativeWindow, ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn) {
-    REQUIRE_NATIVE_DND(ready);
-    WITH_DRAG_SELECTION();
-    const QString received = directory.filePath(QStringLiteral("received.txt"));
-    Pane* left = window->focusedPane();
-    PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty raw -echo; exec cat > \"$0\""), received};
-    Pane* right = window->splitPane(left, SplitTree::Direction::Right, launch, nullptr);
-    ASSERT_NE(right, nullptr);
-    // Full screen after the split, as the other drags do, so that window
-    // positions are screen positions: a Wayland client does not know where
-    // its window is.
-    window->showFullScreen();
-    ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
-    // The first drag of a process loads every image plugin to list the
-    // formats Qt converts: seconds on the GUI thread. Load them before it.
-    QImageReader::supportedMimeTypes();
-    QImageWriter::supportedMimeTypes();
-    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received) && !gridOf(window, right).isEmpty(); }));
-    // Presses about a third down and in the middle of a row, as the other
-    // drags press: clear of the pane titles and of the window's border, where
-    // the compositor takes the press.
-    const int leftRow = left->rows() / 3, rightRow = right->rows() / 3;
-    selectWholeScreen(left, "dragged words");
-    selectRow(left, leftRow);
-    // The full screen window and its split settle in the compositor first: a
-    // press while the surface still changes is lost.
-    const std::uint64_t frames = window->submittedFrames();
-    waitFor([] { return false; }, 1000);
-    ASSERT_GT(window->submittedFrames(), frames);
-    PressMarker input;
-    input.path = ready + QStringLiteral(".pressed");
-    window->installEventFilter(&input);
-    const auto removeInput = qScopeGuard([&] { window->removeEventFilter(&input); });
-    auto drag = [&](const QPointF& from, const QPointF& to) {
-        // The runner's pointer goes to screen positions: the window must fill the screen.
-        ASSERT_EQ(window->size(), window->screen()->size());
-        QFile::remove(input.path);
-        QFile marker(ready);
-        ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
-        const QPoint a = window->mapToGlobal(from.toPoint()), b = window->mapToGlobal(to.toPoint());
-        marker.write(QByteArray::number(a.x()) + " " + QByteArray::number(a.y()) + " " + QByteArray::number(b.x()) + " "
-                     + QByteArray::number(b.y()));
-    };
-    drag(cellCentre(window, left, left->cols() / 2, leftRow), gridOf(window, right).center());
-    EXPECT_TRUE(waitFor([&] { return fileContent(received) == "dragged words"; }, 15000)) << fileContent(received).toStdString();
-    EXPECT_TRUE(left->hasSelection()); // copied, not moved
-    // From the right pane back onto itself: the drag ends without a paste.
-    selectWholeScreen(right, "own words");
-    selectRow(right, rightRow);
-    window->requestUpdate();
-    drag(cellCentre(window, right, right->cols() / 2, rightRow), cellCentre(window, right, right->cols() / 2, right->rows() * 2 / 3));
-    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(input.path); }, 15000));
-    waitFor([] { return false; }, 1500);
-    EXPECT_EQ(fileContent(received), "dragged words");
 }
 TEST_F(NativeWindow, KittyDragAndDropClient) {
     REQUIRE_NATIVE_DND(ready);
@@ -2327,6 +2217,588 @@ TEST_F(NativeWindow, AglowRemoteDragRefusedByAWaylandTargetKeepsTheFiles) {
     REQUIRE_NATIVE_DND(ready);
     REQUIRE_AGLOW(aglow);
     remoteDragToWaylandTarget(aglow, ready, Qt::MoveAction, true);
+}
+// Selected text that drags out of a pane (Mouse.dragSelection), and text that
+// drops on a pane. Only ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn needs
+// the real compositor input of native_window_acceptance.py. The others send
+// their events to the window. A drag here ends soon, as the compositor
+// refuses a drag that no real press started: a zero timer acts in QDrag::exec's
+// event loop before it does.
+
+// Writes @p line into every row of @p pane.
+void fillRows(Pane* pane, const QByteArray& line) {
+    QByteArray text = "\x1b[2J\x1b[H";
+    for (int row = 0; row < pane->rows(); ++row) text += line + (row + 1 < pane->rows() ? "\r\n" : "");
+    pane->withTerminal([&text](AfterglowVt::Terminal& t) { t.feed(std::string_view(text.constData(), std::size_t(text.size()))); });
+}
+// Selects from cell (@p fromCol, @p fromRow) to cell (@p toCol, @p toRow) of @p pane, as a drag does.
+void selectCells(Pane* pane, int fromCol, int fromRow, int toCol, int toRow) {
+    pane->startSelection(pane->selectionPointAt(fromCol, fromRow), AfterglowVt::SelectionMode::Normal, true);
+    pane->extendSelection(pane->selectionPointAt(toCol, toRow));
+}
+// One row: a drop of it asks no paste question.
+void selectRow(Pane* pane, int row) { selectCells(pane, 0, row, pane->cols() - 1, row); }
+void selectWholeScreen(Pane* pane) { selectCells(pane, 0, 0, pane->cols() - 1, pane->rows() - 1); }
+// The centre of cell (@p col, @p row) of @p pane, in window logical pixels.
+QPointF cellCentre(TerminalWindow* window, Pane* pane, int col, int row) {
+    const QRectF grid = gridOf(window, pane);
+    return grid.topLeft() + QPointF((col + 0.5) * grid.width() / pane->cols(), (row + 0.5) * grid.height() / pane->rows());
+}
+// A command for a pane that writes what its program gets to @p path, byte for byte.
+QStringList catInto(const QString& path) {
+    return {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty raw -echo; exec cat > \"$0\""), path};
+}
+// A left press with @p modifiers, from @p source.
+void pressLeftWith(QWindow* window, const QPointF& at, Qt::KeyboardModifiers modifiers,
+                   Qt::MouseEventSource source = Qt::MouseEventNotSynthesized) {
+    QMouseEvent event(QEvent::MouseButtonPress, at, at, window->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, modifiers, source);
+    QCoreApplication::sendEvent(window, &event);
+}
+// A distance that starts a drag, in logical pixels.
+qreal dragDistance() { return 4 * QGuiApplication::styleHints()->startDragDistance(); }
+// Fails the test when @p window starts a drag, which it cancels so that the
+// test goes on. A drag that ended leaves its QDrag: its deleteLater came from
+// no event loop, so only an explicit send of the deferred deletes takes it.
+class NoDrag : public QObject {
+public:
+    explicit NoDrag(QWindow* window) : m_window(window) {
+        QObject::connect(&m_timer, &QTimer::timeout, this, [this] {
+            if (!m_window->findChild<QDrag*>()) return;
+            m_started = true;
+            QDrag::cancel();
+        });
+        m_timer.start(0);
+    }
+    ~NoDrag() override { EXPECT_FALSE(m_started || m_window->findChild<QDrag*>()) << "a drag started"; }
+private:
+    QWindow* m_window;
+    QTimer m_timer;
+    bool m_started = false;
+};
+TEST_F(NativeWindow, APressInsideTheSelectionWaitsForAMoveOrClicks) {
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "select me here");
+    selectWholeScreen(pane);
+    ASSERT_TRUE(pane->hasSelection());
+    // A click inside the selection clears it, as any click does. The press
+    // only waits: a press that started a selection would end this one.
+    const QPointF at = cellCentre(window, pane, 3, 0);
+    pressLeft(window, at);
+    EXPECT_TRUE(pane->hasSelection());
+    releaseLeft(window, at);
+    EXPECT_FALSE(pane->hasSelection());
+    // A move shorter than the drag distance does not drag. Another cell, so
+    // that this press is no double click.
+    selectWholeScreen(pane);
+    const QPointF other = cellCentre(window, pane, 4, 2);
+    const QPointF near = other + QPointF(QGuiApplication::styleHints()->startDragDistance() - 1, 0);
+    pressLeft(window, other);
+    dragLeft(window, near);
+    EXPECT_TRUE(pane->hasSelection());
+    releaseLeft(window, near);
+    EXPECT_FALSE(pane->hasSelection());
+}
+TEST_F(NativeWindow, TheClickThatAPressInsideTheSelectionHeldMovesTheShellCursor) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    restartWithDragSelection({}, catInto(received));
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received) && !gridOf(window, pane).isEmpty(); }));
+    // A prompt that takes clicks (OSC 133 click_events), with the cursor
+    // after its command, in column 13.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b]133;A;click_events=1\x07$ \x1b]133;B\x07hello world"); });
+    selectCells(pane, 2, 0, 12, 0);
+    // A release on another cell, nearer than the drag distance, is a drag
+    // that selects nothing: it moves no cursor.
+    const QRectF grid = gridOf(window, pane);
+    const QPointF edge = grid.topLeft() + QPointF(5 * grid.width() / pane->cols(), 0.5 * grid.height() / pane->rows());
+    pressLeft(window, edge - QPointF(1, 0));
+    releaseLeft(window, edge + QPointF(1, 0));
+    EXPECT_FALSE(pane->hasSelection());
+    // A click on column 6 moves the cursor 7 characters to the left.
+    selectCells(pane, 2, 0, 12, 0);
+    clickLeft(window, cellCentre(window, pane, 6, 0));
+    EXPECT_FALSE(pane->hasSelection());
+    QByteArray left;
+    for (int i = 0; i < 7; ++i) left += "\x1b[D";
+    EXPECT_TRUE(waitFor([&] { return fileContent(received) == left; }))
+        << QString::fromLatin1(fileContent(received).toPercentEncoding()).toStdString();
+}
+TEST_F(NativeWindow, AProgramThatReportsTheMouseGetsAPressInsideTheSelection) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    restartWithDragSelection({}, catInto(received));
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received) && !gridOf(window, pane).isEmpty(); }));
+    fillRows(pane, "select me here");
+    selectWholeScreen(pane);
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?1000h\x1b[?1006h"); });
+    const QPointF at = cellCentre(window, pane, 3, 1);
+    pressLeft(window, at);
+    releaseLeft(window, at);
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).contains("M") && fileContent(received).endsWith("m"); }))
+        << QString::fromLatin1(fileContent(received).toPercentEncoding()).toStdString();
+    EXPECT_TRUE(pane->hasSelection());
+    // With Shift the window takes the press, which waits inside the selection.
+    pressLeftWith(window, at, Qt::ShiftModifier);
+    EXPECT_TRUE(pane->hasSelection());
+    releaseLeft(window, at);
+    EXPECT_FALSE(pane->hasSelection());
+}
+TEST_F(NativeWindow, ClicksInsideTheSelectionSelectAWordALineOrABlock) {
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "select me here");
+    selectWholeScreen(pane);
+    // The press held back inside the selection is the first click of a
+    // series: a double click selects a word, and a third press inside that
+    // word selects the line.
+    const QPointF at = cellCentre(window, pane, 8, 1);
+    clickLeft(window, at);
+    clickLeft(window, at);
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("me"));
+    clickLeft(window, at);
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("select me here"));
+    // The fourth press of the series counts as one again, inside the line:
+    // it starts a selection, which a move extends.
+    pressLeft(window, at);
+    EXPECT_FALSE(pane->hasSelection());
+    dragLeft(window, cellCentre(window, pane, 11, 1));
+    releaseLeft(window, cellCentre(window, pane, 11, 1));
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("e he"));
+    // An Alt press starts a block selection, and a press that Qt makes from a
+    // touch starts a selection: neither waits to drag.
+    selectWholeScreen(pane);
+    const QPointF block = cellCentre(window, pane, 2, 3);
+    pressLeftWith(window, block, Qt::AltModifier);
+    EXPECT_FALSE(pane->hasSelection());
+    releaseLeft(window, block);
+    selectWholeScreen(pane);
+    const QPointF touch = cellCentre(window, pane, 5, 4);
+    pressLeftWith(window, touch, Qt::NoModifier, Qt::MouseEventSynthesizedByQt);
+    EXPECT_FALSE(pane->hasSelection());
+    releaseLeft(window, touch);
+}
+TEST_F(NativeWindow, APressOutsideTheSelectionOrOnBlanksSelects) {
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "abcdef");
+    // Outside the selection, a press selects from where it is.
+    selectRow(pane, 0);
+    pressLeft(window, cellCentre(window, pane, 1, 2));
+    EXPECT_FALSE(pane->hasSelection());
+    dragLeft(window, cellCentre(window, pane, 4, 2));
+    releaseLeft(window, cellCentre(window, pane, 4, 2));
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("bcde"));
+    // Blanks after the end of a line hold no text: a press on them waits,
+    // and its move selects from the press as any press does.
+    selectCells(pane, 10, 0, 20, 0);
+    ASSERT_TRUE(pane->hasSelection());
+    ASSERT_TRUE(pane->selectedText().isEmpty());
+    pressLeft(window, cellCentre(window, pane, 15, 0));
+    EXPECT_TRUE(pane->hasSelection());
+    dragLeft(window, cellCentre(window, pane, 3, 1));
+    releaseLeft(window, cellCentre(window, pane, 3, 1));
+    EXPECT_TRUE(pane->selectedText().endsWith(QStringLiteral("abcd"))) << pane->selectedText().toStdString();
+    // A press whose release went elsewhere ends at the next move without
+    // the button. A move with the button after it drags nothing.
+    selectRow(pane, 0);
+    const QPointF held = cellCentre(window, pane, 2, 0);
+    pressLeft(window, held);
+    hoverAt(window, held);
+    dragLeft(window, held + QPointF(dragDistance(), 0));
+    releaseLeft(window, held + QPointF(dragDistance(), 0));
+    EXPECT_TRUE(pane->hasSelection());
+}
+TEST_F(NativeWindow, WithoutDragSelectionAPressInsideTheSelectionSelectsAgain) {
+    // The default, as in Kitty.
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "select me here");
+    selectWholeScreen(pane);
+    // Away from where the old selection starts, so that the old selection
+    // extended to the move would show.
+    pressLeft(window, cellCentre(window, pane, 2, 1));
+    ASSERT_FALSE(pane->hasSelection());
+    dragLeft(window, cellCentre(window, pane, 5, 1));
+    releaseLeft(window, cellCentre(window, pane, 5, 1));
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("lect"));
+}
+TEST_F(NativeWindow, AProgramsDragComesBeforeTheDragOfTheSelection) {
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "select me here");
+    selectWholeScreen(pane);
+    // The program offers drags (OSC 72), as kitten dnd does.
+    pane->dragDrop()->handle("t=o:x=1;");
+    ASSERT_TRUE(pane->dragDrop()->offersDrags());
+    QByteArray replies;
+    QObject context;
+    QObject::connect(pane->dragDrop(), &DragDrop::reply, &context, [&replies](const QByteArray& bytes) { replies += bytes; });
+    const QPointF at = cellCentre(window, pane, 3, 1);
+    pressLeft(window, at);
+    dragLeft(window, at + QPointF(dragDistance(), 0));
+    releaseLeft(window, at + QPointF(dragDistance(), 0));
+    // The program hears that its drag starts, and the selection stays.
+    EXPECT_TRUE(dndKeys(replies).contains("t=o")) << replies.toStdString();
+    EXPECT_TRUE(pane->hasSelection());
+}
+TEST_F(NativeWindow, ASelectionDropsOnAnotherPaneAndNotOnItsOwn) {
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    Pane* left = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = catInto(received);
+    Pane* right = window->splitPane(left, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    ASSERT_TRUE(waitFor([&] { return !gridOf(window, right).isEmpty() && QFileInfo::exists(received); }));
+    fillRows(left, "dragged words");
+    selectRow(left, 1);
+    // While the drag runs, the drops that the compositor would send. The
+    // drop event finds the drag's source through Qt.
+    bool dragging = false, ownTaken = true, otherTaken = false;
+    QByteArray toProgram;
+    QObject context;
+    QTimer::singleShot(0, window, [&] {
+        auto* drag = window->findChild<QDrag*>();
+        dragging = drag;
+        if (drag) {
+            const auto dropAt = [&](Pane* pane, QEvent::Type type) {
+                QDropEvent event(gridOf(window, pane).center(), Qt::CopyAction, drag->mimeData(), Qt::NoButton, Qt::NoModifier, type);
+                QCoreApplication::sendEvent(window, &event);
+                return event.isAccepted();
+            };
+            ownTaken = dropAt(left, QEvent::Drop);
+            // A program that accepts drops (OSC 72) hears nothing of its
+            // own pane's selection either.
+            left->dragDrop()->handle("t=a;");
+            QObject::connect(left->dragDrop(), &DragDrop::reply, &context, [&](const QByteArray& bytes) { toProgram += bytes; });
+            dropAt(left, QEvent::DragMove);
+            ownTaken = dropAt(left, QEvent::Drop) || ownTaken;
+            otherTaken = dropAt(right, QEvent::Drop);
+        }
+        QDrag::cancel();
+    });
+    const QPointF at = cellCentre(window, left, 2, 1);
+    pressLeft(window, at);
+    dragLeft(window, at + QPointF(dragDistance(), 0));
+    releaseLeft(window, at + QPointF(dragDistance(), 0));
+    ASSERT_TRUE(dragging);
+    EXPECT_FALSE(ownTaken);
+    EXPECT_TRUE(toProgram.isEmpty()) << toProgram.toStdString();
+    EXPECT_TRUE(otherTaken);
+    EXPECT_TRUE(waitFor([&] { return fileContent(received) == "dragged words"; })) << fileContent(received).toStdString();
+    EXPECT_TRUE(left->hasSelection()); // copied, not moved
+}
+TEST_F(NativeWindow, AWindowThatClosesDuringASelectionDragGoesAfterIt) {
+    restartWithDragSelection({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}}}});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "dragged words");
+    selectRow(pane, 0);
+    // The drag runs this close in its event loop, with its QDrag a child of
+    // the window: the window goes after the drag.
+    const QPointer<TerminalWindow> closing = window;
+    bool dragging = false, moveReturned = false, deletedInTheDrag = false;
+    QObject context;
+    QObject::connect(window, &QObject::destroyed, &context, [&] { deletedInTheDrag = !moveReturned; });
+    // A drag of a person runs on after the close, and its event loop deletes
+    // what the close left with deleteLater. Here the compositor ends the
+    // drag at once: the timer sends those deletes as that loop would.
+    QTimer::singleShot(0, window, [&] {
+        dragging = closing->findChild<QDrag*>();
+        closing->close();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    });
+    const QPointF at = cellCentre(window, pane, 2, 0);
+    pressLeft(window, at);
+    dragLeft(window, at + QPointF(dragDistance(), 0));
+    moveReturned = true;
+    EXPECT_TRUE(dragging);
+    EXPECT_FALSE(deletedInTheDrag);
+    window = nullptr;
+    // The window went with deleteLater once the drag returned.
+    drainDeferredDeletes();
+    EXPECT_TRUE(closing.isNull());
+}
+TEST_F(NativeWindow, AKeyHeldIntoASelectionDragIsReleasedToItsProgram) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    restartWithDragSelection({}, catInto(received));
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received); }));
+    // The program asks for key releases (Kitty keyboard flags 1, 2 and 8).
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[>11u"); });
+    // A key press clears the selection, as typing does: the selection comes after it.
+    QKeyEvent down(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+    QCoreApplication::sendEvent(window, &down);
+    fillRows(pane, "dragged words");
+    selectRow(pane, 0);
+    // The key comes up during the drag, which takes the key events: the
+    // program has its release from when the drag started, and only that one.
+    bool dragging = false;
+    QTimer::singleShot(0, window, [&] {
+        dragging = window->findChild<QDrag*>();
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+        QCoreApplication::sendEvent(window, &up);
+        QDrag::cancel();
+    });
+    const QPointF at = cellCentre(window, pane, 2, 0);
+    pressLeft(window, at);
+    dragLeft(window, at + QPointF(dragDistance(), 0));
+    releaseLeft(window, at + QPointF(dragDistance(), 0));
+    ASSERT_TRUE(dragging);
+    // Input after the drag reaches the program after any release that the drag sent.
+    ASSERT_TRUE(pane->sendInput("|end"));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).endsWith("|end"); }))
+        << QString::fromLatin1(fileContent(received).toPercentEncoding()).toStdString();
+    EXPECT_EQ(fileContent(received).count("\x1b[97;1:3u"), 1);
+}
+TEST_F(NativeWindow, AProgramsDragStartReleasesTheKeysThatItsWindowSent) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    restartWithDragSelection({}, catInto(received));
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received); }));
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[>11u"); });
+    QKeyEvent down(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+    QCoreApplication::sendEvent(window, &down);
+    // DragDrop::start() says this before QDrag::exec(), which takes the key events.
+    Q_EMIT pane->dragDrop()->dragStarting();
+    ASSERT_TRUE(pane->sendInput("|end"));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).endsWith("|end"); }))
+        << QString::fromLatin1(fileContent(received).toPercentEncoding()).toStdString();
+    EXPECT_EQ(fileContent(received).count("\x1b[97;1:3u"), 1);
+    // The key is taken: its release after the drag sends nothing more.
+    QKeyEvent up(QEvent::KeyRelease, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+    QCoreApplication::sendEvent(window, &up);
+    ASSERT_TRUE(pane->sendInput("|after"));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).endsWith("|after"); }));
+    EXPECT_EQ(fileContent(received).count("\x1b[97;1:3u"), 1);
+}
+TEST_F(NativeWindow, DroppedTextPastesIntoThePane) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = catInto(received);
+    Pane* right = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    ASSERT_TRUE(waitFor([&] { return !gridOf(window, right).isEmpty() && QFileInfo::exists(received); }));
+    // The program uses bracketed paste: the text arrives in its brackets.
+    right->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?2004h"); });
+    window->revealPane(first);
+    ASSERT_EQ(window->focusedPane(), first);
+    QMimeData mime;
+    mime.setText(QStringLiteral("dropped words"));
+    // The desktop drops only where a move of the drag was accepted.
+    QDragMoveEvent move(gridOf(window, right).center(), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &move);
+    EXPECT_TRUE(move.isAccepted());
+    QDropEvent drop(gridOf(window, right).center(), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &drop);
+    EXPECT_TRUE(drop.isAccepted());
+    EXPECT_TRUE(waitFor([&] { return fileContent(received) == "\x1b[200~dropped words\x1b[201~"; }))
+        << fileContent(received).toStdString();
+    EXPECT_EQ(window->focusedPane(), right);
+    // A link from a browser holds no file: its text pastes, as in Kitty.
+    QMimeData link;
+    link.setUrls({QUrl(QStringLiteral("https://example.com/page"))});
+    link.setText(QStringLiteral("https://example.com/page"));
+    QDropEvent linkDrop(gridOf(window, right).center(), Qt::CopyAction, &link, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &linkDrop);
+    EXPECT_TRUE(linkDrop.isAccepted());
+    EXPECT_TRUE(waitFor([&] {
+        return fileContent(received) == "\x1b[200~dropped words\x1b[201~\x1b[200~https://example.com/page\x1b[201~";
+    })) << fileContent(received).toStdString();
+}
+TEST_F(NativeWindow, DroppedLinesAskBeforeTheyPaste) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = catInto(received);
+    Pane* right = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    ASSERT_TRUE(waitFor([&] { return !gridOf(window, right).isEmpty() && QFileInfo::exists(received); }));
+    window->revealPane(first);
+    QMimeData mime;
+    mime.setText(QStringLiteral("one\ntwo\n"));
+    QDropEvent drop(gridOf(window, right).center(), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &drop);
+    EXPECT_TRUE(drop.isAccepted());
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(chrome->pasteConfirmOpen());
+    EXPECT_EQ(window->focusedPane(), right);
+    // The question takes the drops until it has its answer.
+    QMimeData other;
+    other.setText(QStringLiteral("other"));
+    QDropEvent second(gridOf(window, right).center(), Qt::CopyAction, &other, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &second);
+    EXPECT_FALSE(second.isAccepted());
+    auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    EXPECT_TRUE(fileContent(received).isEmpty());
+    QKeyEvent accept(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &accept);
+    EXPECT_FALSE(chrome->pasteConfirmOpen());
+    // A paste sends line feeds as carriage returns, as Enter does.
+    EXPECT_TRUE(waitFor([&] { return fileContent(received) == "one\rtwo\r"; })) << fileContent(received).toStdString();
+}
+TEST_F(NativeWindow, DropsThatAPaneRefusesPasteNothing) {
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    PaneLaunchOptions launch;
+    launch.command = catInto(received);
+    Pane* right = window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    ASSERT_TRUE(waitFor([&] { return !gridOf(window, right).isEmpty() && QFileInfo::exists(received); }));
+    const auto dropOnRight = [&](const QMimeData& mime, Qt::DropActions actions) {
+        QDropEvent drop(gridOf(window, right).center(), actions, &mime, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+        QCoreApplication::sendEvent(window, &drop);
+        return drop.isAccepted();
+    };
+    // A file on another host is no local file. Qt gives the URL as the
+    // drop's text, which does not paste either.
+    QMimeData remote;
+    remote.setUrls({QUrl(QStringLiteral("file://example.com/share/file.txt"))});
+    ASSERT_TRUE(remote.hasText());
+    EXPECT_FALSE(dropOnRight(remote, Qt::CopyAction));
+    // A name with a bidirectional override, with text of its own as well.
+    QMimeData disguised;
+    disguised.setUrls({QUrl::fromLocalFile(directory.filePath(QStringLiteral("name") + QChar(0x202E) + QStringLiteral("txt.sh")))});
+    disguised.setText(QStringLiteral("disguised"));
+    EXPECT_FALSE(dropOnRight(disguised, Qt::CopyAction));
+    // A local file beside a link: the link is no local file, so the whole
+    // file drop is refused, and its text does not paste either.
+    QMimeData mixed;
+    mixed.setUrls({QUrl::fromLocalFile(directory.filePath(QStringLiteral("a"))), QUrl(QStringLiteral("https://example.com/mixed"))});
+    mixed.setText(QStringLiteral("https://example.com/mixed"));
+    EXPECT_FALSE(dropOnRight(mixed, Qt::CopyAction));
+    // A drag with neither text nor URLs: its move is refused on its types.
+    QMimeData picture;
+    picture.setData(QStringLiteral("image/png"), QByteArray("not read"));
+    QDragMoveEvent overRight(gridOf(window, right).center(), Qt::CopyAction, &picture, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &overRight);
+    EXPECT_FALSE(overRight.isAccepted());
+    EXPECT_FALSE(dropOnRight(picture, Qt::CopyAction));
+    // A drag that offers only a move: a paste copies.
+    QMimeData moved;
+    moved.setText(QStringLiteral("moved"));
+    EXPECT_FALSE(dropOnRight(moved, Qt::MoveAction));
+    // A pane held open after its program ended takes no drop.
+    PaneLaunchOptions ending;
+    ending.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("read line")};
+    Pane* held = window->splitPane(right, SplitTree::Direction::Down, ending, nullptr);
+    ASSERT_NE(held, nullptr);
+    held->setHold(true);
+    ASSERT_TRUE(settleQueued());
+    ASSERT_TRUE(held->sendInput("\n"));
+    ASSERT_TRUE(waitFor([&] { return held->isHeld() && !gridOf(window, held).isEmpty(); }));
+    QDropEvent onHeld(gridOf(window, held).center(), Qt::CopyAction, &moved, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &onHeld);
+    EXPECT_FALSE(onHeld.isAccepted());
+    // The program accepts drops (OSC 72): it gets the text, not as a paste.
+    right->dragDrop()->handle("t=a;");
+    ASSERT_TRUE(right->dragDrop()->acceptsDrops());
+    QMimeData forProgram;
+    forProgram.setText(QStringLiteral("for the program"));
+    dropOnRight(forProgram, Qt::CopyAction);
+    right->dragDrop()->reset();
+    // A drop that pastes, after them: only its text arrives.
+    QMimeData marker;
+    marker.setText(QStringLiteral("marker"));
+    EXPECT_TRUE(dropOnRight(marker, Qt::CopyAction));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).endsWith("marker"); })) << fileContent(received).toStdString();
+    EXPECT_FALSE(fileContent(received).contains("for the program"));
+    EXPECT_FALSE(fileContent(received).contains("disguised"));
+    EXPECT_FALSE(fileContent(received).contains("example.com"));
+    EXPECT_FALSE(fileContent(received).contains("moved"));
+}
+// Drag events that reach a window, also in QDrag::exec's own event loop.
+class DragEvents : public QObject {
+public:
+    QRectF over;     ///< where moves count
+    QString hovered; ///< made at the first move over `over`, for the runner
+    int moves = 0;
+    bool ended = false; ///< a drop or a leave after a move
+    bool eventFilter(QObject*, QEvent* event) override {
+        if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+            if (over.contains(static_cast<QDropEvent*>(event)->position()) && ++moves == 1 && !hovered.isEmpty()) {
+                QFile marker(hovered);
+                if (marker.open(QIODevice::WriteOnly)) marker.close();
+            }
+        } else if ((event->type() == QEvent::Drop || event->type() == QEvent::DragLeave) && moves > 0) {
+            ended = true;
+        }
+        return false;
+    }
+};
+// Selected text dragged with real compositor input: into another pane it
+// pastes, back onto its own pane it does not.
+TEST_F(NativeWindow, ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn) {
+    REQUIRE_NATIVE_DND(ready);
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    const QString received = directory.filePath(QStringLiteral("received.txt"));
+    Pane* left = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = catInto(received);
+    Pane* right = window->splitPane(left, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    ASSERT_TRUE(showFullScreenForDrag(window));
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received) && !gridOf(window, right).isEmpty(); }));
+    // The full screen layout and the compositor settle first: a width that
+    // changes ends a selection, and a press while the surface still changes
+    // is lost.
+    expectIdle(window);
+    PressMarker input;
+    input.path = ready + QStringLiteral(".pressed");
+    window->installEventFilter(&input);
+    const auto removeInput = qScopeGuard([&] { window->removeEventFilter(&input); });
+    DragEvents events;
+    events.hovered = ready + QStringLiteral(".hovered");
+    window->installEventFilter(&events);
+    const auto removeEvents = qScopeGuard([&] { window->removeEventFilter(&events); });
+    // Presses about a third down and in the middle of a row, as the other
+    // drags press: clear of the pane titles and of the window's border, where
+    // the compositor takes the press.
+    const int leftRow = left->rows() / 3, rightRow = right->rows() / 3;
+    fillRows(left, "dragged words");
+    selectRow(left, leftRow);
+    ASSERT_TRUE(left->hasSelection());
+    events.over = gridOf(window, right);
+    ASSERT_TRUE(writeDragMarker(ready, window, cellCentre(window, left, left->cols() / 2, leftRow),
+                                gridOf(window, right).center(), true));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received) == "dragged words"; }, 15000)) << fileContent(received).toStdString();
+    EXPECT_TRUE(left->hasSelection()); // copied, not moved
+    // From the right pane back onto itself: the drag moves over the pane and
+    // ends with no paste. The selection stays, so the press waited and
+    // started no selection.
+    fillRows(right, "own words");
+    selectRow(right, rightRow);
+    ASSERT_TRUE(right->hasSelection());
+    events.moves = 0;
+    events.ended = false;
+    ASSERT_TRUE(writeDragMarker(ready, window, cellCentre(window, right, right->cols() / 2, rightRow),
+                                cellCentre(window, right, right->cols() / 2, right->rows() * 2 / 3), true));
+    ASSERT_TRUE(waitFor([&] { return events.ended; }, 15000)) << "moves over the pane: " << events.moves;
+    // Input after the drop reaches the program after a paste of the drop would.
+    ASSERT_TRUE(right->sendInput("|end"));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).endsWith("|end"); })) << fileContent(received).toStdString();
+    EXPECT_EQ(fileContent(received), "dragged words|end");
+    EXPECT_EQ(right->selectedText(), QStringLiteral("own words"));
 }
 
 TEST_F(NativeWindow, ScriptQueriesAreBoundedAndRespectTextPolicy) {
@@ -5919,6 +6391,31 @@ TEST_F(NativeWindow, AFileDroppedOnAnOverlayFocusesItsHostAndReachesItsProgram) 
     EXPECT_TRUE(waitFor([&] { return screenOf(first).contains(QStringLiteral("zz")); })) << screenOf(first).toStdString();
     EXPECT_FALSE(screenOf(second).contains(QStringLiteral("zz"))) << screenOf(second).toStdString();
 }
+TEST_F(NativeWindow, TextDroppedOnAnOverlayReachesItsProgram) {
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+    Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    auto answer = runOverlay(window, first, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                             QStringLiteral("stty -echo; read line; printf 'got:%s' \"$line\"")});
+    ASSERT_NE(first->overlay(), nullptr);
+    window->revealPane(second);
+    ASSERT_EQ(window->focusedPane(), second);
+    ASSERT_TRUE(waitFor([&] { return !window->accessiblePaneRect(first).isEmpty(); }));
+    QMimeData mime;
+    mime.setText(QStringLiteral("overlay words"));
+    const QPointF at = window->mapFromGlobal(QPointF(window->accessiblePaneRect(first).center()));
+    QDropEvent drop(at, Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier, QEvent::Drop);
+    QCoreApplication::sendEvent(window, &drop);
+    EXPECT_TRUE(drop.isAccepted());
+    // The pane in the tab has the focus. Its overlay's program got the text.
+    EXPECT_EQ(window->focusedPane(), first);
+    typeText(window, QStringLiteral("\r"));
+    ASSERT_TRUE(waitFor([&] { return answer->done; }));
+    EXPECT_TRUE(answer->result.value(QStringLiteral("stdout")).toString().contains(QStringLiteral("got:overlay words")))
+        << answer->result.value(QStringLiteral("stdout")).toString().toStdString();
+}
 
 TEST_F(NativeWindow, AConfirmedPasteReachesTheOverlaysProgram) {
     Pane* pane = window->focusedPane();
@@ -6744,12 +7241,6 @@ TEST_F(NativeWindow, APressWaitsForTheButtonsThatAnotherPanesProgramHolds) {
     EXPECT_TRUE(answer->done);
 }
 
-// Where @p pane's grid is drawn, in @p window's logical pixels: a popup's
-// own cells for an overlay's pane.
-QRectF gridOf(TerminalWindow* window, Pane* pane) {
-    const QRect global = window->accessiblePaneRect(pane);
-    return QRectF(window->mapFromGlobal(global.topLeft()), global.size());
-}
 OverlaySpec popupSpec(const QVariantMap& options) {
     QString error;
     const auto spec = OverlaySpec::read({QStringLiteral("x")}, options, &error);

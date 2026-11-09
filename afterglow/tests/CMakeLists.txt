@@ -68,7 +68,7 @@ if(AFTERGLOW_BUILD_AGLOW)
 endif()
 gtest_discover_tests(afterglow_remote_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
-qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp)
+qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp PaneSelectionTest.cpp NestedLoopTest.cpp)
 target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 

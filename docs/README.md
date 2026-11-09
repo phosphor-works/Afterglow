@@ -21,7 +21,7 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 | Install or write packages | [Packages and state](PACKAGES.md) |
 | Configure reactive effects | [Shaders](SHADERS.md) |
 | Write shader passes | [Shader API](SHADER-API.md) |
-| Use accessibility, input methods, file drops, Kitty file transfer and drag and drop, or the `aglow` client | [Desktop integration](DESKTOP.md) |
+| Use accessibility, input methods, file and text drops, Kitty file transfer and drag and drop, or the `aglow` client | [Desktop integration](DESKTOP.md) |
 | Use bidirectional text | [Bidirectional text](BIDI.md) |
 | Check protocol support | [Compatibility](COMPATIBILITY.md) |
 | Read what Afterglow supports | [Release notes](../CHANGELOG.md) |

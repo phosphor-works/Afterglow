@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "desktop/TerminalText.h"
 #include "desktop/FileDrop.h"
+#include <QMimeData>
 #include <AfterglowVt/Terminal.h>
 #include <gtest/gtest.h>
 using namespace Afterglow;
@@ -45,13 +46,14 @@ TEST(FileDrop, QuotesPathsWithoutExecutingCommands)
 {
     QMimeData mime;
     mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/a b'$(touch nope)")), QUrl::fromLocalFile(QStringLiteral("/tmp/界"))});
-    EXPECT_EQ(droppedFiles(&mime), QStringLiteral("'/tmp/a b'\\''$(touch nope)' '/tmp/界'"));
-    mime.setUrls({QUrl(QStringLiteral("https://example.com/a"))});
-    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+    EXPECT_EQ(droppedFiles(mime.urls()), QStringLiteral("'/tmp/a b'\\''$(touch nope)' '/tmp/界'"));
+    // A local file beside a URL of another scheme: the whole drop is refused.
+    mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/a")), QUrl(QStringLiteral("https://example.com/a"))});
+    EXPECT_TRUE(droppedFiles(mime.urls()).isEmpty());
     mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/a\nb"))});
-    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+    EXPECT_TRUE(droppedFiles(mime.urls()).isEmpty());
     mime.setUrls({QUrl::fromLocalFile(QStringLiteral("relative"))});
-    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+    EXPECT_TRUE(droppedFiles(mime.urls()).isEmpty());
 }
 
 TEST(FileDrop, BackslashCannotUnbalanceFishQuotes)
@@ -59,19 +61,19 @@ TEST(FileDrop, BackslashCannotUnbalanceFishQuotes)
     QMimeData mime;
     mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/x\\")), QUrl::fromLocalFile(QStringLiteral("/tmp/(echo INJECTED)"))});
     // Every backslash and quote is escaped outside the quotes, so bash, zsh and fish agree.
-    EXPECT_EQ(droppedFiles(&mime), QStringLiteral("'/tmp/x'\\\\'' '/tmp/(echo INJECTED)'"));
+    EXPECT_EQ(droppedFiles(mime.urls()), QStringLiteral("'/tmp/x'\\\\'' '/tmp/(echo INJECTED)'"));
 }
 TEST(FileDrop, RemoteHostsAndFormatCharactersAreRejected)
 {
     QMimeData mime;
     mime.setUrls({QUrl(QStringLiteral("file://server/share/a"))});
-    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+    EXPECT_TRUE(droppedFiles(mime.urls()).isEmpty());
     EXPECT_TRUE(localFilePath(QUrl(QStringLiteral("file://server/share/a"))).isEmpty());
     EXPECT_EQ(localFilePath(QUrl(QStringLiteral("file://localhost/tmp/a"))), QStringLiteral("/tmp/a"));
     mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/a") + QChar(0x202e) + QStringLiteral("txt.sh"))});
-    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+    EXPECT_TRUE(droppedFiles(mime.urls()).isEmpty());
     mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/a") + QChar(0x9b) + QStringLiteral("b"))});
-    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+    EXPECT_TRUE(droppedFiles(mime.urls()).isEmpty());
 }
 
 TEST(FileDrop, BoundsEncodedBytesIncludingSeparators)
@@ -79,12 +81,12 @@ TEST(FileDrop, BoundsEncodedBytesIncludingSeparators)
     QMimeData mime;
     const QString prefix = QStringLiteral("/") + QString(349524, QChar(0x754c));
     mime.setUrls({QUrl::fromLocalFile(prefix)});
-    ASSERT_FALSE(droppedFiles(&mime).isEmpty());
+    ASSERT_FALSE(droppedFiles(mime.urls()).isEmpty());
     mime.setUrls({QUrl::fromLocalFile(prefix + QChar(0x754c))});
-    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+    EXPECT_TRUE(droppedFiles(mime.urls()).isEmpty());
     const QString half = QStringLiteral("/") + QString(524285, QLatin1Char('x'));
     mime.setUrls({QUrl::fromLocalFile(half), QUrl::fromLocalFile(half)});
-    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+    EXPECT_TRUE(droppedFiles(mime.urls()).isEmpty());
 }
 
 TEST(DesktopText, ScrolledViewportReportsOnlyRemovedAndNewLines)
