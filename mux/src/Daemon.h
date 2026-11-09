@@ -21,8 +21,8 @@ namespace AfterglowMux {
 /// The headless process that owns the sessions. One thread runs the sockets
 /// of the daemon, the windows that show sessions and the lifetimes of
 /// sessions and panes. Each pane's PTY has its reader thread, which wakes
-/// this one through an eventfd after output, a resize, room in the PTY's
-/// input queue, and when its program exits.
+/// this one through an eventfd after output, when the PTY's input queue has
+/// room again, and when its program exits (MuxPane).
 class Daemon
 {
 public:
@@ -58,7 +58,7 @@ public:
     /// stderr. Unless it listens, @p error says why: with no socket left, it
     /// names the reason of each.
     Listen listen(const std::vector<AfterglowProto::MuxSocket>& sockets, std::string* error);
-    /// Serves until it is idle (no session and no connection) after its
+    /// Serves until it is idle (no session, no connection and no window) after its
     /// first session, or after StartWaitMs without one, or until SIGTERM,
     /// SIGINT or SIGHUP. A signal that the daemon got as ignored (nohup)
     /// stays ignored.

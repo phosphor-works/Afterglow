@@ -325,7 +325,7 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
         std::string_view("\x02\x01\x00\x00\x00", 5), // a byte after the event
         std::string_view("\x02\x81", 2),         // a varint that does not end
         std::string_view("\x02\x81\x00\x00\x00", 5), // a varint in a longer form than needed
-        std::string_view("\x02\xff\xff\xff\xff\xff\xff\xff\xff\xff\x7f\x00\x00", 13), // a varint past 64 bits
+        std::string_view("\x02\xff\xff\xff\xff\x10\x00\x00", 8), // a pane id past 32 bits
         std::string_view("\x01\x00\x01\x00", 4), // PaneOpened of pane 0
         std::string_view("\x01\x01\x00\x00", 4), // PaneOpened on the channel of the events
         std::string_view("\x01\x01\x80\x20\x00", 5), // PaneOpened on channel 4096
@@ -333,7 +333,7 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
     for (const std::string_view frame : bad) EXPECT_FALSE(Attach::decodeEvent(frame)) << testing::PrintToString(std::string(frame));
 }
 
-TEST(MuxProtocol, AttachInputRoundTripsAndClampsNothingItCanCarry)
+TEST(MuxProtocol, AttachInputRoundTripsAndKeepsOversizedSizes)
 {
     Attach::Input bytes;
     bytes.pane = 2;

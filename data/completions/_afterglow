@@ -287,7 +287,7 @@ _afterglow() {
     local -a subcommands
     subcommands=(
         'ctl:drive a running Afterglow'
-        'mux:keep terminal sessions running without a window'
+        'mux:keep terminal sessions running, and show them in windows'
         'run:run a command of a script'
         'ssh:ssh with the remote side prepared'
         'transfer:copy files to and from the computer of the terminal'

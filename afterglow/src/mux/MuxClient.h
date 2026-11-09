@@ -118,6 +118,7 @@ private:
     AfterglowProto::MuxSockets m_sockets; ///< the daemon's, for the job
     std::unique_ptr<PhosphorChannel::Stream> m_stream;
     PhosphorChannel::StreamWriter* m_input = nullptr;
+    PhosphorChannel::StreamWriter* m_actions = nullptr; ///< Attach::ActionChannel: the kill
     QSocketNotifier* m_readNotifier = nullptr;
     QSocketNotifier* m_writeNotifier = nullptr;
     std::vector<std::uint32_t> m_paneIds;

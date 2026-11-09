@@ -25,6 +25,8 @@
 #include <QLoggingCategory>
 #include <QQuickStyle>
 
+#include <functional>
+
 Q_LOGGING_CATEGORY(lcApp, "afterglow.app", QtInfoMsg)
 
 namespace Afterglow {
@@ -198,6 +200,21 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     return window;
 }
 
+namespace {
+
+/// Runs @p activate with the launcher's activation token of @p options in the
+/// environment, where Qt reads it when a window asks for the focus. An unused
+/// token must not reach the shells of later panes.
+void withActivationToken(const QVariantMap& options, const std::function<void()>& activate)
+{
+    const QByteArray token = options.value(QStringLiteral("activationToken")).toString().toUtf8();
+    if (!token.isEmpty()) qputenv("XDG_ACTIVATION_TOKEN", token);
+    activate();
+    if (!token.isEmpty()) qunsetenv("XDG_ACTIVATION_TOKEN");
+}
+
+} // namespace
+
 QString Application::openLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
 {
     WindowOptions window{workingDirectory, command, false, options.value(QStringLiteral("directoryGiven")).toBool(),
@@ -207,11 +224,13 @@ QString Application::openLaunch(const QString& workingDirectory, const QStringLi
     if (!session.isEmpty()) {
         // A window of this process shows it already: the attach would take
         // the session from it, while this thread, the only reader of its
-        // stream, waits for the daemon. The window comes to the front.
+        // stream, waits for the daemon. That pane comes to the front, with
+        // the launcher's token that lets it take the focus. Panes of tabs
+        // only: a closed pane waits for its delete as a child too.
         for (TerminalWindow* shown : TerminalWindow::windows()) {
-            for (Pane* pane : shown->findChildren<Pane*>()) {
+            for (Pane* pane : shown->panes()) {
                 if (pane->showsSession(session)) {
-                    shown->requestActivate();
+                    withActivationToken(options, [&] { shown->revealPane(pane); });
                     return {};
                 }
             }
@@ -223,12 +242,7 @@ QString Application::openLaunch(const QString& workingDirectory, const QStringLi
     TerminalWindow* w = newWindow(window);
     if (!w && window.session) return QStringLiteral("cannot show session '%1'").arg(session);
     if (!w) return QStringLiteral("cannot start %1").arg(command.isEmpty() ? QStringLiteral("the shell") : command.first());
-    // Qt reads the token from the environment when the window asks for focus.
-    const QByteArray token = options.value(QStringLiteral("activationToken")).toString().toUtf8();
-    if (!token.isEmpty()) qputenv("XDG_ACTIVATION_TOKEN", token);
-    w->requestActivate();
-    // An unused token must not reach the shells of later panes.
-    if (!token.isEmpty()) qunsetenv("XDG_ACTIVATION_TOKEN");
+    withActivationToken(options, [w] { w->requestActivate(); });
     return {};
 }
 

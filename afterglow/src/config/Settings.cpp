@@ -406,8 +406,9 @@ PhosphorConfig::Schema buildSchema()
                                  "and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use "
                                  "plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme "
                                  "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
-                                 "after the brightness of the color scheme. A mux session runs without the desktop: it takes the "
-                                 "dark NAME, and plasma takes only the colors that the color scheme file sets. A theme replaces each color that it sets, the divider and popup "
+                                 "after the brightness of the color scheme. A mux session runs without the desktop. It takes the "
+                                 "dark NAME, and plasma takes only the colors that the color scheme file sets. A theme "
+                                 "replaces each color that it sets, the divider and popup "
                                  "border colors and the visual bell intensity. Afterglow "
                                  "reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with "
                                  "a slash is a file path. A path can start with ~/ for the home directory. A relative path starts "
@@ -526,7 +527,7 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Variables added to the shell's environment, such as { \"EDITOR\": \"nvim\" }. Each value must be a "
                         "string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow "
                         "ignores TERM, AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO here. Terminal.term, "
-                        "Terminal.sshIntegration and Terminal.sshTerminfo set them. It also ignores AFTERGLOW_PANE_ID, "
+                        "Terminal.sshIntegration and Terminal.sshTerminfo set them. Afterglow also ignores AFTERGLOW_PANE_ID, "
                         "AFTERGLOW_SOCKET, AFTERGLOW_OVERLAY, AFTERGLOW_SESSION and AFTERGLOW_RESULT, which it sets or "
                         "removes for each pane. New panes and new mux sessions use this value.")},
         {QStringLiteral("confirmUnsafePaste"), d.confirmUnsafePaste, QMetaType::Bool,
@@ -658,7 +659,7 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
          QStringLiteral("Allow other programs, such as afterglow ctl and aglow run, to control Afterglow through its "
                         "socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the "
-                        "socket also when this is off.")},
+                        "socket also when this is off. A value that is not true or false turns it off.")},
         {QStringLiteral("allowReadText"), d.control.allowReadText, QMetaType::Bool,
          QStringLiteral("Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands "
                         "that run and the values of user variables. It also allows screenshots of panes, tabs and windows. A "
@@ -681,7 +682,8 @@ PhosphorConfig::Schema buildSchema()
                         "read_text, read_region and semantic_regions also need Control.allowReadText.")},
         {QStringLiteral("enabled"), d.scripts, QMetaType::Bool,
          QStringLiteral("Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in "
-                        "each XDG data directory. The aglow run command also needs Control.enabled.")},
+                        "each XDG data directory. The aglow run command also needs Control.enabled. A value that is not "
+                        "true or false turns it off.")},
         intKey(QStringLiteral("commandTimeout"), d.scriptCommandTimeout, 1000, 3600000,
                QStringLiteral("Longest time in milliseconds that one run of a script command can take. This includes runs "
                               "from a key, a menu or the palette. The time that the run waits for a task, a dialog, an "
@@ -931,8 +933,9 @@ bool hasReadableType(const KeyDef& def, const QJsonValue& raw)
 /// t, r, u and e), and a list or map of another JSON type as empty or as the
 /// JSON that its text holds. So @p defaults gets the default of each such
 /// key, for read() to lay over the file: each "Using the default" is true.
-/// While @p neverRead, read() keeps Scripts.enabled and Control.enabled off
-/// unless a boolean override sets them, so their text says that instead.
+/// Scripts.enabled and Control.enabled with a value that is not a boolean
+/// stay off, and their text says so. While @p neverRead, read() keeps the
+/// two off too, unless a boolean override sets them.
 QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObject& file, const QJsonObject& overrides,
                             QJsonObject* defaults, bool neverRead)
 {
@@ -990,9 +993,10 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
                     keys.insert(def.key, false);
                     defaults->insert(group.key(), keys);
                 }
-                out << (heldOff && neverRead ? QStringLiteral("%1 must be true or false. It stays off until the file holds a JSON object or is deleted")
-                        : heldOff            ? QStringLiteral("%1 must be true or false. It stays off")
-                                             : QStringLiteral("%1 must be true or false. Using the default"))
+                // Off for as long as the value says nothing: also once a
+                // file that was not read is read.
+                out << (heldOff ? QStringLiteral("%1 must be true or false. It stays off")
+                                : QStringLiteral("%1 must be true or false. Using the default"))
                            .arg(name);
             } else if (def.expectedType == QMetaType::Int && !isIntValue(raw)) {
                 out << (isOutOfIntRange(raw) ? QStringLiteral("%1 is too large or too small. Using the default")
@@ -1312,9 +1316,11 @@ QString baseTheme(const QString& picked, const std::optional<Theme>& desktop)
     if (!Themes::isPlasma(picked, &base)) {
         return picked;
     }
-    if (base.isEmpty() && desktop && desktop->background) {
-        const AfterglowVt::Rgb& bg = *desktop->background;
-        const bool dark = 0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b < 128;
+    if (base.isEmpty() && desktop) {
+        // A desktop that gives no background (no GUI application, and no
+        // kdeglobals) is dark, as darkScheme() says without one.
+        bool dark = true;
+        if (const auto& bg = desktop->background) dark = 0.2126 * bg->r + 0.7152 * bg->g + 0.0722 * bg->b < 128;
         base = dark ? QStringLiteral("afterglow-dark") : QStringLiteral("afterglow-light");
     }
     return base;
@@ -1610,13 +1616,18 @@ Settings SettingsStore::read()
         }
     }
     if (desktop) {
+        // Each colour that the desktop gives; one that it does not (no GUI
+        // application, see Themes::plasmaColors) stays the theme's.
         Theme over = theme ? *theme : Theme{};
-        over.background = desktop->background;
-        over.foreground = desktop->foreground;
-        over.selectionBackground = desktop->selectionBackground;
-        over.selectionForeground = desktop->selectionForeground;
-        over.cursor = desktop->cursor;
-        over.cursorText = desktop->cursorText;
+        const auto lay = [](std::optional<AfterglowVt::Rgb>& to, const std::optional<AfterglowVt::Rgb>& from) {
+            if (from) to = from;
+        };
+        lay(over.background, desktop->background);
+        lay(over.foreground, desktop->foreground);
+        lay(over.selectionBackground, desktop->selectionBackground);
+        lay(over.selectionForeground, desktop->selectionForeground);
+        lay(over.cursor, desktop->cursor);
+        lay(over.cursorText, desktop->cursorText);
         // Derived from the desktop's background and text, not the theme's.
         over.divider.reset();
         over.popupBorder.reset();
@@ -1759,7 +1770,7 @@ Settings SettingsStore::read()
         && dir != QLatin1String("home") && dir != QLatin1String("~") && !dir.startsWith(QLatin1String("~/"))
         && QDir::isRelativePath(dir)) {
         // A relative path would start wherever Afterglow was started.
-        problem(QStringLiteral("Window.workingDirectory \"%1\" must be an absolute path or start with ~/. Using inherit")
+        problem(QStringLiteral("Window.workingDirectory \"%1\" must be an absolute path, ~, or start with ~/. Using inherit")
                     .arg(dir));
         s.window.workingDirectory = QStringLiteral("inherit");
     }

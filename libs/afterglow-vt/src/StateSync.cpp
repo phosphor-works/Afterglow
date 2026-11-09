@@ -505,7 +505,12 @@ bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, Scre
     std::set<std::uint32_t> used;
     std::size_t bytes = out.size();
     st.rowsPending = false;
-    for (int y = 0; y < s.rows(); ++y) {
+    // From the first row that the last frame left out: rows at the top that
+    // change in every frame do not keep the others waiting.
+    const int start = st.rowStart < s.rows() ? st.rowStart : 0;
+    st.rowStart = 0;
+    for (int i = 0; i < s.rows(); ++i) {
+        const int y = (start + i) % s.rows();
         std::string row;
         std::set<std::uint32_t> rowStyles;
         encodeRow(row, s.row(y), rowStyles);
@@ -527,6 +532,7 @@ bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, Scre
         // The meaning holds the row and its definitions: about what the row
         // adds to the frame.
         if (!changed.empty() && bytes + meaning.size() > maxBytes) {
+            if (!st.rowsPending) st.rowStart = y;
             st.rowsPending = true;
             continue;
         }

@@ -744,10 +744,27 @@ TEST_F(ConfigTest, ScriptsAndControlStayOffForAValueThatIsNotABoolean)
         EXPECT_FALSE(store.settings().control.enabled);
         EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Scripts"))) << store.problems().join(QLatin1Char('\n')).toStdString();
     }
-    // A command-line override still wins.
-    SettingsStore store(write(QStringLiteral("off.json"), R"({"Scripts": {"enabled": "no way"}})"),
-                        QJsonObject{{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}}});
-    EXPECT_TRUE(store.settings().scripts);
+    {
+        SettingsStore store(write(QStringLiteral("off.json"), R"({"Scripts": {"enabled": "no way"}, "Control": {"enabled": 7}})"));
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Scripts.enabled must be true or false. It stays off")));
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Control.enabled must be true or false. It stays off")));
+    }
+    {
+        SettingsStore store(write(QStringLiteral("off.json"), R"({"Scripts": false})"));
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Using the defaults, with Scripts.enabled off")))
+            << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    // A command-line override still wins, over a bad value and over a group
+    // that is no object.
+    for (const char* json : {R"({"Scripts": {"enabled": "no way"}})", R"({"Scripts": false})"}) {
+        SettingsStore store(write(QStringLiteral("off.json"), json),
+                            QJsonObject{{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}}});
+        EXPECT_TRUE(store.settings().scripts) << json;
+    }
+    // A valid false stays false, with no problem.
+    SettingsStore store(write(QStringLiteral("off.json"), R"({"Scripts": {"enabled": false}})"));
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
 }
 
 TEST_F(ConfigTest, LinkSchemesThatAreNoSchemeAreReported)
@@ -2855,7 +2872,7 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     EXPECT_FALSE(unclearStore.settings().control.enabled);
     // It stays off, so the text must not say that it uses the default.
     EXPECT_TRUE(mentions(unclearStore.problems(),
-                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file holds a JSON object or is deleted")))
+                         QStringLiteral("Scripts.enabled must be true or false. It stays off")))
         << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
     EXPECT_FALSE(mentions(unclearStore.problems(), QStringLiteral("Scripts.enabled must be true or false. Using the default")));
     // An editor that saves in place empties the file first: its text may
@@ -2874,7 +2891,7 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     unclearStore.reload();
     EXPECT_FALSE(unclearStore.settings().scripts);
     EXPECT_TRUE(mentions(unclearStore.problems(),
-                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file holds a JSON object or is deleted")))
+                         QStringLiteral("Scripts.enabled must be true or false. It stays off")))
         << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
     // Text that parses but holds no object keeps them off.
     write(QStringLiteral("config.json"), "[]");
@@ -3087,7 +3104,7 @@ TEST_F(ConfigTest, ARelativeWorkingDirectoryIsReported)
 {
     SettingsStore relative(write(QStringLiteral("relative.json"), R"({"Window": {"workingDirectory": "projects"}})"));
     EXPECT_EQ(relative.settings().window.workingDirectory, QStringLiteral("inherit"));
-    EXPECT_TRUE(mentions(relative.problems(), QStringLiteral("must be an absolute path or start with ~/")));
+    EXPECT_TRUE(mentions(relative.problems(), QStringLiteral("must be an absolute path, ~, or start with ~/")));
     for (const char* value : {"~/projects", "/srv/projects", "home", "~"}) {
         SettingsStore store(write(QStringLiteral("dir.json"),
                                   QByteArray(R"({"Window": {"workingDirectory": ")") + value + "\"}}"));

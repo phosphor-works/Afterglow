@@ -159,9 +159,14 @@ Daemon::Listen Daemon::listen(const std::vector<AfterglowProto::MuxSocket>& sock
         return Listen::Failed;
     }
     // The attach sockets that a daemon before this one left when it was
-    // killed: this one holds the lock of every socket of the user, so no
-    // other daemon waits for a window on them.
-    for (const auto& listener : m_listeners) removeAttachSockets(listener->path().substr(0, listener->path().rfind('/')));
+    // killed, in the runtime directory (its socket is "socket"): that
+    // directory is of this computer, and this daemon holds its lock. The
+    // state directory can be shared with other computers (NFS), whose
+    // daemons wait for windows there.
+    for (const auto& listener : m_listeners) {
+        const std::string& path = listener->path();
+        if (path.ends_with("/socket")) removeAttachSockets(path.substr(0, path.rfind('/')));
+    }
     return Listen::Listening;
 }
 

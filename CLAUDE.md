@@ -37,8 +37,8 @@ wrong, and points to the skills that hold the procedures.
   `afterglow mux new` without `--detach`, `afterglow mux attach` and `--mux-attach` also open a window in the
   Afterglow of the display, and a window of a session ends the session when it closes. Run them only with a private
   `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` under `/tmp` (`mux/tests/TestDaemon.h`), and a nested KWin for a window, and
-  kill the sessions that you made. Never stop, restart or mask the user's `afterglow-mux.service`, and never remove the files
-  in the user's two `afterglow-mux` directories: that ends the user's sessions, or leaves them without a socket.
+  kill the sessions that you made. Never stop, restart or mask the user's `afterglow-mux.service`, and never remove the
+  files in the user's two `afterglow-mux` directories: that ends the user's sessions, or leaves them without a socket.
   `aglow transfer`, `dnd`, `icat`, `clipboard` and `run`, and the `afterglow` commands of the same names, open
   `/dev/tty`, which is the user's pane. `aglow run` asks it for the socket of an ssh session (OSC 24569), and inside
   tmux it runs `tmux display-message` on the user's tmux. Run them only in a pseudo-terminal that a test makes

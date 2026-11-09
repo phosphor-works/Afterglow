@@ -143,6 +143,9 @@ public:
     pid_t pid() const noexcept { return m_pid.load(); }
     /// Bytes queued for the child and not yet written. Thread-safe.
     std::size_t pendingInput() const;
+    /// write() can still take bytes: false once the terminal's child side is
+    /// gone or the Pty stopped, although the child may still run. Thread-safe.
+    bool accepting() const noexcept { return m_accepting.load(); }
     /// The foreground job's working directory, else the child's, read from
     /// /proc. Empty when neither is a directory that exists.
     std::string currentWorkingDirectory() const;

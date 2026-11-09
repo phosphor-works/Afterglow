@@ -5,7 +5,7 @@
 
 The mux daemon, `afterglow-mux`, keeps terminal sessions running while no window shows them.
 A session is a set of panes with running programs. A session that `afterglow mux new` creates has one pane.
-The `afterglow mux` commands create, list and end sessions. They also show a session in a window, and close that window.
+The `afterglow mux` commands create, list and end sessions. They also show a session in a window, and close it again.
 
 The mux is opt-in. A normal launch of Afterglow does not use it.
 A mux session and a normal `afterglow` launch can run at the same time.
@@ -82,7 +82,7 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 | --- | --- |
 | `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `-- COMMAND...`. |
 | `afterglow mux attach [NAME]` | Shows a session in a window. Option: `--no-takeover`. |
-| `afterglow mux detach [NAME]` | Closes the window of a session. The session keeps running. |
+| `afterglow mux detach [NAME]` | Closes the pane of the session in its window. The session keeps running. |
 | `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES` |
 | `afterglow mux kill NAME` | Ends a session and its programs. Option: `--force`. |
 | `afterglow mux server` | Runs `afterglow-mux` in the foreground |
@@ -122,6 +122,7 @@ One window at a time shows a session.
 When another window shows the session, its pane of the session closes, and the session moves to the new window.
 A window that has no other pane closes with it.
 With `--no-takeover`, the command refuses instead, with exit status 1.
+A window of the same Afterglow does not count: it comes to the front, also with `--no-takeover`.
 
 `afterglow mux attach` and `afterglow mux new` without `--detach` need a Wayland display.
 The display is `WAYLAND_DISPLAY`, by default `wayland-0`, as a socket in `XDG_RUNTIME_DIR` unless it is a path.
@@ -137,7 +138,7 @@ The Reset and Clear actions of the window reset or clear the terminal of the ses
 | Event | Result |
 | --- | --- |
 | You close the window, the tab or the pane of the session | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running. |
-| You quit Afterglow, or log out | The session keeps running, whatever `Mux.onClose` says |
+| You quit Afterglow | The session keeps running, whatever `Mux.onClose` says. At your last logout, the daemon can end too (see [start](#start)). |
 | `afterglow mux detach NAME` | The pane of the session closes. The session keeps running. In a pane of a session, `NAME` defaults to that session. |
 | Another window shows the session (`afterglow mux attach`) | The pane of the session closes, with a notice. The session keeps running. |
 | The window crashes, or its connection to the daemon breaks | The session keeps running. A window that still runs closes the pane, with a notice. |
@@ -224,7 +225,7 @@ When the daemon exits, it removes its sockets and its lock files.
 For each window that shows a session, the daemon makes one more socket, `attach-` and 16 hexadecimal digits, then `.sock`.
 It is in the directory of the first socket that the daemon still listens on.
 Only the process that asked for it can connect, and the daemon removes it when that process connects, or after 5 seconds.
-A daemon that starts removes the attach sockets that a daemon before it left in its directories.
+A daemon that starts removes the attach sockets that a daemon before it left in `$XDG_RUNTIME_DIR/afterglow-mux`. It leaves the state directory as it is, because other computers can share it.
 
 ## Environment
 
@@ -313,7 +314,7 @@ The window that shows a session does not change these answers yet.
 | Waiting output to one client | 32 MiB | The daemon closes the connection to a client that does not read its answers |
 | Environment, arguments and directory of a session | UTF-8 text | `afterglow mux new` changes each byte that is not UTF-8 to U+FFFD |
 | Wait for a window to connect to its attach socket | 5 seconds | The daemon removes the socket, and `afterglow mux attach` stops with exit status 1 |
-| Input of a window that the program does not read | 32 MiB in the queue of the PTY, then 32 MiB in the window | The window refuses more input and shows a notice, as for a pane of its own |
-| Frames to a window | 4 MiB for each frame | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
+| Input of a window that the program does not read | 32 MiB in the queue of the PTY, 4 MiB in the daemon, then 32 MiB in the window | The window refuses more input and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
+| Frames to a window | About 2 MiB of state in each frame, at most the 4 MiB window of the channel | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
 
 The daemon sets no limit on the number of sessions or connections. Each session and each connection uses open files.

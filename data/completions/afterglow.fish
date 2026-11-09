@@ -72,7 +72,7 @@ function __afterglow_window
         set i (math $i + 1)
     end
     if test $n -eq 0; and not string match -q -- '-*' "$cur"
-        __afterglow_print ctl\t'Drive a running Afterglow' mux\t'Keep terminal sessions running without a window' \
+        __afterglow_print ctl\t'Drive a running Afterglow' mux\t'Keep terminal sessions running, and show them in windows' \
             run\t'Run a command of a script' \
             ssh\t'ssh with the remote side prepared' \
             transfer\t'Copy files to and from the computer of the terminal' \

@@ -182,9 +182,9 @@ MuxPane::Input MuxPane::input(std::string_view bytes)
 {
     if (!m_pty || m_exited) return Input::Gone;
     if (m_pty->write(bytes)) return Input::Written;
-    // The write refused it for a full queue, or the child side is gone and
-    // its exit follows.
-    return m_exited ? Input::Gone : Input::Full;
+    // A terminal that takes no more input (its child side is gone, while the
+    // child may still run) never has room again: only a full queue does.
+    return m_exited || !m_pty->accepting() ? Input::Gone : Input::Full;
 }
 
 void MuxPane::reset()

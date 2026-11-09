@@ -14,6 +14,8 @@
 #include <PhosphorChannel/Stream.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 
 using namespace MuxTest;
 
@@ -67,7 +69,8 @@ public:
         stream = std::make_unique<PhosphorChannel::Stream>(fd);
         std::string why;
         input = stream->openWriter(Attach::ControlChannel, Attach::InputCodec, &why);
-        return input ? std::string() : why;
+        if (input) actions = stream->openWriter(Attach::ActionChannel, Attach::ActionCodec, &why);
+        return input && actions ? std::string() : why;
     }
 
     /// Runs the stream until @p done, up to five seconds.
@@ -167,12 +170,15 @@ public:
         Attach::Input message;
         message.type = type;
         message.pane = pane;
+        // A Kill goes on the action channel, the others with the input.
+        if (type == Attach::InputType::Kill) return actions->tryWrite(Attach::encode(message)) == PhosphorChannel::WriteResult::Written;
         return send(message);
     }
 
     std::string socket;
     std::unique_ptr<PhosphorChannel::Stream> stream;
     PhosphorChannel::StreamWriter* input = nullptr;
+    PhosphorChannel::StreamWriter* actions = nullptr;
     std::uint32_t pane = 0;
     std::uint32_t channel = 0;
     bool channelClosed = false;
@@ -253,10 +259,12 @@ TEST(MuxAttach, ResetAndClearActOnTheSessionsTerminal)
     ASSERT_TRUE(w.until([&] { return contains(w.screen(), "$ "); }));
     ASSERT_TRUE(w.type("printf '\\033[?2004h'; echo mark\n"));
     ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nmark") && w.replica.modes().bracketedPaste; })) << w.screen();
-    ASSERT_TRUE(w.action(Attach::InputType::Reset));
-    ASSERT_TRUE(w.until([&] { return !w.replica.modes().bracketedPaste; }));
+    // Clear first: a reset clears the screen too. Clear keeps the modes.
     ASSERT_TRUE(w.action(Attach::InputType::Clear));
     ASSERT_TRUE(w.until([&] { return !contains(w.screen(), "mark"); })) << w.screen();
+    EXPECT_TRUE(w.replica.modes().bracketedPaste);
+    ASSERT_TRUE(w.action(Attach::InputType::Reset));
+    ASSERT_TRUE(w.until([&] { return !w.replica.modes().bracketedPaste; }));
 }
 
 TEST(MuxAttach, ASecondWindowTakesTheSessionOver)
@@ -276,8 +284,9 @@ TEST(MuxAttach, ASecondWindowTakesTheSessionOver)
     ASSERT_TRUE(first.until([&] { return first.got(Attach::EventType::TakenOver) && first.ended; }));
     // The second window gets the whole screen, the first one's output too.
     ASSERT_TRUE(second.until([&] { return contains(second.screen(), "\nbefore"); })) << second.screen();
-    // The first window gets nothing more, and its kill ends nothing: only
-    // the window that shows the session may.
+    // The first window gets nothing more. A finished attachment reads no
+    // more input, so its kill ends nothing: only the window that shows the
+    // session can end it.
     ASSERT_TRUE(second.type("echo after\n"));
     ASSERT_TRUE(second.until([&] { return contains(second.screen(), "\nafter"); }));
     // A frame that the daemon made before the takeover may be read after its
@@ -295,12 +304,14 @@ TEST(MuxAttach, DetachKeepsTheSessionForTheNextWindow)
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    // Made when the job's output is out: while no window shows the session.
+    const std::string done = daemon.dir() + "/job-done";
     {
         Window w;
         ASSERT_EQ(w.attach(daemon, "sh"), "");
         ASSERT_TRUE(w.until([&] { return contains(w.screen(), "$ "); }));
         // Output that comes while no window shows the session.
-        ASSERT_TRUE(w.type("echo kept; (sleep 1; echo la''ter) &\n"));
+        ASSERT_TRUE(w.type("echo kept; (sleep 1; echo la''ter; : > " + done + ") &\n"));
         ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nkept"); }));
         ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"sh"})) << daemon.lastError();
         ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
@@ -311,8 +322,11 @@ TEST(MuxAttach, DetachKeepsTheSessionForTheNextWindow)
     EXPECT_FALSE(daemon.call(Fn::Detach, Json::Array{"sh"}, &error));
     EXPECT_EQ(error.code, Error::NotAttached);
     // The output while no window showed the session is there for the next one.
-    ASSERT_TRUE(waitFor([&] { return !sessionNamed(daemon, "sh")->attached; }));
-    std::this_thread::sleep_for(1500ms);
+    ASSERT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "sh");
+        return info && !info->attached;
+    }));
+    ASSERT_TRUE(waitFor([&] { return exists(done); }));
     Window again;
     ASSERT_EQ(again.attach(daemon, "sh"), "");
     ASSERT_TRUE(again.until([&] { return contains(again.screen(), "\nkept") && contains(again.screen(), "later"); }))
@@ -327,7 +341,9 @@ TEST(MuxAttach, ADetachBeforeTheWindowConnectsReachesIt)
     Window w;
     ASSERT_EQ(w.call(daemon, "sh"), "");
     // The window did not connect yet: no window shows the session.
-    EXPECT_FALSE(sessionNamed(daemon, "sh")->attached);
+    const auto info = sessionNamed(daemon, "sh");
+    ASSERT_TRUE(info);
+    EXPECT_FALSE(info->attached);
     ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"sh"})) << daemon.lastError();
     ASSERT_EQ(w.connect(), "");
     ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
@@ -409,14 +425,110 @@ TEST(MuxAttach, ASlowWindowGetsFewerFramesAndMissesNothing)
     // The window reads nothing while the program writes much more than the
     // window of a channel: the daemon's frame waits, and newer output goes
     // in the next one.
-    ASSERT_TRUE(w.type("i=0; while [ $i -lt 30000 ]; do echo \"line $i of the output that fills the channel\"; i=$((i+1)); done; echo E''ND\n"));
+    // Wide rows of many colours: far more state than the 4 MiB window of the
+    // channel, so a frame has to wait for credit.
+    ASSERT_TRUE(w.resize(400, 50));
+    ASSERT_TRUE(w.type("i=0; while [ $i -lt 30000 ]; do printf '\\033[3%dmline %d %0390d\\033[0m\\n' $((i%8)) $i 0; i=$((i+1)); done; echo E''ND\n"));
     ASSERT_TRUE(w.stream->flush(2000));
     std::this_thread::sleep_for(3s);
     ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nEND"); })) << w.screen();
     // Far fewer frames than lines, and every one applied (Window::read),
     // up to the last line.
     EXPECT_LT(w.frames, 3000);
-    EXPECT_TRUE(contains(w.screen(), "line 29999 of the output")) << w.screen();
+    EXPECT_TRUE(contains(w.screen(), "line 29999 ")) << w.screen();
+}
+
+TEST(MuxAttach, TheAttachCallAnswersWithItsKeys)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    IpcConnection::Error error;
+    const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep", Json::Object{}}, &error);
+    ASSERT_TRUE(result) << error.message;
+    ASSERT_TRUE(result->isObject());
+    std::vector<std::string> keys;
+    for (const auto& [key, value] : result->toObject()) keys.push_back(key);
+    std::sort(keys.begin(), keys.end());
+    EXPECT_EQ(keys, (std::vector<std::string>{"name", "socket"}));
+    EXPECT_EQ((*result)["name"].toString(), "keep");
+}
+
+TEST(MuxAttach, InputThatAFullPtyRefusesWaitsAndAKillStillGoes)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // A program that reads nothing, until it reads everything.
+    const std::string file = daemon.dir() + "/read";
+    const std::string go = daemon.dir() + "/go";
+    const std::string ready = daemon.dir() + "/ready";
+    SessionOptions o = daemon.options(
+        {"/bin/sh", "-c", "stty raw -echo; : > " + ready + "; while [ ! -e " + go + " ]; do sleep 0.1; done; exec cat > " + file});
+    o.name = "slow";
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    // Raw before the first byte: a line of the terminal holds 4 KiB.
+    ASSERT_TRUE(waitFor([&] { return exists(ready); }));
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "slow"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    // Past the 32 MiB that the PTY queues: the daemon holds the rest, and
+    // the window's channel fills behind it.
+    const std::string part(60000, 'x');
+    std::size_t sent = 0;
+    for (int stuck = 0; sent < 48u << 20 && stuck < 200;) {
+        if (w.type(part)) {
+            sent += part.size();
+            stuck = 0;
+        } else {
+            ++stuck;
+            w.stream->pump(20);
+            w.read();
+        }
+    }
+    EXPECT_GT(sent, std::size_t(32) << 20) << "the PTY never filled";
+    // The window's input waits; the program now reads, and every byte goes.
+    std::ofstream(go).put('x');
+    std::size_t queued = sent;
+    const auto deadline = std::chrono::steady_clock::now() + 60s;
+    while (std::filesystem::exists(file) ? std::filesystem::file_size(file) < queued : true) {
+        if (std::chrono::steady_clock::now() > deadline) break;
+        if (queued < sent + (8u << 20) && w.type(part)) queued += part.size();
+        w.stream->pump(20);
+        w.read();
+    }
+    ASSERT_TRUE(std::filesystem::exists(file));
+    EXPECT_EQ(std::filesystem::file_size(file), queued);
+}
+
+TEST(MuxAttach, AKillGoesPastInputThatWaitsForAFullPty)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string ready = daemon.dir() + "/ready";
+    SessionOptions o = daemon.options({"/bin/sh", "-c", "stty raw -echo; : > " + ready + "; exec sleep 60"});
+    o.name = "stuck";
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    ASSERT_TRUE(waitFor([&] { return exists(ready); }));
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "stuck"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    // Until the window's channel takes no more: the daemon holds input, and
+    // reads its control channel no more.
+    const std::string part(60000, 'x');
+    std::size_t sent = 0;
+    for (int stuck = 0; stuck < 100;) {
+        if (w.type(part)) {
+            sent += part.size();
+            stuck = 0;
+        } else {
+            ++stuck;
+            w.stream->pump(20);
+            w.read();
+        }
+    }
+    EXPECT_GT(sent, std::size_t(32) << 20);
+    ASSERT_TRUE(w.action(Attach::InputType::Kill));
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::SessionEnded); }));
+    EXPECT_FALSE(sessionNamed(daemon, "stuck"));
 }
 
 TEST(MuxAttach, OnlyTheCallerMayConnect)

@@ -472,21 +472,24 @@ The `StateSync.*` tests cover these cases:
 - The link definitions of history rows count in the size of a frame
 - A damaged frame and a link without a URI, which the reader refuses without a crash
 - After a refused frame, the reader takes the first frame of a writer that starts over
+- Each synchronized update, with its own count
 
 The `Mux.MuxAttach.*` tests cover these cases:
 
-- The attach call and its socket, which only the caller may connect to, and which goes after the connect wait
+- The attach call, its keys and its socket, which only the caller may connect to, and which goes after the connect wait
 - The screen, the input, the size of the window, and the channel of a pane
 - Reset and Clear, which change the terminal of the session
 - A takeover, a detach, also one before the window connects, and a window that leaves
 - The last output of a program that exits, before its exit, and a kill
 - A window that reads slowly: fewer frames, and no lost output
+- Input that a full PTY refuses: it waits and arrives whole, and a Kill goes past it
 - The attach sockets that an earlier daemon left, and calls that the daemon refuses
 
 The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow mux new` starts in a session of its own:
 
-- `afterglow mux new`, `ls`, `kill`, `attach` and `detach`, and their usage errors
-- The refusals of `attach` and `new` without a Wayland display
+- `afterglow mux new`, `ls` and `kill`
+- The usage errors of every command, and `detach` without a daemon
+- The refusals of `attach` and `new` without a Wayland display, or with another `QT_QPA_PLATFORM`
 - The start errors of the daemon, a socket that another daemon holds, and a daemon of another protocol version
 - The largest and smallest values of the settings that a session takes
 
@@ -499,8 +502,11 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.AWindowThatLosesItsSessionLeavesItRunning` | A detach and a takeover close the pane and kill nothing |
 | `NativeWindow.AMuxSessionCanOutliveItsWindow` | `Mux.onClose` detach |
 | `NativeWindow.MuxOnCloseAppliesToAnOpenSessionPane` | A change of `Mux.onClose` reaches an open pane |
+| `NativeWindow.ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow` | A launch of a session that a window shows brings that window to the front. A launch of an unknown session fails with the reason. |
+| `NativeWindow.ALargePasteReachesTheProgramOfASessionWhole` | Input larger than a frame goes in parts, in order |
 
-Not every test starts a daemon. A `Mux.*` test, a `MuxCommandTest.*` test or one of the native tests above that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test (`mux/tests/TestDaemon.h`).
+Not every test starts a daemon. A test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.
+This is true for the `Mux.*` tests, the `MuxCommandTest.*` tests and the native tests above (`mux/tests/TestDaemon.h`).
 A native test that shows a session also gives the window the sockets of its daemon. A launch with `--mux-attach` uses the sockets of the environment, so a test of it must set these directories first.
 Thus a test daemon never reaches the mux daemon of the user, and never starts in a systemd user unit.
 The tests get the name of the state socket from `AfterglowProto::muxStateSocketName`, which the daemon uses too (see [sockets](MUX.md#sockets)).

@@ -21,7 +21,8 @@
 // searches the replica as it does a terminal of its own.
 //
 // A frame always describes the newest state, so a writer that cannot send
-// (a full channel) waits and sends one frame later that covers everything.
+// (a full channel) waits and sends a later frame that covers everything that
+// changed, or as much of it as the budget of a frame allows.
 //
 // What a frame carries: both screens (their rows, the history with the
 // stable id of each row, the cursor), the styles and links of their cells,
@@ -41,8 +42,8 @@ public:
     /// The next frame for @p terminal: what changed since the last frame,
     /// everything for the first one. Empty when nothing changed. Visible
     /// rows, then history rows, past about @p maxBytes wait for the next
-    /// frames, though each frame carries at least one row of each; the
-    /// small sections always go.
+    /// frames, though each frame carries at least one visible row and one
+    /// history row of each screen; the small sections always go.
     std::string update(const Terminal& terminal, std::size_t maxBytes);
     /// The next frame carries everything again, as the first one does: for
     /// a new replica.
@@ -68,6 +69,7 @@ private:
         std::unordered_map<std::uint32_t, std::pair<std::string, std::string>> links;
         bool historyPending = false;
         bool rowsPending = false; ///< changed visible rows wait for a later frame
+        int rowStart = 0; ///< the first row that the last frame left out, where the next one starts
     };
 
     /// The visible rows of screen @p which that changed, while @p out stays

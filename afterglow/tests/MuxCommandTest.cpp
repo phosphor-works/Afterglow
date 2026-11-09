@@ -100,7 +100,8 @@ protected:
             const std::string_view entry(*e);
             const std::string_view name = entry.substr(0, entry.find('='));
             if (name.starts_with("AFTERGLOW_") || name == "TMUX" || name == "TMUX_PANE" || name.starts_with("XDG_")
-                || name == "HOME" || name == "WAYLAND_DISPLAY" || name == "DISPLAY") {
+                || name == "HOME" || name == "WAYLAND_DISPLAY" || name == "DISPLAY"
+                || name == "QT_QPA_PLATFORM") {
                 continue;
             }
             m_environment.emplace_back(entry);
@@ -375,6 +376,17 @@ TEST_F(MuxCommandTest, UsageErrorsAndCommandsThatAreNotAvailable)
         EXPECT_EQ(r.status, status) << args.front() << " " << r.err;
         EXPECT_TRUE(r.err.starts_with(message)) << r.err;
     }
+    EXPECT_TRUE(daemons().empty());
+}
+
+// A platform other than Wayland, which afterglow would refuse after the
+// session was made: refused first, with no session.
+TEST_F(MuxCommandTest, AWindowNeedsTheWaylandPlatform)
+{
+    m_environment.push_back("QT_QPA_PLATFORM=offscreen");
+    const Result r = mux({"new"});
+    EXPECT_EQ(r.status, 1) << r.err;
+    EXPECT_EQ(r.err, "afterglow mux new: QT_QPA_PLATFORM is offscreen, and Afterglow shows windows only on Wayland: give --detach\n");
     EXPECT_TRUE(daemons().empty());
 }
 

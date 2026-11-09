@@ -846,7 +846,7 @@ void Pane::commandFinished(int exitCode)
 QString Pane::foregroundJob() const
 {
     // A session pane that closing leaves running ends nothing.
-    if (m_session) return m_sessionGone || m_held.load() || !m_killSessionOnClose ? QString() : m_session->foregroundJob();
+    if (m_session) return m_sessionGone || m_held.load() || !closeEndsProgram() ? QString() : m_session->foregroundJob();
     if (!m_pty || m_held.load()) {
         return {};
     }

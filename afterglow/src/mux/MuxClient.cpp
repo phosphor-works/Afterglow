@@ -126,7 +126,8 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
     client->m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
     std::string streamError;
     client->m_input = client->m_stream->openWriter(Attach::ControlChannel, Attach::InputCodec, &streamError);
-    if (!client->m_input) return fail(QString::fromStdString(streamError));
+    if (client->m_input) client->m_actions = client->m_stream->openWriter(Attach::ActionChannel, Attach::ActionCodec, &streamError);
+    if (!client->m_input || !client->m_actions) return fail(QString::fromStdString(streamError));
 
     // The daemon names the panes first: the window shows them once it knows them.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(Attach::ConnectWaitMs);
@@ -161,27 +162,37 @@ void MuxClient::bind(std::uint32_t id, Pane* pane)
     m_panes[id] = pane;
     // Frames that came before the pane existed wait in the stream's reader.
     handleFrames();
-    // A pane that the session lost before it existed closes at once.
-    if (m_ended && pane) pane->sessionLost(m_loss);
+    // A pane that the session lost before it existed closes at once, unless
+    // half of its exit came: the rest closes it as a program's exit.
+    if (m_ended && pane && !m_exits.contains(id) && !m_closedChannels.contains(id)) pane->sessionLost(m_loss);
 }
 
 void MuxClient::release(std::uint32_t id, bool kill)
 {
     m_panes.erase(id);
     if (!m_panes.empty() || !m_stream) return;
-    if (kill && showing()) {
-        Attach::Input input;
-        input.type = Attach::InputType::Kill;
-        // The kill goes whatever waits: the session ends anyway.
-        queueInput(Attach::encode(input), false);
-    }
-    // The input that waits goes before the window lets the session go, for a
-    // short time: the GUI thread waits here. What a slow program or daemon
-    // has no room for by then is lost, as the input of a closed window is.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ReleaseWaitMs);
     const auto left = [&deadline] {
         return int(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
     };
+    if (kill && showing()) {
+        // The session ends: the input that waits is for nothing. The kill
+        // goes on a channel of its own, which the daemon reads also while
+        // input waits for a full PTY there.
+        m_waitingInput.clear();
+        m_waitingBytes.store(0, std::memory_order_relaxed);
+        Attach::Input input;
+        input.type = Attach::InputType::Kill;
+        const std::string frame = Attach::encode(input);
+        while (m_actions->tryWrite(frame) == WriteResult::WouldBlock && left() > 0 && m_stream->open()) {
+            // Only before the daemon granted the channel, at the start.
+            if (!m_stream->pump(left())) break;
+        }
+    }
+    // The input that waits goes before the window lets the session go, for a
+    // short time: the GUI thread waits here. What a slow program or daemon
+    // has no room for by then is lost, as the input of a closed window is.
+    sendWaitingInput();
     while (showing() && !m_waitingInput.empty() && left() > 0 && m_stream->open()) {
         if (!m_stream->pump(left())) break;
         sendWaitingInput();
@@ -191,7 +202,7 @@ void MuxClient::release(std::uint32_t id, bool kill)
     delete m_writeNotifier;
     m_readNotifier = m_writeNotifier = nullptr;
     m_stream.reset();
-    m_input = nullptr;
+    m_input = m_actions = nullptr;
     m_waitingInput.clear();
     m_waitingBytes.store(0, std::memory_order_relaxed);
 }

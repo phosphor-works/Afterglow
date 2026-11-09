@@ -163,9 +163,8 @@ public:
     /// Runs a keybind action as if it were pressed in @p pane. The tab
     /// actions of a pane in another tab (close, rename, move, detach, and a
     /// new tab beside it) act on that tab without showing it, as its tab menu
-    /// does. False, and nothing
-    /// done, while a prompt, a menu, the palette, the search or a script
-    /// dialog has the keyboard.
+    /// does. False, and nothing done, while a prompt, a menu, the palette,
+    /// the search or a script dialog has the keyboard.
     bool runAction(Pane* pane, Action action);
     using ScriptReply = std::function<void(QString, QVariantMap)>;
     QString showScriptDialog(const QString& owner, Pane*, const QVariantMap&, ScriptReply);
@@ -919,7 +918,8 @@ private:
     QTimer m_holdRetry; ///< a frame again when a pane's held frame times out
     qint64 m_holdWait = 0; ///< this frame: the milliseconds until the first held frame times out
     bool m_textBlinkOn = true;
-    /// Tells each pane whether it can be seen (mode 2033 reports).
+    /// Tells each pane whether it can be seen (mode 2033 reports), except a
+    /// session pane: its replica never answers its program (docs/MUX.md).
     void updatePaneVisibility();
     bool m_blinkOn = true;
     double m_wheelAccumulator = 0;

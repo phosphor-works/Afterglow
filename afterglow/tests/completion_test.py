@@ -597,7 +597,8 @@ FULL_CASES = (('afterglow -e ech', 'echo'), ('afterglow --title x -e ech', 'echo
               ('afterglow --title=x -e ech', 'echo'), ('afterglow -d adir -e ech', 'echo'),
               ('afterglow -o A.b=1 -e ech', 'echo'), ('afterglow ctl split -- ech', 'echo'),
               ('afterglow ctl new-window --cwd adir -- ech', 'echo'),
-              ('afterglow ctl overlay --capture none -- ech', 'echo'), ('afterglow mux new --detach -- ech', 'echo'), ('afterglow mux new -- ech', 'echo'),
+              ('afterglow ctl overlay --capture none -- ech', 'echo'), ('afterglow mux new --detach -- ech', 'echo'),
+              ('afterglow mux new -- ech', 'echo'),
               ('afterglow -e ssh --help ', 'ssh-marker'),
               ('afterglow ssh ', 'ssh-marker'))
 

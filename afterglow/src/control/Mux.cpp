@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -172,8 +173,8 @@ int run(const std::vector<std::string>& argv, std::string* output = nullptr)
         ::close(pipe[0]);
     }
     if (spawned != 0) return -1;
-    // A SIGCHLD that this process got as ignored reaps the child itself:
-    // waitpid() fails then, and the status is unknown, not 0.
+    // runMux() set SIGCHLD to its default, so the status is the child's. A
+    // waitpid() that fails tells nothing: unknown, not 0.
     int status = 0;
     pid_t reaped;
     while ((reaped = ::waitpid(pid, &status, 0)) < 0 && errno == EINTR) { }
@@ -251,9 +252,7 @@ bool startDetached(const std::string& daemon, int reportFd, std::string* error)
     int status = 0;
     pid_t reaped;
     while ((reaped = ::waitpid(child, &status, 0)) < 0 && errno == EINTR) { }
-    // A child that the kernel reaped (SIGCHLD ignored) tells nothing: the
-    // report pipe says whether the daemon started.
-    if (reaped == child && (!WIFEXITED(status) || WEXITSTATUS(status) != 0)) {
+    if (reaped != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         *error = "cannot start afterglow-mux: the second fork failed";
         return false;
     }
@@ -611,8 +610,8 @@ int newSession(int argc, char** argv, const std::string& command = "new")
         return 0;
     }
     const int status = openWindow(command, name, true);
-    // afterglow did not run, so no window will show the session: it ends,
-    // as the session of a window that fails to open.
+    // afterglow did not run, so no window will show the session: it ends
+    // here. (A window that starts and then fails leaves it running.)
     IpcConnection::Error killError;
     (void)reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::KillSession, Json::Array{name}, CallTimeoutMs, &killError);
     return status;
@@ -806,6 +805,11 @@ int server(int argc, char**)
 
 int runMux(int argc, char** argv)
 {
+    // A SIGCHLD that this process got as ignored (from its parent, across
+    // exec) makes the kernel reap the children of run() and startDetached():
+    // their status would be lost, and a systemd-run that worked would look
+    // failed.
+    std::signal(SIGCHLD, SIG_DFL);
     if (argc < 2) return usage({});
     const std::string command = argv[1];
     if (command == "--help" || command == "-h" || command == "help") {

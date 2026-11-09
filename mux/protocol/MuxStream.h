@@ -25,9 +25,13 @@ namespace AfterglowMux::Attach {
 /// The channel of the events (from the daemon) and of the input (from the
 /// window). The state channels of panes start at 1.
 inline constexpr std::uint32_t ControlChannel = 0;
-/// The ids of the channels that each end reads are below this, so that a
-/// daemon that has run many panes still fits the window's stream: the daemon
-/// gives a pane the lowest channel id that is free.
+/// The window's channel for Kill: the daemon reads it also while input waits
+/// for a full PTY and the control channel gets no credit.
+inline constexpr std::uint32_t ActionChannel = 1;
+inline constexpr const char* ActionCodec = "afterglow.mux.actions.v1";
+/// The ids of the state channels, which the window reads, are below this, so
+/// that a daemon that has run many panes still fits the window's stream: the
+/// daemon gives a pane the lowest channel id that is free.
 inline constexpr std::uint32_t MaxChannelId = 4096;
 inline constexpr const char* EventCodec = "afterglow.mux.events.v1";
 inline constexpr const char* InputCodec = "afterglow.mux.input.v1";
@@ -62,7 +66,7 @@ enum class InputType : std::uint8_t {
     Resize = 2, ///< the size that the window measured for the pane
     Reset = 3, ///< the user reset the pane's terminal (Action::ResetTerminal)
     Clear = 4, ///< the user cleared the pane's screen and history (Action::ClearScreen)
-    Kill = 5, ///< the user closed the window, and Mux.onClose is kill: the session ends
+    Kill = 5, ///< the user closed the window, and Mux.onClose is kill: the session ends (ActionChannel only)
 };
 
 struct Input

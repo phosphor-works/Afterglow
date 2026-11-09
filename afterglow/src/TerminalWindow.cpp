@@ -1037,7 +1037,9 @@ Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList&
                              QString* error, int at)
 {
     // Size the shell for the area it will get, with the tab bar if it now
-    // shows. addTab() puts it beside the current tab unless @p at says. The pane exists before its tab, so no tab is ever without a tree.
+    // shows. addTab() puts it beside the current tab unless @p at says
+    // otherwise. The pane exists before its tab, so no tab is ever without a
+    // tree.
     Pane* first = createPane(workingDirectory, paneArea(int(m_tabs.size()) + 1), command, error, environment);
     if (!first) {
         return nullptr;
@@ -2347,9 +2349,9 @@ bool TerminalWindow::event(QEvent* e)
         // deletion it would be typed next to what it was to replace. The
         // log says that it happened, without the text.
         if (ime->replacementStart() != 0 || ime->replacementLength() != 0) {
-            qCInfo(lcWindow) << "ignored an input method edit of the text around the cursor:" << ime->replacementLength()
-                             << "characters at" << ime->replacementStart() << "and" << ime->commitString().size()
-                             << "characters to commit";
+            qCDebug(lcWindow) << "ignored an input method edit of the text around the cursor:" << ime->replacementLength()
+                              << "UTF-16 units at" << ime->replacementStart() << "and" << ime->commitString().size()
+                              << "UTF-16 units to commit, with its preedit";
             ime->ignore();
             return true;
         }
@@ -2673,10 +2675,13 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     // program would otherwise get none of between its press and release.
     const bool pressSent = e->isAutoRepeat() && m_sentKeys.contains(physicalKeyOf(e));
     // Text a binding types, from a key mode or a chord alike.
-    const auto typeText = [this](const QByteArray& text) {
+    const auto typeText = [this, e](const QByteArray& text) {
         Pane* target = inputPane(m_focused);
-        // --hold: its program has ended, and a key closes it, as sendKey does.
+        // --hold: its program has ended, and a key closes it, as sendKey
+        // does. The press is taken as no shortcut: its repeats must not type
+        // the text into the pane focused next.
         if (target->isHeld()) {
+            m_consumedKeys.insert(physicalKeyOf(e), false);
             closePane(target);
             return;
         }
@@ -2870,7 +2875,7 @@ bool TerminalWindow::performAction(Action action)
         return true;
     case Action::NotifyOnFinish:
         if (m_focused && m_focused->isSessionPane()) {
-            NotificationCenter::instance().showNotice(m_focused, tr("No command ends"),
+            NotificationCenter::instance().showNotice(m_focused, tr("No command notification"),
                                                       tr("A window of a mux session does not see the commands of its shell yet."));
         } else if (m_focused) {
             if (!m_notifyOnFinish.remove(m_focused.data())) {
@@ -4520,7 +4525,8 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
     // card, a hint's last letter): its repeats must not reach the shell.
     if (repeatOfTaken && !repeatOfShortcut) return;
     if (handleShortcut(e)) {
-        m_consumedKeys.insert(physicalKey, true);
+        // A shortcut that closed a held pane took the key as no shortcut.
+        if (!m_consumedKeys.contains(physicalKey)) m_consumedKeys.insert(physicalKey, true);
         return;
     }
     // A shortcut's key that repeats into no shortcut (a key mode ended) stays here.

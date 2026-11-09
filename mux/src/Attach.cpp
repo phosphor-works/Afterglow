@@ -117,10 +117,11 @@ void Attachment::accept()
         ::close(m_listenFd);
         ::unlink(m_path.c_str());
         m_listenFd = -1;
-        // The window writes only its input, on the control channel.
+        // The window writes only its input, on the control channel, and its
+        // Kill on the action channel.
         PhosphorChannel::Stream::Options options;
-        options.maxChannels = 1;
-        options.maxChannelId = Attach::ControlChannel + 1;
+        options.maxChannels = 2;
+        options.maxChannelId = Attach::ActionChannel + 1;
         m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
         std::string error;
         m_events = m_stream->openWriter(Attach::ControlChannel, Attach::EventCodec, &error);
@@ -182,6 +183,23 @@ bool Attachment::sendHeldInput(Session& session)
 
 void Attachment::readInput(Session& session)
 {
+    std::string frame;
+    // First, and whatever input waits: a Kill does not queue behind it.
+    if (PhosphorChannel::StreamReader* actions = m_stream->reader(Attach::ActionChannel)) {
+        if (actions->codec() != Attach::ActionCodec) {
+            m_failed = true;
+            return;
+        }
+        while (actions->read(frame) == PhosphorChannel::ReadResult::Frame) {
+            const auto action = Attach::decodeInput(frame);
+            if (!action || action->type != Attach::InputType::Kill) {
+                m_failed = true;
+                return;
+            }
+            m_kill = true;
+        }
+        if (m_kill) return;
+    }
     PhosphorChannel::StreamReader* input = m_stream->reader(Attach::ControlChannel);
     if (!input) return;
     if (input->codec() != Attach::InputCodec) {
@@ -193,15 +211,15 @@ void Attachment::readInput(Session& session)
     // end of the session).
     const bool windowLeft = !m_stream->open();
     if (!windowLeft && !sendHeldInput(session)) return;
-    std::string frame;
     while (input->read(frame) == PhosphorChannel::ReadResult::Frame) {
         auto message = Attach::decodeInput(frame);
         if (!message) {
             m_failed = true;
             return;
         }
+        // A Kill comes on the action channel only.
         if (message->type == Attach::InputType::Kill) {
-            m_kill = true;
+            m_failed = true;
             return;
         }
         MuxPane* pane = session.pane(message->pane);
@@ -374,8 +392,14 @@ void Attachment::pump(Session* session)
 bool Attachment::busy() const
 {
     if (!m_stream || m_failed) return false;
+    // A finished attachment sends no more of its live panes: only the last
+    // frames of closed ones, then its last event, which can go at once when
+    // no pane closes (a finish from a call: the next pass sends it).
+    bool closing = false;
+    for (const auto& [id, l] : m_panes) closing = closing || l.closed;
+    if (m_finish && !m_finishSent && !closing && m_stream->open()) return true;
     for (const auto& [id, l] : m_panes) {
-        if (l.waiting.empty() && l.writer && l.writer->maxFrame() > 0 && (l.state.pending() || l.closed)) return true;
+        if (l.waiting.empty() && l.writer && l.writer->maxFrame() > 0 && (l.closed || (!m_finish && l.state.pending()))) return true;
     }
     return false;
 }
