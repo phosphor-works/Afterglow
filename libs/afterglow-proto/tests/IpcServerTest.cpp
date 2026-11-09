@@ -3,6 +3,7 @@
 
 #include <AfterglowProto/Ipc.h>
 #include <AfterglowProto/IpcServer.h>
+#include <AfterglowProto/Lock.h>
 
 #include <gtest/gtest.h>
 
@@ -290,6 +291,26 @@ TEST(IpcServer, TheLockAloneDecidesWhoListens)
     ::unlink(dir.lock().c_str());
     ::close(holder);
     EXPECT_EQ(listener.listen(dir.socket(), &error), Listen::Listening) << error;
+}
+
+TEST(IpcServer, ALockFileIsHeldOnlyWhileAHolderHasItsLock)
+{
+    // A file that a killed holder left has no lock: a client that waits for
+    // the holder of such a file would wait for nothing.
+    TempDir dir;
+    EXPECT_FALSE(AfterglowProto::lockFileHeld(dir.lock()));
+    const int left = ::open(dir.lock().c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    ASSERT_GE(left, 0);
+    ::close(left);
+    EXPECT_FALSE(AfterglowProto::lockFileHeld(dir.lock()));
+    std::string error;
+    const int held = AfterglowProto::lockFile(dir.lock(), &error);
+    ASSERT_GE(held, 0) << error;
+    EXPECT_TRUE(AfterglowProto::lockFileHeld(dir.lock()));
+    // Asking takes no lock: the holder keeps it, and another taker is refused.
+    EXPECT_EQ(AfterglowProto::lockFile(dir.lock(), &error), AfterglowProto::LockHeld);
+    AfterglowProto::unlockFile(dir.lock(), held);
+    EXPECT_FALSE(AfterglowProto::lockFileHeld(dir.lock()));
 }
 
 TEST(IpcServer, ACloseRemovesOnlyTheFilesOfItsOwnListener)

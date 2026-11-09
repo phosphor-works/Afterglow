@@ -7589,13 +7589,15 @@ TEST_F(NativeWindow, AQuickTerminalMovesToTheScreenNamedWhileItShowedAtItsNextSh
     ASSERT_TRUE(file.write(QStringLiteral("QuickTerminal"), QStringLiteral("screen"), second->name()));
     ASSERT_TRUE(quick->runAction(quick->focusedPane(), Action::ReloadConfig));
     EXPECT_EQ(LayerSurface::get(quick)->screen(), first);
+    // The outputs of the runner have one size, so this guards the height: it
+    // cannot tell the height of the new screen from the old one.
     EXPECT_EQ(quick->height(), height);
     quick->toggleQuick();
     ASSERT_TRUE(waitFor([&] { return quick && !quick->isVisible(); }, 5000));
     quick->toggleQuick();
     ASSERT_TRUE(waitFor([&] { return quick && quick->isExposed(); }));
     EXPECT_EQ(LayerSurface::get(quick)->screen(), second);
-    EXPECT_TRUE(waitFor([&] { return quick && quick->screen() == second; })) << "the quick terminal shows on " << quick->screen()->name().toStdString();
+    EXPECT_TRUE(waitFor([&] { return quick && quick->screen() == second; })) << "the quick terminal shows on " << (quick && quick->screen() ? quick->screen()->name() : QString()).toStdString();
     expectIdle(quick);
     EXPECT_EQ(LayerSurface::get(quick)->margins().top(), 0);
 }

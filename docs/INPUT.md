@@ -267,7 +267,7 @@ Its global shortcut shows and hides it. `afterglow --quick-terminal` does the sa
 | `QuickTerminal.animate` | `true` | Slides the window in and out |
 
 A shown quick terminal stays on its output.
-A change to `QuickTerminal.screen` applies when the quick terminal shows again.
+A change to `QuickTerminal.screen` applies after the quick terminal hides and shows again.
 
 ## Paste
 

@@ -4,11 +4,16 @@
 #include <AfterglowProto/Lock.h>
 
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <string>
 
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 namespace AfterglowProto {
@@ -58,6 +63,27 @@ void unlockFile(const std::string& path, int fd)
 {
     if (names(path, fd)) ::unlink(path.c_str());
     ::close(fd);
+}
+
+bool lockFileHeld(const std::string& path)
+{
+    struct stat file{};
+    if (::lstat(path.c_str(), &file) != 0) return false;
+    std::ifstream locks("/proc/locks");
+    if (!locks) return true;
+    char device[32];
+    std::snprintf(device, sizeof device, "%02x:%02x:", ::major(file.st_dev), ::minor(file.st_dev));
+    const std::string where = device + std::to_string(file.st_ino);
+    for (std::string line; std::getline(locks, line);) {
+        // "1: FLOCK  ADVISORY  WRITE 1234 00:49:9071 0 EOF". A waiter has
+        // "->" after the number.
+        std::istringstream fields(line);
+        std::string number, type, mode, access, pid, place;
+        fields >> number >> type;
+        if (type == "->") fields >> type;
+        if (type == "FLOCK" && fields >> mode >> access >> pid >> place && place == where) return true;
+    }
+    return false;
 }
 
 } // namespace AfterglowProto

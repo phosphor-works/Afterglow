@@ -82,6 +82,8 @@ Skipped with "Run through native_window_acceptance.py for real compositor input"
 
 `NativeWindow.ANativeGtkSaveDialogKeepsItsNameWhenItsWindowCloses` skips with "runs with --platform-theme gtk3"
 (see Platform themes).
+`NativeWindow.AQuickTerminalMovesToTheScreenNamedWhileItShowedAtItsNextShow` skips with "needs two outputs
+(kwin_wayland --output-count 2)". It runs with `--outputs 2`.
 
 Each client drag-and-drop test runs two times, with two clients. `NativeWaylandFileDrop` uses no client and runs
 one time. The `Kitty*` tests run `kitten dnd`, and skip when `kitten` is not installed. The `Aglow*` tests run the

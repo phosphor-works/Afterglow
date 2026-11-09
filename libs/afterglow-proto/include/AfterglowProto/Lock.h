@@ -26,6 +26,14 @@ inline constexpr int LockFailed = -2;
 /// that is there after the lock: one taken on a removed file guards nothing.
 int lockFile(const std::string& path, std::string* error);
 
+/// Whether a holder has the lock of the file at @p path, without taking it:
+/// a probe that took it would make a holder that starts meanwhile fail with
+/// LockHeld. A file that a holder left when it was killed, or when the
+/// computer stopped, exists with no lock on it. Reads /proc/locks, which
+/// names each flock by device and inode. Without /proc/locks, a file that
+/// exists counts as held.
+bool lockFileHeld(const std::string& path);
+
 /// Lets go of a lock of lockFile(): removes the file at @p path when it is
 /// still the one of @p fd, and closes @p fd. While the lock is held, no
 /// other process takes the file that this removes.

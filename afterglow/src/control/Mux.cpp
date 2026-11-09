@@ -11,6 +11,7 @@
 #include "MuxProtocol.h"
 
 #include <AfterglowProto/Ipc.h>
+#include <AfterglowProto/Lock.h>
 #include <AfterglowProto/Socket.h>
 #include <AfterglowProto/Text.h>
 
@@ -25,6 +26,7 @@
 #include <cstring>
 #include <exception>
 #include <fstream>
+#include <sstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -91,15 +93,12 @@ int usage(const std::string& message)
 
 using AfterglowProto::printable;
 
-// Whether a lock file of a socket exists: a daemon took it before it binds,
-// and removes it when it ends. A daemon killed with SIGKILL leaves it, and the
-// caller then waits until its deadline.
+// Whether a daemon holds a socket: it takes the lock before it binds and
+// keeps it until it ends.
 bool lockHeldElsewhere(const AfterglowProto::MuxSockets& sockets)
 {
-    return std::any_of(sockets.candidates.cbegin(), sockets.candidates.cend(), [](const AfterglowProto::MuxSocket& socket) {
-        struct stat info {};
-        return ::lstat((socket.path + ".lock").c_str(), &info) == 0;
-    });
+    return std::any_of(sockets.candidates.cbegin(), sockets.candidates.cend(),
+                       [](const AfterglowProto::MuxSocket& socket) { return AfterglowProto::lockFileHeld(socket.path + ".lock"); });
 }
 
 std::string daemonPath(std::string* error)
@@ -396,7 +395,9 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, std::string* e
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
-            if (unitProperty("ActiveState") == "deactivating") {
+            if (lockHeldElsewhere(sockets)) {
+                *error = "afterglow-mux did not start: another afterglow-mux holds a socket and does not answer";
+            } else if (unitProperty("ActiveState") == "deactivating") {
                 *error = std::string("afterglow-mux did not start: the daemon of ") + Unit
                     + ".service is ending. Try again when it has ended";
             } else {

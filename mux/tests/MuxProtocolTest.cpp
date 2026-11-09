@@ -274,4 +274,6 @@ TEST(MuxProtocol, SessionInfoRoundTrip)
     EXPECT_FALSE(sessionInfo(with(toJson(info), "jobs", Json::Array{1})));
     // A key of another version.
     EXPECT_FALSE(sessionInfo(with(toJson(info), "title", "x")));
+    // A key that version 2 had.
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "windows", 1)));
 }
