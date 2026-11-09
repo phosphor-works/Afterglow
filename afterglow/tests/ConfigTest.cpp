@@ -546,6 +546,36 @@ TEST_F(ConfigTest, PlasmaColorsReadHexValuesTheViewSectionAndTheSystemFile)
     EXPECT_TRUE(theme.selectionForeground == Rgb(252, 252, 252));
 }
 
+// The tests run without a QGuiApplication, as afterglow mux new does: a
+// colour that the scheme leaves out stays the theme's, not a fixed one.
+TEST_F(ConfigTest, WithoutTheDesktopPlasmaKeepsTheColorsThatTheSchemeLeavesOut)
+{
+    ASSERT_EQ(qobject_cast<QGuiApplication*>(QCoreApplication::instance()), nullptr);
+    write(QStringLiteral("kdeglobals"), "[Colors:View]\nBackgroundNormal=10,20,30\nForegroundNormal=200,210,220\n");
+    const auto light = bundled("afterglow-light");
+    ASSERT_TRUE(light);
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-light"}})"));
+    const auto& t = store.settings().terminal;
+    EXPECT_TRUE(t.defaultBackground == Rgb(10, 20, 30));
+    EXPECT_TRUE(t.defaultForeground == Rgb(200, 210, 220));
+    EXPECT_TRUE(t.selectionBackground == light->selectionBackground);
+    EXPECT_TRUE(t.cursorColor == light->cursor);
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// plasma alone with a scheme that gives no background: dark, as a session
+// without the desktop takes the dark side.
+TEST_F(ConfigTest, PlasmaWithoutABackgroundTakesTheDarkTheme)
+{
+    ASSERT_EQ(qobject_cast<QGuiApplication*>(QCoreApplication::instance()), nullptr);
+    const auto dark = bundled("afterglow-dark");
+    ASSERT_TRUE(dark && dark->palette[4]);
+    write(QStringLiteral("kdeglobals"), "[Colors:View]\nForegroundNormal=200,210,220\n");
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma"}})"));
+    EXPECT_TRUE(same(store.settings().terminal.basePalette[4], *dark->palette[4]));
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
 TEST_F(ConfigTest, PlasmaThemeAloneTakesTheColorsOfTheSchemesBrightness)
 {
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma"}})");

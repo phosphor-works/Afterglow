@@ -122,6 +122,7 @@ private:
     std::vector<std::string> m_waitingEvents; ///< events before the window granted the channel a window
     std::map<std::uint32_t, PaneLink> m_panes; ///< by pane id
     std::optional<Attach::Input> m_heldInput; ///< input that a full PTY refused
+    bool m_inputDue = false; ///< held input went in pump(): the next handle() reads what follows it
     std::optional<Attach::EventType> m_finish;
     bool m_finishSent = false;
     bool m_outputEnded = false; ///< all went, and the stream's output ended: the window closes

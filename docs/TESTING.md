@@ -489,7 +489,7 @@ The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow 
 
 - `afterglow mux new`, `ls` and `kill`
 - The usage errors of every command, and `detach` without a daemon
-- The refusals of `attach` and `new` without a Wayland display, or with another `QT_QPA_PLATFORM`
+- The refusals of `attach` and `new` without a Wayland display, and of `new` with another `QT_QPA_PLATFORM`
 - The start errors of the daemon, a socket that another daemon holds, and a daemon of another protocol version
 - The largest and smallest values of the settings that a session takes
 
@@ -506,7 +506,7 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.ALargePasteReachesTheProgramOfASessionWhole` | Input larger than a frame goes in parts, in order |
 
 Not every test starts a daemon. A test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.
-This is true for the `Mux.*` tests, the `MuxCommandTest.*` tests and the native tests above (`mux/tests/TestDaemon.h`).
+The `Mux.*` tests and the native tests above do this with `mux/tests/TestDaemon.h`, and the `MuxCommandTest.*` tests in their `SetUp`.
 A native test that shows a session also gives the window the sockets of its daemon. A launch with `--mux-attach` uses the sockets of the environment, so a test of it must set these directories first.
 Thus a test daemon never reaches the mux daemon of the user, and never starts in a systemd user unit.
 The tests get the name of the state socket from `AfterglowProto::muxStateSocketName`, which the daemon uses too (see [sockets](MUX.md#sockets)).

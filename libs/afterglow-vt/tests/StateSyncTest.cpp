@@ -220,6 +220,27 @@ TEST(StateSync, AScreenLargerThanTheBudgetGoesInSeveralFrames)
     EXPECT_EQ(differs(p.source, p.replica), "");
 }
 
+TEST(StateSync, RowsThatAFrameLeftOutGoFirstInTheNext)
+{
+    // The top rows change before every frame and fill its budget: a row
+    // further down that changed once still goes in the next frame or so,
+    // not only once the top rows rest.
+    Pair p(30, 20, 0, 1500);
+    std::string marks;
+    for (int x = 0; x < 25; ++x) marks += "a\xcc\x81\xcc\x82\xcc\x83";
+    ASSERT_TRUE(p.sync());
+    p.source.feed("\x1b[20;1Hbottom");
+    bool reached = false;
+    for (int frame = 0; frame < 6 && !reached; ++frame) {
+        for (int y = 1; y <= 10; ++y) p.source.feed("\x1b[" + std::to_string(y) + ";1H" + std::to_string(frame) + marks);
+        const std::string update = p.writer.update(p.source, p.budget);
+        std::string error;
+        ASSERT_TRUE(p.reader.apply(p.replica, update, &error)) << error;
+        reached = rowText(p.replica, 19).starts_with("bottom");
+    }
+    EXPECT_TRUE(reached);
+}
+
 TEST(StateSync, EachSynchronizedUpdateReachesTheReplica)
 {
     // An update that ends and the next that begins between two frames: the

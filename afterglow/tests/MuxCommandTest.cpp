@@ -332,6 +332,20 @@ TEST_F(MuxCommandTest, CreatesListsAndKillsASessionAndTheDaemonEndsWithIt)
     EXPECT_TRUE(empty.out.empty());
 }
 
+// A SIGCHLD that the command got as ignored (inherited across exec) would make
+// the kernel reap its children: the start of the daemon looked failed.
+TEST_F(MuxCommandTest, ASigchldThatTheCommandGotAsIgnoredDoesNotStopTheStart)
+{
+    const std::string wrapper = m_dir + "/afterglow-ignoring-sigchld";
+    std::ofstream(wrapper) << "#!/bin/sh\ntrap '' CHLD\nexec '" << AFTERGLOW_BINARY << "' \"$@\"\n";
+    ASSERT_EQ(::chmod(wrapper.c_str(), 0700), 0);
+    const Result r = mux({"new", "--detach", "--", "/bin/sh", "-c", "exec sleep 60"}, wrapper);
+    EXPECT_EQ(r.status, 0) << r.err;
+    EXPECT_EQ(r.out, "1\n");
+    EXPECT_EQ(daemons().size(), 1u);
+    EXPECT_EQ(mux({"kill", "--force", "1"}).status, 0);
+}
+
 TEST_F(MuxCommandTest, WithoutADaemonThereAreNoSessions)
 {
     const Result listed = mux({"ls"});

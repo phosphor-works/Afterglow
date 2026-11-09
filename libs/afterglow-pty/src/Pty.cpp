@@ -16,6 +16,7 @@
 #include <sstream>
 #include <system_error>
 #include <unordered_set>
+#include <utility>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -655,8 +656,9 @@ bool Pty::flushPending()
         }
         pending = !m_pending.empty();
         // Half the queue, not one byte: a writer that waits for room sends
-        // its next part into a queue that can take it.
-        if (m_refused && m_accepting.load() && m_pendingBytes <= MaxPendingInput / 2) {
+        // its next part into a queue that can take it. A queue that takes
+        // nothing more (EIO above) says so too: the writer stops waiting.
+        if (m_refused && (!m_accepting.load() || m_pendingBytes <= MaxPendingInput / 2)) {
             m_refused = false;
             room = true;
         }
@@ -838,6 +840,14 @@ void Pty::run()
 
         if (closed) {
             m_accepting.store(false);
+            // A writer that waits for room waits no more: the child side is
+            // gone, while the child may run on for long.
+            bool refused = false;
+            {
+                std::lock_guard lock(m_writeMutex);
+                refused = std::exchange(m_refused, false);
+            }
+            if (refused) m_listener.ptyWritable();
             int status = 0;
             const pid_t child = m_pid.load();
             const pid_t reaped = waitChild(child, &status, WNOHANG);

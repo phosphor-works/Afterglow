@@ -259,7 +259,7 @@ function __afterglow_mux
             __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
         else
             __afterglow_print server\t'Run afterglow-mux in the foreground' new\t'Create a session' \
-                attach\t'Show a session in a window' detach\t'Close the window of a session and keep the session' \
+                attach\t'Show a session in a window' detach\t'Close the pane of a session in its window, and keep the session' \
                 ls\t'List the sessions' kill\t'End a session and its programs'
         end
         return

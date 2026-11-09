@@ -9478,6 +9478,73 @@ TEST_F(NativeWindow, AWindowThatLosesItsSessionLeavesItRunning) {
     }
 }
 
+// A launch with --mux-attach (Application::openLaunch) finds the daemon in
+// its environment: the test points that at its own daemon, never the user's.
+// A second launch of a session that a window of this process shows brings
+// that window to the front, and opens no other.
+TEST_F(NativeWindow, ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "launched")) << daemon.lastError();
+    const Saved runtime("XDG_RUNTIME_DIR", QByteArray::fromStdString(daemon.runtime()));
+    const Saved state("XDG_STATE_HOME", QByteArray::fromStdString(daemon.dir() + "/state"));
+    const auto launch = [&](const QString& name, bool takeover) {
+        return application->openLaunch(QDir::homePath(), {}, {{QStringLiteral("session"), name}, {QStringLiteral("takeover"), takeover}});
+    };
+    const int before = int(TerminalWindow::windows().size());
+    ASSERT_EQ(launch(QStringLiteral("launched"), true), QString());
+    ASSERT_EQ(int(TerminalWindow::windows().size()), before + 1);
+    QPointer<TerminalWindow> shown = TerminalWindow::windows().last();
+    Pane* const sessionPane = shown->focusedPane();
+    ASSERT_NE(sessionPane, nullptr);
+    ASSERT_TRUE(sessionPane->isSessionPane());
+    ASSERT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "launched");
+        return info && info->attached;
+    }, 5000));
+    // Another tab in front: the launch brings the session's pane back.
+    PaneLaunchOptions other;
+    other.command = {QStringLiteral("/bin/cat")};
+    ASSERT_NE(shown->openTab(other, nullptr), nullptr);
+    ASSERT_NE(shown->focusedPane(), sessionPane);
+    EXPECT_EQ(launch(QStringLiteral("launched"), false), QString());
+    EXPECT_EQ(int(TerminalWindow::windows().size()), before + 1);
+    EXPECT_EQ(shown->focusedPane(), sessionPane);
+    // A session that does not run: the launch fails, and says why.
+    EXPECT_TRUE(launch(QStringLiteral("none"), true).contains(QStringLiteral("no session named 'none'")));
+    EXPECT_EQ(int(TerminalWindow::windows().size()), before + 1);
+    delete shown;
+}
+
+// Input larger than a frame of the attach stream goes in parts, all of them
+// in order.
+TEST_F(NativeWindow, ALargePasteReachesTheProgramOfASessionWhole) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "paste")) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("paste"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    const std::string file = daemon.dir() + "/pasted";
+    pane->sendInput("stty -echo; cat > " + file + "\n");
+    // Lines of 100 bytes, as a terminal in canonical mode takes them: 2000 of
+    // them are three parts and more.
+    std::string text;
+    for (int i = 0; i < 2000; ++i) {
+        std::string line = std::to_string(i);
+        line.resize(99, '.');
+        text += line + '\n';
+    }
+    ASSERT_TRUE(pane->sendInput(text));
+    ASSERT_TRUE(waitFor([&] { return MuxTest::readFile(file).size() == text.size(); }, 10000)) << MuxTest::readFile(file).size();
+    EXPECT_TRUE(MuxTest::readFile(file) == text);
+    pane->sendInput("\x04");
+    delete shown;
+}
+
 // With Mux.onClose detach, the session outlives its window.
 TEST_F(NativeWindow, AMuxSessionCanOutliveItsWindow) {
     restartApplication(QStringLiteral("mux.conf"),

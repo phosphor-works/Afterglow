@@ -240,7 +240,7 @@ _afterglow_mux() {
             'server:run afterglow-mux in the foreground'
             'new:create a session'
             'attach:show a session in a window'
-            'detach:close the window of a session and keep the session'
+            'detach:close the pane of a session in its window, and keep the session'
             'ls:list the sessions'
             'kill:end a session and its programs'
         )

@@ -5,7 +5,7 @@
 
 The mux daemon, `afterglow-mux`, keeps terminal sessions running while no window shows them.
 A session is a set of panes with running programs. A session that `afterglow mux new` creates has one pane.
-The `afterglow mux` commands create, list and end sessions. They also show a session in a window, and close it again.
+The `afterglow mux` commands create, list and end sessions. They also show a session in a window, and close its pane again.
 
 The mux is opt-in. A normal launch of Afterglow does not use it.
 A mux session and a normal `afterglow` launch can run at the same time.
@@ -225,7 +225,9 @@ When the daemon exits, it removes its sockets and its lock files.
 For each window that shows a session, the daemon makes one more socket, `attach-` and 16 hexadecimal digits, then `.sock`.
 It is in the directory of the first socket that the daemon still listens on.
 Only the process that asked for it can connect, and the daemon removes it when that process connects, or after 5 seconds.
-A daemon that starts removes the attach sockets that a daemon before it left in `$XDG_RUNTIME_DIR/afterglow-mux`. It leaves the state directory as it is, because other computers can share it.
+A daemon that starts removes the attach sockets that a daemon before it left in `$XDG_RUNTIME_DIR/afterglow-mux`.
+It leaves the state directory as it is, because other computers can share it.
+Thus an attach socket that a killed daemon left there stays until you remove it.
 
 ## Environment
 
@@ -266,8 +268,10 @@ An `afterglow` that starts from a session pane does not give `AFTERGLOW_SESSION`
 
 `afterglow mux new` also sends the terminal settings of your configuration, such as `Terminal.scrollback` and the theme colors.
 The session keeps these values. A later change of the configuration does not change a running session.
-`afterglow mux new` does not read the color scheme of the desktop.
+`afterglow mux new` reads no colors from the palette of the desktop.
 When `Colors.theme` names a dark and a light theme, the session gets the dark theme.
+With a `plasma` theme, the session gets only the colors that `kdeglobals` sets, over the theme.
+When `kdeglobals` sets no background, `plasma` alone takes `afterglow-dark`.
 
 ### Control in a session pane
 
@@ -315,6 +319,6 @@ The window that shows a session does not change these answers yet.
 | Environment, arguments and directory of a session | UTF-8 text | `afterglow mux new` changes each byte that is not UTF-8 to U+FFFD |
 | Wait for a window to connect to its attach socket | 5 seconds | The daemon removes the socket, and `afterglow mux attach` stops with exit status 1 |
 | Input of a window that the program does not read | 32 MiB in the queue of the PTY, 4 MiB in the daemon, then 32 MiB in the window | The window refuses more input and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
-| Frames to a window | About 2 MiB of state in each frame, at most the 4 MiB window of the channel | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
+| Frames to a window | About 2 MiB of state in each frame, and at most 4 MiB, the largest frame of the stream | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
 
 The daemon sets no limit on the number of sessions or connections. Each session and each connection uses open files.

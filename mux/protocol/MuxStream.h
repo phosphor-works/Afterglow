@@ -14,7 +14,9 @@
 // socket that the attach call names. The daemon writes the session's events
 // on channel 0 and the state of each pane on a channel of its own
 // (AfterglowVt::StateCodec), which PaneOpened names. The window writes its
-// input on channel 0. Integers are LEB128 varints in their shortest form.
+// input on channel 0, and its Kill on ActionChannel. The ids of each
+// direction are apart, so a pane's state channel and the action channel can
+// both be 1. Integers are LEB128 varints in their shortest form.
 //
 // A pane's channel closes after its last frame, and then PaneClosed follows
 // on channel 0. The window learns that a pane's program exited once it has

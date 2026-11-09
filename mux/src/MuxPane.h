@@ -62,7 +62,7 @@ public:
     enum class Input : std::uint8_t {
         Written,
         Full, ///< the PTY's queue is full: the wake says when it has room again
-        Gone, ///< the program exited
+        Gone, ///< the program exited, or its terminal takes no more input
     };
     /// Input of an attached window for the program.
     Input input(std::string_view bytes);

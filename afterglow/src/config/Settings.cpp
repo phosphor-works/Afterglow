@@ -934,10 +934,9 @@ bool hasReadableType(const KeyDef& def, const QJsonValue& raw)
 /// JSON that its text holds. So @p defaults gets the default of each such
 /// key, for read() to lay over the file: each "Using the default" is true.
 /// Scripts.enabled and Control.enabled with a value that is not a boolean
-/// stay off, and their text says so. While @p neverRead, read() keeps the
-/// two off too, unless a boolean override sets them.
+/// stay off, and their text says so.
 QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObject& file, const QJsonObject& overrides,
-                            QJsonObject* defaults, bool neverRead)
+                            QJsonObject* defaults)
 {
     QStringList out;
     QSet<QString> groups;
@@ -1411,7 +1410,7 @@ Settings SettingsStore::read()
     const PhosphorConfig::Store& st = *m_store;
     Settings s;
     QJsonObject defaults;
-    QStringList problems = malformedValues(st.schema(), m_backend->jsonRootSnapshot(), m_overrides, &defaults, m_neverRead);
+    QStringList problems = malformedValues(st.schema(), m_backend->jsonRootSnapshot(), m_overrides, &defaults);
     // The defaults of keys that hold another JSON type, over the overrides,
     // which the backend lays over the file for every read below.
     QJsonObject overlay = m_overrides;

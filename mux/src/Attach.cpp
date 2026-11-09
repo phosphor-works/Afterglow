@@ -245,7 +245,7 @@ void Attachment::readInput(Session& session)
             pane->clear();
             break;
         case Attach::InputType::Kill:
-            break;
+            break; // refused above: a Kill comes on the action channel only
         }
     }
 }
@@ -260,6 +260,7 @@ bool Attachment::handle(short revents, Session* session)
         if (revents & (POLLIN | POLLHUP | POLLERR)) m_stream->readable();
         if (revents & POLLOUT) m_stream->writable();
     }
+    m_inputDue = false;
     if (!m_finish && session && m_stream->ready()) readInput(*session);
     if (m_failed || !m_stream->open()) return false;
     pump(session);
@@ -347,7 +348,10 @@ void Attachment::pump(Session* session)
     // The events that waited for the window to grant the channel.
     flushEvents();
     if (session && !m_finish) {
-        sendHeldInput(*session);
+        // Input that went now leaves the frames behind it in the channel's
+        // reader, which only readInput() reads: the next pass does, at once.
+        const bool held = m_heldInput.has_value();
+        if (sendHeldInput(*session) && held) m_inputDue = true;
         for (const auto& pane : session->panes()) {
             PaneLink* l = link(*pane);
             if (!l) return;
@@ -392,6 +396,7 @@ void Attachment::pump(Session* session)
 bool Attachment::busy() const
 {
     if (!m_stream || m_failed) return false;
+    if (m_inputDue) return true;
     // A finished attachment sends no more of its live panes: only the last
     // frames of closed ones, then its last event, which can go at once when
     // no pane closes (a finish from a call: the next pass sends it).

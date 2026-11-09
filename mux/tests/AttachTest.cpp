@@ -453,7 +453,7 @@ TEST(MuxAttach, TheAttachCallAnswersWithItsKeys)
     EXPECT_EQ((*result)["name"].toString(), "keep");
 }
 
-TEST(MuxAttach, InputThatAFullPtyRefusesWaitsAndAKillStillGoes)
+TEST(MuxAttach, InputThatAFullPtyRefusesWaitsAndArrivesWhole)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
@@ -515,7 +515,8 @@ TEST(MuxAttach, AKillGoesPastInputThatWaitsForAFullPty)
     // reads its control channel no more.
     const std::string part(60000, 'x');
     std::size_t sent = 0;
-    for (int stuck = 0; stuck < 100;) {
+    // Bounded: a daemon that read on past held input would take it all.
+    for (int stuck = 0; stuck < 100 && sent < std::size_t(64) << 20;) {
         if (w.type(part)) {
             sent += part.size();
             stuck = 0;

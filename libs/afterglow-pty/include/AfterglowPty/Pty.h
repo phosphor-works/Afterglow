@@ -99,8 +99,9 @@ public:
     /// elsewhere, or still ran when the terminal failed.
     virtual void ptyClosed(int status) = 0;
     /// Pty::write() refused bytes because its queue was full, and the queue
-    /// has room again: at most half of Pty::MaxPendingInput waits. On the
-    /// I/O thread, without a lock of the Pty.
+    /// has room again (at most half of Pty::MaxPendingInput waits), or
+    /// write() refuses for good now (Pty::accepting()). On the I/O thread,
+    /// without a lock of the Pty.
     virtual void ptyWritable() {}
 };
 

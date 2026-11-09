@@ -184,15 +184,22 @@ void MuxClient::release(std::uint32_t id, bool kill)
         Attach::Input input;
         input.type = Attach::InputType::Kill;
         const std::string frame = Attach::encode(input);
-        while (m_actions->tryWrite(frame) == WriteResult::WouldBlock && left() > 0 && m_stream->open()) {
+        WriteResult result = m_actions->tryWrite(frame);
+        while (result == WriteResult::WouldBlock && left() > 0 && m_stream->open()) {
             // Only before the daemon granted the channel, at the start.
             if (!m_stream->pump(left())) break;
+            result = m_actions->tryWrite(frame);
+        }
+        // Mux.onClose said kill: a session that keeps running is worth a word.
+        if (result != WriteResult::Written) {
+            qCWarning(lcMux) << "cannot end session" << m_session << "as Mux.onClose says: the daemon took no kill"
+                             << QString::fromStdString(m_stream->error());
         }
     }
     // The input that waits goes before the window lets the session go, for a
     // short time: the GUI thread waits here. What a slow program or daemon
     // has no room for by then is lost, as the input of a closed window is.
-    sendWaitingInput();
+    if (showing()) sendWaitingInput();
     while (showing() && !m_waitingInput.empty() && left() > 0 && m_stream->open()) {
         if (!m_stream->pump(left())) break;
         sendWaitingInput();

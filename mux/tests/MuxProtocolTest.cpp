@@ -333,7 +333,7 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
     for (const std::string_view frame : bad) EXPECT_FALSE(Attach::decodeEvent(frame)) << testing::PrintToString(std::string(frame));
 }
 
-TEST(MuxProtocol, AttachInputRoundTripsAndKeepsOversizedSizes)
+TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)
 {
     Attach::Input bytes;
     bytes.pane = 2;
