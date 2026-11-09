@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <optional>
 #include <set>
 
@@ -180,9 +179,9 @@ std::uint64_t fnv(std::string_view bytes)
 // the terminal bounds them, and an OSC 8 link.
 constexpr std::size_t MaxText = 64 * 1024;
 constexpr std::size_t MaxLinkText = StyleTable::MaxLinkBytes;
-constexpr std::size_t MaxGraphemeExtra = 64;
-constexpr std::uint64_t MaxCols = 4096;
-constexpr std::uint64_t MaxRows = 1048576;
+
+using StyleDefinitions = std::unordered_map<std::uint32_t, Style>;
+using LinkDefinitions = std::unordered_map<std::uint32_t, std::pair<std::string, std::string>>;
 
 /// Encodes @p row and adds the style ids that its cells use to @p styles.
 void encodeRow(std::string& out, const Row& row, std::set<std::uint32_t>& styles)
@@ -237,6 +236,79 @@ std::string encodeStyle(const Style& s)
     return out;
 }
 
+/// The style and link definitions that a frame carries for one screen,
+/// ahead of the rows that use them.
+class Definitions
+{
+public:
+    /// @p styles and @p links are the definitions that the replica has.
+    Definitions(const StyleTable& table, StyleDefinitions& styles, LinkDefinitions& links)
+        : m_table(table)
+        , m_known(styles)
+        , m_knownLinks(links)
+    {
+    }
+
+    /// Adds style @p id and its link, when the replica lacks them or has
+    /// them with another meaning.
+    void define(std::uint32_t id)
+    {
+        const Style& style = m_table.get(id);
+        if (style.link) {
+            std::pair<std::string, std::string> link{std::string(m_table.linkUri(style.link)),
+                                                     std::string(m_table.linkId(style.link))};
+            const auto known = m_knownLinks.find(style.link);
+            if (known == m_knownLinks.end() || known->second != link) {
+                Out o(m_links);
+                o.varint(style.link);
+                o.string(link.first);
+                o.string(link.second);
+                ++m_linkCount;
+                m_knownLinks[style.link] = std::move(link);
+            }
+        }
+        const auto known = m_known.find(id);
+        if (known == m_known.end() || !(known->second == style)) {
+            Out(m_styles).varint(id);
+            m_styles += encodeStyle(style);
+            ++m_styleCount;
+            m_known[id] = style;
+        }
+    }
+
+    /// The bytes of the definitions that wait for emit().
+    std::size_t bytes() const { return m_styles.size() + m_links.size(); }
+
+    /// The sections of screen @p which for the definitions added since the
+    /// last call: the links first, which the styles name.
+    void emit(std::string& out, int which)
+    {
+        if (m_linkCount) {
+            std::string payload(1, char(which));
+            Out(payload).varint(m_linkCount);
+            section(out, LinksTag, payload + m_links);
+            m_links.clear();
+            m_linkCount = 0;
+        }
+        if (m_styleCount) {
+            std::string payload(1, char(which));
+            Out(payload).varint(m_styleCount);
+            section(out, StylesTag, payload + m_styles);
+            m_styles.clear();
+            m_styleCount = 0;
+        }
+    }
+
+private:
+    const StyleTable& m_table;
+    StyleDefinitions& m_known;
+    LinkDefinitions& m_knownLinks;
+    std::string m_styles;
+    std::string m_links;
+    std::size_t m_styleCount = 0;
+    std::size_t m_linkCount = 0;
+};
+
 std::optional<Color> colorOf(std::uint32_t bits)
 {
     const std::uint32_t kind = bits >> 24;
@@ -264,6 +336,9 @@ std::optional<Style> decodeStyle(In& in)
 }
 
 // The modes, in a fixed order. A new mode goes at the end, with a new codec.
+// Modes is 34 flags and 4 bytes: a new field changes its size, and must be
+// added here or to encodeModes().
+static_assert(sizeof(Modes) == 38, "a field of Modes that the codec does not carry");
 std::array<bool*, 34> modeFlags(Modes& m)
 {
     return {&m.insert, &m.newline, &m.cursorKeysApp, &m.keypadApp, &m.reverseVideo, &m.originMode, &m.autowrap,
@@ -380,8 +455,10 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes)
     }
     // The visible rows of both screens first, then their history in the
     // bytes that are left.
-    bool reset = writeScreen(out, t, 0, m_screens[0], maxBytes);
-    reset = writeScreen(out, t, 1, m_screens[1], maxBytes) || reset;
+    bool reset = writeRows(out, t, 0, m_screens[0]);
+    reset = writeRows(out, t, 1, m_screens[1]) || reset;
+    writeHistory(out, t, 0, m_screens[0], maxBytes);
+    writeHistory(out, t, 1, m_screens[1], maxBytes);
     // The cursors go after the rows, which the reader checks them against.
     // A screen that started over lost its cursor on the replica.
     if (first || reset || payload != m_cursor) {
@@ -391,12 +468,11 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes)
     return out.size() == 1 ? std::string() : out;
 }
 
-bool StateWriter::writeScreen(std::string& out, const Terminal& t, int which, ScreenState& st, std::size_t maxBytes)
+bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, ScreenState& st)
 {
     bool reset = false;
     const Screen& s = which == 0 ? *t.m_primary : *t.m_alternate;
-    const std::uint64_t oldest = s.rowsDropped();
-    const std::uint64_t total = oldest + s.historySize();
+    const std::uint64_t total = s.rowsDropped() + s.historySize();
     if (!st.synced || st.cols != s.cols() || st.rows != s.rows() || st.epoch != s.layoutEpoch() || total < st.to) {
         // A new size or layout rebuilt the rows: the replica starts over,
         // with the history from the newest row back.
@@ -420,84 +496,35 @@ bool StateWriter::writeScreen(std::string& out, const Terminal& t, int which, Sc
     // The rows that changed, with the styles and links that they use.
     std::vector<std::pair<int, std::string>> changed;
     std::set<std::uint32_t> used;
-    const auto collect = [&] {
-        changed.clear();
-        used.clear();
-        for (int y = 0; y < s.rows(); ++y) {
-            std::string row;
-            std::set<std::uint32_t> rowStyles;
-            encodeRow(row, s.row(y), rowStyles);
-            // What the row means, not only its bytes: between two frames a
-            // style id can be freed and taken again by another style, and a
-            // row rewritten with the same characters and that id.
-            std::string meaning = row;
-            for (const std::uint32_t id : rowStyles) {
-                const Style& style = s.styles().get(id);
-                meaning += encodeStyle(style);
-                if (style.link) {
-                    Out o(meaning);
-                    o.string(s.styles().linkUri(style.link));
-                    o.string(s.styles().linkId(style.link));
-                }
+    for (int y = 0; y < s.rows(); ++y) {
+        std::string row;
+        std::set<std::uint32_t> rowStyles;
+        encodeRow(row, s.row(y), rowStyles);
+        // What the row means, not only its bytes: between two frames a
+        // style id can be freed and taken again by another style, and a
+        // row rewritten with the same characters and that id.
+        std::string meaning = row;
+        for (const std::uint32_t id : rowStyles) {
+            const Style& style = s.styles().get(id);
+            meaning += encodeStyle(style);
+            if (style.link) {
+                Out o(meaning);
+                o.string(s.styles().linkUri(style.link));
+                o.string(s.styles().linkId(style.link));
             }
-            const std::uint64_t h = fnv(meaning) | 1; // never 0, the mark of a missing row
-            if (st.rowHashes[std::size_t(y)] == h) continue;
-            st.rowHashes[std::size_t(y)] = h;
-            used.insert(rowStyles.begin(), rowStyles.end());
-            changed.emplace_back(y, std::move(row));
         }
-    };
-    collect();
+        const std::uint64_t h = fnv(meaning) | 1; // never 0, the mark of a missing row
+        if (st.rowHashes[std::size_t(y)] == h) continue;
+        st.rowHashes[std::size_t(y)] = h;
+        used.insert(rowStyles.begin(), rowStyles.end());
+        changed.emplace_back(y, std::move(row));
+    }
 
-    std::string styles;
-    std::string links;
-    std::size_t styleCount = 0;
-    std::size_t linkCount = 0;
     // The definitions that the replica lacks, or has with another meaning:
     // a row that uses a changed one has a new hash, so it goes again too.
-    const auto define = [&](std::uint32_t id) {
-        const Style& style = s.styles().get(id);
-        if (style.link) {
-            std::pair<std::string, std::string> link{std::string(s.styles().linkUri(style.link)),
-                                                     std::string(s.styles().linkId(style.link))};
-            const auto known = st.links.find(style.link);
-            if (known == st.links.end() || known->second != link) {
-                Out o(links);
-                o.varint(style.link);
-                o.string(link.first);
-                o.string(link.second);
-                ++linkCount;
-                st.links[style.link] = std::move(link);
-            }
-        }
-        const auto known = st.styles.find(id);
-        if (known == st.styles.end() || !(known->second == style)) {
-            Out o(styles);
-            o.varint(id);
-            styles += encodeStyle(style);
-            ++styleCount;
-            st.styles[id] = style;
-        }
-    };
-    for (const std::uint32_t id : used) define(id);
-
-    const auto emitDefinitions = [&] {
-        if (linkCount) {
-            std::string payload(1, char(which));
-            Out(payload).varint(linkCount);
-            section(out, LinksTag, payload + links);
-            links.clear();
-            linkCount = 0;
-        }
-        if (styleCount) {
-            std::string payload(1, char(which));
-            Out(payload).varint(styleCount);
-            section(out, StylesTag, payload + styles);
-            styles.clear();
-            styleCount = 0;
-        }
-    };
-    emitDefinitions();
+    Definitions definitions(s.styles(), st.styles, st.links);
+    for (const std::uint32_t id : used) definitions.define(id);
+    definitions.emit(out, which);
     if (!changed.empty()) {
         std::string payload(1, char(which));
         Out o(payload);
@@ -508,9 +535,17 @@ bool StateWriter::writeScreen(std::string& out, const Terminal& t, int which, Sc
         }
         section(out, RowsTag, payload);
     }
+    return reset;
+}
 
-    // History: the rows that scrolled in since the last frame, oldest first,
-    // then older rows that the replica never had, newest first.
+void StateWriter::writeHistory(std::string& out, const Terminal& t, int which, ScreenState& st, std::size_t maxBytes)
+{
+    const Screen& s = which == 0 ? *t.m_primary : *t.m_alternate;
+    const std::uint64_t oldest = s.rowsDropped();
+    const std::uint64_t total = oldest + s.historySize();
+
+    // The rows that scrolled in since the last frame, oldest first, then
+    // older rows that the replica never had, newest first.
     const bool gap = st.to < oldest;
     if (gap) {
         // Rows scrolled in and out again before they could be sent: the
@@ -518,32 +553,37 @@ bool StateWriter::writeScreen(std::string& out, const Terminal& t, int which, Sc
         st.from = st.to = oldest;
     }
     if (st.from < oldest) st.from = oldest;
+    Definitions definitions(s.styles(), st.styles, st.links);
     std::string appends;
     std::size_t appendCount = 0;
-    std::set<std::uint32_t> historyStyles;
+    std::string prepends;
+    std::size_t prependCount = 0;
     std::string rowBytes;
-    const auto fits = [&](std::size_t bytes) { return out.size() + appends.size() + bytes + 64 <= maxBytes; };
+    // A row goes when the frame, with the definitions that its rows need,
+    // stays within about maxBytes. The first row always goes, so the
+    // history advances even past a row larger than maxBytes.
+    const auto fits = [&](std::size_t bytes) {
+        return appendCount + prependCount == 0
+            || out.size() + definitions.bytes() + appends.size() + prepends.size() + bytes + 64 <= maxBytes;
+    };
     while (st.to < total) {
         rowBytes.clear();
         std::set<std::uint32_t> rowStyles;
         encodeRow(rowBytes, s.absoluteRow(std::size_t(st.to - oldest)), rowStyles);
-        // At least one row in each frame, so the history always advances.
-        if (appendCount > 0 && !fits(rowBytes.size() + 10)) break;
-        for (const std::uint32_t id : rowStyles) define(id);
+        if (!fits(rowBytes.size() + 10)) break;
+        for (const std::uint32_t id : rowStyles) definitions.define(id);
         Out o(appends);
         o.varint(st.to);
         appends += rowBytes;
         ++appendCount;
         ++st.to;
     }
-    std::string prepends;
-    std::size_t prependCount = 0;
     while (st.to == total && st.from > oldest) {
         rowBytes.clear();
         std::set<std::uint32_t> rowStyles;
         encodeRow(rowBytes, s.absoluteRow(std::size_t(st.from - 1 - oldest)), rowStyles);
-        if (!fits(prepends.size() + rowBytes.size() + 10)) break;
-        for (const std::uint32_t id : rowStyles) define(id);
+        if (!fits(rowBytes.size() + 10)) break;
+        for (const std::uint32_t id : rowStyles) definitions.define(id);
         Out o(prepends);
         o.varint(st.from - 1);
         prepends += rowBytes;
@@ -552,7 +592,7 @@ bool StateWriter::writeScreen(std::string& out, const Terminal& t, int which, Sc
     }
     // History rows take their definitions when the replica installs them,
     // so a later change of an id leaves them as they were.
-    emitDefinitions();
+    definitions.emit(out, which);
     if (appendCount || gap || oldest != st.oldestSent) {
         std::string payload(1, char(which));
         Out o(payload);
@@ -569,7 +609,6 @@ bool StateWriter::writeScreen(std::string& out, const Terminal& t, int which, Sc
         section(out, PrependTag, payload);
     }
     st.historyPending = st.to < total || st.from > oldest;
-    return reset;
 }
 
 // ---------------------------------------------------------------- reader ---
@@ -597,8 +636,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         row.wrapped = flags & RowWrapped;
         row.promptStart = flags & RowPromptStart;
         row.lineSize = LineSize((flags >> RowLineSizeShift) & 3);
-        // A history row keeps the cells that it had, up to the widest screen.
-        const std::uint64_t count = r.bounded(history ? MaxCols : std::uint64_t(s.cols()));
+        // A history row can be shorter: it drops its trailing blank cells.
+        const std::uint64_t count = r.bounded(std::uint64_t(s.cols()));
         if (!r.ok() || (!history && count != std::uint64_t(s.cols()))) return r.fail();
         row.cells.resize(std::size_t(count));
         bool plain = true;
@@ -635,13 +674,17 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             }
             c.setStyleId(ours);
         }
+        // A cell keeps Screen::MaxGraphemeExtra codepoints, and the text of a
+        // sizing block up to that many for each column of its row. The text
+        // stays whole on one cell when a narrower width flattens the block.
+        constexpr std::uint64_t MaxExtra = std::uint64_t(Screen::MaxColumns) * Screen::MaxGraphemeExtra;
         const std::uint64_t graphemes = r.bounded(count);
         for (std::uint64_t i = 0; i < graphemes && r.ok(); ++i) {
             const std::uint64_t x = r.bounded(count ? count - 1 : 0);
-            const std::uint64_t n = r.bounded(MaxGraphemeExtra);
+            const std::uint64_t n = r.bounded(MaxExtra);
             if (!r.ok() || count == 0) return r.fail();
             std::u32string extra;
-            for (std::uint64_t k = 0; k < n; ++k) {
+            for (std::uint64_t k = 0; k < n && r.ok(); ++k) {
                 const std::uint64_t cp = r.bounded(0x10FFFF);
                 extra.push_back(char32_t(cp));
             }
@@ -739,10 +782,10 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         }
         case ResetTag: {
             Screen* s = screenOf(p.byte());
-            const std::uint64_t cols = p.bounded(MaxCols);
-            const std::uint64_t rows = p.bounded(MaxRows);
+            const std::uint64_t cols = p.bounded(std::uint64_t(Screen::MaxColumns));
+            const std::uint64_t rows = p.bounded(Screen::MaxCells);
             const std::uint64_t next = p.varint();
-            if (!s || !p.ok() || !p.done() || cols < 2 || rows < 1 || cols * rows > MaxRows) {
+            if (!s || !p.ok() || !p.done() || cols < 2 || rows < 1 || cols * rows > Screen::MaxCells) {
                 return fail("the state frame has a bad screen reset");
             }
             ScreenState& st = m_screens[s == t.m_primary.get() ? 0 : 1];
@@ -778,7 +821,9 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 } else {
                     const std::string_view uri = p.string(MaxLinkText);
                     const std::string_view linkId = p.string(MaxLinkText);
-                    if (!p.ok() || id == 0) return fail("the state frame has a bad link");
+                    // An OSC 8 link always has a URI. The link cache also
+                    // needs one: a freed link of the replica has an empty URI.
+                    if (!p.ok() || id == 0 || uri.empty()) return fail("the state frame has a bad link");
                     st.links[id] = {std::string(uri), std::string(linkId)};
                 }
             }
@@ -812,6 +857,10 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             ScreenState& st = m_screens[which];
             const std::uint64_t oldest = p.varint();
             const std::uint64_t count = p.bounded(payload.size());
+            // A view scrolled back into the history stays on its rows, as it
+            // does when a terminal scrolls rows into its own history.
+            const std::size_t viewport = s->m_viewportOffset;
+            std::size_t added = 0;
             for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
                 const std::uint64_t id = p.varint();
                 Row row;
@@ -830,6 +879,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                     discard(*s, row);
                 } else {
                     s->m_rows.insert(s->m_rows.begin() + std::ptrdiff_t(s->historySize()), std::move(row));
+                    ++added;
                 }
                 st.next = id + 1;
             }
@@ -852,7 +902,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             }
             // The stable ids of the replica are the writer's.
             s->m_rowsDropped = st.next - s->historySize();
-            s->m_viewportOffset = std::min(s->m_viewportOffset, s->historySize());
+            s->m_viewportOffset = viewport ? std::min(viewport + added, s->historySize()) : 0;
             break;
         }
         case PrependTag: {

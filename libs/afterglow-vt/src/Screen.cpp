@@ -10,8 +10,6 @@
 namespace AfterglowVt {
 
 namespace {
-constexpr std::size_t MaxGraphemeExtra = 32;
-
 bool isBlank(const Cell& c)
 {
     return c.isEmpty() && c.styleId() == StyleTable::DefaultId && !c.hasGrapheme() && c.width() == 1;
@@ -37,8 +35,8 @@ bool isDroppableBlank(const Cell& c)
 } // namespace
 
 Screen::Screen(int cols, int rows, std::size_t maxScrollback)
-    : m_cols(std::clamp(cols, 2, 4096))
-    , m_rowCount(std::clamp(rows, 1, 1048576 / m_cols))
+    : m_cols(std::clamp(cols, 2, MaxColumns))
+    , m_rowCount(std::clamp(rows, 1, int(MaxCells) / m_cols))
     , m_maxScrollback(maxScrollback)
 {
     for (int y = 0; y < m_rowCount; ++y) {
@@ -746,8 +744,8 @@ void Screen::scrollViewport(long delta) noexcept
 void Screen::resize(int cols, int rows, bool reflow, std::optional<std::size_t> promptStart,
                     std::vector<std::size_t>* trackedRows, std::vector<int>* trackedColumns)
 {
-    cols = std::clamp(cols, 2, 4096);
-    rows = std::clamp(rows, 1, 1048576 / cols);
+    cols = std::clamp(cols, 2, MaxColumns);
+    rows = std::clamp(rows, 1, int(MaxCells) / cols);
     if (trackedColumns && (!trackedRows || trackedColumns->size() != trackedRows->size())) trackedColumns = nullptr;
     if (cols == m_cols && rows == m_rowCount) {
         return;

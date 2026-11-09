@@ -40,8 +40,9 @@ class AFTERGLOWVT_EXPORT StateWriter
 public:
     /// The next frame for @p terminal: what changed since the last frame,
     /// everything for the first one. Empty when nothing changed. History
-    /// rows past about @p maxBytes wait for the next frames; the rest of a
-    /// frame (the visible rows and the small sections) always goes.
+    /// rows past about @p maxBytes wait for the next frames, though each
+    /// frame carries at least one; the rest of a frame (the visible rows and
+    /// the small sections) always goes.
     std::string update(const Terminal& terminal, std::size_t maxBytes);
     /// The next frame carries everything again, as the first one does: for
     /// a new replica.
@@ -68,8 +69,12 @@ private:
         bool historyPending = false;
     };
 
-    /// True when the screen started over (a reset section).
-    bool writeScreen(std::string& out, const Terminal& terminal, int which, ScreenState& state, std::size_t maxBytes);
+    /// The visible rows of screen @p which that changed. True when the
+    /// screen started over (a reset section).
+    bool writeRows(std::string& out, const Terminal& terminal, int which, ScreenState& state);
+    /// The history rows that the replica lacks, while @p out stays within
+    /// about @p maxBytes.
+    void writeHistory(std::string& out, const Terminal& terminal, int which, ScreenState& state, std::size_t maxBytes);
 
     ScreenState m_screens[2];
     std::string m_modes;

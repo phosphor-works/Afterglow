@@ -59,6 +59,16 @@ struct Region
 class AFTERGLOWVT_EXPORT Screen
 {
 public:
+    /// The largest grid: a size is clamped to at most MaxColumns columns
+    /// and MaxCells cells.
+    static constexpr int MaxColumns = 4096;
+    static constexpr std::size_t MaxCells = 1048576;
+    /// Extra codepoints that a cell's grapheme cluster keeps. The text of a
+    /// sizing block (OSC 66) can be longer: up to this many for each column
+    /// of the row where it was written. A resize that flattens the block
+    /// keeps that text on one cell.
+    static constexpr std::size_t MaxGraphemeExtra = 32;
+
     /// @param maxScrollback rows of history to keep; 0 disables history (alternate screen).
     Screen(int cols, int rows, std::size_t maxScrollback);
     ~Screen();

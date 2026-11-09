@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <random>
 #include <string>
@@ -319,9 +320,120 @@ TEST(StateSync, ReaderRefusesBrokenFrames)
         Terminal replica(20, 4, host, withScrollback(10));
         StateReader reader;
         reader.apply(replica, bad, &error);
-        // A fresh frame still works after a refused one.
+        // The same reader takes the first frame of a writer that starts
+        // over, which gives the replica everything again.
         StateWriter writer;
-        StateReader second;
-        EXPECT_TRUE(second.apply(replica, writer.update(p.source, p.budget), &error)) << error;
+        EXPECT_TRUE(reader.apply(replica, writer.update(p.source, p.budget), &error)) << error;
+        EXPECT_EQ(differs(p.source, replica), "");
     }
+}
+
+TEST(StateSync, ReaderRefusesALinkWithoutAUri)
+{
+    RecordingHost host;
+    Terminal replica(20, 4, host);
+    StateReader reader;
+    // The version, then a links section of the primary screen: one link,
+    // number 1, with an empty URI and an empty id.
+    const std::string frame("\x01\x06\x05\x00\x01\x01\x00\x00", 8);
+    std::string error;
+    EXPECT_FALSE(reader.apply(replica, frame, &error));
+    EXPECT_NE(error.find("link"), std::string::npos) << error;
+}
+
+TEST(StateSync, ASizedBlockKeepsItsLongText)
+{
+    // OSC 66 with w= puts all of its text in one block: more codepoints than
+    // one cell keeps.
+    Pair p(40, 4, 20, 1024);
+    p.source.feed("\x1b]66;w=2;" + std::string(300, 'x') + "\x1b\\\r\n");
+    const Screen& source = p.source.screen();
+    ASSERT_GT(source.graphemeExtra(source.row(0), 0).size(), 64u);
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    // In the history, and for a replica that starts late.
+    p.source.feed("\n\n\n\n\n");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    p.writer.reset();
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+}
+
+TEST(StateSync, AFlattenedBlockKeepsItsTextOnANarrowerScreen)
+{
+    // A width change turns a block into one plain cell with all of its text:
+    // more than the new width gives a block.
+    Pair p(200, 4, 20);
+    p.source.feed("\x1b]66;w=2;" + std::string(3000, 'x') + "\x1b\\");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    p.source.resize(40, 4, 0, 0);
+    const Screen& source = p.source.screen();
+    ASSERT_GT(source.graphemeExtra(source.row(0), 0).size(), 40u * Screen::MaxGraphemeExtra);
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+}
+
+TEST(StateSync, AHistoryRowLargerThanTheBudgetStillGoes)
+{
+    // A late replica gets the history newest first. Each of these rows
+    // takes more bytes than a frame may have, so one row goes in each frame.
+    Pair p(200, 4, 30, 512);
+    for (int i = 0; i < 20; ++i) {
+        std::string line;
+        for (int x = 0; x < 200; ++x) line += "\x1b[3" + std::to_string(x % 8) + "m" + char('a' + x % 26);
+        p.source.feed(line + "\x1b[0m\r\n");
+    }
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+}
+
+TEST(StateSync, TheDefinitionsOfHistoryRowsCountInTheBudget)
+{
+    // Each history row has a link of its own, with a long URI.
+    Pair p(30, 4, 100, 4096);
+    for (int i = 0; i < 40; ++i) {
+        p.source.feed("\x1b]8;;https://example.com/" + std::string(1000, char('a' + i % 26)) + std::to_string(i)
+                      + "\x1b\\link\x1b]8;;\x1b\\\r\n");
+    }
+    // The first frame has the visible rows, which always go. After it, a
+    // frame passes the budget by one row and its link at most.
+    std::size_t largest = 0;
+    bool first = true;
+    for (int guard = 0; guard < 1000; ++guard) {
+        const std::string frame = p.writer.update(p.source, p.budget);
+        if (frame.empty() && !p.writer.pending()) break;
+        if (!first) largest = std::max(largest, frame.size());
+        first = false;
+        std::string error;
+        ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
+    }
+    EXPECT_FALSE(p.writer.pending());
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    EXPECT_LE(largest, p.budget + 1100);
+}
+
+TEST(StateSync, AScrolledBackViewStaysOnItsRows)
+{
+    Pair p(30, 5, 200);
+    for (int i = 0; i < 50; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
+    ASSERT_TRUE(p.sync());
+    p.source.scrollViewport(10);
+    p.replica.scrollViewport(10);
+    const Screen& replica = p.replica.screen();
+    const std::string top = rowText(replica, replica.absoluteRow(replica.viewportTop()));
+    for (int i = 0; i < 3; ++i) p.source.feed("more " + std::to_string(i) + "\r\n");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(replica.viewportOffset(), p.source.screen().viewportOffset());
+    EXPECT_EQ(rowText(replica, replica.absoluteRow(replica.viewportTop())), top);
+    // More rows than the history holds: the view ends on the oldest row, as
+    // it does in the terminal that parsed them.
+    for (int i = 0; i < 300; ++i) p.source.feed("flood\r\n");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(replica.viewportOffset(), p.source.screen().viewportOffset());
+    EXPECT_EQ(differs(p.source, p.replica), "");
 }

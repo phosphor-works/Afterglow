@@ -102,7 +102,7 @@ wrong, and points to the skills that hold the procedures.
 | Task | Command |
 | --- | --- |
 | Build | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build -j6` (zero warnings is the bar) |
-| Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j6` (about 1,700, all pass) |
+| Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j6` (about 1,800, all pass) |
 | Native window tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 .claude/skills/ag-verify-live/headless_native.py` |
 | Shader preview | `build/tools/render/afterglow_renderpng --shader PACK - out.png` |
 | Configuration reference | `python3 tools/generate-reference.py build/afterglow/afterglow` |
