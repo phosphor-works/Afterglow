@@ -11,6 +11,7 @@
 #include <QInputMethod>
 
 #include <algorithm>
+#include <cmath>
 
 namespace Afterglow {
 
@@ -24,10 +25,11 @@ Pane* TerminalWindow::pointerTarget(Pane* pane, const QPointF& pos) const
     Pane* target = inputPane(pane);
     if (!target || target == pane || !m_splits || !pane->overlay()->popup()) return target;
     // The program's own cells: a popup's grid, which its border is not. By
-    // the layout and the pixel the point is in, as paneUnder and cellAt
-    // find a pane and a cell, also while a split eases towards it.
+    // the layout, where the pane's maps send the point, as paneUnder and
+    // cellAt find a pane and a cell, also while a split eases towards it.
     const QRect grid = contentRect(target, m_splits->rectOf(pane));
-    return grid.contains(dockPixel(pos)) ? target : nullptr;
+    const QPointF content = paneContentPixel(pane, pos);
+    return grid.contains(QPoint(int(std::floor(content.x())), int(std::floor(content.y())))) ? target : nullptr;
 }
 
 QString TerminalWindow::openOverlay(const QString& owner, const QString& request, Pane* pane, const OverlaySpec& spec,

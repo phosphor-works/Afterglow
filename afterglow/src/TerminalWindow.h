@@ -425,6 +425,28 @@ private:
     int tabBarHeight(int tabCount = -1) const;
     /// The window in pixels, before the renderer has a size too.
     QSize windowPixels() const;
+    /// Where the content shown at window logical point @p logical sits in
+    /// the layout, in pixels: through the pointer maps (pPointerMap) of the
+    /// window chain, as the last frames drew them. Without maps, @p logical
+    /// in pixels. The panes, their dividers and the panes' docks are found
+    /// here; the chrome and the window's docks, drawn over the chains, at
+    /// @p logical. Touches no GPU state.
+    QPointF windowContentPixel(const QPointF& logical) const;
+    /// The same, then through the pane chain of @p pane's host: where its
+    /// cells, its docks and a popup over it are found. The pane chain's maps
+    /// are at the rectangle that frames draw the pane at, which a split's
+    /// motion eases. The cells, the docks and the popups are at the layout,
+    /// as without maps: while a split eases, a hit is in between for a pack
+    /// that moves the content.
+    QPointF paneContentPixel(Pane* pane, const QPointF& logical) const;
+    /// The pixel of windowContentPixel() that holds the point: where a
+    /// divider is found.
+    QPoint dividerPixel(const QPointF& logical) const;
+    /// The pane whose content shows at @p logical: none outside the window,
+    /// and none where no pane shows (between panes, over the tab bar's band).
+    /// A window chain's map that sends the point out of the window finds
+    /// the pane at that edge.
+    Pane* paneShownAt(const QPointF& logical) const;
     /// The window below the tab bar, in pixels, with @p tabCount tabs (the
     /// current count when negative): what the docks and panes share.
     QRect windowArea(int tabCount = -1) const;
@@ -488,13 +510,18 @@ private:
     QRect placeDocks();
     /// The panes' terminal options, for the docks too.
     void setDockOptions(const AfterglowVt::TerminalOptions& options);
-    /// The dock at @p pixel: a window's dock, or a shown pane's dock.
-    DockArea* dockAt(const QPoint& pixel) const;
-    /// A plain left press at @p pixel grabs a divider whose grab reaches
+    /// The dock at window logical point @p logical: a window's dock there,
+    /// or a dock of the pane that shows there (paneShownAt()), where the
+    /// pane's maps send the point.
+    DockArea* dockAt(const QPointF& logical) const;
+    /// The pixel of @p dock at @p logical, which its items and cells are
+    /// found at: through the maps for a pane's dock (dockAt()).
+    QPoint dockPixelOf(const DockArea& dock, const QPointF& logical) const;
+    /// A plain left press at @p logical grabs a divider whose grab reaches
     /// into a pane's dock there, not the dock.
-    bool dividerTakesDock(const QPoint& pixel) const;
-    /// The pane whose own cells are at window logical point @p logical: not
-    /// one whose dock is there.
+    bool dividerTakesDock(const QPointF& logical) const;
+    /// The pane whose content shows at window logical point @p logical
+    /// (paneShownAt()): not one whose dock is there.
     Pane* paneUnder(const QPointF& logical) const;
     /// How far from a divider a press still grabs it, pixels.
     int dividerTolerance() const;
@@ -642,8 +669,9 @@ private:
     /// holds a press). Returns true if the chrome took it.
     bool routePointerToChrome(QEvent* e, const QPointF& pos, bool press, bool release);
     void runSearch(const QString& query, int direction);
-    /// Finds the link under the pointer while the link modifier is held and underlines it.
-    void updateLinkHover();
+    /// Finds the link under the pointer while the link modifier is held and
+    /// underlines it. True when the link changed, which sets the pointer's shape.
+    bool updateLinkHover();
     /// The pointer for where it is: a link hand, the program's shape, or the default.
     void applyPointerShape();
     /// Shows @p pane for an assistive technology's action and lays its tab
@@ -790,11 +818,22 @@ private:
     /// The scroll shift of @p pane's last frame (PaneMotion::scrollShift).
     float drawnScrollShift(const Pane* pane) const;
     /// Where window position @p pos (logical) is on @p pane's grid as the
-    /// last frame drew it, in pixels from the grid's top left corner.
+    /// last frame drew it, in pixels from the grid's top left corner:
+    /// through the pointer maps (paneContentPixel()).
     QPointF gridPixel(Pane* pane, const QPointF& pos) const;
+    /// The same for @p pixel, a layout pixel of the window: no map.
+    QPointF gridPixelAt(Pane* pane, const QPointF& pixel) const;
+    /// @p pos is over @p pane's cells, not around them (the padding, or
+    /// what a pack shows around a pane), where cellAt() clamps.
+    bool overCells(Pane* pane, const QPointF& pos) const;
+    /// The grid pixel that holds @p pos, clamped to the grid: for reports
+    /// in pixels, as cellAt() for reports in cells.
+    QPoint cellPixel(Pane* pane, const QPointF& pos) const;
     /// Cell under a window position, as the last frame drew the cells,
     /// clamped to the pane's grid.
     QPoint cellAt(Pane* pane, const QPointF& pos) const;
+    /// The cell at grid pixel @p px (gridPixel()), clamped to the grid.
+    QPoint cellOf(Pane* pane, const QPointF& px) const;
     /// Cell row under @p pos without clamping; negative above, >= rows below.
     int rawRowAt(Pane* pane, const QPointF& pos) const;
     void updateSelectionDrag();
@@ -931,6 +970,8 @@ private:
     // Links under the pointer (while the link modifier is held). Outside
     // the window, as before the pointer first enters it, it is (-1, -1).
     QPointF m_pointer{-1, -1};
+    /// WindowRenderer::pointerMapSerial() when the pointer was last looked at.
+    std::uint64_t m_pointerMapSerial = 0;
     /// A link on one row: an OSC 8 hyperlink run or a URL in the text.
     struct UrlSpan
     {
@@ -1158,10 +1199,14 @@ private:
     /// Finds the link under the pointer again when @p pane's snapshot is
     /// not the one m_hover was found in. After the pane's refreshSnapshot.
     void refreshLinkHover(Pane* pane);
-    /// The link (OSC 8 or a URL in the text) under @p pos in @p pane, if any.
+    /// The link (OSC 8 or a URL in the text) under @p pos in @p pane, if
+    /// any: only over its cells (overCells()).
     LinkHover linkAt(Pane* pane, const QPointF& pos) const;
-    /// The right-click menu, at @p pos (logical pixels).
-    void openContextMenu(const QPointF& pos);
+    /// The link at @p cell of @p pane, if any.
+    LinkHover linkAtCell(Pane* pane, const QPoint& cell) const;
+    /// The right-click menu, at @p pos (logical pixels), with @p link, the
+    /// link it opens and copies, if any.
+    void openContextMenu(const QPointF& pos, const QString& link);
     /// Opens @p url with Links.openWith, or the desktop's handler.
     void openLink(const QString& url);
     /// The link modifier (Links.modifier) is held, or none is needed.

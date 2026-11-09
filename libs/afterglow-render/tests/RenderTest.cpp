@@ -16,6 +16,7 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QImage>
+#include <QTemporaryDir>
 
 #include <QMatrix4x4>
 #include <QFloat16>
@@ -511,7 +512,9 @@ TEST_F(FontRendering, ModesAndHintingProduceTheRequestedCoverage)
         for (const auto aa : {Antialiasing::None, Antialiasing::Grayscale, Antialiasing::Rgb, Antialiasing::Bgr}) {
             mode(aa, 1.0f, hint);
             const QImage img = sample();
-            ASSERT_FALSE(img.isNull());
+            // One mode failing does not hide the others.
+            EXPECT_FALSE(img.isNull());
+            if (img.isNull()) continue;
             int ink = 0, intermediate = 0, translucent = 0;
             for (int y = 0; y < img.height(); ++y) {
                 for (int x = 0; x < img.width(); ++x) {
@@ -566,7 +569,8 @@ TEST_F(FontRendering, SubpixelCompositesEachChannelOverColoredBackgrounds)
             mode(aa, gamma);
             const QImage coverage = sample();
             const QImage colored = sample(" MWi Il -> fi", "220;90;40;48;2;30;120;200");
-            ASSERT_EQ(coverage.size(), colored.size());
+            EXPECT_EQ(coverage.size(), colored.size());
+            if (coverage.size() != colored.size()) continue;
             // The text has ink, with channels that differ at its edges: a
             // sample without text would match the background everywhere.
             EXPECT_GT(coloredEdges(coverage), 0);
@@ -596,16 +600,21 @@ TEST_F(FontRendering, GammaChangesCoverageButLeavesMonochromeBinary)
         const QImage normal = sample(" M ");
         mode(aa, 2.0f);
         const QImage stronger = sample(" M ");
-        int changed = 0;
+        EXPECT_EQ(normal.size(), stronger.size());
+        if (normal.size() != stronger.size()) continue;
+        int changed = 0, mismatches = 0;
+        QPoint first;
+        const auto near = [](int value, int base) { return std::abs(value - 255 * std::sqrt(base / 255.0)) <= 2; };
         for (int y = 0; y < normal.height(); ++y) {
             for (int x = 0; x < normal.width(); ++x) {
                 const QRgb a = normal.pixel(x, y), b = stronger.pixel(x, y);
                 changed += a != b;
-                EXPECT_NEAR(qRed(b), 255 * std::sqrt(qRed(a) / 255.0), 2);
-                EXPECT_NEAR(qGreen(b), 255 * std::sqrt(qGreen(a) / 255.0), 2);
-                EXPECT_NEAR(qBlue(b), 255 * std::sqrt(qBlue(a) / 255.0), 2);
+                if (!(near(qRed(b), qRed(a)) && near(qGreen(b), qGreen(a)) && near(qBlue(b), qBlue(a))) && mismatches++ == 0)
+                    first = QPoint(x, y);
             }
         }
+        EXPECT_EQ(mismatches, 0) << "first at " << first.x() << "," << first.y() << ": gamma 1 " << std::hex
+                                 << normal.pixel(first) << " gamma 2 " << stronger.pixel(first);
         if (aa == Antialiasing::None) {
             EXPECT_EQ(changed, 0);
         } else {
@@ -631,20 +640,20 @@ TEST_F(FontRendering, SubpixelFallbackTracksShadersAndTranslucencyWithoutSnapsho
         if (layer == 1) chains.pane = {ShaderProgram::passthrough()};
         if (layer == 2) chains.window = {ShaderProgram::passthrough()};
         renderer->setShaderChains(chains);
-        EXPECT_EQ(redraw(), gray);
+        EXPECT_TRUE(redraw() == gray) << "layer " << layer;
         renderer->setShaderChains({});
-        EXPECT_EQ(redraw(), lcd);
+        EXPECT_TRUE(redraw() == lcd) << "layer " << layer;
     }
     renderer->setTranslucent(true);
-    EXPECT_EQ(redraw(), gray);
+    EXPECT_TRUE(redraw() == gray);
     renderer->setTranslucent(false);
-    EXPECT_EQ(redraw(), lcd);
+    EXPECT_TRUE(redraw() == lcd);
     pane.params.backgroundAlpha = 150;
     // Explicit cell backgrounds are opaque, but the pane still requests the
     // fallback. This also checks cached instances after an opacity change.
-    EXPECT_EQ(redraw(), gray);
+    EXPECT_TRUE(redraw() == gray);
     pane.params.backgroundAlpha = 255;
-    EXPECT_EQ(redraw(), lcd);
+    EXPECT_TRUE(redraw() == lcd);
 }
 
 TEST_F(FontRendering, DockTextKeepsSubpixelUnderShadersButNotWhenTranslucent)
@@ -751,7 +760,7 @@ TEST_F(FontRendering, IconsAndScaledTextWorkInEveryMode)
         EXPECT_GT(ink, 0);
         const QImage scaled = sample("\x1b#6 WMi");
         EXPECT_EQ(coloredEdges(scaled) > 0, aa == Antialiasing::Rgb || aa == Antialiasing::Bgr);
-        EXPECT_NE(scaled, sample(" WMi"));
+        EXPECT_FALSE(scaled == sample(" WMi"));
     }
 }
 
@@ -760,26 +769,37 @@ TEST_F(FontRendering, SubpixelColorRunsRespectFaintTextAndWhiteBackgrounds)
     mode(Antialiasing::Rgb);
     const QImage white = sample(" MMMM", "255;255;255;48;2;0;0;0");
     const QImage black = sample(" MMMM", "0;0;0;48;2;255;255;255");
+    ASSERT_EQ(white.size(), black.size());
+    int mismatches = 0;
+    QPoint first;
     for (int y = 0; y < white.height(); ++y) {
         for (int x = 0; x < white.width(); ++x) {
             const QRgb a = white.pixel(x, y), b = black.pixel(x, y);
-            EXPECT_NEAR(qRed(a) + qRed(b), 255, 1);
-            EXPECT_NEAR(qGreen(a) + qGreen(b), 255, 1);
-            EXPECT_NEAR(qBlue(a) + qBlue(b), 255, 1);
+            const bool inverse = std::abs(qRed(a) + qRed(b) - 255) <= 1 && std::abs(qGreen(a) + qGreen(b) - 255) <= 1
+                && std::abs(qBlue(a) + qBlue(b) - 255) <= 1;
+            if (!inverse && mismatches++ == 0) first = QPoint(x, y);
         }
     }
+    EXPECT_EQ(mismatches, 0) << "first at " << first.x() << "," << first.y() << ": white " << std::hex << white.pixel(first)
+                             << " black " << black.pixel(first);
     const QImage mixed = sample(" \x1b[31mM\x1b[32mM\x1b[34mM\x1b[2mM");
     const QImage plain = sample(" \x1b[34mMMMM");
     int redInk = 0, greenInk = 0, blueInk = 0, faintInk = 0;
+    // The blue cell matches the plain one: a count and the first pixel that
+    // differs.
+    int differ = 0;
+    QPoint firstDiffer;
     for (int y = 0; y < ch; ++y) {
         for (int x = 0; x < cw; ++x) {
             redInk += qRed(mixed.pixel(cw + x, y));
             greenInk += qGreen(mixed.pixel(2 * cw + x, y));
             blueInk += qBlue(mixed.pixel(3 * cw + x, y));
             faintInk += qBlue(mixed.pixel(4 * cw + x, y));
-            EXPECT_EQ(mixed.pixel(3 * cw + x, y), plain.pixel(3 * cw + x, y));
+            if (mixed.pixel(3 * cw + x, y) != plain.pixel(3 * cw + x, y) && differ++ == 0) firstDiffer = QPoint(3 * cw + x, y);
         }
     }
+    EXPECT_EQ(differ, 0) << "first at " << firstDiffer.x() << "," << firstDiffer.y() << ": " << std::hex
+                         << mixed.pixel(firstDiffer) << " against " << plain.pixel(firstDiffer);
     EXPECT_GT(redInk, 0);
     EXPECT_GT(greenInk, 0);
     EXPECT_GT(blueInk, faintInk);
@@ -797,7 +817,7 @@ TEST_F(FontRendering, ColorEmojiBypassAntialiasingAndGamma)
     EXPECT_GT(coloredEdges(original), 0);
     for (const auto aa : {Antialiasing::None, Antialiasing::Grayscale, Antialiasing::Rgb, Antialiasing::Bgr}) {
         mode(aa, 2.0f);
-        EXPECT_EQ(sample(" 🙂 "), original);
+        EXPECT_TRUE(sample(" 🙂 ") == original);
     }
 }
 
@@ -1102,9 +1122,11 @@ TEST_F(Render, IndexedImagesTakeTheColoursOfThePane)
     EXPECT_PIXEL_NEAR(img, cellCenter(0, 0), qRgb(0, 255, 0), 12);
     // Reverse video swaps the default colours, and 248 and 249 with them.
     const std::uint32_t foreground = snapshot.defaultFg;
+    const std::uint32_t background = snapshot.defaultBg;
     img = render("\x1b[?5h", true, 128, 0x00000000u);
     ASSERT_EQ(snapshot.defaultBg, foreground);
     EXPECT_PIXEL_NEAR(img, cellCenter(3, 0), rgb(foreground), 12);
+    EXPECT_PIXEL_NEAR(img, cellCenter(0, 1), rgb(background), 12);
 }
 
 TEST_F(Render, AHeldFrameKeepsTheImageThatASynchronizedUpdateReplaces)
@@ -1139,12 +1161,21 @@ ShaderProgramPtr layerShader(const char* id, const char* body, bool hdr = false)
     QString error;
     auto program = ShaderProgram::compile(src, &error);
     // A failure, and a program that draws, so that the caller goes on to
-    // fail its checks instead of crashing on a null chain entry.
+    // fail its checks instead of crashing on a null chain entry (ShaderChains
+    // reads every entry). A caller that holds the program checks it with
+    // compiledShader().
     if (!program) {
         ADD_FAILURE() << id << ": " << error.toStdString();
         return ShaderProgram::passthrough();
     }
     return program;
+}
+
+/// @p program is one that layerShader, panesShader or keepHistory compiled,
+/// not the stand-in that they give for a failure.
+bool compiledShader(const ShaderProgramPtr& program)
+{
+    return program && program != ShaderProgram::passthrough();
 }
 
 /// A pack with the panes contract (terminal_panes.glsl): @p body is the
@@ -1164,10 +1195,201 @@ ShaderProgramPtr panesShader(const char* id, const char* body)
 }
 } // namespace
 
+namespace {
+ShaderProgramPtr pointerMapProgram(const char* id, const char* map, float param0 = 0.0f)
+{
+    ShaderProgramSource src;
+    src.id = QString::fromLatin1(id);
+    src.code = QByteArray("vec4 pTerminal(vec2 uv) { return terminalTexel(uv); }\n") + map;
+    src.params[0] = param0;
+    QString error;
+    auto program = ShaderProgram::compile(src, &error);
+    EXPECT_TRUE(program) << error.toStdString();
+    return program ? program->instance(QString::fromLatin1(id)) : nullptr;
+}
+} // namespace
+
+TEST_F(Render, PointerMapsFindTheContentUnderThePointer)
+{
+    // A map that mirrors the canvas: the content at x came from width - x.
+    auto mirror = pointerMapProgram("mirror", "vec2 pPointerMap(vec2 uv) { return vec2(1.0 - uv.x, uv.y); }\n");
+    ASSERT_TRUE(mirror && mirror->hasPointerMap());
+    auto none = pointerMapProgram("none", "");
+    ASSERT_TRUE(none && !none->hasPointerMap());
+    // A map in a comment is no map, and the pack still compiles.
+    auto commented = pointerMapProgram("commented", "// vec2 pPointerMap(vec2 uv) { return uv; }\n"
+                                                    "/* vec2 pPointerMap(vec2 uv) {\n   return uv;\n} */\n");
+    ASSERT_TRUE(commented);
+    EXPECT_FALSE(commented->hasPointerMap());
+    // A stage with its own main() has no generated entry, so no map.
+    ShaderProgramSource own;
+    own.id = QStringLiteral("own-main");
+    // Such a stage has no prologue either: it declares what it uses.
+    own.code = "#version 450\nlayout(location = 0) out vec4 fragColor;\nvec2 pPointerMap(vec2 uv) { return uv; }\n"
+               "void main() { fragColor = vec4(pPointerMap(vec2(0.5)), 0.0, 1.0); }\n";
+    QString error;
+    auto ownMain = ShaderProgram::compile(own, &error);
+    ASSERT_TRUE(ownMain) << error.toStdString();
+    EXPECT_FALSE(ownMain->hasPointerMap());
+
+    // The maps are the drawn ones: a frame draws the pane (id 7) at
+    // @p paneRect in a window of @p window, focused, with @p parameters.
+    constexpr std::uint32_t Id = 7;
+    auto draw = [&](const QSize& window, const QRect& paneRect, const ShaderParameterMap& parameters = {}) {
+        WindowRenderer::Pane pane{&snapshot, {}};
+        pane.params.rect = paneRect;
+        pane.params.id = Id;
+        pane.params.focused = true;
+        pane.params.shaderParameters = parameters;
+        return !renderer->renderToImage(window, {pane}, {}, packRgba(0, 0, 0)).isNull();
+    };
+    auto near = [](QPointF got, QPointF want) {
+        if (std::abs(got.x() - want.x()) < 0.5 && std::abs(got.y() - want.y()) < 0.5) return ::testing::AssertionSuccess();
+        return ::testing::AssertionFailure() << "got " << got.x() << "," << got.y() << ", want " << want.x() << "," << want.y();
+    };
+
+    const QSize window(200, 100);
+    ShaderChains chains;
+    chains.window = {none, mirror};
+    renderer->setShaderChains(chains);
+    EXPECT_TRUE(renderer->hasPointerMaps());
+    // Before a frame draws the chain, no map is known: the point comes back.
+    EXPECT_TRUE(near(renderer->windowContentPoint({10, 20}), {10, 20}));
+    ASSERT_TRUE(draw(window, QRect(QPoint(), window)));
+    EXPECT_TRUE(near(renderer->windowContentPoint({10, 20}), {190, 20}));
+    EXPECT_TRUE(near(renderer->windowContentPoint({150, 80}), {50, 80}));
+    // At the canvas's edge, and past it, the edge cells carry on in a line.
+    EXPECT_TRUE(near(renderer->windowContentPoint({0.25, 20}), {199.75, 20}));
+    EXPECT_TRUE(near(renderer->windowContentPoint({-10, 20}), {210, 20}));
+    EXPECT_TRUE(near(renderer->windowContentPoint({205, 120}), {-5, 120}));
+    // A pane chain maps inside the rectangle that the frame drew the pane at.
+    chains = {};
+    chains.pane = {mirror};
+    renderer->setShaderChains(chains);
+    EXPECT_TRUE(renderer->hasPointerMaps());
+    ASSERT_TRUE(draw(QSize(400, 200), QRect(100, 50, 200, 100)));
+    EXPECT_TRUE(near(renderer->windowContentPoint({110, 60}), {110, 60})); // the window chain has no map
+    EXPECT_TRUE(near(renderer->paneContentPoint({110, 60}, Id), {290, 60}));
+    // A pane that no frame drew, or none at all, has no map.
+    EXPECT_TRUE(near(renderer->paneContentPoint({110, 60}, Id + 1), {110, 60}));
+    EXPECT_TRUE(near(renderer->paneContentPoint({110, 60}, 0), {110, 60}));
+    // The canvas size: a shift of 10 pixels on any canvas.
+    auto shift = pointerMapProgram("shift", "vec2 pPointerMap(vec2 uv) { return uv + vec2(10.0 / iResolution.x, 0.0); }\n");
+    ASSERT_TRUE(shift && shift->hasPointerMap());
+    chains = {};
+    chains.window = {shift};
+    renderer->setShaderChains(chains);
+    ASSERT_TRUE(draw(QSize(300, 200), QRect(0, 0, 300, 200)));
+    EXPECT_TRUE(near(renderer->windowContentPoint({50, 50}), {60, 50}));
+    ASSERT_TRUE(draw(QSize(800, 600), QRect(0, 0, 800, 600)));
+    EXPECT_TRUE(near(renderer->windowContentPoint({50, 50}), {60, 50}));
+    // Live parameter values: the map is evaluated again for new ones, and
+    // the old one holds until a frame has drawn with them.
+    auto scaled = pointerMapProgram("scaled", "vec2 pPointerMap(vec2 uv) { return vec2(uv.x * customParams[0].x, uv.y); }\n");
+    ASSERT_TRUE(scaled && scaled->hasPointerMap());
+    chains = {};
+    chains.window = {scaled};
+    renderer->setShaderChains(chains);
+    ShaderParameterMap parameters;
+    ShaderParameterValues values;
+    values.paramMask = 1;
+    values.params[0] = 0.5f;
+    parameters.insert(scaled->instanceId(), values);
+    ASSERT_TRUE(draw(window, QRect(QPoint(), window), parameters));
+    EXPECT_TRUE(near(renderer->windowContentPoint({100, 50}), {50, 50}));
+    values.params[0] = 0.25f;
+    parameters.insert(scaled->instanceId(), values);
+    EXPECT_TRUE(near(renderer->windowContentPoint({100, 50}), {50, 50}));
+    ASSERT_TRUE(draw(window, QRect(QPoint(), window), parameters));
+    EXPECT_TRUE(near(renderer->windowContentPoint({100, 50}), {25, 50}));
+    // The pack's own default, with no live value.
+    auto defaulted = pointerMapProgram("defaulted", "vec2 pPointerMap(vec2 uv) { return vec2(uv.x * customParams[0].x, uv.y); }\n",
+                                       0.5f);
+    ASSERT_TRUE(defaulted && defaulted->hasPointerMap());
+    chains = {};
+    chains.window = {defaulted};
+    renderer->setShaderChains(chains);
+    ASSERT_TRUE(draw(window, QRect(QPoint(), window)));
+    EXPECT_TRUE(near(renderer->windowContentPoint({100, 50}), {50, 50}));
+    // Live colours are values too.
+    auto tinted = pointerMapProgram("tinted", "vec2 pPointerMap(vec2 uv) { return vec2(uv.x * customColors[0].r, uv.y); }\n");
+    ASSERT_TRUE(tinted && tinted->hasPointerMap());
+    chains = {};
+    chains.window = {tinted};
+    renderer->setShaderChains(chains);
+    ShaderParameterValues colour;
+    colour.colorMask = 1;
+    colour.colors[0] = 0.5f;
+    ASSERT_TRUE(draw(window, QRect(QPoint(), window), {{tinted->instanceId(), colour}}));
+    EXPECT_TRUE(near(renderer->windowContentPoint({100, 50}), {50, 50}));
+    colour.colors[0] = 0.25f;
+    ASSERT_TRUE(draw(window, QRect(QPoint(), window), {{tinted->instanceId(), colour}}));
+    EXPECT_TRUE(near(renderer->windowContentPoint({100, 50}), {25, 50}));
+    // Last pack first: the shift's map, then the scale's. The other order
+    // gives 60.
+    chains = {};
+    chains.window = {scaled, shift};
+    renderer->setShaderChains(chains);
+    values.params[0] = 0.5f;
+    parameters.insert(scaled->instanceId(), values);
+    ASSERT_TRUE(draw(window, QRect(QPoint(), window), parameters));
+    EXPECT_TRUE(near(renderer->windowContentPoint({100, 50}), {55, 50}));
+    // Where a map discards, the pointer stays.
+    auto holed = pointerMapProgram("holed", "vec2 pPointerMap(vec2 uv) { if (uv.x < 0.5) discard; return vec2(1.0 - uv.x, uv.y); }\n");
+    ASSERT_TRUE(holed && holed->hasPointerMap());
+    chains = {};
+    chains.window = {holed};
+    renderer->setShaderChains(chains);
+    ASSERT_TRUE(draw(window, QRect(QPoint(), window)));
+    EXPECT_TRUE(near(renderer->windowContentPoint({150, 50}), {50, 50}));
+    EXPECT_TRUE(near(renderer->windowContentPoint({40, 50}), {40, 50}));
+    // Without maps, the point itself.
+    chains = {};
+    chains.window = {none};
+    renderer->setShaderChains(chains);
+    EXPECT_FALSE(renderer->hasPointerMaps());
+    ASSERT_TRUE(draw(window, QRect(QPoint(), window)));
+    EXPECT_EQ(renderer->windowContentPoint({33, 44}), QPointF(33, 44));
+}
+
+TEST_F(Render, PointerMapsStopAskingForFramesWhenTheirPackGoes)
+{
+    // A map's readback asks for frames until it arrives. Its pack can go
+    // before a lookup takes it: the frames stop all the same. An offscreen
+    // frame completes its readback when it ends, so this pins what
+    // pending() counts. A window's frames, whose readbacks complete frames
+    // later, are the native tests'.
+    auto mirror = pointerMapProgram("mirror", "vec2 pPointerMap(vec2 uv) { return vec2(1.0 - uv.x, uv.y); }\n");
+    auto none = pointerMapProgram("none", "");
+    ASSERT_TRUE(mirror && none);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(0, 0, 200, 100);
+    pane.params.id = 7;
+    pane.params.focused = true;
+    ShaderChains chains;
+    chains.window = {mirror};
+    renderer->setShaderChains(chains);
+    ASSERT_FALSE(renderer->renderToImage(QSize(200, 100), {pane}, {}, packRgba(0, 0, 0)).isNull());
+    chains.window = {none};
+    renderer->setShaderChains(chains);
+    ASSERT_FALSE(renderer->renderToImage(QSize(200, 100), {pane}, {}, packRgba(0, 0, 0)).isNull());
+    EXPECT_FALSE(renderer->animating());
+    chains = {};
+    renderer->setShaderChains(chains);
+    ASSERT_FALSE(renderer->renderToImage(QSize(200, 100), {pane}, {}, packRgba(0, 0, 0)).isNull());
+    EXPECT_FALSE(renderer->animating());
+    // With its pack, a map that has arrived asks for nothing more either.
+    chains.window = {mirror};
+    renderer->setShaderChains(chains);
+    ASSERT_FALSE(renderer->renderToImage(QSize(200, 100), {pane}, {}, packRgba(0, 0, 0)).isNull());
+    EXPECT_FALSE(renderer->animating());
+    EXPECT_EQ(renderer->windowContentPoint({10, 20}).toPoint(), QPoint(190, 20));
+}
+
 TEST_F(Render, LiveParameterOverridesReachLayerPaneAndWindowUniforms)
 {
     auto source = layerShader("live-parameters", "fragColor = vec4(customParams[0].x, customColors[0].g, 0.0, 1.0);");
-    ASSERT_TRUE(source);
+    ASSERT_TRUE(compiledShader(source));
     auto program = source->instance(QStringLiteral("test-instance"));
     terminal->feed("\x1b[?25l");
     snapshot.capture(*terminal);
@@ -1199,7 +1421,7 @@ TEST_F(Render, DocksAreDrawnAfterEveryShaderChain)
     // own red: it goes into the window after the chains, the layered path,
     // the overview and the pane effects included.
     auto source = layerShader("magenta", "fragColor = vec4(1.0, 0.0, 1.0, 1.0);");
-    ASSERT_TRUE(source);
+    ASSERT_TRUE(compiledShader(source));
     auto program = source->instance(QStringLiteral("magenta"));
     terminal->feed("\x1b[?25l");
     snapshot.capture(*terminal);
@@ -1298,7 +1520,7 @@ TEST_F(Render, PaneDocksAreDrawnInsideTheirPaneAndUnderItsChains)
     // and a chain passes it through or halves it as it does the pane. The
     // window dock comes after every chain and keeps its red.
     auto source = layerShader("halve", "fragColor = vec4(c.rgb * 0.5, c.a);");
-    ASSERT_TRUE(source);
+    ASSERT_TRUE(compiledShader(source));
     auto halve = source->instance(QStringLiteral("halve"));
     terminal->feed("\x1b[?25l");
     snapshot.capture(*terminal);
@@ -1492,7 +1714,7 @@ TEST_F(Render, PaneDocksShowInOtherTabsTheTabBeingLeftAndTheClosedPane)
     {
         SCOPED_TRACE("overview card of another tab");
         auto program = panesShader("card", "return vec4(paneTexel(1, uv).rgb, 1.0);");
-        ASSERT_TRUE(program);
+        ASSERT_TRUE(compiledShader(program));
         ShaderChains chains;
         chains.overview = {program};
         renderer->setShaderChains(chains);
@@ -1507,7 +1729,7 @@ TEST_F(Render, PaneDocksShowInOtherTabsTheTabBeingLeftAndTheClosedPane)
     {
         SCOPED_TRACE("the tab being left");
         auto program = panesShader("leaving", "return vec4(previousTabTexel(uv).rgb, 1.0);");
-        ASSERT_TRUE(program);
+        ASSERT_TRUE(compiledShader(program));
         ShaderChains chains;
         chains.tabTransition = {program};
         renderer->setShaderChains(chains);
@@ -1520,7 +1742,7 @@ TEST_F(Render, PaneDocksShowInOtherTabsTheTabBeingLeftAndTheClosedPane)
     {
         SCOPED_TRACE("the closed pane");
         auto program = panesShader("closed", "return vec4(closingPaneActive() ? closingPaneTexel(uv).rgb : vec3(1.0), 1.0);");
-        ASSERT_TRUE(program);
+        ASSERT_TRUE(compiledShader(program));
         ShaderChains chains;
         chains.paneEffects = {program};
         renderer->setShaderChains(chains);
@@ -1689,13 +1911,20 @@ TEST_F(Render, BufferInstanceLimitUsesTransparentFallback)
     src.buffers={buffer};
     src.code="#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     QString error;auto program=ShaderProgram::compile(src,&error);ASSERT_TRUE(program);
-    ShaderChains chains;
-    for(int i=0;i<34;++i) chains.pane.push_back(program);
-    renderer->setShaderChains(chains);
-    auto image=render("\x1b[?25l");
-    EXPECT_EQ(image.pixelColor(cellCenter(2,2)).alpha(),0);
-    image=render("");
-    EXPECT_EQ(image.pixelColor(cellCenter(2,2)).alpha(),0);
+    // Each step of the chain is an occurrence (PostChain::runBuffers): 32 of
+    // them get their buffers, and the last one draws its opaque red. The
+    // 33rd gets a transparent buffer, and the chain ends in it.
+    for (const int copies : {32, 33}) {
+        SCOPED_TRACE(copies);
+        ShaderChains chains;
+        for (int i = 0; i < copies; ++i) chains.pane.push_back(program);
+        renderer->setShaderChains(chains);
+        const int alpha = copies > 32 ? 0 : 255;
+        auto image = render("\x1b[?25l");
+        EXPECT_EQ(image.pixelColor(cellCenter(2, 2)).alpha(), alpha);
+        image = render("");
+        EXPECT_EQ(image.pixelColor(cellCenter(2, 2)).alpha(), alpha);
+    }
     src.buffers.front().scale=0; EXPECT_FALSE(ShaderProgram::compile(src,&error));
 }
 
@@ -2028,10 +2257,14 @@ TEST_F(Render, AgeOnlyShadersSettleThenWakeOnTheNextEvent)
     chains.window = {layerShader("signal-age", "fragColor = c * clamp(signalAge(3), 0.0, 1.0);")};
     EXPECT_EQ(chains.window[0]->eventAges(), unsigned(SignalAge));
     renderer->setShaderChains(chains);
+    // The age is real time since the set, which a loaded machine stretches:
+    // times far from the settle time (2 s) on both sides. A signal set a
+    // minute ahead is younger than the settle time however long a frame
+    // takes.
     pane.params.signals[3] = {1.0f, std::chrono::steady_clock::now() - std::chrono::seconds(5)};
     draw(30, "");
     EXPECT_FALSE(renderer->animating());
-    pane.params.signals[3].at = std::chrono::steady_clock::now();
+    pane.params.signals[3].at = std::chrono::steady_clock::now() + std::chrono::minutes(1);
     draw(30.1, "");
     EXPECT_TRUE(renderer->animating());
 }
@@ -2252,7 +2485,7 @@ TEST_F(Render, ShapeCacheTracksFontResourceAcrossDprChanges)
         WindowRenderer fresh(*s_device, nullptr);
         fresh.setDevicePixelRatio(dpr);
         const auto expected = fresh.renderToImage(size, {pane}, {}, snapshot.defaultBg);
-        EXPECT_EQ(reused, expected) << "DPR " << dpr;
+        EXPECT_TRUE(reused == expected) << "DPR " << dpr;
     }
 }
 
@@ -2291,7 +2524,7 @@ TEST_F(Render, FullAtlasAddsPagesWithoutInvalidatingEarlierGlyphs)
     EXPECT_EQ(cache.epoch(), epoch);
     cache.reset();
     const auto expected = render("");
-    EXPECT_EQ(actual, expected);
+    EXPECT_TRUE(actual == expected);
 }
 
 TEST(Fonts, StaticStyleSlotsAndSymbolMappingsSelectStyledFaces)
@@ -2363,14 +2596,20 @@ TEST_F(Render, MultipleBuffersCarryDepthAndSamplerHelpers)
     ShaderProgramSource source;
     source.id = QStringLiteral("multipass-depth");
     source.useDepthBuffer = true;
+    // The first buffer holds its own x in red, and repeats: the second reads
+    // it at 2.25 through a helper, which gives 0.25 (a clamp would give
+    // about 1). The depth goes from the first buffer through the second.
     ShaderBufferSource first;
-    first.code = "vec4 pTerminal(vec2 uv){ depthBuffer=vec4(0.25,0.5,0.75,1); return vec4(1,0,0,1); }";
+    first.code = "vec4 pTerminal(vec2 uv){ depthBuffer=vec4(0.25,0.5,0.75,1); return vec4(uv.x,0,0,1); }";
     first.wrap = ShaderWrap::Repeat;
+    first.nearest = true;
     ShaderBufferSource second;
     second.code = "#include <terminal_multipass.glsl>\nvec4 sampleIt(sampler2D s,vec2 uv){return texture(s,uv);} "
-        "vec4 pTerminal(vec2 uv){depthBuffer=texture(uDepthBuffer,vec2(0.5)); return sampleIt(iChannel0,vec2(2.5));}";
+        "vec4 pTerminal(vec2 uv){depthBuffer=texture(uDepthBuffer,vec2(0.5)); return sampleIt(iChannel0,vec2(2.25,0.5));}";
     source.buffers = {first, second};
-    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){ return texture(uDepthBuffer,vec2(0.5)); }";
+    // Red from the second buffer's colour, green and blue from the depth.
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){ vec4 d=texture(uDepthBuffer,vec2(0.5));"
+        " return vec4(texture(iChannel1,vec2(0.5)).r,d.g,d.b,1); }";
     QString error;
     const auto program = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(program) << error.toStdString();
@@ -2412,8 +2651,10 @@ TEST_F(Render, VertexHookDeformsQuadUsingSharedParameters)
     EXPECT_PIXEL(full, cellCenter(10,2), qRgb(255,0,0));
 }
 
-TEST_F(Render, ImageOverridesAreLiveAndDefaultsReturnWithoutRecompile)
+TEST_F(Render, ImageOverridesAreLiveAndDefaultsReturnInTheSameChain)
 {
+    // The chains are set once: each frame below takes the images of the
+    // pane's parameters.
     ShaderProgramSource source;
     source.id = QStringLiteral("image-live");
     source.images[0] = QImage(2,2,QImage::Format_RGBA8888);
@@ -2539,6 +2780,7 @@ TEST_F(Render, MeshInstancesUseHardwareDepthAndClearBetweenFrames)
     WindowRenderer::Pane other{&otherSnapshot,{}};
     pane.params.rect = QRect(QPoint(),size);
     other.params.rect = QRect(size.width(),0,size.width(),size.height());
+    other.params.contentOrigin = other.params.rect.topLeft();
     const auto split = renderer->renderToImage(QSize(size.width()*2,size.height()), {pane,other}, {}, snapshot.defaultBg);
     EXPECT_PIXEL(split, cellCenter(10,2), qRgb(255,0,0));
     EXPECT_PIXEL(split, cellCenter(10,2)+QPoint(size.width(),0), qRgb(0,255,0));
@@ -2743,7 +2985,6 @@ TEST_F(Render, BufferOverBudgetRendersSmallerInsteadOfTransparent)
     if (!s_device->rhi()->supportedSampleCounts().contains(4)) GTEST_SKIP() << "no 4x multisampling";
     ShaderProgramSource source;
     source.id = QStringLiteral("over-budget");
-    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     ShaderBufferSource pass;
     pass.halfFloat = true;
     QString error;
@@ -3079,16 +3320,20 @@ TEST(ShaderGeometry, SceneMatricesComposeParentsParametersAndSpin)
     TerminalSceneUniforms scene{};
     ShaderProgram::sceneMatrices(objects, params, 1.0f, scene);
     auto point = [&](int object, QVector3D p) { return QMatrix4x4(scene.uObjectMatrix[object]).transposed().map(p); };
+    // Each component near its value: qFuzzyCompare has no tolerance at zero.
+    auto expectNear = [](QVector3D actual, QVector3D expected) {
+        for (int i = 0; i < 3; ++i) EXPECT_NEAR(actual[i], expected[i], 1e-5f) << "component " << i;
+    };
     // After one second the root has turned 90 degrees, so the child's "up"
     // offset points left of the root.
-    EXPECT_TRUE(qFuzzyCompare(point(1, {0, 0, 0}), QVector3D(1, 0, 0))) << point(1, {0, 0, 0}).x();
-    EXPECT_TRUE(qFuzzyCompare(point(2, {1, 0, 0}), QVector3D(1, 3, 0))) << point(2, {1, 0, 0}).y();
+    expectNear(point(1, {0, 0, 0}), QVector3D(1, 0, 0));
+    expectNear(point(2, {1, 0, 0}), QVector3D(1, 3, 0));
     // Normals undo the scale.
     const QMatrix4x4 normal = QMatrix4x4(scene.uObjectNormalMatrix[2]).transposed();
     EXPECT_NEAR(normal.mapVector({1, 0, 0}).length(), 1.0f / 3.0f, 1e-5f);
     params[4] = 2.0f;
     ShaderProgram::sceneMatrices(objects, params, 1.0f, scene);
-    EXPECT_TRUE(qFuzzyCompare(point(1, {0, 0, 0}), QVector3D(0, 0, 0)));
+    expectNear(point(1, {0, 0, 0}), QVector3D(0, 0, 0));
 }
 
 TEST(ShaderGeometry, RejectsExcessiveOrIncompleteDraws)
@@ -3138,19 +3383,27 @@ TEST(ShaderGeometry, ClockPointerAndTimeHelpersAreDetected)
         EXPECT_TRUE(program) << error.toStdString();
         return program;
     };
+    // Every body compiles before any program is read: a failure, which
+    // compileBody reports, ends the test here.
+    const auto date = compileBody("return vec4(fract(iDate.w));");
+    const auto angle = compileBody("return vec4(sin(timeAngle(1.0)));");
+    const auto still = compileBody("return vec4(1);");
+    const auto commented = compileBody("// iTime\n/* timeAngle(1.0) */ return vec4(1);");
+    const auto ages = compileBody("return vec4(cursorAge() + focusAge() + signalAge(0));");
+    const auto value = compileBody("return vec4(signalValue(0));");
+    const auto pointer = compileBody("return vec4(iMouse.x > 0.0 ? 1.0 : 0.0);");
+    ASSERT_TRUE(date && angle && still && commented && ages && value && pointer);
     // iDate and the contract's time helpers animate, like iTime.
-    EXPECT_TRUE(compileBody("return vec4(fract(iDate.w));")->animated());
-    EXPECT_TRUE(compileBody("return vec4(sin(timeAngle(1.0)));")->animated());
-    EXPECT_FALSE(compileBody("return vec4(1);")->animated());
+    EXPECT_TRUE(date->animated());
+    EXPECT_TRUE(angle->animated());
+    EXPECT_FALSE(still->animated());
     // A comment that mentions the clock is not a read of it.
-    EXPECT_FALSE(compileBody("// iTime\n/* timeAngle(1.0) */ return vec4(1);")->animated());
+    EXPECT_FALSE(commented->animated());
     // Event ages are not a clock: they settle (PostChain::animated()).
-    auto ages = compileBody("return vec4(cursorAge() + focusAge() + signalAge(0));");
     EXPECT_FALSE(ages->animated());
     EXPECT_EQ(ages->eventAges(), unsigned(CursorAge | FocusAge | SignalAge));
-    EXPECT_EQ(compileBody("return vec4(signalValue(0));")->eventAges(), 0u);
+    EXPECT_EQ(value->eventAges(), 0u);
     // A pack that reads only the pointer asks for frames when it moves.
-    auto pointer = compileBody("return vec4(iMouse.x > 0.0 ? 1.0 : 0.0);");
     EXPECT_TRUE(pointer->readsMouse());
     EXPECT_FALSE(pointer->animated());
     ShaderChains chains;
@@ -3244,7 +3497,11 @@ TEST_F(Render, AFrameThatFailsSubmitsTheBatchItStaged)
     };
     auto readBack = [&] {
         QRhiCommandBuffer* cb = nullptr;
-        EXPECT_EQ(rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+        // No frame, no command buffer: the read back ends here.
+        if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) {
+            ADD_FAILURE() << "no offscreen frame for the read back";
+            return QRgb(0);
+        }
         QRhiReadbackResult result;
         QRhiResourceUpdateBatch* updates = rhi->nextResourceUpdateBatch();
         updates->readBackTexture({texture.get()}, &result);
@@ -3283,11 +3540,15 @@ TEST_F(Render, ADateOverrideReplacesTheWallClocksDate)
     // June 31 does not exist: the fields go to the shader as given.
     renderer->setDateOverride(std::array<float, 4>{2026.0f, 6.0f, 31.0f, 21600.0f});
     EXPECT_PIXEL(render("\x1b[?25l"), cellCenter(2, 2), qRgb(128, 255, 64));
-    // Unset: the wall clock's month again.
+    // Unset: the wall clock's month again. The month can turn during the
+    // frame: either one passes.
     renderer->setDateOverride(std::nullopt);
+    const int before = QDate::currentDate().month();
     const QImage image = render("");
-    const int month = QDate::currentDate().month();
-    EXPECT_NEAR(qRed(image.pixel(cellCenter(2, 2))), month / 12.0 * 255, 3);
+    const int after = QDate::currentDate().month();
+    const int red = qRed(image.pixel(cellCenter(2, 2)));
+    EXPECT_TRUE(std::abs(red - before / 12.0 * 255) <= 3 || std::abs(red - after / 12.0 * 255) <= 3)
+        << red << " for month " << before << " or " << after;
 }
 
 TEST_F(Render, ShaderRegionsClipAnimatedBoundsToSurface)
@@ -3360,7 +3621,9 @@ TEST_F(Render, ShaderCursorBoxMatchesDoubleWidthAndMulticellDrawing)
         std::vector<Instance> instances;
         auto& resources = renderer->fonts();
         builder.buildPane(snapshot, pane.params, *resources.fonts, resources.glyphs, instances, ranges);
-        ASSERT_LT(ranges.cursorStart, instances.size());
+        // One case failing does not hide the other.
+        EXPECT_LT(ranges.cursorStart, instances.size()) << "multicell " << multicell;
+        if (ranges.cursorStart >= instances.size()) continue;
         const auto& cursor = instances[ranges.cursorStart];
         EXPECT_EQ(QRectF(cursor.x, cursor.y, cursor.w, cursor.h), expected);
         // QString::number ignores LC_NUMERIC; std::to_string would write 63,000000 in de_DE.
@@ -3559,13 +3822,16 @@ TEST(GlyphCache, OverBudgetOnlyAPageUnusedForStaleAfterDiscardsTheCache)
     GlyphCache cache;
     // The renders' clock is the test's, so a slow setup does not age the pages.
     const auto start = std::chrono::steady_clock::now();
-    // Five full gray pages: 80 MiB, over the 64 MiB budget.
+    // Five gray pages: each sprite opens a new page after the one before
+    // is full, so four are full and the fifth holds one sprite. 80 MiB,
+    // over the 64 MiB budget.
     int x = 0, y = 0, width = 49;
     while (cache.grayPageCount() < 5 && width > 0) {
         while (cache.grayPage(cache.grayPageCount() - 1).allocate(128, 128, x, y)) {}
         cache.beginFrame(std::numeric_limits<std::size_t>::max() / 2, 8192, start);
         cache.sprite(fonts, U'\u2588', width--, 7); // a new size: a new entry, on a new page
     }
+    ASSERT_EQ(cache.grayPageCount(), 5u);
     ASSERT_GT(cache.bytes(), 64u * 1024 * 1024);
     const auto epoch = cache.epoch();
     // Other windows render many times in a fraction of a second: no page of
@@ -3622,7 +3888,11 @@ TEST(GlyphCache, DashedLinesKeepEveryDashOrDrawSolid)
         const int expected = fonts.metrics().cellWidth >= 8 ? 4 : 1;
         GlyphCache cache;
         const GlyphEntry* e = cache.sprite(fonts, U'\u2508'); // four light dashes
-        ASSERT_FALSE(e->empty);
+        // One size failing does not hide the others.
+        EXPECT_NE(e, nullptr) << points << " pt";
+        if (!e) continue;
+        EXPECT_FALSE(e->empty) << points << " pt";
+        if (e->empty) continue;
         const QImage& page = cache.grayPage(e->page).image();
         const int row = e->v + e->height / 2;
         int runs = 0;
@@ -3809,7 +4079,7 @@ TEST_F(Render, AnOverlayTransitionCrossFadesThePaneAndItsOverlayThroughThePaneAn
     ASSERT_TRUE(fade);
     // A shader that swaps red and green: both images go through it.
     const ShaderProgramPtr swap = layerShader("swap", "fragColor = c.grba;");
-    ASSERT_TRUE(swap);
+    ASSERT_TRUE(compiledShader(swap));
     // As a pane shader, and as a background shader: then the pane under the
     // overlay takes the layered path, with its own composite.
     for (const bool layered : {false, true}) {
@@ -3862,7 +4132,7 @@ TEST_F(Render, AnOverlayFadingInOnePaneLeavesTheOtherPaneAsItWas)
     const ShaderProgramPtr fade = overlayFade();
     ASSERT_TRUE(fade);
     const ShaderProgramPtr swap = layerShader("swap", "fragColor = c.grba;");
-    ASSERT_TRUE(swap);
+    ASSERT_TRUE(compiledShader(swap));
     for (const bool layered : {false, true}) {
         SCOPED_TRACE(layered ? "background chain" : "pane chain");
         ShaderChains chains;
@@ -3903,10 +4173,10 @@ TEST_F(Render, AnOverlaySwitchesAtHalfwayWhileTheTabImageIsTaken)
     const ShaderProgramPtr fade = overlayFade();
     ASSERT_TRUE(fade);
     const ShaderProgramPtr pass = layerShader("pass", "");
-    ASSERT_TRUE(pass);
+    ASSERT_TRUE(compiledShader(pass));
     // Pane effects show the closed pane's last frame on the right half.
     const ShaderProgramPtr ghost = panesShader("ghost", "return uv.x > 0.5 ? texture(uTabImage, uv) : terminalTexel(uv);");
-    ASSERT_TRUE(ghost);
+    ASSERT_TRUE(compiledShader(ghost));
     ShaderChains chains;
     chains.overlayTransition = {fade};
     chains.overview = {pass};
@@ -4040,7 +4310,7 @@ TEST_F(Render, ThePaneUnderAFadingOverlayKeepsItsOwnTextHistory)
     const ShaderProgramPtr fade = overlayFade();
     ASSERT_TRUE(fade);
     const ShaderProgramPtr keep = keepHistory();
-    ASSERT_TRUE(keep);
+    ASSERT_TRUE(compiledShader(keep));
     // The pane's snapshot is taken by each frame below; the first now, for its colours.
     terminal->feed("\x1b[?25l");
     snapshot.capture(*terminal);
@@ -4096,7 +4366,7 @@ TEST_F(Render, TheTrailsOfThePaneUnderAnOverlayOutlastItsFadeOut)
     const ShaderProgramPtr fade = overlayFade();
     ASSERT_TRUE(fade);
     const ShaderProgramPtr keep = keepHistory();
-    ASSERT_TRUE(keep);
+    ASSERT_TRUE(compiledShader(keep));
     ShaderChains chains;
     chains.text = {keep};
     chains.overlayTransition = {fade};
@@ -4500,6 +4770,11 @@ TEST_F(PopupRender, APopupPastItsPaneIsClippedToThePane)
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);
+    // fontconfig reads the user's configuration (aliases, hinting, rejected
+    // fonts) from XDG_CONFIG_HOME/fontconfig: an empty one keeps it out of
+    // the pixels. The fonts stay: the system's and those in XDG_DATA_HOME.
+    const QTemporaryDir config;
+    if (config.isValid()) qputenv("XDG_CONFIG_HOME", QFile::encodeName(config.path()));
     Testing::selectPlatform();
     QGuiApplication app(argc, argv);
     Testing::Device made = Testing::makeDevice();

@@ -263,6 +263,11 @@ public:
     bool meshPass() const noexcept { return !m_geometry.vertexCode.isEmpty(); }
     int vertexCount() const noexcept { return meshPass() ? m_geometry.vertexCount : m_vertexShader.isValid() ? 6 : 3; }
     const QShader& shader() const noexcept { return m_shader; }
+    /// The pack's pointer map (pPointerMap) as its own stage, which writes
+    /// the map's result for each position of the canvas. Invalid when the
+    /// pack defines none. See PointerMaps.
+    const QShader& pointerShader() const noexcept { return m_pointerShader; }
+    bool hasPointerMap() const noexcept { return m_pointerShader.isValid(); }
     const QString& id() const noexcept { return m_id; }
     const QString& instanceId() const noexcept { return m_instanceId; }
     std::shared_ptr<const ShaderProgram> instance(const QString& id) const
@@ -328,6 +333,7 @@ private:
     std::array<QImage, MaxShaderImages> m_images;
     std::array<QString, MaxShaderImages> m_imagePaths;
     QShader m_shader;
+    QShader m_pointerShader;
     QShader m_vertexShader;
     bool m_depthOutput = false;
     ShaderGeometry m_geometry;
