@@ -9,6 +9,7 @@
 #include <AfterglowRender/PostChain.h>
 #include <AfterglowRender/Snapshot.h>
 
+#include "PointerMap.h"
 #include "Sprites.h"
 #include <AfterglowRender/RenderFrame.h>
 
@@ -778,7 +779,46 @@ WindowRenderer::WindowRenderer(GpuDevice& device, QWindow* window)
 
 WindowRenderer::~WindowRenderer()
 {
+    // The maps' pipelines and textures go before the device's resources.
+    m_pointerMaps.reset();
     releaseSwapChain();
+}
+
+bool WindowRenderer::hasPointerMaps() const
+{
+    if (!m_post) return false;
+    const ShaderChains& chains = m_post->chains();
+    auto mapped = [](const ShaderProgramPtr& p) { return p && p->hasPointerMap(); };
+    return std::any_of(chains.pane.begin(), chains.pane.end(), mapped)
+        || std::any_of(chains.window.begin(), chains.window.end(), mapped);
+}
+
+QPointF WindowRenderer::unwarp(const std::vector<ShaderProgramPtr>& chain, const QPointF& point, const QSize& canvas,
+                               const ShaderParameterMap& parameters)
+{
+    QPointF p = point;
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        const ShaderProgramPtr& program = *it;
+        if (!program || !program->hasPointerMap()) continue;
+        if (!m_pointerMaps) m_pointerMaps = std::make_unique<PointerMaps>(m_device);
+        const auto values = parameters.constFind(program->instanceId());
+        p = m_pointerMaps->unwarp(program, canvas, values == parameters.cend() ? nullptr : &*values, p);
+    }
+    return p;
+}
+
+QPointF WindowRenderer::windowContentPoint(const QPointF& windowPixel, const QSize& windowSize,
+                                           const ShaderParameterMap& parameters)
+{
+    if (!m_post) return windowPixel;
+    return unwarp(m_post->chains().window, windowPixel, windowSize, parameters);
+}
+
+QPointF WindowRenderer::paneContentPoint(const QPointF& windowPixel, const QRect& paneRect, const ShaderParameterMap& parameters)
+{
+    if (!m_post || paneRect.isEmpty()) return windowPixel;
+    return unwarp(m_post->chains().pane, windowPixel - QPointF(paneRect.topLeft()), paneRect.size(), parameters)
+        + QPointF(paneRect.topLeft());
 }
 
 FontResources& WindowRenderer::fonts()
@@ -858,6 +898,8 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
         m_scrollbackInitialized = false;
         m_scrollbackSettling = false;
     }
+    // Maps of the old chains, and pipelines made for their programs.
+    if (m_pointerMaps) m_pointerMaps->clear();
     if (chains.empty()) {
         m_post.reset();
         m_postWasActive = false;

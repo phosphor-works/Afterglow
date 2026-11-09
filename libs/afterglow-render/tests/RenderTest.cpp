@@ -1045,6 +1045,80 @@ ShaderProgramPtr panesShader(const char* id, const char* body)
 }
 } // namespace
 
+namespace {
+ShaderProgramPtr pointerMapProgram(const char* id, const char* map)
+{
+    ShaderProgramSource src;
+    src.id = QString::fromLatin1(id);
+    src.code = QByteArray("vec4 pTerminal(vec2 uv) { return terminalTexel(uv); }\n") + map;
+    QString error;
+    auto program = ShaderProgram::compile(src, &error);
+    EXPECT_TRUE(program) << error.toStdString();
+    return program ? program->instance(QString::fromLatin1(id)) : nullptr;
+}
+} // namespace
+
+TEST_F(Render, PointerMapsFindTheContentUnderThePointer)
+{
+    // A map that mirrors the canvas: the content at x came from width - x.
+    auto mirror = pointerMapProgram("mirror", "vec2 pPointerMap(vec2 uv) { return vec2(1.0 - uv.x, uv.y); }\n");
+    ASSERT_TRUE(mirror && mirror->hasPointerMap());
+    auto none = pointerMapProgram("none", "");
+    ASSERT_TRUE(none && !none->hasPointerMap());
+    // A stage with its own main() has no generated entry, so no map.
+    ShaderProgramSource own;
+    own.id = QStringLiteral("own-main");
+    // Such a stage has no prologue either: it declares what it uses.
+    own.code = "#version 450\nlayout(location = 0) out vec4 fragColor;\nvec2 pPointerMap(vec2 uv) { return uv; }\n"
+               "void main() { fragColor = vec4(pPointerMap(vec2(0.5)), 0.0, 1.0); }\n";
+    QString error;
+    auto ownMain = ShaderProgram::compile(own, &error);
+    ASSERT_TRUE(ownMain) << error.toStdString();
+    EXPECT_FALSE(ownMain->hasPointerMap());
+
+    const QSize window(200, 100);
+    ShaderChains chains;
+    chains.window = {none, mirror};
+    renderer->setShaderChains(chains);
+    EXPECT_TRUE(renderer->hasPointerMaps());
+    auto near = [](QPointF a, QPointF b) { return std::abs(a.x() - b.x()) < 0.5 && std::abs(a.y() - b.y()) < 0.5; };
+    EXPECT_TRUE(near(renderer->windowContentPoint({10, 20}, window, {}), {190, 20}));
+    EXPECT_TRUE(near(renderer->windowContentPoint({150, 80}, window, {}), {50, 80}));
+    // A pane chain maps inside its pane's rectangle.
+    chains = {};
+    chains.pane = {mirror};
+    renderer->setShaderChains(chains);
+    EXPECT_TRUE(near(renderer->windowContentPoint({10, 20}, window, {}), {10, 20})); // the window chain has no map
+    EXPECT_TRUE(near(renderer->paneContentPoint({110, 60}, QRect(100, 50, 200, 100), {}), {290, 60}));
+    // The canvas size: a shift of 10 pixels on any canvas.
+    auto shift = pointerMapProgram("shift", "vec2 pPointerMap(vec2 uv) { return uv + vec2(10.0 / iResolution.x, 0.0); }\n");
+    chains = {};
+    chains.window = {shift};
+    renderer->setShaderChains(chains);
+    EXPECT_TRUE(near(renderer->windowContentPoint({50, 50}, QSize(300, 200), {}), {60, 50}));
+    EXPECT_TRUE(near(renderer->windowContentPoint({50, 50}, QSize(800, 600), {}), {60, 50}));
+    // Live parameter values: the map is evaluated again for new ones.
+    auto scaled = pointerMapProgram("scaled", "vec2 pPointerMap(vec2 uv) { return vec2(uv.x * customParams[0].x, uv.y); }\n");
+    chains = {};
+    chains.window = {scaled};
+    renderer->setShaderChains(chains);
+    ShaderParameterMap parameters;
+    ShaderParameterValues half;
+    half.paramMask = 1;
+    half.params[0] = 0.5f;
+    parameters.insert(scaled->instanceId(), half);
+    EXPECT_TRUE(near(renderer->windowContentPoint({100, 50}, window, parameters), {50, 50}));
+    half.params[0] = 0.25f;
+    parameters.insert(scaled->instanceId(), half);
+    EXPECT_TRUE(near(renderer->windowContentPoint({100, 50}, window, parameters), {25, 50}));
+    // Without maps, the point itself.
+    chains = {};
+    chains.window = {none};
+    renderer->setShaderChains(chains);
+    EXPECT_FALSE(renderer->hasPointerMaps());
+    EXPECT_EQ(renderer->windowContentPoint({33, 44}, window, {}), QPointF(33, 44));
+}
+
 TEST_F(Render, LiveParameterOverridesReachLayerPaneAndWindowUniforms)
 {
     auto source = layerShader("live-parameters", "fragColor = vec4(customParams[0].x, customColors[0].g, 0.0, 1.0);");

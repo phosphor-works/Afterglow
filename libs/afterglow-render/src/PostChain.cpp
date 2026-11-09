@@ -7,6 +7,8 @@
 #include <AfterglowRender/PostChain.h>
 #include <AfterglowRender/Snapshot.h>
 
+#include "ShaderBindings.h"
+
 #include <PhosphorShaders/ShaderBindings.h>
 
 #include <QFile>
@@ -63,13 +65,12 @@ float age(double now, double when)
     return float(std::clamp(now - when, 0.0, 1e6));
 }
 
-/// uPreviousText in terminal_history.glsl: the first binding above Phosphor's table.
-constexpr int PreviousTextBinding = PhosphorShaders::Bindings::kExtraBase;
-/// TerminalScene in terminal_scene.glsl: object matrices for mesh passes.
-constexpr int SceneBinding = PreviousTextBinding + 1;
-constexpr int PanesBinding = SceneBinding + 1;
-constexpr int TabImageBinding = PanesBinding + 1;
-constexpr int TabAtlasBinding = TabImageBinding + 1;
+// Afterglow's bindings above Phosphor's table (ShaderBindings.h).
+constexpr int PreviousTextBinding = Bindings::PreviousText;
+constexpr int SceneBinding = Bindings::Scene;
+constexpr int PanesBinding = Bindings::Panes;
+constexpr int TabImageBinding = Bindings::TabImage;
+constexpr int TabAtlasBinding = Bindings::TabAtlas;
 
 /// Shrinks the window-sized tab image into an atlas tile: each tile pixel
 /// averages a 3x3 grid across the source pixels it covers.

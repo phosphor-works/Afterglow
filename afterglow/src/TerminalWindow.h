@@ -360,6 +360,12 @@ private:
     int tabBarHeight(int tabCount = -1) const;
     /// The window in pixels, before the renderer has a size too.
     QSize windowPixels() const;
+    /// Where the content shown at @p pos (logical) sits in the layout:
+    /// through the pointer maps (pPointerMap) of the window chain, and of
+    /// the pane chain for @p pane. Without maps, @p pos itself. Panes and
+    /// cells are found at this position; the chrome, drawn over the chains,
+    /// at @p pos.
+    QPointF contentPosition(const QPointF& pos, Pane* pane = nullptr) const;
     /// The window below the tab bar, in pixels, with @p tabCount tabs (the
     /// current count when negative): what the docks and panes share.
     QRect windowArea(int tabCount = -1) const;

@@ -602,7 +602,8 @@ Pane* TerminalWindow::paneUnder(const QPointF& logical) const
 {
     const QPoint pixel = dockPixel(logical);
     if (!m_splits || dockAt(pixel)) return nullptr;
-    return m_splits->paneAt(pixel);
+    // The pane whose content shows here, through the window chain's maps.
+    return m_splits->paneAt(dockPixel(contentPosition(logical)));
 }
 
 QList<const DockArea*> TerminalWindow::accessibleDocks() const

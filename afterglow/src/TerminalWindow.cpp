@@ -3303,7 +3303,7 @@ void TerminalWindow::applyPointerShape()
         setCursor(Qt::PointingHandCursor);
         return;
     }
-    Pane* pane = m_splits ? pointerTarget(m_splits->paneAt(px), m_pointer) : nullptr;
+    Pane* pane = m_splits ? pointerTarget(m_splits->paneAt((contentPosition(m_pointer) * devicePixelRatio()).toPoint()), m_pointer) : nullptr;
     const QString shape = pane ? motion(pane).pointerShape : QString();
     setCursor(protocolPointer(shape, devicePixelRatio()));
 }
@@ -4511,11 +4511,26 @@ float TerminalWindow::drawnScrollShift(const Pane* pane) const
     return found == m_motion.end() ? 0.0f : found->second->scrollShift;
 }
 
+QPointF TerminalWindow::contentPosition(const QPointF& pos, Pane* pane) const
+{
+    if (!m_renderer->hasPointerMaps()) return pos;
+    const qreal dpr = devicePixelRatio();
+    auto values = [this](Pane* p) { return p ? m_shaderControls.values(p->id()) : AfterglowRender::ShaderParameterMap{}; };
+    // The window chain draws over the composed panes, so its maps come
+    // first; it runs with the focused pane's values, as GridRenderer gives them.
+    QPointF px = m_renderer->windowContentPoint(pos * dpr, windowPixels(), values(m_focused));
+    if (pane && m_splits) {
+        Pane* host = hostOf(pane);
+        px = m_renderer->paneContentPoint(px, m_splits->rectOf(host), values(host));
+    }
+    return px / dpr;
+}
+
 QPointF TerminalWindow::gridPixel(Pane* pane, const QPointF& pos) const
 {
     const QPoint origin = contentRect(pane, m_splits->rectOf(hostOf(pane))).topLeft();
     // The rows were drawn higher by the scroll shift.
-    return pos * devicePixelRatio() - QPointF(origin) + QPointF(0, drawnScrollShift(pane));
+    return contentPosition(pos, pane) * devicePixelRatio() - QPointF(origin) + QPointF(0, drawnScrollShift(pane));
 }
 
 QPoint TerminalWindow::cellAt(Pane* pane, const QPointF& pos) const
@@ -4576,7 +4591,7 @@ int TerminalWindow::rawRowAt(Pane* pane, const QPointF& pos) const
 {
     const auto& m = m_renderer->fonts().fonts->metrics();
     const QPoint origin = contentRect(pane, m_splits->rectOf(hostOf(pane))).topLeft();
-    return int(std::floor((pos.y() * devicePixelRatio() - origin.y() + drawnScrollShift(pane)) / m.cellHeight));
+    return int(std::floor((contentPosition(pos, pane).y() * devicePixelRatio() - origin.y() + drawnScrollShift(pane)) / m.cellHeight));
 }
 
 void TerminalWindow::emitDockEvent(const DockArea& dock, const QString& handler, QVariantMap event, bool limited)
@@ -4656,7 +4671,7 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     const bool divider = e->button() == Qt::LeftButton && !(e->modifiers() & Qt::ControlModifier)
         && dividerTakesDock(dockPixel(e->position()));
     if (!divider && pressDock(e)) return;
-    Pane* p = m_splits->paneAt((e->position() * devicePixelRatio()).toPoint());
+    Pane* p = m_splits->paneAt((contentPosition(e->position()) * devicePixelRatio()).toPoint());
     if (p && p != m_focused) {
         setFocusedPane(p);
     }
@@ -5072,7 +5087,7 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
         wheelDock(*overDock, overPixel, e);
         return;
     }
-    Pane* p = m_splits->paneAt((e->position() * devicePixelRatio()).toPoint());
+    Pane* p = m_splits->paneAt((contentPosition(e->position()) * devicePixelRatio()).toPoint());
     if (!p) {
         p = m_focused;
     }

@@ -580,6 +580,43 @@ TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
 
 INSTANTIATE_TEST_SUITE_P(Shaders, NativeRenderer, ::testing::Bool());
 
+QRectF gridOf(TerminalWindow* window, Pane* pane); // the pane's cells, in window logical pixels
+QByteArray fileContent(const QString& path);
+TEST_F(NativeWindow, AClickOnABentPaneReachesTheCellDrawnThere) {
+    // CRT Curve bends each pane: content near the edges moves outwards. Its
+    // pointer map (pPointerMap) moves the click the same way.
+    const QString reports = directory.filePath(QStringLiteral("reports"));
+    restartApplication(QStringLiteral("crt.conf"),
+        testSettings({{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("pane"), QJsonArray{QStringLiteral("crt-curve")}},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("crt-curve"), QJsonObject{{QStringLiteral("curvature"), 0.3}}}}}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+         QStringLiteral("stty raw -echo; printf '\\033[?1000h\\033[?1006h'; exec cat > \"$0\""), reports});
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] {
+        return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.modes().mouseTracking != AfterglowVt::MouseTracking::None; });
+    }));
+    const QRectF grid = gridOf(window, pane);
+    const double cell = grid.width() / pane->cols();
+    // The column that the layout has at x, 1-based as SGR reports count.
+    auto layoutColumn = [&](double x) { return int(std::floor((x - grid.left()) / cell)) + 1; };
+    auto click = [&](const QPointF& at) {
+        const qsizetype before = fileContent(reports).size();
+        clickLeft(window, at);
+        EXPECT_TRUE(waitFor([&] { return fileContent(reports).size() > before; }));
+        const QByteArray report = fileContent(reports).mid(before);
+        const auto parts = report.mid(report.indexOf('<') + 1).split(';');
+        return parts.size() >= 2 ? parts[1].toInt() : -1;
+    };
+    // The centre does not move.
+    const QPointF centre = grid.center();
+    EXPECT_LE(std::abs(click(centre) - layoutColumn(centre.x())), 1);
+    // Near the right edge the content came from further right.
+    const QPointF edge(grid.left() + grid.width() * 0.88, grid.center().y());
+    const int drawn = click(edge);
+    EXPECT_GT(drawn, layoutColumn(edge.x()) + 2) << drawn << " " << layoutColumn(edge.x());
+    EXPECT_LE(drawn, pane->cols());
+}
+
 TEST_F(NativeWindow, FailedLaunchDoesNotAddPaneOrTab) {
     const int panes = window->panes().size(), tabs = window->tabs().size();
     PaneLaunchOptions options; options.command = {QStringLiteral("/nonexistent/afterglow-test-program")};

@@ -36,6 +36,7 @@ Each stage defines one function. Afterglow adds `terminal_lib.glsl`, the paramet
 | Final and buffer passes | `vec4 pTerminal(vec2 uv)` returns premultiplied color for `uv`. |
 | `vertexShader` | `vec4 pVertex(vec2 uv)` returns the clip position of the canvas quad's corner at `uv`. |
 | Mesh vertex shader | `vec4 pMesh()` returns the clip position of the current vertex. |
+| Final pass, optional | `vec2 pPointerMap(vec2 uv)` returns where the content shown at `uv` comes from. See [pointer maps](#pointer-maps). |
 
 A stage can define `main()` instead. Afterglow then adds only the parameter definitions.
 That stage must declare `#version 450`, its includes and its outputs.
@@ -196,6 +197,36 @@ The pass does not run for pixels that a smaller quad leaves out.
 In a pane chain, those pixels show the undeformed pane, because pane passes draw over a copy of their input.
 The overlay transition also draws over a copy of its input, so those pixels show the overlay.
 In window, overview, tab transition and pane effects passes, they show the window's clear color.
+
+## Pointer maps
+
+A pack that moves the content, such as a bend or a lens, makes a click land on the wrong cell.
+The click is at the cell that the layout has there, not at the cell that the pack draws there.
+To prevent this, define the pointer map in the final pass, beside `pTerminal`:
+
+```glsl
+vec2 pPointerMap(vec2 uv)
+```
+
+It returns the position of the content that the pack shows at `uv`, in the same coordinates as `pTerminal`.
+Usually it returns the coordinate that `pTerminal` gives to `terminalTexel`.
+Afterglow moves the pointer through it before it finds the pane and the cell.
+This applies to clicks, selections, links, mouse reports to programs, drops and the shape of the pointer.
+The chrome (the tab bar and the menus) is drawn over the chains, so the map does not move it.
+
+| Item | Rule |
+| --- | --- |
+| Chains | The pane chain and the window chain. Layer and event chains do not use the map. |
+| Order | Last pass first: the window chain, then the pane chain of the pane that the result is in. |
+| Inputs | Only `uv`, the canvas size `iResolution` and the pack's parameters. Time, events, the pointer and samplers do not apply. |
+| Parameters | The live values: the pane's for a pane chain, the focused pane's for the window chain. |
+| `main()` | A final pass that defines its own `main()` has no pointer map. |
+| Positions outside the canvas | A result outside 0 to 1 goes to the nearest cell at the edge. |
+
+Afterglow evaluates the map on the GPU into a grid of 128 columns, and the rows that keep the canvas aspect.
+Between grid points the map is linear, so a map must be smooth.
+Afterglow evaluates it again when the canvas size or a parameter value changes, at the next pointer event.
+[CRT Curve](../data/shaders/crt-curve/effect.frag) bends the canvas and moves the pointer the same way.
 
 ## Mesh passes
 
