@@ -642,8 +642,9 @@ PhosphorConfig::Schema buildSchema()
                         "socket also when this is off.")},
         {QStringLiteral("allowReadText"), d.control.allowReadText, QMetaType::Bool,
          QStringLiteral("Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands "
-                        "that run and the values of user variables. A script command that runs for a client, such as aglow "
-                        "run or afterglow run, reads pane text only when Scripts.allowReadText is on too.")},
+                        "that run and the values of user variables. It also allows screenshots of panes, tabs and windows. A "
+                        "script command that runs for a client, such as aglow run or afterglow run, reads pane text only when "
+                        "Scripts.allowReadText is on too.")},
         {QStringLiteral("allowRemoteReadText"), d.control.allowRemoteReadText, QMetaType::Bool,
          QStringLiteral("Allow a script command that runs from a remote host, with aglow run in an afterglow ssh session, to "
                         "read pane text. Any process of the remote user, and the remote root user, can run such a "
@@ -757,8 +758,9 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[GraphicsGroup] = {
         intKey(QStringLiteral("quota"), int(term.graphicsQuota >> 20), 16, 4096,
-               QStringLiteral("Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps. A pane has "
-                              "a main and an alternate screen. The oldest images go first when a screen is full.")),
+               QStringLiteral("Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 "
+                              "bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images "
+                              "without a placement go first: those sent with the transient hint (N=1), then the oldest.")),
     };
     schema.groups[NotificationsGroup] = {
         {QStringLiteral("enabled"), d.notifications, QMetaType::Bool,

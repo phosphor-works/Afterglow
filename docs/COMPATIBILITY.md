@@ -20,6 +20,7 @@ The following table describes tested features. It does not claim complete xterm,
 | Native terminal accessibility | Viewport text, cursor, selection and character geometry through Qt/AT-SPI; pane actions, the pane menu and docked-area buttons | `DesktopText.*`, `NativeWindow.Accessible*`, `desktop_acceptance.py`; [accessibility](DESKTOP.md#accessible-terminal-text) |
 | Local file drop | Local absolute paths quoted for Bash/Zsh/Fish, targeted pane, bracketed paste, no automatic Enter | `FileDrop.*`; [file-drop workflow](DESKTOP.md#drop-files-and-text-into-a-pane) |
 | Text drop and selection drag | Dropped text pasted with the size limit and the question of a paste, selected text dragged to another pane or application (`Mouse.dragSelection`) | `NativeWindow.Dropped*`, `NativeWindow.DropsThatAPaneRefusesPasteNothing`, `NativeWindow.ASelection*`, `NativeWindow.*InsideTheSelection*`; [text drops](DESKTOP.md#drop-files-and-text-into-a-pane), [selection drag](INPUT.md#drag-selected-text-out-of-a-pane) |
+| Kitty indexed images | `f=8` and `f=16`; the special indices 248 to 255; a new color of the pane draws the image again; no frames | `Graphics.Indexed*`, `Render.IndexedImages*`, `SnapshotImages.Indexed*`; [indexed images](#indexed-images) |
 
 ## Relative images
 
@@ -30,10 +31,10 @@ Each store has these limits:
 
 | Item | Limit | At the limit |
 | --- | --- | --- |
-| Images | 4,096 | Afterglow deletes the oldest image without a placement. When every image has a placement, a Kitty command gets an `ENOSPC` error. |
+| Images | 4,096 | Afterglow deletes an image without a placement: first an image with the transient hint (`N=1`), then the oldest. When every image has a placement, a Kitty command gets an `ENOSPC` error. |
 | Placements | 4,096 | A Kitty command gets an `ENOSPC` error. A new Sixel or iTerm2 image removes the oldest Sixel or iTerm2 placement. When there is none, Afterglow does not keep the new image. |
 | Frames per image | 1,024 | A Kitty command gets an `ENOSPC` error. |
-| Image data | `Graphics.quota`, 320 MiB by default | Afterglow deletes the oldest image without a placement, then the oldest image. |
+| Image data | `Graphics.quota`, 320 MiB by default, at 4 bytes for each pixel | Afterglow deletes images without a placement: first those with the transient hint (`N=1`), then the oldest. When none is left, it deletes the oldest image with a placement. |
 | Pending transmissions | 320 MiB | The transmission fails with an `EFBIG` error. |
 
 An omitted parent placement ID selects the first matching placement at creation.
@@ -77,7 +78,7 @@ These cases give that error:
 - The file or object does not exist, or it is not a regular file.
 - The file is in `/proc`, `/sys` or `/dev`, except `/dev/shm`.
 - The name is longer than 4,096 bytes.
-- The file holds less data than `s` × `v` raw pixels.
+- The file holds less data than `s` × `v` raw or indexed pixels.
 - The data is PNG (`f=100`) or compressed (`o=z`), and the part to read is longer than 320 MiB.
 
 The main screen and the alternate screen of a pane each have their own image work budget.
@@ -97,7 +98,6 @@ While a read waits, for example on a network mount that does not answer, the pan
 To prevent this, set `Terminal.graphicsFileTransfer` to `"deny"`.
 
 A feature query (`a=q` with `e`) gets the keys of that action that Afterglow supports.
-Afterglow does not support the indexed formats `f=8` and `f=16`.
 The transient usage hint (`N=1`) applies to a transmission (`a=t`, `a=T`). It does not apply to a frame (`a=f`).
 When Afterglow must delete an image to make room, it first deletes an image with the hint that has no placement.
 A feature query reports `N` for the transmit and query actions.
@@ -106,21 +106,49 @@ The `r` key selects the frame (the first frame is 1). Without `r`, the command d
 On an image with one frame, `d=F` deletes the image, and `d=f` keeps it.
 
 Afterglow checks the size that a Kitty transmission declares before it reads or decompresses the data.
-Raw pixels (`f=24` or `f=32`) use 3 or 4 bytes for each pixel.
+Raw pixels (`f=24` or `f=32`) use 3 or 4 bytes for each pixel, and Afterglow keeps 4.
+Indexed pixels (`f=8` or `f=16`) use 1 or 2 bytes for each pixel, and Afterglow keeps the same number.
+The limits count 4 bytes for each pixel of all these formats, because Afterglow draws every image as RGBA.
 
 | Case | Result |
 | --- | --- |
 | `o` has a value that is not `z` | The program gets an `EINVAL` error. |
-| `f` is not 24, 32 or 100 | The program gets an `EINVAL` error. |
-| Raw pixels without `s` or `v`, or with a value above 10,000 | The program gets an `EINVAL` error. |
-| Raw pixels where `s` × `v` × 4 bytes is more than 320 MiB | The program gets an `EFBIG` error. |
-| Raw pixels where `s` × `v` × 4 bytes is more than `Graphics.quota` | The program gets an `ENOSPC` error. |
-| Uncompressed raw pixels from a file or shared memory | Afterglow reads `s` × `v` pixels and no more of the file. |
-| Raw pixels with `o=z` that decompress to more than `s` × `v` pixels | The program gets an `EINVAL` error. |
+| `f=0` | Afterglow reads it as the default, `f=32`, as Kitty does. |
+| `f` is not 0, 8, 16, 24, 32 or 100 | The program gets an `EINVAL` error. |
+| Raw or indexed pixels without `s` or `v`, or with a value above 10,000 | The program gets an `EINVAL` error. |
+| Raw or indexed pixels where `s` × `v` × 4 bytes is more than 320 MiB | The program gets an `EFBIG` error. |
+| Raw or indexed pixels where `s` × `v` × 4 bytes is more than `Graphics.quota` | The program gets an `ENOSPC` error. |
+| Uncompressed raw or indexed pixels from a file or shared memory | Afterglow reads `s` × `v` pixels and no more of the file. |
+| Raw or indexed pixels with `o=z` that decompress to more than `s` × `v` pixels | The program gets an `EINVAL` error. |
 | PNG data (`f=100`) or `o=z` data that is longer than 320 MiB, inline | The program gets an `EFBIG` error. |
 | PNG data with `o=z` that decompresses to more than `Graphics.quota` or 320 MiB | The program gets an `EINVAL` error. |
 | A PNG image whose decoded pixels (width × height × 4 bytes) are more than 320 MiB | The program gets an `EBADPNG` error. |
 | A PNG image whose decoded pixels (width × height × 4 bytes) are more than `Graphics.quota` | The program gets an `ENOSPC` error. |
+
+## Indexed images
+
+An indexed image (`f=8` or `f=16`) holds palette indices, so it follows the colors of the pane.
+When the colors of the pane change, Afterglow draws the image again in the new colors.
+A theme, OSC 4 and OSC 21 are examples of such a change.
+With `f=8`, every pixel is opaque. With `f=16`, the second byte of each pixel is its alpha.
+
+| Index | Color |
+| --- | --- |
+| 0 to 247 | Entries 0 to 247 of the 256-color palette |
+| 248 | The default background. `Window.backgroundOpacity` does not apply to it. |
+| 249 | The default foreground |
+| 250 | The selection background, or the default foreground when no setting or program sets it |
+| 251 | The selection foreground, or the default background when no setting or program sets it |
+| 252 | The cursor color, or the default foreground when no setting or program sets it |
+| 253 | The cursor text color, or the default background when no setting or program sets it |
+| 254 | The default foreground. Afterglow underlines a link under the pointer in its text color. Afterglow has no link hover color. |
+| 255 | The default foreground (reserved) |
+
+In reverse video (DECSCNM), 248 and 249 change places, as the default colors do.
+An indexed image has one frame.
+A frame action (`a=f`) or a composition (`a=c`) on an indexed image gets the error `EINVAL:indexed images have no frames`.
+A frame action with `f=8` or `f=16` on an image that exists gets the same error.
+A feature query reports `f=8` and `f=16` for the transmit and query actions.
 
 ## Multiple cursors
 
@@ -296,6 +324,7 @@ The permissions of the socket are the only boundary.
 ## Protocol definitions
 
 - [Kitty relative graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/#relative-placements).
+- [Kitty indexed color data](https://sw.kovidgoyal.net/kitty/graphics-protocol/#indexed-color-data).
 - [Kitty multiple cursors](https://sw.kovidgoyal.net/kitty/multiple-cursors-protocol/).
 - [iTerm2 file transport](https://iterm2.com/documentation-images.html).
 
@@ -306,7 +335,7 @@ The suite also checks these features:
 - Terminal parsing, grid behavior, scrollback and reflow.
 - Tab stops: HTS, TBC, CHT, CBT and DECST8C (`CSI ? 5 W`), which sets a stop at every 8th column again.
 - Sixel.
-- Kitty image transmission, placement, animation and Unicode placeholders.
+- Kitty image transmission, placement, animation, Unicode placeholders and indexed images.
 - iTerm2 inline images.
 - OSC 66 text sizing.
 - Keyboard and mouse encodings.
@@ -320,7 +349,7 @@ Support for a protocol does not imply support for every optional operation.
 Run focused tests:
 
 ```sh
-ctest --test-dir build --output-on-failure -R 'Graphics.Relative|Graphics.TransmitAndPlaceReportsInvalidRelativeParent|Extensions.Multiple|Terminal.ExtraCursorsAreBounded|Terminal.ResizeClipsExtraCursors|Extensions.ResizeClipsExtraCursors|Extensions.ExtraCursor|Extensions.Download|DesktopText|FileDrop|Render.Multiple|SnapshotCursor|Bidi'
+ctest --test-dir build --output-on-failure -R 'Graphics.Relative|Graphics.TransmitAndPlaceReportsInvalidRelativeParent|Extensions.Multiple|Terminal.ExtraCursorsAreBounded|Terminal.ResizeClipsExtraCursors|Extensions.ResizeClipsExtraCursors|Extensions.ExtraCursor|Extensions.Download|DesktopText|FileDrop|Render.Multiple|SnapshotCursor|Bidi|Graphics.Indexed|Render.Indexed|SnapshotImages.Indexed'
 ```
 
 See [accessibility and downloads](TESTING.md#accessibility-and-downloads) for the native acceptance suite.

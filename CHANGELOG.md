@@ -35,8 +35,9 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 ### Graphics and text sizing
 
 - Kitty graphics: transmission, placement, animation, Unicode placeholders and relative placements with parent chains.
+- Kitty indexed images (`f=8` and `f=16`), which take the colors of the pane and change with them.
 - Kitty images sent as a file, a temporary file or shared memory, unless `Terminal.graphicsFileTransfer` is `deny`.
-- An image memory limit for the main and the alternate screen of each pane (`Graphics.quota`, 320 MiB each by default). Images that no placement shows go first: those sent with the transient hint (`N=1`), then the oldest.
+- An image memory limit for the main and the alternate screen of each pane (`Graphics.quota`, 320 MiB each by default). Images without a placement go first: those sent with the transient hint (`N=1`), then the oldest.
 - Sixel images.
 - iTerm2 inline images and file downloads (OSC 1337), with a native Save dialog.
 - Kitty text sizing (OSC 66).
@@ -44,7 +45,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 ### Colors and themes
 
-- Palette and dynamic colors (OSC 4, 10, 11, 12, 104 and 110 to 112).
+- Palette and dynamic colors (OSC 4, 10 to 12, 17, 19, 104, 110 to 112, 117 and 119).
 - The Kitty color-control protocol (OSC 21), including transparent background colors and the color stack.
 - Themes in Afterglow JSON, Ghostty, Kitty and Konsole color scheme formats, which reload when the file changes. A theme that Ghostty, Kitty or Konsole installed works by its name alone, such as Ghostty's Catppuccin Mocha or Konsole's Breeze.
 - `plasma:NAME` themes, which take the background, text, selection and cursor colors of the desktop color scheme and follow it while Afterglow runs.
@@ -74,7 +75,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - `Mouse.autoScrollInterval` sets the time between the rows that a selection scrolls while you extend it.
 - `Control.eventInterval` sets the shortest time between two control events of one kind for a pane.
 - `Terminal.pasteReadTimeout` sets how long a paste event lets a program read the clipboard.
-- Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates. The approval lists the paths, and covers only the paths that it lists: the files that a program reads, or the destinations of the files that it sends. A file goes only where the approval showed, also when a link changes after it. A file that the approval did not list waits for an approval of its own, and the approved files continue meanwhile.
+- Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates. The approval lists the paths and covers only those paths. They are the files that a program reads, or the destinations of the files that it sends. A file goes only where the approval showed, also when a link changes after it. A file that the approval did not list waits for an approval of its own, and the approved files continue meanwhile.
 - Kitty drag and drop, including remote directory data and thumbnails.
 - `Terminal.dragAnswerWait` sets how long a drag waits for the answer of a program that uses Kitty drag and drop.
 - `Terminal.dragTreeLifetime` sets how long Afterglow keeps the files of a drag from another computer after the drop.
@@ -145,6 +146,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - `new_tab(pane)` starts in the directory of that pane and opens its tab after the tab of that pane.
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
 - External control through `afterglow ctl` and a control socket, with access settings and merged state events.
+- `afterglow ctl screenshot` saves a PNG of a pane, its tab or its window as the window shows it, with the shader packs. With `--window` it includes the tab bar. It needs `Control.allowReadText`.
 - Script commands. A script or package declares each command with a summary. A usage text, a palette title and standard input are optional. A script can also change its commands at run time with `afterglow.set_commands`, which takes the same map of names as the package manifest.
 - Commands that a script marks `remote` also run from a remote host, with `aglow run` in an `afterglow ssh` session. They need `Terminal.sshRemoteCommands`, which is off by default, and `Control.enabled` and `Scripts.enabled`. `Terminal.sshIntegration` is not necessary, because you can also run `afterglow ssh` yourself.
 - `afterglow ssh` forwards a socket of Afterglow for each session over the shared ssh connection, and `aglow run` on the host finds it with OSC 24569. Before the session, `aglow remote-prune` removes the sockets of sessions that ended. An `afterglow ssh` in an overlay has a socket of its own, and the pane keeps the socket of its session.
@@ -160,7 +162,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - An overlay closes before its program exits when its pane closes or its script stops. It also closes when the command run or the `afterglow ctl` client that waits for it ends. An overlay that a control client opened also closes when `Control.enabled` goes off. The `cancel_overlay` action, Ctrl+Shift+Alt+Escape by default, closes the overlay of the focused pane. In each case, the program gets `SIGHUP`.
 - Popup overlays: the `width` and `height` options make an overlay a popup over a part of its pane. Each is a number of cells or a percentage of the pane. `position` puts the popup at one of nine positions, and `border` adds or removes its border. The pane stays visible and keeps running around the popup, darker by `Colors.popupDim`. A border in the popup border color shows the title in its top edge, in the text color. `Window.popupCorners` makes its corners rounded or square. The mouse acts in the popup only. A click on the pane around it gives that pane the focus and reaches no program.
 - `afterglow ctl overlay -- CMD` runs a program over a pane from a shell script. It uses the `overlay` call of the control socket. It sends standard input of up to 4 MiB to the program, in parts before the call. It prints the program's output and exits with its status. Without `Control.allowReadText`, a control client gets the exit status but not the output, and `afterglow ctl overlay` prints nothing on standard output. `-w`, `-h` or `--border` makes it a popup, at `--position`. `--no-border` removes the border of a popup.
-- The fzf picker example package picks a saved project or a file with fzf in a popup overlay, or with the select dialog when fzf is not installed.
+- The fzf picker example package picks a saved project or a file with fzf in a popup overlay. Without fzf, it uses the select dialog.
 - Shell completion of `afterglow` and `aglow` for Bash, Zsh and Fish, with the commands of the running scripts. The completion reads the commands from `aglow run`, which starts faster than `afterglow`. The Fish completion needs Fish 4 or later.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
 - A different build on the same display starts on its own and does not hand its window over.

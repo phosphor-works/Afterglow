@@ -71,7 +71,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `allowReadText` | `false` |  | Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands that run and the values of user variables. A script command that runs for a client, such as aglow run or afterglow run, reads pane text only when Scripts.allowReadText is on too. |
+| `allowReadText` | `false` |  | Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands that run and the values of user variables. It also allows screenshots of panes, tabs and windows. A script command that runs for a client, such as aglow run or afterglow run, reads pane text only when Scripts.allowReadText is on too. |
 | `allowRemoteReadText` | `false` |  | Allow a script command that runs from a remote host, with aglow run in an afterglow ssh session, to read pane text. Any process of the remote user, and the remote root user, can run such a command and read its output. Scripts.allowReadText and Control.allowReadText must be on too. While this is off, only the handler of the run writes to its output. |
 | `enabled` | `true` |  | Allow other programs, such as afterglow ctl and aglow run, to control Afterglow through its socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the socket also when this is off. |
 | `eventInterval` | `100` | 0–10000 | Shortest time in milliseconds between two events of one kind for one pane, for titles, status, context, bells and each user variable. A newer event replaces one that waits, and the bells in between become one. A value of 0 sends every event. |
@@ -103,7 +103,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `quota` | `320` | 16–4096 | Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps. A pane has a main and an alternate screen. The oldest images go first when a screen is full. |
+| `quota` | `320` | 16–4096 | Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images without a placement go first: those sent with the transient hint (N=1), then the oldest. |
 
 ## Hints
 

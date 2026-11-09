@@ -22,6 +22,7 @@
 #include <QFile>
 #include <QHash>
 #include <QLoggingCategory>
+#include <QScopeGuard>
 #include <QSet>
 #include <QWindow>
 #include <rhi/qrhi.h>
@@ -29,6 +30,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <iterator>
 #include <numeric>
 #include <span>
 #include <stdexcept>
@@ -791,15 +793,94 @@ QSize WindowRenderer::pixelSize() const
     return m_hasSwapChain ? m_swapChain->currentPixelSize() : QSize();
 }
 
+QImage WindowRenderer::readbackImage(QRhiReadbackResult& readback, bool yUp, bool opaque)
+{
+    QImage::Format format = QImage::Format_Invalid;
+    int bytesPerPixel = 4;
+    switch (readback.format) {
+    case QRhiTexture::RGBA8:
+        format = QImage::Format_RGBA8888_Premultiplied;
+        break;
+    case QRhiTexture::BGRA8:
+        // The bytes B, G, R, A are one ARGB word on a little-endian host only.
+        format = Q_BYTE_ORDER == Q_LITTLE_ENDIAN ? QImage::Format_ARGB32_Premultiplied : QImage::Format_RGBA8888_Premultiplied;
+        break;
+    case QRhiTexture::RGB10A2: // VK_FORMAT_A2B10G10R10_UNORM_PACK32
+        format = QImage::Format_A2BGR30_Premultiplied;
+        break;
+    case QRhiTexture::RGBA16F:
+        format = QImage::Format_RGBA16FPx4_Premultiplied;
+        bytesPerPixel = 8;
+        break;
+    case QRhiTexture::RGBA32F:
+        format = QImage::Format_RGBA32FPx4_Premultiplied;
+        bytesPerPixel = 16;
+        break;
+    default:
+        break;
+    }
+    const QSize size = readback.pixelSize;
+    const qsizetype stride = qsizetype(size.width()) * bytesPerPixel;
+    if (format == QImage::Format_Invalid || size.isEmpty() || readback.data.size() < stride * size.height()) {
+        return {};
+    }
+    // The image owns the bytes: a 4K frame is not copied once more.
+    auto* bytes = new QByteArray(std::move(readback.data));
+    QImage image(reinterpret_cast<uchar*>(bytes->data()), size.width(), size.height(), stride, format,
+                 [](void* info) { delete static_cast<QByteArray*>(info); }, bytes);
+    if (bytesPerPixel != 4 || format == QImage::Format_A2BGR30_Premultiplied) {
+        image = std::move(image).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    } else if (readback.format == QRhiTexture::BGRA8 && format == QImage::Format_RGBA8888_Premultiplied) {
+        image = std::move(image).rgbSwapped();
+    }
+    if (yUp) {
+        image = std::move(image).flipped(Qt::Vertical);
+    }
+    if (opaque) {
+        // A surface without alpha shows the stored colours and ignores alpha.
+        const bool word = image.format() == QImage::Format_ARGB32_Premultiplied;
+        for (int y = 0; y < image.height(); ++y) {
+            uchar* line = image.scanLine(y);
+            for (int x = 0; x < image.width(); ++x) {
+                if (word) {
+                    reinterpret_cast<quint32*>(line)[x] |= 0xff000000u;
+                } else {
+                    line[x * 4 + 3] = 0xff;
+                }
+            }
+        }
+        image.reinterpretAsFormat(word ? QImage::Format_RGB32 : QImage::Format_RGBX8888);
+    }
+    return image;
+}
+
+std::uint64_t WindowRenderer::captureNextFrame(CaptureDone done)
+{
+    m_captures.push_back({++m_lastCapture, std::move(done)});
+    return m_lastCapture;
+}
+
+void WindowRenderer::cancelCapture(std::uint64_t ticket)
+{
+    std::erase_if(m_captures, [ticket](const Capture& capture) { return capture.ticket == ticket; });
+}
+
 bool WindowRenderer::ensureSwapChain()
 {
     QRhi* rhi = m_device.rhi(m_window);
     if (!m_swapChain) {
         m_swapChain.reset(rhi->newSwapChain());
         m_swapChain->setWindow(m_window);
+        // A transfer source, so captureNextFrame() can read the backbuffer.
+        // On every swapchain: to set it at the first capture would need a new
+        // swapchain, which frees the textures of the chains and the state of
+        // their persistent buffers. Qt leaves it out on a surface that cannot
+        // be read back; a capture then fails (render() logs it).
+        QRhiSwapChain::Flags flags = QRhiSwapChain::UsedAsTransferSource;
         if (m_translucent) {
-            m_swapChain->setFlags(QRhiSwapChain::SurfaceHasPreMulAlpha);
+            flags |= QRhiSwapChain::SurfaceHasPreMulAlpha;
         }
+        m_swapChain->setFlags(flags);
         m_renderPass.reset(m_swapChain->newCompatibleRenderPassDescriptor());
         m_swapChain->setRenderPassDescriptor(m_renderPass.get());
     }
@@ -1343,7 +1424,52 @@ WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& pane
             failed("endFrame", r);
         }
     };
+    // A capture reads the backbuffer after the last pass, and waits for it
+    // once the frame ends: a screenshot is wanted at once, not frames later.
+    std::vector<Capture> captures = std::exchange(m_captures, {});
+    // Qt holds a pointer to the result from the last pass until the readback
+    // completes: in finish(), or in a later beginFrame of any window when
+    // endFrame fails. So finish() runs whenever the readback was queued,
+    // whatever the frame gave, and the result is on the heap: after a finish()
+    // that fails (a lost device), Qt can still write it, and it is not freed.
+    QRhiReadbackResult* readback = captures.empty() ? nullptr : new QRhiReadbackResult;
+    bool queued = false;
+    const auto release = qScopeGuard([&readback, &queued] {
+        if (!queued) delete readback;
+    });
+    if (readback) {
+        target.finalUpdates = [rhi, readback, &queued] {
+            QRhiResourceUpdateBatch* u = rhi->nextResourceUpdateBatch();
+            u->readBackTexture(QRhiReadbackDescription(), readback);
+            queued = true;
+            return u;
+        };
+    }
     renderTo(target, panes, docks, overlays, clearColor, overlayTexture, overlaySerial);
+    if (captures.empty()) {
+        return result;
+    }
+    QImage image;
+    if (queued && rhi->finish() == QRhi::FrameOpSuccess) {
+        if (result == FrameResult::Presented) {
+            const bool read = !readback->data.isEmpty();
+            const auto format = readback->format;
+            if (read) image = readbackImage(*readback, rhi->isYUpInFramebuffer(), !m_translucent);
+            if (image.isNull() && !std::exchange(m_readbackFailureLogged, true)) {
+                if (read) qCWarning(lcRender, "A screenshot cannot use the swapchain format %d", int(format));
+                else qCWarning(lcRender, "A screenshot cannot read the swapchain back on this GPU driver");
+            }
+        }
+        delete std::exchange(readback, nullptr);
+    }
+    if (result == FrameResult::Retry) {
+        // The frame is drawn again (a resize, a surface that went out of
+        // date): that frame serves these captures, before later ones.
+        m_captures.insert(m_captures.begin(), std::make_move_iterator(captures.begin()),
+                          std::make_move_iterator(captures.end()));
+    } else {
+        for (const auto& capture : captures) capture.done(image);
+    }
     return result;
 }
 
@@ -1386,12 +1512,7 @@ QImage WindowRenderer::renderToImage(const QSize& size, const std::vector<Pane>&
     // An offscreen frame completes, readbacks included, when it ends.
     target.end = [rhi] { rhi->endOffscreenFrame(); };
     renderTo(target, panes, docks, overlays, clearColor, nullptr, 0);
-    if (readback.data.isEmpty()) {
-        return {};
-    }
-    return QImage(reinterpret_cast<const uchar*>(readback.data.constData()), readback.pixelSize.width(),
-                  readback.pixelSize.height(), QImage::Format_RGBA8888_Premultiplied)
-        .copy();
+    return readbackImage(readback, false, false);
 }
 
 void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& givenPanes, const std::vector<Pane>& docks,

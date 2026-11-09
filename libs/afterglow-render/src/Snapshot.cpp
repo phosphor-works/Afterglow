@@ -80,6 +80,30 @@ private:
     Rgb m_last{};
 };
 
+/// @p frame in @p colors, as RGBA. A frame whose indices do not fill it
+/// gives an empty RGBA frame, which the GPU upload refuses.
+FramePtr colorFrame(const ImageFrame& frame, const std::array<std::uint32_t, 256>& colors)
+{
+    auto rgba = std::make_shared<ImageFrame>();
+    rgba->width = frame.width;
+    rgba->height = frame.height;
+    const std::size_t pixels = std::size_t(frame.width) * frame.height;
+    const bool alpha = frame.format == PixelFormat::IndexedAlpha;
+    if (frame.indices.size() != pixels * bytesPerPixel(frame.format)) {
+        return rgba;
+    }
+    rgba->rgba.resize(pixels * 4);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        const std::uint32_t c = colors[frame.indices[alpha ? 2 * i : i]];
+        std::uint8_t* out = &rgba->rgba[i * 4];
+        out[0] = std::uint8_t(c);
+        out[1] = std::uint8_t(c >> 8);
+        out[2] = std::uint8_t(c >> 16);
+        out[3] = alpha ? frame.indices[2 * i + 1] : 255;
+    }
+    return rgba;
+}
+
 } // namespace
 
 std::uint64_t PaneSnapshot::Identity::next() noexcept
@@ -324,7 +348,50 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     for (int i = 0; i < 256; ++i) {
         palette[std::size_t(i)] = packRgba(t.paletteColor(i));
     }
+    colorIndexedImages();
     if (reorder) applyBidi(t);
+}
+
+void PaneSnapshot::colorIndexedImages()
+{
+    // The colours of the kitty indexed formats: 0-247 the 256-colour table,
+    // then the default background (without the pane's opacity) and
+    // foreground, the selection background and foreground, the cursor and
+    // its text, the link hover colour and one reserved entry. Afterglow
+    // shows a hovered link in its own text colour, so 254 is the default
+    // foreground, as the reserved 255 is.
+    const bool anyIndexed
+        = std::any_of(images.begin(), images.end(), [](const VisiblePlacement& image) { return image.frame->indexed(); });
+    if (!anyIndexed) {
+        coloredFrames.clear();
+        return;
+    }
+    std::array<std::uint32_t, 256> colors = palette;
+    colors[248] = defaultBg;
+    colors[249] = defaultFg;
+    colors[250] = selectionBackgroundColor;
+    colors[251] = selectionForegroundColor;
+    colors[252] = cursorColor;
+    colors[253] = cursorTextColor;
+    colors[254] = defaultFg;
+    colors[255] = defaultFg;
+    if (colors != indexColors) {
+        coloredFrames.clear();
+        indexColors = colors;
+    }
+    for (VisiblePlacement& image : images) {
+        if (!image.frame->indexed()) continue;
+        ColoredFrame& entry = coloredFrames[image.frame.get()];
+        // The address of a freed frame can come back for a new one.
+        if (!entry.rgba || entry.source.lock() != image.frame) {
+            entry.source = image.frame;
+            entry.rgba = colorFrame(*image.frame, colors);
+        }
+        entry.seen = version;
+        image.frame = entry.rgba;
+    }
+    // Frames that no placement shows any more give their colours back.
+    std::erase_if(coloredFrames, [&](const auto& item) { return item.second.seen != version; });
 }
 
 } // namespace AfterglowRender

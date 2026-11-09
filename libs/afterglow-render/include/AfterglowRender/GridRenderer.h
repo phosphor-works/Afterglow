@@ -40,6 +40,7 @@ class QRhiRenderTarget;
 class QRhiResourceUpdateBatch;
 class QRhiSwapChain;
 class QWindow;
+struct QRhiReadbackResult;
 typedef struct hb_buffer_t hb_buffer_t;
 
 namespace AfterglowVt {
@@ -397,12 +398,41 @@ public:
     /// iDate (year, month, day, seconds since midnight) instead of the
     /// wall clock's date, for reproducible renders; unset returns to it.
     void setDateOverride(std::optional<std::array<float, 4>> date) { m_dateOverride = date; }
+    using CaptureDone = std::function<void(QImage)>;
+    /// Reads back the next frame that render() presents, as the window shows
+    /// it: shader packs and chrome included. @p done gets the image in device
+    /// pixels (see readbackImage()), or a null image when that frame fails.
+    /// It runs inside render(), after the frame ends, and must not call
+    /// render(). A frame that must be drawn again (FrameResult::Retry) and a
+    /// render() with no swapchain keep the capture for a later frame. The
+    /// capture is dropped with no call by cancelCapture(), when render()
+    /// throws and when the renderer is destroyed. Returns its ticket.
+    std::uint64_t captureNextFrame(CaptureDone done);
+    /// Forgets a capture that has not run: its frame reads nothing back.
+    void cancelCapture(std::uint64_t ticket);
+    /// The image of @p readback in device pixels, which takes its bytes.
+    /// 8-bit RGBA and BGRA keep them, premultiplied. 10-bit and float formats
+    /// become 8-bit ARGB, read as SDR values: no swapchain here is HDR.
+    /// @p yUp flips the rows of a framebuffer with its origin at the bottom.
+    /// @p opaque sets alpha to 1, as a surface without alpha shows the
+    /// colours (premultiplied, so as they are). Another format gives a null
+    /// image.
+    static QImage readbackImage(QRhiReadbackResult& readback, bool yUp, bool opaque);
+
     /// Renders the panes into an image instead of the window, through the
     /// same passes and post-processing. For tests and visual checks.
     QImage renderToImage(const QSize& size, const std::vector<Pane>& panes,
                          const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor);
 
 private:
+    struct Capture
+    {
+        std::uint64_t ticket = 0;
+        CaptureDone done;
+    };
+    std::vector<Capture> m_captures;
+    std::uint64_t m_lastCapture = 0;
+    bool m_readbackFailureLogged = false;
     bool m_gpuTimingEnabled = false;
     bool m_frameFailureLogged = false;
     double m_completedGpuSeconds = 0;
