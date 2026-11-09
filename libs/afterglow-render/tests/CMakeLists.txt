@@ -7,8 +7,8 @@ find_package(GTest REQUIRED)
 # Vulkan pipeline into offscreen images. They skip without a Wayland display
 # or without a Vulkan 1.2 device (a software driver such as lavapipe is
 # one). On a machine with Vulkan, a device that cannot be made fails them.
-# The Snapshot, SnapshotCursor, Bidi, Fonts, GlyphCache and ShaderGeometry
-# tests run everywhere.
+# The Snapshot, SnapshotCursor, SnapshotImages, Bidi, Fonts, GlyphCache,
+# ShaderGeometry and Readback tests run everywhere.
 add_executable(afterglow_render_tests RenderTest.cpp BidiTest.cpp GpuTestDevice.h)
 target_link_libraries(afterglow_render_tests PRIVATE Afterglow::Render Qt6::Gui GTest::gtest)
 set_target_properties(afterglow_render_tests PROPERTIES AUTOMOC OFF)

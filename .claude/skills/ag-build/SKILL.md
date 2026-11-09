@@ -126,11 +126,12 @@ before a commit.
 - `aglow_only_build` (label `slow`) configures, builds and installs `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) in
   `build/tools/aglow/aglow-only`, with Qt hidden and no Phosphor directory. It compiles zlib-ng again and takes some
   minutes. `-LE slow` leaves it out while you work. The whole suite before a commit includes it.
-- The renderer tests (`libs/afterglow-render/tests`) and `afterglow/tests/PopupLookTest.cpp` need a Wayland display and
-  a working Vulkan driver. They skip only on a machine with no Wayland display or no Vulkan. A device that cannot be
-  made fails them. They take turns on the GPU (`RESOURCE_LOCK gpu`, also `aglow_icat_render`): each test process makes
-  its own device, and several at once ran out of device memory beside the desktop's own use of the GPU. Give a new GPU
-  test the same lock.
+- The renderer tests (`libs/afterglow-render/tests`), `afterglow/tests/PopupLookTest.cpp` and
+  `afterglow/tests/PointerMapTest.cpp` (`afterglow_pointer_map_tests`) need a Wayland display and a working Vulkan
+  driver. They skip only on a machine with no Wayland display or no Vulkan. A device that cannot be made fails them.
+  They take turns on the GPU (`RESOURCE_LOCK gpu`, also `aglow_icat_render`): each test process makes its own device,
+  and several at once ran out of device memory beside the desktop's own use of the GPU. Give a new GPU test the same
+  lock.
 - The native window tests (`afterglow_native_tests`, the `Shaders/` tests included) are not in CTest by default
   (`AFTERGLOW_NATIVE_TESTS=OFF`).
   They need a nested KWin. Use the `ag-verify-live` skill to run them.

@@ -6,7 +6,7 @@
 Afterglow shaders are Phosphor shader packs.
 A pack is a directory with `metadata.json` and GLSL stages.
 Each stage uses the terminal shader contract. Each fragment stage defines `vec4 pTerminal(vec2 uv)`.
-See the [shader API](SHADER-API.md) for vertex and mesh stages.
+See the [shader API](SHADER-API.md) for vertex and mesh stages, and for pointer maps.
 Configuration refers to a pack by its directory name, which normally equals its `id`.
 The [shader API](SHADER-API.md) describes the contract.
 

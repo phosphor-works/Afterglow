@@ -54,13 +54,13 @@ const QList<PhosphorShaders::EntryCandidate>& pointerEntry()
 }
 
 /// Whether @p code defines the pointer map, and not its own main(): a
-/// stage with a main() of its own has no generated entry to choose.
+/// stage with a main() of its own has no generated entry to choose. The
+/// same test as assembleEntryPoint() makes, on the pass's own text with its
+/// comments taken out, so a map is baked exactly when its entry is found.
 bool definesPointerMap(const QByteArray& code)
 {
-    static const QRegularExpression pointerMap(QStringLiteral(R"(\bvec2\s+pPointerMap\s*\([^)]*\)\s*\{)"));
-    static const QRegularExpression ownMain(QStringLiteral(R"(\bvoid\s+main\s*\(\s*(void)?\s*\)\s*\{)"));
     const QString text = QString::fromUtf8(code);
-    return text.contains(pointerMap) && !text.contains(ownMain);
+    return PhosphorShaders::definesFunction(text, QStringLiteral("pPointerMap")) && !PhosphorShaders::definesMain(text);
 }
 
 QString vertexPrologue()

@@ -53,6 +53,10 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
     config.mkdir()
     # The user's KWin plugins (PlasmaZones) must not load into the test compositor
     (config / 'kwinrc').write_text(KWINRC)
+    # A Save dialog of a download opens in the download directory: a private one, so that a test
+    # that saves never writes to the user's.
+    (root / 'downloads').mkdir()
+    (config / 'user-dirs.dirs').write_text(f'XDG_DOWNLOAD_DIR="{root / "downloads"}"\n')
     socket = f'afterglow-headless-{os.getpid()}'
     env = dict(
         os.environ,

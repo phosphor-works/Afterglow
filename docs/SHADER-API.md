@@ -29,7 +29,8 @@ See [pack locations](SHADERS.md#pack-locations) for where packs and shared inclu
 
 ### Entry points
 
-Each stage defines one function. Afterglow adds `terminal_lib.glsl`, the parameter definitions and `main()`.
+Each stage defines one entry function. The final pass can also define a pointer map.
+Afterglow adds `terminal_lib.glsl`, the parameter definitions and `main()`.
 
 | Stage | Function |
 | --- | --- |
@@ -211,21 +212,35 @@ vec2 pPointerMap(vec2 uv)
 It returns the position of the content that the pack shows at `uv`, in the same coordinates as `pTerminal`.
 Usually it returns the coordinate that `pTerminal` gives to `terminalTexel`.
 Afterglow moves the pointer through it before it finds the pane and the cell.
-This applies to clicks, selections, links, mouse reports to programs, drops and the shape of the pointer.
-The chrome (the tab bar and the menus) is drawn over the chains, so the map does not move it.
+This applies to clicks, selections, links and drops.
+It also applies to mouse reports to programs, the docks of panes, popups, dividers and the shape of the pointer.
 
 | Item | Rule |
 | --- | --- |
-| Chains | The pane chain and the window chain. Layer and event chains do not use the map. |
-| Order | Last pass first: the window chain, then the pane chain of the pane that the result is in. |
-| Inputs | Only `uv`, the canvas size `iResolution` and the pack's parameters. Time, events, the pointer and samplers do not apply. |
-| Parameters | The live values: the pane's for a pane chain, the focused pane's for the window chain. |
+| Chains | The pane chain and the window chain. Layer chains and event packs do not use the map. |
+| Order | Last pack first: the window chain, then the pane chain of the pane that the result is in. |
+| Inputs | Only `uv`, the canvas size `iResolution` and the pack's parameters. Time, events, the pointer, the other uniforms and samplers do not apply. |
+| Parameters | The values that the last frames drew with: the pane's for a pane chain, the window region's for the window chain. |
+| Where | In the final pass's own file, as `pTerminal`. A map in an include file is not found. |
 | `main()` | A final pass that defines its own `main()` has no pointer map. |
-| Positions outside the canvas | A result outside 0 to 1 goes to the nearest cell at the edge. |
+| `discard` | Do not discard. At a position that the map discards, the pointer does not move. |
+| Positions outside the canvas | The map carries on in a line past the edge. A pane chain's result outside the pane goes to the nearest cell at the edge. A window chain's result outside the window goes to the pane at that edge. Between panes, a click reaches no pane. |
 
-Afterglow evaluates the map on the GPU into a grid of 128 columns, and the rows that keep the canvas aspect.
-Between grid points the map is linear, so a map must be smooth.
-Afterglow evaluates it again when the canvas size or a parameter value changes, at the next pointer event.
+Afterglow evaluates the map on the GPU into a grid with a point every 8 pixels of the canvas.
+Each side of the grid has 8 to 256 points.
+Between grid points the map is bilinear, so a map must be smooth.
+Afterglow evaluates the map in the first frame that draws the pack.
+It evaluates it again in a frame with a new canvas size or new parameter values.
+The map takes effect a few frames later, when its result arrives. Until then, the previous map stays.
+A result that is not a finite number leaves the pointer where it is.
+
+The map moves only the pointer. These stay where the layout has them:
+
+- `iMouse` and `uWindowMouse`, which other packs read.
+- The chrome: the tab bar, the menus and the scroll bar, which are drawn over the chains.
+- The docks of the window, which are drawn over the chains.
+- The labels of URL hints, the input method's cursor and what accessibility tools read.
+
 [CRT Curve](../data/shaders/crt-curve/effect.frag) bends the canvas and moves the pointer the same way.
 [Tilt](../data/shaders/tilt/effect.frag) turns the canvas in perspective. Its map casts the same ray as its picture.
 

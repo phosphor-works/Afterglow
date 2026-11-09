@@ -121,6 +121,8 @@ public:
         };
         std::array<Signal, 8> signals{};
         ShaderParameterMap shaderParameters;
+        /// Names the pane to WindowRenderer::paneContentPoint(); 0 is none.
+        std::uint32_t id = 0;
         /// Highlighted in the pane overview, or the card it closes onto
         /// while it closes.
         bool highlighted = false;
@@ -398,17 +400,25 @@ public:
     /// iDate (year, month, day, seconds since midnight) instead of the
     /// wall clock's date, for reproducible renders; unset returns to it.
     void setDateOverride(std::optional<std::array<float, 4>> date) { m_dateOverride = date; }
-    /// Where the content shown at @p windowPixel (device pixels, in a window
-    /// of @p windowSize) comes from, through the pointer maps (pPointerMap)
-    /// of the window chain, last pass first. @p parameters are the live
-    /// values of the window region: the focused pane's. Runs an offscreen
-    /// frame when a map is not known yet: call it outside a frame.
-    QPointF windowContentPoint(const QPointF& windowPixel, const QSize& windowSize, const ShaderParameterMap& parameters);
-    /// The same through the pane chain, for a pane drawn at @p paneRect
-    /// (device pixels) with its live @p parameters.
-    QPointF paneContentPoint(const QPointF& windowPixel, const QRect& paneRect, const ShaderParameterMap& parameters);
+    /// Where the content shown at @p windowPixel (device pixels) comes from,
+    /// through the pointer maps (pPointerMap) of the window chain, last pack
+    /// first, as the frames drew them: on the window's canvas, with the
+    /// window region's parameter values. A frame evaluates a map that is
+    /// new to it and reads it back without a wait, so a map takes effect a
+    /// few frames after its pack, canvas size or values change. Until the
+    /// first frame, the point comes back. Touches no GPU state: call it at
+    /// any time.
+    QPointF windowContentPoint(const QPointF& windowPixel);
+    /// The same through the pane chain of the pane that frames drew with
+    /// FrameBuilder::PaneParams::id @p pane, at the rectangle and with the
+    /// values they drew it with. A pane that no frame drew gives the point back.
+    QPointF paneContentPoint(const QPointF& windowPixel, std::uint32_t pane);
     /// Some pack of the pane or window chain has a pointer map.
     bool hasPointerMaps() const;
+    /// Changes when the maps that windowContentPoint() and
+    /// paneContentPoint() use change, so what is under the pointer can be
+    /// looked for again.
+    std::uint64_t pointerMapSerial() const;
     using CaptureDone = std::function<void(QImage)>;
     /// Reads back the next frame that render() presents, as the window shows
     /// it: shader packs and chrome included. @p done gets the image in device
@@ -562,9 +572,6 @@ private:
     std::optional<std::uint64_t> m_postPipelinePass; ///< PostChain::renderPassGeneration() they were made for
     std::unique_ptr<class PostChain> m_post;
     std::unique_ptr<class PointerMaps> m_pointerMaps;
-    /// @p point through the maps of @p chain, last pass first, on a canvas of @p canvas.
-    QPointF unwarp(const std::vector<ShaderProgramPtr>& chain, const QPointF& point, const QSize& canvas,
-                   const ShaderParameterMap& parameters);
     bool m_postWasActive = false;
     std::uint64_t m_lastPostFrame = 0; ///< m_frameCounter of the last frame with post-processing
     QPointF m_mouse;

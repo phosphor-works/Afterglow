@@ -89,7 +89,9 @@ gtest_discover_tests(afterglow_popup_tests DISCOVERY_MODE PRE_TEST PROPERTIES RE
 # The pointer maps of the bundled packs against their pictures, offscreen.
 qt_add_executable(afterglow_pointer_map_tests PointerMapTest.cpp)
 target_include_directories(afterglow_pointer_map_tests PRIVATE ${PROJECT_SOURCE_DIR}/libs/afterglow-render/tests)
-target_link_libraries(afterglow_pointer_map_tests PRIVATE afterglow_app GTest::gtest)
+# The pack registry and the renderer: no window, no application.
+target_link_libraries(afterglow_pointer_map_tests PRIVATE afterglow_shaders GTest::gtest)
+target_compile_definitions(afterglow_pointer_map_tests PRIVATE AFTERGLOW_SOURCE_SHADERS="${PROJECT_SOURCE_DIR}/data/shaders")
 gtest_discover_tests(afterglow_pointer_map_tests DISCOVERY_MODE PRE_TEST PROPERTIES RESOURCE_LOCK gpu TIMEOUT 60)
 
 qt_add_executable(afterglow_signal_tests QuitSignalsTest.cpp)

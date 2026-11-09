@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Every bundled pack with a pointer map (pPointerMap) moves the pointer the
-// way its picture moves the content. A pane of black and white cells, as a
+// The bundled packs with a pointer map (pPointerMap), CRT Curve and Tilt,
+// move the pointer the way their pictures move the content, in the pane
+// chain and in the window chain. A pane of black and white cells, as a
 // checkerboard, goes through the pack offscreen. At each pixel of the
 // picture, the cell that the map gives must have the colour drawn there.
 
@@ -14,6 +15,7 @@
 #include <AfterglowRender/Snapshot.h>
 #include <AfterglowVt/Terminal.h>
 
+#include <QDir>
 #include <QGuiApplication>
 #include <QImage>
 #include <QTemporaryDir>
@@ -53,7 +55,7 @@ QVariantMap packValues()
 
 } // namespace
 
-TEST(PointerMap, EveryBundledMapFindsTheCellDrawnUnderThePointer)
+TEST(PointerMap, TheBundledMapsFindTheCellDrawnUnderThePointer)
 {
     if (!s_device) {
         if (s_noVulkan) GTEST_SKIP() << s_noDevice;
@@ -81,43 +83,61 @@ TEST(PointerMap, EveryBundledMapFindsTheCellDrawnUnderThePointer)
     pane.snapshot = &snapshot;
     pane.params.rect = QRect(0, 0, Cols * cw, Rows * ch);
     pane.params.focused = true;
+    pane.params.id = 1;
 
-    int mapped = 0;
-    for (const QString& id : library.packIds()) {
+    // The packs by name, at values that move the content: not whatever else
+    // the data directories hold. A bundled pack with a map joins the list.
+    const QStringList mapped{QStringLiteral("crt-curve"), QStringLiteral("tilt")};
+    const QStringList bundled = QDir(QStringLiteral(AFTERGLOW_SOURCE_SHADERS)).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    ASSERT_TRUE(bundled.contains(QStringLiteral("tilt"))) << AFTERGLOW_SOURCE_SHADERS;
+    for (const QString& id : bundled) {
         ShaderLibrary::Refs refs;
         refs.pane = {id};
-        auto chains = library.build(refs, packValues());
-        if (chains.pane.size() != 1 || !chains.pane.front()->hasPointerMap()) continue;
-        SCOPED_TRACE(id.toStdString());
-        ++mapped;
-        renderer.setShaderChains(std::move(chains));
-        const QImage image = renderer.renderToImage(pane.params.rect.size(), {pane}, {}, 0xff000000u);
-        ASSERT_FALSE(image.isNull());
-        int checked = 0, wrong = 0, missedWithoutMap = 0;
-        for (int y = 1; y < image.height(); y += 3) {
-            for (int x = 1; x < image.width(); x += 3) {
-                const QPointF at = renderer.paneContentPoint(QPointF(x + 0.5, y + 0.5), pane.params.rect, {});
-                const double col = at.x() / cw, row = at.y() / ch;
-                // Near a cell's edge the picture blends two cells, and near
-                // the pane's edge the content leaves it: neither has one answer.
-                const double fx = col - std::floor(col), fy = row - std::floor(row);
-                if (std::min(fx, 1.0 - fx) < 0.25 || std::min(fy, 1.0 - fy) < 0.25) continue;
-                if (col < 1 || row < 1 || col > Cols - 1 || row > Rows - 1) continue;
-                const QRgb pixel = image.pixel(x, y);
-                const bool white = std::max({qRed(pixel), qGreen(pixel), qBlue(pixel)}) > 80;
-                const bool expected = (int(row) + int(col)) % 2;
-                ++checked;
-                if (white != expected) ++wrong;
-                const bool plain = (y / ch + x / cw) % 2;
-                if (white != plain) ++missedWithoutMap;
-            }
+        const auto chains = library.build(refs, {});
+        if (chains.pane.size() == 1 && chains.pane.front()->hasPointerMap()) {
+            EXPECT_TRUE(mapped.contains(id)) << id.toStdString() << " has a pointer map: add it here, with values that move its content";
         }
-        EXPECT_GT(checked, 500);
-        EXPECT_EQ(wrong, 0) << "of " << checked;
-        // The plain pointer would have hit the wrong cell often.
-        EXPECT_GT(missedWithoutMap, checked / 10) << "of " << checked;
     }
-    EXPECT_GE(mapped, 2) << "CRT Curve and Tilt have pointer maps";
+    for (const QString& id : mapped) {
+        for (const bool window : {false, true}) {
+            SCOPED_TRACE(id.toStdString() + (window ? " in the window chain" : " in the pane chain"));
+            ShaderLibrary::Refs refs;
+            (window ? refs.window : refs.pane) = {id};
+            auto chains = library.build(refs, {{id, packValues().value(id)}});
+            const auto& chain = window ? chains.window : chains.pane;
+            ASSERT_EQ(chain.size(), 1u);
+            ASSERT_TRUE(chain.front()->hasPointerMap());
+            renderer.setShaderChains(std::move(chains));
+            // The frame that draws the pack evaluates its map; the lookups
+            // after it use that map.
+            const QImage image = renderer.renderToImage(pane.params.rect.size(), {pane}, {}, 0xff000000u);
+            ASSERT_FALSE(image.isNull());
+            int checked = 0, wrong = 0, missedWithoutMap = 0;
+            for (int y = 1; y < image.height(); y += 3) {
+                for (int x = 1; x < image.width(); x += 3) {
+                    const QPointF pixel(x + 0.5, y + 0.5);
+                    const QPointF at = window ? renderer.windowContentPoint(pixel) : renderer.paneContentPoint(pixel, 1);
+                    const double col = at.x() / cw, row = at.y() / ch;
+                    // Near a cell's edge the picture blends two cells, and near
+                    // the pane's edge the content leaves it: neither has one answer.
+                    const double fx = col - std::floor(col), fy = row - std::floor(row);
+                    if (std::min(fx, 1.0 - fx) < 0.25 || std::min(fy, 1.0 - fy) < 0.25) continue;
+                    if (col < 1 || row < 1 || col > Cols - 1 || row > Rows - 1) continue;
+                    const QRgb drawn = image.pixel(x, y);
+                    const bool white = std::max({qRed(drawn), qGreen(drawn), qBlue(drawn)}) > 80;
+                    const bool expected = (int(row) + int(col)) % 2;
+                    ++checked;
+                    if (white != expected) ++wrong;
+                    const bool plain = (y / ch + x / cw) % 2;
+                    if (white != plain) ++missedWithoutMap;
+                }
+            }
+            EXPECT_GT(checked, 500);
+            EXPECT_EQ(wrong, 0) << "of " << checked;
+            // The plain pointer would have hit the wrong cell often.
+            EXPECT_GT(missedWithoutMap, checked / 10) << "of " << checked;
+        }
+    }
 }
 
 int main(int argc, char** argv)

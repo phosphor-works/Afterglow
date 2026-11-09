@@ -2,14 +2,14 @@
     "id": "tilt",
     "name": "Tilt",
     "category": "Screen",
-    "description": "Each pane is a screen turned in space and seen in perspective, with a glowing rim. Clicks and selections follow the tilt.",
+    "description": "Each pane is a screen turned in space and seen in perspective, with a glowing rim. Clicks and selections follow the tilt. Use it as a pane shader.",
     "author": "afterglow",
     "version": "1.0",
     "fragmentShader": "effect.frag",
     "parameters": [
         {
             "id": "yaw",
-            "name": "Turn",
+            "name": "Turn (degrees)",
             "group": "Screen",
             "type": "float",
             "default": 28.0,
@@ -18,7 +18,7 @@
         },
         {
             "id": "pitch",
-            "name": "Lean",
+            "name": "Lean (degrees)",
             "group": "Screen",
             "type": "float",
             "default": 10.0,
@@ -27,16 +27,16 @@
         },
         {
             "id": "scale",
-            "name": "Size",
+            "name": "Size (share of the largest that fits)",
             "group": "Screen",
             "type": "float",
-            "default": 0.66,
+            "default": 0.95,
             "min": 0.4,
             "max": 1.0
         },
         {
             "id": "fov",
-            "name": "Field of view",
+            "name": "Field of view (degrees)",
             "group": "Camera",
             "type": "float",
             "default": 50.0,
@@ -64,12 +64,12 @@
         "Gentle": {
             "yaw": 14.0,
             "pitch": 5.0,
-            "scale": 0.8
+            "scale": 1.0
         },
         "Steep": {
             "yaw": 38.0,
             "pitch": 14.0,
-            "scale": 0.58
+            "scale": 0.91
         }
     }
 }

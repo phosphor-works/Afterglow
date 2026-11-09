@@ -380,13 +380,12 @@ void TerminalWindow::updateDockHover()
     // the chrome or the overview took. A grab whose release went elsewhere
     // ends with its buttons.
     DockHover now;
-    const QPoint px = dockPixel(m_pointer);
     const bool held = QGuiApplication::mouseButtons() != Qt::NoButton;
     const bool dragging = (m_dividerDrag && !m_overview.open) || m_selectionPane || m_reportedButtons != Qt::NoButton
         || (held && (m_chromeGrab || m_overviewButtons != Qt::NoButton));
     if (!dragging) {
-        if (const DockArea* dock = dockAt(px)) {
-            const QString item = dock->itemAt(px);
+        if (const DockArea* dock = dockAt(m_pointer)) {
+            const QString item = dock->itemAt(dockPixelOf(*dock, m_pointer));
             const bool chrome = (!m_overview.open || m_controller->wantsKeyboard()) && chromeVisible()
                 && m_chrome->wantsPointer(m_pointer);
             if (!item.isEmpty() && !chrome) now = {dock->owner(), dock->id(), item, dock->pane()};
@@ -466,7 +465,7 @@ void TerminalWindow::moveDockDrag(const QPointF& pos)
         return;
     }
     if (!drag.started && (pos - drag.from).manhattanLength() < QGuiApplication::styleHints()->startDragDistance()) return;
-    const QPoint px = dockPixel(pos);
+    const QPoint px = dockPixelOf(dock, pos);
     // Cells of the area, also past its edges: a drag goes on outside it. A
     // window area that does not show has no cells to go by: the last cell,
     // first the press's, holds.
@@ -579,31 +578,42 @@ int TerminalWindow::dividerTolerance() const
     return int(std::lround(4 * devicePixelRatio()));
 }
 
-DockArea* TerminalWindow::dockAt(const QPoint& pixel) const
+DockArea* TerminalWindow::dockAt(const QPointF& logical) const
 {
+    // The window's docks are over the panes, the chains and the overview,
+    // at the pointer itself. A pane's docks are in the pane, drawn through
+    // the window chain and the pane's chain: where their maps send the point.
+    const QPoint pixel = dockPixel(logical);
     for (const auto& dock : m_docks) {
         if (dock->rect().contains(pixel)) return dock.get();
     }
-    // The window's docks are over the panes and the overview, the panes'
-    // ones in the panes.
-    return firstShownPaneDock([&pixel](DockArea* d) { return d->rect().contains(pixel); });
+    Pane* pane = paneShownAt(logical);
+    if (!pane) return nullptr;
+    const QPointF content = paneContentPixel(pane, logical);
+    const QPoint inPane(int(std::floor(content.x())), int(std::floor(content.y())));
+    return firstShownPaneDock([&](DockArea* d) { return d->pane() == pane->id() && d->rect().contains(inPane); });
 }
 
-bool TerminalWindow::dividerTakesDock(const QPoint& pixel) const
+QPoint TerminalWindow::dockPixelOf(const DockArea& dock, const QPointF& logical) const
+{
+    if (dock.pane() == 0) return dockPixel(logical);
+    const QPointF content = m_renderer->paneContentPoint(windowContentPixel(logical), dock.pane());
+    return QPoint(int(std::floor(content.x())), int(std::floor(content.y())));
+}
+
+bool TerminalWindow::dividerTakesDock(const QPointF& logical) const
 {
     // A divider's grab reaches into a pane's dock at the pane's edge, as
     // into the pane's text. A window's dock is over the dividers.
-    if (!m_splits || m_overview.open || !m_splits->dividerAt(pixel, dividerTolerance())) return false;
-    const DockArea* dock = dockAt(pixel);
+    if (!m_splits || m_overview.open || !m_splits->dividerAt(dividerPixel(logical), dividerTolerance())) return false;
+    const DockArea* dock = dockAt(logical);
     return dock && dock->pane() != 0;
 }
 
 Pane* TerminalWindow::paneUnder(const QPointF& logical) const
 {
-    const QPoint pixel = dockPixel(logical);
-    if (!m_splits || dockAt(pixel)) return nullptr;
-    // The pane whose content shows here, through the window chain's maps.
-    return m_splits->paneAt(dockPixel(contentPosition(logical)));
+    if (!m_splits || dockAt(logical)) return nullptr;
+    return paneShownAt(logical);
 }
 
 QList<const DockArea*> TerminalWindow::accessibleDocks() const
