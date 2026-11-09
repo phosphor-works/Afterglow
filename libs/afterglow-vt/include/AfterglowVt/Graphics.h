@@ -57,13 +57,38 @@ private:
     PlaceholderCell m_last;
 };
 
-/// One frame of an image, RGBA8, immutable once published so renderers can
-/// hold it without a lock.
+/// How a frame holds its pixels. Indexed frames (kitty f=8 and f=16) hold
+/// palette indices, so an image follows the colour scheme: a renderer gives
+/// each index the pane's colour before it draws the frame.
+enum class PixelFormat : std::uint8_t {
+    Rgba,
+    Indexed, ///< one index for each pixel, opaque
+    IndexedAlpha, ///< an index and an alpha for each pixel
+};
+
+/// The bytes that a frame of @p format keeps for each pixel.
+constexpr std::size_t bytesPerPixel(PixelFormat format) noexcept
+{
+    return format == PixelFormat::Indexed ? 1 : format == PixelFormat::IndexedAlpha ? 2 : 4;
+}
+
+/// One frame of an image, immutable once published so renderers can hold it
+/// without a lock.
 struct ImageFrame
 {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
-    std::vector<std::uint8_t> rgba;
+    PixelFormat format = PixelFormat::Rgba;
+    std::vector<std::uint8_t> rgba; ///< Rgba frames only: R, G, B, A for each pixel
+    /// Indexed and IndexedAlpha frames only: the index of each pixel, or for
+    /// IndexedAlpha the index and then the alpha of each pixel.
+    std::vector<std::uint8_t> indices;
+
+    bool indexed() const noexcept { return format != PixelFormat::Rgba; }
+    /// What the frame counts for in the image quota: its RGBA size. An
+    /// indexed frame keeps fewer bytes, but it is drawn as RGBA, and the
+    /// quota bounds what the images of a screen cost when they show.
+    std::size_t byteSize() const noexcept { return indexed() ? std::size_t(width) * height * 4 : rgba.size(); }
 };
 using FramePtr = std::shared_ptr<const ImageFrame>;
 
@@ -133,7 +158,7 @@ struct Placement
 /// What a renderer needs to draw one placement.
 struct VisiblePlacement
 {
-    FramePtr frame;
+    FramePtr frame; ///< can be indexed: give it colours before an RGBA upload
     std::uint32_t imageId = 0;
     /// Destination in pixels relative to cell (0, 0) of the viewport.
     int x = 0;
@@ -268,6 +293,8 @@ private:
         /// its q, as in kitty.
         AfterglowProto::GraphicsCommand first;
         std::string data;
+        /// Decoded bytes received, also those past what data keeps.
+        std::size_t received = 0;
         bool active = false;
         bool failed = false;
     };

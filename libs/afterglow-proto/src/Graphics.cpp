@@ -42,7 +42,11 @@ GraphicsCommand GraphicsCommand::parse(std::string_view keys)
         const auto u = std::uint32_t(std::clamp<std::int64_t>(n, 0, 0xFFFFFFFF));
         const auto i = int(std::clamp<std::int64_t>(n, -0x7FFFFFFF, 0x7FFFFFFF));
         switch (key) {
-        case 'f': cmd.format = u; break;
+        case 'f':
+            // kitty reads f=0 as the default, RGBA. A negative f is no format,
+            // and stays one when keys() writes it again.
+            cmd.format = n == 0 ? 32 : n < 0 ? 0xFFFFFFFFu : u;
+            break;
         case 's': cmd.s = u; break;
         case 'v': cmd.v = u; break;
         case 'S': cmd.size = u; break;

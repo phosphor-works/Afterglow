@@ -77,8 +77,9 @@ public:
 
     /// Texture for an image frame, uploaded on first use and shared by every
     /// window. @p serial receives an id that changes if the texture is replaced.
-    /// Null when the frame is larger than the GPU allows or the texture cannot
-    /// be made: the image is not drawn.
+    /// Null when the frame is larger than the GPU allows, the texture cannot
+    /// be made, or the frame has no whole RGBA data (an indexed frame that the
+    /// snapshot did not colour): the image is not drawn.
     QRhiTexture* imageTexture(const AfterglowVt::FramePtr& frame, QRhiResourceUpdateBatch* updates,
                               std::uint64_t& serial);
     QRhiSampler* imageSampler() const noexcept { return m_imageSampler; }
@@ -129,6 +130,7 @@ private:
     };
     std::unordered_map<const AfterglowVt::ImageFrame*, ImageTexture> m_imageTextures;
     bool m_imageLimitWarned = false;
+    bool m_imageFormatWarned = false;
     std::map<int, std::unique_ptr<FontResources>> m_fonts; // keyed by dpr * 100
     std::uint64_t m_textureSerial = 0;
     std::uint64_t m_fontEpoch = 1;
