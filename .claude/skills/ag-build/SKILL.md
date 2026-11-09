@@ -50,11 +50,15 @@ tests (`Render.*`) do not: `BUILD_TESTING` builds them.
 
 ## The Phosphor libraries
 
-`cmake/AfterglowPhosphor.cmake` compiles the Phosphor libraries from `../PlasmaZones/phosphor-libs`
-(`AFTERGLOW_PHOSPHOR_LIBS_DIR`). Thus the state of that checkout is part of the Afterglow build:
+`cmake/AfterglowPhosphor.cmake` compiles the Phosphor libraries from `../PlasmaZones/phosphor-libs` by default
+(`AFTERGLOW_PHOSPHOR_LIBS_DIR`). A build directory can name another checkout: the user's `build/` uses
+`../PlasmaZones-afterglow/phosphor-libs`. Find the one in use with
+`grep AFTERGLOW_PHOSPHOR_LIBS_DIR build/CMakeCache.txt`. The state of that checkout is part of the Afterglow build:
 
-- If the PlasmaZones checkout is on another branch, or has uncommitted work, an Afterglow build can fail or change
-  for reasons that are not in this repository. Check `git -C ../PlasmaZones status -sb` before you blame Afterglow.
+- If the PlasmaZones checkout is on another branch, has uncommitted work, or is behind the Phosphor API that
+  Afterglow `main` needs, an Afterglow build can fail or change for reasons that are not in this repository. Check
+  `git -C <checkout> status -sb` and `git -C <checkout> log -1` before you blame Afterglow. A clean checkout on
+  `main` that is only behind can be fast-forwarded with `git pull --ff-only`, with the user's approval.
 - Never edit PlasmaZones from an Afterglow session. A Phosphor change goes through a PlasmaZones branch and pull
   request. Tell the user what Phosphor needs.
 - The renderer uses Qt private APIs. After a Qt update, rebuild everything (`cmake --build build --clean-first`).

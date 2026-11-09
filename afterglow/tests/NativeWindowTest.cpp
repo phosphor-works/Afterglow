@@ -50,11 +50,13 @@
 #include <QDBusArgument>
 #include <QBuffer>
 #include <QClipboard>
+#include <QFileDialog>
 #include <QImage>
 #include <QQuickWindow>
 #include <QQuickItem>
 #include <QKeyEvent>
 #include <QTemporaryDir>
+#include <AfterglowProto/Base64.h>
 #include <AfterglowProto/Clipboard.h>
 #include <limits>
 #include <QThread>
@@ -7172,6 +7174,44 @@ TEST_F(NativeWindow, AnOverlaysTransferPromptMovesWithItsPaneWhenItsWindowCloses
     EXPECT_TRUE(waitFor([&] { return QFileInfo(sent).isDir(); }));
     ASSERT_TRUE(host);
     if (host->overlay()) host->overlay()->pane()->sendInput("\x04");
+}
+
+TEST_F(NativeWindow, ADownloadsSaveDialogMovesWithItsPaneWhenItsWindowCloses) {
+    // The dialog moves while the window it was over still exists: the
+    // compositor closes the dialogs over a surface that goes away.
+    WindowOptions options; options.command = {QStringLiteral("/bin/cat")};
+    QPointer<TerminalWindow> source = application->newWindow(options); ASSERT_TRUE(source);
+    source->show();
+    auto* destination = application->newWindow(options); ASSERT_NE(destination, nullptr);
+    destination->show();
+    ASSERT_TRUE(waitFor([&] { return source->isExposed() && destination->isExposed(); }));
+    QPointer<Pane> pane = source->focusedPane(); ASSERT_TRUE(pane);
+    pane->withTerminal([](AfterglowVt::Terminal& t) {
+        t.feed("\x1b]1337;File=name=" + AfterglowProto::base64Encode("notes.txt") + ";size=5;inline=0:"
+               + AfterglowProto::base64Encode("hello") + "\x07");
+    });
+    QPointer<QFileDialog> dialog;
+    const auto rejectAll = qScopeGuard([&dialog] {
+        if (dialog) dialog->reject();
+        drain(50);
+    });
+    ASSERT_TRUE(waitFor([&] {
+        for (auto* widget : QApplication::topLevelWidgets())
+            if (auto* box = qobject_cast<QFileDialog*>(widget); box && box->isVisible()) dialog = box;
+        return !dialog.isNull();
+    }));
+    EXPECT_EQ(dialog->windowHandle()->transientParent(), source.data());
+    ASSERT_TRUE(source->movePaneTo(pane, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
+    EXPECT_EQ(dialog->windowHandle()->transientParent(), destination);
+    if (source) source->close();
+    ASSERT_TRUE(waitFor([&] {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        return source.isNull();
+    }));
+    drain(200);
+    ASSERT_TRUE(dialog) << "the dialog closed with the window it left";
+    EXPECT_TRUE(dialog->isVisible());
+    EXPECT_EQ(dialog->windowHandle()->transientParent(), destination);
 }
 
 TEST_F(NativeWindow, AnOverlaysProgramGetsTheRemoteSocketOfItsHost) {

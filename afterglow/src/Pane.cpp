@@ -1471,11 +1471,18 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
         dialog->selectFile(clean);
         // On Wayland a dialog with no transient parent is not attached to the
         // window. An overlay's pane is its host's child, in the host's window.
-        const Pane* place = m_overlayHost ? m_overlayHost : this;
+        Pane* place = m_overlayHost ? m_overlayHost : this;
         if (auto* window = qobject_cast<QWindow*>(place->parent())) {
             dialog->winId();
             dialog->windowHandle()->setTransientParent(window);
         }
+        // It follows the pane to another window before the old one goes,
+        // which would take the dialog with it (TerminalWindow's file
+        // transfer prompt does the same).
+        connect(place, &Pane::movedToWindow, dialog, [dialog](QWindow* window) {
+            dialog->winId();
+            dialog->windowHandle()->setTransientParent(window);
+        });
         // Keep the lease until the dialog is destroyed, including on cancellation.
         connect(dialog, &QObject::destroyed, [lease] {});
         connect(this, &QObject::destroyed, dialog, &QDialog::reject);

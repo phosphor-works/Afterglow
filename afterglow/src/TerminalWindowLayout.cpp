@@ -88,6 +88,7 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
     if (!pane->docks().empty()) windowAccessibilityChanged(this);
     pane->setParent(destination);
     destination->bindPane(pane);
+    Q_EMIT pane->movedToWindow(destination);
 }
 
 std::unique_ptr<TerminalWindow::Tab> TerminalWindow::removeTabShell(int index)

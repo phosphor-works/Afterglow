@@ -252,6 +252,10 @@ public:
     TerminalText accessibleText(bool cursorRow = false) const;
 
 Q_SIGNALS:
+    /// The pane went to another window, which is its parent now. Emitted
+    /// while the window it left still exists: a dialog over that window must
+    /// move before the window's surface goes, or the compositor closes it.
+    void movedToWindow(QWindow* window);
     /// The terminal changed. Emitted on the GUI thread, coalesced.
     void contentChanged();
     void searchStatusChanged(const QString& status);
