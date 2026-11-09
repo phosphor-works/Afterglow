@@ -1313,6 +1313,7 @@ def parallel_jobs(args):
     Without a command, each word of the ::: lists is a command. The words of a :::: file, of -a FILE and of the
     standard input, when no ::: list is given, are not known here."""
     k, replace, plus, files = 0, None, False, False
+    delimiters = {'\n'}
     while k < len(args) and args[k].startswith('-'):
         if args[k] == '--':
             k += 1
@@ -1325,6 +1326,11 @@ def parallel_jobs(args):
             replace = value or '{}'
         plus |= args[k] == '--plus'
         files |= flag in ('-a', '--arg-file')
+        if flag in ('-d', '--delimiter') and value:
+            try:  # parallel reads escapes such as \0 and \t in the delimiter
+                delimiters.add(value.encode().decode('unicode_escape'))
+            except UnicodeDecodeError:
+                delimiters.add(value)
         k = after
     end = next((j for j in range(k, len(args)) if args[j] in PARALLEL_LISTS), len(args))
     lists = []
@@ -1332,8 +1338,9 @@ def parallel_jobs(args):
         if a in PARALLEL_LISTS:
             lists.append([] if a.startswith(':::') and len(a.rstrip('+')) == 3 else None)
         elif lists[-1] is not None:
-            # parallel splits a word of a ::: list at each newline: 'x\nmain' is the two jobs x and main
-            lists[-1].extend(a.split('\n'))
+            # parallel splits a word of a ::: list at each newline ('x\nmain' is the jobs x and main), at the
+            # delimiter of -d, or not at all with -0. The guard checks the whole word and each of its pieces.
+            lists[-1].extend(dict.fromkeys([a] + [piece for d in delimiters for piece in a.split(d)]))
     files |= not lists or None in lists
     lists = [words for words in lists if words]
     if k == end:
