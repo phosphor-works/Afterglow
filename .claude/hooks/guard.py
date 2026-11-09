@@ -1351,7 +1351,7 @@ def parallel_jobs(args):
     readings = [None, '\n'] + sorted(d for d in delimiters if d and d != '\n')
 
     def read(words, delimiter):
-        return list(dict.fromkeys(piece for w in words for piece in ([w] if delimiter is None else w.split(delimiter))))
+        return [piece for w in words for piece in ([w] if delimiter is None else w.split(delimiter))]
 
     if k == end:
         return list(dict.fromkeys(a for d in readings for words in lists for a in read(words, d))), files
