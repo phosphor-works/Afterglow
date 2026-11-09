@@ -522,8 +522,8 @@ PhosphorConfig::Schema buildSchema()
                         "Terminal.sshIntegration and Terminal.sshTerminfo set, and AFTERGLOW_PANE_ID and AFTERGLOW_SOCKET, "
                         "which it always sets. New panes use this value.")},
         {QStringLiteral("confirmUnsafePaste"), d.confirmUnsafePaste, QMetaType::Bool,
-         QStringLiteral("Ask before pasting text that holds a line break, unless the program uses bracketed paste. A line "
-                        "break could run a command.")},
+         QStringLiteral("Ask before pasting or dropping text that holds a line break, unless the program uses bracketed "
+                        "paste. A line break could run a command.")},
         stringKey(QStringLiteral("fileTransferPassword"), {},
                   QStringLiteral("Shared secret for Kitty file-transfer approval. An empty value always asks for approval.")),
         intKey(QStringLiteral("fileTransferDeltaLimit"), int(d.fileTransferDeltaLimit >> 30), 0, 1048576,
@@ -599,8 +599,12 @@ PhosphorConfig::Schema buildSchema()
         enumKey(QStringLiteral("middleClick"), MiddleClickChoices, d.mouse.middleClick,
                 QStringLiteral("What a middle click pastes. The none value turns middle-click paste off.")),
         intKey(QStringLiteral("autoScrollInterval"), d.mouse.autoScrollInterval, 10, 1000,
-               QStringLiteral("Milliseconds between the rows that a selection scrolls while you drag it past the top or bottom "
-                              "of a pane.")),
+               QStringLiteral("Milliseconds between the rows that a selection scrolls while you extend it past the top or "
+                              "bottom of a pane.")),
+        {QStringLiteral("dragSelection"), d.mouse.dragSelection, QMetaType::Bool,
+         QStringLiteral("Allow a single press without Alt inside the selection to drag its text to another pane or "
+                        "another desktop application. A click there without a move clears the selection, and other presses "
+                        "there select as they do elsewhere.")},
     };
     schema.groups[LinksGroup] = {
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,
@@ -1695,7 +1699,11 @@ Settings SettingsStore::read()
                                       t.graphicsFileTransfer ? Settings::Permission::Allow : Settings::Permission::Deny)
         != Settings::Permission::Deny;
     t.allowScreenReadback = st.read<bool>(Terminal, QStringLiteral("allowScreenReadback"));
+
+    // Graphics
     t.graphicsQuota = std::size_t(st.read<int>(GraphicsGroup, QStringLiteral("quota"))) << 20;
+
+    // Notifications
     s.notifications = st.read<bool>(NotificationsGroup, QStringLiteral("enabled"));
     s.notificationRateLimit = st.read<int>(NotificationsGroup, QStringLiteral("rateLimit"));
     s.notificationRateWindow = st.read<int>(NotificationsGroup, QStringLiteral("rateWindow"));
@@ -1726,9 +1734,14 @@ Settings SettingsStore::read()
     s.window.scrollbar = readEnum(st, Window, QStringLiteral("scrollbar"), ScrollbarChoices, s.window.scrollbar);
     s.window.scrollbarHideDelay = st.read<int>(Window, QStringLiteral("scrollbarHideDelay"));
     s.window.scrollbarWidth = st.read<int>(Window, QStringLiteral("scrollbarWidth"));
+
+    // Mouse
     s.mouse.rightClick = readEnum(st, MouseGroup, QStringLiteral("rightClick"), RightClickChoices, s.mouse.rightClick);
     s.mouse.middleClick = readEnum(st, MouseGroup, QStringLiteral("middleClick"), MiddleClickChoices, s.mouse.middleClick);
     s.mouse.autoScrollInterval = st.read<int>(MouseGroup, QStringLiteral("autoScrollInterval"));
+    s.mouse.dragSelection = st.read<bool>(MouseGroup, QStringLiteral("dragSelection"));
+
+    // Links
     s.links.detectUrls = st.read<bool>(LinksGroup, QStringLiteral("detectUrls"));
     s.links.openWith = st.read<QString>(LinksGroup, QStringLiteral("openWith")).trimmed();
     s.links.modifier = readEnum(st, LinksGroup, QStringLiteral("modifier"), ModifierChoices, s.links.modifier);
@@ -1743,6 +1756,8 @@ Settings SettingsStore::read()
             s.links.schemes.append(scheme);
         }
     }
+
+    // Quick terminal
     s.quickTerminal.height = st.read<double>(Quick, QStringLiteral("height"));
     // The shortcut backend gets the sequence that this text parses to: one
     // that does not parse would bind nothing, with no word of it.
@@ -1763,10 +1778,14 @@ Settings SettingsStore::read()
     s.quickTerminal.duration = st.read<int>(Quick, QStringLiteral("duration"));
     s.quickTerminal.position = readEnum(st, Quick, QStringLiteral("position"), QuickPositionChoices, s.quickTerminal.position);
     s.quickTerminal.screen = st.read<QString>(Quick, QStringLiteral("screen")).trimmed();
+
+    // Control
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));
     s.control.allowReadText = st.read<bool>(ControlGroup, QStringLiteral("allowReadText"));
     s.control.allowRemoteReadText = st.read<bool>(ControlGroup, QStringLiteral("allowRemoteReadText"));
     s.control.eventInterval = st.read<int>(ControlGroup, QStringLiteral("eventInterval"));
+
+    // Scripts
     s.scripts = st.read<bool>(ScriptsGroup, QStringLiteral("enabled"));
     s.scriptsAllowReadText = st.read<bool>(ScriptsGroup, QStringLiteral("allowReadText"));
     s.scriptCommandTimeout = st.read<int>(ScriptsGroup, QStringLiteral("commandTimeout"));
@@ -1775,6 +1794,7 @@ Settings SettingsStore::read()
     s.scriptCommandOutputLimit = qint64(st.read<int>(ScriptsGroup, QStringLiteral("commandOutputLimit"))) << 10;
     s.scriptCpuBudget = st.read<int>(ScriptsGroup, QStringLiteral("cpuBudget"));
 
+    // Audio
     s.audio.enabled = st.read<bool>(AudioGroup, QStringLiteral("enabled"));
     s.audio.inputMethod = st.read<QString>(AudioGroup, QStringLiteral("inputMethod"));
     s.audio.inputSource = st.read<QString>(AudioGroup, QStringLiteral("inputSource")).trimmed();

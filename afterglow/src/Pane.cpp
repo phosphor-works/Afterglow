@@ -306,6 +306,11 @@ AfterglowRender::PaneSnapshot Pane::takeSnapshot()
 AfterglowVt::SelectionPoint Pane::selectionPointAt(int col, int row) const
 {
     std::lock_guard lock(m_mutex);
+    return pointAt(col, row);
+}
+
+AfterglowVt::SelectionPoint Pane::pointAt(int col, int row) const
+{
     const AfterglowVt::Screen& scr = m_terminal.screen();
     return {scr.rowsDropped() + scr.viewportTop() + std::size_t(std::clamp(row, 0, scr.rows() - 1)),
             std::clamp(col, 0, scr.cols() - 1)};
@@ -356,11 +361,32 @@ void Pane::clearSelection()
     }
 }
 
+bool Pane::selectionShown() const
+{
+    // validFor() checks active first.
+    return m_selectionOnAltScreen == m_terminal.modes().altScreen && m_selection.validFor(m_terminal.screen());
+}
+
 bool Pane::hasSelection() const
 {
     std::lock_guard lock(m_mutex);
-    return m_selection.active && m_selectionOnAltScreen == m_terminal.modes().altScreen
-        && m_selection.validFor(m_terminal.screen());
+    return selectionShown();
+}
+
+bool Pane::selectionContains(int col, int row) const
+{
+    // One lock for the cell and the test: a region scroll between them
+    // would move the selection's rows but not the cell's.
+    std::lock_guard lock(m_mutex);
+    // Copy mode draws its cursor as a selection of one cell. A selection
+    // that the mouse made meanwhile is a selection.
+    const bool copyCursor = m_copyMode && !m_copySelecting && m_selection.anchor == m_copyCursor
+        && m_selection.head == m_copyCursor;
+    if (!selectionShown() || copyCursor) {
+        return false;
+    }
+    const AfterglowVt::SelectionPoint point = pointAt(col, row);
+    return m_selection.range(m_terminal.screen(), m_terminal.options().wordBoundaries).contains(point.row, point.col);
 }
 
 QString Pane::selectedText() const
@@ -368,7 +394,7 @@ QString Pane::selectedText() const
     std::string text;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_selection.active || m_selectionOnAltScreen != m_terminal.modes().altScreen) {
+        if (!selectionShown()) {
             return {};
         }
         text = m_selection.text(m_terminal.screen(), m_terminal.options().wordBoundaries);
@@ -1532,6 +1558,7 @@ DragDrop* Pane::dragDrop()
         m_dragDrop->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
         m_dragDrop->setCommandDelivery([this](int waitMs) { deliverProtocolCommands(waitMs); });
         m_dragDrop->setAnswerWait(m_dragAnswerWait);
+        connect(m_dragDrop.get(), &DragDrop::dragStarting, this, &Pane::programDragStarting);
         connect(m_dragDrop.get(), &DragDrop::reply, this, [this](const QByteArray& bytes) {
             if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
             // A held pane's program has exited: no input failed, nothing reads it.

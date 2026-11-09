@@ -135,7 +135,8 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `autoScrollInterval` | `50` | 10–1000 | Milliseconds between the rows that a selection scrolls while you drag it past the top or bottom of a pane. |
+| `autoScrollInterval` | `50` | 10–1000 | Milliseconds between the rows that a selection scrolls while you extend it past the top or bottom of a pane. |
+| `dragSelection` | `false` |  | Allow a single press without Alt inside the selection to drag its text to another pane or another desktop application. A click there without a move clears the selection, and other presses there select as they do elsewhere. |
 | `middleClick` | `"primary"` | `"primary"`, `"clipboard"`, `"none"` | What a middle click pastes. The none value turns middle-click paste off. |
 | `rightClick` | `"menu"` | `"menu"`, `"paste"`, `"copy-or-paste"`, `"extend"` | What a right click does. The menu value opens the context menu. The paste value pastes the clipboard. The copy-or-paste value copies an existing selection, or else pastes. The extend value extends the selection. |
 
@@ -200,7 +201,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `clipboardRead` | `"ask"` | `"allow"`, `"ask"`, `"deny"` | Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read. |
 | `clipboardWrite` | `"allow"` | `"allow"`, `"ask"`, `"deny"` | Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write. |
 | `confirmClose` | `true` |  | Ask before closing a pane, tab or window where a program is running. |
-| `confirmUnsafePaste` | `true` |  | Ask before pasting text that holds a line break, unless the program uses bracketed paste. A line break could run a command. |
+| `confirmUnsafePaste` | `true` |  | Ask before pasting or dropping text that holds a line break, unless the program uses bracketed paste. A line break could run a command. |
 | `copyOnSelect` | `"primary"` | `"primary"`, `"clipboard"`, `"off"` | Where Afterglow copies a new selection. The primary value copies it to the primary selection. The clipboard value copies it to the clipboard too. The off value does not copy it. |
 | `cursorBlink` | `true` |  | Make the cursor blink. |
 | `cursorBlinkInterval` | `530` | 100–5000 | Duration in milliseconds for each visible and hidden cursor phase. |

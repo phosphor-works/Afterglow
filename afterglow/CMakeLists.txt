@@ -13,6 +13,7 @@ qt_add_library(afterglow_app STATIC
     src/desktop/Accessibility.cpp
     src/DockArea.cpp
     src/DockArea.h
+    src/NestedLoop.h
     src/Pane.cpp
     src/PaneText.cpp
     src/Pane.h

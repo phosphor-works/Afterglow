@@ -341,9 +341,9 @@ private:
     void releasePaneUi(Pane* pane);
     /// Closes the prompts and modes that belong to @p pane, which is going
     /// away: its clipboard and paste prompts, title prompt, menu, URL mode,
-    /// selection drag, reported mouse buttons, a drag on or the pointer over
-    /// its docks, and a close confirmation about it alone. Prompts about
-    /// other panes stay.
+    /// selection drag, held press inside its selection, reported mouse
+    /// buttons, a drag on or the pointer over its docks, and a close
+    /// confirmation about it alone. Prompts about other panes stay.
     void dropPanePrompts(Pane* pane);
     /// Cancels the title prompt and closes the tab menu when they belong to
     /// tab @p tabId, which is going away: they would have nothing to act on.
@@ -541,9 +541,22 @@ private:
     /// press. A mode or the chrome took the others, and their auto-repeats
     /// go nowhere once the mode has closed.
     QHash<quint32, bool> m_consumedKeys;
+    /// A press that reached a pane's program, with what its release needs.
+    struct SentKey {
+        QPointer<Pane> pane;
+        int key = 0;
+        QString text;
+        quint32 nativeScanCode = 0;
+        std::uint64_t order = 0; ///< later presses have higher numbers
+    };
     /// Presses that reached a pane's program, by physical key: the release
     /// goes to that pane whatever has the keyboard by then.
-    QHash<quint32, QPointer<Pane>> m_sentKeys;
+    QHash<quint32, SentKey> m_sentKeys;
+    std::uint64_t m_sentKeyOrder = 0;
+    /// Sends the release of every key in m_sentKeys to its pane now, and
+    /// takes the keys: a drag takes the keyboard (QDrag::exec), and their
+    /// releases would go to it.
+    void releaseSentKeys();
     /// A mode holds the keyboard: the overview, URL mode, Unicode input,
     /// copy mode or a script's key mode. Input-method text does not reach
     /// the pane meanwhile.
@@ -659,6 +672,9 @@ private:
     /// Encodes @p e for @p pane (the focused pane's input pane when null) and sends it.
     void sendKey(QKeyEvent* e, Pane* pane = nullptr);
     void paste(QClipboard::Mode mode);
+    /// Pastes @p text into @p target, with the size limit and the question
+    /// before an unsafe paste (Terminal.confirmUnsafePaste).
+    void pasteText(Pane* target, const QByteArray& text);
 
     // Clipboard protocol (OSC 5522)
     void clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRequest& request);
@@ -733,6 +749,11 @@ private:
     /// Cell row under @p pos without clamping; negative above, >= rows below.
     int rawRowAt(Pane* pane, const QPointF& pos) const;
     void updateSelectionDrag();
+    /// Starts a selection at @p pos of @p pane, as a press there does.
+    void beginSelection(Pane* pane, const QPointF& pos, AfterglowVt::SelectionMode mode);
+    /// Drags the selected text of @p pane out (QDrag, text/plain), and returns
+    /// when the drop ends. False, with no drag, when the selection has no text.
+    bool dragSelectionText(Pane* pane);
     void copySelection(bool toClipboard);
     /// Copies @p pane's new selection where Terminal.copyOnSelect says.
     void copyOnSelect(Pane* pane);
@@ -1118,6 +1139,13 @@ private:
 
     // Selection dragging.
     QPointer<Pane> m_selectionPane;
+    /// A press inside the selection (Mouse.dragSelection), held back: a move
+    /// drags the text out, a release clicks where the press was.
+    QPointer<Pane> m_textDragPane;
+    QPointF m_textDragFrom;
+    /// The pane whose selection a drag carries while it runs: no drop there.
+    QPointer<Pane> m_textDragSource;
+    bool m_textDragging = false; ///< dragSelectionText() is in QDrag::exec()
     /// The selection's press moved to another cell: its release is no click,
     /// even when output cleared the selection meanwhile.
     bool m_selectionDragged = false;

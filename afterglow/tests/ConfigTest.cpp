@@ -1346,6 +1346,15 @@ TEST_F(ConfigTest, RemoteCommandsOverSshAreOffByDefault)
     EXPECT_TRUE(on.settings().sshRemoteCommands);
 }
 
+TEST_F(ConfigTest, DragSelectionIsOffByDefault)
+{
+    // As in Kitty: a press inside the selection starts a new selection.
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_FALSE(defaults.settings().mouse.dragSelection);
+    SettingsStore on(write(QStringLiteral("on.json"), R"({"Mouse": {"dragSelection": true}})"));
+    EXPECT_TRUE(on.settings().mouse.dragSelection);
+}
+
 TEST_F(ConfigTest, DragTreeLifetimeIsMinutesWithAClamp)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));

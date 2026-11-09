@@ -30,7 +30,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Keypad keys with Num Lock off, which the Kitty protocol reports as keypad keys, and the function keys F13 to F35.
 - The Kitty mouse-pointer protocol (OSC 22), with separate shape stacks for the main and alternate screens.
 - Pastes keep tab, carriage return and line feed, and drop all other control characters.
-- A prompt before a paste with a line break reaches a program that does not use bracketed paste.
+- Afterglow asks before a paste or a text drop with a line break reaches a program that does not use bracketed paste.
 
 ### Graphics and text sizing
 
@@ -72,7 +72,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99), which `Notifications.enabled` turns on and off.
 - A notification limit for each pane (`Notifications.rateLimit` in `Notifications.rateWindow`, 20 in 10 seconds by default). Notices from Afterglow itself do not count, and neither do `afterglow ctl notify` and script notifications. The notice at the end of a script command that has no client counts.
 - Settings for the shortest time between two bell sounds (`Terminal.bellSoundInterval`) and between two status notifications of a pane (`Notifications.statusInterval`).
-- `Mouse.autoScrollInterval` sets the time between the rows of a selection drag that scrolls.
+- `Mouse.autoScrollInterval` sets the time between the rows that a selection scrolls while you extend it.
 - `Control.eventInterval` sets the shortest time between two control events of one kind for a pane.
 - `Terminal.pasteReadTimeout` sets how long a paste event lets a program read the clipboard.
 - Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates. The approval lists the paths and covers only those paths. They are the files that a program reads, or the destinations of the files that it sends. A file goes only where the approval showed, also when a link changes after it. A file that the approval did not list waits for an approval of its own, and the approved files continue meanwhile.
@@ -82,6 +82,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Afterglow tells the source of a drag the action that the drop took (the `o` key of `t=e:x=4`). `aglow dnd` uses it to delete the files of a remote drag only when the drop was a move. A move to another application is reported as a copy, so the source keeps its files.
 - Received file transfers keep the read, write and execute bits of a mode. Afterglow drops the set-user-ID, set-group-ID and sticky bits.
 - Local file drops, quoted for the shell and sent as bracketed paste.
+- Text drops, pasted with the size limit and the question of a paste, unless the program in the pane accepts drops.
 - `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. Its `transfer`, `dnd`, `icat` and `clipboard` commands take the options of `kitten`, with a few differences that the compatibility document lists.
 - `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard`, which run the `aglow` that is installed with Afterglow.
 - `AFTERGLOW_AGLOW_ONLY` builds `aglow` alone, for a remote host or a package of its own. This build needs no Qt and no Phosphor libraries, and it installs only `aglow`, its completions and its license notices.
@@ -106,6 +107,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 - Search with PCRE2 regular expressions, across soft-wrapped lines.
 - Keyboard selection in character, line and rectangle modes.
+- With `Mouse.dragSelection` on (off by default, as in Kitty), selected text drags to another pane or another desktop application.
 - Text hints that copy, open or run commands on regular-expression matches, and URL hints, labeled from `Hints.alphabet`.
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.
 - Keybindings with multi-key sequences, a leader key and named key tables.
@@ -205,7 +207,7 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 
 - [Documentation index](docs/README.md).
 - [Supported protocols and limits](docs/COMPATIBILITY.md).
-- [Desktop integration](docs/DESKTOP.md) for accessibility, input methods, file drops, Kitty file transfer, Kitty drag and drop, and the `aglow` client.
+- [Desktop integration](docs/DESKTOP.md) for accessibility, input methods, file and text drops, Kitty file transfer, Kitty drag and drop, and the `aglow` client.
 - [Bidirectional text](docs/BIDI.md) for the application-grid policy.
 - [External control](docs/CONTROL.md) for `afterglow ctl`, the control socket and script commands from a shell.
 - [Testing](docs/TESTING.md) for regression and native desktop test procedures.
