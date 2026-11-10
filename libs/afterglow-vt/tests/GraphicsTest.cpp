@@ -344,6 +344,43 @@ TEST(Graphics, ClearScreenDropsImagesThatReachItFromTheScrollback)
     EXPECT_TRUE(t.g().placements().empty());
 }
 
+TEST(Graphics, EraseLineDropsAnImageOnThatLine)
+{
+    Term t(20, 10);
+    // A 25x45 image at 10x20 cells covers three rows from the top.
+    t.t.feed(apc("a=T,f=32,s=25,v=45,i=5", base64Encode(rgba(25, 45, 0, 0, 255))));
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    t.t.feed("\x1b[H\x1b[K");
+    EXPECT_TRUE(t.g().placements().empty());
+}
+
+TEST(Graphics, EraseToEndOfScreenDropsImagesBelowTheCursor)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=T,f=32,s=25,v=45,i=5", base64Encode(rgba(25, 45, 0, 0, 255))));
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    t.t.feed("\x1b[H\x1b[J");
+    EXPECT_TRUE(t.g().placements().empty());
+}
+
+TEST(Graphics, EraseFromTopDropsImagesAboveTheCursor)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=T,f=32,s=25,v=45,i=5", base64Encode(rgba(25, 45, 0, 0, 255))));
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    t.t.feed("\x1b[4;1H\x1b[1J");
+    EXPECT_TRUE(t.g().placements().empty());
+}
+
+TEST(Graphics, EraseOfANonOverlappingRowKeepsTheImage)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=T,f=32,s=25,v=45,i=5", base64Encode(rgba(25, 45, 0, 0, 255))));
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    t.t.feed("\x1b[6;1H\x1b[K"); // the image ends on row 2; row 5 is below it
+    EXPECT_EQ(t.g().placements().size(), 1u);
+}
+
 TEST(Graphics, SixelAllocationAndCoveragePreserveKittyImagesInInternalRange)
 {
     Term t(20, 10);

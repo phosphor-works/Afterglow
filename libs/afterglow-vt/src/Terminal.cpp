@@ -1480,12 +1480,14 @@ void Terminal::eraseDisplay(int mode, bool selective)
         for (int y = cur.y + 1; y < rows(); ++y) {
             eraseWholeRow(scr.row(y), fill, selective);
         }
+        m_graphics[m_modes.altScreen ? 1 : 0].eraseRows(cur.y, rows() - 1, scr, m_cellWidth, m_cellHeight);
         break;
     case 1:
         for (int y = 0; y < cur.y; ++y) {
             eraseWholeRow(scr.row(y), fill, selective);
         }
         eraseSpan(scr.row(cur.y), 0, cur.x + 1, fill, selective);
+        m_graphics[m_modes.altScreen ? 1 : 0].eraseRows(0, cur.y, scr, m_cellWidth, m_cellHeight);
         break;
     case 2:
         for (int y = 0; y < rows(); ++y) {
@@ -1547,6 +1549,9 @@ void Terminal::eraseLine(int mode, bool selective)
         break;
     default:
         break;
+    }
+    if (mode >= 0 && mode <= 2) {
+        m_graphics[m_modes.altScreen ? 1 : 0].eraseRows(cur.y, cur.y, scr, m_cellWidth, m_cellHeight);
     }
     releaseFill(fill);
     cur.pendingWrap = false;
