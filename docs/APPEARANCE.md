@@ -213,6 +213,7 @@ Use `plasma:NAME` to take colors from the desktop color scheme:
 `plasma` without a name takes the palette from `afterglow-dark` for a dark color scheme, and from `afterglow-light` for a light one.
 Afterglow reads `kdeglobals` in the XDG configuration directories, as Plasma does.
 On another desktop, or for a color that `kdeglobals` does not set, the colors come from the application palette.
+`afterglow mux new` has no application palette: such a color stays the color of the theme (see [the mux daemon](MUX.md#environment)).
 Afterglow applies a new color scheme while it runs.
 Each half of a `light:` and `dark:` value can also be a `plasma:` value.
 

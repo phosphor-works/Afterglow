@@ -117,7 +117,6 @@ def mux_commands():
     run = re.search(r'^int runMux\(.*?^\}', source, re.M | re.S)
     if not run:
         raise SystemExit(f'FAIL: no runMux in {MUX}')
-    # attach and detach only say that they are not available yet.
     commands = {c: f for c, f in re.findall(r'command == "([a-z]+)"\) return (\w+)\(', run.group(0)) if f != 'fail'}
     if not commands:
         raise SystemExit(f'FAIL: no commands in runMux in {MUX}')
@@ -498,6 +497,11 @@ def mux_cases(commands, options):
     yield 'afterglow mux new --name x ', options['new'] - {'--name'}
     yield 'afterglow mux kill -', options['kill']
     yield 'afterglow mux kill --force -', set()
+    yield 'afterglow mux attach -', options['attach']
+    yield 'afterglow mux attach --no-takeover -', set()
+    # The session names are the daemon's: nothing to offer, not files.
+    yield 'afterglow mux attach ', lambda got: 'adir' not in got
+    yield 'afterglow mux detach -', options['detach']
     yield 'afterglow mux ls ', set()
     yield 'afterglow mux server ', set()
 
@@ -516,6 +520,7 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     # --quick-terminal takes no -e, -d, --title or --hold.
     yield 'afterglow --quick-terminal -', lambda got: '--config' in got and not {'-e', '-d', '--title', '--hold'} & got
     yield 'afterglow --title x -', lambda got: '--hold' in got and '--quick-terminal' not in got
+    yield 'afterglow --title=x -', lambda got: '--hold' in got and '--title' not in got
     yield 'afterglow -o A.b=1 -', has('-o', '--override')
     yield 'afterglow --config-reference ', set()
     yield 'afterglow -d ', {'adir'}
@@ -593,6 +598,7 @@ FULL_CASES = (('afterglow -e ech', 'echo'), ('afterglow --title x -e ech', 'echo
               ('afterglow -o A.b=1 -e ech', 'echo'), ('afterglow ctl split -- ech', 'echo'),
               ('afterglow ctl new-window --cwd adir -- ech', 'echo'),
               ('afterglow ctl overlay --capture none -- ech', 'echo'), ('afterglow mux new --detach -- ech', 'echo'),
+              ('afterglow mux new -- ech', 'echo'),
               ('afterglow -e ssh --help ', 'ssh-marker'),
               ('afterglow ssh ', 'ssh-marker'))
 

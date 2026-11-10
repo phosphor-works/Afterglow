@@ -16,6 +16,7 @@
 #include <QDragEnterEvent>
 #include "PaneDialog.h"
 #include "PaneLaunch.h"
+#include "mux/MuxClient.h"
 
 #include "app/NotificationCenter.h"
 #include "control/Control.h"
@@ -386,7 +387,8 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
 
     m_fixedTitle = options.title;
     m_holdNextPane = options.hold;
-    if (!options.empty) newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command, options.environment);
+    if (options.session) newSessionTab(options.session);
+    else if (!options.empty) newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command, options.environment);
     updateTitle();
     // QWindow tells nobody of a new title but its own signal.
     connect(this, &QWindow::windowTitleChanged, this, [this] {
@@ -751,6 +753,21 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     return pane;
 }
 
+Pane* TerminalWindow::createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id)
+{
+    // The program runs under the daemon, which holds nothing open: --hold is
+    // for a program of the window, and must not go to the next pane.
+    m_holdNextPane = false;
+    auto* pane = new Pane(m_settings.settings().terminal, this);
+    bindPane(pane);
+    applySearchColors(pane);
+    pane->setScrollPolicy(m_settings.settings().scrollOnOutput, m_settings.settings().scrollOnInput);
+    // The size goes to the daemon with the first layout of the pane.
+    pane->showSession(session, id, m_settings.settings().mux.onClose == MuxSettings::Close::Kill);
+    Q_EMIT paneCreated(pane);
+    return pane;
+}
+
 Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QStringList& command, const PaneLaunchOptions& options, QString* error)
 {
     if (!m_focused) {
@@ -1037,14 +1054,27 @@ QString TerminalWindow::tabTitle(const Tab& tab, const Pane* focused) const
 Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList& command, const QVariantMap& environment,
                              QString* error, int at)
 {
-    // A new tab opens beside the current one.
-    if (at < 0 || at > int(m_tabs.size())) at = m_tabs.empty() ? 0 : m_currentTab + 1;
     // Size the shell for the area it will get, with the tab bar if it now
-    // shows. The pane exists before its tab, so no tab is ever without a tree.
+    // shows. addTab() puts it beside the current tab unless @p at says
+    // otherwise. The pane exists before its tab, so no tab is ever without a
+    // tree.
     Pane* first = createPane(workingDirectory, paneArea(int(m_tabs.size()) + 1), command, error, environment);
     if (!first) {
         return nullptr;
     }
+    return addTab(first, at);
+}
+
+Pane* TerminalWindow::newSessionTab(const std::shared_ptr<MuxClient>& session)
+{
+    // One pane for each session until the daemon keeps a layout.
+    if (session->panes().empty()) return nullptr;
+    return addTab(createSessionPane(session, session->panes().front()), -1);
+}
+
+Pane* TerminalWindow::addTab(Pane* first, int at)
+{
+    if (at < 0 || at > int(m_tabs.size())) at = m_tabs.empty() ? 0 : m_currentTab + 1;
     auto created = std::make_unique<Tab>();
     created->splits = std::make_unique<SplitTree>(first);
     created->focused = first;
@@ -1169,7 +1199,11 @@ QStringList TerminalWindow::closingJobs(const QList<Pane*>& panes) const
     if (!m_settings.settings().confirmClose) return jobs;
     for (Pane* p : panes) {
         // An overlay's program runs on the pane too, and closing ends it.
-        for (Pane* running : {p, inputPane(p)}) {
+        // Without one, inputPane() is the pane itself: one question each,
+        // which for a session pane is a call to the daemon.
+        Pane* const overlay = inputPane(p);
+        for (Pane* running : {p, overlay == p ? nullptr : overlay}) {
+            if (!running) continue;
             // The name is the program's to choose (prctl): shown as plain text.
             if (const QString job = sanitizedText(running->foregroundJob(), 64); !job.isEmpty() && !jobs.contains(job)) {
                 jobs << job;
@@ -2355,7 +2389,13 @@ bool TerminalWindow::event(QEvent* e)
         }
         // Terminal output is not an editable document. Never translate arbitrary
         // IME replacement ranges into destructive shell keystrokes.
+        // The text that came with such an edit goes too: without the
+        // deletion it would be typed next to what it was to replace. The
+        // log says that it happened, without the text.
         if (ime->replacementStart() != 0 || ime->replacementLength() != 0) {
+            qCDebug(lcWindow) << "ignored an input method edit of the text around the cursor:" << ime->replacementLength()
+                              << "UTF-16 units at" << ime->replacementStart() << "and" << ime->commitString().size()
+                              << "UTF-16 units to commit, with its preedit";
             ime->ignore();
             return true;
         }
@@ -2570,7 +2610,10 @@ void TerminalWindow::updatePaneVisibility()
         tree->forEachPane([&](Pane* p, const QRect&) {
             const bool visible = shown
                 && ((current && tree->isVisible(p)) || std::find(cards.begin(), cards.end(), p) != cards.end());
-            p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
+            // A session pane's replica must not answer its program: the
+            // daemon's terminal answers the program's own queries, and the
+            // stream carries no visibility yet (docs/MUX.md).
+            if (!p->isSessionPane()) p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
             // An overlay shows where its host does, on a card too.
             if (PaneOverlay* overlay = p->overlay()) overlay->pane()->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
         });
@@ -2680,8 +2723,16 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     // program would otherwise get none of between its press and release.
     const bool pressSent = e->isAutoRepeat() && m_sentKeys.contains(physicalKeyOf(e));
     // Text a binding types, from a key mode or a chord alike.
-    const auto typeText = [this](const QByteArray& text) {
+    const auto typeText = [this, e](const QByteArray& text) {
         Pane* target = inputPane(m_focused);
+        // --hold: its program has ended, and a key closes it, as sendKey
+        // does. The press is taken as no shortcut: its repeats must not type
+        // the text into the pane focused next.
+        if (target->isHeld()) {
+            m_consumedKeys.insert(physicalKeyOf(e), false);
+            closePane(target);
+            return;
+        }
         target->clearSelection();
         restartBlink();
         target->sendInput(std::string_view(text.constData(), std::size_t(text.size())));
@@ -2795,7 +2846,9 @@ bool TerminalWindow::performAction(Action action)
     }
 
     case Action::TogglePaneZoom:
-        if (!m_focused || m_splits->paneCount() < 2) return false;
+        // The overview restores the zooms that it saw at its open: one made
+        // under it would stay, and hide cards of the open deck.
+        if (!m_focused || m_splits->paneCount() < 2 || m_overview.open) return false;
         setPaneZoom(m_splits->zoomedPane() ? nullptr : m_focused.data());
         return true;
     case Action::ResizeLeft:
@@ -2822,22 +2875,13 @@ bool TerminalWindow::performAction(Action action)
     }
     case Action::ClearScreen:
         if (target) {
-            target->clearSelection();
-            // At a prompt the shell redraws it on the cleared screen.
-            const bool atPrompt = target->withTerminal([](Terminal& t) {
-                t.clearScreenAndHistory();
-                return t.atShellPrompt() && !t.modes().altScreen;
-            });
-            if (atPrompt) {
-                target->sendInput("\x0c");
-            }
+            target->clearScreen();
             scheduleRender();
         }
         return true;
     case Action::ResetTerminal:
         if (target) {
-            target->clearSelection();
-            target->withTerminal([](Terminal& t) { t.reset(); });
+            target->resetTerminal();
             scheduleRender();
         }
         return true;
@@ -2880,7 +2924,10 @@ bool TerminalWindow::performAction(Action action)
         close();
         return true;
     case Action::NotifyOnFinish:
-        if (m_focused) {
+        if (m_focused && m_focused->isSessionPane()) {
+            NotificationCenter::instance().showNotice(m_focused, tr("No command notification"),
+                                                      tr("A window of a mux session does not see the commands of its shell yet."));
+        } else if (m_focused) {
             if (!m_notifyOnFinish.remove(m_focused.data())) {
                 m_notifyOnFinish.insert(m_focused.data());
             }
@@ -2954,6 +3001,9 @@ bool TerminalWindow::performAction(Action action)
         if (command.isEmpty() || QStandardPaths::findExecutable(command.front()).isEmpty()) {
             return fail(tr("No pager"), command.isEmpty() ? tr("Terminal.pager is empty.")
                                                           : tr("The pager %1 was not found.").arg(command.front()));
+        }
+        if (m_focused->isSessionPane()) {
+            return fail(tr("No command output"), tr("A window of a mux session does not see the commands of its shell yet."));
         }
         const std::size_t limit = m_settings.settings().lastOutputLimit;
         const auto output = m_focused->readText(Terminal::TextScope::LastOutput, limit);
@@ -3682,8 +3732,9 @@ void TerminalWindow::openContextMenu(const QPointF& pos, const QString& link)
         items << entry(MenuOpenLink, QStringLiteral("Open Link"), "internet-web-browser")
               << entry(MenuCopyLink, QStringLiteral("Copy Link Address"), "insert-link") << separator;
     }
+    // A session window does not see the commands of the session's shell.
     QVariantMap notify = action(Action::NotifyOnFinish, QStringLiteral("Notify on Next Command Finish"),
-                                "preferences-desktop-notification-bell", pane)
+                                "preferences-desktop-notification-bell", pane && !m_focused->isSessionPane())
                              .toMap();
     notify.insert(QStringLiteral("checked"), pane && m_notifyOnFinish.contains(m_focused.data()));
     items << action(Action::Copy, QStringLiteral("Copy"), "edit-copy", pane && inputPane(m_focused)->hasSelection())
@@ -4153,8 +4204,14 @@ void TerminalWindow::unicodeInputKey(QKeyEvent* e)
         m_unicodeInput.reset();
         showUnicodeInput();
         if (ok && cp > 0 && cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF) && m_focused) {
+            Pane* const target = inputPane(m_focused);
+            // --hold: a key closes a pane whose program has ended.
+            if (target->isHeld()) {
+                closePane(target);
+                return;
+            }
             const char32_t c = char32_t(cp);
-            inputPane(m_focused)->sendInput(QString::fromUcs4(&c, 1).toStdString());
+            target->sendInput(QString::fromUcs4(&c, 1).toStdString());
         }
         return;
     }
@@ -4217,8 +4274,16 @@ void TerminalWindow::applySettings(const Settings& previous)
     if (now.shaders != previous.shaders || now.shaderParams != previous.shaderParams) {
         applyShaders();
     }
+    if (now.mux.onClose != previous.mux.onClose) {
+        for (Pane* p : findChildren<Pane*>()) p->setKillSessionOnClose(now.mux.onClose == MuxSettings::Close::Kill);
+    }
     if (now.terminal != previous.terminal) {
         for (Pane* p : findChildren<Pane*>()) {
+            // A session pane's colors and modes are the session's, which its
+            // frames carry: new options would replace the palette that they
+            // set. Its own options (word boundaries for a selection) stay as
+            // the pane got them.
+            if (p->isSessionPane()) continue;
             p->setOptions(now.terminal);
         }
         setDockOptions(now.terminal);
@@ -4516,7 +4581,8 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
     // card, a hint's last letter): its repeats must not reach the shell.
     if (repeatOfTaken && !repeatOfShortcut) return;
     if (handleShortcut(e)) {
-        m_consumedKeys.insert(physicalKey, true);
+        // A shortcut that closed a held pane took the key as no shortcut.
+        if (!m_consumedKeys.contains(physicalKey)) m_consumedKeys.insert(physicalKey, true);
         return;
     }
     // A shortcut's key that repeats into no shortcut (a key mode ended) stays here.

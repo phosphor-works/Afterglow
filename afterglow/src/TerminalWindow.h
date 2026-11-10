@@ -42,6 +42,8 @@ class QDialog;
 
 namespace Afterglow {
 
+class MuxClient;
+
 struct WindowOptions
 {
     QString workingDirectory;
@@ -58,6 +60,9 @@ struct WindowOptions
     bool hold = false;
     bool empty = false; ///< Internal: receive live panes or a restored project before showing.
     QVariantMap environment = {};
+    /// A mux session that the window shows in its first tab, in place of a
+    /// program of its own (afterglow mux attach).
+    std::shared_ptr<MuxClient> session = {};
 };
 
 class ChromeController;
@@ -157,10 +162,10 @@ public:
     Pane* openTab(const PaneLaunchOptions& options, QString* error, Pane* from = nullptr);
     void requestClosePane(Pane* pane) { closePane(pane); }
     /// Runs a keybind action as if it were pressed in @p pane. The tab
-    /// actions of a pane in another tab (close, rename, move, detach) act on
-    /// that tab without showing it, as its tab menu does. False, and nothing
-    /// done, while a prompt, a menu, the palette, the search or a script
-    /// dialog has the keyboard.
+    /// actions of a pane in another tab (close, rename, move, detach, and a
+    /// new tab beside it) act on that tab without showing it, as its tab menu
+    /// does. False, and nothing done, while a prompt, a menu, the palette,
+    /// the search or a script dialog has the keyboard.
     bool runAction(Pane* pane, Action action);
     using ScriptReply = std::function<void(QString, QVariantMap)>;
     QString showScriptDialog(const QString& owner, Pane*, const QVariantMap&, ScriptReply);
@@ -306,6 +311,10 @@ private:
     struct Tab;
     /// Creates a pane and starts its shell sized for @p area (pane rect, pixels).
     Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
+    /// A pane that shows pane @p id of @p session: no program of its own.
+    Pane* createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id);
+    /// Puts @p first in a new tab at @p at (-1: beside the current one).
+    Pane* addTab(Pane* first, int at);
     void bindPane(Pane* pane);
     /// Connects the overlay that runs over @p host (bindPane does it).
     void bindOverlay(Pane* host);
@@ -381,6 +390,9 @@ private:
     Pane* splitFocused(SplitTree::Direction direction, const QStringList& command = {}, const PaneLaunchOptions& options = {}, QString* error = nullptr);
     /// Opens a tab at @p at (beside the current tab when negative).
     Pane* newTab(const QString& workingDirectory, const QStringList& command = {}, const QVariantMap& environment = {}, QString* error = nullptr, int at = -1);
+    /// A tab that shows the first pane of @p session. Null when the session
+    /// names no pane: the window then has no tab, and Application deletes it.
+    Pane* newSessionTab(const std::shared_ptr<MuxClient>& session);
     /// Opens a shell tab beside @p from's tab, in its directory (beside the
     /// current tab with none), without showing @p from's tab first: one tab
     /// switch. A failure is a notice.
@@ -948,7 +960,8 @@ private:
     QTimer m_holdRetry; ///< a frame again when a pane's held frame times out
     qint64 m_holdWait = 0; ///< this frame: the milliseconds until the first held frame times out
     bool m_textBlinkOn = true;
-    /// Tells each pane whether it can be seen (mode 2033 reports).
+    /// Tells each pane whether it can be seen (mode 2033 reports), except a
+    /// session pane: its replica never answers its program (docs/MUX.md).
     void updatePaneVisibility();
     bool m_blinkOn = true;
     double m_wheelAccumulator = 0;

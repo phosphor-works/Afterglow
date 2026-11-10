@@ -1,385 +1,12 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Each test runs its own afterglow-mux, with a runtime and a state directory
-// of its own under /tmp and no AFTERGLOW_* variables, so no test reaches the
+// Each test runs its own afterglow-mux (TestDaemon.h), so no test reaches the
 // daemon of the user.
 
-#include "MuxProtocol.h"
+#include "TestDaemon.h"
 
-#include <AfterglowProto/Ipc.h>
-#include <AfterglowProto/IpcServer.h>
-#include <AfterglowProto/Run.h>
-#include <AfterglowProto/Socket.h>
-
-#include <gtest/gtest.h>
-
-#include <chrono>
-#include <csignal>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <functional>
-#include <optional>
-#include <sstream>
-#include <thread>
-
-#include <fcntl.h>
-#include <poll.h>
-#include <sys/prctl.h>
-#include <sys/resource.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/un.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
-extern char** environ;
-
-using namespace AfterglowMux;
-using namespace std::chrono_literals;
-namespace Json = AfterglowProto::Json;
-using AfterglowProto::IpcConnection;
-namespace IpcErrorCode = AfterglowProto::IpcErrorCode;
-
-namespace {
-
-std::string readFile(const std::string& path)
-{
-    std::ifstream in(path, std::ios::binary);
-    std::stringstream text;
-    text << in.rdbuf();
-    return text.str();
-}
-
-/// Waits up to five seconds for @p done.
-bool waitFor(const std::function<bool()>& done)
-{
-    const auto deadline = std::chrono::steady_clock::now() + 5s;
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (done()) return true;
-        std::this_thread::sleep_for(20ms);
-    }
-    return done();
-}
-
-bool pythonFound()
-{
-    return std::system("command -v python3 >/dev/null 2>&1") == 0;
-}
-
-bool exists(const std::string& path)
-{
-    struct stat info{};
-    return ::lstat(path.c_str(), &info) == 0;
-}
-
-/// A program that keeps its session open until the test ends it.
-const std::vector<std::string> Waiting = {"/bin/sh", "-c", "exec sleep 60"};
-
-/// A program that writes its environment to @p file, then waits.
-std::vector<std::string> writesEnvironment(const std::string& file)
-{
-    return {"/bin/sh", "-c", "env > '" + file + ".part' && mv '" + file + ".part' '" + file + "'; exec sleep 60"};
-}
-
-class TestDaemon
-{
-public:
-    TestDaemon()
-    {
-        // Under /tmp: TMPDIR can be too long for a socket path.
-        char dir[] = "/tmp/afterglow-mux-XXXXXX";
-        if (!::mkdtemp(dir)) {
-            ADD_FAILURE() << "cannot create a directory under /tmp: " << std::strerror(errno);
-            return;
-        }
-        m_dir = dir;
-        ::mkdir(runtime().c_str(), 0700);
-        ::mkdir((m_dir + "/home").c_str(), 0700);
-        m_environment = cleanEnvironment();
-        m_callSocket = socket();
-    }
-    ~TestDaemon()
-    {
-        for (const pid_t pid : {m_pid, m_other}) {
-            if (pid <= 0) continue;
-            ::kill(pid, SIGKILL);
-            ::waitpid(pid, nullptr, 0);
-        }
-        std::error_code ignored;
-        if (!m_dir.empty()) std::filesystem::remove_all(m_dir, ignored);
-    }
-
-    const std::string& dir() const { return m_dir; }
-    std::string runtime() const { return m_dir + "/run"; }
-    std::string socket() const { return runtime() + "/afterglow-mux/socket"; }
-    std::string stateDirectory() const { return m_dir + "/state/afterglow-mux"; }
-    std::string stateSocket() const { return stateDirectory() + "/" + AfterglowProto::muxStateSocketName(); }
-    pid_t pid() const { return m_pid; }
-    /// The socket that call() connects to.
-    void callOn(std::string path) { m_callSocket = std::move(path); }
-
-    /// The environment of this process, without the variables that lead to
-    /// the user's Afterglow, and with the test's directories.
-    std::vector<std::pair<std::string, std::string>> cleanEnvironment() const
-    {
-        std::vector<std::pair<std::string, std::string>> env;
-        for (char** e = environ; *e; ++e) {
-            const std::string entry(*e);
-            const auto eq = entry.find('=');
-            const std::string name = entry.substr(0, eq);
-            if (name.starts_with("AFTERGLOW_") || name == "XDG_RUNTIME_DIR" || name == "XDG_STATE_HOME" || name == "HOME" || name == "TMUX") {
-                continue;
-            }
-            env.emplace_back(name, eq == std::string::npos ? "" : entry.substr(eq + 1));
-        }
-        env.emplace_back("XDG_RUNTIME_DIR", runtime());
-        // The daemon listens under the state directory too: never the user's.
-        env.emplace_back("XDG_STATE_HOME", m_dir + "/state");
-        env.emplace_back("HOME", m_dir + "/home");
-        return env;
-    }
-
-    /// Starts the daemon and waits until it answers. With @p keep, it gets a
-    /// session named "keep" that runs until the test ends: without a session
-    /// and a connection, the daemon ends.
-    bool start(bool keep = true, bool ignoreHangup = false)
-    {
-        m_pid = spawnDaemon(ignoreHangup);
-        if (m_pid <= 0) return false;
-        const bool answers = waitFor([this] {
-            IpcConnection connection;
-            IpcConnection::Error error;
-            return connection.connect(m_callSocket, &error, 100);
-        });
-        return answers && (!keep || newSession(options(Waiting, "keep")));
-    }
-
-    /// The soft RLIMIT_NOFILE that the daemon starts with, below the hard one.
-    void startFileLimit(rlim_t soft) { m_startFileLimit = soft; }
-
-    /// A variable that the daemon has and the sessions have not.
-    void daemonOnly(std::string name, std::string value) { m_daemonOnly.emplace_back(std::move(name), std::move(value)); }
-
-    /// Starts a daemon that this test kills at its end whatever happens: the
-    /// test's daemon, or with @p other a second one. With @p ignoreHangup
-    /// it starts with SIGHUP ignored, as under nohup. Its stdin is /dev/null
-    /// and its stdout and stderr go to daemon.err: it holds no pipe of
-    /// ctest, and it ends with this process (PR_SET_PDEATHSIG).
-    /// @p report: the write end of a pipe that the daemon gets as its
-    /// report descriptor (AfterglowMux::ReportFdVariable), as from
-    /// `afterglow mux new`; -1 for none.
-    pid_t spawnDaemon(bool ignoreHangup = false, bool other = false, int report = -1)
-    {
-        std::vector<std::string> store;
-        for (const auto& [name, value] : m_environment) store.push_back(name + "=" + value);
-        for (const auto& [name, value] : m_daemonOnly) store.push_back(name + "=" + value);
-        if (report >= 0) store.push_back(std::string(AfterglowMux::ReportFdVariable) + "=3");
-        std::vector<char*> envp;
-        for (auto& entry : store) envp.push_back(entry.data());
-        envp.push_back(nullptr);
-        const std::string err = m_dir + "/daemon.err";
-        const std::string script = std::string("trap '' HUP; exec '") + AFTERGLOW_MUX + "'";
-        std::vector<char*> argv;
-        if (ignoreHangup) argv = {const_cast<char*>("/bin/sh"), const_cast<char*>("-c"), const_cast<char*>(script.c_str()), nullptr};
-        else argv = {const_cast<char*>(AFTERGLOW_MUX), nullptr};
-        const pid_t parent = ::getpid();
-        const pid_t pid = ::fork();
-        if (pid < 0) return -1;
-        if (pid == 0) {
-            ::prctl(PR_SET_PDEATHSIG, SIGKILL);
-            if (::getppid() != parent) ::_exit(127);
-            const int in = ::open("/dev/null", O_RDONLY);
-            const int out = ::open(err.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
-            if (in < 0 || out < 0) ::_exit(127);
-            if (rlimit limit{}; m_startFileLimit > 0 && ::getrlimit(RLIMIT_NOFILE, &limit) == 0) {
-                limit.rlim_cur = m_startFileLimit;
-                ::setrlimit(RLIMIT_NOFILE, &limit);
-            }
-            if (report >= 0 && report != 3) {
-                ::dup2(report, 3);
-            } else if (report == 3) {
-                ::fcntl(3, F_SETFD, 0);
-            }
-            ::dup2(in, 0);
-            ::dup2(out, 1);
-            ::dup2(out, 2);
-            ::close_range(report >= 0 ? 4 : 3, ~0U, 0);
-            ::execve(argv[0], argv.data(), envp.data());
-            ::_exit(127);
-        }
-        (other ? m_other : m_pid) = pid;
-        return pid;
-    }
-
-    std::string errors() const { return readFile(m_dir + "/daemon.err"); }
-
-    /// Whether the daemon still runs. It is not reaped here: a later
-    /// waitExit() still gets its status.
-    bool alive() const
-    {
-        siginfo_t info{};
-        return m_pid > 0 && ::waitid(P_PID, id_t(m_pid), &info, WEXITED | WNOHANG | WNOWAIT) == 0 && info.si_pid == 0;
-    }
-
-    /// The exit status, 128 + the signal for one that ended it, once the
-    /// daemon ended within @p timeout; else nullopt, and it still runs.
-    std::optional<int> waitExit(std::chrono::milliseconds timeout = 5s, bool other = false)
-    {
-        pid_t& pid = other ? m_other : m_pid;
-        int status = 0;
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (::waitpid(pid, &status, WNOHANG) != pid) {
-            if (std::chrono::steady_clock::now() >= deadline) return std::nullopt;
-            std::this_thread::sleep_for(20ms);
-        }
-        pid = -1;
-        return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
-    }
-
-    /// A call on its own connection, as `afterglow mux` makes them.
-    std::optional<Json::Value> call(const std::string& fn, Json::Array args, IpcConnection::Error* error = nullptr,
-                                    const std::string& target = Target)
-    {
-        IpcConnection connection;
-        IpcConnection::Error& e = error ? *error : m_lastError;
-        e = {};
-        if (!connection.connect(m_callSocket, &e, 2000)) return std::nullopt;
-        auto result = connection.call(target, fn, std::move(args), 5000, &e);
-        if (&e != &m_lastError) m_lastError = e;
-        return result;
-    }
-
-    /// Why the last call failed.
-    std::string lastError() const { return m_lastError.code + ": " + m_lastError.message + " " + errors(); }
-
-    SessionOptions options(std::vector<std::string> argv, std::string name = {}) const
-    {
-        SessionOptions o;
-        o.name = std::move(name);
-        o.launch.argv = std::move(argv);
-        o.launch.workingDirectory = m_dir;
-        o.launch.environment = m_environment;
-        return o;
-    }
-
-    std::optional<Json::Value> newSession(const SessionOptions& o, IpcConnection::Error* error = nullptr)
-    {
-        return call(Fn::NewSession, Json::Array{ProtocolVersion, toJson(o)}, error);
-    }
-
-    std::vector<SessionInfo> sessions()
-    {
-        std::vector<SessionInfo> list;
-        const auto result = call(Fn::ListSessions, {});
-        if (!result) return list;
-        for (const Json::Value& item : result->toArray()) {
-            auto info = sessionInfo(item);
-            EXPECT_TRUE(info) << Json::write(item);
-            if (info) list.push_back(std::move(*info));
-        }
-        return list;
-    }
-
-private:
-    std::string m_dir;
-    std::vector<std::pair<std::string, std::string>> m_environment;
-    std::vector<std::pair<std::string, std::string>> m_daemonOnly;
-    std::string m_callSocket;
-    rlim_t m_startFileLimit = 0;
-    pid_t m_pid = -1;
-    pid_t m_other = -1;
-    IpcConnection::Error m_lastError;
-};
-
-/// A raw connection to @p path, for lines that IpcConnection does not send.
-/// Its sends and reads time out after five seconds.
-class RawClient
-{
-public:
-    explicit RawClient(const std::string& path)
-    {
-        m_fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-        sockaddr_un address{};
-        address.sun_family = AF_UNIX;
-        std::snprintf(address.sun_path, sizeof address.sun_path, "%s", path.c_str());
-        const timeval timeout{5, 0};
-        ::setsockopt(m_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
-        if (::connect(m_fd, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0) {
-            ::close(m_fd);
-            m_fd = -1;
-        }
-    }
-    ~RawClient()
-    {
-        if (m_fd >= 0) ::close(m_fd);
-    }
-    bool connected() const { return m_fd >= 0; }
-    bool send(std::string_view text)
-    {
-        while (!text.empty()) {
-            const ssize_t n = ::send(m_fd, text.data(), text.size(), MSG_NOSIGNAL);
-            if (n <= 0) return false;
-            text.remove_prefix(std::size_t(n));
-        }
-        return true;
-    }
-    /// The next line, without its '\n'; empty after five seconds or at the end.
-    std::string line()
-    {
-        while (true) {
-            if (const auto end = m_buffer.find('\n'); end != std::string::npos) {
-                std::string line = m_buffer.substr(0, end);
-                m_buffer.erase(0, end + 1);
-                return line;
-            }
-            pollfd p{m_fd, POLLIN, 0};
-            if (::poll(&p, 1, 5000) <= 0) return {};
-            char buffer[4096];
-            const ssize_t n = ::read(m_fd, buffer, sizeof buffer);
-            if (n <= 0) return {};
-            m_buffer.append(buffer, std::size_t(n));
-        }
-    }
-
-private:
-    int m_fd = -1;
-    std::string m_buffer;
-};
-
-std::vector<std::string> names(const std::vector<SessionInfo>& sessions)
-{
-    std::vector<std::string> list;
-    for (const auto& s : sessions) list.push_back(s.name);
-    return list;
-}
-
-/// A Python program that puts the terminal in raw mode, writes @p query
-/// and saves what the terminal answers, up to @p end, in @p file.
-std::vector<std::string> ask(const std::string& query, const std::string& end, const std::string& file)
-{
-    const std::string script = R"(import os, select, sys, tty
-fd = sys.stdin.fileno()
-tty.setraw(fd)
-os.write(1, sys.argv[1].encode().decode('unicode_escape').encode('latin-1'))
-end = sys.argv[2].encode().decode('unicode_escape').encode('latin-1')
-data = b''
-while not data.endswith(end):
-    ready, _, _ = select.select([fd], [], [], 5)
-    if not ready:
-        break
-    data += os.read(fd, 4096)
-with open(sys.argv[3] + '.part', 'wb') as f:
-    f.write(data)
-os.rename(sys.argv[3] + '.part', sys.argv[3])
-)";
-    return {"python3", "-I", "-c", script, query, end, file};
-}
-
-} // namespace
+using namespace MuxTest;
 
 TEST(MuxDaemon, AnswersItsVersion)
 {
@@ -468,20 +95,27 @@ TEST(MuxDaemon, ControlAndCommandCallsFailWithAReason)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string message = "a session pane takes no control calls: the mux daemon answers only mux calls";
     for (const std::string target : {"control", AfterglowProto::Run::Target}) {
+        SCOPED_TRACE(target);
         IpcConnection::Error error;
-        EXPECT_FALSE(daemon.call("listPanes", {}, &error, target)) << target;
-        EXPECT_EQ(error.code, IpcErrorCode::CallFailed) << target;
-        EXPECT_EQ(error.message, "a session pane takes no control calls until a window shows the session") << target;
+        EXPECT_FALSE(daemon.call("listPanes", {}, &error, target));
+        EXPECT_EQ(error.code, IpcErrorCode::CallFailed);
+        EXPECT_EQ(error.message, message);
         // Not only calls: `afterglow ctl watch` subscribes.
         RawClient raw(daemon.socket());
-        ASSERT_TRUE(raw.connected());
-        ASSERT_TRUE(raw.send(R"({"type":"subscribe","id":3,"target":")" + target + R"(","signal":"x"})" "\n"));
+        EXPECT_TRUE(raw.connected());
+        if (!raw.connected() || !raw.send(R"({"type":"subscribe","id":3,"target":")" + target + R"(","signal":"x"})" "\n")) {
+            ADD_FAILURE() << "cannot subscribe";
+            continue;
+        }
         const auto reply = Json::parse(raw.line());
-        ASSERT_TRUE(reply) << target;
+        if (!reply) {
+            ADD_FAILURE() << "no reply";
+            continue;
+        }
         EXPECT_EQ((*reply)["code"].toString(), IpcErrorCode::CallFailed) << Json::write(*reply);
-        EXPECT_EQ((*reply)["message"].toString(), "a session pane takes no control calls until a window shows the session")
-            << Json::write(*reply);
+        EXPECT_EQ((*reply)["message"].toString(), message) << Json::write(*reply);
     }
 }
 
@@ -708,7 +342,10 @@ TEST(MuxDaemon, ListensOnTheStateDirectoryToo)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     for (const std::string& directory : {daemon.runtime() + "/afterglow-mux", daemon.stateDirectory(), daemon.dir() + "/state"}) {
         struct stat info{};
-        ASSERT_EQ(::lstat(directory.c_str(), &info), 0) << directory;
+        if (::lstat(directory.c_str(), &info) != 0) {
+            ADD_FAILURE() << "no " << directory;
+            continue;
+        }
         EXPECT_TRUE(S_ISDIR(info.st_mode)) << directory;
         EXPECT_EQ(info.st_mode & 0777, 0700u) << directory;
     }
@@ -724,9 +361,13 @@ TEST(MuxDaemon, ListensOnTheStateDirectoryToo)
 
 // A directory that is open to others, or a link, is no directory for the
 // socket: the daemon says why and serves on the other.
-TEST(MuxDaemon, SkipsADirectoryThatIsNotPrivate)
+namespace {
+
+/// One case of SkipsADirectoryThatIsNotPrivate: a failed check ends this
+/// case only.
+void skipsDirectory(bool link)
 {
-    for (const bool link : {false, true}) {
+    {
         TestDaemon daemon;
         const std::string directory = daemon.runtime() + "/afterglow-mux";
         if (link) {
@@ -747,6 +388,16 @@ TEST(MuxDaemon, SkipsADirectoryThatIsNotPrivate)
         ASSERT_TRUE(daemon.newSession(daemon.options(writesEnvironment(out)))) << daemon.lastError();
         ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
         EXPECT_NE(readFile(out).find("\nAFTERGLOW_SOCKET=" + daemon.stateSocket() + "\n"), std::string::npos) << readFile(out);
+    }
+}
+
+} // namespace
+
+TEST(MuxDaemon, SkipsADirectoryThatIsNotPrivate)
+{
+    for (const bool link : {false, true}) {
+        SCOPED_TRACE(link ? "a link" : "a directory open to others");
+        skipsDirectory(link);
     }
 }
 
@@ -778,10 +429,10 @@ TEST(MuxDaemon, APipeliningClientDoesNotStarveTheOthers)
     IpcConnection connection;
     IpcConnection::Error error;
     ASSERT_TRUE(connection.connect(daemon.socket(), &error, 1000)) << error.message;
-    const auto before = std::chrono::steady_clock::now();
+    // The call's own wait bounds it: a daemon that answered the flood first
+    // would leave it without an answer.
     const auto list = connection.call(Target, Fn::ListSessions, {}, 1000, &error);
     EXPECT_TRUE(list) << error.message;
-    EXPECT_LT(std::chrono::steady_clock::now() - before, 1s);
     writer.join();
     // Each call gets its answer, in order: the lines that wait in the
     // daemon's buffer after the socket went quiet are answered too.

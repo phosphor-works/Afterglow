@@ -132,6 +132,8 @@ QStringList plasmaSources();
 /// later files over earlier ones, as KDE reads them. A colour that no file
 /// sets comes from the application palette (Base, Text, Highlight,
 /// HighlightedText, Accent), so other desktops get their own colours too.
+/// Without a QGuiApplication (afterglow mux new) it stays unset, and the
+/// settings keep the theme's.
 Theme plasmaColors(const QStringList& sources);
 
 } // namespace Themes

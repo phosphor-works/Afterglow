@@ -72,7 +72,7 @@ function __afterglow_window
         set i (math $i + 1)
     end
     if test $n -eq 0; and not string match -q -- '-*' "$cur"
-        __afterglow_print ctl\t'Drive a running Afterglow' mux\t'Keep terminal sessions running without a window' \
+        __afterglow_print ctl\t'Drive a running Afterglow' mux\t'Keep terminal sessions running, and show them in windows' \
             run\t'Run a command of a script' \
             ssh\t'ssh with the remote side prepared' \
             transfer\t'Copy files to and from the computer of the terminal' \
@@ -259,6 +259,7 @@ function __afterglow_mux
             __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
         else
             __afterglow_print server\t'Run afterglow-mux in the foreground' new\t'Create a session' \
+                attach\t'Show a session in a window' detach\t'Close the pane of a session in its window, and keep the session' \
                 ls\t'List the sessions' kill\t'End a session and its programs'
         end
         return
@@ -293,6 +294,10 @@ function __afterglow_mux
             contains -- --name $argv; or set -a offer --name\t'The session name'
             contains -- --cwd $argv; or set -a offer --cwd\t'Start in the directory'
             contains -- --detach $argv; or set -a offer --detach\t'Create the session without a window'
+        case attach
+            string match -q -- '-*' "$cur"
+            and not contains -- --no-takeover $argv
+            and set -a offer --no-takeover\t'Refuse when another window shows the session'
         case kill
             # An empty word is the name of the session.
             string match -q -- '-*' "$cur"

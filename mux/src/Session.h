@@ -14,9 +14,8 @@
 
 namespace AfterglowMux {
 
-/// One set of windows, tabs and panes with running processes. The daemon
-/// owns the layout. Until a client can attach, a session has one window
-/// with one pane.
+/// The panes of one session and their running programs. A session has one
+/// pane until the daemon keeps a layout of windows, tabs and splits.
 class Session
 {
 public:
@@ -29,10 +28,22 @@ public:
     /// Starts a pane with the session's launch, its environment and umask,
     /// and the variables that name the session, the pane and the daemon
     /// socket. False when its program cannot start: @p error says why.
-    bool addPane(std::uint32_t id, const std::string& daemonSocket, std::function<void()> exited, std::string* error);
-    /// Removes the panes whose programs exited. True when none is left: the
-    /// last program of a session ended, and so does the session.
-    bool reap();
+    /// @p wake is the pane's (MuxPane), safe to call from any thread.
+    bool addPane(std::uint32_t id, const std::string& daemonSocket, std::function<void()> wake, std::string* error);
+    /// Takes out the panes whose programs exited: the window that shows the
+    /// session still sends their last frames. Afterwards no pane may be
+    /// left: then the last program of the session ended, and so does the
+    /// session.
+    std::vector<std::unique_ptr<MuxPane>> reap();
+    bool empty() const { return m_panes.empty(); }
+    const std::vector<std::unique_ptr<MuxPane>>& panes() const { return m_panes; }
+    MuxPane* pane(std::uint32_t id) const
+    {
+        for (const auto& p : m_panes) {
+            if (p->id() == id) return p.get();
+        }
+        return nullptr;
+    }
     /// Ends every program of the session.
     void kill();
 

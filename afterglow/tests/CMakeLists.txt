@@ -71,11 +71,11 @@ endif()
 gtest_discover_tests(afterglow_remote_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
 # afterglow mux against daemons of its own, in directories of the test.
-qt_add_executable(afterglow_mux_client_tests MuxClientTest.cpp)
-target_link_libraries(afterglow_mux_client_tests PRIVATE afterglow_config afterglow_mux_protocol GTest::gtest_main)
-target_compile_definitions(afterglow_mux_client_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>")
-add_dependencies(afterglow_mux_client_tests afterglow afterglow-mux)
-gtest_discover_tests(afterglow_mux_client_tests PROPERTIES TIMEOUT 120)
+qt_add_executable(afterglow_mux_command_tests MuxCommandTest.cpp)
+target_link_libraries(afterglow_mux_command_tests PRIVATE afterglow_config afterglow_mux_protocol GTest::gtest_main)
+target_compile_definitions(afterglow_mux_command_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>")
+add_dependencies(afterglow_mux_command_tests afterglow afterglow-mux)
+gtest_discover_tests(afterglow_mux_command_tests PROPERTIES TIMEOUT 120)
 
 qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp PaneSelectionTest.cpp NestedLoopTest.cpp PaneLaunchTest.cpp)
 target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)

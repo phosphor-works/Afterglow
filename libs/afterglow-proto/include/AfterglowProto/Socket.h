@@ -52,7 +52,7 @@ struct SocketLookup
     /// The socket of $AFTERGLOW_SOCKET. A pane of a window sets it to the
     /// socket of the Afterglow that runs the pane. A pane of a mux session
     /// sets it to the socket of the mux daemon, which answers the `control`
-    /// and `commands` targets with CALL_FAILED until a window shows the
+    /// and `commands` targets with CALL_FAILED, also while a window shows the
     /// session.
     bool own = false;
     /// $AFTERGLOW_PANE_ID whenever $AFTERGLOW_SOCKET is set, else 0. The

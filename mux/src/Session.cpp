@@ -14,7 +14,7 @@ Session::Session(std::string name, SessionOptions options, long fileLimit)
 {
 }
 
-bool Session::addPane(std::uint32_t id, const std::string& daemonSocket, std::function<void()> exited, std::string* error)
+bool Session::addPane(std::uint32_t id, const std::string& daemonSocket, std::function<void()> wake, std::string* error)
 {
     AfterglowPty::SpawnOptions spawn;
     spawn.argv = m_options.launch.argv;
@@ -27,22 +27,26 @@ bool Session::addPane(std::uint32_t id, const std::string& daemonSocket, std::fu
     spawn.umask = m_options.launch.umask;
     spawn.fileLimit = m_fileLimit;
     // `afterglow ctl` and `aglow run` in a session pane reach the daemon,
-    // which answers their calls with CALL_FAILED until a window shows the
-    // session. The pane ID is the daemon's, whichever client sent it.
+    // which answers their calls with CALL_FAILED, also while a window shows
+    // the session. The pane ID is the daemon's, whichever client sent it.
     AfterglowPty::setVariable(spawn, "AFTERGLOW_SOCKET", daemonSocket);
     AfterglowPty::setVariable(spawn, "AFTERGLOW_PANE_ID", std::to_string(id));
     AfterglowPty::setVariable(spawn, "AFTERGLOW_SESSION", m_name);
     AfterglowPty::unsetVariable(spawn, "AFTERGLOW_OVERLAY");
-    auto pane = std::make_unique<MuxPane>(m_options.terminal, m_options.size, m_options.notificationCapabilities, std::move(exited));
+    auto pane = std::make_unique<MuxPane>(id, m_options.terminal, m_options.size, m_options.notificationCapabilities, std::move(wake));
     if (!pane->start(std::move(spawn), m_options.launch.launchedProgram, error)) return false;
     m_panes.push_back(std::move(pane));
     return true;
 }
 
-bool Session::reap()
+std::vector<std::unique_ptr<MuxPane>> Session::reap()
 {
-    std::erase_if(m_panes, [](const auto& pane) { return pane->exited(); });
-    return m_panes.empty();
+    std::vector<std::unique_ptr<MuxPane>> closed;
+    for (auto& pane : m_panes) {
+        if (pane->exited()) closed.push_back(std::move(pane));
+    }
+    std::erase(m_panes, nullptr);
+    return closed;
 }
 
 void Session::kill()

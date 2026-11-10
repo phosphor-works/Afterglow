@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "MuxProtocol.h"
+#include "MuxStream.h"
 
 #include <gtest/gtest.h>
 
@@ -55,7 +56,21 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 3) << "a new protocol version: update the key lists of this test";
+    ASSERT_EQ(ProtocolVersion, 4) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 4 added attach and detach, and the attach stream: its events
+    // and input, byte for byte (the keys of the attach call are in
+    // Mux.MuxAttach.TheAttachCallAnswersWithItsKeys).
+    EXPECT_EQ(std::string(Fn::Attach), "attach");
+    EXPECT_EQ(std::string(Fn::Detach), "detach");
+    Attach::Event opened;
+    opened.pane = 300;
+    opened.channel = 2;
+    EXPECT_EQ(Attach::encode(opened), std::string("\x01\xac\x02\x02\x00", 5));
+    Attach::Input resize;
+    resize.type = Attach::InputType::Resize;
+    resize.pane = 1;
+    resize.size = {80, 24, 8, 16};
+    EXPECT_EQ(Attach::encode(resize), std::string("\x02\x01\x50\x18\x08\x10", 6));
     // A new field that toJson leaves out would still pass the key lists. The
     // bindings name every field, so a new field stops this test compiling
     // until it has its key, its place in the round trip and a new version.
@@ -276,4 +291,89 @@ TEST(MuxProtocol, SessionInfoRoundTrip)
     EXPECT_FALSE(sessionInfo(with(toJson(info), "title", "x")));
     // A key that version 2 had.
     EXPECT_FALSE(sessionInfo(with(toJson(info), "windows", 1)));
+}
+
+TEST(MuxProtocol, AttachEventsRoundTrip)
+{
+    for (const int status : {-1, 0, 3 << 8, 0x7fffffff}) {
+        Attach::Event closed;
+        closed.type = Attach::EventType::PaneClosed;
+        closed.pane = 7;
+        closed.status = status;
+        const auto back = Attach::decodeEvent(Attach::encode(closed));
+        ASSERT_TRUE(back) << status;
+        EXPECT_EQ(back->type, Attach::EventType::PaneClosed);
+        EXPECT_EQ(back->pane, 7u);
+        // -1 is the status that is unknown, and stays so.
+        EXPECT_EQ(back->status, status) << status;
+    }
+    for (const auto type : {Attach::EventType::SessionEnded, Attach::EventType::TakenOver, Attach::EventType::Detached}) {
+        Attach::Event event;
+        event.type = type;
+        const auto back = Attach::decodeEvent(Attach::encode(event));
+        ASSERT_TRUE(back);
+        EXPECT_EQ(back->type, type);
+    }
+}
+
+TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
+{
+    const std::string_view bad[] = {
+        {},                         // empty
+        std::string_view("\x09\x01\x00\x00", 4), // an unknown type
+        std::string_view("\x00\x01\x00\x00", 4), // type 0
+        std::string_view("\x02\x01\x00\x00\x00", 5), // a byte after the event
+        std::string_view("\x02\x81", 2),         // a varint that does not end
+        std::string_view("\x02\x81\x00\x00\x00", 5), // a varint in a longer form than needed
+        std::string_view("\x02\xff\xff\xff\xff\x10\x00\x00", 8), // a pane id past 32 bits
+        std::string_view("\x01\x00\x01\x00", 4), // PaneOpened of pane 0
+        std::string_view("\x01\x01\x00\x00", 4), // PaneOpened on the channel of the events
+        std::string_view("\x01\x01\x80\x20\x00", 5), // PaneOpened on channel 4096
+    };
+    for (const std::string_view frame : bad) EXPECT_FALSE(Attach::decodeEvent(frame)) << testing::PrintToString(std::string(frame));
+}
+
+TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)
+{
+    Attach::Input bytes;
+    bytes.pane = 2;
+    bytes.bytes = std::string("a\0b", 3);
+    const auto back = Attach::decodeInput(Attach::encode(bytes));
+    ASSERT_TRUE(back);
+    EXPECT_EQ(back->type, Attach::InputType::Bytes);
+    EXPECT_EQ(back->bytes, bytes.bytes);
+    for (const auto type : {Attach::InputType::Reset, Attach::InputType::Clear, Attach::InputType::Kill}) {
+        Attach::Input action;
+        action.type = type;
+        action.pane = 2;
+        const auto decoded = Attach::decodeInput(Attach::encode(action));
+        ASSERT_TRUE(decoded);
+        EXPECT_EQ(decoded->type, type);
+        EXPECT_EQ(decoded->pane, 2u);
+    }
+    // A size past what a terminal takes still decodes: the terminal clamps
+    // it, and the window does not lose its session for it.
+    Attach::Input resize;
+    resize.type = Attach::InputType::Resize;
+    resize.pane = 1;
+    resize.size = {100000, 0, 70000, 1};
+    const auto size = Attach::decodeInput(Attach::encode(resize));
+    ASSERT_TRUE(size);
+    EXPECT_EQ(size->size.cols, 100000);
+    EXPECT_EQ(size->size.rows, 0);
+    EXPECT_EQ(size->size.cellWidth, 65535);
+}
+
+TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
+{
+    const std::string_view bad[] = {
+        {},
+        std::string_view("\x09\x01", 2),         // an unknown type
+        std::string_view("\x01", 1),             // no pane
+        std::string_view("\x02\x01\x50\x18\x08", 5), // a Resize that ends early
+        std::string_view("\x02\x01\x50\x18\x08\x10\x00", 7), // a byte after the Resize
+        std::string_view("\x03\x01\x00", 3),     // a byte after a Reset
+        std::string_view("\x02\x01\x80\x00\x18\x08\x10", 7), // a varint in a longer form than needed
+    };
+    for (const std::string_view frame : bad) EXPECT_FALSE(Attach::decodeInput(frame)) << testing::PrintToString(std::string(frame));
 }

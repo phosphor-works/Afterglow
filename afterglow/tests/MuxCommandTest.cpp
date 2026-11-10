@@ -85,14 +85,14 @@ bool waitFor(Done done)
     return done();
 }
 
-class MuxClientTest : public ::testing::Test
+class MuxCommandTest : public ::testing::Test
 {
 protected:
     void SetUp() override
     {
         removeAbandonedAfterglows();
         // Under /tmp: TMPDIR can be too long for a socket path.
-        char dir[] = "/tmp/afterglow-muxclient-XXXXXX";
+        char dir[] = "/tmp/afterglow-muxcommand-XXXXXX";
         ASSERT_TRUE(::mkdtemp(dir)) << std::strerror(errno);
         m_dir = dir;
         for (const char* sub : {"/run", "/home", "/config"}) ASSERT_EQ(::mkdir((m_dir + sub).c_str(), 0700), 0);
@@ -100,7 +100,8 @@ protected:
             const std::string_view entry(*e);
             const std::string_view name = entry.substr(0, entry.find('='));
             if (name.starts_with("AFTERGLOW_") || name == "TMUX" || name == "TMUX_PANE" || name.starts_with("XDG_")
-                || name == "HOME" || name == "WAYLAND_DISPLAY" || name == "DISPLAY") {
+                || name == "HOME" || name == "WAYLAND_DISPLAY" || name == "DISPLAY"
+                || name == "QT_QPA_PLATFORM") {
                 continue;
             }
             m_environment.emplace_back(entry);
@@ -191,7 +192,12 @@ protected:
         for (const auto& e : m_environment) envp.push_back(const_cast<char*>(e.c_str()));
         envp.push_back(nullptr);
         int out[2], err[2];
-        if (::pipe2(out, O_CLOEXEC) != 0 || ::pipe2(err, O_CLOEXEC) != 0) return {};
+        if (::pipe2(out, O_CLOEXEC) != 0) return {};
+        if (::pipe2(err, O_CLOEXEC) != 0) {
+            ::close(out[0]);
+            ::close(out[1]);
+            return {};
+        }
         const pid_t pid = ::fork();
         if (pid < 0) {
             for (const int fd : {out[0], out[1], err[0], err[1]}) ::close(fd);
@@ -252,7 +258,7 @@ protected:
     std::string afterglowWithDaemon(const std::string& script)
     {
         const std::filesystem::path binary(AFTERGLOW_BINARY);
-        std::string pattern = (binary.parent_path() / ("muxclient-" + std::to_string(::getpid()) + "-XXXXXX")).string();
+        std::string pattern = (binary.parent_path() / ("muxcommand-" + std::to_string(::getpid()) + "-XXXXXX")).string();
         if (!::mkdtemp(pattern.data())) {
             ADD_FAILURE() << std::strerror(errno);
             return {};
@@ -282,9 +288,10 @@ protected:
         std::error_code error;
         for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(AFTERGLOW_BINARY).parent_path(), error)) {
             const std::string name = entry.path().filename().string();
-            if (!name.starts_with("muxclient-")) continue;
+            constexpr std::string_view Prefix = "muxcommand-";
+            if (!name.starts_with(Prefix)) continue;
             // Without a valid pid: no process can own it.
-            const std::optional<pid_t> pid = parsePid(std::string_view(name).substr(10, name.find('-', 10) - 10));
+            const std::optional<pid_t> pid = parsePid(std::string_view(name).substr(Prefix.size(), name.find('-', Prefix.size()) - Prefix.size()));
             const bool owned = pid && (::kill(*pid, 0) == 0 || errno == EPERM);
             std::error_code ignored;
             if (!owned) std::filesystem::remove_all(entry.path(), ignored);
@@ -298,7 +305,7 @@ protected:
 
 } // namespace
 
-TEST_F(MuxClientTest, CreatesListsAndKillsASessionAndTheDaemonEndsWithIt)
+TEST_F(MuxCommandTest, CreatesListsAndKillsASessionAndTheDaemonEndsWithIt)
 {
     const Result created = mux(newWaiting());
     ASSERT_EQ(created.status, 0) << created.err;
@@ -325,7 +332,23 @@ TEST_F(MuxClientTest, CreatesListsAndKillsASessionAndTheDaemonEndsWithIt)
     EXPECT_TRUE(empty.out.empty());
 }
 
-TEST_F(MuxClientTest, WithoutADaemonThereAreNoSessions)
+// A SIGCHLD that the command got as ignored (inherited across exec) would make
+// the kernel reap its children: the start of the daemon looked failed.
+TEST_F(MuxCommandTest, ASigchldThatTheCommandGotAsIgnoredDoesNotStopTheStart)
+{
+    const std::string wrapper = m_dir + "/afterglow-ignoring-sigchld";
+    // The binary's path comes in the environment: no quoting of it here.
+    m_environment.push_back(std::string("AFTERGLOW_TEST_BINARY=") + AFTERGLOW_BINARY);
+    std::ofstream(wrapper) << "#!/bin/sh\ntrap '' CHLD\nexec \"$AFTERGLOW_TEST_BINARY\" \"$@\"\n";
+    ASSERT_EQ(::chmod(wrapper.c_str(), 0700), 0);
+    const Result r = mux({"new", "--detach", "--", "/bin/sh", "-c", "exec sleep 60"}, wrapper);
+    EXPECT_EQ(r.status, 0) << r.err;
+    EXPECT_EQ(r.out, "1\n");
+    EXPECT_EQ(daemons().size(), 1u);
+    EXPECT_EQ(mux({"kill", "--force", "1"}).status, 0);
+}
+
+TEST_F(MuxCommandTest, WithoutADaemonThereAreNoSessions)
 {
     const Result listed = mux({"ls"});
     EXPECT_EQ(listed.status, 0);
@@ -337,7 +360,7 @@ TEST_F(MuxClientTest, WithoutADaemonThereAreNoSessions)
     EXPECT_TRUE(daemons().empty());
 }
 
-TEST_F(MuxClientTest, UsageErrorsAndCommandsThatAreNotAvailable)
+TEST_F(MuxCommandTest, UsageErrorsAndCommandsThatAreNotAvailable)
 {
     for (const auto& [args, status, message] : std::vector<std::tuple<std::vector<std::string>, int, std::string>>{
              {{"new", "--name"}, 2, "afterglow mux: --name needs a value\n"},
@@ -345,12 +368,22 @@ TEST_F(MuxClientTest, UsageErrorsAndCommandsThatAreNotAvailable)
              {{"new", "--detach", "--name", "-x"}, 2,
               "afterglow mux new: the name must be 1 to 64 ASCII letters, digits, '_' or '-', with a letter, a digit or '_' first\n"},
              {{"new", "--detach", "--cwd", "/no/such/directory"}, 1, "afterglow mux new: no directory /no/such/directory\n"},
-             {{"new"}, 1, "afterglow mux new: a window cannot show a session yet: give --detach\n"},
+             // The test has no Wayland display: no window, and no session for it.
+             {{"new"}, 1, "afterglow mux new: no Wayland display shows a window here: "},
+             {{"attach"}, 1, "afterglow mux attach: no Wayland display shows a window here: "},
+             {{"attach", "bad name"}, 2, "afterglow mux attach: the name must be "},
+             {{"attach", "a", "b"}, 2, "afterglow mux: unknown argument of attach: b\n"},
+             {{"attach", "--ssh", "host"}, 1, "afterglow mux attach: sessions on other hosts are not available yet\n"},
+             {{"detach"}, 2, "afterglow mux: detach takes the name of a session, outside a session pane\n"},
+             {{"detach", "a", "b"}, 2, "afterglow mux: unknown argument of detach: b\n"},
+             {{"detach", "bad name"}, 2, "afterglow mux detach: the name must be "},
+             {{"detach", "--ssh", "host"}, 1, "afterglow mux detach: sessions on other hosts are not available yet\n"},
+             // No daemon: no session to detach, and none starts.
+             {{"detach", "work"}, 1, "afterglow mux detach: no sessions\n"},
              {{"new", "--ssh", "host"}, 1, "afterglow mux new: sessions on other hosts are not available yet\n"},
              {{"ls", "--ssh", "host"}, 1, "afterglow mux ls: sessions on other hosts are not available yet\n"},
              {{"kill", "--ssh", "host"}, 1, "afterglow mux kill: sessions on other hosts are not available yet\n"},
              {{"ls", "x"}, 2, "afterglow mux: ls takes no arguments\n"},
-             {{"attach"}, 1, "afterglow mux attach: a window cannot show a session yet\n"},
              // Bytes that are not UTF-8 come back as '?', at once.
              {{"new", "--bad\xff\xfe"}, 2, "afterglow mux: unknown option of new: --bad??\n"},
              {{"\xff"}, 2, "afterglow mux: unknown command: ?\n"},
@@ -362,9 +395,20 @@ TEST_F(MuxClientTest, UsageErrorsAndCommandsThatAreNotAvailable)
     EXPECT_TRUE(daemons().empty());
 }
 
+// A platform other than Wayland, which afterglow would refuse after the
+// session was made: refused first, with no session.
+TEST_F(MuxCommandTest, AWindowNeedsTheWaylandPlatform)
+{
+    m_environment.push_back("QT_QPA_PLATFORM=offscreen");
+    const Result r = mux({"new"});
+    EXPECT_EQ(r.status, 1) << r.err;
+    EXPECT_EQ(r.err, "afterglow mux new: QT_QPA_PLATFORM is offscreen, and Afterglow shows windows only on Wayland: give --detach\n");
+    EXPECT_TRUE(daemons().empty());
+}
+
 // A daemon of a session of its own has /dev/null as its stderr: it reports
 // why it cannot start through a pipe, and `afterglow mux new` prints that.
-TEST_F(MuxClientTest, SaysWhyTheDaemonDidNotStart)
+TEST_F(MuxCommandTest, SaysWhyTheDaemonDidNotStart)
 {
     for (const std::string& directory : {runtime() + "/afterglow-mux", state() + "/afterglow-mux"}) {
         std::filesystem::create_directories(directory);
@@ -381,7 +425,7 @@ TEST_F(MuxClientTest, SaysWhyTheDaemonDidNotStart)
 // A daemon that ends before it listens and says nothing (a signal, a crash)
 // ends the report pipe without the byte that a listening daemon writes: the
 // client fails at once, and does not wait out its start time for a socket.
-TEST_F(MuxClientTest, ADaemonThatEndsBeforeItListensFailsAtOnce)
+TEST_F(MuxCommandTest, ADaemonThatEndsBeforeItListensFailsAtOnce)
 {
     // An afterglow whose afterglow-mux ends at once.
     const std::string afterglow = afterglowWithDaemon("#!/bin/sh\nkill -KILL $$\n");
@@ -390,14 +434,15 @@ TEST_F(MuxClientTest, ADaemonThatEndsBeforeItListensFailsAtOnce)
     const Result r = mux(newWaiting(), afterglow);
     EXPECT_EQ(r.status, 1) << r.err;
     EXPECT_EQ(r.err, "afterglow mux new: afterglow-mux ended before it listened\n");
-    // The start wait of the client is five seconds.
-    EXPECT_LT(std::chrono::steady_clock::now() - before, 3s);
+    // At once, not after the start wait of five seconds: a second of it
+    // left is room for a slow test computer.
+    EXPECT_LT(std::chrono::steady_clock::now() - before, 4s);
 }
 
 // Two commands start a daemon at the same time: the second daemon finds the
 // lock of the first, which may not listen yet. It reports that the socket is
 // held, and its client waits for the first daemon, not only one look.
-TEST_F(MuxClientTest, ADaemonThatFindsTheSocketHeldLeavesTheClientToWaitForTheHolder)
+TEST_F(MuxCommandTest, ADaemonThatFindsTheSocketHeldLeavesTheClientToWaitForTheHolder)
 {
     // Its afterglow-mux reports the held socket and ends; the daemon of the
     // build listens a second later, as the holder that was slow to bind.
@@ -414,7 +459,7 @@ TEST_F(MuxClientTest, ADaemonThatFindsTheSocketHeldLeavesTheClientToWaitForTheHo
 
 // A daemon of another protocol keeps its sessions: the client says so, and
 // does not start a second daemon.
-TEST_F(MuxClientTest, RefusesADaemonOfAnotherProtocol)
+TEST_F(MuxCommandTest, RefusesADaemonOfAnotherProtocol)
 {
     const std::string directory = runtime() + "/afterglow-mux";
     ASSERT_EQ(::mkdir(directory.c_str(), 0700), 0);
@@ -454,7 +499,7 @@ TEST_F(MuxClientTest, RefusesADaemonOfAnotherProtocol)
 
 // The bounds of the protocol hold every value of the settings that it
 // carries: the largest and the smallest that the configuration takes.
-TEST_F(MuxClientTest, TheProtocolTakesEveryValueOfTheSettings)
+TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
 {
     // In this process: the store reads themes and kdeglobals from the base
     // directories, which are the test's, never the user's.
@@ -480,6 +525,8 @@ TEST_F(MuxClientTest, TheProtocolTakesEveryValueOfTheSettings)
         const AfterglowVt::TerminalOptions defaults;
         EXPECT_NE(options.terminal.maxScrollback, defaults.maxScrollback) << json;
         EXPECT_NE(options.terminal.graphicsQuota, defaults.graphicsQuota) << json;
+        // 100 takes the upper bound; -1 the lower one, which is the default.
+        EXPECT_DOUBLE_EQ(options.terminal.minimumContrast, std::string_view(json).find("100") != std::string_view::npos ? 21.0 : 1.0) << json;
         std::string error;
         EXPECT_TRUE(AfterglowMux::sessionOptions(AfterglowMux::toJson(options), &error)) << json << ": " << error;
     }

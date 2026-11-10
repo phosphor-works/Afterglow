@@ -473,18 +473,23 @@ Theme plasmaColors(const QStringList& sources)
         }
     }
     // Without kdeglobals (another desktop, or a scheme that leaves a colour
-    // out) the platform theme's palette says the same.
-    const QPalette palette = hasGuiApplication() ? QGuiApplication::palette() : QPalette(Qt::black, Qt::white);
-    auto from = [&](QPalette::ColorRole role) {
+    // out) the platform theme's palette says the same. Without a GUI
+    // application (afterglow mux new) there is no palette of the desktop:
+    // a colour that the scheme leaves out stays unset, and the theme under
+    // it keeps its own.
+    const bool gui = hasGuiApplication();
+    const QPalette palette = gui ? QGuiApplication::palette() : QPalette();
+    auto from = [&](const std::optional<AfterglowVt::Rgb>& set, QPalette::ColorRole role) -> std::optional<AfterglowVt::Rgb> {
+        if (set || !gui) return set;
         const QColor c = palette.color(QPalette::Active, role);
         return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
     };
     Theme theme;
-    theme.background = background.value_or(from(QPalette::Base));
-    theme.foreground = foreground.value_or(from(QPalette::Text));
-    theme.selectionBackground = selectionBackground.value_or(from(QPalette::Highlight));
-    theme.selectionForeground = selectionForeground.value_or(from(QPalette::HighlightedText));
-    theme.cursor = accent.value_or(from(QPalette::Accent));
+    theme.background = from(background, QPalette::Base);
+    theme.foreground = from(foreground, QPalette::Text);
+    theme.selectionBackground = from(selectionBackground, QPalette::Highlight);
+    theme.selectionForeground = from(selectionForeground, QPalette::HighlightedText);
+    theme.cursor = from(accent, QPalette::Accent);
     theme.cursorText = theme.background;
     return theme;
 }
