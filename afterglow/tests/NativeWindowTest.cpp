@@ -62,10 +62,10 @@
 #include <QTemporaryDir>
 #include <AfterglowProto/Clipboard.h>
 #include <limits>
-#include <QPointingDevice>
 #include <QThread>
-#include <QTouchEvent>
 #include <QThreadPool>
+#include <QtGui/qtestsupport_gui.h>
+#include <qpa/qwindowsysteminterface.h>
 #include <QImageReader>
 #include <QImageWriter>
 #include <QTimer>
@@ -619,142 +619,6 @@ TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Shaders, NativeRenderer, ::testing::Bool());
-
-QRectF gridOf(TerminalWindow* window, Pane* pane); // the pane's cells, in window logical pixels
-// Rows of history in @p pane, and the view at its bottom.
-void fillHistory(Pane* pane, int lines) {
-    std::string text;
-    for (int i = 0; i < lines; ++i) text += "line " + std::to_string(i) + "\r\n";
-    pane->withTerminal([&text](AfterglowVt::Terminal& t) { t.feed(text); });
-}
-int viewportOffset(Pane* pane) {
-    return int(pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }));
-}
-// A touchpad's finger scroll: a begin, @p updates of @p pixels 8 ms apart,
-// and the end when the fingers lift.
-void fingerScroll(QWindow* window, const QPointF& at, int pixels, int updates) {
-    auto wheel = [&](Qt::ScrollPhase phase, int dy) {
-        QWheelEvent event(at, window->mapToGlobal(at), QPoint(0, dy), QPoint(0, dy), Qt::NoButton, Qt::NoModifier, phase, false,
-                          Qt::MouseEventSynthesizedBySystem);
-        QCoreApplication::sendEvent(window, &event);
-    };
-    wheel(Qt::ScrollBegin, 0);
-    for (int i = 0; i < updates; ++i) {
-        wheel(Qt::ScrollUpdate, pixels);
-        QThread::msleep(8);
-    }
-    wheel(Qt::ScrollEnd, 0);
-}
-// The offset once it stays the same for 150 ms, or -1 after 5 s.
-int settledOffset(Pane* pane) {
-    int last = viewportOffset(pane);
-    QElapsedTimer still;
-    still.start();
-    QElapsedTimer total;
-    total.start();
-    while (total.elapsed() < 5000) {
-        drain(10);
-        const int now = viewportOffset(pane);
-        if (now != last) {
-            last = now;
-            still.restart();
-        } else if (still.elapsed() > 150) {
-            return now;
-        }
-    }
-    return -1;
-}
-// The rows that @p pixels of finger movement scroll in @p pane.
-int fingerRows(TerminalWindow* window, Pane* pane, int pixels) {
-    return int(std::lround(pixels / (gridOf(window, pane).height() / pane->rows())));
-}
-TEST_F(NativeWindow, AFingerScrollCoastsAfterTheFingersLift) {
-    Pane* pane = window->focusedPane();
-    fillHistory(pane, 400);
-    const QPointF at = gridOf(window, pane).center();
-    // 180 pixels of finger movement, then the coast: it goes on past them,
-    // slows down and stops (kitty's 0.96 each 8 ms).
-    const int finger = fingerRows(window, pane, 180);
-    ASSERT_GT(finger, 2);
-    fingerScroll(window, at, 30, 6);
-    const int coasted = settledOffset(pane);
-    ASSERT_GE(coasted, 0) << "the coast did not stop";
-    EXPECT_GT(coasted, finger + 5);
-    // A press ends a coast at once: the view goes back by about the finger's
-    // distance, not more.
-    fingerScroll(window, at, -30, 6);
-    clickLeft(window, at);
-    const int stopped = settledOffset(pane);
-    EXPECT_LE(std::abs((coasted - stopped) - finger), 2) << coasted << " " << stopped << " " << finger;
-}
-TEST_F(NativeWindow, WithoutMomentumAFingerScrollStopsWithTheFingers) {
-    restartApplication(QStringLiteral("nomomentum.conf"),
-        testSettings({{QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("momentumScroll"), 0}}}}),
-        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
-    Pane* pane = window->focusedPane();
-    fillHistory(pane, 400);
-    fingerScroll(window, gridOf(window, pane).center(), 30, 6);
-    // The fingers' distance and no more.
-    EXPECT_LE(std::abs(settledOffset(pane) - fingerRows(window, pane, 180)), 1);
-}
-// One finger on a touchscreen, as the compositor reports it.
-struct Finger {
-    QWindow* window;
-    QPointingDevice device{QStringLiteral("test touchscreen"), 42, QInputDevice::DeviceType::TouchScreen,
-                           QPointingDevice::PointerType::Finger, QInputDevice::Capability::Position, 2, 0};
-    void send(QEvent::Type type, const QList<QEventPoint>& points) {
-        QTouchEvent event(type, &device, Qt::NoModifier, points);
-        QCoreApplication::sendEvent(window, &event);
-    }
-    QEventPoint point(int id, QEventPoint::State state, const QPointF& at) {
-        return QEventPoint(id, state, at, window->mapToGlobal(at));
-    }
-    void down(const QPointF& at) { send(QEvent::TouchBegin, {point(1, QEventPoint::State::Pressed, at)}); }
-    void move(const QPointF& at) { send(QEvent::TouchUpdate, {point(1, QEventPoint::State::Updated, at)}); }
-    void up(const QPointF& at) { send(QEvent::TouchEnd, {point(1, QEventPoint::State::Released, at)}); }
-};
-TEST_F(NativeWindow, ATouchscreenTapsScrollsAndSelects) {
-    Pane* pane = window->focusedPane();
-    fillHistory(pane, 400);
-    Finger finger{window};
-    const QRectF grid = gridOf(window, pane);
-    const QPointF at = grid.center();
-    // A tap is a click: it clears a selection.
-    pane->startSelection(pane->selectionPointAt(0, 0), AfterglowVt::SelectionMode::Normal, true);
-    pane->extendSelection(pane->selectionPointAt(5, 0));
-    ASSERT_TRUE(pane->hasSelection());
-    finger.down(at);
-    finger.move(at + QPointF(3, 3)); // within the slop
-    finger.up(at + QPointF(3, 3));
-    EXPECT_FALSE(pane->hasSelection());
-    // A finger that moves at once scrolls: down shows older rows, and it coasts.
-    finger.down(at - QPointF(0, 100));
-    for (int i = 1; i <= 10; ++i) {
-        finger.move(at - QPointF(0, 100) + QPointF(0, 20 * i));
-        QThread::msleep(8);
-    }
-    finger.up(at + QPointF(0, 100));
-    EXPECT_GT(settledOffset(pane), fingerRows(window, pane, 200) + 5);
-    EXPECT_FALSE(pane->hasSelection());
-    // Held still for 400 ms, then moved: a selection from where it landed.
-    // Column 1 to column 6 of a row: inside "line N".
-    const double cell = grid.width() / pane->cols();
-    const QPointF from = grid.topLeft() + QPointF(cell * 1.5, grid.height() * 0.3);
-    finger.down(from);
-    waitFor([] { return false; }, 450);
-    finger.move(from + QPointF(cell * 5, 0));
-    finger.up(from + QPointF(cell * 5, 0));
-    EXPECT_TRUE(pane->hasSelection());
-    EXPECT_FALSE(pane->selectedText().isEmpty());
-    // Two fingers at once are no gesture of these: no scroll, no selection.
-    pane->clearSelection();
-    const int before = settledOffset(pane);
-    finger.send(QEvent::TouchBegin, {finger.point(1, QEventPoint::State::Pressed, at), finger.point(2, QEventPoint::State::Pressed, at + QPointF(40, 0))});
-    finger.send(QEvent::TouchUpdate, {finger.point(1, QEventPoint::State::Updated, at + QPointF(0, 120)), finger.point(2, QEventPoint::State::Updated, at + QPointF(40, 120))});
-    finger.send(QEvent::TouchEnd, {finger.point(1, QEventPoint::State::Released, at + QPointF(0, 120)), finger.point(2, QEventPoint::State::Released, at + QPointF(40, 120))});
-    EXPECT_EQ(settledOffset(pane), before);
-    EXPECT_FALSE(pane->hasSelection());
-}
 
 // A screenshot, as Control::capture answers it.
 struct Shot {
@@ -2813,6 +2677,410 @@ private:
     QTimer m_timer;
     bool m_started = false;
 };
+// --- Finger scrolls and touchscreens -----------------------------------------
+
+// @p lines rows of output in @p pane, which go into its history.
+void fillHistory(Pane* pane, int lines) {
+    std::string text;
+    for (int i = 0; i < lines; ++i) text += "line " + std::to_string(i) + "\r\n";
+    pane->withTerminal([&text](AfterglowVt::Terminal& t) { t.feed(text); });
+}
+std::size_t viewportOffset(Pane* pane) {
+    return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); });
+}
+std::size_t historySize(Pane* pane) {
+    return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().historySize(); });
+}
+// The height of a row of @p pane, in window logical pixels.
+double rowPitch(TerminalWindow* window, Pane* pane) {
+    return window->accessibleCellRect(pane, pane->selectionPointAt(0, 0)).height();
+}
+// Rows of @p pixels of finger travel in @p pane.
+double rowsOf(TerminalWindow* window, Pane* pane, double pixels) { return pixels / rowPitch(window, pane); }
+// A touchpad's finger scroll, through Qt's input processing in the form
+// QtWayland gives it: a begin, @p updates of @p pixels 8 ms apart (an angle
+// 12 times as large), and the end when the fingers lift.
+void fingerScroll(QWindow* window, const QPointF& at, int pixels, int updates) {
+    auto wheel = [&](Qt::ScrollPhase phase, int dy) {
+        const auto source = phase == Qt::ScrollBegin ? Qt::MouseEventNotSynthesized : Qt::MouseEventSynthesizedBySystem;
+        QWindowSystemInterface::handleWheelEvent(window, at, window->mapToGlobal(at), QPoint(0, dy), QPoint(0, dy * 12),
+                                                 Qt::NoModifier, phase, source);
+        QWindowSystemInterface::flushWindowSystemEvents();
+    };
+    wheel(Qt::ScrollBegin, 0);
+    for (int i = 0; i < updates; ++i) {
+        wheel(Qt::ScrollUpdate, pixels);
+        QThread::msleep(8);
+    }
+    wheel(Qt::ScrollEnd, 0);
+}
+// Writes @p group.@p key = @p value to the fixture's settings and reloads
+// them, as a user's edit does.
+void setLive(TerminalWindow* window, const QString& config, const QString& group, const QString& key, const QJsonValue& value) {
+    SettingsStore file(config);
+    ASSERT_TRUE(file.write(group, key, value.toVariant()));
+    ASSERT_TRUE(window->runAction(window->focusedPane(), Action::ReloadConfig));
+}
+// Waits until @p window renders no frame for 300 ms, and fails when it
+// still renders after 10 s. A coast asks for frames from the event that
+// starts it, so no wait for a first frame comes before, as in expectIdle.
+void waitIdle(TerminalWindow* window) {
+    QElapsedTimer deadline;
+    deadline.start();
+    for (;;) {
+        const auto frames = window->submittedFrames();
+        drain(300);
+        if (window->submittedFrames() == frames) return;
+        if (deadline.elapsed() > 10000) {
+            ADD_FAILURE() << "the window still renders";
+            return;
+        }
+    }
+}
+// The offset of @p pane's view once its window renders no more frames:
+// a coast has ended then, or stopped.
+std::size_t settledOffset(TerminalWindow* window, Pane* pane) {
+    waitIdle(window);
+    return viewportOffset(pane);
+}
+// A touchscreen as Qt knows one, for every test.
+QPointingDevice* touchscreen() {
+    static QPointingDevice* device = QTest::createTouchDevice();
+    return device;
+}
+// Touch points through Qt's input processing, as the compositor's touch
+// comes: Qt tracks the points and makes mouse events of a touch that a
+// window does not take.
+struct TouchSequence : QTest::QTouchEventSequence {
+    explicit TouchSequence(QWindow* window) : QTouchEventSequence(window, touchscreen(), false) {}
+};
+// One finger on a touchscreen.
+struct Finger {
+    QWindow* window;
+    TouchSequence touch{window};
+    void down(const QPointF& at, int id = 1) { touch.press(id, at.toPoint()).commit(); }
+    void move(const QPointF& at, int id = 1) { touch.move(id, at.toPoint()).commit(); }
+    void up(const QPointF& at, int id = 1) { touch.release(id, at.toPoint()).commit(); }
+    void cancel() { touch.cancel(); }
+    // From @p from by @p by in @p steps moves 8 ms apart, and the lift.
+    void stroke(const QPointF& from, const QPointF& by, int steps = 10) {
+        down(from);
+        for (int i = 1; i <= steps; ++i) {
+            move(from + by * double(i) / steps);
+            QThread::msleep(8);
+        }
+        up(from + by);
+    }
+};
+// A program that turns on alternate scroll on the alternate screen and
+// writes what it gets to @p file.
+QStringList alternateScreenReader(const QString& file) {
+    return {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+            QStringLiteral("stty raw -echo; printf '\\033[?1049h\\033[?1007h'; exec cat > \"$0\""), file};
+}
+// Up keys in @p bytes, in either cursor key mode.
+qsizetype upKeys(const QByteArray& bytes) { return bytes.count("\x1b[A") + bytes.count("\x1bOA"); }
+
+TEST_F(NativeWindow, AFingerScrollCoastsAfterTheFingersLiftUntilAPressStopsIt) {
+    Pane* pane = window->focusedPane();
+    fillHistory(pane, 400);
+    waitIdle(window);
+    const QPointF at = gridOf(window, pane).center();
+    // 180 pixels of finger travel, then the coast: it goes on past them,
+    // slows down and stops (kitty's 0.96 each 8 ms). About 24 pixels a step
+    // at the lift coast about 570 pixels in all.
+    const double travel = rowsOf(window, pane, 180);
+    ASSERT_GT(travel, 2);
+    fingerScroll(window, at, 30, 6);
+    const std::size_t coasted = settledOffset(window, pane);
+    EXPECT_GT(double(coasted), travel + 5);
+    EXPECT_LT(double(coasted), travel + rowsOf(window, pane, 700));
+    // A press stops a coast that moves: once it is past the fingers'
+    // distance, the view stays where the press found it.
+    fingerScroll(window, at, -30, 6);
+    ASSERT_TRUE(waitFor([&] { return double(viewportOffset(pane)) < double(coasted) - travel - 2; })) << "no coast";
+    const std::size_t pressed = viewportOffset(pane);
+    clickLeft(window, at);
+    EXPECT_LE(std::abs(double(settledOffset(window, pane)) - double(pressed)), 1.0) << pressed;
+}
+
+TEST_F(NativeWindow, ACoastEndsWithTheHistoryAKeyTheFocusATouchOrAnActionAndAWheelGoesOn) {
+    // Mouse.momentumScroll 1, set while Afterglow runs: the coast never slows,
+    // so only what stops it ends it.
+    setLive(window, directory.filePath(QStringLiteral("afterglow.conf")), QStringLiteral("Mouse"), QStringLiteral("momentumScroll"), 1);
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    fillHistory(pane, 30);
+    waitIdle(window);
+    const QPointF at = gridOf(window, pane).center();
+    // Fewer rows of history than it coasts: it ends at the top, and the
+    // window stops rendering.
+    fingerScroll(window, at, 30, 6);
+    EXPECT_EQ(settledOffset(window, pane), historySize(pane));
+    fillHistory(pane, 5000);
+    ASSERT_TRUE(window->runAction(pane, Action::ScrollBottom));
+    waitIdle(window);
+    const auto stops = [&](const char* what, const std::function<void()>& stop) {
+        SCOPED_TRACE(what);
+        const std::size_t from = viewportOffset(pane);
+        fingerScroll(window, at, 30, 6);
+        ASSERT_TRUE(waitFor([&] { return viewportOffset(pane) > from + 20; })) << "no coast";
+        stop();
+        const std::size_t stopped = viewportOffset(pane);
+        EXPECT_LE(std::abs(double(settledOffset(window, pane)) - double(stopped)), 1.0) << stopped;
+    };
+    stops("a key", [&] {
+        QKeyEvent shift(QEvent::KeyPress, Qt::Key_Shift, Qt::ShiftModifier);
+        QCoreApplication::sendEvent(window, &shift);
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Shift, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &up);
+    });
+    stops("the focus", [&] {
+        QFocusEvent out(QEvent::FocusOut, Qt::ActiveWindowFocusReason);
+        QCoreApplication::sendEvent(window, &out);
+        QFocusEvent in(QEvent::FocusIn, Qt::ActiveWindowFocusReason);
+        QCoreApplication::sendEvent(window, &in);
+    });
+    stops("a touch", [&] {
+        Finger finger{window};
+        finger.down(at);
+        finger.up(at);
+    });
+    // An action from a key, a script or afterglow ctl: the view goes where
+    // the action puts it, and stays.
+    {
+        SCOPED_TRACE("an action");
+        fingerScroll(window, at, 30, 6);
+        ASSERT_TRUE(waitFor([&] { return viewportOffset(pane) > 20; })) << "no coast";
+        ASSERT_TRUE(window->runAction(pane, Action::ScrollBottom));
+        EXPECT_EQ(settledOffset(window, pane), 0u);
+    }
+    // As in kitty, a wheel turn scrolls on top of the coast and does not
+    // end it.
+    fingerScroll(window, at, 30, 6);
+    ASSERT_TRUE(waitFor([&] { return viewportOffset(pane) > 20; })) << "no coast";
+    wheelAt(window, at);
+    const std::size_t wheeled = viewportOffset(pane);
+    EXPECT_TRUE(waitFor([&] { return viewportOffset(pane) > wheeled + 20; })) << "the wheel ended the coast";
+    clickLeft(window, at);
+    waitIdle(window);
+}
+
+TEST_F(NativeWindow, AFingerScrollGivesAProgramOneWheelReportOrKeyForEachRow) {
+    // No coast: the fingers' distance only. 300 pixels of travel.
+    const auto scrollIn = [&](const QStringList& command, const QString& file) {
+        restartApplication(QStringLiteral("program.conf"),
+            testSettings({{QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("momentumScroll"), 0}}}}), command);
+        if (HasFatalFailure()) return 0.0;
+        Pane* pane = window->focusedPane();
+        EXPECT_TRUE(waitFor([&] { return QFileInfo::exists(file) && !gridOf(window, pane).isEmpty(); }));
+        waitIdle(window);
+        fingerScroll(window, gridOf(window, pane).center(), 30, 10);
+        return rowsOf(window, pane, 300);
+    };
+    const QString reports = directory.filePath(QStringLiteral("reports"));
+    const double rows = scrollIn(mouseReporter(reports), reports);
+    if (HasFatalFailure()) return;
+    ASSERT_TRUE(waitFor([&] { return fileContent(reports).count("\x1b[<64;") >= qsizetype(rows) - 1; }));
+    drain(200);
+    EXPECT_LE(std::abs(double(fileContent(reports).count("\x1b[<64;")) - rows), 1.0) << fileContent(reports).toStdString();
+    // On the alternate screen with alternate scroll, a row is one Up key.
+    // A wheel notch is Terminal.scrollLines of them.
+    const QString keys = directory.filePath(QStringLiteral("keys"));
+    const double keyRows = scrollIn(alternateScreenReader(keys), keys);
+    if (HasFatalFailure()) return;
+    ASSERT_TRUE(waitFor([&] { return upKeys(fileContent(keys)) >= qsizetype(keyRows) - 1; }));
+    drain(200);
+    const qsizetype fromFinger = upKeys(fileContent(keys));
+    EXPECT_LE(std::abs(double(fromFinger) - keyRows), 1.0) << fromFinger;
+    wheelAt(window, gridOf(window, window->focusedPane()).center());
+    EXPECT_TRUE(waitFor([&] { return upKeys(fileContent(keys)) == fromFinger + 3; })) << upKeys(fileContent(keys));
+}
+
+TEST_F(NativeWindow, ACoastEndsWhenItsPaneGoesToTheAlternateScreen) {
+    const QString keys = directory.filePath(QStringLiteral("keys"));
+    restartApplication(QStringLiteral("screen.conf"),
+        testSettings({{QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("momentumScroll"), 1}}}}), catInto(keys));
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(keys) && !gridOf(window, pane).isEmpty(); }));
+    fillHistory(pane, 5000);
+    waitIdle(window);
+    fingerScroll(window, gridOf(window, pane).center(), 30, 6);
+    ASSERT_TRUE(waitFor([&] { return viewportOffset(pane) > 20; })) << "no coast";
+    // A program starts on the alternate screen, with alternate scroll: the
+    // rest of a coast through the history is no arrow keys for it.
+    feedFromReader(pane, "\x1b[?1049h\x1b[?1007h");
+    waitIdle(window);
+    EXPECT_EQ(upKeys(fileContent(keys)), 0) << fileContent(keys).toStdString();
+}
+
+TEST_F(NativeWindow, OutputKeepsAFingerScrollsPartOfARow) {
+    restartApplication(QStringLiteral("part.conf"),
+        testSettings({{QStringLiteral("Window"), QJsonObject{{QStringLiteral("paneTitles"), true}}},
+                      {QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("momentumScroll"), 0}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    fillHistory(pane, 200);
+    waitIdle(window);
+    // Two and a half rows back: the view shows three rows back, drawn down
+    // by half a row.
+    const double pitch = rowPitch(window, pane);
+    fingerScroll(window, gridOf(window, pane).center(), int(std::lround(pitch * 2.5)), 1);
+    waitIdle(window);
+    ASSERT_EQ(viewportOffset(pane), 3u);
+    const int shifted = window->accessibleCellRect(pane, pane->selectionPointAt(0, 0)).y();
+    // Output enters the history: the view stays on its text, with its half
+    // row.
+    feedFromReader(pane, "out 1\r\nout 2\r\nout 3\r\n");
+    ASSERT_TRUE(nextFrame(window));
+    EXPECT_EQ(viewportOffset(pane), 6u);
+    EXPECT_LE(std::abs(window->accessibleCellRect(pane, pane->selectionPointAt(0, 0)).y() - shifted), 1);
+}
+
+TEST_F(NativeWindow, ASelectionBeingDraggedTakesInTheRowsThatTheWheelScrolls) {
+    Pane* pane = window->focusedPane();
+    fillHistory(pane, 200);
+    waitIdle(window);
+    const QPointF at = cellCentre(window, pane, 3, 5);
+    pressLeft(window, at);
+    dragLeft(window, cellCentre(window, pane, 6, 5));
+    ASSERT_TRUE(pane->hasSelection());
+    ASSERT_EQ(pane->selectedText().count(QLatin1Char('\n')), 0);
+    // The wheel scrolls Terminal.scrollLines rows back under the pointer,
+    // which stays still: the selection reaches them.
+    wheelAt(window, at);
+    waitIdle(window);
+    EXPECT_EQ(pane->selectedText().count(QLatin1Char('\n')), 3) << pane->selectedText().toStdString();
+    releaseLeft(window, cellCentre(window, pane, 6, 5));
+}
+
+TEST_F(NativeWindow, AFingerOnATouchscreenTapsScrollsAndSelects) {
+    Pane* pane = window->focusedPane();
+    fillHistory(pane, 400);
+    waitIdle(window);
+    Finger finger{window};
+    const QRectF grid = gridOf(window, pane);
+    const QPointF at = grid.center();
+    // A tap is a click: it clears a selection.
+    selectCells(pane, 0, 0, 5, 0);
+    ASSERT_TRUE(pane->hasSelection());
+    finger.down(at);
+    finger.move(at + QPointF(3, 3)); // within the slop
+    finger.up(at + QPointF(3, 3));
+    EXPECT_FALSE(pane->hasSelection());
+    // A finger that moves at once scrolls: down shows older rows, and it
+    // coasts.
+    finger.stroke(at - QPointF(0, 100), QPointF(0, 200));
+    const std::size_t scrolled = settledOffset(window, pane);
+    EXPECT_GT(double(scrolled), rowsOf(window, pane, 200) + 5);
+    EXPECT_FALSE(pane->hasSelection());
+    // Held still for Mouse.touchSelectHold (400 ms), then moved: a selection
+    // from where it landed, from column 1 to column 6 of a "line NNN" row.
+    // The button is down meanwhile, for a program's drag that reads it.
+    const QPointF from = cellCentre(window, pane, 1, 3);
+    finger.down(from);
+    drain(450);
+    finger.move(cellCentre(window, pane, 6, 3));
+    EXPECT_EQ(QGuiApplication::mouseButtons(), Qt::LeftButton);
+    finger.up(cellCentre(window, pane, 6, 3));
+    EXPECT_EQ(QGuiApplication::mouseButtons(), Qt::NoButton);
+    EXPECT_EQ(pane->selectedText().size(), 6) << pane->selectedText().toStdString();
+    EXPECT_TRUE(pane->selectedText().startsWith(QStringLiteral("ine "))) << pane->selectedText().toStdString();
+    // Two fingers at once are no gesture of these: no scroll, and no tap
+    // that clears the selection.
+    const std::size_t before = settledOffset(window, pane);
+    finger.touch.press(1, at.toPoint()).press(2, (at + QPointF(40, 0)).toPoint()).commit();
+    finger.touch.move(1, (at + QPointF(0, 120)).toPoint()).move(2, (at + QPointF(40, 120)).toPoint()).commit();
+    finger.touch.release(1, (at + QPointF(0, 120)).toPoint()).release(2, (at + QPointF(40, 120)).toPoint()).commit();
+    EXPECT_EQ(settledOffset(window, pane), before);
+    EXPECT_TRUE(pane->hasSelection());
+    // A second finger before the first moves ends the gesture too. As
+    // QtWayland does, each event has the fingers that did not move as
+    // stationary.
+    finger.down(at);
+    finger.touch.stationary(1).press(2, (at + QPointF(40, 0)).toPoint()).commit();
+    finger.touch.move(1, (at + QPointF(0, 120)).toPoint()).stationary(2).commit();
+    finger.touch.release(1, (at + QPointF(0, 120)).toPoint()).release(2, (at + QPointF(40, 0)).toPoint()).commit();
+    EXPECT_EQ(settledOffset(window, pane), before);
+    EXPECT_TRUE(pane->hasSelection());
+    // One that lands after the first moved is ignored: the scroll goes on.
+    finger.down(at);
+    finger.move(at + QPointF(0, 60));
+    finger.touch.stationary(1).press(2, (at + QPointF(40, 0)).toPoint()).commit();
+    finger.touch.move(1, (at + QPointF(0, 120)).toPoint()).stationary(2).commit();
+    finger.touch.release(1, (at + QPointF(0, 120)).toPoint()).release(2, (at + QPointF(40, 0)).toPoint()).commit();
+    EXPECT_GT(double(settledOffset(window, pane)), double(before) + rowsOf(window, pane, 120) - 1);
+}
+
+TEST_F(NativeWindow, ACancelledTouchNeitherCoastsNorHoldsItsButton) {
+    Pane* pane = window->focusedPane();
+    fillHistory(pane, 400);
+    waitIdle(window);
+    Finger finger{window};
+    const QPointF at = gridOf(window, pane).center();
+    // The compositor takes a scroll (an edge gesture): the view stays at the
+    // fingers' distance, with no coast.
+    finger.down(at - QPointF(0, 100));
+    for (int i = 1; i <= 10; ++i) {
+        finger.move(at - QPointF(0, 100) + QPointF(0, 20 * i));
+        QThread::msleep(8);
+    }
+    finger.cancel();
+    EXPECT_LE(std::abs(double(settledOffset(window, pane)) - rowsOf(window, pane, 200)), 1.0);
+    // And a selection: its button goes up.
+    const QPointF from = cellCentre(window, pane, 1, 3);
+    finger.down(from);
+    drain(450);
+    finger.move(cellCentre(window, pane, 6, 3));
+    ASSERT_EQ(QGuiApplication::mouseButtons(), Qt::LeftButton);
+    finger.cancel();
+    EXPECT_EQ(QGuiApplication::mouseButtons(), Qt::NoButton);
+    EXPECT_TRUE(pane->hasSelection());
+}
+
+TEST_F(NativeWindow, AFlickThatEndsOverAnotherPaneCoastsInItsOwn) {
+    Pane* top = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+    Pane* bottom = window->splitPane(top, SplitTree::Direction::Down, launch, nullptr);
+    ASSERT_NE(bottom, nullptr);
+    fillHistory(top, 400);
+    fillHistory(bottom, 400);
+    waitIdle(window);
+    // From the top pane's middle down past its bottom edge.
+    const QRectF upper = gridOf(window, top);
+    const QPointF from = upper.center();
+    Finger finger{window};
+    finger.stroke(from, QPointF(0, gridOf(window, bottom).center().y() - from.y()));
+    EXPECT_GT(double(settledOffset(window, top)), rowsOf(window, top, gridOf(window, bottom).center().y() - from.y()) + 5);
+    EXPECT_EQ(viewportOffset(bottom), 0u);
+}
+
+TEST_F(NativeWindow, AFingerDragsADividerAsAMouseDoes) {
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    fillHistory(first, 400);
+    waitIdle(window);
+    const QPoint left = window->mapFromGlobal(window->accessiblePaneRect(first).topRight());
+    const QPoint right = window->mapFromGlobal(window->accessiblePaneRect(second).topLeft());
+    const QPointF divider((left.x() + right.x()) / 2.0, window->mapFromGlobal(window->accessiblePaneRect(first).center()).y());
+    const int cols = first->cols();
+    // A move at once, which in a pane would scroll, drags the divider.
+    Finger finger{window};
+    finger.down(divider);
+    finger.move(divider + QPointF(30, 0));
+    ASSERT_TRUE(nextFrame(window));
+    finger.move(divider + QPointF(60, 0));
+    EXPECT_TRUE(waitFor([&] { return first->cols() > cols; })) << first->cols();
+    finger.up(divider + QPointF(60, 0));
+    EXPECT_EQ(settledOffset(window, first), 0u);
+}
+
 TEST_F(NativeWindow, APressInsideTheSelectionWaitsForAMoveOrClicks) {
     restartWithDragSelection();
     if (HasFatalFailure()) return;
@@ -2838,6 +3106,21 @@ TEST_F(NativeWindow, APressInsideTheSelectionWaitsForAMoveOrClicks) {
     EXPECT_TRUE(pane->hasSelection());
     releaseLeft(window, near);
     EXPECT_FALSE(pane->hasSelection());
+}
+TEST_F(NativeWindow, AFingerInsideTheSelectionSelectsAndDoesNotDragIt) {
+    restartWithDragSelection();
+    if (HasFatalFailure()) return;
+    NoDrag noDrag(window);
+    Pane* pane = window->focusedPane();
+    fillRows(pane, "select me here");
+    selectWholeScreen(pane);
+    // Held, then moved, inside the selection: a new selection, as anywhere.
+    Finger finger{window};
+    finger.down(cellCentre(window, pane, 0, 1));
+    drain(450);
+    finger.move(cellCentre(window, pane, 5, 1));
+    finger.up(cellCentre(window, pane, 5, 1));
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("select"));
 }
 TEST_F(NativeWindow, TheClickThatAPressInsideTheSelectionHeldMovesTheShellCursor) {
     const QString received = directory.filePath(QStringLiteral("received.txt"));
@@ -2911,8 +3194,9 @@ TEST_F(NativeWindow, ClicksInsideTheSelectionSelectAWordALineOrABlock) {
     dragLeft(window, cellCentre(window, pane, 11, 1));
     releaseLeft(window, cellCentre(window, pane, 11, 1));
     EXPECT_EQ(pane->selectedText(), QStringLiteral("e he"));
-    // An Alt press starts a block selection, and a press that Qt makes from a
-    // touch starts a selection: neither waits to drag.
+    // An Alt press starts a block selection, and a press that a finger makes
+    // (touchMouse, with the source of Qt's own synthesis) starts a
+    // selection: neither waits to drag.
     selectWholeScreen(pane);
     const QPointF block = cellCentre(window, pane, 2, 3);
     pressLeftWith(window, block, Qt::AltModifier);
@@ -8310,10 +8594,11 @@ TEST_F(NativeWindow, APointerOverAViewScrolledByPartOfARowIsOnTheRowDrawnUnderIt
     const QRect tenth = window->accessibleCellRect(pane, pane->selectionPointAt(0, 10));
     const double row = (tenth.y() - top.y()) / 10.0;
     ASSERT_GT(row, 4.0);
-    // A trackpad scrolls by pixels: about half a row back.
+    // A trackpad scrolls by pixels: about half a row back. Qt marks its
+    // events as synthesized by the system, which a wheel's are not.
     const QPointF at = window->mapFromGlobal(window->accessiblePaneRect(pane).center());
     QWheelEvent wheel(at, window->mapToGlobal(at), QPoint(0, int(row / 2)), QPoint(0, 0), Qt::NoButton, Qt::NoModifier,
-                      Qt::NoScrollPhase, false);
+                      Qt::NoScrollPhase, false, Qt::MouseEventSynthesizedBySystem);
     QCoreApplication::sendEvent(window, &wheel);
     ASSERT_TRUE(nextFrame(window));
     ASSERT_EQ(pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }), 1u);

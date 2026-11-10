@@ -88,10 +88,17 @@ struct MouseSettings
     /// Milliseconds between the rows a selection scrolls while it is
     /// extended past the top or bottom of its pane.
     int autoScrollInterval = 50;
-    /// The friction of the coast after a finger scroll on a touchpad or a
-    /// touchscreen: the part of the speed kept each 8 ms. 0 turns the coast
-    /// off. kitty's default.
+    /// The part of a finger scroll's speed that its coast keeps every 8 ms
+    /// after the last finger lifts, on a touchpad or a touchscreen: 0.96, as
+    /// in Kitty (momentum_scroll). 0 turns the coast off, and 1 never slows it.
     double momentumScroll = 0.96;
+    /// Multiplies the distance of a finger scroll on a touchpad or a
+    /// touchscreen: 1, as in Kitty (touch_scroll_multiplier). A negative value
+    /// scrolls the other way. A program that reads the mouse gets the sign only.
+    double touchScrollMultiplier = 1.0;
+    /// Milliseconds that a finger holds still on a touchscreen before a move
+    /// selects instead of scrolling: 400, as in Kitty.
+    int touchSelectHold = 400;
     /// A single press inside the selection and a move drag its text out, to
     /// another pane or another application. A click there without a move
     /// clears the selection. Off, as in Kitty: a press inside the selection

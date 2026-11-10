@@ -26,7 +26,7 @@ Start with the [documentation index](docs/README.md).
 
 - [Build and install](docs/BUILD.md)
 - [Settings and appearance](docs/APPEARANCE.md)
-- [Keyboard, search and shell integration](docs/INPUT.md)
+- [Keyboard, mouse, touch, search and shell integration](docs/INPUT.md)
 - [Panes and projects](docs/PROJECTS.md)
 - [Luau scripting](docs/SCRIPTING.md)
 - [Shader effects](docs/SHADERS.md)

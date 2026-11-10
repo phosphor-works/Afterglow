@@ -269,7 +269,7 @@ if(NOT PLASMAZONES_SYSTEM_LUAU)
     get_directory_property(AFTERGLOW_LUAU_SOURCE_DIR DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-scripting"
         DEFINITION luau_SOURCE_DIR)
     if(NOT EXISTS "${AFTERGLOW_LUAU_SOURCE_DIR}/LICENSE.txt" OR NOT EXISTS "${AFTERGLOW_LUAU_SOURCE_DIR}/lua_LICENSE.txt")
-        message(FATAL_ERROR "The Luau and Lua licences were not found in '${AFTERGLOW_LUAU_SOURCE_DIR}', and they must install with the binaries.")
+        message(FATAL_ERROR "The Luau and Lua licenses were not found in '${AFTERGLOW_LUAU_SOURCE_DIR}', and they must install with the binaries.")
     endif()
     install(FILES "${AFTERGLOW_LUAU_SOURCE_DIR}/LICENSE.txt" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
             RENAME LICENSE.Luau)
@@ -286,7 +286,7 @@ if(NOT PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON)
     get_directory_property(AFTERGLOW_VALIJSON_SOURCE_DIR DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-fsloader"
         DEFINITION valijson_SOURCE_DIR)
     if(NOT EXISTS "${AFTERGLOW_VALIJSON_SOURCE_DIR}/LICENSE")
-        message(FATAL_ERROR "The valijson licence was not found in '${AFTERGLOW_VALIJSON_SOURCE_DIR}', and it must install with the binaries.")
+        message(FATAL_ERROR "The valijson license was not found in '${AFTERGLOW_VALIJSON_SOURCE_DIR}', and it must install with the binaries.")
     endif()
     install(FILES "${AFTERGLOW_VALIJSON_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
             RENAME LICENSE.valijson)

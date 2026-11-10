@@ -592,6 +592,7 @@ The suite also checks these behaviors:
 - Terminal events that reach the GUI thread in their order, with a bound on the events that wait.
 - Focus and keys: the palette closes when the focus moves, and a held key that closes a pane does not repeat into the next pane.
 - A split whose shell does not start keeps the zoom, and the pointer row of a view that is scrolled by part of a row.
+- Finger scrolls and their coast, the events that stop the coast, and one-finger touchscreen gestures. These tests send Qt wheel and touch events through Qt's input processing in the form that QtWayland gives them. They do not send compositor input.
 
 Composition tests use Qt events through the window, renderer and PTY.
 They do not certify external IBus or Fcitx engines.

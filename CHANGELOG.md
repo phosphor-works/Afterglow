@@ -31,6 +31,10 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - The Kitty mouse-pointer protocol (OSC 22), with separate shape stacks for the main and alternate screens.
 - Pastes keep tab, carriage return and line feed, and drop all other control characters.
 - Afterglow asks before a paste or a text drop with a line break reaches a program that does not use bracketed paste.
+- Finger scrolls on a touchpad or a touchscreen go on after the last finger lifts, as in Kitty (`Mouse.momentumScroll`, 0.96 by default). `Mouse.touchScrollMultiplier` changes their distance.
+- One finger on a touchscreen clicks, scrolls and selects, as in Kitty. A hold of `Mouse.touchSelectHold` (400 milliseconds by default) before a move selects.
+- A mouse wheel scrolls `Terminal.scrollLines` rows for each notch.
+- `Mouse.autoScrollInterval` sets the time between the rows that a selection scrolls while you extend it.
 
 ### Graphics and text sizing
 
@@ -72,7 +76,6 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99), which `Notifications.enabled` turns on and off.
 - A notification limit for each pane (`Notifications.rateLimit` in `Notifications.rateWindow`, 20 in 10 seconds by default). Notices from Afterglow itself do not count, and neither do `afterglow ctl notify` and script notifications. The notice at the end of a script command that has no client counts.
 - Settings for the shortest time between two bell sounds (`Terminal.bellSoundInterval`) and between two status notifications of a pane (`Notifications.statusInterval`).
-- `Mouse.autoScrollInterval` sets the time between the rows that a selection scrolls while you extend it.
 - `Control.eventInterval` sets the shortest time between two control events of one kind for a pane.
 - `Terminal.pasteReadTimeout` sets how long a paste event lets a program read the clipboard.
 - Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates. The approval lists the paths and covers only those paths. They are the files that a program reads, or the destinations of the files that it sends. A file goes only where the approval showed, also when a link changes after it. A file that the approval did not list waits for an approval of its own, and the approved files continue meanwhile.
@@ -108,7 +111,6 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 - Search with PCRE2 regular expressions, across soft-wrapped lines.
 - Keyboard selection in character, line and rectangle modes.
-- Finger scrolls on a touchpad or a touchscreen go on after the fingers lift (`Mouse.momentumScroll`, 0.96 by default as in kitty). A touchscreen taps, scrolls and selects with one finger.
 - With `Mouse.dragSelection` on (off by default, as in Kitty), selected text drags to another pane or another desktop application.
 - Text hints that copy, open or run commands on regular-expression matches, and URL hints, labeled from `Hints.alphabet`.
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.

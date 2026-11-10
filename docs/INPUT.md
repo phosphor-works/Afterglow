@@ -247,7 +247,9 @@ Afterglow opens OSC 8 links and plain-text URLs with a click while you hold the 
 | `Mouse.rightClick` | `menu` | `menu`, `paste`, `copy-or-paste`, `extend` |
 | `Mouse.middleClick` | `primary` | `primary`, `clipboard`, `none` |
 | `Mouse.autoScrollInterval` | `50` | 10 to 1000 milliseconds |
-| `Mouse.momentumScroll` | `0.96` | 0 to 1 |
+| `Mouse.momentumScroll` | `0.96` | 0 to 1, the part of the speed that a finger scroll keeps every 8 milliseconds |
+| `Mouse.touchScrollMultiplier` | `1` | -10 to 10 |
+| `Mouse.touchSelectHold` | `400` | 100 to 2000 milliseconds |
 | `Mouse.dragSelection` | `false` | `true`, `false` |
 
 `copy-or-paste` copies a selection, or pastes when there is no selection.
@@ -281,26 +283,56 @@ Only a single press with the left button and no Alt can drag:
 - To select again from a point inside the selection, click once to clear the selection, then drag.
   A press on the same cell within the double-click time is a double click, and its drag selects whole words.
 - A double click or a triple click inside the selection selects a word or a line. An Alt press starts a block selection.
-- A touch or a pen selects. It does not drag.
+- A pen selects. A finger on a touchscreen selects after it holds still (see [Touchpads and touchscreens](#touchpads-and-touchscreens)). Neither drags the selection.
 - When the program in the pane offers a drag of its own ([Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop)), a move starts the program's drag.
 
 ### Touchpads and touchscreens
 
-A scroll with fingers on a touchpad goes on after the fingers lift, and slows down until it stops.
-`Mouse.momentumScroll` sets how much of the speed stays each 8 milliseconds. The default is kitty's.
-A value of 0 stops the scroll when the fingers lift.
-A click, a key, a wheel turn or another window that takes the focus stops it at once.
+A scroll with fingers on a touchpad or a touchscreen goes on after the last finger lifts, and slows down until it stops.
+Afterglow uses the rules of Kitty for the speed and the stop:
 
-A touchscreen works with one finger. Afterglow reads it as kitty does.
+- The speed comes from the moves in the last 150 milliseconds and from the lift. Fingers that hold still before they lift make a slower scroll.
+- A scroll of 10 logical pixels or less does not go on after the lift.
+- Every 8 milliseconds, the scroll keeps the part of its speed that `Mouse.momentumScroll` sets.
+- The scroll stops when its speed is less than half a pixel, or at the top or the bottom of the history.
+- A value of 0 stops the scroll when the finger lifts. A value of 1 does not slow the scroll.
+
+These events stop the scroll at once:
+
+| Event | Note |
+| --- | --- |
+| A click or a touch | Also a touch of two fingers |
+| A key press or a key release | |
+| Another window takes the focus | |
+| A scroll action, a jump to a prompt, URL hints or copy mode | Also from a script or `afterglow ctl` |
+| Typing or output that moves the view | |
+| The pane goes out of view, closes, or gets an overlay | Also when the overview opens |
+| The program in the pane goes to the alternate screen, or back | |
+
+A wheel turn does not stop the scroll. As in Kitty, the wheel scrolls in addition.
+Fingers that rest on a touchpad do not stop the scroll, because Qt does not report a hold gesture.
+
+`Mouse.touchScrollMultiplier` multiplies the distance of a finger scroll. A negative value scrolls the other way.
+
+A touchscreen works with one finger, as in Kitty.
 
 | Gesture | Result |
 | --- | --- |
-| Touch and lift within 8 pixels | A left click where the finger touched |
-| Touch and move at once | A scroll that follows the finger, and goes on after the finger lifts |
-| Touch, hold still for 400 milliseconds, then move | A selection from where the finger touched |
-| Two fingers or more at once | Nothing |
+| Touch and lift within 8 logical pixels in each direction | A left click where the finger touched. Two taps are a double click. |
+| Touch and move more than 8 logical pixels before `Mouse.touchSelectHold` | A scroll that follows the finger, and goes on after the finger lifts |
+| Touch, hold still for `Mouse.touchSelectHold`, then move | A drag of the left button from where the finger touched, which selects |
+| Touch with two fingers or more together, or with a second finger before the first moves | No click, scroll or selection |
+| Touch with a second finger after the first moves | The second finger is ignored, and the first goes on |
+| Touch the tab bar, the scrollbar, a dock or a divider | A press of the left button at once, so that a move drags |
 
-In a program that reads the mouse or uses the alternate screen, each row of scroll distance is one wheel step.
+The pointer does not show when a finger touches. Shader packs that read the pointer follow the finger.
+
+In a program that reads the mouse, a tap is a click for the program, and a hold then a move is a drag for the program.
+Hold Shift to select instead.
+
+A finger scroll gives a program that reads the mouse one wheel report for each row of distance.
+On the alternate screen with alternate scroll, a finger scroll gives one arrow key for each row of distance.
+A wheel notch gives `Terminal.scrollLines` rows.
 
 ## Quick terminal
 

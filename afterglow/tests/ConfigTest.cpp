@@ -3,6 +3,7 @@
 
 #include "config/Settings.h"
 #include "config/Theme.h"
+#include "animation/MomentumScroll.h"
 #include "desktop/DragDrop.h"
 #include "desktop/FileTransfer.h"
 #include "scripting/ScriptHost.h"
@@ -1376,13 +1377,12 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(defaults.settings().statusNotificationInterval, 3000);
     EXPECT_EQ(defaults.settings().pasteReadTimeout, 10);
     EXPECT_EQ(defaults.settings().mouse.autoScrollInterval, 50);
-    EXPECT_DOUBLE_EQ(defaults.settings().mouse.momentumScroll, 0.96);
     EXPECT_EQ(defaults.settings().control.eventInterval, 100);
 
     SettingsStore custom(write(QStringLiteral("custom.json"), R"({
         "Terminal": {"bellSoundInterval": 0, "pasteReadTimeout": 30},
         "Notifications": {"statusInterval": 0},
-        "Mouse": {"autoScrollInterval": 120, "momentumScroll": 0},
+        "Mouse": {"autoScrollInterval": 120},
         "Control": {"eventInterval": 0}
     })"));
     EXPECT_EQ(custom.settings().control.eventInterval, 0);
@@ -1390,12 +1390,11 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(custom.settings().statusNotificationInterval, 0);
     EXPECT_EQ(custom.settings().pasteReadTimeout, 30);
     EXPECT_EQ(custom.settings().mouse.autoScrollInterval, 120);
-    EXPECT_DOUBLE_EQ(custom.settings().mouse.momentumScroll, 0.0);
 
     SettingsStore clamped(write(QStringLiteral("clamped.json"), R"({
         "Terminal": {"bellSoundInterval": 99999, "pasteReadTimeout": 0},
         "Notifications": {"statusInterval": -5},
-        "Mouse": {"autoScrollInterval": 1, "momentumScroll": 3},
+        "Mouse": {"autoScrollInterval": 1},
         "Control": {"eventInterval": 99999}
     })"));
     EXPECT_EQ(clamped.settings().control.eventInterval, 10000);
@@ -1404,8 +1403,37 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(clamped.settings().bellSoundInterval, 10000);
     EXPECT_EQ(clamped.settings().statusNotificationInterval, 0);
     EXPECT_EQ(clamped.settings().pasteReadTimeout, 1);
-    EXPECT_DOUBLE_EQ(clamped.settings().mouse.momentumScroll, 1.0);
     EXPECT_EQ(clamped.settings().mouse.autoScrollInterval, 10);
+}
+
+TEST_F(ConfigTest, FingerScrollsAreSettingsWithKittysDefaults)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_DOUBLE_EQ(defaults.settings().mouse.momentumScroll, 0.96);
+    EXPECT_DOUBLE_EQ(defaults.settings().mouse.touchScrollMultiplier, 1.0);
+    EXPECT_EQ(defaults.settings().mouse.touchSelectHold, 400);
+    // The coast keeps the same friction in a window that has applied no
+    // setting yet.
+    EXPECT_DOUBLE_EQ(Settings{}.mouse.momentumScroll, MomentumScroll::DefaultFriction);
+    EXPECT_DOUBLE_EQ(MomentumScroll{}.friction(), MomentumScroll::DefaultFriction);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"),
+                               R"({"Mouse": {"momentumScroll": 0, "touchScrollMultiplier": -2.5, "touchSelectHold": 800}})"));
+    EXPECT_DOUBLE_EQ(custom.settings().mouse.momentumScroll, 0.0);
+    EXPECT_DOUBLE_EQ(custom.settings().mouse.touchScrollMultiplier, -2.5);
+    EXPECT_EQ(custom.settings().mouse.touchSelectHold, 800);
+
+    SettingsStore high(write(QStringLiteral("high.json"),
+                             R"({"Mouse": {"momentumScroll": 3, "touchScrollMultiplier": 50, "touchSelectHold": 99999}})"));
+    EXPECT_DOUBLE_EQ(high.settings().mouse.momentumScroll, 1.0);
+    EXPECT_DOUBLE_EQ(high.settings().mouse.touchScrollMultiplier, 10.0);
+    EXPECT_EQ(high.settings().mouse.touchSelectHold, 2000);
+
+    SettingsStore low(write(QStringLiteral("low.json"),
+                            R"({"Mouse": {"momentumScroll": -1, "touchScrollMultiplier": -50, "touchSelectHold": 0}})"));
+    EXPECT_DOUBLE_EQ(low.settings().mouse.momentumScroll, 0.0);
+    EXPECT_DOUBLE_EQ(low.settings().mouse.touchScrollMultiplier, -10.0);
+    EXPECT_EQ(low.settings().mouse.touchSelectHold, 100);
 }
 
 TEST_F(ConfigTest, HighlightColoursComeFromTheConfigAndTheTheme)

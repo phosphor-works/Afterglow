@@ -3,6 +3,7 @@
 
 #include "Settings.h"
 #include "Theme.h"
+#include "animation/MomentumScroll.h"
 
 #include <AfterglowRender/Snapshot.h>
 #include <AfterglowVt/TextSearch.h>
@@ -604,13 +605,21 @@ PhosphorConfig::Schema buildSchema()
                                "value extends the selection.")),
         enumKey(QStringLiteral("middleClick"), MiddleClickChoices, d.mouse.middleClick,
                 QStringLiteral("What a middle click pastes. The none value turns middle-click paste off.")),
-        doubleKey(QStringLiteral("momentumScroll"), d.mouse.momentumScroll, 0.0, 1.0,
-                  QStringLiteral("How long a finger scroll on a touchpad or a touchscreen goes on after the fingers lift. It is "
-                                 "the part of the speed kept each 8 milliseconds. A higher value coasts further. A value of 0 "
-                                 "stops at once, and a value of 1 does not slow down.")),
         intKey(QStringLiteral("autoScrollInterval"), d.mouse.autoScrollInterval, 10, 1000,
                QStringLiteral("Milliseconds between the rows that a selection scrolls while you extend it past the top or "
                               "bottom of a pane.")),
+        doubleKey(QStringLiteral("momentumScroll"), d.mouse.momentumScroll, 0.0, 1.0,
+                  QStringLiteral("Part of the speed of a finger scroll on a touchpad or a touchscreen that the scroll keeps "
+                                 "every %1 milliseconds after the last finger lifts. A higher value scrolls further. A value "
+                                 "of 0 stops the scroll when the finger lifts. A value of 1 does not slow the scroll, which "
+                                 "goes on until a click, a key or a touch stops it.")
+                      .arg(MomentumScroll::StepMs)),
+        doubleKey(QStringLiteral("touchScrollMultiplier"), d.mouse.touchScrollMultiplier, -10.0, 10.0,
+                  QStringLiteral("Multiplier for the distance of a finger scroll on a touchpad or a touchscreen. A negative "
+                                 "value scrolls the other way. A program that reads the mouse gets the direction only.")),
+        intKey(QStringLiteral("touchSelectHold"), d.mouse.touchSelectHold, 100, 2000,
+               QStringLiteral("Milliseconds that a finger holds still on a touchscreen before a move selects text. A finger "
+                              "that moves sooner scrolls.")),
         {QStringLiteral("dragSelection"), d.mouse.dragSelection, QMetaType::Bool,
          QStringLiteral("Allow a single press without Alt inside the selection to drag its text to another pane or "
                         "another desktop application. A click there without a move clears the selection, and other presses "
@@ -1750,6 +1759,8 @@ Settings SettingsStore::read()
     s.mouse.middleClick = readEnum(st, MouseGroup, QStringLiteral("middleClick"), MiddleClickChoices, s.mouse.middleClick);
     s.mouse.autoScrollInterval = st.read<int>(MouseGroup, QStringLiteral("autoScrollInterval"));
     s.mouse.momentumScroll = st.read<double>(MouseGroup, QStringLiteral("momentumScroll"));
+    s.mouse.touchScrollMultiplier = st.read<double>(MouseGroup, QStringLiteral("touchScrollMultiplier"));
+    s.mouse.touchSelectHold = st.read<int>(MouseGroup, QStringLiteral("touchSelectHold"));
     s.mouse.dragSelection = st.read<bool>(MouseGroup, QStringLiteral("dragSelection"));
 
     // Links
