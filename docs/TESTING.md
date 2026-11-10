@@ -101,7 +101,7 @@ It uses the Basic control style and generic Qt platform theme.
 | Option | Default | Function |
 | --- | --- | --- |
 | `--filter` | All tests | A GTest filter, for example `NativeWindow.AglowDragAndDropClient` |
-| `--timeout` | 400 | Seconds for the whole run. The runner stops the suite at the limit and fails. |
+| `--timeout` | 600 | Seconds for the whole run. The runner stops the suite at the limit and fails. |
 
 See [desktop integration](DESKTOP.md#native-acceptance-coverage) for coverage and limits.
 

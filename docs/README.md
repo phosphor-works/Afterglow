@@ -10,7 +10,7 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 | Build or install | [Build instructions](BUILD.md) |
 | Set fonts, colors or themes | [Appearance](APPEARANCE.md) |
 | Find a setting or default binding | [Configuration reference](CONFIGURATION.md) |
-| Use keybindings, selection, search or hints | [Input](INPUT.md) |
+| Use keybindings, the mouse, touchpads, touchscreens, selection, search or hints | [Input](INPUT.md) |
 | Move panes or save layouts | [Projects](PROJECTS.md) |
 | Keep terminal sessions running, and show them in windows | [The mux daemon](MUX.md) |
 | Control a running instance | [Command line and control socket](CONTROL.md) |

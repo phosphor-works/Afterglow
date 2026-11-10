@@ -5,7 +5,7 @@ find_package(GTest REQUIRED)
 
 # Application sources compiled again into a test keep the definitions they
 # ship with. The tests themselves build strings from literals.
-set_source_files_properties(../src/ProjectStore.cpp ../src/SplitTree.cpp ../src/DockArea.cpp
+set_source_files_properties(../src/ProjectStore.cpp ../src/SplitTree.cpp ../src/DockArea.cpp ../src/animation/MomentumScroll.cpp
     ../src/desktop/FileTransfer.cpp ../src/desktop/DragDrop.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_CAST_FROM_ASCII)
 
 qt_add_executable(afterglow_app_tests
@@ -15,6 +15,8 @@ qt_add_executable(afterglow_app_tests
     ../src/SplitTree.cpp
     DockAreaTest.cpp
     ../src/DockArea.cpp
+    MomentumScrollTest.cpp
+    ../src/animation/MomentumScroll.cpp
 )
 target_include_directories(afterglow_app_tests PRIVATE ../src)
 target_link_libraries(afterglow_app_tests PRIVATE Qt6::Core Afterglow::Vt Afterglow::Render GTest::gtest_main)
@@ -144,7 +146,7 @@ if(AFTERGLOW_NATIVE_TESTS)
         COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native_window_acceptance.py
                 --binary $<TARGET_FILE:afterglow_native_tests>)
     # The window and Kitty draw on the GPU: they take turns with the renderer's tests.
-    set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 420 RESOURCE_LOCK gpu)
+    set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 620 RESOURCE_LOCK gpu)
     # aglow transfer against Kitty in a headless KWin (77: no kitty, kwin_wayland or dbus-run-session).
     if(AFTERGLOW_BUILD_AGLOW)
         add_test(NAME afterglow_transfer_kitty

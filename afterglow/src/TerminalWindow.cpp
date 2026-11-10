@@ -59,6 +59,8 @@
 #include <QInputMethodQueryEvent>
 #include <QLocale>
 #include <QPlatformSurfaceEvent>
+#include <QPointingDevice>
+#include <qpa/qwindowsysteminterface.h>
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScreen>
@@ -75,6 +77,21 @@
 Q_LOGGING_CATEGORY(lcWindow, "afterglow.window", QtInfoMsg)
 
 namespace {
+/// Milliseconds on the steady clock, with their fraction, for the times of
+/// finger scrolls and of the frames that move their coast.
+double steadyMs()
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+/// Logical pixels of finger travel for each card that the overview moves: a
+/// step that does not depend on the font size, as kitty's
+/// MAPPED_SCROLL_STEP_PIXELS for touchpads.
+constexpr double OverviewFingerStep = 100;
+/// A mouse event that a finger on a touchscreen makes (touchMouse).
+bool fromTouch(const QPointerEvent* e)
+{
+    return e->pointingDevice() && e->pointingDevice()->type() == QInputDevice::DeviceType::TouchScreen;
+}
 /// Command palette ids from here on are script commands.
 constexpr int ScriptCommandBase = 10000;
 /// Context menu items that are not actions.
@@ -417,6 +434,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
 
     m_autoScroll.setInterval(m_settings.settings().mouse.autoScrollInterval);
     connect(&m_autoScroll, &QTimer::timeout, this, &TerminalWindow::updateSelectionDrag);
+    m_momentum.setFriction(m_settings.settings().mouse.momentumScroll);
     m_holdRetry.setSingleShot(true);
     m_holdRetry.setTimerType(Qt::PreciseTimer);
     connect(&m_holdRetry, &QTimer::timeout, this, &TerminalWindow::scheduleRender);
@@ -1906,6 +1924,8 @@ void TerminalWindow::renderNow()
     bool anyBlinkingText = false;
     bool focusedCursorBlinks = false;
     m_anyPaneAway = false;
+    // Before the panes: this frame shows the coast where it is now.
+    advanceMomentum(animating);
     advanceOverview(animating);
     m_splits->forEachPane([&](Pane* p, const QRect& r) {
         if (r.isEmpty()) return;
@@ -2171,6 +2191,7 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
 
     // Scrolling: the terminal shows whole rows; the rest is a pixel shift.
     followViewport(pane, m);
+    const double followed = m.scrollValue;
     if (m.scroll.isAnimating()) {
         m.scroll.advance();
         m.scrollValue = m.scroll.value() + m.scrollRebase;
@@ -2180,6 +2201,12 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
         holding = true;
         m_holdWait = std::min(m_holdWait, pane->holdRemaining());
     }
+    // A selection being dragged takes in the rows that a wheel, a finger or
+    // a coast scrolled under the pointer, as kitty's does: in each frame
+    // that draws the view somewhere else, so that it ends on the row drawn
+    // under the pointer when the scroll stops. Past the top or bottom rows
+    // the auto scroll moves both.
+    if (pane == m_selectionPane && m.scrollValue != followed && !m_autoScroll.isActive()) updateSelectionDrag();
     const float shift = m.scrollShift;
 
     // The cursor glides from cell to cell.
@@ -2229,15 +2256,19 @@ void TerminalWindow::followViewport(Pane* pane, PaneMotion& m)
     seen = written;
     if (offset == m.appliedOffset) return;
     const qint64 moved = qint64(offset) - qint64(m.appliedOffset);
-    if (m.scroll.isAnimating() && moved > 0 && std::uint64_t(moved) == added) {
+    if (moved > 0 && std::uint64_t(moved) == added) {
         // Output entered the history while the view is scrolled back, and
         // the terminal moved the view by as much to keep it on the same
-        // text: the easing goes on, shifted, at its own pace.
-        m.scrollRebase += qreal(moved);
+        // text: the view stays where it was on that text, with its part of
+        // a row (a finger scroll's, a coast's), and an easing goes on,
+        // shifted, at its own pace.
+        if (m.scroll.isAnimating()) m.scrollRebase += qreal(moved);
         m.scrollValue += qreal(moved);
         m.scrollTarget += qreal(moved);
     } else {
-        // Moved by something else (typing, a prompt jump): follow it.
+        // Moved by something else (typing, a prompt jump): follow it, and
+        // a coast ends.
+        stopMomentumOf(pane);
         m.scroll.cancel();
         m.scrollRebase = 0;
         m.scrollValue = qreal(offset);
@@ -2266,6 +2297,9 @@ bool TerminalWindow::applyScroll(Pane* pane, PaneMotion& m)
 
 void TerminalWindow::settleScroll(Pane* pane)
 {
+    // A mode that reads the rows as drawn (hints, URLs) holds the view: a
+    // coast would move it.
+    stopMomentumOf(pane);
     PaneMotion& m = motion(pane);
     followViewport(pane, m);
     if (m.scroll.isAnimating()) {
@@ -2276,10 +2310,10 @@ void TerminalWindow::settleScroll(Pane* pane)
     scheduleRender();
 }
 
-void TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)
+bool TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)
 {
     if (!pane) {
-        return;
+        return false;
     }
     PaneMotion& m = motion(pane);
     // Hint labels sit on the rows the view had.
@@ -2287,6 +2321,7 @@ void TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)
     const auto history = double(pane->withTerminal([](Terminal& t) { return t.screen().historySize(); }));
     const double base = m.scroll.isAnimating() ? m.scrollTarget : m.scrollValue;
     const double target = std::clamp(base + rows, 0.0, history);
+    if (target == base) return false;
     m.scrollTarget = target;
     const AnimationSettings& anim = m_settings.settings().animation;
     if (!animate || !anim.scroll) {
@@ -2300,6 +2335,7 @@ void TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)
                                                          "Animation.scrollCurve", AnimationSettings{}.scrollCurve));
     }
     scheduleRender();
+    return true;
 }
 
 // --- events ----------------------------------------------------------------
@@ -2491,15 +2527,7 @@ bool TerminalWindow::event(QEvent* e)
         m_hover = {};
         m_pointer = QPointF(-1, -1);
         updateDockHover();
-        if (chromeVisible() && !m_chromeGrab) {
-            // The chrome hears of the pointer only through deliver(): as a
-            // move out of the window does, this one ends its hover (a tab,
-            // the scrollbar that hides when the pointer leaves it). Not
-            // during a press that the chrome took: its drag goes on.
-            QMouseEvent outside(QEvent::MouseMove, QPointF(-1, -1), QPointF(-1, -1), Qt::NoButton, Qt::NoButton,
-                                QGuiApplication::keyboardModifiers());
-            m_chrome->deliver(&outside);
-        }
+        leaveChrome();
         scheduleRender();
         break;
     case QEvent::PlatformSurface:
@@ -2608,6 +2636,8 @@ void TerminalWindow::focusInEvent(QFocusEvent*)
 
 void TerminalWindow::focusOutEvent(QFocusEvent*)
 {
+    // As kitty: a coast is the focused window's (advanceMomentum).
+    stopMomentum();
     cancelKeyMode();
     m_controller->closeContextMenu();
     m_windowFocused = false;
@@ -2774,6 +2804,8 @@ bool TerminalWindow::performAction(Action action)
         if (target->withTerminal([](Terminal& t) { return t.modes().altScreen; })) {
             return false;
         }
+        // A scroll from a key, the menu, a script or afterglow ctl ends a coast.
+        stopMomentumOf(target);
         scrollPane(target, double(delta));
         return true;
     };
@@ -3006,7 +3038,7 @@ bool TerminalWindow::performAction(Action action)
             // Its keys come before the overview's and a script's key mode:
             // not over them. The other modes end, as for the overview.
             if (m_overview.open || m_scriptKeyMode) return false;
-            cancelKeyMode(); stopUrlMode(); stopUnicodeInput();
+            cancelKeyMode(); stopUrlMode(); stopUnicodeInput(); stopMomentumOf(target);
             m_copyPane = target; m_copyPane->beginCopyMode(); updateKeyMode();
         }
         return true;
@@ -4282,6 +4314,8 @@ void TerminalWindow::applySettings(const Settings& previous)
     m_blinkTimer.setInterval(now.cursorBlinkInterval);
     m_textBlinkTimer.setInterval(now.textBlinkInterval);
     m_autoScroll.setInterval(now.mouse.autoScrollInterval);
+    // A coast under way goes on with the new value.
+    m_momentum.setFriction(now.mouse.momentumScroll);
     if (now.window.backgroundOpacity != previous.window.backgroundOpacity || now.window.blur != previous.window.blur) {
         applyWindowEffects();
     }
@@ -4488,6 +4522,8 @@ bool TerminalWindow::copyModeKey(QKeyEvent* e)
 void TerminalWindow::keyPressEvent(QKeyEvent* e)
 {
     if (!m_splits) return;
+    // As in kitty: a key ends a coast (keyReleaseEvent too).
+    stopMomentum();
     const quint32 physicalKey = physicalKeyOf(e);
     const bool repeat = e->isAutoRepeat();
     const auto taken = m_consumedKeys.constFind(physicalKey);
@@ -4556,6 +4592,8 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
 
 void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
 {
+    // As in kitty: a key, pressed or let go, ends a coast.
+    stopMomentum();
     const quint32 physicalKey = physicalKeyOf(e);
     const Qt::KeyboardModifiers linkModifier = m_settings.settings().links.modifier;
     if ((e->key() == Qt::Key_Control && linkModifier == Qt::ControlModifier)
@@ -5109,7 +5147,10 @@ bool TerminalWindow::pressDock(QMouseEvent* e)
 void TerminalWindow::mousePressEvent(QMouseEvent* e)
 {
     if (!m_splits) return;
-    if (m_pointerHidden) {
+    stopMomentum();
+    // As in kitty, a finger does not show the pointer that typing hid: the
+    // pointer is not where the finger is.
+    if (m_pointerHidden && !fromTouch(e)) {
         m_pointerHidden = false;
         applyPointerShape();
     }
@@ -5239,14 +5280,18 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
         return;
     }
 
-    // Count clicks on the same cell for word (2) and line (3) selection.
+    // Count clicks for word (2) and line (3) selection: as in kitty, within
+    // half a row of the last press, which a finger's taps keep to even
+    // across the edge of a cell.
     const QPoint cell = cellAt(target, e->position());
     const int interval = QGuiApplication::styleHints()->mouseDoubleClickInterval();
-    const bool series = m_lastClick.isValid() && m_lastClick.elapsed() < interval && cell == m_lastClickCell
-        && target == m_lastClickPane;
+    const double radius = m_renderer->fonts().fonts->metrics().cellHeight / devicePixelRatio() / 2;
+    const bool series = m_lastClick.isValid() && m_lastClick.elapsed() < interval
+        && QLineF(e->position(), m_lastClickAt).length() <= radius && target == m_lastClickPane;
     m_clickCount = series ? m_clickCount % 3 + 1 : 1;
     m_lastClick.start();
     m_lastClickCell = cell;
+    m_lastClickAt = e->position();
     m_lastClickPane = target;
 
     AfterglowVt::SelectionMode mode = AfterglowVt::SelectionMode::Normal;
@@ -5258,11 +5303,12 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
         mode = AfterglowVt::SelectionMode::Block;
     }
     // A single plain press inside the selection waits: a move drags the text
-    // out, a release clicks (mouseReleaseEvent). Only a mouse drags: Qt turns
-    // the touch and tablet input that the window does not handle into
-    // presses, and a finger that strokes over the selection selects. The
-    // fourth click of a series counts as one again, inside the line that the
-    // third selected: it selects too.
+    // out, a release clicks (mouseReleaseEvent). Only a mouse drags: the
+    // presses of a finger (touchMouse) and of a pen, which Qt makes of the
+    // tablet input that the window does not handle, are synthesized, and a
+    // finger that strokes over the selection selects. The fourth click of a
+    // series counts as one again, inside the line that the third selected:
+    // it selects too.
     if (!series && mode == AfterglowVt::SelectionMode::Normal && e->source() == Qt::MouseEventNotSynthesized
         && m_settings.settings().mouse.dragSelection && target->selectionContains(cell.x(), cell.y())) {
         m_textDragPane = target;
@@ -5495,9 +5541,15 @@ void TerminalWindow::moveCursorToClick(Pane* pane, const QPointF& pos)
 void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 {
     if (!m_splits) return;
+    // A finger that selects or drags holds its button, which a mouse that
+    // moves meanwhile does not: that move is no release that went elsewhere,
+    // and the finger's gesture goes on.
+    if (!fromTouch(e) && (m_touch.state == TouchGesture::State::Selecting || m_touch.state == TouchGesture::State::Pointer))
+        return;
     // Before the overview's return below: typing hid the pointer, and the
-    // overview opened from the keyboard must not keep it hidden.
-    if (std::exchange(m_pointerHidden, false)) applyPointerShape();
+    // overview opened from the keyboard must not keep it hidden. A finger
+    // does not show it (mousePressEvent).
+    if (!fromTouch(e) && std::exchange(m_pointerHidden, false)) applyPointerShape();
     m_renderer->setMousePosition(e->position() * devicePixelRatio());
     m_pointer = e->position();
     // A pack that reads the pointer moves with it, with nothing else changing.
@@ -5621,6 +5673,16 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 void TerminalWindow::wheelEvent(QWheelEvent* e)
 {
     if (!m_splits) return;
+    // A finger scroll (touchpad, or touchEvent's) comes in phases: a begin
+    // when the fingers touch, updates while they move, an end when they
+    // lift. Wayland sends no coast after it, so Afterglow makes one, as kitty
+    // does (Mouse.momentumScroll). Fingers that touch end a coast, wherever
+    // their scroll goes. A wheel, with no phase, does not: as in kitty, its
+    // notches scroll the view on. The times are when the events come, as
+    // kitty takes them for a touchpad: an event's timestamp is on the
+    // compositor's clock, and the frames that move the coast are not.
+    const double now = steadyMs();
+    if (e->phase() == Qt::ScrollBegin) m_momentum.begin(now);
     // A dock is its script's: the wheel over it scrolls no pane and moves
     // no card. The chrome draws over docks, so it comes first.
     DockArea* overDock = dockAt(e->position());
@@ -5630,11 +5692,15 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
         return;
     }
     if (m_overview.open) {
-        m_overviewWheel += e->angleDelta().y() ? e->angleDelta().y() : e->angleDelta().x();
+        // A wheel moves a card for each notch, and fingers one for each
+        // OverviewFingerStep of travel.
+        const bool finger = e->source() != Qt::MouseEventNotSynthesized && !e->pixelDelta().isNull();
+        const QPoint delta = finger ? e->pixelDelta() : e->angleDelta();
+        m_overviewWheel += (delta.y() ? delta.y() : delta.x()) * (finger ? 120 / OverviewFingerStep : 1.0);
         const auto panes = overviewPanes();
         const auto at = std::find(panes.begin(), panes.end(), m_overview.highlighted.data());
         const int current = at == panes.end() ? 0 : int(at - panes.begin());
-        const int steps = m_overviewWheel / 120;
+        const int steps = int(m_overviewWheel / 120);
         m_overviewWheel -= steps * 120;
         if (steps) moveOverview(current - steps, steps > 0 ? -1 : 1);
         return;
@@ -5648,29 +5714,275 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
     }
     // Where no pane shows, the wheel scrolls the focused pane's history.
     Pane* shown = paneShownAt(e->position());
-    const bool overPane = shown != nullptr;
-    Pane* p = overPane ? shown : m_focused.data();
+    Pane* p = shown ? shown : m_focused.data();
     // An overlay's program, or its history, while one runs over the pane:
     // nothing around a popup.
     p = pointerTarget(p, e->position());
     if (!p) {
         return;
     }
-    // Trackpads report pixels: scroll the history by exactly that much.
-    if (!e->pixelDelta().isNull()) {
-        const AfterglowVt::Modes modes = p->withTerminal([](Terminal& t) { return t.modes(); });
-        if (modes.mouseTracking == AfterglowVt::MouseTracking::None && !modes.altScreen) {
-            const double cell = m_renderer->fonts().fonts->metrics().cellHeight;
-            scrollPane(p, e->pixelDelta().y() * devicePixelRatio() / cell, false);
+    // A wheel reports notches: steps of Terminal.scrollLines. Qt gives every
+    // Wayland wheel event pixels too, from the axis value: they are not the
+    // wheel's distance.
+    if (e->source() == Qt::MouseEventNotSynthesized) {
+        if (e->phase() == Qt::NoScrollPhase)
+            scrollNotches(p, e->angleDelta().y() / 120.0, e->position(), e->modifiers(), m_settings.settings().scrollLines);
+        return;
+    }
+    // Fingers report pixels: rows of distance, as kitty reads a
+    // high-resolution scroll.
+    if (e->phase() == Qt::ScrollEnd) {
+        // Qt sends a begin and an end with no distance twice, once for each
+        // axis (QWindowSystemInterface::handleWheelEvent): the second end
+        // finds the gesture over, and leaves the coast that the first began.
+        if (!m_momentum.gesture()) return;
+        // A gesture over another pane than its moves were: no coast.
+        if (p != m_momentumPane) {
+            m_momentum.cancel();
             return;
         }
+        if (!m_momentum.release(now)) return;
+        m_momentumAt = e->position();
+        m_momentumModifiers = e->modifiers();
+        m_momentumAltScreen = p->withTerminal([](Terminal& t) { return t.modes().altScreen; });
+        scheduleRender();
+        return;
     }
+    // Less than a pixel: Qt carries it into the next event's pixels.
+    if (e->pixelDelta().isNull()) return;
+    if (e->phase() == Qt::ScrollUpdate) {
+        // Moves over another pane start a gesture of their own, as kitty's
+        // over another window do: the coast's speed does not carry over.
+        if (p != m_momentumPane) {
+            m_momentum.cancel();
+            m_momentumPane = p;
+        }
+        m_momentum.move(e->pixelDelta().y(), now);
+    }
+    scrollPixels(p, e->pixelDelta().y(), e->position(), e->modifiers());
+}
+
+void TerminalWindow::advanceMomentum(bool& animating)
+{
+    if (!m_momentum.coasting()) return;
+    Pane* const pane = m_momentumPane;
+    // The coast scrolls what a wheel at its place would: not once a tab, a
+    // zoom, the overview, a layout change, an overlay or a popup put
+    // something else there, or the pane left. As in kitty, it is the
+    // focused window's, and the screen's that it began on: a program that
+    // goes to the alternate screen gets no arrow keys from a scroll of the
+    // history.
+    Pane* const shown = paneShownAt(m_momentumAt);
+    if (!pane || !m_windowFocused || m_overview.open || pointerTarget(shown ? shown : m_focused.data(), m_momentumAt) != pane
+        || pane->withTerminal([](Terminal& t) { return t.modes().altScreen; }) != m_momentumAltScreen) {
+        stopMomentum();
+        return;
+    }
+    bool moved = true;
+    if (const double pixels = m_momentum.advance(steadyMs()); pixels != 0)
+        moved = scrollPixels(pane, pixels, m_momentumAt, m_momentumModifiers);
+    // At the top or the bottom of the history the coast has nothing left to
+    // move: no more frames for it.
+    if (moved && m_momentum.coasting()) animating = true;
+    else stopMomentum();
+}
+
+void TerminalWindow::stopMomentum()
+{
+    m_momentum.cancel();
+    m_momentumPane = nullptr;
+}
+
+void TerminalWindow::stopMomentumOf(const Pane* pane)
+{
+    // Not a gesture under way: its own moves scroll the pane too.
+    if (pane && pane == m_momentumPane && m_momentum.coasting()) stopMomentum();
+}
+
+void TerminalWindow::touchScroll(const QPointF& at, double dy, Qt::ScrollPhase phase, Qt::KeyboardModifiers modifiers)
+{
+    // As a touchpad's finger scroll, in the form QtWayland gives one: through
+    // wheelEvent, which routes it (chrome, docks, the overview, the pane
+    // under it) and coasts after the end. A wheel event carries whole
+    // pixels, and an angle 12 times as large: the rest waits.
+    m_touch.pixelRest += dy;
+    const int pixels = int(m_touch.pixelRest);
+    m_touch.pixelRest -= pixels;
+    if (phase == Qt::ScrollUpdate && pixels == 0) return;
+    QWheelEvent wheel(at, mapToGlobal(at), QPoint(0, pixels), QPoint(0, pixels * 12), Qt::NoButton, modifiers, phase, false,
+                      Qt::MouseEventSynthesizedByApplication);
+    QCoreApplication::sendEvent(this, &wheel);
+}
+
+void TerminalWindow::touchMouse(const QTouchEvent* e, QEvent::Type type, const QPointF& at, Qt::MouseButton button,
+                                Qt::MouseButtons held)
+{
+    // As Qt makes mouse events of a touch that a window does not take
+    // (QGuiApplicationPrivate::processTouchEvent): through its input
+    // processing, which keeps QGuiApplication::mouseButtons() for a
+    // program's drag (DragDrop), moves the pointer to the finger before a
+    // press, and counts double taps. Its source keeps a touch from dragging
+    // the selection (mousePressEvent).
+    QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+        this, e->timestamp(), e->pointingDevice(), at, mapToGlobal(at), held, button, type, e->modifiers(),
+        Qt::MouseEventSynthesizedByQt);
+}
+
+void TerminalWindow::cancelTouch(const QTouchEvent* e)
+{
+    using State = TouchGesture::State;
+    const TouchGesture gesture = std::exchange(m_touch, TouchGesture{});
+    switch (gesture.state) {
+    case State::Selecting:
+    case State::Pointer:
+        // The button goes up, so that nothing is left held down.
+        touchMouse(e, QEvent::MouseButtonRelease, gesture.last, Qt::LeftButton, Qt::NoButton);
+        break;
+    case State::Scrolling:
+        // As in kitty, a scroll that the compositor took does not coast. Its
+        // end goes where the scroll did, so that a list in the chrome ends
+        // its scroll too.
+        touchScroll(gesture.start, 0, Qt::ScrollEnd, e->modifiers());
+        stopMomentum();
+        break;
+    default: break;
+    }
+    if (gesture.state == State::Pointer) leaveChrome();
+}
+
+void TerminalWindow::touchEvent(QTouchEvent* e)
+{
+    // Taken here, so that Qt makes no mouse events of its own from it.
+    e->accept();
+    using State = TouchGesture::State;
+    // kitty's rule (kitty/glfw.c TOUCH_TAP_SLOP): a finger within 8 logical
+    // pixels of where it landed, on each axis, is still a tap. Not a
+    // setting: it is the size of a finger's wobble, not a preference.
+    constexpr double TapSlop = 8.0;
+    const double now = steadyMs();
+    const Qt::KeyboardModifiers mods = e->modifiers();
+    if (e->type() == QEvent::TouchCancel) {
+        cancelTouch(e);
+        return;
+    }
+    if (e->type() == QEvent::TouchBegin) {
+        // As in kitty: a finger that lands stops a coast, and ends a gesture
+        // whose end never came.
+        stopMomentum();
+        cancelTouch(e);
+        const auto& points = e->points();
+        if (points.size() != 1) {
+            m_touch.state = State::Ignored; // several fingers at once: not a gesture of these
+            return;
+        }
+        m_touch.id = points.front().id();
+        // For a window, the scene is the window: scenePosition() is set on
+        // every touch point, also on one an application makes.
+        const QPointF at = points.front().scenePosition();
+        m_touch.start = m_touch.last = at;
+        m_touch.downAt = now;
+        // Over the chrome, a dock or a divider, the finger is a mouse with its
+        // button held, as when Qt made mouse events of it: it drags a tab,
+        // the scrollbar or a divider, and taps a button. The overview's cards
+        // take a tap and a scroll.
+        const bool pointer = !m_overview.open
+            && ((chromeVisible() && m_chrome->wantsPointer(at, nullptr)) || dockAt(at)
+                || m_splits->dividerAt(dividerPixel(at), dividerTolerance()));
+        m_touch.state = pointer ? State::Pointer : State::Pending;
+        if (pointer) touchMouse(e, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+        return;
+    }
+    for (const QEventPoint& point : e->points()) {
+        if (m_touch.state == State::Idle || m_touch.state == State::Ignored) break;
+        if (point.id() != m_touch.id) {
+            // A second finger before the gesture was known ends it. After,
+            // it is ignored, as in kitty.
+            if (point.state() == QEventPoint::State::Pressed && m_touch.state == State::Pending) m_touch.state = State::Ignored;
+            continue;
+        }
+        const QPointF at = point.scenePosition();
+        if (point.state() == QEventPoint::State::Released) {
+            switch (m_touch.state) {
+            case State::Pending: // a tap: a click where the finger landed
+                touchMouse(e, QEvent::MouseButtonPress, m_touch.start, Qt::LeftButton, Qt::LeftButton);
+                touchMouse(e, QEvent::MouseButtonRelease, m_touch.start, Qt::LeftButton, Qt::NoButton);
+                break;
+            case State::Selecting:
+            case State::Pointer: touchMouse(e, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton); break;
+            // The end goes where the scroll did, to the pane under where the
+            // finger landed: that pane coasts.
+            case State::Scrolling: touchScroll(m_touch.start, 0, Qt::ScrollEnd, mods); break;
+            default: break;
+            }
+            if (std::exchange(m_touch, TouchGesture{}).state == State::Pointer) leaveChrome();
+            break;
+        }
+        // As in kitty, only a finger that moved does something.
+        if (point.state() != QEventPoint::State::Updated) continue;
+        switch (m_touch.state) {
+        case State::Pending:
+            if (std::abs(at.x() - m_touch.start.x()) <= TapSlop && std::abs(at.y() - m_touch.start.y()) <= TapSlop) break;
+            if (now - m_touch.downAt >= m_settings.settings().mouse.touchSelectHold) {
+                m_touch.state = State::Selecting;
+                touchMouse(e, QEvent::MouseButtonPress, m_touch.start, Qt::LeftButton, Qt::LeftButton);
+                touchMouse(e, QEvent::MouseMove, at, Qt::NoButton, Qt::LeftButton);
+            } else {
+                m_touch.state = State::Scrolling;
+                // As kitty: the pointer goes to the finger, for packs that
+                // read it and for the pane that the scroll goes to.
+                touchMouse(e, QEvent::MouseMove, m_touch.start, Qt::NoButton, Qt::NoButton);
+                touchScroll(m_touch.start, 0, Qt::ScrollBegin, mods);
+                touchScroll(m_touch.start, at.y() - m_touch.start.y(), Qt::ScrollUpdate, mods);
+            }
+            break;
+        case State::Selecting:
+        case State::Pointer: touchMouse(e, QEvent::MouseMove, at, Qt::NoButton, Qt::LeftButton); break;
+        case State::Scrolling: touchScroll(m_touch.start, at.y() - m_touch.last.y(), Qt::ScrollUpdate, mods); break;
+        default: break;
+        }
+        m_touch.last = at;
+    }
+    // The sequence is over once every finger has lifted, as in kitty.
+    if (e->type() == QEvent::TouchEnd && m_touch.state != State::Idle) cancelTouch(e);
+}
+
+void TerminalWindow::leaveChrome()
+{
+    // The chrome hears of the pointer only through deliver(): as a move out
+    // of the window does, this one ends its hover (a tab, the scrollbar
+    // that hides when the pointer leaves it). Not during a press that the
+    // chrome took: its drag goes on.
+    if (!chromeVisible() || m_chromeGrab) return;
+    QMouseEvent outside(QEvent::MouseMove, QPointF(-1, -1), QPointF(-1, -1), Qt::NoButton, Qt::NoButton,
+                        QGuiApplication::keyboardModifiers());
+    m_chrome->deliver(&outside);
+}
+
+bool TerminalWindow::scrollPixels(Pane* p, double pixels, const QPointF& at, Qt::KeyboardModifiers modifiers)
+{
+    const AfterglowVt::Modes modes = p->withTerminal([](Terminal& t) { return t.modes(); });
+    // Shift keeps the scroll from a program that reads the mouse, as it
+    // keeps a wheel's (scrollNotches).
+    const bool reports = modes.mouseTracking != AfterglowVt::MouseTracking::None && !(modifiers & Qt::ShiftModifier);
+    // As in kitty, such a program gets only the multiplier's direction.
+    const double multiplier = m_settings.settings().mouse.touchScrollMultiplier;
+    const double scale = reports ? double((multiplier > 0) - (multiplier < 0)) : multiplier;
+    const double rows = pixels * scale * devicePixelRatio() / m_renderer->fonts().fonts->metrics().cellHeight;
+    if (!reports && !modes.altScreen) return scrollPane(p, rows, false);
+    // A program gets one wheel report, or one arrow key on the alternate
+    // screen, for each row of distance.
+    scrollNotches(p, rows, at, modifiers, 1);
+    return true;
+}
+
+void TerminalWindow::scrollNotches(Pane* p, double notches, const QPointF& at, Qt::KeyboardModifiers modifiers, int lines)
+{
     // Part of a notch over one pane does not carry over to another.
     if (p != m_wheelPane) {
         m_wheelPane = p;
         m_wheelAccumulator = 0;
     }
-    m_wheelAccumulator += e->angleDelta().y() / 120.0;
+    m_wheelAccumulator += notches;
     const int steps = int(m_wheelAccumulator);
     if (steps == 0) {
         return;
@@ -5678,13 +5990,13 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
     m_wheelAccumulator -= steps;
 
     const AfterglowVt::Modes modes = p->withTerminal([](Terminal& t) { return t.modes(); });
-    if (modes.mouseTracking != AfterglowVt::MouseTracking::None && !(e->modifiers() & Qt::ShiftModifier)) {
+    if (modes.mouseTracking != AfterglowVt::MouseTracking::None && !(modifiers & Qt::ShiftModifier)) {
         // A program hears only of a wheel over its pane, as of a press: not
         // at a clamped cell nobody pointed at.
-        if (!overPane) return;
+        if (!paneShownAt(at)) return;
         const int button = int(steps > 0 ? AfterglowVt::MouseButton::WheelUp : AfterglowVt::MouseButton::WheelDown);
         for (int i = 0; i < std::abs(steps); ++i) {
-            sendMouse(p, e->position(), button, int(AfterglowVt::MouseAction::Press), e->modifiers());
+            sendMouse(p, at, button, int(AfterglowVt::MouseAction::Press), modifiers);
         }
         return;
     }
@@ -5692,13 +6004,13 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
         AfterglowVt::KeyEvent key;
         key.key = steps > 0 ? AfterglowVt::Key::Up : AfterglowVt::Key::Down;
         std::string bytes;
-        for (int i = 0; i < std::abs(steps) * m_settings.settings().scrollLines; ++i) {
+        for (int i = 0; i < std::abs(steps) * lines; ++i) {
             bytes += AfterglowVt::encodeKey(key, modes);
         }
         p->sendInput(bytes);
         return;
     }
-    scrollPane(p, double(steps) * m_settings.settings().scrollLines);
+    scrollPane(p, double(steps) * lines);
 }
 
 } // namespace Afterglow

@@ -9,6 +9,7 @@
 #include "SplitTree.h"
 #include "ShownText.h"
 #include "animation/FrameClock.h"
+#include "animation/MomentumScroll.h"
 #include "animation/PaneMotion.h"
 #include "app/Services.h"
 #include "config/Settings.h"
@@ -302,6 +303,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
+    void touchEvent(QTouchEvent* e) override;
     void focusInEvent(QFocusEvent* e) override;
     void focusOutEvent(QFocusEvent* e) override;
 
@@ -718,8 +720,9 @@ private:
     // Animation
     PaneMotion& motion(const Pane* pane);
     /// Scrolls a pane's view by @p rows (positive is back in history),
-    /// eased when @p animate and scroll animation is on.
-    void scrollPane(Pane* pane, double rows, bool animate = true);
+    /// eased when @p animate and scroll animation is on. Returns whether its
+    /// place in the history changed: not at the top or bottom of it.
+    bool scrollPane(Pane* pane, double rows, bool animate = true);
     /// Takes a move of @p pane's view by the terminal (output, typing) into
     /// @p m: the easing follows it.
     void followViewport(Pane* pane, PaneMotion& m);
@@ -963,6 +966,55 @@ private:
     bool m_blinkOn = true;
     double m_wheelAccumulator = 0;
     QPointer<Pane> m_wheelPane; ///< the pane m_wheelAccumulator belongs to
+    /// Scrolls @p pixels of a finger scroll (logical, as a touchpad reports
+    /// them) in @p pane, as kitty reads a high-resolution scroll: its history
+    /// by the pixels, or a wheel report to its program or an arrow key on
+    /// the alternate screen for each row of distance. Mouse.touchScrollMultiplier
+    /// scales the distance (only its sign for a program that reads the
+    /// mouse). Returns whether the view moved or the program got something:
+    /// not at the top or bottom of the history.
+    bool scrollPixels(Pane* pane, double pixels, const QPointF& at, Qt::KeyboardModifiers modifiers);
+    /// Wheel steps (120 units each) to @p pane: its program's wheel reports,
+    /// or @p lines arrow keys on the alternate screen or rows of its history
+    /// for each step.
+    void scrollNotches(Pane* pane, double notches, const QPointF& at, Qt::KeyboardModifiers modifiers, int lines);
+    /// The coast after a finger scroll (Mouse.momentumScroll). Each frame
+    /// moves it to the frame's time (advanceMomentum), for as long as a wheel
+    /// at m_momentumAt would reach m_momentumPane, on the screen (main or
+    /// alternate) where the coast began, in a window that has the focus.
+    MomentumScroll m_momentum;
+    QPointer<Pane> m_momentumPane; ///< the pane of the gesture, and of its coast
+    QPointF m_momentumAt;
+    Qt::KeyboardModifiers m_momentumModifiers;
+    bool m_momentumAltScreen = false;
+    void advanceMomentum(bool& animating);
+    void stopMomentum();
+    /// Ends the coast of @p pane, whose view moves for another reason.
+    void stopMomentumOf(const Pane* pane);
+    /// One finger on a touchscreen, as kitty reads it: a tap clicks, a move
+    /// scrolls (through the finger scroll path, so it coasts), and a finger
+    /// held still for Mouse.touchSelectHold and then moved selects. Over the
+    /// chrome, a dock or a divider, the finger is a mouse with its button
+    /// held, as it was when Qt made mouse events of it.
+    struct TouchGesture
+    {
+        enum class State { Idle, Pending, Scrolling, Selecting, Pointer, Ignored };
+        State state = State::Idle;
+        int id = -1;
+        QPointF start;
+        QPointF last;
+        double downAt = 0;
+        double pixelRest = 0; ///< below one pixel, for the next wheel event
+    };
+    TouchGesture m_touch;
+    void touchScroll(const QPointF& at, double dy, Qt::ScrollPhase phase, Qt::KeyboardModifiers modifiers);
+    /// A mouse event of the touch @p e, at @p at, with the left button.
+    void touchMouse(const QTouchEvent* e, QEvent::Type type, const QPointF& at, Qt::MouseButton button, Qt::MouseButtons held);
+    /// Ends the gesture of m_touch: a button it holds goes up, and a scroll
+    /// stops without a coast.
+    void cancelTouch(const QTouchEvent* e);
+    /// The chrome hears that no pointer is over it: its hover ends.
+    void leaveChrome();
     Qt::MouseButtons m_reportedButtons;
     QPointer<Pane> m_reportedPane; ///< the pane whose program got the reported press
     Qt::MouseButtons m_overviewButtons; ///< the overview took their presses: it takes their releases
@@ -1150,7 +1202,7 @@ private:
     /// Advances the tab switch and hands it to the renderer.
     void advanceTabTransition(std::uint8_t backgroundAlpha, bool& holding, bool& animating);
     bool m_overviewAvailable = false; ///< Shaders.overview compiled
-    int m_overviewWheel = 0; ///< wheel travel not yet a whole step
+    double m_overviewWheel = 0; ///< wheel travel (120 for a step) not yet a whole step
     /// The overview's cards: while it shows, every tab's panes in tab order,
     /// then layout order; otherwise the current tab's.
     std::vector<Pane*> overviewPanes() const;
@@ -1255,6 +1307,7 @@ private:
     int m_clickCount = 0;
     QElapsedTimer m_lastClick;
     QPoint m_lastClickCell{-1, -1};
+    QPointF m_lastClickAt; ///< where the last press was, for a series of clicks
     QPointer<Pane> m_lastClickPane; ///< the pane m_lastClickCell is in
 };
 

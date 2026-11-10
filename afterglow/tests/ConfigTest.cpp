@@ -3,6 +3,7 @@
 
 #include "config/Settings.h"
 #include "config/Theme.h"
+#include "animation/MomentumScroll.h"
 #include "desktop/DragDrop.h"
 #include "desktop/FileTransfer.h"
 #include "scripting/ScriptHost.h"
@@ -1503,6 +1504,36 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(clamped.settings().statusNotificationInterval, 0);
     EXPECT_EQ(clamped.settings().pasteReadTimeout, 1);
     EXPECT_EQ(clamped.settings().mouse.autoScrollInterval, 10);
+}
+
+TEST_F(ConfigTest, FingerScrollsAreSettingsWithKittysDefaults)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_DOUBLE_EQ(defaults.settings().mouse.momentumScroll, 0.96);
+    EXPECT_DOUBLE_EQ(defaults.settings().mouse.touchScrollMultiplier, 1.0);
+    EXPECT_EQ(defaults.settings().mouse.touchSelectHold, 400);
+    // The coast keeps the same friction in a window that has applied no
+    // setting yet.
+    EXPECT_DOUBLE_EQ(Settings{}.mouse.momentumScroll, MomentumScroll::DefaultFriction);
+    EXPECT_DOUBLE_EQ(MomentumScroll{}.friction(), MomentumScroll::DefaultFriction);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"),
+                               R"({"Mouse": {"momentumScroll": 0, "touchScrollMultiplier": -2.5, "touchSelectHold": 800}})"));
+    EXPECT_DOUBLE_EQ(custom.settings().mouse.momentumScroll, 0.0);
+    EXPECT_DOUBLE_EQ(custom.settings().mouse.touchScrollMultiplier, -2.5);
+    EXPECT_EQ(custom.settings().mouse.touchSelectHold, 800);
+
+    SettingsStore high(write(QStringLiteral("high.json"),
+                             R"({"Mouse": {"momentumScroll": 3, "touchScrollMultiplier": 50, "touchSelectHold": 99999}})"));
+    EXPECT_DOUBLE_EQ(high.settings().mouse.momentumScroll, 1.0);
+    EXPECT_DOUBLE_EQ(high.settings().mouse.touchScrollMultiplier, 10.0);
+    EXPECT_EQ(high.settings().mouse.touchSelectHold, 2000);
+
+    SettingsStore low(write(QStringLiteral("low.json"),
+                            R"({"Mouse": {"momentumScroll": -1, "touchScrollMultiplier": -50, "touchSelectHold": 0}})"));
+    EXPECT_DOUBLE_EQ(low.settings().mouse.momentumScroll, 0.0);
+    EXPECT_DOUBLE_EQ(low.settings().mouse.touchScrollMultiplier, -10.0);
+    EXPECT_EQ(low.settings().mouse.touchSelectHold, 100);
 }
 
 TEST_F(ConfigTest, HighlightColoursComeFromTheConfigAndTheTheme)

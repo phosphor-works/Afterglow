@@ -138,7 +138,10 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `autoScrollInterval` | `50` | 10–1000 | Milliseconds between the rows that a selection scrolls while you extend it past the top or bottom of a pane. |
 | `dragSelection` | `false` |  | Allow a single press without Alt inside the selection to drag its text to another pane or another desktop application. A click there without a move clears the selection, and other presses there select as they do elsewhere. |
 | `middleClick` | `"primary"` | `"primary"`, `"clipboard"`, `"none"` | What a middle click pastes. The none value turns middle-click paste off. |
+| `momentumScroll` | `0.96` | 0–1 | Part of the speed of a finger scroll on a touchpad or a touchscreen that the scroll keeps every 8 milliseconds after the last finger lifts. A higher value scrolls further. A value of 0 stops the scroll when the finger lifts. A value of 1 does not slow the scroll, which goes on until a click, a key or a touch stops it. |
 | `rightClick` | `"menu"` | `"menu"`, `"paste"`, `"copy-or-paste"`, `"extend"` | What a right click does. The menu value opens the context menu. The paste value pastes the clipboard. The copy-or-paste value copies an existing selection, or else pastes. The extend value extends the selection. |
+| `touchScrollMultiplier` | `1` | -10–10 | Multiplier for the distance of a finger scroll on a touchpad or a touchscreen. A negative value scrolls the other way. A program that reads the mouse gets the direction only. |
+| `touchSelectHold` | `400` | 100–2000 | Milliseconds that a finger holds still on a touchscreen before a move selects text. A finger that moves sooner scrolls. |
 
 ## Mux
 

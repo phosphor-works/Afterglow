@@ -114,7 +114,7 @@ if(NOT installed STREQUAL expected)
     if(installed)
         list(REMOVE_ITEM missing ${installed})
     endif()
-    message(FATAL_ERROR "The installation of aglow alone is not bin/aglow, its completions and its licence notices.\n"
+    message(FATAL_ERROR "The installation of aglow alone is not bin/aglow, its completions and its license notices.\n"
                         "  not expected: ${extra}\n  missing: ${missing}")
 endif()
 
