@@ -37,9 +37,10 @@ bool leadsForeground(pid_t pid, pid_t session)
 
 } // namespace
 
-MuxPane::MuxPane(const AfterglowVt::TerminalOptions& options, const PaneSize& size, std::string notificationCapabilities,
-                 std::function<void()> exited)
-    : m_exitedCallback(std::move(exited))
+MuxPane::MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, const PaneSize& size,
+                 std::string notificationCapabilities, std::function<void()> wake)
+    : m_id(id)
+    , m_wake(std::move(wake))
     , m_notificationCapabilities(std::move(notificationCapabilities))
     , m_terminal(size.cols, size.rows, *this, options)
 {
@@ -104,8 +105,8 @@ void MuxPane::desktopNotification(const AfterglowVt::NotificationRequest& reques
 bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
 {
     using AfterglowVt::ClipboardAssembler;
-    // No client means no clipboard and no user to ask: the request gets the
-    // answer of a denial. A write is dropped.
+    // The daemon has no clipboard, and the attach stream carries none yet:
+    // the request gets the answer of a denial. A write is dropped.
     if (request.kind == AfterglowVt::ClipboardRequest::Kind::Write) {
         writeToPty(ClipboardAssembler::writeStatus("EPERM", request.id));
     } else if (request.osc52) {
@@ -126,8 +127,8 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
             return;
         }
         // A drag starts from an offer (t=o without x=1 or x=2) while the
-        // user holds the mouse button: with no window, the user holds none,
-        // and the offer gets the window's EPERM. A drop never arrives, so
+        // user holds the mouse button. The attach stream carries no drag
+        // yet, so the offer gets the window's EPERM. A drop never arrives, so
         // the other commands need no answer. A chunked offer is answered
         // once, at its last chunk.
         const std::string_view raw = AfterglowProto::splitDnd(payload).first;
@@ -143,7 +144,8 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
     }
     if (code != 5113 || payload.size() > AfterglowProto::TransferMaxCommand) return;
     // A transfer starts with ac=send or ac=receive and waits for the user's
-    // answer: without a client, it is the answer of a denial. A session with
+    // answer. The attach stream carries no transfer yet: it is the answer of
+    // a denial. A session with
     // q=2 asked for no status, errors included.
     const auto fields = AfterglowProto::decodeTransfer(payload);
     if (!fields) return;
@@ -161,14 +163,65 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
 
 void MuxPane::ptyData(std::string_view bytes)
 {
-    std::lock_guard lock(m_mutex);
-    m_terminal.feed(bytes);
+    {
+        std::lock_guard lock(m_mutex);
+        m_terminal.feed(bytes);
+    }
+    // One wake for each burst: the daemon takes the flag when it sends.
+    if (!m_changed.exchange(true)) m_wake();
 }
 
-void MuxPane::ptyClosed(int)
+void MuxPane::ptyClosed(int status)
 {
+    m_exitStatus = status;
     m_exited = true;
-    m_exitedCallback();
+    m_wake();
+}
+
+MuxPane::Input MuxPane::input(std::string_view bytes)
+{
+    if (!m_pty || m_exited) return Input::Gone;
+    if (m_pty->write(bytes)) return Input::Written;
+    // A terminal that takes no more input (its child side is gone, while the
+    // child may still run) never has room again: only a full queue does.
+    return m_exited || !m_pty->accepting() ? Input::Gone : Input::Full;
+}
+
+void MuxPane::reset()
+{
+    {
+        std::lock_guard lock(m_mutex);
+        m_terminal.reset();
+    }
+    if (!m_changed.exchange(true)) m_wake();
+}
+
+void MuxPane::clear()
+{
+    bool atPrompt = false;
+    {
+        std::lock_guard lock(m_mutex);
+        m_terminal.clearScreenAndHistory();
+        atPrompt = m_terminal.atShellPrompt() && !m_terminal.modes().altScreen;
+    }
+    // At a prompt the shell redraws it on the cleared screen, as in a window.
+    if (atPrompt) writeToPty("\x0c");
+    if (!m_changed.exchange(true)) m_wake();
+}
+
+void MuxPane::resize(const PaneSize& size)
+{
+    int cols = 0;
+    int rows = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        m_terminal.resize(size.cols, size.rows, size.cellWidth, size.cellHeight);
+        cols = m_terminal.cols();
+        rows = m_terminal.rows();
+    }
+    if (m_pty) m_pty->resize(cols, rows, pixels(cols, size.cellWidth), pixels(rows, size.cellHeight));
+    // The window needs the frame of the new size.
+    if (!m_changed.exchange(true)) m_wake();
 }
 
 } // namespace AfterglowMux

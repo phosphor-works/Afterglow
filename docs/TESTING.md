@@ -92,7 +92,9 @@ Run the native window suite:
 python3 afterglow/tests/native_window_acceptance.py --binary build/afterglow/afterglow_native_tests
 ```
 
-The runner creates an isolated nested KWin desktop on a private session bus.
+The runner creates a nested KWin desktop on a private session bus.
+It keeps your `HOME` and `XDG_RUNTIME_DIR`. Thus the panes of the tests run `Terminal.shell` `/bin/sh`, which reads none of your startup files.
+The test binary runs only in a runner. Without one, it stops with exit status 2.
 See [native test dependencies](#native-test-dependencies) for the required software.
 It uses the Basic control style and generic Qt platform theme.
 
@@ -409,7 +411,7 @@ ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest
 
 | Tests | Binary | What they run |
 | --- | --- | --- |
-| `ControlSocketTest.*` | `afterglow_control_tests` | The `control` target: calls and errors, `overlay` and its `overlayInput` parts, the refusals of `screenshot`, the socket lookup, stale sockets and merged events |
+| `ControlSocketTest.*` | `afterglow_control_tests` | The `control` target: calls and errors, `overlay` and its `overlayInput` parts, and the refusals of `screenshot`. The socket lookup, stale sockets and merged events. |
 | `CtlBinaryTest.*`, `CtlOverlayTest.*` and `CtlScreenshotTest.*` | `afterglow_command_tests` | `afterglow ctl` against a socket that the test makes: usage errors, `afterglow ctl overlay` with its options and standard input, and `afterglow ctl screenshot` with a `FILE`, `-`, a pipe, a FIFO that a program reads, a socket, a terminal and a directory that takes no new file |
 | `CommandSocketTest.*` | `afterglow_command_tests` | The `commands` target of the socket: the list, runs, standard input, flow control, cancel and the limits |
 | `RunBinaryTest.*` | `afterglow_command_tests` | `aglow run` against a socket that the test makes. They check the exit status, the output, standard input, the pane, signals and the socket lookup. |
@@ -448,27 +450,74 @@ Run the test in the `debug` preset, which has the sanitizers, to see it every ti
 Run the tests of the [mux daemon](MUX.md), of `afterglow mux` and of the server side of its protocol:
 
 ```sh
-ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|MuxClientTest|StateSync)\.' -j4
+ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|MuxCommandTest|StateSync)\.' -j4
 ```
 
 | Tests | Binary | What they run |
 | --- | --- | --- |
 | `Proto.IpcServer.*` | `afterglow_proto_tests` | The server side of the phosphor-ipc wire format that `afterglow-mux` uses: requests, errors, the listener and long lines |
 | `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run`, and the sockets of the mux daemon: their order and the name of the state socket |
-| `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, session names, and the keys and fields that belong to the protocol version |
-| `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own: sessions, the environment of a pane, the answers to queries and refusals while no window shows a session, and when the daemon exits |
-| `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`): a replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are text, styles, links, wide and combined characters, the long text of a sizing block, also after a resize flattens it, scrolling in small frames, a replica that starts late, a replica that keeps less history, a view scrolled back into the history, the alternate screen, a resize, cleared and dropped history, and 60 runs of random output. A history row larger than a frame still goes, and the link definitions of history rows count in the size of a frame. The reader refuses a damaged frame and a link without a URI, and does not crash. After a refused frame, it takes the first frame of a writer that starts over. |
-| `MuxClientTest.*` | `afterglow_mux_client_tests` | `afterglow mux new`, `ls` and `kill`, with the daemon that `afterglow mux new` starts in a session of its own: usage errors, the start errors of the daemon, a socket that another daemon holds, a daemon of another protocol version, and the largest and smallest values of the settings that a session takes |
+| `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, and session names. The keys and fields that belong to the protocol version. The bytes of the attach stream, and the frames that its decoders refuse. |
+| `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own. The cases are sessions, the environment of a pane, the answers to queries, the refused control calls, and when the daemon exits. |
+| `Mux.MuxAttach.*` | `afterglow_mux_tests` | A window of a session, played without Qt. The cases are listed below the table. |
+| `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`). A replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are listed below the table. |
+| `MuxCommandTest.*` | `afterglow_mux_command_tests` | The commands of `afterglow mux`. The cases are listed below the table. |
 
-Not every test starts a daemon. A `Mux.MuxDaemon.*` or `MuxClientTest.*` test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.
+The `StateSync.*` tests cover these cases:
+
+- Text, styles, links, wide and combined characters, and the long text of a sizing block, also after a resize flattens it
+- Scrolling in small frames, a replica that starts late, a replica that keeps less history, and a view scrolled back into the history
+- The alternate screen, a resize, cleared and dropped history, and 60 runs of random output
+- A history row larger than a frame still goes, and a screen larger than a frame goes in several frames
+- Rows that a frame left out go first in the next frame
+- The link definitions of history rows count in the size of a frame
+- A damaged frame and a link without a URI, which the reader refuses without a crash
+- After a refused frame, the reader takes the first frame of a writer that starts over
+- Each synchronized update, with its own count
+
+The `Mux.MuxAttach.*` tests cover these cases:
+
+- The attach call, its keys and its socket, which only the caller may connect to, and which goes after the connect wait
+- The screen, the input, the size of the window, and the channel of a pane
+- Reset and Clear, which change the terminal of the session
+- A takeover, a detach, also one before the window connects, and a window that leaves
+- The last output of a program that exits, before its exit, and a kill
+- A window that reads slowly: fewer frames, and no lost output
+- Input that a full PTY refuses: it waits and arrives whole, and a Kill goes past it
+- The attach sockets that an earlier daemon left, and calls that the daemon refuses
+
+The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow mux new` starts in a session of its own:
+
+- `afterglow mux new`, `ls` and `kill`
+- The usage errors of every command, and `detach` without a daemon
+- The refusals of `attach` and `new` without a Wayland display, and of `new` with another `QT_QPA_PLATFORM`
+- The start errors of the daemon, a socket that another daemon holds, and a daemon of another protocol version
+- A start of the daemon while `afterglow mux` inherited `SIGCHLD` as ignored
+- The largest and smallest values of the settings that a session takes
+
+These tests in the [native window suite](#native-window-tests) show a session in a real window, with a daemon of the test:
+
+| Test | Function |
+| --- | --- |
+| `NativeWindow.AMuxSessionShowsInAWindowAndEndsWithIt` | The screen, typed input, the size of the window, and the kill of `Mux.onClose` |
+| `NativeWindow.AMuxSessionWhoseProgramExitsClosesItsPane` | The last output and the exit status of the program |
+| `NativeWindow.AWindowThatLosesItsSessionLeavesItRunning` | A detach and a takeover close the pane and kill nothing |
+| `NativeWindow.AMuxSessionCanOutliveItsWindow` | `Mux.onClose` detach |
+| `NativeWindow.MuxOnCloseAppliesToAnOpenSessionPane` | A change of `Mux.onClose` reaches an open pane |
+| `NativeWindow.ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow` | A launch of a session that a window shows brings that window to the front and shows the pane of the session. A launch of an unknown session fails with the reason. |
+| `NativeWindow.ALargePasteReachesTheProgramOfASessionWhole` | Input larger than a frame goes in parts, in order |
+
+Not every test starts a daemon. A test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.
+The `Mux.*` tests and the native tests above do this with `mux/tests/TestDaemon.h`, and the `MuxCommandTest.*` tests in their `SetUp`.
+A native test that shows a session also gives the window the sockets of its daemon. A launch with `--mux-attach` uses the sockets of the environment, so a test of it must set these directories first.
 Thus a test daemon never reaches the mux daemon of the user, and never starts in a systemd user unit.
 The tests get the name of the state socket from `AfterglowProto::muxStateSocketName`, which the daemon uses too (see [sockets](MUX.md#sockets)).
-At its end, each `MuxClientTest.*` test kills the processes that have its `XDG_RUNTIME_DIR`.
-Some `MuxClientTest.*` tests put an `afterglow` with a script as its daemon in `build/afterglow/muxclient-PID-*`.
-The test removes the directory at its end. When a timeout kills the test first, the next `MuxClientTest.*` test removes it.
+At its end, each `MuxCommandTest.*` test kills the processes that have its `XDG_RUNTIME_DIR`.
+Some `MuxCommandTest.*` tests put an `afterglow` with a script as its daemon in `build/afterglow/muxcommand-PID-*`.
+The test removes the directory at its end. When a timeout kills the test first, the next `MuxCommandTest.*` test removes it.
 Some of the tests need `python3`. Without it, they report Skipped.
 With `-j4`, the tests take about 10 seconds. `Mux.MuxDaemon.ADaemonThatNobodyReachesEnds` waits out the start wait of the daemon, which is 10 seconds.
-Without `-j`, the tests take about 15 seconds.
+Without `-j`, the tests take about 30 seconds.
 
 ## Shell completion tests
 

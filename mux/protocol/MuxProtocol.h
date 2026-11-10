@@ -22,9 +22,10 @@ namespace AfterglowMux {
 
 /// Changes when a call, its arguments or its result change. Each end checks
 /// it: the client calls Fn::Version first on each connection, and the daemon
-/// refuses a newSession of another version. MuxProtocolTest pins the keys of
+/// refuses a newSession or an attach of another version. The codecs of the
+/// attach stream (MuxStream.h) change with it. MuxProtocolTest pins the keys of
 /// the options to this number, so that a new key changes it too.
-inline constexpr int ProtocolVersion = 3;
+inline constexpr int ProtocolVersion = 4;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -34,6 +35,11 @@ inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
 inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name}
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
+/// (protocol, name, {takeover}) -> {name, socket}: the window connects to
+/// socket, where the session's stream starts (MuxStream.h).
+inline constexpr const char* Attach = "attach";
+/// (name) -> null: the window of the session closes, and the session keeps running.
+inline constexpr const char* Detach = "detach";
 } // namespace Fn
 
 /// The error codes of the daemon's calls, besides those of phosphor-ipc.
@@ -42,6 +48,10 @@ inline constexpr const char* NoSuchSession = "NO_SUCH_SESSION";
 inline constexpr const char* SessionExists = "SESSION_EXISTS";
 inline constexpr const char* VersionMismatch = "VERSION_MISMATCH";
 inline constexpr const char* SpawnFailed = "SPAWN_FAILED";
+/// Another window shows the session, and the attach asked for no takeover.
+inline constexpr const char* Attached = "ATTACHED";
+/// No window shows the session.
+inline constexpr const char* NotAttached = "NOT_ATTACHED";
 } // namespace Error
 
 /// The environment variable with the descriptor of a pipe that `afterglow
@@ -72,7 +82,7 @@ bool validSessionName(std::string_view name);
 /// The bounds that the daemon takes for the terminal values of a session.
 /// They hold every value of the settings that they come from
 /// (Terminal.scrollback, Colors.minimumContrast, Graphics.quota): the
-/// application's MuxClientTest checks that.
+/// application's MuxCommandTest checks that.
 inline constexpr std::int64_t MaxScrollback = 1000000;
 inline constexpr double MinContrast = 1;
 inline constexpr double MaxContrast = 21;

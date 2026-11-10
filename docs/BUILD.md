@@ -132,11 +132,11 @@ git clone https://github.com/phosphor-works/PlasmaZones ../PlasmaZones
 3. Select the PlasmaZones commit that this Afterglow source was tested with:
 
 ```sh
-git -C ../PlasmaZones checkout 01c112566
+git -C ../PlasmaZones checkout f8a408aae
 ```
 
 A later PlasmaZones commit can change the Phosphor API. The build then fails.
-An older PlasmaZones checkout has no `cmake/PhosphorDependencies.cmake`. The configuration then stops with an error.
+An older PlasmaZones checkout lacks `cmake/PhosphorDependencies.cmake`, or a library such as `phosphor-channel`. The configuration then stops with an error.
 
 4. Configure the build with the installation prefix:
 

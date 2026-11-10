@@ -154,9 +154,9 @@ int main(int argc, char** argv)
     // The commands that run before Qt starts take no window and no options of their own here.
     QString description = QStringLiteral(
         "A GPU accelerated terminal\n\n"
-        "Commands that open no window:\n"
+        "Commands that run before a window starts:\n"
         "  afterglow ctl ...       Control a running Afterglow.\n"
-        "  afterglow mux ...       Keep terminal sessions running without a window.\n"
+        "  afterglow mux ...       Keep terminal sessions running, and show them in windows.\n"
         "  afterglow ssh ...       Run ssh with shell integration on the remote computer.\n");
     if (Afterglow::Aglow::built()) {
         for (const Afterglow::Aglow::Command& command : Afterglow::Aglow::Commands) {
@@ -188,7 +188,16 @@ int main(int argc, char** argv)
     const QCommandLineOption classOption(QStringLiteral("class"),
                                          QStringLiteral("Wayland app id for window rules (starts a separate Afterglow)."),
                                          QStringLiteral("id"));
-    parser.addOptions({cwdOption, quickOption, execOption, titleOption, holdOption, configOption, overrideOption, classOption});
+    // afterglow mux attach runs afterglow with these: the window of a session
+    // opens in the main process of the display, as the window of any launch.
+    QCommandLineOption muxAttachOption(QStringLiteral("mux-attach"), QStringLiteral("Show the mux session <name>."),
+                                       QStringLiteral("name"));
+    muxAttachOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    QCommandLineOption muxNoTakeoverOption(QStringLiteral("mux-no-takeover"),
+                                           QStringLiteral("Refuse when another window shows the session."));
+    muxNoTakeoverOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    parser.addOptions({cwdOption, quickOption, execOption, titleOption, holdOption, configOption, overrideOption, classOption,
+                       muxAttachOption, muxNoTakeoverOption});
     // Everything after the program -e runs is its own, options included.
     parser.setOptionsAfterPositionalArgumentsMode(QCommandLineParser::ParseAsPositionalArguments);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("With -e: the program and its arguments."),
@@ -226,9 +235,22 @@ int main(int argc, char** argv)
         return fail(QStringLiteral("-e needs a program"));
     }
     if (parser.isSet(quickOption)
-        && (parser.isSet(execOption) || parser.isSet(cwdOption) || parser.isSet(titleOption) || parser.isSet(holdOption))) {
-        return fail(QStringLiteral("--quick-terminal takes no -e, -d, --title or --hold"));
+        && (parser.isSet(execOption) || parser.isSet(cwdOption) || parser.isSet(titleOption) || parser.isSet(holdOption)
+            || parser.isSet(muxAttachOption))) {
+        return fail(QStringLiteral("--quick-terminal takes no -e, -d, --title, --hold or --mux-attach"));
     }
+    // The program and its directory are the session's.
+    if (parser.isSet(muxAttachOption) && (parser.isSet(execOption) || parser.isSet(cwdOption) || parser.isSet(holdOption))) {
+        return fail(QStringLiteral("--mux-attach takes no -e, -d or --hold"));
+    }
+    if (parser.isSet(muxNoTakeoverOption) && !parser.isSet(muxAttachOption)) {
+        return fail(QStringLiteral("--mux-no-takeover needs --mux-attach"));
+    }
+    if (parser.isSet(muxAttachOption) && parser.value(muxAttachOption).isEmpty()) {
+        return fail(QStringLiteral("--mux-attach needs the name of a session"));
+    }
+    if (parser.isSet(configOption) && parser.value(configOption).isEmpty()) return fail(QStringLiteral("--config needs a file"));
+    if (parser.isSet(classOption) && parser.value(classOption).isEmpty()) return fail(QStringLiteral("--class needs an app id"));
     // Any QtWayland platform (wayland, wayland-egl) has the Wayland interface.
     if (!app->nativeInterface<QNativeInterface::QWaylandApplication>()) {
         return fail(QStringLiteral("Afterglow runs on Wayland only (platform is %1)").arg(QGuiApplication::platformName()));
@@ -243,7 +265,9 @@ int main(int argc, char** argv)
     const QVariantMap windowOptions{{QStringLiteral("directoryGiven"), cwdGiven},
                                     {QStringLiteral("title"), parser.value(titleOption)},
                                     {QStringLiteral("hold"), parser.isSet(holdOption)},
-                                    {QStringLiteral("activationToken"), qEnvironmentVariable("XDG_ACTIVATION_TOKEN")}};
+                                    {QStringLiteral("activationToken"), qEnvironmentVariable("XDG_ACTIVATION_TOKEN")},
+                                    {QStringLiteral("session"), parser.value(muxAttachOption)},
+                                    {QStringLiteral("takeover"), !parser.isSet(muxNoTakeoverOption)}};
     qunsetenv("XDG_ACTIVATION_TOKEN");
     // An Afterglow started from a pane of another one, or of a mux session,
     // must not hand that pane's identity to its scripts' programs. Its own
@@ -336,8 +360,9 @@ int main(int argc, char** argv)
             // The quick terminal is a layer surface, which takes no activation token.
             const QString error = quick ? application.toggleQuickTerminal() : application.openLaunch(cwd, command, windowOptions);
             if (!error.isEmpty()) return fail(error);
-            // A signal during the start quits before the loop runs.
-            code = quitSignals.signal() != 0 ? 0 : app->exec();
+            // A signal during the start ends the loop at its first pass:
+            // QuitSignals hears it there.
+            code = app->exec();
             quitSignal = quitSignals.signal();
         } catch (const std::exception& e) {
             return fail(QString::fromLocal8Bit(e.what()));

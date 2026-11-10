@@ -98,6 +98,11 @@ public:
     /// the waitpid() status, or -1 when it is unknown: the child was reaped
     /// elsewhere, or still ran when the terminal failed.
     virtual void ptyClosed(int status) = 0;
+    /// Pty::write() refused bytes because its queue was full, and the queue
+    /// has room again (at most half of Pty::MaxPendingInput waits), or
+    /// write() refuses for good now (Pty::accepting()). On the I/O thread,
+    /// without a lock of the Pty.
+    virtual void ptyWritable() {}
 };
 
 /// A child process on a pseudo-terminal, with a dedicated I/O thread that
@@ -123,8 +128,13 @@ public:
     Pty(const Pty&) = delete;
     Pty& operator=(const Pty&) = delete;
 
+    /// The most input that waits for the child, in bytes.
+    static constexpr std::size_t MaxPendingInput = std::size_t(32) << 20;
+
     /// Queues bytes for the child. Thread-safe; never blocks on the child.
-    /// Entire writes are accepted atomically, up to 32 MiB pending.
+    /// Entire writes are accepted atomically, up to MaxPendingInput pending.
+    /// After a refusal for a full queue, the listener's ptyWritable() says
+    /// when there is room again.
     [[nodiscard]] bool write(std::string_view bytes);
     /// Lifecycle operations belong to the owner thread. Cannot restart after stop.
     [[nodiscard]] bool start(std::string* error = nullptr);
@@ -134,6 +144,9 @@ public:
     pid_t pid() const noexcept { return m_pid.load(); }
     /// Bytes queued for the child and not yet written. Thread-safe.
     std::size_t pendingInput() const;
+    /// write() can still take bytes: false once the terminal's child side is
+    /// gone or the Pty stopped, although the child may still run. Thread-safe.
+    bool accepting() const noexcept { return m_accepting.load(); }
     /// The foreground job's working directory, else the child's, read from
     /// /proc. Empty when neither is a directory that exists.
     std::string currentWorkingDirectory() const;
@@ -170,6 +183,7 @@ private:
     std::deque<std::string> m_pending;
     std::size_t m_pendingOffset = 0;
     std::size_t m_pendingBytes = 0;
+    bool m_refused = false; ///< write() refused bytes since the queue last had room
     std::atomic<bool> m_accepting{true};
 
     std::atomic<bool> m_stop{false};

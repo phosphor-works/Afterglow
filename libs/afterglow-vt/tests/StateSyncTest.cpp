@@ -196,6 +196,68 @@ TEST(StateSync, ALateReplicaGetsTheScreenFirstThenTheHistory)
     EXPECT_EQ(differs(p.source, p.replica), "");
 }
 
+TEST(StateSync, AScreenLargerThanTheBudgetGoesInSeveralFrames)
+{
+    // Each cell carries combining marks, so the visible rows alone are far
+    // past the budget: no frame may be much larger than it.
+    Pair p(60, 20, 0, 4096);
+    std::string row;
+    for (int x = 0; x < 59; ++x) row += "a\xcc\x81\xcc\x82\xcc\x83";
+    for (int y = 0; y < 20; ++y) p.source.feed(row + (y < 19 ? "\r\n" : ""));
+    std::size_t largest = 0;
+    int frames = 0;
+    for (int guard = 0; guard < 1000; ++guard) {
+        const std::string frame = p.writer.update(p.source, p.budget);
+        if (frame.empty() && !p.writer.pending()) break;
+        ++frames;
+        largest = std::max(largest, frame.size());
+        std::string error;
+        ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
+    }
+    EXPECT_GT(frames, 1);
+    // The budget and one row, which always goes.
+    EXPECT_LT(largest, p.budget + row.size() + 512);
+    EXPECT_EQ(differs(p.source, p.replica), "");
+}
+
+TEST(StateSync, RowsThatAFrameLeftOutGoFirstInTheNext)
+{
+    // The top rows change before every frame and fill its budget: a row
+    // further down that changed once still goes in the next frame or so,
+    // not only once the top rows rest.
+    Pair p(30, 20, 0, 1500);
+    std::string marks;
+    for (int x = 0; x < 25; ++x) marks += "a\xcc\x81\xcc\x82\xcc\x83";
+    ASSERT_TRUE(p.sync());
+    p.source.feed("\x1b[20;1Hbottom");
+    bool reached = false;
+    for (int frame = 0; frame < 6 && !reached; ++frame) {
+        for (int y = 1; y <= 10; ++y) p.source.feed("\x1b[" + std::to_string(y) + ";1H" + std::to_string(frame) + marks);
+        const std::string update = p.writer.update(p.source, p.budget);
+        std::string error;
+        ASSERT_TRUE(p.reader.apply(p.replica, update, &error)) << error;
+        reached = rowText(p.replica, 19).starts_with("bottom");
+    }
+    EXPECT_TRUE(reached);
+}
+
+TEST(StateSync, EachSynchronizedUpdateReachesTheReplica)
+{
+    // An update that ends and the next that begins between two frames: the
+    // replica sees the mode on in both, and still learns that a new update
+    // began, so that its renderer gives it a timeout of its own.
+    Pair p(20, 4, 0);
+    p.source.feed("\x1b[?2026h");
+    ASSERT_TRUE(p.sync());
+    const std::uint64_t first = p.replica.synchronizedOutputSerial();
+    EXPECT_TRUE(p.replica.modes().synchronizedOutput);
+    p.source.feed("x\x1b[?2026l\x1b[?2026h");
+    ASSERT_TRUE(p.sync());
+    EXPECT_TRUE(p.replica.modes().synchronizedOutput);
+    EXPECT_EQ(p.replica.synchronizedOutputSerial(), p.source.synchronizedOutputSerial());
+    EXPECT_NE(p.replica.synchronizedOutputSerial(), first);
+}
+
 TEST(StateSync, AlternateScreenAndBack)
 {
     Pair p(30, 6, 50);

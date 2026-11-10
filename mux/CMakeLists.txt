@@ -3,14 +3,17 @@
 
 # The calls of the mux daemon and the values that they carry. The client in
 # afterglow and the daemon link the same code.
-add_library(afterglow_mux_protocol STATIC protocol/MuxProtocol.cpp)
+add_library(afterglow_mux_protocol STATIC protocol/MuxConnect.cpp protocol/MuxProtocol.cpp protocol/MuxStream.cpp)
 target_include_directories(afterglow_mux_protocol PUBLIC protocol)
-target_link_libraries(afterglow_mux_protocol PUBLIC Afterglow::Vt Afterglow::Proto)
+# phosphor-channel carries the frames of an attached session: no Qt, so the
+# daemon links it too.
+target_link_libraries(afterglow_mux_protocol PUBLIC Afterglow::Vt Afterglow::Proto PhosphorChannel::PhosphorChannel)
 set_target_properties(afterglow_mux_protocol PROPERTIES POSITION_INDEPENDENT_CODE ON AUTOMOC OFF AUTOUIC OFF)
 
 # afterglow-mux: the daemon that keeps sessions running while no window shows
 # them. No Qt: only the terminal core, the PTY and the protocol library.
 add_executable(afterglow-mux
+    src/Attach.cpp
     src/Daemon.cpp
     src/MuxPane.cpp
     src/Session.cpp

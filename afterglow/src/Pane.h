@@ -10,6 +10,7 @@
 #include <AfterglowRender/Snapshot.h>
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
+#include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
 
 #include <QDeadlineTimer>
@@ -21,9 +22,11 @@
 #include <QTimer>
 #include <QString>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <limits>
@@ -37,6 +40,10 @@ class QDialog;
 class QWindow;
 
 namespace Afterglow {
+
+class MuxClient;
+/// Why a window no longer shows a mux session (MuxClient.h).
+enum class MuxLoss : std::uint8_t;
 
 /// A program status record (OSC 7501) as the GUI uses it.
 struct PaneStatusRecord
@@ -55,8 +62,10 @@ class FileTransfer;
 class DockArea;
 class PaneOverlay;
 
-/// One terminal: the emulator state, the child process on its pty, and the
-/// snapshot the window renders from. The pty thread feeds the terminal under
+/// One terminal: the emulator state, the child process on its pty (or, for a
+/// pane of a mux session, a replica of the session's terminal and the daemon
+/// in place of the pty: showSession), and the snapshot the window renders
+/// from. The pty thread feeds the terminal under
 /// m_mutex, and a captured standard output (an overlay's) under
 /// m_outputMutex; everything else runs on the GUI thread.
 class Pane : public QObject, private AfterglowVt::ITerminalHost, private AfterglowPty::IPtyListener
@@ -76,6 +85,32 @@ public:
     void setOptions(const AfterglowVt::TerminalOptions& options);
 
     void resize(int cols, int rows, int cellWidth, int cellHeight);
+
+    /// Shows pane @p id of a mux session in place of a program of its own:
+    /// the terminal becomes a replica of the session's, and input goes to the
+    /// daemon. With @p killOnClose, closing the pane ends the session.
+    void showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, bool killOnClose);
+    bool isSessionPane() const { return m_session != nullptr; }
+    /// The pane shows mux session @p name, and has not lost it.
+    bool showsSession(const QString& name) const;
+    void setKillSessionOnClose(bool kill) { m_killSessionOnClose = kill; }
+    /// Closing the pane ends its program: always for a program of its own,
+    /// and for a session pane with Mux.onClose kill.
+    bool closeEndsProgram() const { return !m_session || m_killSessionOnClose; }
+    /// Clears the screen and the history: the action of Action::ClearScreen.
+    /// At a shell prompt the shell redraws its prompt. A session pane's
+    /// daemon does it, and the next frame shows it.
+    void clearScreen();
+    /// Resets the terminal: the action of Action::ResetTerminal.
+    void resetTerminal();
+    /// A state frame of the session (MuxClient, GUI thread). False when it
+    /// does not apply: the replica no longer matches the daemon's terminal.
+    bool applySessionFrame(std::string_view frame);
+    /// The program of the session pane exited, with @p status as waitpid gives it.
+    void sessionPaneExited(int status);
+    /// The window no longer shows the session (@p loss says why): the pane
+    /// closes. Once.
+    void sessionLost(MuxLoss loss);
     int cols() const;
     int rows() const;
 
@@ -157,6 +192,8 @@ public:
     QString userTitle() const;
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
     /// is local and exists, else the foreground job's directory from /proc.
+    /// A session pane has only what its shell reported: its program runs
+    /// under the daemon.
     QString workingDirectory() const;
     QString text(AfterglowVt::Terminal::TextScope scope);
     /// At most `limit` bytes of text. The caller bounds the limit: scripts
@@ -166,6 +203,9 @@ public:
     QString runningCommand() const;
     /// The program closing the pane would end: the shell's foreground job, or
     /// the program the pane was opened for. Empty while a shell sits idle.
+    /// For a session pane that closing ends (closeEndsProgram), the first job
+    /// of the session, which the daemon names: the GUI thread waits for its
+    /// answer. Empty for one that closing leaves running.
     QString foregroundJob() const;
     /// The command that a project saves for the pane and runs again when it
     /// opens: the program the pane was opened for (afterglow -e, a script,
@@ -552,8 +592,20 @@ private:
 
     std::atomic<bool> m_notifyPending{false};
     QTimer m_animationTimer;
+    // A session pane (showSession): no PTY of its own.
+    std::shared_ptr<MuxClient> m_session;
+    std::uint32_t m_sessionPane = 0;
+    bool m_killSessionOnClose = false;
+    std::atomic<bool> m_sessionGone{false};
+    /// The size last sent to the daemon: cols, rows, cell width and height.
+    std::array<int, 4> m_sentSize{0, 0, 0, 0};
+    AfterglowVt::StateReader m_stateReader;
     // Declared last so it is destroyed first: its thread calls into the terminal.
     std::unique_ptr<AfterglowPty::Pty> m_pty;
+
+    bool hasProgram() const;
+    /// The program's input: its PTY, or the daemon of a session pane.
+    bool writeProgram(std::string_view bytes);
 };
 
 } // namespace Afterglow

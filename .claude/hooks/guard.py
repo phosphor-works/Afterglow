@@ -201,10 +201,11 @@ MSG_CTL = (
     'instance.'
 )
 MSG_MUX = (
-    "`afterglow mux` and `afterglow-mux` reach the user's mux daemon, which holds the user's terminal sessions. The "
-    'daemon listens in $XDG_RUNTIME_DIR/afterglow-mux and in $XDG_STATE_HOME/afterglow-mux (else '
-    '~/.local/state/afterglow-mux), and with the runtime directory /run/user/UID it starts in the systemd user unit '
-    'afterglow-mux.service. None of these depends on the display, so WAYLAND_DISPLAY does not isolate them. Name a '
+    "`afterglow mux`, `afterglow-mux` and `afterglow --mux-attach` reach the user's mux daemon, which holds the user's "
+    'terminal sessions. The daemon listens in $XDG_RUNTIME_DIR/afterglow-mux and in $XDG_STATE_HOME/afterglow-mux '
+    '(else ~/.local/state/afterglow-mux), and with the runtime directory /run/user/UID it starts in the systemd user '
+    'unit afterglow-mux.service. These sockets do not depend on the display, so WAYLAND_DISPLAY does not isolate them. '
+    'A window of a session ends the session when it closes. Name a '
     'private runtime directory and a private state directory under /tmp on the command '
     '(XDG_RUNTIME_DIR=/tmp/... XDG_STATE_HOME=/tmp/...), and kill the sessions that you made with the same '
     'variables. Do not run systemctl stop, kill, restart, try-restart, reload-or-restart, try-reload-or-restart, '
@@ -967,8 +968,13 @@ MUX_DAEMON_PRINTS = {'--version', '--help', '-h'}
 def reaches_mux(wrappers, word, args):
     """Whether WORD ARGS runs afterglow mux or afterglow-mux against the user's mux daemon. afterglow mux alone
     prints the usage, and so do afterglow mux server --help and afterglow-mux with one of MUX_DAEMON_PRINTS, unless
-    xargs or parallel adds the words of its input. Any other afterglow-mux counts."""
+    xargs or parallel adds the words of its input. Any other afterglow-mux counts, and so does afterglow
+    --mux-attach, the hidden option of afterglow mux new and attach: its window attaches to the user's daemon
+    whatever display it opens on."""
     appended = appends(wrappers)
+    if (word == 'afterglow' or '$' in word or '`' in word) and any(
+            a == '--mux-attach' or a.startswith('--mux-attach=') for a in args):
+        return not isolated_mux(wrappers)
     if word == 'afterglow' or '$' in word or '`' in word:
         if args[:1] != ['mux'] or args[1:2] and args[1] in MUX_HELP:
             return False
@@ -1214,7 +1220,7 @@ def drives_instance(args, program='afterglow', appended=False):
 
 # afterglow's options (main.cpp): the ones that take a value, and the ones that end the process before a window,
 # with the help and the version of QCommandLineParser
-LAUNCH_VALUES = {'-d', '--working-directory', '--title', '--config', '-o', '--override', '--class'}
+LAUNCH_VALUES = {'-d', '--working-directory', '--title', '--config', '-o', '--override', '--class', '--mux-attach'}
 NO_WINDOW = {'-h', '--help', '-?', '--help-all', '-v', '--version', '--config-reference'}
 # The words after afterglow that run something else than the terminal: ctl, ssh, mux and the aglow commands
 # (Aglow::Commands in afterglow/src/shell/Aglow.h)

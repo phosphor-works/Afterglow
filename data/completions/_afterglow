@@ -239,6 +239,8 @@ _afterglow_mux() {
         commands=(
             'server:run afterglow-mux in the foreground'
             'new:create a session'
+            'attach:show a session in a window'
+            'detach:close the pane of a session in its window, and keep the session'
             'ls:list the sessions'
             'kill:end a session and its programs'
         )
@@ -264,6 +266,14 @@ _afterglow_mux() {
         shift words; (( CURRENT-- ))
         _arguments '--force[end it without a question]' ':session:'
         ;;
+    attach)
+        shift words; (( CURRENT-- ))
+        _arguments '--no-takeover[refuse when another window shows the session]' ':session:'
+        ;;
+    detach)
+        shift words; (( CURRENT-- ))
+        _arguments ':session:'
+        ;;
     esac
 }
 
@@ -277,7 +287,7 @@ _afterglow() {
     local -a subcommands
     subcommands=(
         'ctl:drive a running Afterglow'
-        'mux:keep terminal sessions running without a window'
+        'mux:keep terminal sessions running, and show them in windows'
         'run:run a command of a script'
         'ssh:ssh with the remote side prepared'
         'transfer:copy files to and from the computer of the terminal'

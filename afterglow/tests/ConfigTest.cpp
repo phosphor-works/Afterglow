@@ -325,13 +325,23 @@ TEST(Themes, BundledThemesLoad)
     for (const QString& file : names) {
         const QString name = QFileInfo(file).completeBaseName();
         const QString path = Themes::locate(name, {QStringLiteral(AFTERGLOW_THEME_DIR)});
-        ASSERT_FALSE(path.isEmpty()) << name.toStdString();
+        // A broken theme fails its own row: the others are still checked.
+        if (path.isEmpty()) {
+            ADD_FAILURE() << name.toStdString() << ": not found";
+            continue;
+        }
         QFile f(path);
-        ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+        if (!f.open(QIODevice::ReadOnly)) {
+            ADD_FAILURE() << name.toStdString() << ": cannot open";
+            continue;
+        }
         QStringList ignored;
         QStringList invalid;
         const auto theme = Themes::parse(f.readAll(), nullptr, &ignored, &invalid);
-        ASSERT_TRUE(theme) << name.toStdString();
+        if (!theme) {
+            ADD_FAILURE() << name.toStdString() << ": does not parse";
+            continue;
+        }
         // A misspelt key would be dropped without a word.
         EXPECT_TRUE(ignored.isEmpty()) << name.toStdString() << ": " << ignored.join(QLatin1Char(' ')).toStdString();
         EXPECT_TRUE(invalid.isEmpty()) << name.toStdString() << ": " << invalid.join(QLatin1Char(' ')).toStdString();
@@ -536,6 +546,36 @@ TEST_F(ConfigTest, PlasmaColorsReadHexValuesTheViewSectionAndTheSystemFile)
     EXPECT_TRUE(theme.selectionForeground == Rgb(252, 252, 252));
 }
 
+// The tests run without a QGuiApplication, as afterglow mux new does: a
+// colour that the scheme leaves out stays the theme's, not a fixed one.
+TEST_F(ConfigTest, WithoutTheDesktopPlasmaKeepsTheColorsThatTheSchemeLeavesOut)
+{
+    ASSERT_EQ(qobject_cast<QGuiApplication*>(QCoreApplication::instance()), nullptr);
+    write(QStringLiteral("kdeglobals"), "[Colors:View]\nBackgroundNormal=10,20,30\nForegroundNormal=200,210,220\n");
+    const auto light = bundled("afterglow-light");
+    ASSERT_TRUE(light);
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-light"}})"));
+    const auto& t = store.settings().terminal;
+    EXPECT_TRUE(t.defaultBackground == Rgb(10, 20, 30));
+    EXPECT_TRUE(t.defaultForeground == Rgb(200, 210, 220));
+    EXPECT_TRUE(t.selectionBackground == light->selectionBackground);
+    EXPECT_TRUE(t.cursorColor == light->cursor);
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// plasma alone with a scheme that gives no background: dark, as a session
+// without the desktop takes the dark side.
+TEST_F(ConfigTest, PlasmaWithoutABackgroundTakesTheDarkTheme)
+{
+    ASSERT_EQ(qobject_cast<QGuiApplication*>(QCoreApplication::instance()), nullptr);
+    const auto dark = bundled("afterglow-dark");
+    ASSERT_TRUE(dark && dark->palette[4]);
+    write(QStringLiteral("kdeglobals"), "[Colors:View]\nForegroundNormal=200,210,220\n");
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma"}})"));
+    EXPECT_TRUE(same(store.settings().terminal.basePalette[4], *dark->palette[4]));
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
 TEST_F(ConfigTest, PlasmaThemeAloneTakesTheColorsOfTheSchemesBrightness)
 {
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma"}})");
@@ -706,6 +746,66 @@ TEST(Keybinds, TextBindingsSendTheirBytes)
     const QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::ShiftModifier);
     EXPECT_EQ(kb.matchText(&press), QByteArray("\x1b\r"));
     EXPECT_EQ(kb.match(&press), Action::None);
+}
+
+TEST_F(ConfigTest, ReadsWhatClosingTheWindowOfASessionDoes)
+{
+    EXPECT_EQ(MuxSettings{}.onClose, MuxSettings::Close::Kill);
+    {
+        SettingsStore store(write(QStringLiteral("detach.json"), R"({"Mux": {"onClose": "detach"}})"));
+        EXPECT_EQ(store.settings().mux.onClose, MuxSettings::Close::Detach);
+        EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    // Not a choice: the default, and the problem says so.
+    SettingsStore store(write(QStringLiteral("other.json"), R"({"Mux": {"onClose": "keep"}})"));
+    EXPECT_EQ(store.settings().mux.onClose, MuxSettings::Close::Kill);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Mux.onClose must be one of"))) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// A file that means to turn scripts or the control socket off, and says it
+// wrongly, turns them off: they fail closed.
+TEST_F(ConfigTest, ScriptsAndControlStayOffForAValueThatIsNotABoolean)
+{
+    for (const char* json : {R"({"Scripts": {"enabled": "disabled"}, "Control": {"enabled": "False "}})",
+                             R"({"Scripts": false, "Control": 0})"}) {
+        SCOPED_TRACE(json);
+        SettingsStore store(write(QStringLiteral("off.json"), json));
+        EXPECT_FALSE(store.settings().scripts);
+        EXPECT_FALSE(store.settings().control.enabled);
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Scripts"))) << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    {
+        SettingsStore store(write(QStringLiteral("off.json"), R"({"Scripts": {"enabled": "no way"}, "Control": {"enabled": 7}})"));
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Scripts.enabled must be true or false. It stays off")));
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Control.enabled must be true or false. It stays off")));
+    }
+    {
+        SettingsStore store(write(QStringLiteral("off.json"), R"({"Scripts": false})"));
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Using the defaults, with Scripts.enabled off")))
+            << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    // A command-line override still wins, over a bad value and over a group
+    // that is no object.
+    for (const char* json : {R"({"Scripts": {"enabled": "no way"}})", R"({"Scripts": false})"}) {
+        SettingsStore store(write(QStringLiteral("off.json"), json),
+                            QJsonObject{{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}}});
+        EXPECT_TRUE(store.settings().scripts) << json;
+    }
+    // A valid false stays false, with no problem.
+    SettingsStore store(write(QStringLiteral("off.json"), R"({"Scripts": {"enabled": false}})"));
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, LinkSchemesThatAreNoSchemeAreReported)
+{
+    SettingsStore store(write(QStringLiteral("schemes.json"), R"({"Links": {"schemes": ["HTTPS:", "https://", "mailto:x", "git+ssh"]}})"));
+    const QStringList& schemes = store.settings().links.schemes;
+    EXPECT_TRUE(schemes.contains(QStringLiteral("https")));
+    EXPECT_TRUE(schemes.contains(QStringLiteral("git+ssh")));
+    for (const QString& scheme : schemes) EXPECT_FALSE(scheme.contains(QLatin1Char('/')) || scheme.contains(QLatin1Char(':'))) << scheme.toStdString();
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("https://"))) << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("mailto:x")));
 }
 
 TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
@@ -1569,6 +1669,7 @@ TEST_F(ConfigTest, StructDefaultsAgreeWithTheSchema)
     EXPECT_TRUE(read.audio == expected.audio);
     EXPECT_TRUE(read.quickTerminal == expected.quickTerminal);
     EXPECT_TRUE(read.control == expected.control);
+    EXPECT_TRUE(read.mux == expected.mux);
     EXPECT_TRUE(read.mouse == expected.mouse);
     EXPECT_TRUE(read.links == expected.links);
     EXPECT_TRUE(read.colors == expected.colors);
@@ -2515,7 +2616,10 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
             } else {
                 value = QStringLiteral("afterglow-test");
             }
-            ASSERT_FALSE(value.isUndefined()) << name.toStdString();
+            if (value.isUndefined()) {
+                ADD_FAILURE() << name.toStdString() << " has no test value";
+                continue;
+            }
             SettingsStore store(path, QJsonObject{{group.key(), QJsonObject{{def.key, value}}}});
             EXPECT_FALSE(store.settings() == defaults) << name.toStdString();
             // A value that a check refused would reach the settings as the
@@ -2798,7 +2902,7 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     EXPECT_FALSE(unclearStore.settings().control.enabled);
     // It stays off, so the text must not say that it uses the default.
     EXPECT_TRUE(mentions(unclearStore.problems(),
-                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file holds a JSON object or is deleted")))
+                         QStringLiteral("Scripts.enabled must be true or false. It stays off")))
         << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
     EXPECT_FALSE(mentions(unclearStore.problems(), QStringLiteral("Scripts.enabled must be true or false. Using the default")));
     // An editor that saves in place empties the file first: its text may
@@ -2817,7 +2921,7 @@ TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
     unclearStore.reload();
     EXPECT_FALSE(unclearStore.settings().scripts);
     EXPECT_TRUE(mentions(unclearStore.problems(),
-                         QStringLiteral("Scripts.enabled must be true or false. It stays off until the file holds a JSON object or is deleted")))
+                         QStringLiteral("Scripts.enabled must be true or false. It stays off")))
         << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
     // Text that parses but holds no object keeps them off.
     write(QStringLiteral("config.json"), "[]");
@@ -2999,9 +3103,10 @@ TEST_F(ConfigTest, AConfigLinkOrALinkedDirectoryThatIsRetargetedReloads)
         ASSERT_TRUE(QFile::link(target, next));
         ASSERT_EQ(::rename(QFile::encodeName(next).constData(), QFile::encodeName(path).constData()), 0);
     };
-    retarget(linked, m_home.filePath(QStringLiteral("two")));
+    // A failed ASSERT in the lambda returns from the lambda only.
+    ASSERT_NO_FATAL_FAILURE(retarget(linked, m_home.filePath(QStringLiteral("two"))));
     EXPECT_TRUE(waitUntil([&] { return store.settings().window.padding == 12; }));
-    retarget(link, m_home.filePath(QStringLiteral("three/config.json")));
+    ASSERT_NO_FATAL_FAILURE(retarget(link, m_home.filePath(QStringLiteral("three/config.json"))));
     EXPECT_TRUE(waitUntil([&] { return store.settings().window.padding == 15; }));
     // The new target is watched: an edit of it reloads.
     write(QStringLiteral("three/config.json"), R"({"Window": {"padding": 18}})");
@@ -3029,7 +3134,7 @@ TEST_F(ConfigTest, ARelativeWorkingDirectoryIsReported)
 {
     SettingsStore relative(write(QStringLiteral("relative.json"), R"({"Window": {"workingDirectory": "projects"}})"));
     EXPECT_EQ(relative.settings().window.workingDirectory, QStringLiteral("inherit"));
-    EXPECT_TRUE(mentions(relative.problems(), QStringLiteral("must be an absolute path or start with ~/")));
+    EXPECT_TRUE(mentions(relative.problems(), QStringLiteral("must be an absolute path, ~, or start with ~/")));
     for (const char* value : {"~/projects", "/srv/projects", "home", "~"}) {
         SettingsStore store(write(QStringLiteral("dir.json"),
                                   QByteArray(R"({"Window": {"workingDirectory": ")") + value + "\"}}"));
