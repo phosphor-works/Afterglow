@@ -1893,6 +1893,22 @@ void GraphicsStore::clearPlacements(const Screen& screen, int cellWidth, int cel
     settle();
 }
 
+void GraphicsStore::eraseRows(int firstRow, int lastRow, const Screen& screen, int cellWidth, int cellHeight)
+{
+    // The erased screen rows, as buffer rows: the top of the screen is the
+    // first row after the history.
+    const long long history = static_cast<long long>(screen.historySize());
+    const long long eraseTop = history + firstRow;
+    const long long eraseBottom = history + lastRow;
+    std::erase_if(m_placements, [&](const Placement& p) {
+        if (p.parentImage || p.isVirtual) return false;
+        const long long top = anchorIndex(p, screen);
+        const long long bottom = top + rowsCovered(p, cellWidth, cellHeight);
+        return top <= eraseBottom && bottom > eraseTop;
+    });
+    settle();
+}
+
 std::vector<std::size_t> GraphicsStore::anchorRows(const Screen& screen) const
 {
     std::vector<std::size_t> out;

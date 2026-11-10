@@ -237,6 +237,13 @@ public:
     /// (1049, 1047) uses clear(), which drops the images too.
     void clearPlacements(const Screen& screen, int cellWidth = 0, int cellHeight = 0);
 
+    /// An erase of part of the screen (EL, ED 0 and ED 1): drops the
+    /// placements whose rows overlap the erased rows, inclusive of both ends,
+    /// in visible screen rows (0 is the top). Virtual placements and relative
+    /// children stay; a child goes with its parent. The cell size measures how
+    /// many rows an image covers; 0 counts only its top row.
+    void eraseRows(int firstRow, int lastRow, const Screen& screen, int cellWidth = 0, int cellHeight = 0);
+
     /// Reflow renumbers rows. anchorRows() and anchorColumns() give each
     /// placement's absolute row and column for Screen::resize() to track;
     /// retarget() applies the result. Both vectors hold one entry per
