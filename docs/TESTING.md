@@ -51,7 +51,7 @@ When the tools are there and its own sshd cannot start, the test fails.
 | `BUILD_TESTING` | `ON` | Builds the unit and renderer tests. Requires GTest. |
 | `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng`, the headless conformance host and the [TUI fuzzer](#tui-fuzzing). Adds the regression tests of the host and the fuzzer, [`afterglow_kitten_icat`](#kitten-icat) and `aglow_icat_render` to CTest. |
 | `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`, and with `AFTERGLOW_BUILD_AGLOW` also `afterglow_transfer_kitty`. Requires Python 3 and the native test dependencies. |
-| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the image decoders of `aglow` and the attach stream of `afterglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
+| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the stb_image and GIF reader that `aglow` and `afterglow-mux` share, and the attach stream of `afterglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
 | `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries. Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests, the `RunBinaryTest.*` tests and the `sshd` test of `RemoteCommandsTest.*` report Skipped. |
 | `AFTERGLOW_BUILD_VTDIFF` | `OFF` | Builds `afterglow_vtdiff`, which compares the terminal core with libghostty-vt. Requires libghostty-vt 1.0 in `CMAKE_PREFIX_PATH`. See [Differences with libghostty-vt](#differences-with-libghostty-vt). |
 
@@ -274,16 +274,16 @@ A difference that comes from this rule goes into the file with its reason.
 ### Fuzzing
 
 The fuzz targets need clang for C and C++, and a separate build directory.
-The targets compile the terminal core, the protocol library, zlib-ng, xxHash, the image decoders of `aglow` and the codecs of the attach stream with the sanitizers.
+The targets compile the terminal core, the protocol library, zlib-ng, xxHash, the stb_image and GIF reader that `aglow` and `afterglow-mux` share, and the codecs of the attach stream with the sanitizers.
 Build only the fuzz targets in a fuzz build directory.
 The commands below turn off the tests and build the four targets by name.
 A fuzz build does not build `aglow`, because a static program cannot use the sanitizer runtimes.
 
 | Target | Input |
 | --- | --- |
-| `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. One control record sends the rest of the input as a state frame to the reader of a replica terminal. |
+| `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. One control record sends the rest of the input as a state frame to the reader of a replica terminal. A second replica (the mirror) gets a frame of a writer after each control record. At the end, at the 1 MiB budget, the writer must catch up within 4,096 frames. The mirror must then show the text of the terminal, and the same images with the same frame counts. |
 | `afterglow_protofuzz` | The protocol readers for remote input. The first byte selects the reader. |
-| `afterglow_imagefuzz` | An image file to the image decoders of `aglow`: the patched stb_image and the GIF reader of `aglow`. |
+| `afterglow_imagefuzz` | An image file to the patched stb_image and the GIF reader of `aglow`, which `aglow` and `afterglow-mux` share. |
 | `afterglow_muxfuzz` | The host calls, the events and the input of the attach stream of `afterglow-mux`. The first byte selects the reader. The state frames of panes are in `afterglow_vtfuzz`. |
 
 Build the targets:
@@ -736,6 +736,8 @@ ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|M
 | `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, and session names. The keys and fields that belong to the protocol version. The bytes of the attach stream and of each host call, and the frames and calls that its decoders refuse. |
 | `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own. The cases are sessions, the environment of a pane, the answers to queries, the refused control calls, and when the daemon exits. |
 | `Mux.MuxAttach.*` | `afterglow_mux_tests` | A window of a session, played without Qt. The cases are listed below the table. |
+| `Mux.MuxImageDecoder.*` | `afterglow_mux_tests` | The image decoder of `afterglow-mux`: the pixels of a PNG with alpha, a JPEG, the first frame of a GIF and a BMP. The formats and the files that it refuses (WebP, PNM and TGA, a cut PNG, a side of 10,001 pixels, Apple's CgBI PNG), and a side of 10,000 pixels, which it decodes. A decoder that is missing, ends, or does not answer by its deadline. A decode that passes its deadline or that the pane cancels. A pane that closes while its request waits leaves the same server to the other panes. This is also true while the request waits for the answer to an earlier one. |
+| `Mux.MuxPane.*` | `afterglow_mux_tests` | A pane of `afterglow-mux` while its program's image decodes. The daemon's calls return at once, and a resize that waited reaches the next frame. Input waits in the pane behind a resize and a clear, up to half of the PTY's queue, and reaches the program after them. A pane that closes ends its decode at once. |
 | `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`). A replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are listed below the table. |
 | `MuxCommandTest.*` | `afterglow_mux_command_tests` | The commands of `afterglow mux`. The cases are listed below the table. |
 
@@ -763,6 +765,21 @@ The `StateSync.*` tests cover these cases:
 - A new layout of the writer, also at the same size, numbers the replica's rows anew. A change of height keeps them.
 - Rows of many links: no frame passes its budget by more than the bytes of one row
 - A writer for a replica with less history sends no older rows
+- Images of both screens with their placements: a relative placement, a virtual placement, a sixel, and a deleted image with its placements
+- An image larger than a frame comes in parts and shows only once all of it came. An image of a lower id waits for it. An image deleted before all of it came lets the next one come.
+- An animation runs on the replica's clock: output and a new frame keep its step. A command that stops it, jumps to a frame or plays it again reaches the replica, also when it changes no value of the writer's store.
+- A deleted frame keeps the frame that shows, and a new image under an id starts its animation over
+- An image that a program sends again faster than its pixels go still shows, and the replica keeps only the frames of the last version
+- Many images, a command to each of them, and the frames that go when they go, all in state frames within the budget and one item more
+- A transfer that ends drops the frame that the replica builds, also one that another image still holds
+- A clear that replaces an image ends its transfer
+- An image that a frame deletion completes shows at once, and the version with the deleted frame never replaces it, also after a new frame
+- A version that shows gives its place to the store's image once that image is whole, and the replica keeps only the frames of that image
+- A frame deletion that leaves an image whole while its transfer runs ends that transfer at once
+- The frames that only a version that showed held go with its record, also when nothing else waits
+- A reader takes a writer that starts over: the images of the old writer go
+- Bad image sections, each to a reader of its own, which refuses them
+- The random runs place, animate and delete images and sixels too, also images larger than a state frame, between state frames
 - The prompt redraw after a resize (OSC 133 `redraw=1`)
 - Shell mark, program status, shell context, extra cursor and region scroll sections with bad values, which the reader refuses
 - A frame that fails after its status and contexts tells the replica's host nothing, and bad modes leave the modes and the screen
@@ -790,6 +807,8 @@ The `Mux.MuxAttach.*` tests cover these cases:
 - When the window detaches, the program hears that you cannot see the pane. The next window, and a window that takes the session over, report whether you can see it.
 - The `paneDirectory` call: the directory of the shell, a directory that was removed, then the program in the foreground, and the calls that the daemon refuses
 - The frames carry the region scrolls since the frame before, and the first frame of a window carries none of a time when no window showed the pane
+- A PNG (kitty graphics `f=100`) and an iTerm2 JPEG that the session's shell prints reach the window with their pixels
+- An image that the program prints while no window shows the session reaches the next window
 
 The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow mux new` starts in a session of its own:
 
@@ -809,6 +828,8 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.AWindowThatLosesItsSessionLeavesItRunning` | A detach and a takeover close the pane and kill nothing |
 | `NativeWindow.AMuxSessionCanOutliveItsWindow` | `Mux.onClose` detach |
 | `NativeWindow.AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow` | A bell, a user variable and an OSC 52 write of the session's shell reach the window and its clipboard |
+| `NativeWindow.AMuxSessionsImageShowsInTheWindow` | A PNG that the session's shell prints with kitty graphics, which the daemon decodes, shows in a screenshot of the pane at its own size |
+| `NativeWindow.AMuxSessionsAnimationRunsInTheWindow` | An animated image of a session's program runs on the window's clock without output, and stops on the frame that shows for the program's command. It does not move while its tab is hidden behind another tab, and runs again once that tab shows. |
 | `NativeWindow.AMuxSessionsMarksStatusAndDirectoryReachTheWindow` | The last output in the pager, and the regions of shell integration. The status of a program, with the `Pane::statusChanged` signal. A shell context. A new tab starts in the directory that the daemon gets from the system, because the shell reports none. |
 | `NativeWindow.ASessionPaneTellsItsProgramWhetherItCanBeSeen` | Mode 2033 reports at the attach, when another tab shows, and when the pane shows again |
 | `NativeWindow.AnAttachShowsTheSessionsStateAndNotifiesNothingOld` | A window that attaches gets the history, the last output and the prompts of the session. It shows no notification for a status from before the attach. |

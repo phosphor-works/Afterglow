@@ -34,6 +34,7 @@ Each store has these limits:
 | Images | 4,096 | Afterglow deletes an image without a placement: first an image with the transient hint (`N=1`), then the oldest. When every image has a placement, a Kitty command gets an `ENOSPC` error. |
 | Placements | 4,096 | A Kitty command gets an `ENOSPC` error. A new Sixel or iTerm2 image removes the oldest Sixel or iTerm2 placement. When there is none, Afterglow does not keep the new image. |
 | Frames per image | 1,024 | A Kitty command gets an `ENOSPC` error. |
+| Frames of all images | 16,384 | Afterglow deletes images as for image data. A frame of one pixel costs far more to keep than its 4 bytes. |
 | Image data | `Graphics.quota`, 320 MiB by default, at 4 bytes for each pixel | Afterglow deletes images without a placement: first those with the transient hint (`N=1`), then the oldest. When none is left, it deletes the oldest image with a placement. |
 | Pending transmissions | 320 MiB | The transmission fails with an `EFBIG` error. |
 

@@ -23,6 +23,7 @@ namespace AfterglowVt {
 
 class ITerminalHost;
 class Screen;
+class StateReader;
 struct Row;
 
 /// One decoded placeholder cell: which image and placement it shows, and
@@ -85,6 +86,9 @@ struct ImageFrame
     std::vector<std::uint8_t> indices;
 
     bool indexed() const noexcept { return format != PixelFormat::Rgba; }
+    /// The bytes that the frame holds: rgba, or indices for an indexed frame.
+    std::vector<std::uint8_t>& pixels() noexcept { return indexed() ? indices : rgba; }
+    const std::vector<std::uint8_t>& pixels() const noexcept { return indexed() ? indices : rgba; }
     /// What the frame counts for in the image quota: its RGBA size. An
     /// indexed frame keeps fewer bytes, but it is drawn as RGBA, and the
     /// quota bounds what the images of a screen cost when they show.
@@ -122,6 +126,12 @@ struct Image
     std::uint32_t loopsDone = 0;
     std::size_t currentFrame = 0;
     std::uint64_t frameShownAtMs = 0;
+    /// The a=a commands that set the state (s=) and the current frame (c=):
+    /// a replica (StateSync.h) runs the animation on its own clock, and
+    /// takes the state or the frame of the terminal that it mirrors only for
+    /// a command, also one that changes no value there.
+    std::uint32_t stateCommands = 0;
+    std::uint32_t frameCommands = 0;
     std::uint64_t sequence = 0; ///< transmission order, for eviction
     /// When an image first had this id: placements at one z draw in this
     /// order, as in kitty. Sending the id again keeps it.
@@ -192,6 +202,10 @@ public:
     };
 
     static constexpr std::size_t DefaultQuota = AfterglowProto::GraphicsDefaultQuota;
+    /// The largest quota that a terminal of the application takes
+    /// (Graphics.quota): what a store of a session's terminal can hold.
+    static constexpr std::size_t MaxQuota = std::size_t(4096) << 20;
+    static_assert(sizeof(std::size_t) >= 8, "a 4 GiB quota needs a 64-bit size");
     static constexpr std::size_t MaxImages = 4096;
     static constexpr std::size_t MaxPlacements = 4096;
     /// Frame edits (a=f on a frame, a=c) copy a whole frame for a command of
@@ -201,6 +215,11 @@ public:
     static constexpr std::size_t DefaultWorkBurst = std::size_t(1) << 30;
     static constexpr std::size_t DefaultWorkBytesPerSecond = std::size_t(1) << 30;
     static constexpr std::size_t MaxFrames = AfterglowProto::GraphicsMaxFrames;
+    /// The most frames of all the images of a store. The quota counts the
+    /// pixels, and a frame of one pixel costs far more than its four bytes
+    /// to keep, and to mirror in a replica: past this, images are evicted as
+    /// past the quota.
+    static constexpr std::size_t MaxStoreFrames = 16384;
 
     /// Handles an APC payload that starts with 'G'.
     void handle(std::string_view payload, Context& ctx);
@@ -228,6 +247,8 @@ public:
     /// animation started by a command begins on the next call.
     bool advanceAnimations(const Screen& screen, int cellWidth, int cellHeight, std::uint64_t nowMs,
                            std::uint64_t& nextDeadlineMs);
+    /// The images that @p screen's viewport draws at the cell size.
+    std::unordered_set<std::uint32_t> shownImages(const Screen& screen, int cellWidth, int cellHeight) const;
 
     /// A clear of the screen (ED 2, DECCOLM): drops the placements that
     /// reach into the active area, and those whose rows have all left the
@@ -275,6 +296,8 @@ public:
     /// Whether transmissions may read files, temporary files and shared
     /// memory (t=f, t=t, t=s). Off, they are refused and nothing is opened.
     void setFileTransfer(bool allowed) noexcept { m_fileTransfer = allowed; }
+    /// The $TMPDIR of the programs (Terminal::setTemporaryDirectory).
+    void setTemporaryDirectory(std::string directory) { m_temporaryDirectory = std::move(directory); }
     /// Sets the work budget (chargeWork()) and fills it: @p burst bytes at
     /// once, refilled at @p bytesPerSecond.
     void setWorkBudget(std::size_t burst, std::size_t bytesPerSecond);
@@ -290,8 +313,16 @@ public:
     const std::map<std::uint32_t, Image>& images() const noexcept { return m_images; }
     const std::vector<Placement>& placements() const noexcept { return m_placements; }
     std::size_t totalBytes() const;
+    /// Grows with each change that may have changed the images or the
+    /// placements: a writer of the codec (StateSync.h) looks at a store
+    /// again only when it grew.
+    std::uint64_t changes() const noexcept { return m_changes; }
 
 private:
+    /// A replica takes the images and placements of the terminal that it
+    /// mirrors (StateSync.h). The codec is part of this library: it keeps the
+    /// invariants of the store itself (m_virtual through indexVirtual()).
+    friend class StateReader;
     struct Command;
     class Origins;
     struct Pending
@@ -332,8 +363,6 @@ private:
     /// A query with e= (a feature query): the keys of its action that the
     /// store supports, with no other effect.
     void featureQuery(const Command& cmd, Context& ctx);
-    /// The images that @p screen's viewport draws at the cell size.
-    std::unordered_set<std::uint32_t> shownImages(const Screen& screen, int cellWidth, int cellHeight) const;
     /// Answers a command that names an image; an a=f or a=a reply also
     /// names the frame (r=).
     void respond(const Command& cmd, Context& ctx, std::string_view status, bool isError);
@@ -347,8 +376,9 @@ private:
     /// Drops placements whose rows have all left the scrollback.
     void pruneDead(const Screen& screen, int cellWidth, int cellHeight);
     void pruneOrphans();
-    /// Evicts images until the quota and the image limit hold, unused ones
-    /// and older ones first. Image @p keep (being added to) is never evicted.
+    /// Evicts images until the quota, the image limit and MaxStoreFrames
+    /// hold, unused ones and older ones first. Image @p keep (being added
+    /// to) is never evicted.
     void enforceQuota(std::uint32_t keep = 0);
     /// Evicts the oldest image without placements. False if there is none.
     bool evictUnusedImage();
@@ -356,6 +386,8 @@ private:
     /// After each change: drops orphans and the images nothing can name or
     /// show any more, and rebuilds the lookups that queries use.
     void settle();
+    /// Rebuilds m_virtual from the placements.
+    void indexVirtual();
     /// Charges @p bytes of frame copying, or of a file or shared memory read,
     /// against a budget that refills over time. Both run on the thread that
     /// feeds the terminal. False when the budget is spent.
@@ -376,8 +408,10 @@ private:
     std::uint32_t m_nextPlacementId = 1u << 31;
     std::uint32_t m_nextInternalId = 3u << 29; ///< preferred range; occupied IDs are skipped
     std::uint64_t m_sequence = 0;
+    std::uint64_t m_changes = 0;
     std::size_t m_quota = DefaultQuota;
     bool m_fileTransfer = true;
+    std::string m_temporaryDirectory;
     double m_workBytes = -1; ///< work budget left; below 0 before first use
     double m_workBurst = double(DefaultWorkBurst);
     double m_workRate = double(DefaultWorkBytesPerSecond);

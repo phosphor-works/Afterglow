@@ -57,25 +57,8 @@ else()
 endif()
 
 # stb_image's MIT notice installs with aglow, as the notices of zlib-ng and
-# xxHash do. It is the notice in the vendored header itself, from the MIT
-# alternative up to the next one. A regular expression cannot cut it there:
-# CMake has no lazy match, and ".*" runs on to the end of the Unlicense.
-file(READ "${AGLOW_STB_IMAGE}" AGLOW_STB_TEXT)
-string(FIND "${AGLOW_STB_TEXT}" "ALTERNATIVE A - MIT License\n" AGLOW_STB_MIT)
-string(FIND "${AGLOW_STB_TEXT}" "ALTERNATIVE B - " AGLOW_STB_UNLICENSE)
-if(AGLOW_STB_MIT EQUAL -1 OR AGLOW_STB_UNLICENSE LESS_EQUAL AGLOW_STB_MIT)
-    message(FATAL_ERROR "The MIT notice was not found in ${AGLOW_STB_IMAGE}")
-endif()
-math(EXPR AGLOW_STB_LENGTH "${AGLOW_STB_UNLICENSE} - ${AGLOW_STB_MIT}")
-string(SUBSTRING "${AGLOW_STB_TEXT}" ${AGLOW_STB_MIT} ${AGLOW_STB_LENGTH} AGLOW_STB_MIT_TEXT)
-# Without the heading line and the rule of dashes that ends the alternative.
-string(REGEX REPLACE "^ALTERNATIVE A - MIT License\n" "" AGLOW_STB_MIT_TEXT "${AGLOW_STB_MIT_TEXT}")
-string(REGEX REPLACE "-+\n$" "" AGLOW_STB_MIT_TEXT "${AGLOW_STB_MIT_TEXT}")
-if(NOT AGLOW_STB_MIT_TEXT MATCHES "^Copyright[^\n]*\n.*SOFTWARE\\.\n$")
-    message(FATAL_ERROR "The MIT notice in ${AGLOW_STB_IMAGE} does not have the expected form")
-endif()
-aglow_write_file("${CMAKE_CURRENT_BINARY_DIR}/LICENSE.stb_image"
-                 "stb_image ${AFTERGLOW_VENDORED_stb_image_URL}, with the patches of aglow\n\n${AGLOW_STB_MIT_TEXT}")
+# xxHash do.
+afterglow_stb_image_notice("${CMAKE_CURRENT_BINARY_DIR}/LICENSE.stb_image")
 set(AGLOW_NOTICES "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.stb_image")
 # A static aglow holds parts of glibc (LGPL-2.1-or-later) and of libstdc++
 # and libgcc (GPL-3.0-or-later with the GCC Runtime Library Exception). Their

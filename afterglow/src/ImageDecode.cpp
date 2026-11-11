@@ -36,6 +36,8 @@ bool toRgba(QImage img, std::uint32_t& width, std::uint32_t& height, std::vector
 
 /// The formats a program may send as an image. Other Qt image plugins (SVG,
 /// TIFF, PSD, RAW…) are large parsers that remote output should not reach.
+/// The daemon of sessions takes the same formats but WebP, by their
+/// signatures (allowed() in mux/src/ImageDecoder.cpp): change both.
 bool imageFormatAllowed(const QByteArray& format)
 {
     static const QByteArrayList allowed{"png", "jpeg", "jpg", "gif", "bmp", "webp"};

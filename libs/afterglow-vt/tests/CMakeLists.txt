@@ -26,4 +26,6 @@ target_link_libraries(afterglow_vt_tests PRIVATE Afterglow::Vt GTest::gtest_main
 set_target_properties(afterglow_vt_tests PROPERTIES AUTOMOC OFF)
 
 include(GoogleTest)
-gtest_discover_tests(afterglow_vt_tests)
+# A test that hangs (a parser loop that never ends) fails instead of
+# holding ctest for its default timeout.
+gtest_discover_tests(afterglow_vt_tests PROPERTIES TIMEOUT 120)

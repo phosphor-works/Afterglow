@@ -4,7 +4,8 @@
 // The implementation of the vendored stb_image, in its own target: it builds
 // without Afterglow's warnings, as zlib-ng and xxHash do. aglow decodes from
 // memory only, in a child process that Image.cpp starts with limits on its
-// memory and CPU time. GIF goes through aglow's own decoder below, as
+// memory and CPU time. afterglow-mux compiles this file too, and decodes in a
+// process of its own with limits (mux/src/ImageDecoder.cpp). GIF goes through aglow's own decoder below, as
 // stb_image's animated GIF loader read before its heap block
 // (GHSL-2023-145) and freed its delays twice (GHSL-2023-150).
 //

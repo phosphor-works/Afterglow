@@ -302,6 +302,7 @@ void TerminalWindow::advancePaneEffects(bool& animating)
 void TerminalWindow::advanceTabTransition(std::uint8_t backgroundAlpha, bool& holding, bool& animating)
 {
     AfterglowRender::WindowRenderer::TabTransition transition;
+    const bool wasAnimating = m_tabTransition.progress.isAnimating();
     if (m_tabTransition.progress.isAnimating()) {
         m_tabTransition.progress.advance();
         const auto from = std::find_if(m_tabs.begin(), m_tabs.end(), [&](const auto& tab) { return tab->id == m_tabTransition.from; });
@@ -315,6 +316,11 @@ void TerminalWindow::advanceTabTransition(std::uint8_t backgroundAlpha, bool& ho
                           prepareOtherTab(int(from - m_tabs.begin()), nullptr, backgroundAlpha, holding, animating)};
             animating = true;
         }
+    }
+    // The tab that the switch left is no longer drawn: nobody sees its panes
+    // now. Queued: this runs within a frame.
+    if (wasAnimating && !m_tabTransition.progress.isAnimating()) {
+        QMetaObject::invokeMethod(this, &TerminalWindow::updatePaneVisibility, Qt::QueuedConnection);
     }
     m_renderer->setTabTransition(std::move(transition));
 }

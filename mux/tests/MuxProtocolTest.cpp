@@ -63,7 +63,9 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 6) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 7) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 7 added the images and the cell size of the state codec
+    // (StateSyncTest).
     // Version 6 added the visibility of a pane in the window's input, the
     // paneDirectory call, the history option of the attach call, and the
     // shell marks, status, contexts, extra cursors, region scrolls, layout
