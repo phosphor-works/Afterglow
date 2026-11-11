@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstring>
 #include <tuple>
+#include <utility>
 
 namespace AfterglowVt {
 
@@ -616,6 +617,7 @@ void Terminal::print(char32_t cp)
         return;
     }
 
+    const char32_t sent = cp; // what REP repeats, before the charsets map it
     if (cp < 0x80) {
         const Charset set = m_charsets[m_singleShift ? m_singleShift : m_gl];
         m_singleShift = 0;
@@ -672,7 +674,7 @@ void Terminal::print(char32_t cp)
                 && Unicode::props(base.codepoint()).widensWithVs16 && m_lastX + 1 <= right) {
                 const char32_t baseCp = base.codepoint();
                 const std::u32string extra(scr.graphemeExtra(row, m_lastX));
-                if (m_modes.insert) {
+                if (insertsAt(m_lastX + 1)) {
                     // The tail needs a cell of its own: shift the text after it.
                     scr.insertCells(row, m_lastX + 1, right, 1, StyleTable::DefaultId);
                 }
@@ -792,12 +794,12 @@ void Terminal::print(char32_t cp)
     }
 
     Row& row = *line;
-    if (m_modes.insert) {
+    if (insertsAt(cur.x)) {
         const std::uint32_t fill = StyleTable::DefaultId;
         scr.insertCells(row, cur.x, right, width, fill);
     }
     scr.writeCell(row, cur.x, cp, cur.penId, width);
-    m_lastPrinted = cp;
+    m_lastPrinted = sent;
     m_lastX = cur.x;
     m_lastY = cur.y;
 
@@ -964,9 +966,10 @@ void Terminal::repeatLast(int n)
     }
     const char32_t cp = m_lastPrinted;
     n = std::min(n, 65535);
-    // The character repeats as it was shown: the charsets mapped it already,
-    // whichever print path stored it, so they must not map it again.
-    const CharsetBypass bypass(m_charsets[m_gl], m_singleShift);
+    // The character repeats as the program sent it, through the G-set in GL
+    // now (xterm, kitty). A pending single shift waits for the next character
+    // that the program sends.
+    const int singleShift = std::exchange(m_singleShift, 0);
     if (m_modes.insert) {
         repeatInserting(cp, n);
     } else if (cp >= 0x20 && cp < 0x7F) {
@@ -986,6 +989,7 @@ void Terminal::repeatLast(int n)
             print(cp);
         }
     }
+    m_singleShift = singleShift;
 }
 
 void Terminal::repeatInserting(char32_t cp, int n)
@@ -1001,7 +1005,8 @@ void Terminal::repeatInserting(char32_t cp, int n)
         Row& row = m_active->row(cur.y);
         const int right = rightEdge(row, cur.x);
         const int room = width > 0 && !cur.pendingWrap && cur.x <= right ? (right - cur.x + 1) / width : 0;
-        if (room < 2 || row.cells[std::size_t(cur.x)].isMulticell()) {
+        if (room < 2 || !insertsAt(cur.x) || m_charsets[m_gl] != Charset::Ascii
+            || row.cells[std::size_t(cur.x)].isMulticell()) {
             m_lastX = -1;
             print(cp);
             --n;
@@ -1294,7 +1299,9 @@ void Terminal::textSizing(std::string_view args)
         }
     }
     if (cps.empty()) {
-        cps.push_back(U' '); // "w=2;" with no text: a space in the block
+        // No text, also once controls are dropped: kitty ignores the code
+        // (screen_handle_multicell_command), whatever its metadata says.
+        return;
     }
 
     if (s == 1 && w == 0 && d == 0) {
@@ -1467,6 +1474,21 @@ void Terminal::setProtection(bool on, bool iso)
 
 void Terminal::eraseDisplay(int mode, bool selective)
 {
+    if (mode == 22) {
+        // kitty: the screen goes into the scrollback, down to its last line
+        // with text, and is then erased as ED 2. Only the primary screen
+        // with the full scrolling region has a scrollback to go to.
+        if (!m_modes.altScreen && m_margins.top == 0 && m_margins.bottom == rows() - 1) {
+            int used = rows();
+            while (used > 0 && std::ranges::all_of(m_active->row(used - 1).cells, &Cell::isEmpty)) {
+                --used;
+            }
+            if (used > 0) {
+                scrollRegion(Region{0, rows() - 1, 0, cols() - 1}, used, true, true);
+            }
+        }
+        mode = 2;
+    }
     if (mode == 2 || mode == 3) {
         m_extraCursors.clear();
     }
@@ -1480,12 +1502,14 @@ void Terminal::eraseDisplay(int mode, bool selective)
         for (int y = cur.y + 1; y < rows(); ++y) {
             eraseWholeRow(scr.row(y), fill, selective);
         }
+        m_graphics[m_modes.altScreen ? 1 : 0].eraseRows(cur.y, rows() - 1, scr, m_cellWidth, m_cellHeight);
         break;
     case 1:
         for (int y = 0; y < cur.y; ++y) {
             eraseWholeRow(scr.row(y), fill, selective);
         }
         eraseSpan(scr.row(cur.y), 0, cur.x + 1, fill, selective);
+        m_graphics[m_modes.altScreen ? 1 : 0].eraseRows(0, cur.y, scr, m_cellWidth, m_cellHeight);
         break;
     case 2:
         for (int y = 0; y < rows(); ++y) {
@@ -1547,6 +1571,9 @@ void Terminal::eraseLine(int mode, bool selective)
         break;
     default:
         break;
+    }
+    if (mode >= 0 && mode <= 2) {
+        m_graphics[m_modes.altScreen ? 1 : 0].eraseRows(cur.y, cur.y, scr, m_cellWidth, m_cellHeight);
     }
     releaseFill(fill);
     cur.pendingWrap = false;
@@ -2258,6 +2285,7 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
             insertChars(p.atOr(0, 1));
             return;
         case 'A':
+        case 'k': // VPB
             moveCursorRelative(0, -p.atOr(0, 1));
             return;
         case 'B':
@@ -2277,6 +2305,9 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
             } else {
                 moveCursorRelative(-p.atOr(0, 1), 0);
             }
+            return;
+        case 'j': // HPB: a plain move, also with reverse wrap
+            moveCursorRelative(-p.atOr(0, 1), 0);
             return;
         case 'E':
             moveCursorRelative(0, p.atOr(0, 1));

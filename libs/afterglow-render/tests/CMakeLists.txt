@@ -25,4 +25,4 @@ include(GoogleTest)
 # The lock covers every test of the binary, the few that draw nothing too:
 # they take milliseconds. A test that hangs on the GPU gives the lock back
 # at its timeout; one takes about a second.
-gtest_discover_tests(afterglow_render_tests DISCOVERY_MODE PRE_TEST PROPERTIES RESOURCE_LOCK gpu TIMEOUT 60)
+gtest_discover_tests(afterglow_render_tests DISCOVERY_MODE PRE_TEST PROPERTIES RESOURCE_LOCK gpu LABELS gpu TIMEOUT 60)

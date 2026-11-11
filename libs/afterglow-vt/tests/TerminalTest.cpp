@@ -66,6 +66,30 @@ TEST(Terminal, CursorMovementAndErase)
     EXPECT_EQ(screenText(t.t), "");
 }
 
+TEST(Terminal, EraseDisplay22MovesTheScreenIntoTheHistory)
+{
+    // kitty's ED 22: the lines down to the last one with text go into the
+    // history, then the screen is erased. The cursor stays.
+    Term t(5, 4);
+    t.feed("a\r\nb\r\nc\x1b[22J");
+    EXPECT_EQ(screenText(t.t), "");
+    ASSERT_EQ(t.t.screen().historySize(), 3u);
+    EXPECT_EQ(rowText(t.t.screen(), t.t.screen().absoluteRow(0)), "a");
+    EXPECT_EQ(rowText(t.t.screen(), t.t.screen().absoluteRow(2)), "c");
+    EXPECT_EQ(t.t.screen().cursor.y, 2);
+    EXPECT_EQ(t.t.screen().cursor.x, 1);
+
+    Term region(5, 4); // a scrolling region keeps the lines out of the history
+    region.feed("a\x1b[1;3r\x1b[22J");
+    EXPECT_EQ(screenText(region.t), "");
+    EXPECT_EQ(region.t.screen().historySize(), 0u);
+
+    Term alt(5, 4); // the alternate screen has no history
+    alt.feed("\x1b[?1049ha\x1b[22J");
+    EXPECT_EQ(screenText(alt.t), "");
+    EXPECT_EQ(alt.t.screen().historySize(), 0u);
+}
+
 TEST(Terminal, ScrollingFeedsHistory)
 {
     Term t(5, 2);
@@ -1259,11 +1283,22 @@ TEST(Terminal, DecimalValuesIgnoreTheLocale)
     EXPECT_EQ(t.host.written, "\x1b]4;1;rgb:8080/8080/8080\x07\x1b]21;transparent_background_color1=rgb:10/20/30@0.25\x07");
 }
 
-TEST(Terminal, RepeatShowsTheCharacterAsDrawn)
+TEST(Terminal, RepeatMapsTheCharacterThroughTheCharsetOfNow)
 {
+    // xterm and kitty repeat the character as the program sent it, through
+    // the G-set in GL at the time of REP.
     Term t(10, 2);
     t.feed("q\x1b(0\x1b[2b\x1b(B");
-    EXPECT_EQ(rowText(t.t, 0), "qqq"); // printed before the switch: repeats as printed
+    EXPECT_EQ(rowText(t.t, 0), "q\u2500\u2500");
+    Term back(10, 2); // a mapped character goes back to what was sent
+    back.feed("\x1b(0q\x1b(B\x1b[2b");
+    EXPECT_EQ(rowText(back.t, 0), "\u2500qq");
+    Term shift(10, 2); // a pending single shift is for the next character sent
+    shift.feed("\x1b*0q\x1bN\x1b[bq");
+    EXPECT_EQ(rowText(shift.t, 0), "qq\u2500");
+    Term insert(10, 2); // also under IRM
+    insert.feed("xyz\r\x1b[4hq\x1b(0\x1b[2b\x1b(B\x1b[4l");
+    EXPECT_EQ(rowText(insert.t, 0), "q\u2500\u2500xyz");
 }
 
 TEST(Terminal, RepeatInInsertModeShiftsOnce)

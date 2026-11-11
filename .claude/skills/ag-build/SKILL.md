@@ -27,7 +27,7 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 | `build-release` | Release | ON | Performance numbers and release checks |
 | `build-prof` | RelWithDebInfo | ON | Profiling with `perf` |
 | `build-fuzz` | RelWithDebInfo, clang for C and C++, `AFTERGLOW_BUILD_FUZZERS=ON`, `BUILD_TESTING=OFF` | OFF | The libFuzzer targets `afterglow_vtfuzz`, `afterglow_protofuzz`, `afterglow_imagefuzz` and `afterglow_muxfuzz` only. Build them by name: the other binaries are not supported there (zlib-ng is instrumented in place). The fuzz option turns `aglow` off. Make it when you fuzz, with the commands in `docs/TESTING.md`. |
-| `build-debug` | Debug with ASan and UBSan (`debug` preset) | — | Make it when you look for memory errors. `aglow` links dynamically there, and `aglow_static` is left out. |
+| `build-debug` | Debug with ASan and UBSan at `-O1` (`debug` preset) | — | Make it when you look for memory errors, and before a PR that changes a parser, a protocol or a pane's memory. Build it with `-j2`: at `-j4` the compiles hit the 6 GB cap. `docs/TESTING.md` "Sanitizer build" has the three runs (errors, leaks without `-L gpu`, native). `aglow` links dynamically there, and `aglow_static` is left out. |
 
 ## aglow
 

@@ -51,7 +51,10 @@ Relative placements do not move the terminal cursor.
 | Lowercase Kitty delete (`d=a`, `d=i` and the others) | The placements go. Image data with an ID or a number stays, also the data of child images. |
 | Last placement of an image without an ID or a number goes | The image data goes. Sixel and iTerm2 images do the same. |
 | ED 2 (erase the screen) | Images that reach into the screen go, also when their top row is in the scrollback. |
+| ED 22 (move the screen into the scrollback, then erase it, as in Kitty) | The lines down to the last line with text go into the scrollback with their images. Then ED 2 erases the screen. On the alternate screen, or with a scrolling region, ED 22 is the same as ED 2. |
 | ED 3 (erase the scrollback) | Images whose top row is in the scrollback go. Images on the screen stay, like the text. |
+| EL (erase part of a line) | An image whose rows include that line goes. |
+| ED 0 and ED 1 (erase to the end or to the start of the screen) | An image whose rows include an erased line goes. |
 | SU, SD, IL, DL, or a line feed or reverse index at a scroll-region margin | An image whose top-left cell is in the region moves with its rows. It shows only its rows that are in the region after the scroll. It goes when none of its rows is in the region. Rows below the last row of the screen stay when the scroll is up: they come into view as the image moves. A relative child image moves with its parent, and the same rule cuts it. It goes when its parent goes. |
 
 The same scrolls move shell-integration marks (OSC 133) with their rows.

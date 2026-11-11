@@ -53,12 +53,62 @@ When the tools are there and its own sshd cannot start, the test fails.
 | `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`, and with `AFTERGLOW_BUILD_AGLOW` also `afterglow_transfer_kitty`. Requires Python 3 and the native test dependencies. |
 | `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the image decoders of `aglow` and the attach stream of `afterglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
 | `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries. Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests, the `RunBinaryTest.*` tests and the `sshd` test of `RemoteCommandsTest.*` report Skipped. |
+| `AFTERGLOW_BUILD_VTDIFF` | `OFF` | Builds `afterglow_vtdiff`, which compares the terminal core with libghostty-vt. Requires libghostty-vt 1.0 in `CMAKE_PREFIX_PATH`. See [Differences with libghostty-vt](#differences-with-libghostty-vt). |
 
 With `AFTERGLOW_NATIVE_TESTS=ON`, run only the native suite:
 
 ```sh
 ctest --test-dir build -L native --output-on-failure
 ```
+
+## Sanitizer build
+
+The `debug` preset builds Afterglow and its tests with AddressSanitizer and UndefinedBehaviorSanitizer in `build-debug`.
+It compiles at `-O1`, as the sanitizer documentation recommends. At `-O0` the tests are too slow for their waits.
+It turns off `-Wmaybe-uninitialized`, because GCC gives false warnings for instrumented code.
+Run the sanitizer build before a pull request that changes a parser, a protocol or the memory of a pane.
+
+1. Configure the build directory with the Phosphor checkout of `build` (see `AFTERGLOW_PHOSPHOR_LIBS_DIR` in `build/CMakeCache.txt`):
+
+   ```sh
+   cmake --preset debug -DAFTERGLOW_PHOSPHOR_LIBS_DIR=../PlasmaZones/phosphor-libs
+   ```
+
+2. Build it with two jobs. Each sanitizer compile needs more memory than a normal compile:
+
+   ```sh
+   systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build-debug -j2
+   ```
+
+3. Run the suite for memory errors and undefined behavior:
+
+   ```sh
+   ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+       ctest --test-dir build-debug --output-on-failure -j4
+   ```
+
+4. Run the suite for leaks, without the tests that have the label `gpu`:
+
+   ```sh
+   ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS=suppressions=$PWD/tools/sanitizers/lsan.supp \
+       ctest --test-dir build-debug -LE gpu --output-on-failure -j4
+   ```
+
+5. Run the native window tests on the sanitizer build:
+
+   ```sh
+   ASAN_OPTIONS=detect_leaks=0 python3 .claude/skills/ag-verify-live/headless_native.py \
+       --binary build-debug/afterglow/afterglow_native_tests --timeout 1500
+   ```
+
+`UBSAN_OPTIONS=halt_on_error=1` makes a test fail at the first finding. Without it, the test prints the finding and passes.
+
+| Leaks that the leak run does not report | Reason |
+| --- | --- |
+| The tests with the label `gpu` | The Vulkan driver frees its last memory in code that it unloads before the check. The stacks have no names. |
+| The Vulkan loader, libdbus and the default input devices of Qt | They keep their memory until the process ends. `tools/sanitizers/lsan.supp` lists them, with the reason for each. |
+
+Keep the default unwinder for the leak run. The full unwinder (`fast_unwind_on_malloc=0`) makes the tests that measure time fail.
 
 ## Native test dependencies
 
@@ -215,6 +265,82 @@ mkdir -p build-fuzz/corpus-mux
 ```
 
 A run passes when the fuzzer stops at the time limit without a crash report.
+
+### Differences with libghostty-vt
+
+`afterglow_vtdiff` sends the same bytes to the terminal core and to [libghostty-vt](https://ghostty.org), and compares the two screens.
+It finds a screen that one of the two terminals gets wrong.
+The fuzzers find only crashes, and esctest checks a fixed set of xterm cases.
+
+The tool compares these items after each chunk of input:
+
+| Item | Compared values |
+| --- | --- |
+| Cells | Text, width, colors, attributes and underline style |
+| Cursor | Position, pending wrap and visibility |
+| Screen | The active screen (main or alternate) |
+| Scrollback | The last 200 rows |
+| Replies | What each terminal writes back to the program, with `--replies` |
+
+libghostty-vt is not a dependency of Afterglow, and the build downloads nothing.
+Build libghostty-vt in a directory of its own:
+
+1. Download `libghostty-vt-1.0.0.tar.gz`, `libghostty-vt-1.0.0-deps.tar.gz` and their `.minisig` files from `https://release.files.ghostty.org/libghostty-vt/1.0.0/`.
+2. Check each archive with the public key of Ghostty:
+
+   ```sh
+   minisign -V -P RWQlAjJC23149WL2sEpT/l0QKy7hMIFhYdQOFy0Z7z7PbneUgvlsnYcV -m libghostty-vt-1.0.0.tar.gz
+   ```
+
+3. Extract both archives in the same directory.
+4. Build and install libghostty-vt into a prefix of your choice. Use the Zig version that `build.zig.zon` gives:
+
+   ```sh
+   cd libghostty-vt-1.0.0
+   zig build --prefix /path/to/libghostty --system ../libghostty-vt-1.0.0-deps -Doptimize=ReleaseFast
+   ```
+
+5. Configure Afterglow with the prefix, and build the tool:
+
+   ```sh
+   cmake -B build -DAFTERGLOW_BUILD_VTDIFF=ON -DCMAKE_PREFIX_PATH=/path/to/libghostty
+   cmake --build build --target afterglow_vtdiff
+   ```
+
+Compare files of terminal output, or the files in a directory:
+
+```sh
+build/tools/vtdiff/afterglow_vtdiff --expected tools/vtdiff/expected-differences.txt --minimize capture.txt
+```
+
+Compare random inputs:
+
+```sh
+build/tools/vtdiff/afterglow_vtdiff --expected tools/vtdiff/expected-differences.txt --random 1 --count 400
+```
+
+| Option | Default | Function |
+| --- | --- | --- |
+| `--cols N`, `--rows N` | 80, 24 | The size of both terminals. |
+| `--chunk N` | 4096 | The bytes that each terminal reads before a comparison. |
+| `--replies` | Off | Also compares the replies. |
+| `--expected FILE` | None | The file of expected differences. |
+| `--minimize` | Off | Cuts each difference down to the shortest input that still differs in the same kind of way, and prints it. The kinds are the text of a cell, the look of a cell, the cursor, the active screen, the scrollback and the replies. |
+| `--random SEED` | None | Makes random inputs from sequences that terminals parse, from seed `SEED`. |
+| `--count N` | 1 | The number of random inputs. |
+| `--length N` | 512 | The sequences in each random input. |
+
+A line of `tools/vtdiff/expected-differences.txt` is an input name or a `/REGEX/`, then the reason.
+A pattern matches the shortest input that `--minimize` prints, with bytes outside ASCII as `\xHH`.
+A second `/REGEX/` after the first one also matches the difference of that input, as the run prints it, for example `cell 1,0: "" w1 / "" w1 bg3`. Write a `/` in a pattern as `\/`.
+The run fails on a difference that is not expected, and on a named input that no longer differs.
+
+Examine each new difference before you add it to the file:
+
+1. Find what xterm and Kitty do for the input.
+2. If Afterglow is wrong, fix Afterglow and add a regression test.
+3. If libghostty-vt is wrong, or the terminals disagree with reason, add a pattern for the class of input. Write the reason and the terminal that Afterglow follows.
+4. Do not change Afterglow only so that it agrees with libghostty-vt.
 
 ### Unicode tables
 

@@ -95,6 +95,7 @@ add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shap
 option(AFTERGLOW_BUILD_TOOLS "Build developer tools: benchmarks, afterglow_renderpng and the headless conformance host" OFF)
 option(AFTERGLOW_BUILD_AGLOW "Build aglow, the static client of the Kitty protocols and of script commands (no Qt). Without it, afterglow has no run, transfer, dnd, icat or clipboard command" ON)
 option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core, the protocol library and the image decoders (clang for C and C++)" OFF)
+option(AFTERGLOW_BUILD_VTDIFF "Build afterglow_vtdiff, which compares the terminal core with libghostty-vt (needs libghostty-vt in CMAKE_PREFIX_PATH)" OFF)
 # A fuzz build instruments zlib-ng with the sanitizers (tools/fuzz), and a
 # static aglow cannot link their runtimes. This normal variable hides the
 # cached option in every directory, afterglow/ included.
@@ -115,4 +116,7 @@ if(AFTERGLOW_BUILD_TOOLS)
 endif()
 if(AFTERGLOW_BUILD_FUZZERS)
     add_subdirectory(tools/fuzz)
+endif()
+if(AFTERGLOW_BUILD_VTDIFF)
+    add_subdirectory(tools/vtdiff)
 endif()

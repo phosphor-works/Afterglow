@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# Differences between Afterglow and libghostty-vt 1.0.0 that afterglow_vtdiff
+# expects, one a line: an input name, or /REGEX/ for the minimized input of a
+# class (docs/TESTING.md). The reason follows, with the terminal that the
+# behavior follows.
+
+# A CSI with more parameters than it takes, or with an empty first parameter
+# and another after it (CSI ; 1 B, CSI 6 s): libghostty ignores the whole
+# sequence, and Afterglow, as xterm, uses the first parameter (its default when
+# empty) and ignores the rest. CSI Ps s is SCOSC while DECLRMM is off.
+/\\x1b\[[0-9]*;[0-9;]*[ABCDEFGIJKLMPSTXZ`abdegjk@]/ extra parameters: Afterglow follows xterm
+/\\x1b\[[0-9]*;[0-9]*;[0-9;]*[Hfr]/ extra parameters: Afterglow follows xterm
+/\\x1b\[[0-9;]+s/ CSI Ps s while DECLRMM is off: Afterglow saves the cursor, as xterm
+
+# A sub-parameter (a ':' separator) in a CSI other than SGR: libghostty ignores
+# the sequence. Afterglow, as kitty, carries it out with the main parameters.
+/\\x1b\[[0-9;]*:[0-9:;]*[@A-Za-ln-z`]/ sub-parameter outside SGR: Afterglow follows kitty
+
+# SGR with an empty last parameter (CSI 5 ; m): ECMA-48 and xterm read the empty
+# parameter as 0, a reset, and Afterglow does the same. libghostty skips it.
+/\\x1b\[[0-9;:]*;m/ SGR with an empty last parameter: Afterglow follows xterm
+
+# An escape that a UTF-8 character interrupts (ESC, ESC with intermediates, or a
+# CSI with or without parameters, then a non-ASCII character): no standard says
+# what to do. Afterglow ends the escape and prints the character, libghostty
+# drops both, and kitty drops the first byte.
+/\\x1b(\[[0-9;:<=>?]*|[ -\/]*)\\x[c-f][0-9a-f]/ escape interrupted by a UTF-8 character: Afterglow keeps the character
+
+# U+200B ZERO WIDTH SPACE, a format character: Afterglow keeps it in the cluster
+# before it at zero width, as glibc's wcwidth gives 0, so copied text keeps it.
+# libghostty drops it, and kitty draws it in a cell of its own.
+/\\xe2\\x80\\x8b/ U+200B: Afterglow keeps it at zero width
+
+# ?1049l, or XTRESTORE of 1049, on the primary screen: kitty saves and restores
+# the cursor only when it switches screens, and Afterglow does the same.
+# libghostty, as xterm, restores the cursor also when no switch happens.
+/^(?!.*\?(1049|1047|47)h).*\\x1b\[\?1049[lr]/ 1049 reset on the primary screen: Afterglow follows kitty
+
+# DECRC with origin mode on, of a cursor saved outside the scrolling region:
+# xterm and kitty move the restored cursor into the region, and Afterglow does
+# the same. libghostty leaves it outside.
+/\?6h.*(\\x1b8|\\x1b\[u)/ DECRC in origin mode: Afterglow follows xterm and kitty
+
+# A count of 0 in CHT, CBT, IL, DL, DCH, SU, SD, HPR or VPR: ECMA-48, xterm and
+# kitty read 0 as 1, and Afterglow does the same. libghostty does nothing.
+/\\x1b\[0+[ILMPSTZae]/ a count of 0: Afterglow follows ECMA-48, xterm and kitty
+
+# DECALN after SGR or DECOM: kitty keeps the SGR attributes of the cursor and
+# origin mode, and Afterglow does the same. libghostty resets them.
+/\\x1b\[[0-9;:]*m.*\\x1b#8/ DECALN keeps the SGR attributes: Afterglow follows kitty
+/\?6h.*\\x1b#8/ DECALN keeps origin mode: Afterglow follows kitty
+
+# XTRESTORE of a mode that XTSAVE did not save: kitty does nothing, and
+# Afterglow does the same. libghostty resets the mode.
+/^(?!.*\\x1b\[\?[0-9;]+s).*\\x1b\[\?[0-9;]+r/ XTRESTORE with nothing saved: Afterglow follows kitty
+
+# ?1049h on the alternate screen: xterm and kitty do nothing when no switch
+# happens, and Afterglow does the same. libghostty clears the alternate screen.
+/\?(47|1047|1049)h.*\\x1b\[\?1049h/ 1049 set on the alternate screen: Afterglow follows xterm and kitty
+
+# RIS also resets mode 2027 in libghostty, which afterglow_vtdiff sets at the
+# start. libghostty then splits grapheme clusters that Afterglow keeps whole.
+/\\x1bc.*\\x[c-f][0-9a-f]/ RIS turns grapheme clustering off in libghostty
+
+# SGR 38, 48 or 58 with a color type other than 2 or 5 (CSI 48;3 m): kitty
+# ignores the rest of the sequence, and Afterglow does the same. libghostty
+# reads the parameters after it as attributes.
+/\\x1b\[([0-9:;]*;)?[345]8;(?![25][;m])[0-9]/ unknown color type: Afterglow follows kitty
+
+# A blank cell next to a wide character, which Afterglow leaves plain and
+# libghostty gives the current pen: the left half of a wide character that a
+# character overwrites or erases in part (kitty keeps the attributes of the
+# wide character there), and the last column when a wide character does not
+# fit in it and wraps (kitty leaves that cell as it was).
+/\\x(f0|e[3-9])/ /^cell [0-9]+,[0-9]+: "" w1 \/ "" w1 / blank cell beside a wide character: Afterglow follows kitty
+
+# The clear of the alternate screen (?1049h, ?1047l): kitty clears it to blank
+# cells with no attributes, and Afterglow does the same. libghostty uses the
+# current background.
+/\\x1b\[\?10(49|47)/ /^cell [0-9]+,[0-9]+: "" w1 \/ "" w1 / alternate screen clear: Afterglow follows kitty
+
+# ED 22: kitty moves the screen into the scrollback and erases it, and leaves
+# the cursor where it is, as ED 2 does. Afterglow does the same. libghostty
+# moves the cursor home.
+/\\x1b\[22J/ ED 22 keeps the cursor: Afterglow follows kitty
+
+# Double-width and double-height lines (DECDWL, DECDHL): a line shows half its
+# columns, and Afterglow, as xterm, keeps the cursor and the text in them.
+# libghostty uses the line as a line of normal width.
+/\\x1b#[3-6]/ double-width lines: Afterglow follows xterm
+
+# VPR and HPR at a margin: xterm and kitty move as CUD and CUF do, and stop at
+# the bottom or right margin. Afterglow does the same. libghostty goes past it.
+/\\x1b\[[0-9;]*r.*\\x1b\[[0-9]*e/ VPR stops at the bottom margin: Afterglow follows xterm and kitty
+/\?69h.*\\x1b\[[0-9]*a/ HPR stops at the right margin: Afterglow follows xterm and kitty
+
+# SGR 38, 48 or 58 with too few values (CSI 48;2;1 m, CSI 38;5 m): kitty and
+# xterm ignore the color, and Afterglow does the same. libghostty reads the
+# values that are there as attributes.
+/\\x1b\[([0-9:;]*;)?[345]8;(5|2(;[0-9]*){0,2})m/ a color with too few values: Afterglow follows kitty

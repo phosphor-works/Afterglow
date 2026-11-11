@@ -565,6 +565,32 @@ TEST(Conformance, CursorBackWithReverseWrapStepsLikeBackspace)
     EXPECT_EQ(plain.t.screen().cursor.x, 0);
 }
 
+TEST(Conformance, InsertModeOutsideTheMarginsOverwrites)
+{
+    // IRM inserts as ICH does (xterm), and ICH does nothing outside the left
+    // and right margins: there a character overwrites the cell.
+    Term t(10, 2);
+    t.feed("abcdefghij\x1b[?69h\x1b[3;6s\x1b[4h");
+    t.feed("\x1b[1;1HX");
+    EXPECT_EQ(rowText(t.t, 0), "Xbcdefghij");
+    t.feed("\x1b[1;8HY\x1b[b"); // right of the margins, also with REP
+    EXPECT_EQ(rowText(t.t, 0), "XbcdefgYYj");
+    t.feed("\x1b[1;4HZ"); // inside them the text up to the right margin moves
+    EXPECT_EQ(rowText(t.t, 0), "XbcZdegYYj");
+}
+
+TEST(Conformance, PositionBackwardMovesLeftAndUp)
+{
+    // HPB and VPB (ECMA-48), the backward pair of HPR and VPR.
+    Term t(10, 6);
+    t.feed("\x1b[4;6H\x1b[2j\x1b[6n");
+    EXPECT_EQ(t.take(), "\x1b[4;4R");
+    t.feed("\x1b[k\x1b[6n");
+    EXPECT_EQ(t.take(), "\x1b[3;4R");
+    t.feed("\x1b[9j\x1b[9k\x1b[6n"); // clamped at the edges
+    EXPECT_EQ(t.take(), "\x1b[1;1R");
+}
+
 TEST(Conformance, ColorStackSlotsStoreWithoutPushing)
 {
     Term t(10, 2);
