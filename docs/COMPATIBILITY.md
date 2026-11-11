@@ -301,6 +301,18 @@ Run the tests of `aglow`:
 ctest --test-dir build --output-on-failure -R 'aglow|Aglow|^(Client|RunBinaryTest|RemoteCommandsTest)\.|^Proto\.(Client|Hostile|RunClient|RunInput|RunRemote|Remote)\.'
 ```
 
+## kitten interoperability
+
+The `kitten` commands of Kitty are clients of the same protocols as `aglow`.
+The tests below run `kitten` 0.50 against Afterglow. Each test skips when `kitten` is not installed.
+
+| Command | Interoperability checks |
+| --- | --- |
+| `kitten icat` | `afterglow_kitten_icat` runs it in `afterglow_headless`, which answers its queries, and reads the images and placements that reach the terminal. It checks the transfer modes `detect`, `stream`, `file` and `memory`, with a PNG that `kitten` sends as it is and with an image that it converts. Each temporary file and shared memory object must be deleted. It also checks `--place`, Unicode placeholders, the frames of an animated GIF, and `kitten` in a private tmux server. Then it draws the output with the Afterglow renderer. |
+| `kitten clipboard` | `NativeWindow.KittenClipboard*` run it in a pane of a window in a nested KWin: a write of text and of several MIME types, a read that the prompt allows or denies, and a read over the 8 MiB limit (`EFBIG`). |
+| `kitten dnd` | `NativeWindow.Kitty*` drag and drop tests, in a nested KWin with real compositor input: a drag between panes, remote directory trees, and a move or copy to a Wayland application. |
+| `kitten transfer` | `afterglow_transfer_kitten_relay`, against the Afterglow file transfer service in process. |
+
 ## Remote commands (OSC 24569)
 
 OSC 24569 is Afterglow's own sequence. It tells `aglow run` on a remote host where the socket of its ssh session is.
