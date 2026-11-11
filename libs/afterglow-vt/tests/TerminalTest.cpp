@@ -287,6 +287,73 @@ TEST(Terminal, Vs16WidensEmoji)
     EXPECT_EQ(t.t.screen().cursor.x, 3);
 }
 
+TEST(Terminal, Vs15NarrowsAWideEmoji)
+{
+    // kitty's text sizing spec: VS15 right after a wide emoji makes its cell
+    // one cell wide, and the cursor comes back by one.
+    Term t(10, 2);
+    t.feed("\xE2\x8C\x9A\xEF\xB8\x8E" "a"); // watch + VS15
+    EXPECT_EQ(t.t.screen().row(0).cells[0].width(), 1);
+    EXPECT_EQ(t.t.screen().row(0).cells[1].codepoint(), U'a');
+    EXPECT_EQ(t.t.screen().cursor.x, 2);
+    Term edge(4, 2); // in the last two columns: the freed cell takes the next character
+    edge.feed("ab\xF0\x9F\x98\x80\xEF\xB8\x8E" "c");
+    EXPECT_EQ(rowText(edge.t, 0), "ab\U0001F600\uFE0Ec");
+    EXPECT_EQ(rowText(edge.t, 1), "");
+    Term plain(10, 2); // VS15 after a narrow character, or not right after the emoji, changes nothing
+    plain.feed("\xE2\x9D\xA4\xEF\xB8\x8E\xF0\x9F\x91\xA8\xE2\x80\x8D\xEF\xB8\x8E" "a");
+    EXPECT_EQ(plain.t.screen().row(0).cells[0].width(), 1);
+    EXPECT_EQ(plain.t.screen().row(0).cells[1].width(), 2);
+    EXPECT_EQ(plain.t.screen().cursor.x, 4);
+    Term sized(10, 2); // a sized block keeps the width its program gave it
+    sized.feed("\x1b]66;w=2;\xE2\x8C\x9A\x07\xEF\xB8\x8E" "a");
+    EXPECT_EQ(sized.t.screen().cursor.x, 3);
+}
+
+TEST(Terminal, AJoinedCharacterWithAWidthWidensItsCluster)
+{
+    // glibc's wcwidth counts a spacing mark, a consonant after a virama and
+    // the digit after a prepended mark, so programs that measure with it
+    // expect the cluster to take two cells. It takes no more than two, as in
+    // wcwidth and ghostty.
+    // clusterWidth(), which OSC 66 and the input method's text use, follows
+    // the same rules as printing.
+    const auto widthOf = [](const std::string& text) {
+        Term t(20, 2);
+        t.feed(text + "a");
+        const int printed = t.t.screen().cursor.x - 1;
+        std::u32string cluster;
+        char32_t cp = 0;
+        for (std::size_t i = 0; AfterglowProto::nextUtf8(text, i, cp);) {
+            cluster += cp;
+        }
+        EXPECT_EQ(t.t.clusterWidth(cluster), printed) << text;
+        return printed;
+    };
+    EXPECT_EQ(widthOf("\xE0\xB8\x95\xE0\xB9\x88\xE0\xB8\xB3"), 2); // Thai TO TAO, MAI EK, SARA AM
+    EXPECT_EQ(widthOf("\xE0\xBA\x81\xE0\xBA\xB3"), 2); // Lao KO, AM
+    EXPECT_EQ(widthOf("\xE0\xA4\x95\xE0\xA4\xBE"), 2); // Hindi KA, AA (a spacing mark)
+    EXPECT_EQ(widthOf("\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\xB0"), 2); // Hindi KA, virama, RA
+    EXPECT_EQ(widthOf("\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\xB7\xE0\xA5\x8D\xE0\xA4\xAE"), 2); // three consonants
+    EXPECT_EQ(widthOf("\xE0\xAE\x95\xE0\xAE\xBE"), 2); // Tamil KA, AA (an Extend spacing mark)
+    EXPECT_EQ(widthOf("\xD8\x81\xDB\xB1"), 2); // U+0601, a prepended mark, then a digit
+    EXPECT_EQ(widthOf("\xE0\xA4\x95\xE0\xA4\xBF\xE0\xA4\x82"), 2); // KA, I, a nasal mark (Mn)
+    EXPECT_EQ(widthOf("e\xCC\x81"), 1); // a nonspacing mark adds no width
+    EXPECT_EQ(widthOf("\xE2\x9D\xA4\xE2\x80\x8D\xF0\x9F\x94\xA5"), 1); // emoji after a ZWJ: the first one's width
+    EXPECT_EQ(widthOf("\xE1\x84\x80\xE1\x85\xA1\xE1\x86\xA8"), 2); // Hangul jamo: the leading one's width
+    EXPECT_EQ(widthOf("\xE2\x8C\x9A\xEF\xB8\x8E"), 1); // VS15 after a wide emoji
+    EXPECT_EQ(widthOf("\xE2\x9D\xA4\xEF\xB8\x8F"), 2); // VS16 after a text emoji
+
+    // The new tail cell takes the character that was after the cluster.
+    Term t(10, 2);
+    t.feed("xyz\r\xE0\xA4\x95\xE0\xA4\xBE");
+    EXPECT_EQ(rowText(t.t, 0), "\u0915\u093Ez");
+    Term off(10, 2); // without grapheme clustering, each character takes its own cells
+    off.feed("\x1b[?2027l\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\xB0");
+    EXPECT_EQ(off.t.screen().row(0).cells[0].width(), 1);
+    EXPECT_EQ(off.t.screen().cursor.x, 2);
+}
+
 TEST(Terminal, ZwjFamilyIsOneWideCell)
 {
     Term t(10, 2);

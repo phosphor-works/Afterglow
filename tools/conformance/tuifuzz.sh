@@ -27,7 +27,7 @@ trap 'rm -rf "$work"' EXIT
 # Lines of each width class: wide, combining, emoji, tabs, long lines.
 i=0
 while [ $i -lt 300 ]; do
-    printf '%4d plain é 中文字 😀 e\314\201 →\tafter a tab %*s\n' $i $((i % 90)) end
+    printf '%4d plain é 中文字 😀 e\314\201 → का क्र ต่ำ ⌚\357\270\216\tafter a tab %*s\n' $i $((i % 90)) end
     i=$((i + 1))
 done >"$work/sample.txt"
 printf 'set -g mouse on\nset -g default-command /bin/sh\n' >"$work/tmux.conf"

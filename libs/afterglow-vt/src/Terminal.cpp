@@ -183,6 +183,27 @@ std::string formatColorReply(std::string_view prefix, Rgb c, bool bel)
 
 /// Prints with the G-sets out of the way (REP, OSC 66): GL acts as ASCII and
 /// a pending single shift waits, and both come back afterwards.
+/// The width rules of a grapheme cluster, for print(), which joins its
+/// characters one at a time, and for Terminal::clusterWidth(). VS16 after a
+/// text-default emoji makes a narrow cluster two cells wide (kitty's text
+/// sizing spec). So does a character with a width of its own that joins it:
+/// a spacing mark (Mc, Thai SARA AM), a consonant after a virama, the digit
+/// after a prepended mark. glibc's wcwidth counts those, so programs that
+/// measure with it expect the second cell; the cluster stays within two
+/// cells, as in wcwidth and ghostty. Emoji joined by a ZWJ keep the width of
+/// their first one.
+bool widensCluster(char32_t previous, char32_t cp, const Unicode::Props& props)
+{
+    return (cp == Unicode::VariationSelector16 && Unicode::props(previous).widensWithVs16)
+        || (props.width > 0 && !props.extendedPictographic);
+}
+
+/// VS15 right after a wide emoji makes its cluster one cell wide.
+bool narrowsCluster(char32_t previous, char32_t cp)
+{
+    return cp == Unicode::VariationSelector15 && Unicode::props(previous).narrowsWithVs15;
+}
+
 class CharsetBypass
 {
 public:
@@ -666,33 +687,29 @@ void Terminal::print(char32_t cp)
         if (!brk) {
             Row& row = scr.row(m_lastY);
             Cell& base = row.cells[std::size_t(m_lastX)];
+            const std::u32string_view before = scr.graphemeExtra(row, m_lastX);
+            const char32_t previous = before.empty() ? base.codepoint() : before.back();
             scr.appendGrapheme(row, m_lastX, cp);
-            // VS16 makes the base two cells wide when the tail fits within the
-            // same bounds print() uses (margin, double-width line).
+            // A joined character can change the cluster's width
+            // (widensCluster). The tail must fit within the same bounds
+            // print() uses (margin, double-width line). A sized block (OSC
+            // 66) keeps the width that its program gave it.
             const int right = rightEdge(row, m_lastX);
-            if (cp == Unicode::VariationSelector16 && base.width() == 1
-                && Unicode::props(base.codepoint()).widensWithVs16 && m_lastX + 1 <= right) {
-                const char32_t baseCp = base.codepoint();
-                const std::u32string extra(scr.graphemeExtra(row, m_lastX));
-                if (insertsAt(m_lastX + 1)) {
-                    // The tail needs a cell of its own: shift the text after it.
-                    scr.insertCells(row, m_lastX + 1, right, 1, StyleTable::DefaultId);
-                }
-                // writeCell releases the old style before it takes the new
-                // one; this reference keeps the style alive in between.
-                const std::uint32_t style = base.styleId();
-                scr.styles().retain(style);
-                scr.writeCell(row, m_lastX, baseCp, style, 2);
-                scr.styles().release(style);
-                for (char32_t e : extra) {
-                    scr.appendGrapheme(row, m_lastX, e);
-                }
+            if (widensCluster(previous, cp, props) && base.width() == 1 && !base.isMulticell() && m_lastX + 1 <= right) {
+                setClusterWidth(row, m_lastX, 2);
                 if (cur.y == m_lastY && cur.x == m_lastX + 1 && !cur.pendingWrap) {
                     if (cur.x + 1 > right) {
                         cur.pendingWrap = true;
                     } else {
                         ++cur.x;
                     }
+                }
+            } else if (narrowsCluster(previous, cp) && base.width() == 2 && !base.isMulticell()) {
+                setClusterWidth(row, m_lastX, 1);
+                if (cur.y == m_lastY && cur.pendingWrap && cur.x == m_lastX + 1) {
+                    cur.pendingWrap = false; // the freed cell is where the next character goes
+                } else if (cur.y == m_lastY && cur.x == m_lastX + 2 && !cur.pendingWrap) {
+                    --cur.x;
                 }
             }
             touch();
@@ -808,6 +825,43 @@ void Terminal::print(char32_t cp)
         cur.pendingWrap = true;
     } else {
         cur.x += width;
+    }
+}
+
+int Terminal::clusterWidth(std::u32string_view cluster) const noexcept
+{
+    if (cluster.empty()) {
+        return 0;
+    }
+    int width = charWidth(Unicode::props(cluster[0]));
+    for (std::size_t i = 1; i < cluster.size(); ++i) {
+        if (width == 1 && widensCluster(cluster[i - 1], cluster[i], Unicode::props(cluster[i]))) {
+            width = 2;
+        } else if (width == 2 && narrowsCluster(cluster[i - 1], cluster[i])) {
+            width = 1;
+        }
+    }
+    return width;
+}
+
+void Terminal::setClusterWidth(Row& row, int x, int width)
+{
+    Screen& scr = *m_active;
+    Cell& cell = row.cells[std::size_t(x)];
+    const char32_t base = cell.codepoint();
+    const std::u32string extra(scr.graphemeExtra(row, x));
+    if (width == 2 && insertsAt(x + 1)) {
+        // The tail needs a cell of its own: shift the text after it.
+        scr.insertCells(row, x + 1, rightEdge(row, x), 1, StyleTable::DefaultId);
+    }
+    // writeCell releases the old style before it takes the new one; this
+    // reference keeps the style alive in between.
+    const std::uint32_t style = cell.styleId();
+    scr.styles().retain(style);
+    scr.writeCell(row, x, base, style, width);
+    scr.styles().release(style);
+    for (char32_t e : extra) {
+        scr.appendGrapheme(row, x, e);
     }
 }
 
@@ -1326,12 +1380,8 @@ void Terminal::textSizing(std::string_view args)
             if (end <= start) {
                 return;
             }
-            const Unicode::Props props = Unicode::props(cps[start]);
-            int width = charWidth(props);
             const std::u32string_view cluster = std::u32string_view(cps).substr(start, end - start);
-            if (width == 1 && props.widensWithVs16 && cluster.find(Unicode::VariationSelector16) != std::u32string_view::npos) {
-                width = 2;
-            }
+            const int width = clusterWidth(cluster);
             if (width > 0) {
                 params.width = std::uint8_t(width);
                 placeMulticell(cluster[0], cluster.substr(1), params);

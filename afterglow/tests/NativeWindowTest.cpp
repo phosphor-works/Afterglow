@@ -1323,6 +1323,25 @@ TEST_F(NativeWindow, InputMethodPreservesGraphemesAndCommitsToPty) {
         return screenOf(pane).contains(QStringLiteral("native-ime-accepted"));
     }));
 }
+TEST_F(NativeWindow, InputMethodTextTakesTheCellsOfPrintedText) {
+    // The composition takes the cells that the terminal gives the same text:
+    // Hindi KA AA two (a spacing mark widens it), a watch with VS15 one.
+    auto* pane = window->focusedPane();
+    const QString text = QString::fromUtf8("\u0915\u093E\u231A\uFE0E");
+    QInputMethodEvent event(text, {QInputMethodEvent::Attribute(QInputMethodEvent::Cursor, int(text.size()), 1, {})});
+    QCoreApplication::sendEvent(window, &event);
+    pane->refreshSnapshot();
+    const auto& snapshot = pane->snapshot();
+    const auto widthOf = [&](char32_t cp) {
+        const auto cell = std::find_if(snapshot.cells.begin(), snapshot.cells.end(), [&](const auto& c) { return c.cp == cp; });
+        return cell == snapshot.cells.end() ? -1 : int(cell->width);
+    };
+    EXPECT_EQ(widthOf(U'\u0915'), 2);
+    EXPECT_EQ(widthOf(U'\u231A'), 1);
+    QInputMethodEvent clear;
+    QCoreApplication::sendEvent(window, &clear);
+}
+
 TEST_F(NativeWindow, InputMethodQueriesFollowChromeEditor) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);

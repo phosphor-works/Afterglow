@@ -113,9 +113,12 @@ public:
 
     std::string text()
     {
-        static constexpr std::array<std::string_view, 24> Words = {
+        // Clusters whose width the terminal changes after their first
+        // character: a spacing mark, a conjunct, Thai SARA AM, VS15, VS16.
+        static constexpr std::array<std::string_view, 30> Words = {
             "a",  "hello", "q",  " ",   "x",   "jk", ":",      "/",  "0",   "$", "w",  "G",
-            "gg", "dd",    "u",  "é",   "中文", "😀", "é", "→", "👨‍👩‍👧", "\t", "ab", "?"};
+            "gg", "dd",    "u",  "é",   "中文", "😀", "é", "→", "👨‍👩‍👧", "\t", "ab", "?",
+            "\u0915\u093E", "\u0915\u094D\u0930", "\u0E15\u0E48\u0E33", "\u231A\uFE0E", "\u2764\uFE0F", "\u0601\u06F1"};
         std::string out;
         for (std::uint64_t n = 1 + below(4); n > 0; --n) out += Words[below(Words.size())];
         return out;
