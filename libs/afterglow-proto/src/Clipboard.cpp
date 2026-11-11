@@ -376,6 +376,14 @@ std::string ClipboardRequest::osc52Reply(std::string_view text) const
     return r;
 }
 
+std::string ClipboardRequest::refusal(std::string_view status) const
+{
+    if (osc52) {
+        return kind == Kind::Read ? osc52Reply({}) : std::string();
+    }
+    return kind == Kind::Read ? ClipboardAssembler::readStatus(status, *this) : ClipboardAssembler::writeStatus(status, id);
+}
+
 namespace {
 
 /// The metadata that a read and the start of a write share.

@@ -269,6 +269,44 @@ TEST(Notification, TextAndIconHaveLimitsPerNotification)
     EXPECT_EQ(assembler.feed("i=v:d=0:p=icon;" + icon, request), NotificationAssembler::Result::Ignored);
 }
 
+// The answer to a query of the notifications that are open, as the window and
+// the mux daemon give it.
+TEST(Notification, TheAliveAnswerNamesTheQueryAndTheOpenIds)
+{
+    NotificationRequest query;
+    query.kind = NotificationRequest::Kind::Alive;
+    EXPECT_EQ(query.aliveReply(), "\x1b]99;i=0:p=alive;\x1b\\");
+    query.id = "n1";
+    EXPECT_EQ(query.aliveReply("a,b"), "\x1b]99;i=n1:p=alive;a,b\x1b\\");
+}
+
+// The unpadded end of the last chunk counts against the limit too: a request
+// never holds more than MaxText bytes of text, which a mux window checks.
+TEST(Notification, TheUnpaddedEndOfTheLastChunkCountsAgainstTheLimit)
+{
+    // Each row alone: a failure of the first does not skip the second.
+    const auto feed = [](const std::string& end, bool ready) {
+        NotificationAssembler assembler;
+        NotificationRequest request;
+        // 65532 bytes in whole groups of base64, then 4 or 5 bytes with an
+        // unpadded end.
+        const std::string chunk = base64Encode(std::string(6144, 'A'));
+        for (int i = 0; i < 10; ++i) {
+            ASSERT_EQ(assembler.feed("i=x:e=1:d=0;" + chunk, request), NotificationAssembler::Result::Pending);
+        }
+        ASSERT_EQ(assembler.feed("i=x:e=1:d=0;" + base64Encode(std::string(4092, 'A')), request), NotificationAssembler::Result::Pending);
+        const auto result = assembler.feed("i=x:e=1;" + end, request);
+        EXPECT_EQ(result, ready ? NotificationAssembler::Result::Ready : NotificationAssembler::Result::Ignored) << end;
+        if (ready) {
+            EXPECT_EQ(request.title.size(), NotificationRequest::MaxText);
+        }
+    };
+    for (const auto& [end, ready] : std::vector<std::pair<std::string, bool>>{{"QUFBQQ", true}, {"QUFBQUE", false}}) {
+        SCOPED_TRACE(end);
+        feed(end, ready);
+    }
+}
+
 TEST(Notification, UnpaddedIconEndKeepsChunkedNotificationsWorking)
 {
     Term t;

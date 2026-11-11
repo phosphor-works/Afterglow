@@ -401,17 +401,24 @@ inline std::optional<SessionInfo> sessionNamed(TestDaemon& daemon, const std::st
 }
 
 /// A Python program that puts the terminal in raw mode, writes @p query
-/// and saves what the terminal answers, up to @p end, in @p file.
-inline std::vector<std::string> ask(const std::string& query, const std::string& end, const std::string& file)
+/// and saves what the terminal answers, up to @p end, in @p file. With
+/// @p afterByte, it writes "go?" once in raw mode (which drops the input
+/// that came before) and waits for one byte of input before it asks: a
+/// window that attaches first then gets the query. It waits for the answer
+/// longer than a test's own waits, so that the test sets the time limit.
+inline std::vector<std::string> ask(const std::string& query, const std::string& end, const std::string& file, bool afterByte = false)
 {
     const std::string script = R"(import os, select, sys, tty
 fd = sys.stdin.fileno()
 tty.setraw(fd)
+if sys.argv[4] == '1':
+    os.write(1, b'go?')
+    os.read(fd, 1)
 os.write(1, sys.argv[1].encode().decode('unicode_escape').encode('latin-1'))
 end = sys.argv[2].encode().decode('unicode_escape').encode('latin-1')
 data = b''
 while not data.endswith(end):
-    ready, _, _ = select.select([fd], [], [], 5)
+    ready, _, _ = select.select([fd], [], [], 30)
     if not ready:
         break
     data += os.read(fd, 4096)
@@ -419,7 +426,7 @@ with open(sys.argv[3] + '.part', 'wb') as f:
     f.write(data)
 os.rename(sys.argv[3] + '.part', sys.argv[3])
 )";
-    return {"python3", "-I", "-c", script, query, end, file};
+    return {"python3", "-I", "-c", script, query, end, file, afterByte ? "1" : "0"};
 }
 
 } // namespace MuxTest

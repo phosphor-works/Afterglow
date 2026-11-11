@@ -3,71 +3,14 @@
 
 #include "MuxStream.h"
 
+#include "MuxCodec.h"
+
 #include <algorithm>
 
 namespace AfterglowMux::Attach {
 
-namespace {
-
-void varint(std::string& out, std::uint64_t v)
-{
-    while (v >= 0x80) {
-        out.push_back(char((v & 0x7f) | 0x80));
-        v >>= 7;
-    }
-    out.push_back(char(v));
-}
-
-class Reader
-{
-public:
-    explicit Reader(std::string_view s)
-        : m_s(s)
-    {
-    }
-    bool ok() const { return m_ok; }
-    bool done() const { return m_at == m_s.size(); }
-    std::uint8_t byte()
-    {
-        if (m_at >= m_s.size()) {
-            m_ok = false;
-            return 0;
-        }
-        return std::uint8_t(m_s[m_at++]);
-    }
-    /// A varint in its shortest form, up to @p max.
-    std::uint64_t varint(std::uint64_t max)
-    {
-        std::uint64_t v = 0;
-        for (int shift = 0; shift < 64 && m_ok; shift += 7) {
-            const std::uint8_t b = byte();
-            const std::uint64_t part = b & 0x7f;
-            // The tenth byte holds the 64th bit only. A last byte of 0 after
-            // the first is a longer form of a shorter number.
-            if ((shift == 63 && part > 1) || (!(b & 0x80) && shift > 0 && part == 0)) break;
-            v |= part << shift;
-            if (!(b & 0x80)) {
-                if (v > max) m_ok = false;
-                return m_ok ? v : 0;
-            }
-        }
-        m_ok = false;
-        return 0;
-    }
-    std::string_view rest()
-    {
-        const std::string_view r = m_s.substr(m_at);
-        m_at = m_s.size();
-        return r;
-    }
-
-private:
-    std::string_view m_s;
-    std::size_t m_at = 0;
-    bool m_ok = true;
-};
-
-} // namespace
+using Codec::varint;
+using Reader = Codec::Reader;
 
 std::string encode(const Event& event)
 {
@@ -77,6 +20,7 @@ std::string encode(const Event& event)
     // A wait status is never negative: 0 carries -1, the status that is
     // unknown, and the others go up by one.
     varint(out, std::uint64_t(event.status < 0 ? 0 : std::int64_t(event.status) + 1));
+    if (event.type == EventType::Host) out += event.payload;
     return out;
 }
 
@@ -88,7 +32,9 @@ std::optional<Event> decodeEvent(std::string_view frame)
     event.pane = std::uint32_t(r.varint(0xffffffffu));
     event.channel = std::uint32_t(r.varint(MaxChannelId - 1));
     const std::uint64_t status = r.varint(std::uint64_t(0x7fffffff) + 1);
-    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Detached)) {
+    // A host call takes the rest of the frame.
+    if (type == std::uint8_t(EventType::Host) && r.ok()) event.payload = std::string(r.rest());
+    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Host)) {
         return std::nullopt;
     }
     event.type = EventType(type);
@@ -96,6 +42,10 @@ std::optional<Event> decodeEvent(std::string_view frame)
     // Pane ids start at 1, and a pane's state never takes the channel of
     // the events.
     if (event.type == EventType::PaneOpened && (event.pane == 0 || event.channel == ControlChannel)) return std::nullopt;
+    // A host call names its pane, and comes whole or in parts.
+    if (event.type == EventType::Host && (event.pane == 0 || event.channel != 0 || (event.status != -1 && event.status != HostPart))) {
+        return std::nullopt;
+    }
     return event;
 }
 

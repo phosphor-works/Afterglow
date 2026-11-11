@@ -110,7 +110,8 @@ The command itself is not a running program when it runs in the foreground of a 
 
 `afterglow mux attach NAME` opens a window that shows session `NAME`.
 The window opens in the Afterglow that runs on your display, as the window of any launch.
-When a window of that Afterglow shows the session already, that window shows the pane of the session and comes to the front, and no new window opens.
+When a window of that Afterglow shows the session already, that window shows the pane of the session and comes to the front.
+No new window opens then.
 Without `NAME`, the command shows the only session. When no session runs, it creates one, as `afterglow mux new` does.
 When more than one session runs, it stops and names them.
 
@@ -153,13 +154,12 @@ A project saves the pane of a session as a shell in the directory of that pane. 
 
 The window of a session does not show these yet:
 
-- Bells, desktop notifications and the clipboard of the programs (see [what the daemon answers](#what-the-daemon-answers))
 - Images, and extra cursors
-- Command marks of shell integration (OSC 133): the last output, the jumps between prompts, a click on the prompt, and Notify on Next Command Finish
-- The status of programs (OSC 7501), the shell contexts in the title, and user variables
+- Command marks of shell integration (OSC 133): the last output, the jumps between prompts and a click on the prompt
+- The status of programs (OSC 7501), and the shell contexts in the title
 - Visibility reports (mode 2033): the program always hears that the window is visible
 - The directory of the program when its shell does not report it (OSC 7). New tabs and splits then start in your home directory.
-- A selection or a search match in a region that a program scrolls, as an editor does: it stays on its rows, not on its text
+- A selection or a search match in a region that a program scrolls, as an editor does. It stays on its rows, not on its text.
 
 These commands and options are not available. Each stops with exit status 1 and writes this message on standard error:
 
@@ -267,7 +267,9 @@ The daemon removes `AFTERGLOW_OVERLAY`.
 An `afterglow` that starts from a session pane does not give `AFTERGLOW_SESSION` to its own panes.
 
 `afterglow mux new` also sends the terminal settings of your configuration, such as `Terminal.scrollback` and the theme colors.
-The session keeps these values. A later change of the configuration does not change a running session.
+The session keeps these values. A later change of them does not change a running session.
+The requests that reach a window follow the settings of that window, such as `Terminal.bell` and `Terminal.clipboardRead` (see [what a window answers](#what-a-window-answers)).
+A change of these settings applies at once.
 `afterglow mux new` reads no colors from the application palette.
 When `Colors.theme` names a dark and a light theme, the session gets the dark theme.
 With a `plasma` theme, the session gets only the colors that `kdeglobals` sets, over the theme.
@@ -290,21 +292,69 @@ Thus `afterglow ctl`, `afterglow ctl watch` and `aglow run` fail with that messa
 
 The daemon reads the PTY output and parses it into the terminal of the pane, whether or not a window shows the session.
 While no window shows it, the session keeps running, scrollback grows to the `Terminal.scrollback` limit, and the programs do not pause.
-The window that shows a session does not change these answers yet.
+The daemon answers these requests itself, also while a window shows the session.
+While a window shows the session, these answers go through the window, as the answers to queries do (see [what a window answers](#what-a-window-answers)).
+
+| Request of a program | Result |
+| --- | --- |
+| Title and working directory | The daemon keeps the last value |
+| Notification query (OSC 99 `p=?`) | The daemon gives the answer of a window |
+| Query of the socket of an ssh session (OSC 24569) | The daemon answers that there is none (`error=off`) |
+| Images | RGB, RGBA and sixel images work in the daemon. PNG (kitty graphics `f=100`) and iTerm2 images are refused, because the daemon decodes no compressed images. A window does not show images yet. |
+
+While no window shows the session, the daemon also answers these requests.
 
 | Request of a program | Result |
 | --- | --- |
 | Queries that the terminal answers itself (DA1, DSR, color queries) | The daemon answers |
-| Title and working directory | The daemon keeps the last value |
-| Notification query (OSC 99 `p=?`) | The daemon gives the answer of a window |
 | Query of the notifications on screen (OSC 99 `p=alive`) | The daemon answers with an empty list, because no notification is on screen |
-| Query of the socket of an ssh session (OSC 24569) | The daemon answers that there is none (`error=off`) |
-| Bell, notification, clipboard write | The daemon drops it. A clipboard write that asks for a status (OSC 5522) gets `EPERM`. |
+| Bell, flash, notification, clipboard write | The daemon drops it. A clipboard write that asks for a status (OSC 5522) gets `EPERM`. |
 | Clipboard read (OSC 52 and OSC 5522) | Refused, as when you deny the request |
 | File transfer (OSC 5113) | Refused with `EPERM`, as when you deny the request. A transfer with `q=2` asks for no status and gets no answer. |
 | Drag and drop (OSC 72) | A program that asks which types the terminal supports gets the answer of a window. A drag offer (`t=o`) gets `EPERM`. No drop arrives, and no drag starts. |
 | File download (OSC 1337 `File`) | Dropped |
-| Images | RGB, RGBA and sixel images work in the daemon. PNG (kitty graphics `f=100`) and iTerm2 images are refused, because the daemon decodes no compressed images. A window does not show images yet. |
+| Pointer shape (OSC 22), user variables (OSC 1337 `SetUserVar`), commands of shell integration (OSC 133) | The daemon keeps the last pointer shape, the user variables and the running command for the next window |
+
+## What a window answers
+
+While a window shows the session, the daemon sends the other requests of the programs to the window.
+The window answers them as for a program of its own.
+Your settings and prompts apply, such as the questions before a clipboard read and a file transfer.
+
+| Request of a program | Result |
+| --- | --- |
+| Bell (BEL) | The window rings the bell, as `Terminal.bell` sets |
+| Flash (OSC 555) | The window flashes the pane |
+| Queries that the terminal answers itself (DA1, DSR, color queries) | The daemon makes the answer. The window writes it after its replies to the requests that came before the query, as for its own panes. |
+| Notification (OSC 9, OSC 777, OSC 99) | The window shows it. A query of the notifications on screen (OSC 99 `p=alive`) gets the answer of the window. |
+| Clipboard write and read (OSC 52 and OSC 5522) | The window writes or reads its clipboard, and asks first as for its own panes |
+| File transfer (OSC 5113) and drag and drop (OSC 72) | The window runs them, with its questions |
+| File download (OSC 1337 `File`) | The window asks where to save the file |
+| Pointer shape (OSC 22) and user variables (OSC 1337 `SetUserVar`) | The window takes them as from its own panes. A window that attaches gets the last values. |
+| Commands of shell integration (OSC 133) | The window takes them as from its own panes, with the time that the daemon measured. A window that attaches while a command runs gets its start. |
+
+### Requests that wait
+
+The requests wait for the window in a queue of the session and in a queue of each pane.
+`Mux.eventQueue` sets the size of each queue. A change applies when Afterglow next attaches to a session.
+A request that finds the queue of its pane empty always fits, up to the limit of one request.
+A request that does not fit gets the answer of a session that no window shows (see [what the daemon answers](#what-the-daemon-answers)).
+Thus a notification, an OSC 52 clipboard write and a download that do not fit are dropped.
+These requests are exceptions:
+
+- An answer to a query that does not fit is dropped, as a window drops one past its own limit.
+- When commands of file transfer and drag and drop do not fit, the window ends the transfer or the drag, as for its own panes.
+
+These requests do not take more room when more come:
+
+- Bells and flashes that wait count once.
+- The pointer shape and each user variable wait with their last value only.
+- The end of a command always goes when its start went.
+
+When the window goes, the requests that still wait get the answer of a session that no window shows.
+A request that the window got already gets no answer from the daemon.
+A clipboard read that waits for your answer gets the denial when its window closes and the session keeps running.
+When the pane of the session closes in the window, a file transfer that the window ran gets no more answers. The same is true when the pane of a program of the window closes.
 
 ## Limits
 
@@ -320,5 +370,7 @@ The window that shows a session does not change these answers yet.
 | Wait for a window to connect to its attach socket | 5 seconds | The daemon removes the socket, and `afterglow mux attach` stops with exit status 1 |
 | Input of a window that the program does not read | 32 MiB in the queue of the PTY, 4 MiB in the daemon, then 32 MiB in the window | The window refuses more input and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
 | Frames to a window | About 2 MiB of state in each frame, and at most 4 MiB, the largest frame of the stream | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
+| Requests that wait for a window | `Mux.eventQueue` (1 to 64 MiB, 4 MiB by default) in the queue of the session, and as much in the queue of each pane. A request that finds the queue of its pane empty passes the limit. The queue of the session also takes one request of any size while it is below the limit. | The answer of a session that no window shows (see [requests that wait](#requests-that-wait)) |
+| One request to a window | 129 MiB: the largest clipboard write that a terminal takes, and its types | The answer of a session that no window shows |
 
 The daemon sets no limit on the number of sessions or connections. Each session and each connection uses open files.

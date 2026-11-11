@@ -8,6 +8,8 @@
 #include "desktop/FileTransfer.h"
 #include "scripting/ScriptHost.h"
 
+#include "MuxProtocol.h"
+
 #include <AfterglowRender/Snapshot.h>
 
 #include <PhosphorConfig/Schema.h>
@@ -761,6 +763,27 @@ TEST_F(ConfigTest, ReadsWhatClosingTheWindowOfASessionDoes)
     SettingsStore store(write(QStringLiteral("other.json"), R"({"Mux": {"onClose": "keep"}})"));
     EXPECT_EQ(store.settings().mux.onClose, MuxSettings::Close::Kill);
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Mux.onClose must be one of"))) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, ReadsTheEventQueueOfASessionWithinTheDaemonsBounds)
+{
+    // The daemon's default, for an attach that passes none.
+    EXPECT_EQ(std::int64_t(MuxSettings{}.eventQueue), AfterglowMux::DefaultEventQueue);
+    // The bounds are the daemon's: every value of the setting is one that an
+    // attach call may pass.
+    const auto queue = SettingsStore::reference()
+                           .value(QStringLiteral("groups"))
+                           .toObject()
+                           .value(QStringLiteral("Mux"))
+                           .toObject()
+                           .value(QStringLiteral("eventQueue"))
+                           .toObject();
+    EXPECT_EQ(std::int64_t(queue.value(QStringLiteral("minimum")).toInt()) << 20, AfterglowMux::MinEventQueue);
+    EXPECT_EQ(std::int64_t(queue.value(QStringLiteral("maximum")).toInt()) << 20, AfterglowMux::MaxEventQueue);
+    for (const auto& [given, expected] : std::vector<std::pair<int, std::size_t>>{{16, 16}, {0, 1}, {1000, 64}}) {
+        SettingsStore store(write(QStringLiteral("queue.json"), QStringLiteral(R"({"Mux": {"eventQueue": %1}})").arg(given).toUtf8()));
+        EXPECT_EQ(store.settings().mux.eventQueue, expected << 20) << given;
+    }
 }
 
 // A file that means to turn scripts or the control socket off, and says it

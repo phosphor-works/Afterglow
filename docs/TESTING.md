@@ -50,8 +50,8 @@ When the tools are there and its own sshd cannot start, the test fails.
 | --- | --- | --- |
 | `BUILD_TESTING` | `ON` | Builds the unit and renderer tests. Requires GTest. |
 | `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng` and the headless conformance host. Adds the host's regression test and `aglow_icat_render` to CTest. |
-| `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite and `afterglow_transfer_kitty` to CTest with the label `native`. Requires Python 3 and the native test dependencies. |
-| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library and the image decoders of `aglow`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
+| `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`, and with `AFTERGLOW_BUILD_AGLOW` also `afterglow_transfer_kitty`. Requires Python 3 and the native test dependencies. |
+| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the image decoders of `aglow` and the attach stream of `afterglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
 | `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries. Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests, the `RunBinaryTest.*` tests and the `sshd` test of `RemoteCommandsTest.*` report Skipped. |
 | `AFTERGLOW_BUILD_VTDIFF` | `OFF` | Builds `afterglow_vtdiff`, which compares the terminal core with libghostty-vt. Requires libghostty-vt 1.0 in `CMAKE_PREFIX_PATH`. See [Differences with libghostty-vt](#differences-with-libghostty-vt). |
 
@@ -143,7 +143,7 @@ python3 afterglow/tests/native_window_acceptance.py --binary build/afterglow/aft
 ```
 
 The runner creates a nested KWin desktop on a private session bus.
-It keeps your `HOME` and `XDG_RUNTIME_DIR`. Thus the panes of the tests run `Terminal.shell` `/bin/sh`, which reads none of your startup files.
+It keeps your `HOME` and `XDG_RUNTIME_DIR`. For this reason, the tests set `Terminal.shell` to `/bin/sh`, which reads none of your startup files.
 The test binary runs only in a runner. Without one, it stops with exit status 2.
 See [native test dependencies](#native-test-dependencies) for the required software.
 It uses the Basic control style and generic Qt platform theme.
@@ -151,7 +151,7 @@ It uses the Basic control style and generic Qt platform theme.
 | Option | Default | Function |
 | --- | --- | --- |
 | `--filter` | All tests | A GTest filter, for example `NativeWindow.AglowDragAndDropClient` |
-| `--timeout` | 600 | Seconds for the whole run. The runner stops the suite at the limit and fails. |
+| `--timeout` | 1800 | Seconds for the whole run. The runner stops the suite at the limit and fails. The whole suite takes about 15 minutes. |
 
 See [desktop integration](DESKTOP.md#native-acceptance-coverage) for coverage and limits.
 
@@ -217,9 +217,9 @@ Extra arguments go to esctest. With a filter, the script reports only unexpected
 ### Fuzzing
 
 The fuzz targets need clang for C and C++, and a separate build directory.
-The targets compile the terminal core, the protocol library, zlib-ng, xxHash and the image decoders of `aglow` with the sanitizers.
+The targets compile the terminal core, the protocol library, zlib-ng, xxHash, the image decoders of `aglow` and the codecs of the attach stream with the sanitizers.
 Build only the fuzz targets in a fuzz build directory.
-The commands below turn off the tests and build the three targets by name.
+The commands below turn off the tests and build the four targets by name.
 A fuzz build does not build `aglow`, because a static program cannot use the sanitizer runtimes.
 
 | Target | Input |
@@ -227,12 +227,13 @@ A fuzz build does not build `aglow`, because a static program cannot use the san
 | `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. |
 | `afterglow_protofuzz` | The protocol readers for remote input. The first byte selects the reader. |
 | `afterglow_imagefuzz` | An image file to the image decoders of `aglow`: the patched stb_image and the GIF reader of `aglow`. |
+| `afterglow_muxfuzz` | The host calls, the events and the input of the attach stream of `afterglow-mux`. The first byte selects the reader. The state frames of panes are not in it. |
 
 Build the targets:
 
 ```sh
 cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DAFTERGLOW_BUILD_FUZZERS=ON -DBUILD_TESTING=OFF
-cmake --build build-fuzz --target afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz
+cmake --build build-fuzz --target afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz
 ```
 
 Run the terminal core target:
@@ -254,6 +255,13 @@ Run the image target with its own corpus:
 ```sh
 mkdir -p build-fuzz/corpus-image
 ./build-fuzz/tools/fuzz/afterglow_imagefuzz -max_total_time=300 -max_len=65536 build-fuzz/corpus-image/
+```
+
+Run the attach stream target with its own corpus:
+
+```sh
+mkdir -p build-fuzz/corpus-mux
+./build-fuzz/tools/fuzz/afterglow_muxfuzz -max_total_time=300 -max_len=65536 build-fuzz/corpus-mux/
 ```
 
 A run passes when the fuzzer stops at the time limit without a crash report.
@@ -488,7 +496,7 @@ In other runs, they report Skipped.
 
 CTest runs the relay tests below as `afterglow_transfer_kitten_relay` and `afterglow_transfer_aglow_relay`.
 `afterglow_transfer_kitten_relay` reports Skipped when `kitten` is not installed.
-With `AFTERGLOW_NATIVE_TESTS=ON`, CTest also runs the `--kitty` test as `afterglow_transfer_kitty`.
+With `AFTERGLOW_NATIVE_TESTS=ON` and `AFTERGLOW_BUILD_AGLOW=ON`, CTest also runs the `--kitty` test as `afterglow_transfer_kitty`.
 
 Run interoperability tests with the installed `kitten` client:
 
@@ -583,7 +591,7 @@ ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|M
 | --- | --- | --- |
 | `Proto.IpcServer.*` | `afterglow_proto_tests` | The server side of the phosphor-ipc wire format that `afterglow-mux` uses: requests, errors, the listener and long lines |
 | `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run`, and the sockets of the mux daemon: their order and the name of the state socket |
-| `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, and session names. The keys and fields that belong to the protocol version. The bytes of the attach stream, and the frames that its decoders refuse. |
+| `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, and session names. The keys and fields that belong to the protocol version. The bytes of the attach stream and of each host call, and the frames and calls that its decoders refuse. |
 | `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own. The cases are sessions, the environment of a pane, the answers to queries, the refused control calls, and when the daemon exits. |
 | `Mux.MuxAttach.*` | `afterglow_mux_tests` | A window of a session, played without Qt. The cases are listed below the table. |
 | `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`). A replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are listed below the table. |
@@ -611,6 +619,14 @@ The `Mux.MuxAttach.*` tests cover these cases:
 - A window that reads slowly: fewer frames, and no lost output
 - Input that a full PTY refuses: it waits and arrives whole, and a Kill goes past it
 - The attach sockets that an earlier daemon left, and calls that the daemon refuses
+- The calls of the pane's terminal to its host reach the window: a bell, an OSC 52 write and a file transfer, in their order
+- A clipboard read waits for the window's answer, and the daemon gives none
+- The answer to a query (DA1) comes after the drag and drop query before it
+- A request larger than the window's `eventQueue` goes in parts when nothing else waits, and the requests after it follow it
+- A request that does not fit the queue gets the answer of a session that no window shows, once
+- A request that waits when the window detaches, in the queue of the session or of the pane, gets that answer once
+- A request whose first part went goes whole when the session ends
+- An `eventQueue` out of range, and an unknown option of the attach call, are refused
 
 The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow mux new` starts in a session of its own:
 
@@ -629,6 +645,11 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.AMuxSessionWhoseProgramExitsClosesItsPane` | The last output and the exit status of the program |
 | `NativeWindow.AWindowThatLosesItsSessionLeavesItRunning` | A detach and a takeover close the pane and kill nothing |
 | `NativeWindow.AMuxSessionCanOutliveItsWindow` | `Mux.onClose` detach |
+| `NativeWindow.AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow` | A bell, a user variable and an OSC 52 write of the session's shell reach the window and its clipboard |
+| `NativeWindow.AMuxSessionsReadsAndCommandsReachTheWindowAndBack` | An OSC 52 read gets the clipboard after the prompt. The commands of shell integration come in order, with the time that the daemon measured. |
+| `NativeWindow.AProtocolWaitOfASessionPaneReadsItsStream` | The answer wait of a drag reads the session's stream, and ends when the command comes |
+| `NativeWindow.ALaunchOfASessionPassesItsEventQueue` | A launch of a session passes `Mux.eventQueue` of the configuration to the daemon, in bytes |
+| `NativeWindow.AReadOfASessionThatOutlivesItsWindowGetsTheDenial` | A clipboard read that waits for its prompt gets the denial when the window closes and the session keeps running |
 | `NativeWindow.MuxOnCloseAppliesToAnOpenSessionPane` | A change of `Mux.onClose` reaches an open pane |
 | `NativeWindow.ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow` | A launch of a session that a window shows brings that window to the front and shows the pane of the session. A launch of an unknown session fails with the reason. |
 | `NativeWindow.ALargePasteReachesTheProgramOfASessionWhole` | Input larger than a frame goes in parts, in order |
@@ -688,7 +709,12 @@ Run the suite without it:
 ctest --test-dir build --output-on-failure -LE slow
 ```
 
-A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` tests and these tests of the table: `aglow_version`, `aglow_run_usage`, `aglow_no_command`, `aglow_unknown_command`, `aglow_help_unknown_command`, the three `aglow_remote_prune_*` tests, `Aglow.*`, `aglow_static`, `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_tmux_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`.
+A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` tests and these tests of the table:
+
+- `aglow_version`, `aglow_run_usage`, `aglow_no_command`, `aglow_unknown_command` and `aglow_help_unknown_command`
+- The three `aglow_remote_prune_*` tests, and `Aglow.*`
+- `aglow_static`, `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_tmux_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`
+
 It has no test that runs `afterglow`.
 
 The Python test scripts need Python 3.9 or later.

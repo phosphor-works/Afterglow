@@ -7,6 +7,7 @@
 
 #include "TestDaemon.h"
 
+#include "MuxHost.h"
 #include "MuxStream.h"
 
 #include <AfterglowVt/StateSync.h>
@@ -44,18 +45,22 @@ class Window
 {
 public:
     /// The attach call and the connection to its socket. Empty on success,
-    /// else the error code of the call.
-    std::string attach(TestDaemon& daemon, const std::string& name, bool takeover = true)
+    /// else the error code or message of the call, or why the connection
+    /// failed. Without @p eventQueue, the call passes none.
+    std::string attach(TestDaemon& daemon, const std::string& name, bool takeover = true, std::optional<std::size_t> eventQueue = {})
     {
-        if (std::string error = call(daemon, name, takeover); !error.empty()) return error;
+        if (std::string error = call(daemon, name, takeover, eventQueue); !error.empty()) return error;
         return connect();
     }
 
-    /// The attach call alone. Empty on success, else the error code.
-    std::string call(TestDaemon& daemon, const std::string& name, bool takeover = true)
+    /// The attach call alone. Empty on success, else the error code, or the
+    /// message of an error without one.
+    std::string call(TestDaemon& daemon, const std::string& name, bool takeover = true, std::optional<std::size_t> eventQueue = {})
     {
         IpcConnection::Error error;
-        const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, name, Json::Object{{"takeover", takeover}}}, &error);
+        Json::Object options{{AttachOption::Takeover, takeover}};
+        if (eventQueue) options.emplace_back(AttachOption::EventQueue, *eventQueue);
+        const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, name, std::move(options)}, &error);
         if (!result) return error.code.empty() ? error.message : error.code;
         socket = (*result)["socket"].toString();
         return {};
@@ -88,7 +93,7 @@ public:
     void read()
     {
         std::string frame;
-        if (auto* events = stream->reader(Attach::ControlChannel)) {
+        if (auto* events = readEvents ? stream->reader(Attach::ControlChannel) : nullptr) {
             while (events->read(frame) == PhosphorChannel::ReadResult::Frame) {
                 const auto event = Attach::decodeEvent(frame);
                 if (!event) {
@@ -96,6 +101,20 @@ public:
                     continue;
                 }
                 this->events.push_back(*event);
+                if (event->type == Attach::EventType::Host) {
+                    // A call larger than one frame comes in parts.
+                    parts += event->payload;
+                    if (event->status == Attach::HostPart) continue;
+                    const auto call = Host::decode(parts);
+                    parts.clear();
+                    if (!call) {
+                        ADD_FAILURE() << "a host call does not decode";
+                        continue;
+                    }
+                    calls.push_back(*call);
+                    // As a window does: it writes the terminal's reports.
+                    if (call->kind == Host::Kind::Report && answerReports && !type(call->text)) ADD_FAILURE() << "a report does not go";
+                }
                 if (event->type == Attach::EventType::PaneOpened) {
                     pane = event->pane;
                     channel = event->channel;
@@ -187,6 +206,12 @@ public:
     std::optional<std::string> screenAtExit;
     int frames = 0;
     std::vector<Attach::Event> events;
+    std::vector<Host::Call> calls; ///< the host calls of the pane's terminal, oldest first
+    std::string parts; ///< the parts of a call that came
+    /// Off, the window reads no events: their channel gets no more credit,
+    /// and the calls wait in the daemon.
+    bool readEvents = true;
+    bool answerReports = true;
     NullHost host;
     AfterglowVt::Terminal replica{20, 5, host};
     AfterglowVt::StateReader reader;
@@ -573,7 +598,7 @@ TEST(MuxAttach, AWindowThatDoesNotConnectLosesItsSocket)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
     IpcConnection::Error error;
-    const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "sh", Json::Object{{"takeover", false}}}, &error);
+    const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "sh", Json::Object{{AttachOption::Takeover, false}}}, &error);
     ASSERT_TRUE(result) << error.message;
     const std::string socket = (*result)["socket"].toString();
     const auto made = std::chrono::steady_clock::now();
@@ -615,7 +640,7 @@ TEST(MuxAttach, RefusesBadAttachCalls)
     EXPECT_EQ(error.code, Error::NoSuchSession);
     EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion + 1, "keep", Json::Object{}}, &error));
     EXPECT_EQ(error.code, Error::VersionMismatch);
-    EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep", Json::Object{{"takeover", 1}}}, &error));
+    EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep", Json::Object{{AttachOption::Takeover, 1}}}, &error));
     EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
     EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep"}, &error));
     EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
@@ -624,5 +649,297 @@ TEST(MuxAttach, RefusesBadAttachCalls)
     for (const Json::Array& args : {Json::Array{}, Json::Array{1}, Json::Array{"a", "b"}}) {
         EXPECT_FALSE(daemon.call(Fn::Detach, args, &error));
         EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
+    }
+}
+
+namespace {
+
+bool hasCall(const Window& w, Host::Kind kind)
+{
+    return std::any_of(w.calls.begin(), w.calls.end(), [kind](const Host::Call& c) { return c.kind == kind; });
+}
+
+} // namespace
+
+// The calls of a pane's terminal to its host reach the window that shows it,
+// in place of the daemon's answers for a pane that no window shows.
+TEST(MuxAttach, TheWindowGetsTheCallsOfThePanesTerminal)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    // A bell, an OSC 52 write of "hello", and the start of a file transfer.
+    ASSERT_TRUE(w.type("printf '\\a\\033]52;c;aGVsbG8=\\a\\033]5113;ac=send;id=t1\\033\\\\'\n"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::TerminalProtocol); }));
+    const auto bell = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::Bell; });
+    const auto write = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::ClipboardWrite; });
+    const auto transfer = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::TerminalProtocol; });
+    ASSERT_NE(bell, w.calls.end());
+    ASSERT_NE(write, w.calls.end());
+    EXPECT_EQ(write->title, "c");
+    // As the terminal hands it to a host: in base64, which the window decodes.
+    EXPECT_EQ(write->text, "aGVsbG8=");
+    // The window answers the transfer: the daemon does not refuse it.
+    EXPECT_EQ(transfer->number, 5113);
+    EXPECT_EQ(transfer->text, "ac=send;id=t1");
+    // In the order that the program sent them.
+    EXPECT_LT(bell, write);
+    EXPECT_LT(write, transfer);
+}
+
+// A clipboard read waits for the window: the daemon does not answer it, and
+// the window's answer reaches the program as its input.
+TEST(MuxAttach, AClipboardReadWaitsForTheWindowsAnswer)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string answer = daemon.dir() + "/answer";
+    ASSERT_TRUE(daemon.newSession(daemon.options(ask("\\x1b]52;c;?\\x07", "\\x07", answer, true), "read"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "read"), "");
+    // The program asks once the window shows it.
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "go?"); })) << w.screen();
+    ASSERT_TRUE(w.type("g"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::ClipboardRequest); }));
+    const auto request = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::ClipboardRequest; });
+    const AfterglowVt::ClipboardRequest asked = request->clipboard;
+    EXPECT_TRUE(asked.osc52);
+    EXPECT_EQ(asked.kind, AfterglowVt::ClipboardRequest::Kind::Read);
+    // Nothing answered it yet.
+    EXPECT_FALSE(exists(answer));
+    ASSERT_TRUE(w.type(asked.osc52Reply("from the window")));
+    ASSERT_TRUE(w.until([&] { return exists(answer); }));
+    EXPECT_EQ(readFile(answer), asked.osc52Reply("from the window"));
+}
+
+// The daemon's terminal answers a query (DA1) after the commands before it:
+// the window writes the answer behind its replies to them.
+TEST(MuxAttach, AReportFollowsTheCommandsBeforeIt)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    w.answerReports = false;
+    // aglow dnd's query, then DA1: the window answers both, in this order.
+    ASSERT_TRUE(w.type("printf '\\033]72;t=q:i=3;\\033\\\\\\033[c'\n"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::Report); }));
+    const auto query = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::TerminalProtocol; });
+    const auto report = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::Report; });
+    ASSERT_NE(query, w.calls.end());
+    EXPECT_EQ(query->number, 72);
+    EXPECT_LT(query, report);
+    EXPECT_TRUE(report->text.starts_with("\x1b[?")) << testing::PrintToString(report->text);
+}
+
+// A call larger than Mux.eventQueue goes when nothing else waits, in parts
+// that the window puts back together. What follows it comes after it.
+TEST(MuxAttach, ACallLargerThanTheEventQueueGoesWhenNothingElseWaits)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh", true, std::size_t(MinEventQueue)), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    // 1.5 MiB of clipboard text, which is 2 MiB in base64, then a bell.
+    ASSERT_TRUE(w.type("head -c 1572864 /dev/zero | tr '\\0' a > big; printf '\\033]52;c;'; base64 -w0 big; printf '\\a\\a'\n"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::Bell); }));
+    const auto write = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::ClipboardWrite; });
+    ASSERT_NE(write, w.calls.end());
+    EXPECT_EQ(write->text.size(), std::size_t(2) << 20);
+    EXPECT_EQ(write->text.substr(0, 8), "YWFhYWFh");
+    EXPECT_GT(std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::Bell; }), write);
+}
+
+namespace {
+
+/// A program that writes "go?" once in raw mode and waits for a byte. Then
+/// for each of @p sizes, it writes an OSC 52 write of that many bytes and
+/// "w" with its index, and waits for a byte: the daemon took the write by
+/// the time that the window sees the text after it. Then it writes an OSC
+/// 52 read and "ready", and " early" or " waited": whether an answer came
+/// within @p earlyMs. A test that expects an answer waits long, which costs
+/// nothing when it comes. A test that expects none waits briefly. It saves
+/// all that it reads until a second passes without more, in @p file.
+std::vector<std::string> fillThenRead(const std::vector<std::size_t>& sizes, const std::string& file, int earlyMs)
+{
+    std::string list;
+    for (const std::size_t size : sizes) list += std::to_string(size) + ",";
+    const std::string script = R"(import os, select, sys, tty
+fd = sys.stdin.fileno()
+tty.setraw(fd)
+os.write(1, b'go?')
+os.read(fd, 1)
+for i, size in enumerate(sys.argv[1].split(',')[:-1]):
+    os.write(1, b'\x1b]52;c;' + b'A' * int(size) + b'\x07w%d' % i)
+    os.read(fd, 1)
+os.write(1, b'\x1b]52;c;?\x07ready')
+ready, _, _ = select.select([fd], [], [], int(sys.argv[3]) / 1000)
+os.write(1, b' early\r\n' if ready else b' waited\r\n')
+data = b''
+while True:
+    ready, _, _ = select.select([fd], [], [], 1 if data else 30)
+    if not ready:
+        break
+    data += os.read(fd, 4096)
+with open(sys.argv[2] + '.part', 'wb') as f:
+    f.write(data)
+os.rename(sys.argv[2] + '.part', sys.argv[2])
+# The session runs on until the test ends: its end would drop what waits.
+os.read(fd, 1)
+)";
+    return {"python3", "-I", "-c", script, list, file, std::to_string(earlyMs)};
+}
+
+/// Lets the program of fillThenRead go through its @p writes writes.
+::testing::AssertionResult step(Window& w, std::size_t writes)
+{
+    for (std::size_t i = 0; i <= writes; ++i) {
+        const std::string mark = i == 0 ? "go?" : "w" + std::to_string(i - 1);
+        if (!w.until([&] { return contains(w.screen(), mark); })) return ::testing::AssertionFailure() << "no " << mark << ": " << w.screen();
+        if (!w.type("g")) return ::testing::AssertionFailure() << "no input";
+    }
+    return ::testing::AssertionSuccess();
+}
+
+/// The answer of a session that no window shows to the read of fillThenRead.
+std::string readRefused()
+{
+    AfterglowVt::ClipboardRequest read;
+    read.osc52 = true;
+    read.osc52Bel = true;
+    read.osc52Selection = "c";
+    return read.refusal("EPERM");
+}
+
+} // namespace
+
+// A request that does not fit the queue, while other calls wait, gets the
+// answer of a session that no window shows, at once and once.
+TEST(MuxAttach, ARequestThatDoesNotFitGetsTheAnswerWithoutAWindow)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string answer = daemon.dir() + "/answer";
+    // Two writes take the credit of the channel and fill the daemon's queue,
+    // and the third waits in the pane: the read finds no room there.
+    const std::size_t mib = std::size_t(1) << 20;
+    ASSERT_TRUE(daemon.newSession(daemon.options(fillThenRead({2 * mib, 5 * mib / 2, 2 * mib}, answer, 5000), "full"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "full", true, mib), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    w.readEvents = false;
+    ASSERT_TRUE(step(w, 3));
+    // The window has not read a call yet: the daemon answered at once.
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "ready early"); })) << w.screen();
+    ASSERT_TRUE(w.until([&] { return exists(answer); }));
+    EXPECT_EQ(readFile(answer), readRefused());
+    // The writes still come, and the read does not.
+    w.readEvents = true;
+    ASSERT_TRUE(w.until([&] {
+        return std::count_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::ClipboardWrite; }) == 3;
+    }));
+    EXPECT_FALSE(hasCall(w, Host::Kind::ClipboardRequest));
+}
+
+// A request that waits for a window that detaches, in the daemon's queue or
+// in the pane's, gets the answer of a session that no window shows, once.
+TEST(MuxAttach, RequestsThatWaitWhenTheWindowDetachesGetTheAnswerWithoutAWindow)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    const std::size_t mib = std::size_t(1) << 20;
+    // Each size alone: a failure of the first does not skip the second.
+    const auto detach = [mib](std::size_t queue) {
+        TestDaemon daemon;
+        ASSERT_TRUE(daemon.start()) << daemon.errors();
+        const std::string answer = daemon.dir() + "/answer";
+        ASSERT_TRUE(daemon.newSession(daemon.options(fillThenRead({2 * mib, 5 * mib / 2}, answer, 500), "detach"))) << daemon.lastError();
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "detach", true, queue), "");
+        ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+        w.readEvents = false;
+        ASSERT_TRUE(step(w, 2));
+        // The read waits: the window got no answer to give, and the daemon
+        // gave none.
+        ASSERT_TRUE(w.until([&] { return contains(w.screen(), "ready waited"); })) << w.screen();
+        EXPECT_FALSE(exists(answer));
+        IpcConnection::Error error;
+        ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"detach"}, &error)) << error.message;
+        ASSERT_TRUE(w.until([&] { return exists(answer); }));
+        EXPECT_EQ(readFile(answer), readRefused());
+    };
+    // With 1 MiB, the read waits in the pane; with 4 MiB, behind the second
+    // write in the daemon's queue.
+    for (const std::size_t queue : {mib, 4 * mib}) {
+        SCOPED_TRACE(queue);
+        detach(queue);
+    }
+}
+
+// A call whose first part went goes whole, also when the session ends
+// before its other parts went: the window takes no half call.
+TEST(MuxAttach, ACallWhoseFirstPartWentGoesWholeWhenTheSessionEnds)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::size_t mib = std::size_t(1) << 20;
+    // Two writes, which take more than the credit of the channel, and the
+    // program ends. The second comes once the daemon took the first.
+    const std::string script = R"(import os, sys, tty
+fd = sys.stdin.fileno()
+tty.setraw(fd)
+os.write(1, b'go?')
+os.read(fd, 1)
+os.write(1, b'\x1b]52;c;' + b'A' * (2 << 20) + b'\x07w0')
+os.read(fd, 1)
+os.write(1, b'\x1b]52;c;' + b'A' * (5 << 19) + b'\x07w1')
+os.read(fd, 1)
+)";
+    ASSERT_TRUE(daemon.newSession(daemon.options({"python3", "-I", "-c", script}, "ends"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "ends", true, mib), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    w.readEvents = false;
+    // The daemon took both writes off the pane once w1 shows: the window's
+    // credit holds the second one's parts back when the program ends.
+    ASSERT_TRUE(step(w, 2));
+    // The pane's last frame: the program ended.
+    ASSERT_TRUE(w.until([&] { return w.channelClosed; }));
+    w.readEvents = true;
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::SessionEnded); }));
+    std::vector<std::size_t> sizes;
+    for (const Host::Call& c : w.calls) {
+        if (c.kind == Host::Kind::ClipboardWrite) sizes.push_back(c.text.size());
+    }
+    EXPECT_EQ(sizes, (std::vector<std::size_t>{2 * mib, 5 * mib / 2}));
+}
+
+TEST(MuxAttach, RefusesAnEventQueueOutOfRangeAndAnUnknownOption)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::vector<Json::Value> refused = {Json::Value(MinEventQueue - 1), Json::Value(MaxEventQueue + 1), Json::Value("4194304"),
+                                              Json::Value(1048576.5), Json::Value(true)};
+    for (std::size_t i = 0; i < refused.size(); ++i) {
+        IpcConnection::Error error;
+        EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep", Json::Object{{AttachOption::EventQueue, refused[i]}}}, &error));
+        EXPECT_EQ(error.code, IpcErrorCode::InvalidArg) << i;
+    }
+    IpcConnection::Error error;
+    EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep", Json::Object{{"eventQueues", MinEventQueue}}}, &error));
+    EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
+    // The bounds themselves are values of the setting.
+    for (const std::int64_t bytes : {MinEventQueue, MaxEventQueue}) {
+        Window w;
+        EXPECT_EQ(w.attach(daemon, "keep", true, std::size_t(bytes)), "") << bytes;
     }
 }
