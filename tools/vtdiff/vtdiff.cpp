@@ -28,6 +28,8 @@
 // to the shortest input that still differs in the same kind of way (a cell's
 // text, a cell's look, the cursor, the screen, the scrollback, the replies),
 // and prints it.
+// A file whose name ends in -COLSxROWS.vt, as afterglow_tuifuzz --record
+// writes them, runs at that size in place of --cols and --rows.
 // --random makes COUNT inputs of LENGTH tokens (512 by default) from a list
 // of sequences that terminals parse, starting at SEED: input "random-SEED".
 //
@@ -693,8 +695,15 @@ int main(int argc, char** argv)
 
     int unexpected = 0, same = 0, known = 0;
     std::map<std::string, int> matched; // pattern -> inputs
+    const std::regex sized(R"(-([0-9]+)x([0-9]+)\.vt$)");
     for (const auto& [name, bytes] : inputs) {
-        const auto difference = run(bytes, o);
+        // A recording of afterglow_tuifuzz names the size it was made at.
+        Options io = o;
+        if (std::smatch m; std::regex_search(name, m, sized)) {
+            io.cols = std::clamp(std::atoi(m[1].str().c_str()), 2, 1000);
+            io.rows = std::clamp(std::atoi(m[2].str().c_str()), 2, 1000);
+        }
+        const auto difference = run(bytes, io);
         const bool listed = expected.count(name) != 0;
         if (!difference) {
             ++same;
@@ -710,9 +719,9 @@ int main(int argc, char** argv)
         }
         std::string shortest, shortestWhat;
         if (o.minimize || !patterns.empty()) {
-            const std::string bytesShortest = minimize(bytes, o);
+            const std::string bytesShortest = minimize(bytes, io);
             shortest = escaped(bytesShortest);
-            Options one = o;
+            Options one = io;
             one.chunk = std::max<std::size_t>(bytesShortest.size(), 1);
             const auto d = run(bytesShortest, one);
             shortestWhat = d ? d->what : difference->what;
