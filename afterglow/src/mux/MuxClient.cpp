@@ -94,7 +94,7 @@ QString lossText(MuxClient::Loss loss, const QString& name)
 } // namespace
 
 std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover, QString* error,
-                                              const AfterglowProto::MuxSockets& sockets)
+                                              const AfterglowProto::MuxSockets& sockets, std::size_t eventQueue)
 {
     const auto fail = [error](const QString& text) -> std::shared_ptr<MuxClient> {
         if (error) *error = text;
@@ -110,7 +110,7 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
     AfterglowProto::IpcConnection::Error callError;
     const auto result = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::Attach,
                                                  Json::Array{AfterglowMux::ProtocolVersion, name.toStdString(),
-                                                             Json::Object{{"takeover", takeover}}},
+                                                             Json::Object{{"takeover", takeover}, {"eventQueue", eventQueue}}},
                                                  AfterglowMux::CallTimeoutMs, &callError);
     // The daemon's words, which the user reads in a terminal.
     if (!result) return fail(QString::fromStdString(AfterglowProto::printable(callError.message)));
@@ -157,9 +157,23 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
 
 MuxClient::~MuxClient() = default;
 
+bool MuxClient::hostCall(std::uint32_t id, const std::string& call)
+{
+    const auto it = m_panes.find(id);
+    if (it == m_panes.end()) {
+        // The window makes the pane after the daemon names it: the call waits.
+        m_waitingHostCalls[id].push_back(call);
+        return true;
+    }
+    return !it->second || it->second->applySessionHostCall(call);
+}
+
 void MuxClient::bind(std::uint32_t id, Pane* pane)
 {
     m_panes[id] = pane;
+    if (auto waiting = m_waitingHostCalls.extract(id); !waiting.empty() && pane) {
+        for (const std::string& call : waiting.mapped()) pane->applySessionHostCall(call);
+    }
     // Frames that came before the pane existed wait in the stream's reader.
     handleFrames();
     // A pane that the session lost before it existed closes at once, unless
@@ -361,6 +375,9 @@ void MuxClient::handleFrames()
                     m_exits[event->pane] = event->status;
                     paneExited(event->pane);
                 }
+            } else if (event && event->type == Attach::EventType::Host) {
+                bad = !m_channels.contains(event->pane);
+                if (!bad) bad = !hostCall(event->pane, event->payload);
             } else if (event) {
                 ending = event->type == Attach::EventType::SessionEnded ? Loss::Ended
                     : event->type == Attach::EventType::TakenOver      ? Loss::TakenOver

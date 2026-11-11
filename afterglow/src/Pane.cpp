@@ -13,6 +13,8 @@
 #include "ShownText.h"
 #include "mux/MuxClient.h"
 
+#include "MuxHost.h"
+
 #include "app/InstanceSocket.h"
 #include "app/NotificationCenter.h"
 
@@ -990,6 +992,40 @@ bool Pane::applySessionFrame(std::string_view frame)
         if (m_terminal.workingDirectory() != directory) workingDirectoryChanged(m_terminal.workingDirectory());
     }
     Q_EMIT contentChanged();
+    return true;
+}
+
+bool Pane::applySessionHostCall(std::string_view encoded)
+{
+    const auto call = AfterglowMux::Host::decode(encoded);
+    if (!call) return false;
+    using AfterglowMux::Host::Kind;
+    // As the terminal makes them: with the lock held, on the thread that
+    // holds it, here the GUI thread.
+    std::lock_guard lock(m_mutex);
+    switch (call->kind) {
+    case Kind::Bell: bell(); break;
+    case Kind::Flash: flash(); break;
+    case Kind::Notify: notify(call->title, call->text); break;
+    case Kind::DesktopNotification: desktopNotification(call->notification); break;
+    case Kind::ClipboardWrite: clipboardWrite(call->title, call->text); break;
+    case Kind::ClipboardRequest:
+        // The terminal answers a request that its host does not take.
+        if (!clipboardRequest(call->clipboard)) {
+            const AfterglowVt::ClipboardRequest& r = call->clipboard;
+            using AfterglowVt::ClipboardAssembler;
+            writeToPty(r.osc52 ? r.osc52Reply({})
+                               : r.kind == AfterglowVt::ClipboardRequest::Kind::Read ? ClipboardAssembler::readStatus("ENOSYS", r)
+                                                                                     : ClipboardAssembler::writeStatus("ENOSYS", r.id));
+        }
+        break;
+    case Kind::TerminalProtocol: terminalProtocol(call->number, call->text); break;
+    case Kind::PointerShape: pointerShapeChanged(call->text); break;
+    case Kind::UserVar: userVarChanged(call->title, call->text); break;
+    case Kind::CommandStarted: commandStarted(call->text); break;
+    case Kind::CommandFinished: commandFinished(call->number); break;
+    case Kind::Download: downloadFile(call->title, call->text); break;
+    }
     return true;
 }
 

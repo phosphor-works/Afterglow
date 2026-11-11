@@ -3,7 +3,7 @@
 
 # The calls of the mux daemon and the values that they carry. The client in
 # afterglow and the daemon link the same code.
-add_library(afterglow_mux_protocol STATIC protocol/MuxConnect.cpp protocol/MuxProtocol.cpp protocol/MuxStream.cpp)
+add_library(afterglow_mux_protocol STATIC protocol/MuxConnect.cpp protocol/MuxHost.cpp protocol/MuxProtocol.cpp protocol/MuxStream.cpp)
 target_include_directories(afterglow_mux_protocol PUBLIC protocol)
 # phosphor-channel carries the frames of an attached session: no Qt, so the
 # daemon links it too.

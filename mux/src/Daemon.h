@@ -80,6 +80,8 @@ private:
     void endSession(std::vector<std::unique_ptr<Session>>::iterator session);
     /// Sends what changed in each attached session.
     void pumpAttachments();
+    /// Tells each pane whether a window shows it, for its host calls.
+    void syncAttached();
     /// The attachment that shows the session @p name, connected or not;
     /// not one that finishes.
     Attachment* shown(const std::string& name) const;

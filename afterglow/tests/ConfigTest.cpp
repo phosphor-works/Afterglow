@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "config/Settings.h"
+#include "MuxProtocol.h"
 #include "config/Theme.h"
 #include "animation/MomentumScroll.h"
 #include "desktop/DragDrop.h"
@@ -761,6 +762,19 @@ TEST_F(ConfigTest, ReadsWhatClosingTheWindowOfASessionDoes)
     SettingsStore store(write(QStringLiteral("other.json"), R"({"Mux": {"onClose": "keep"}})"));
     EXPECT_EQ(store.settings().mux.onClose, MuxSettings::Close::Kill);
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Mux.onClose must be one of"))) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, ReadsTheEventQueueOfASessionWithinTheDaemonsBounds)
+{
+    EXPECT_EQ(MuxSettings{}.eventQueue, 4);
+    // The bounds are the daemon's: every value of the setting is one that an
+    // attach call may pass.
+    for (const auto& [given, read] : std::vector<std::pair<int, int>>{{16, 16}, {0, 1}, {1000, 64}}) {
+        SettingsStore store(write(QStringLiteral("queue.json"), QStringLiteral(R"({"Mux": {"eventQueue": %1}})").arg(given).toUtf8()));
+        EXPECT_EQ(store.settings().mux.eventQueue, read) << given;
+        EXPECT_GE(std::int64_t(read) << 20, AfterglowMux::MinEventQueue);
+        EXPECT_LE(std::int64_t(read) << 20, AfterglowMux::MaxEventQueue);
+    }
 }
 
 // A file that means to turn scripts or the control socket off, and says it

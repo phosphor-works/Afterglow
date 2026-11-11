@@ -153,10 +153,9 @@ A project saves the pane of a session as a shell in the directory of that pane. 
 
 The window of a session does not show these yet:
 
-- Bells, desktop notifications and the clipboard of the programs (see [what the daemon answers](#what-the-daemon-answers))
 - Images, and extra cursors
 - Command marks of shell integration (OSC 133): the last output, the jumps between prompts, a click on the prompt, and Notify on Next Command Finish
-- The status of programs (OSC 7501), the shell contexts in the title, and user variables
+- The status of programs (OSC 7501), and the shell contexts in the title
 - Visibility reports (mode 2033): the program always hears that the window is visible
 - The directory of the program when its shell does not report it (OSC 7). New tabs and splits then start in your home directory.
 - A selection or a search match in a region that a program scrolls, as an editor does: it stays on its rows, not on its text
@@ -290,7 +289,7 @@ Thus `afterglow ctl`, `afterglow ctl watch` and `aglow run` fail with that messa
 
 The daemon reads the PTY output and parses it into the terminal of the pane, whether or not a window shows the session.
 While no window shows it, the session keeps running, scrollback grows to the `Terminal.scrollback` limit, and the programs do not pause.
-The window that shows a session does not change these answers yet.
+The daemon answers the queries of the first rows of this table itself. It gives the other answers only while no window shows the session.
 
 | Request of a program | Result |
 | --- | --- |
@@ -305,6 +304,24 @@ The window that shows a session does not change these answers yet.
 | Drag and drop (OSC 72) | A program that asks which types the terminal supports gets the answer of a window. A drag offer (`t=o`) gets `EPERM`. No drop arrives, and no drag starts. |
 | File download (OSC 1337 `File`) | Dropped |
 | Images | RGB, RGBA and sixel images work in the daemon. PNG (kitty graphics `f=100`) and iTerm2 images are refused, because the daemon decodes no compressed images. A window does not show images yet. |
+
+### While a window shows a session
+
+The daemon sends these requests of the programs to the window, and the window answers them as for a program of its own.
+Your settings and prompts apply, such as the questions before a clipboard read and a file transfer.
+
+| Request of a program | Result |
+| --- | --- |
+| Bell (BEL), flash (OSC 555) | The window rings the bell, as `Terminal.bell` sets |
+| Notification (OSC 9, OSC 777, OSC 99) | The window shows it. A query of the notifications on screen (OSC 99 `p=alive`) gets the answer of the window. |
+| Clipboard write and read (OSC 52 and OSC 5522) | The window writes or reads its clipboard, and asks first as for its own panes |
+| File transfer (OSC 5113) and drag and drop (OSC 72) | The window runs them, with its questions |
+| File download (OSC 1337 `File`) | The window asks where to save the file |
+| Pointer shape (OSC 22), user variables (OSC 1337 `SetUserVar`), commands of shell integration (OSC 133) | The window takes them as from its own panes |
+
+The requests wait for the window in a queue of `Mux.eventQueue` MiB for each session, and in a queue of the same size for each pane.
+A request that does not fit, such as a clipboard write of many megabytes, gets the answer of a session that no window shows.
+A request that waits in the queue of a pane when its window goes also gets that answer.
 
 ## Limits
 

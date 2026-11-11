@@ -94,7 +94,119 @@ void MuxPane::writeToPty(std::string_view bytes)
     if (m_pty) (void)m_pty->write(bytes);
 }
 
+void MuxPane::setAttached(bool attached, std::size_t queueBytes)
+{
+    std::deque<std::string> left;
+    {
+        std::lock_guard lock(m_hostMutex);
+        if (m_attached == attached && m_hostLimit == queueBytes) return;
+        m_attached = attached;
+        m_hostLimit = queueBytes;
+        if (attached) return;
+        left.swap(m_hostCalls);
+        m_hostBytes = 0;
+    }
+    // The window went before it got them: a request waits for an answer,
+    // which it gets as when no window shows the pane. The rest go.
+    for (const std::string& encoded : left) {
+        const auto call = Host::decode(encoded);
+        if (!call) continue;
+        if (call->kind == Host::Kind::ClipboardRequest) clipboardWithoutWindow(call->clipboard);
+        else if (call->kind == Host::Kind::TerminalProtocol) protocolWithoutWindow(call->number, call->text);
+        else if (call->kind == Host::Kind::DesktopNotification) notificationWithoutWindow(call->notification);
+    }
+}
+
+bool MuxPane::forward(const Host::Call& call)
+{
+    std::string encoded = Host::encode(call);
+    bool first = false;
+    {
+        std::lock_guard lock(m_hostMutex);
+        if (!m_attached || encoded.size() > Host::MaxCall || m_hostBytes + encoded.size() > m_hostLimit) return false;
+        first = m_hostCalls.empty();
+        m_hostBytes += encoded.size();
+        m_hostCalls.push_back(std::move(encoded));
+    }
+    // The daemon sends the calls when it wakes: one wake for each batch.
+    if (first) m_wake();
+    return true;
+}
+
+std::vector<std::string> MuxPane::takeHostCalls(std::size_t budget)
+{
+    std::vector<std::string> calls;
+    std::lock_guard lock(m_hostMutex);
+    std::size_t taken = 0;
+    while (!m_hostCalls.empty() && (calls.empty() || taken + m_hostCalls.front().size() <= budget)) {
+        taken += m_hostCalls.front().size();
+        m_hostBytes -= m_hostCalls.front().size();
+        calls.push_back(std::move(m_hostCalls.front()));
+        m_hostCalls.pop_front();
+    }
+    return calls;
+}
+
+bool MuxPane::hasHostCalls() const
+{
+    std::lock_guard lock(m_hostMutex);
+    return !m_hostCalls.empty();
+}
+
+void MuxPane::bell()
+{
+    forward(Host::make(Host::Kind::Bell));
+}
+
+void MuxPane::flash()
+{
+    forward(Host::make(Host::Kind::Flash));
+}
+
+void MuxPane::notify(std::string_view title, std::string_view body)
+{
+    forward(Host::make(Host::Kind::Notify, std::string(title), std::string(body)));
+}
+
+void MuxPane::clipboardWrite(std::string_view selection, std::string_view data)
+{
+    forward(Host::make(Host::Kind::ClipboardWrite, std::string(selection), std::string(data)));
+}
+
+void MuxPane::pointerShapeChanged(std::string_view shape)
+{
+    forward(Host::make(Host::Kind::PointerShape, {}, std::string(shape)));
+}
+
+void MuxPane::userVarChanged(std::string_view name, std::string_view value)
+{
+    forward(Host::make(Host::Kind::UserVar, std::string(name), std::string(value)));
+}
+
+void MuxPane::commandStarted(std::string_view command)
+{
+    forward(Host::make(Host::Kind::CommandStarted, {}, std::string(command)));
+}
+
+void MuxPane::commandFinished(int exitCode)
+{
+    forward(Host::make(Host::Kind::CommandFinished, {}, {}, exitCode));
+}
+
+void MuxPane::downloadFile(std::string_view name, std::string_view data)
+{
+    // Without a window, the download is dropped: no user can be asked.
+    forward(Host::make(Host::Kind::Download, std::string(name), std::string(data)));
+}
+
 void MuxPane::desktopNotification(const AfterglowVt::NotificationRequest& request)
+{
+    Host::Call call = Host::make(Host::Kind::DesktopNotification);
+    call.notification = request;
+    if (!forward(call)) notificationWithoutWindow(request);
+}
+
+void MuxPane::notificationWithoutWindow(const AfterglowVt::NotificationRequest& request)
 {
     // No notification is on screen: a program that asks which are gets an
     // empty list, in the reply of a window. The others are dropped.
@@ -105,8 +217,18 @@ void MuxPane::desktopNotification(const AfterglowVt::NotificationRequest& reques
 bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
 {
     using AfterglowVt::ClipboardAssembler;
-    // The daemon has no clipboard, and the attach stream carries none yet:
-    // the request gets the answer of a denial. A write is dropped.
+    // The window asks the user and answers, as for a terminal of its own.
+    Host::Call call = Host::make(Host::Kind::ClipboardRequest);
+    call.clipboard = request;
+    if (!forward(call)) clipboardWithoutWindow(request);
+    return true;
+}
+
+void MuxPane::clipboardWithoutWindow(const AfterglowVt::ClipboardRequest& request)
+{
+    using AfterglowVt::ClipboardAssembler;
+    // No window has a clipboard to give: the request gets the answer of a
+    // denial. A write is dropped.
     if (request.kind == AfterglowVt::ClipboardRequest::Kind::Write) {
         writeToPty(ClipboardAssembler::writeStatus("EPERM", request.id));
     } else if (request.osc52) {
@@ -114,10 +236,16 @@ bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
     } else {
         writeToPty(ClipboardAssembler::readStatus("EPERM", request));
     }
-    return true;
 }
 
 void MuxPane::terminalProtocol(int code, std::string_view payload)
+{
+    // The window runs the transfer or the drag, and answers the queries
+    // too: the program then hears of one terminal.
+    if (!forward(Host::make(Host::Kind::TerminalProtocol, {}, std::string(payload), code))) protocolWithoutWindow(code, payload);
+}
+
+void MuxPane::protocolWithoutWindow(int code, std::string_view payload)
 {
     if (code == 72) {
         // A program asks which drag and drop types the terminal supports. It
@@ -127,8 +255,8 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
             return;
         }
         // A drag starts from an offer (t=o without x=1 or x=2) while the
-        // user holds the mouse button. The attach stream carries no drag
-        // yet, so the offer gets the window's EPERM. A drop never arrives, so
+        // user holds the mouse button. Without a window no drag can start,
+        // so the offer gets the window's EPERM. A drop never arrives, so
         // the other commands need no answer. A chunked offer is answered
         // once, at its last chunk.
         const std::string_view raw = AfterglowProto::splitDnd(payload).first;
@@ -144,8 +272,8 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
     }
     if (code != 5113 || payload.size() > AfterglowProto::TransferMaxCommand) return;
     // A transfer starts with ac=send or ac=receive and waits for the user's
-    // answer. The attach stream carries no transfer yet: it is the answer of
-    // a denial. A session with
+    // answer. Without a window no user answers: it is the answer of a
+    // denial. A session with
     // q=2 asked for no status, errors included.
     const auto fields = AfterglowProto::decodeTransfer(payload);
     if (!fields) return;

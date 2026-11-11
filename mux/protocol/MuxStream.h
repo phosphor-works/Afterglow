@@ -48,6 +48,7 @@ enum class EventType : std::uint8_t {
     SessionEnded = 3, ///< the last program ended, or `afterglow mux kill` ended it
     TakenOver = 4, ///< another window attached: this one detaches
     Detached = 5, ///< `afterglow mux detach`: the window closes, the session runs on
+    Host = 6, ///< a call of a pane's terminal to its host, in `payload` (MuxHost.h)
 };
 
 struct Event
@@ -58,6 +59,8 @@ struct Event
     std::uint32_t channel = 0;
     /// PaneClosed: the status as waitpid gives it, or -1 when it is unknown.
     int status = -1;
+    /// Host: the call, encoded.
+    std::string payload;
 };
 
 std::string encode(const Event& event);

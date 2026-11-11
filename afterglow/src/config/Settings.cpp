@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "Settings.h"
+
+#include "MuxProtocol.h"
 #include "Theme.h"
 #include "animation/MomentumScroll.h"
 
@@ -667,6 +669,12 @@ PhosphorConfig::Schema buildSchema()
                                "running, and afterglow mux attach shows it again. The session also keeps running after "
                                "afterglow mux detach, a takeover by another window, a quit of Afterglow, a crash and a lost "
                                "connection.")),
+        intKey(QStringLiteral("eventQueue"), d.mux.eventQueue, int(AfterglowMux::MinEventQueue >> 20),
+               int(AfterglowMux::MaxEventQueue >> 20),
+               QStringLiteral("Most data in MiB that a session holds for its window while the window is slow, for bells, "
+                              "notifications, clipboard requests, file transfers and drag and drop. A request that does not "
+                              "fit gets the answer of a session that no window shows. Afterglow passes the value when it "
+                              "attaches to a session.")),
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
@@ -1851,6 +1859,7 @@ Settings SettingsStore::read()
 
     // Mux
     s.mux.onClose = readEnum(st, MuxGroup, QStringLiteral("onClose"), MuxCloseChoices, s.mux.onClose);
+    s.mux.eventQueue = st.read<int>(MuxGroup, QStringLiteral("eventQueue"));
 
     // Control
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));

@@ -254,6 +254,7 @@ Daemon::Exit Daemon::run()
         }
         std::erase_if(m_attachments, [&over](const auto& a) { return std::find(over.begin(), over.end(), a.get()) != over.end(); });
         pumpAttachments();
+        syncAttached();
         for (std::size_t i = firstConnection; i < firstAttachment; ++i) {
             auto& connection = *m_connections[i - firstConnection];
             if (fds[i].revents & POLLOUT) connection.flush();
@@ -411,6 +412,15 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     if (caller <= 0) return ipcError(request.id, IpcErrorCode::CallFailed, "the daemon cannot tell which process called");
     const Json::Value* takeover = request.args[2].find("takeover");
     if (takeover && !takeover->isBool()) return ipcError(request.id, IpcErrorCode::InvalidArg, "'takeover' is not a boolean");
+    // Mux.eventQueue of the window, in bytes.
+    std::size_t eventQueue = Attachment::DefaultEventQueue;
+    if (const Json::Value* queue = request.args[2].find("eventQueue")) {
+        const auto bytes = queue->toInteger();
+        if (!bytes || *bytes < MinEventQueue || *bytes > MaxEventQueue) {
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "'eventQueue' is not 1 to 64 MiB in bytes");
+        }
+        eventQueue = std::size_t(*bytes);
+    }
     Attachment* const previous = shown(name);
     if (previous && (!takeover || !takeover->toBool())) {
         return ipcError(request.id, Error::Attached, "another window shows session '" + name + "'");
@@ -429,6 +439,7 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
             return true;
         });
     }
+    attachment->setEventQueue(eventQueue);
     const std::string path = attachment->path();
     m_attachments.push_back(std::move(attachment));
     return ipcReply(request.id.value_or(0), Json::Object{{"name", name}, {"socket", path}});
@@ -451,6 +462,15 @@ std::string Daemon::detach(const IpcRequest& request)
         return true;
     });
     return ipcReply(request.id.value_or(0), nullptr);
+}
+
+void Daemon::syncAttached()
+{
+    for (const auto& session : m_sessions) {
+        const Attachment* attachment = shown(session->name());
+        const bool showing = attachment && attachment->showing();
+        for (const auto& pane : session->panes()) pane->setAttached(showing, showing ? attachment->eventQueue() : 0);
+    }
 }
 
 void Daemon::pumpAttachments()

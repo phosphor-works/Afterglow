@@ -236,7 +236,8 @@ QString Application::openLaunch(const QString& workingDirectory, const QStringLi
             }
         }
         QString error;
-        window.session = MuxClient::attach(session, options.value(QStringLiteral("takeover"), true).toBool(), &error);
+        window.session = MuxClient::attach(session, options.value(QStringLiteral("takeover"), true).toBool(), &error,
+                                           AfterglowProto::muxSockets(), std::size_t(m_settings.settings().mux.eventQueue) << 20);
         if (!window.session) return error;
     }
     TerminalWindow* w = newWindow(window);

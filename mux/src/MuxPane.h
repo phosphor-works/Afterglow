@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "MuxHost.h"
 #include "MuxProtocol.h"
 
 #include <AfterglowPty/Pty.h>
@@ -10,6 +11,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -91,12 +93,31 @@ public:
     /// about. 0 for no caller.
     std::string foregroundJob(pid_t caller) const;
 
+    /// A window shows the pane: the calls of its terminal to its host
+    /// (MuxHost.h) wait for that window, up to @p queueBytes, in place of the
+    /// answers of a pane that no window shows. Off again, the calls that wait
+    /// are dropped.
+    void setAttached(bool attached, std::size_t queueBytes);
+    /// The calls that wait for the window, encoded, oldest first: as many as
+    /// fit @p budget bytes, and at least one.
+    std::vector<std::string> takeHostCalls(std::size_t budget);
+    bool hasHostCalls() const;
+
     // ITerminalHost
     void writeToPty(std::string_view bytes) override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
     std::string notificationCapabilities() override { return m_notificationCapabilities; }
     bool clipboardRequest(const AfterglowVt::ClipboardRequest& request) override;
     void terminalProtocol(int code, std::string_view payload) override;
+    void bell() override;
+    void flash() override;
+    void notify(std::string_view title, std::string_view body) override;
+    void clipboardWrite(std::string_view selection, std::string_view data) override;
+    void pointerShapeChanged(std::string_view shape) override;
+    void userVarChanged(std::string_view name, std::string_view value) override;
+    void commandStarted(std::string_view command) override;
+    void commandFinished(int exitCode) override;
+    void downloadFile(std::string_view name, std::string_view data) override;
     /// A session pane forwards no socket of an ssh session (afterglow ssh
     /// runs in windows only): `aglow run` hears that it is off, not that the
     /// terminal does not know the query.
@@ -120,6 +141,20 @@ private:
     std::unique_ptr<AfterglowPty::Pty> m_pty;
     std::string m_launchedProgram;
     std::atomic<bool> m_exited{false};
+
+    /// Queues @p call for the window. False when no window shows the pane,
+    /// or the call does not fit the queue: the caller answers as without one.
+    bool forward(const Host::Call& call);
+    /// The answers of a pane that no window shows.
+    void clipboardWithoutWindow(const AfterglowVt::ClipboardRequest& request);
+    void protocolWithoutWindow(int code, std::string_view payload);
+    void notificationWithoutWindow(const AfterglowVt::NotificationRequest& request);
+
+    mutable std::mutex m_hostMutex; ///< guards the host calls, which the reader thread queues
+    bool m_attached = false;
+    std::size_t m_hostLimit = 0;
+    std::deque<std::string> m_hostCalls;
+    std::size_t m_hostBytes = 0;
 };
 
 } // namespace AfterglowMux

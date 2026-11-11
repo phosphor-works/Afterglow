@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <deque>
 #include <optional>
 #include <string>
 #include <utility>
@@ -87,6 +88,13 @@ public:
     /// closed sent their last frames, @p type is the last event. A window
     /// that did not connect yet gets it when it does.
     void finish(Attach::EventType type);
+    /// The bytes of host calls that wait for the window, at most: in the
+    /// daemon's queue and in each pane's (Mux.eventQueue).
+    static constexpr std::size_t DefaultEventQueue = std::size_t(4) << 20;
+    void setEventQueue(std::size_t bytes) { m_eventQueue = bytes; }
+    std::size_t eventQueue() const { return m_eventQueue; }
+    /// A window shows the session's panes now: connected, and not finishing.
+    bool showing() const { return m_stream && !m_finish && !m_failed; }
 
 private:
     struct PaneLink
@@ -119,7 +127,9 @@ private:
     std::chrono::steady_clock::time_point m_deadline; ///< to connect, then to finish
     std::unique_ptr<PhosphorChannel::Stream> m_stream;
     PhosphorChannel::StreamWriter* m_events = nullptr;
-    std::vector<std::string> m_waitingEvents; ///< events before the window granted the channel a window
+    std::deque<std::string> m_waitingEvents; ///< events that the channel did not take yet
+    std::size_t m_waitingBytes = 0;
+    std::size_t m_eventQueue = DefaultEventQueue;
     std::map<std::uint32_t, PaneLink> m_panes; ///< by pane id
     std::optional<Attach::Input> m_heldInput; ///< input that a full PTY refused
     bool m_inputDue = false; ///< held input went in pump(): the next handle() reads what follows it

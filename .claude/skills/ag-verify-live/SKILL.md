@@ -51,7 +51,7 @@ Options:
 | `--validation` | Off | Enables the Vulkan validation layer and GPU logging |
 | `--size 1920x1080` | `1100x750` | Changes the virtual output size |
 | `--outputs 2` | `1` | Gives KWin two virtual outputs. The tests that move a window between screens skip with one. The drag tests expect one output: run them without this option. |
-| `--timeout 600` | 600 | Stops the test binary after this many seconds and 10 more, and reports status 124 |
+| `--timeout 3600` | 1800 | Stops the test binary after this many seconds and 10 more, and reports status 124. The whole suite takes more than 600 seconds. |
 
 The log is long. Read it with `grep`, never in full.
 

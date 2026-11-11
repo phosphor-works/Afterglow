@@ -135,17 +135,20 @@ void Attachment::accept()
 
 void Attachment::sendEvent(const Attach::Event& event)
 {
-    m_waitingEvents.push_back(Attach::encode(event));
+    std::string encoded = Attach::encode(event);
+    m_waitingBytes += encoded.size();
+    m_waitingEvents.push_back(std::move(encoded));
     flushEvents();
 }
 
 void Attachment::flushEvents()
 {
     while (m_events && !m_waitingEvents.empty()) {
-        // Events are few and small: they wait only until the window grants
-        // the channel its window, at the start.
+        // They wait for the window to grant the channel its window, at the
+        // start, and while host calls fill it.
         if (m_events->tryWrite(m_waitingEvents.front()) != WriteResult::Written) break;
-        m_waitingEvents.erase(m_waitingEvents.begin());
+        m_waitingBytes -= m_waitingEvents.front().size();
+        m_waitingEvents.pop_front();
     }
 }
 
@@ -357,6 +360,18 @@ void Attachment::pump(Session* session)
             if (!l) return;
             sendFrame(*l, *pane);
             if (m_failed) return;
+            // The calls of the pane's terminal follow its frame: a bell after
+            // the text that rang it. What does not fit the queue waits in the
+            // pane, and the pane answers a call that does not fit there.
+            if (m_waitingBytes < m_eventQueue) {
+                for (std::string& call : pane->takeHostCalls(m_eventQueue - m_waitingBytes)) {
+                    Attach::Event host;
+                    host.type = Attach::EventType::Host;
+                    host.pane = pane->id();
+                    host.payload = std::move(call);
+                    sendEvent(host);
+                }
+            }
         }
     }
     // A pane whose program exited: its channel closes after its last frame,

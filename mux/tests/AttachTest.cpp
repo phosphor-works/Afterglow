@@ -7,6 +7,7 @@
 
 #include "TestDaemon.h"
 
+#include "MuxHost.h"
 #include "MuxStream.h"
 
 #include <AfterglowVt/StateSync.h>
@@ -45,17 +46,19 @@ class Window
 public:
     /// The attach call and the connection to its socket. Empty on success,
     /// else the error code of the call.
-    std::string attach(TestDaemon& daemon, const std::string& name, bool takeover = true)
+    std::string attach(TestDaemon& daemon, const std::string& name, bool takeover = true, std::size_t eventQueue = 0)
     {
-        if (std::string error = call(daemon, name, takeover); !error.empty()) return error;
+        if (std::string error = call(daemon, name, takeover, eventQueue); !error.empty()) return error;
         return connect();
     }
 
     /// The attach call alone. Empty on success, else the error code.
-    std::string call(TestDaemon& daemon, const std::string& name, bool takeover = true)
+    std::string call(TestDaemon& daemon, const std::string& name, bool takeover = true, std::size_t eventQueue = 0)
     {
         IpcConnection::Error error;
-        const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, name, Json::Object{{"takeover", takeover}}}, &error);
+        Json::Object options{{"takeover", takeover}};
+        if (eventQueue) options.emplace_back("eventQueue", eventQueue);
+        const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, name, std::move(options)}, &error);
         if (!result) return error.code.empty() ? error.message : error.code;
         socket = (*result)["socket"].toString();
         return {};
@@ -96,6 +99,11 @@ public:
                     continue;
                 }
                 this->events.push_back(*event);
+                if (event->type == Attach::EventType::Host) {
+                    const auto call = Host::decode(event->payload);
+                    if (!call) ADD_FAILURE() << "a host call does not decode";
+                    else calls.push_back(*call);
+                }
                 if (event->type == Attach::EventType::PaneOpened) {
                     pane = event->pane;
                     channel = event->channel;
@@ -187,6 +195,7 @@ public:
     std::optional<std::string> screenAtExit;
     int frames = 0;
     std::vector<Attach::Event> events;
+    std::vector<Host::Call> calls; ///< the host calls of the pane's terminal, oldest first
     NullHost host;
     AfterglowVt::Terminal replica{20, 5, host};
     AfterglowVt::StateReader reader;
@@ -624,5 +633,84 @@ TEST(MuxAttach, RefusesBadAttachCalls)
     for (const Json::Array& args : {Json::Array{}, Json::Array{1}, Json::Array{"a", "b"}}) {
         EXPECT_FALSE(daemon.call(Fn::Detach, args, &error));
         EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
+    }
+}
+
+namespace {
+
+bool hasCall(const Window& w, Host::Kind kind)
+{
+    return std::any_of(w.calls.begin(), w.calls.end(), [kind](const Host::Call& c) { return c.kind == kind; });
+}
+
+} // namespace
+
+// The calls of a pane's terminal to its host reach the window that shows it,
+// in place of the daemon's answers for a pane that no window shows.
+TEST(MuxAttach, TheWindowGetsTheCallsOfThePanesTerminal)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    // A bell, and an OSC 52 write of "hello".
+    ASSERT_TRUE(w.type("printf '\\a\\033]52;c;aGVsbG8=\\a'\n"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::Bell) && hasCall(w, Host::Kind::ClipboardWrite); }));
+    const auto write = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::ClipboardWrite; });
+    EXPECT_EQ(write->title, "c");
+    // As the terminal hands it to a host: in base64, which the window decodes.
+    EXPECT_EQ(write->text, "aGVsbG8=");
+    // The bell came first, as the program sent it.
+    EXPECT_EQ(w.calls.front().kind, Host::Kind::Bell);
+}
+
+// A clipboard read waits for the window: the daemon does not answer it, and
+// the window's answer reaches the program as its input.
+TEST(MuxAttach, AClipboardReadWaitsForTheWindowsAnswer)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string answer = daemon.dir() + "/answer";
+    ASSERT_TRUE(daemon.newSession(daemon.options(ask("\\x1b]52;c;?\\x07", "\\x07", answer), "read"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "read"), "");
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::ClipboardRequest); }));
+    const auto request = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::ClipboardRequest; });
+    EXPECT_TRUE(request->clipboard.osc52);
+    EXPECT_EQ(request->clipboard.kind, AfterglowVt::ClipboardRequest::Kind::Read);
+    // Nothing answered it yet.
+    EXPECT_FALSE(exists(answer));
+    ASSERT_TRUE(w.type(request->clipboard.osc52Reply("from the window")));
+    ASSERT_TRUE(w.until([&] { return exists(answer); }));
+    EXPECT_EQ(readFile(answer), request->clipboard.osc52Reply("from the window"));
+}
+
+// A call larger than the window's event queue gets the answer of a pane that
+// no window shows: an OSC 52 write is dropped, and what follows still comes.
+TEST(MuxAttach, ACallOverTheEventQueueGetsTheAnswerWithoutAWindow)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh", true, std::size_t(1) << 20), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    // 1.5 MiB of clipboard text, then a bell.
+    ASSERT_TRUE(w.type("head -c 1572864 /dev/zero | tr '\\0' a > big; printf '\\033]52;c;'; base64 -w0 big; printf '\\a\\a'\n"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::Bell); }));
+    EXPECT_FALSE(hasCall(w, Host::Kind::ClipboardWrite));
+}
+
+TEST(MuxAttach, RefusesAnEventQueueOutOfRange)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    for (const std::int64_t bytes : {MinEventQueue - 1, MaxEventQueue + 1}) {
+        IpcConnection::Error error;
+        EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep", Json::Object{{"eventQueue", bytes}}}, &error));
+        EXPECT_EQ(error.code, "INVALID_ARG") << bytes;
     }
 }

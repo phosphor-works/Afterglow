@@ -25,7 +25,7 @@ namespace AfterglowMux {
 /// refuses a newSession or an attach of another version. The codecs of the
 /// attach stream (MuxStream.h) change with it. MuxProtocolTest pins the keys of
 /// the options to this number, so that a new key changes it too.
-inline constexpr int ProtocolVersion = 4;
+inline constexpr int ProtocolVersion = 5;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -87,6 +87,9 @@ inline constexpr std::int64_t MaxScrollback = 1000000;
 inline constexpr double MinContrast = 1;
 inline constexpr double MaxContrast = 21;
 inline constexpr std::int64_t MaxGraphicsQuota = std::int64_t(4096) << 20;
+/// The bounds of Mux.eventQueue, in bytes, which an attach passes.
+inline constexpr std::int64_t MinEventQueue = std::int64_t(1) << 20;
+inline constexpr std::int64_t MaxEventQueue = std::int64_t(64) << 20;
 
 /// What runs in a new pane. The client prepares it from its configuration
 /// (the shell, shell integration, TERM and the environment of the launch).

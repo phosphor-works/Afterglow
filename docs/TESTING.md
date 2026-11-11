@@ -485,6 +485,10 @@ The `Mux.MuxAttach.*` tests cover these cases:
 - A window that reads slowly: fewer frames, and no lost output
 - Input that a full PTY refuses: it waits and arrives whole, and a Kill goes past it
 - The attach sockets that an earlier daemon left, and calls that the daemon refuses
+- The calls of the pane's terminal to its host reach the window: a bell and an OSC 52 write, in their order
+- A clipboard read waits for the window's answer, and the daemon gives none
+- A call over the window's `eventQueue` gets the answer of a session that no window shows, and the calls after it still come
+- An `eventQueue` out of range is refused
 
 The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow mux new` starts in a session of its own:
 
@@ -503,6 +507,7 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.AMuxSessionWhoseProgramExitsClosesItsPane` | The last output and the exit status of the program |
 | `NativeWindow.AWindowThatLosesItsSessionLeavesItRunning` | A detach and a takeover close the pane and kill nothing |
 | `NativeWindow.AMuxSessionCanOutliveItsWindow` | `Mux.onClose` detach |
+| `NativeWindow.AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow` | A bell, a user variable and an OSC 52 write of the session's shell reach the window and its clipboard |
 | `NativeWindow.MuxOnCloseAppliesToAnOpenSessionPane` | A change of `Mux.onClose` reaches an open pane |
 | `NativeWindow.ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow` | A launch of a session that a window shows brings that window to the front and shows the pane of the session. A launch of an unknown session fails with the reason. |
 | `NativeWindow.ALargePasteReachesTheProgramOfASessionWhole` | Input larger than a frame goes in parts, in order |

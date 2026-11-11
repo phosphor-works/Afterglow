@@ -147,6 +147,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
+| `eventQueue` | `4` | 1–64 | Most data in MiB that a session holds for its window while the window is slow, for bells, notifications, clipboard requests, file transfers and drag and drop. A request that does not fit gets the answer of a session that no window shows. Afterglow passes the value when it attaches to a session. |
 | `onClose` | `"kill"` | `"kill"`, `"detach"` | What closing the window, tab or pane that shows a mux session does. With kill, the session and its programs end, as in a window outside a session. With detach, the session keeps running, and afterglow mux attach shows it again. The session also keeps running after afterglow mux detach, a takeover by another window, a quit of Afterglow, a crash and a lost connection. |
 
 ## Notifications

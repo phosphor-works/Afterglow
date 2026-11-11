@@ -60,8 +60,10 @@ public:
     /// shows it, which then detaches. Waits until the daemon names the
     /// session's panes. Nullptr with @p error on a failure. @p sockets are
     /// the daemon's: the user's, or a test's.
+    /// @p eventQueue is Mux.eventQueue in bytes.
     static std::shared_ptr<MuxClient> attach(const QString& name, bool takeover, QString* error,
-                                             const AfterglowProto::MuxSockets& sockets = AfterglowProto::muxSockets());
+                                             const AfterglowProto::MuxSockets& sockets = AfterglowProto::muxSockets(),
+                                             std::size_t eventQueue = std::size_t(4) << 20);
     ~MuxClient() override;
 
     const QString& session() const { return m_session; }
@@ -108,6 +110,9 @@ private:
     /// The pane's program exited: the pane hears it once its last frame and
     /// the PaneClosed event both came.
     void paneExited(std::uint32_t id);
+    /// A host call for pane @p id: its pane answers it, or it waits for the
+    /// pane. False for a call that does not decode.
+    bool hostCall(std::uint32_t id, const std::string& call);
     void queueInput(std::string frame, bool resize);
     void sendWaitingInput();
     void updateNotifiers();
@@ -125,6 +130,7 @@ private:
     std::map<std::uint32_t, std::uint32_t> m_channels; ///< the state channel of each pane
     std::map<std::uint32_t, QPointer<Pane>> m_panes;
     std::map<std::uint32_t, int> m_exits; ///< PaneClosed came: the wait status
+    std::map<std::uint32_t, std::vector<std::string>> m_waitingHostCalls; ///< for panes that the window has not made yet
     std::set<std::uint32_t> m_closedChannels; ///< the pane's last frame was read
     std::deque<std::string> m_waitingInput;
     /// Where m_waitingInput holds the newest size of a pane, while nothing

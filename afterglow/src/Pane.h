@@ -106,6 +106,10 @@ public:
     /// A state frame of the session (MuxClient, GUI thread). False when it
     /// does not apply: the replica no longer matches the daemon's terminal.
     bool applySessionFrame(std::string_view frame);
+    /// A call of the session's terminal to its host (MuxHost.h): the pane
+    /// answers it as it answers its own terminal. False for a call that does
+    /// not decode.
+    bool applySessionHostCall(std::string_view call);
     /// The program of the session pane exited, with @p status as waitpid gives it.
     void sessionPaneExited(int status);
     /// The window no longer shows the session (@p loss says why): the pane

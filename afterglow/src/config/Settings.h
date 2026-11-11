@@ -141,6 +141,9 @@ struct MuxSettings
     /// session ends its programs. Detach keeps the session running. A quit
     /// of Afterglow always detaches.
     Close onClose = Close::Kill;
+    /// MiB of the calls of a session's terminals (bells, notifications, the
+    /// clipboard, transfers) that wait for the window while it is slow.
+    int eventQueue = 4;
     bool operator==(const MuxSettings&) const = default;
 };
 

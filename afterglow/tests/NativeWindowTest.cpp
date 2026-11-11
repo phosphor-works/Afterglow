@@ -10148,6 +10148,34 @@ TEST_F(NativeWindow, AMuxSessionShowsInAWindowAndEndsWithIt) {
     EXPECT_TRUE(waitFor([&] { return MuxTest::names(daemon.sessions()) == std::vector<std::string>{"keep"}; }, 5000));
 }
 
+// The calls of a session pane's terminal reach the window, as from a program
+// of its own: a bell, a user variable and an OSC 52 write to the clipboard.
+TEST_F(NativeWindow, AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "calls")) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("calls"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    int bells = 0;
+    QStringList vars;
+    QObject listener;
+    QObject::connect(pane, &Pane::bellRang, &listener, [&] { ++bells; });
+    QObject::connect(pane, &Pane::userVarUpdated, &listener, [&](const QString&, const QString& value) { vars.append(value); });
+    QGuiApplication::clipboard()->setText(QStringLiteral("before"));
+    // "done" and "from session" in base64.
+    pane->sendInput("printf '\\a\\033]1337;SetUserVar=mark=ZG9uZQ==\\a\\033]52;c;ZnJvbSBzZXNzaW9u\\a'\n");
+    EXPECT_TRUE(waitFor([&] { return bells > 0; }, 5000));
+    EXPECT_TRUE(waitFor([&] { return vars.contains(QStringLiteral("done")); }, 5000)) << vars.join(QLatin1Char(',')).toStdString();
+    EXPECT_TRUE(waitFor([] { return QGuiApplication::clipboard()->text() == QStringLiteral("from session"); }, 5000))
+        << QGuiApplication::clipboard()->text().toStdString();
+    delete shown;
+}
+
 // The program of the session exits: the pane closes as a pane whose program
 // exited, with its status, and the window with it.
 TEST_F(NativeWindow, AMuxSessionWhoseProgramExitsClosesItsPane) {

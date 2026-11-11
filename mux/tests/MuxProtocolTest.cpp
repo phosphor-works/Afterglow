@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "MuxHost.h"
 #include "MuxProtocol.h"
 #include "MuxStream.h"
 
@@ -56,7 +57,14 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 4) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 5) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 5 added the host calls of a pane's terminal (Host events) and
+    // the eventQueue of the attach call.
+    Attach::Event bell;
+    bell.type = Attach::EventType::Host;
+    bell.pane = 1;
+    bell.payload = Host::encode(Host::make(Host::Kind::Bell));
+    EXPECT_EQ(Attach::encode(bell), std::string("\x06\x01\x00\x00\x01", 5));
     // Version 4 added attach and detach, and the attach stream: its events
     // and input, byte for byte (the keys of the attach call are in
     // Mux.MuxAttach.TheAttachCallAnswersWithItsKeys).
@@ -93,6 +101,70 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
                                         "ambiguousWide", "bidi", "cursorShape", "cursorBlink", "allowScreenReadback", "graphicsQuota",
                                         "graphicsFileTransfer"}));
     EXPECT_EQ(keys(toJson(SessionInfo{})), (std::vector<std::string>{"name", "attached", "panes", "jobs"}));
+}
+
+TEST(MuxProtocol, HostCallsRoundTrip)
+{
+    std::vector<Host::Call> calls;
+    calls.push_back(Host::make(Host::Kind::Bell));
+    calls.push_back(Host::make(Host::Kind::Flash));
+    calls.push_back(Host::make(Host::Kind::Notify, "title", "body\nline"));
+    calls.push_back(Host::make(Host::Kind::ClipboardWrite, "cp", std::string("data\0with nul", 14)));
+    calls.push_back(Host::make(Host::Kind::TerminalProtocol, {}, "ac=send;id=x", 5113));
+    calls.push_back(Host::make(Host::Kind::PointerShape, {}, "pointer"));
+    calls.push_back(Host::make(Host::Kind::UserVar, "name", "value"));
+    calls.push_back(Host::make(Host::Kind::CommandStarted, {}, "make -j4"));
+    calls.push_back(Host::make(Host::Kind::CommandFinished, {}, {}, -1));
+    calls.push_back(Host::make(Host::Kind::CommandFinished, {}, {}, 255));
+    calls.push_back(Host::make(Host::Kind::Download, "file.txt", "contents"));
+    Host::Call notification = Host::make(Host::Kind::DesktopNotification);
+    notification.notification.kind = AfterglowVt::NotificationRequest::Kind::Close;
+    notification.notification.id = "n1";
+    notification.notification.title = "t";
+    notification.notification.body = "b";
+    notification.notification.buttons = {"yes", "no"};
+    notification.notification.iconNames = {"dialog-information"};
+    notification.notification.iconData = std::string("\x89PNG", 4);
+    notification.notification.iconCacheId = "cache";
+    notification.notification.appName = "app";
+    notification.notification.types = {"im"};
+    notification.notification.sound = "silent";
+    notification.notification.focusOnActivate = false;
+    notification.notification.reportActivation = true;
+    notification.notification.reportClose = true;
+    notification.notification.occasion = AfterglowVt::NotificationRequest::Occasion::Invisible;
+    notification.notification.urgency = 2;
+    notification.notification.expireMs = 0;
+    calls.push_back(notification);
+    Host::Call clipboard = Host::make(Host::Kind::ClipboardRequest);
+    clipboard.clipboard.kind = AfterglowVt::ClipboardRequest::Kind::Write;
+    clipboard.clipboard.primary = true;
+    clipboard.clipboard.id = "c1";
+    clipboard.clipboard.password = "pw";
+    clipboard.clipboard.name = "editor";
+    clipboard.clipboard.mimes = {"text/plain", "image/png"};
+    clipboard.clipboard.data = {{"text/plain", "hello"}};
+    clipboard.clipboard.aliases = {{"text/html", "text/plain"}};
+    clipboard.clipboard.osc52 = true;
+    clipboard.clipboard.osc52Bel = true;
+    clipboard.clipboard.osc52Selection = "cp";
+    calls.push_back(clipboard);
+    for (const Host::Call& call : calls) {
+        const std::string bytes = Host::encode(call);
+        const auto back = Host::decode(bytes);
+        ASSERT_TRUE(back) << int(call.kind);
+        EXPECT_EQ(back->kind, call.kind);
+        EXPECT_EQ(back->title, call.title);
+        EXPECT_EQ(back->text, call.text);
+        EXPECT_EQ(back->number, call.number);
+        EXPECT_TRUE(Host::encode(*back) == bytes) << int(call.kind);
+        // Cut short anywhere, a call does not decode.
+        for (std::size_t n = 0; n < bytes.size(); ++n) EXPECT_FALSE(Host::decode(bytes.substr(0, n))) << int(call.kind) << " " << n;
+        EXPECT_FALSE(Host::decode(bytes + "x")) << int(call.kind);
+    }
+    EXPECT_TRUE(Host::decode(Host::encode(notification))->notification.buttons == notification.notification.buttons);
+    EXPECT_TRUE(Host::decode(Host::encode(clipboard))->clipboard == clipboard.clipboard);
+    for (const char* bad : {"", "\x00", "\x0d", "\x04\x07"}) EXPECT_FALSE(Host::decode(bad)) << bad;
 }
 
 TEST(MuxProtocol, SessionOptionsRoundTrip)

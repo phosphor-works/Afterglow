@@ -77,6 +77,7 @@ std::string encode(const Event& event)
     // A wait status is never negative: 0 carries -1, the status that is
     // unknown, and the others go up by one.
     varint(out, std::uint64_t(event.status < 0 ? 0 : std::int64_t(event.status) + 1));
+    if (event.type == EventType::Host) out += event.payload;
     return out;
 }
 
@@ -88,7 +89,9 @@ std::optional<Event> decodeEvent(std::string_view frame)
     event.pane = std::uint32_t(r.varint(0xffffffffu));
     event.channel = std::uint32_t(r.varint(MaxChannelId - 1));
     const std::uint64_t status = r.varint(std::uint64_t(0x7fffffff) + 1);
-    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Detached)) {
+    // A host call takes the rest of the frame.
+    if (type == std::uint8_t(EventType::Host) && r.ok()) event.payload = std::string(r.rest());
+    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Host)) {
         return std::nullopt;
     }
     event.type = EventType(type);
