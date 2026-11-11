@@ -333,6 +333,7 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller)
     if (request.fn == Fn::KillSession) return killSession(request);
     if (request.fn == Fn::Attach) return attach(request, caller);
     if (request.fn == Fn::Detach) return detach(request);
+    if (request.fn == Fn::PaneDirectory) return paneDirectory(request);
     return ipcError(request.id, IpcErrorCode::NoSuchFn, "no function '" + request.fn + "' on target '" + request.target + "'");
 }
 
@@ -482,6 +483,18 @@ std::string Daemon::detach(const IpcRequest& request)
         return true;
     });
     return ipcReply(request.id.value_or(0), nullptr);
+}
+
+std::string Daemon::paneDirectory(const IpcRequest& request)
+{
+    const auto id = request.args.size() == 2 && request.args[0].isString() ? request.args[1].toInteger() : std::nullopt;
+    if (!id || *id < 0 || *id > 0xffffffffLL) return ipcError(request.id, IpcErrorCode::InvalidArg, "paneDirectory takes (name, pane)");
+    const std::string& name = request.args[0].toString();
+    const auto session = find(name);
+    if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    const MuxPane* pane = (*session)->pane(std::uint32_t(*id));
+    if (!pane) return ipcError(request.id, Error::NoSuchPane, "session '" + name + "' has no pane " + std::to_string(*id));
+    return ipcReply(request.id.value_or(0), pane->directory());
 }
 
 void Daemon::syncAttached()

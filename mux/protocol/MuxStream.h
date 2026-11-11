@@ -82,6 +82,7 @@ enum class InputType : std::uint8_t {
     Reset = 3, ///< the user reset the pane's terminal (Action::ResetTerminal)
     Clear = 4, ///< the user cleared the pane's screen and history (Action::ClearScreen)
     Kill = 5, ///< the user closed the window, and Mux.onClose is kill: the session ends (ActionChannel only)
+    Visible = 6, ///< whether the user can see the pane (mode 2033), in `visible`
 };
 
 struct Input
@@ -90,6 +91,7 @@ struct Input
     std::uint32_t pane = 0;
     std::string bytes;
     PaneSize size;
+    bool visible = false;
 };
 
 std::string encode(const Input& input);

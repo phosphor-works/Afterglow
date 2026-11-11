@@ -150,16 +150,18 @@ In each case, a window that has no other pane closes with the pane of the sessio
 
 A new tab or a split in the window of a session runs a program of the window, not of the session.
 These programs end with the window.
+They start in the directory of the pane of the session, as `Window.workingDirectory` sets.
+When its shell does not report its directory (OSC 7), the window asks the daemon for the directory of the program in the foreground.
 A project saves the pane of a session as a shell in the directory of that pane. A project does not keep sessions.
 
-The window of a session does not show these yet:
+The pane of a session shows the same things as a pane outside a session, with one exception: the window does not show images yet.
+These features work as in a pane outside a session:
 
-- Images, and extra cursors
-- Command marks of shell integration (OSC 133): the last output, the jumps between prompts and a click on the prompt
+- The marks of shell integration (OSC 133): the last output, the jumps between prompts, and a click on the prompt
 - The status of programs (OSC 7501), and the shell contexts in the title
-- Visibility reports (mode 2033): the program always hears that the window is visible
-- The directory of the program when its shell does not report it (OSC 7). New tabs and splits then start in your home directory.
-- A selection or a search match in a region that a program scrolls, as an editor does. It stays on its rows, not on its text.
+- Extra cursors
+- A selection or a search match in a region that a program scrolls, as an editor does: it moves with its text
+- Visibility reports (mode 2033): the program hears whether you can see the pane
 
 These commands and options are not available. Each stops with exit status 1 and writes this message on standard error:
 
@@ -314,6 +316,7 @@ While no window shows the session, the daemon also answers these requests.
 | Drag and drop (OSC 72) | A program that asks which types the terminal supports gets the answer of a window. A drag offer (`t=o`) gets `EPERM`. No drop arrives, and no drag starts. |
 | File download (OSC 1337 `File`) | Dropped |
 | Pointer shape (OSC 22), user variables (OSC 1337 `SetUserVar`), commands of shell integration (OSC 133) | The daemon keeps the last pointer shape, the user variables and the running command for the next window |
+| Visibility report (mode 2033) | The program hears that you cannot see the pane. The next window that shows the session reports whether you can. |
 
 ## What a window answers
 

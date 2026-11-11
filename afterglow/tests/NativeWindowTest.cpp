@@ -79,7 +79,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
-#include "QStringPrinter.h"
+#include "QStringPrinter.h" // IWYU pragma: keep (gtest finds PrintTo(QString) by ADL)
 #include "SavedEnvironment.h"
 #include "TestDaemon.h"
 #include "mux/MuxClient.h"
@@ -2051,8 +2051,8 @@ TEST_F(NativeWindow, NativeWaylandFileDrop) {
     DragSender sender; sender.url = QUrl::fromLocalFile(path);
     sender.pressedMarker = ready + QStringLiteral(".pressed");
     window->installEventFilter(&sender);
-    ASSERT_TRUE(writeDragMarker(ready, window, QPointF(window->width() / 4, window->height() / 3),
-                                QPointF(window->width() * 3 / 4, window->height() * 2 / 3), false));
+    ASSERT_TRUE(writeDragMarker(ready, window, QPoint(window->width() / 4, window->height() / 3),
+                                QPoint(window->width() * 3 / 4, window->height() * 2 / 3), false));
     waitFor([&] { return sender.completed; }, 15000);
     window->removeEventFilter(&sender);
     EXPECT_TRUE(sender.started);
@@ -2164,8 +2164,8 @@ void NativeWindow::runClientDrag(const QString& ready, ClientDrag& drag, const s
     PressMarker input; input.path = ready + QStringLiteral(".pressed"); window->installEventFilter(&input);
     const auto removeInput = qScopeGuard([&] { window->removeEventFilter(&input); });
     // The runner releases only after the receiver's program has accepted the drag.
-    ASSERT_TRUE(writeDragMarker(ready, window, QPointF(window->width() / 4, window->height() / 3),
-                                QPointF(window->width() * 3 / 4, window->height() * 2 / 3), true));
+    ASSERT_TRUE(writeDragMarker(ready, window, QPoint(window->width() / 4, window->height() / 3),
+                                QPoint(window->width() * 3 / 4, window->height() * 2 / 3), true));
     // A timer, because the drag runs in QDrag::exec's own event loop.
     QTimer hover;
     QObject::connect(&hover, &QTimer::timeout, &drag.listener, [&] {
@@ -10170,6 +10170,37 @@ TEST_F(NativeWindow, AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow) 
     EXPECT_TRUE(waitFor([&] { return vars.contains(QStringLiteral("done")); }, 5000)) << vars.join(QLatin1Char(',')).toStdString();
     EXPECT_TRUE(waitFor([] { return QGuiApplication::clipboard()->text() == QStringLiteral("from session"); }, 5000))
         << QGuiApplication::clipboard()->text().toStdString();
+    delete shown;
+}
+
+// The pane of a session has what a pane of the window has: the last output
+// and the regions of shell integration, the status of its programs, and the
+// directory of a shell that does not report it, which the daemon reads.
+TEST_F(NativeWindow, AMuxSessionsMarksStatusAndDirectoryReachTheWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "marks")) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("marks"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    ASSERT_TRUE(pane->sendInput("cd / && printf '\\033]133;C\\aout1\\nout2\\n\\033]133;D;4\\a\\033]7501;state=working:app=build:progress=30\\a'\n"));
+    EXPECT_TRUE(waitFor([&] { return pane->text(AfterglowVt::Terminal::TextScope::LastOutput) == QStringLiteral("out1\nout2\n"); }, 5000))
+        << pane->text(AfterglowVt::Terminal::TextScope::LastOutput).toStdString();
+    EXPECT_TRUE(waitFor([&] {
+        const QList<PaneStatusRecord> records = pane->status();
+        return records.size() == 1 && records[0].app == QStringLiteral("build") && records[0].progress == 30;
+    }, 5000));
+    const QVariantList regions = pane->semanticRegions().value(QStringLiteral("regions")).toList();
+    EXPECT_TRUE(std::any_of(regions.begin(), regions.end(), [](const QVariant& r) {
+        const QVariantMap region = r.toMap();
+        return region.value(QStringLiteral("kind")) == QStringLiteral("output") && region.value(QStringLiteral("exit_code")).toInt() == 4;
+    }));
+    // The shell reports no directory (OSC 7): the daemon reads the system's.
+    EXPECT_EQ(pane->workingDirectory(), QStringLiteral("/"));
     delete shown;
 }
 

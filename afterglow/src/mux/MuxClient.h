@@ -97,6 +97,9 @@ public:
     /// the session's terminal.
     void sendReset(std::uint32_t id);
     void sendClear(std::uint32_t id);
+    /// Whether the user can see pane @p id: its terminal in the daemon
+    /// reports a change to the program (mode 2033).
+    void sendVisible(std::uint32_t id, bool visible);
     /// The input that waits for the channel, in bytes: the backlog that a
     /// file transfer or a drag holds back for. Any thread.
     std::size_t pendingInput() const { return m_waitingBytes.load(std::memory_order_relaxed); }
@@ -104,6 +107,10 @@ public:
     /// a close. Empty when none runs, or when the daemon does not answer.
     /// It calls the daemon and waits for the answer.
     QString foregroundJob() const;
+    /// The working directory of the program of pane @p id, as the system has
+    /// it: for a shell that does not report its own (OSC 7). Empty when the
+    /// daemon does not answer. It calls the daemon and waits for the answer.
+    QString directory(std::uint32_t id) const;
     /// Reads the stream for up to @p waitMs, and handles what comes, until
     /// @p done: a pane that waits for the answer of a host call on the GUI
     /// thread, which alone reads the stream (a drag's answer wait). True

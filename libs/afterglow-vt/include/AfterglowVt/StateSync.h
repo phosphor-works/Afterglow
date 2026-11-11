@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Style.h>
 #include <AfterglowVt/afterglowvt_export.h>
 
@@ -27,14 +28,43 @@
 // What a frame carries: both screens (their rows, the history with the
 // stable id of each row, the cursor), the styles and links of their cells,
 // the modes, the colors, the cursor shape, the title and the working
-// directory. Not yet: extra cursors, OSC 133 marks and semantic regions,
-// program status, shell contexts and images.
+// directory, the extra cursors, the OSC 133 marks and semantic regions, the
+// program status, the shell contexts, and the region scrolls since the last
+// frame. Not yet: images.
 
 namespace AfterglowVt {
 
 class Terminal;
 
 inline constexpr std::string_view StateCodec = "afterglow.state.v1";
+
+/// The region scrolls of a terminal (ITerminalHost::regionScrolled) for the
+/// next frame. The replica gets the rows that moved as rows, so its host
+/// hears of each scroll from the frame, and moves what it keeps by stable row
+/// id (a selection, a search) with the text, as a host of the terminal does.
+class AFTERGLOWVT_EXPORT RegionScrolls
+{
+public:
+    /// The most scrolls that a frame carries. A scroll that continues the
+    /// last one (the same region, the same direction) adds to it.
+    static constexpr std::size_t Max = 256;
+    /// A scroll of the active screen, @p altScreen as the terminal has it
+    /// when it calls back. Past Max, every row of both screens counts as
+    /// moved out of its region: the replica's host lets go of what it kept.
+    void add(bool altScreen, const RegionScroll& scroll);
+    void clear();
+    bool empty() const { return m_entries.empty() && !m_lost; }
+
+private:
+    friend class StateWriter;
+    struct Entry
+    {
+        bool altScreen = false;
+        RegionScroll scroll;
+    };
+    std::vector<Entry> m_entries;
+    bool m_lost = false;
+};
 
 class AFTERGLOWVT_EXPORT StateWriter
 {
@@ -44,7 +74,9 @@ public:
     /// rows, then history rows, past about @p maxBytes wait for the next
     /// frames, though each frame carries at least one visible row and one
     /// history row of each screen; the small sections always go.
-    std::string update(const Terminal& terminal, std::size_t maxBytes);
+    /// @p scrolls: the region scrolls since the last frame, which the first
+    /// frame leaves out: a new replica keeps nothing that they move.
+    std::string update(const Terminal& terminal, std::size_t maxBytes, const RegionScrolls* scrolls = nullptr);
     /// The next frame carries everything again, as the first one does: for
     /// a new replica.
     void reset();
@@ -85,6 +117,10 @@ private:
     std::string m_colors;
     std::string m_text;
     std::string m_cursor;
+    std::string m_shell;
+    std::string m_status;
+    std::string m_contexts;
+    std::string m_extraCursors;
     bool m_started = false;
 };
 

@@ -59,6 +59,8 @@ std::string encode(const Input& input)
         for (const int v : {input.size.cols, input.size.rows, input.size.cellWidth, input.size.cellHeight}) {
             varint(out, std::uint64_t(v < 0 ? 0 : v));
         }
+    } else if (input.type == InputType::Visible) {
+        out.push_back(input.visible ? 1 : 0);
     }
     return out;
 }
@@ -78,6 +80,13 @@ std::optional<Input> decodeInput(std::string_view frame)
     if (type == std::uint8_t(InputType::Reset) || type == std::uint8_t(InputType::Clear) || type == std::uint8_t(InputType::Kill)) {
         if (!r.done()) return std::nullopt;
         input.type = InputType(type);
+        return input;
+    }
+    if (type == std::uint8_t(InputType::Visible)) {
+        const std::uint8_t visible = r.byte();
+        if (!r.ok() || !r.done() || visible > 1) return std::nullopt;
+        input.type = InputType::Visible;
+        input.visible = visible;
         return input;
     }
     if (type != std::uint8_t(InputType::Resize)) return std::nullopt;

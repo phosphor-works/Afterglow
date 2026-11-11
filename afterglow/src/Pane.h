@@ -112,6 +112,9 @@ public:
     /// A state frame of the session (MuxClient, GUI thread). False when it
     /// does not apply: the replica no longer matches the daemon's terminal.
     bool applySessionFrame(std::string_view frame);
+    /// Whether the user can see this session pane: the daemon's terminal
+    /// reports a change to the program (mode 2033). Sends a change only.
+    void setSessionVisible(bool visible);
     /// A call of the session's terminal to its host (MuxHost.h, MuxClient,
     /// GUI thread): the pane answers it as it answers its own terminal.
     void applySessionHostCall(const AfterglowMux::Host::Call& call);
@@ -615,6 +618,7 @@ private:
     std::uint32_t m_sessionPane = 0;
     bool m_killSessionOnClose = false;
     std::atomic<bool> m_sessionGone{false};
+    int m_sessionVisible = -1; ///< what the daemon last heard (setSessionVisible), -1 for nothing yet
     /// The size last sent to the daemon: cols, rows, cell width and height.
     std::array<int, 4> m_sentSize{0, 0, 0, 0};
     AfterglowVt::StateReader m_stateReader;

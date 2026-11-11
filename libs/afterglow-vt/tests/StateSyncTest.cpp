@@ -93,13 +93,32 @@ std::string differs(const Terminal& a, const Terminal& b)
     return {};
 }
 
+/// A host that also hears of program status and region scrolls.
+struct SyncHost : RecordingHost
+{
+    const Terminal* terminal = nullptr;
+    /// The source's: where its scrolls wait for the next frame, as the
+    /// daemon's pane keeps them.
+    RegionScrolls* record = nullptr;
+    /// What the host heard, with the screen that was active then.
+    std::vector<std::pair<bool, RegionScroll>> scrolls;
+    int statusChanges = 0;
+    void programStatusChanged() override { ++statusChanges; }
+    void regionScrolled(const RegionScroll& s) override
+    {
+        if (record) record->add(terminal->modes().altScreen, s);
+        scrolls.emplace_back(terminal->modes().altScreen, s);
+    }
+};
+
 /// A terminal that parses, and a replica that only takes frames.
 struct Pair
 {
-    RecordingHost sourceHost;
-    RecordingHost replicaHost;
+    SyncHost sourceHost;
+    SyncHost replicaHost;
     Terminal source;
     Terminal replica;
+    RegionScrolls scrolls;
     StateWriter writer;
     StateReader reader;
     std::size_t budget;
@@ -111,6 +130,9 @@ struct Pair
         , replica(20, 5, replicaHost, withScrollback(replicaScrollback ? replicaScrollback : scrollback))
         , budget(budget)
     {
+        sourceHost.terminal = &source;
+        sourceHost.record = &scrolls;
+        replicaHost.terminal = &replica;
     }
 
     /// Frames until the writer has nothing left. False when the reader
@@ -118,7 +140,8 @@ struct Pair
     bool sync(std::string* error = nullptr)
     {
         for (int guard = 0; guard < 100000; ++guard) {
-            const std::string frame = writer.update(source, budget);
+            const std::string frame = writer.update(source, budget, &scrolls);
+            scrolls.clear();
             if (frame.empty() && !writer.pending()) return true;
             ++frames;
             std::string why;
@@ -131,6 +154,25 @@ struct Pair
         return false;
     }
 };
+
+/// The first difference of the OSC 133 regions as each terminal reports them.
+std::string regionsDiffer(const Terminal& a, const Terminal& b)
+{
+    const auto ra = a.semanticRegions();
+    const auto rb = b.semanticRegions();
+    if (ra.size() != rb.size()) return "count " + std::to_string(ra.size()) + " and " + std::to_string(rb.size());
+    for (std::size_t i = 0; i < ra.size(); ++i) {
+        const SemanticRegion& x = ra[i];
+        const SemanticRegion& y = rb[i];
+        if (x.id != y.id || x.kind != y.kind || x.start.row != y.start.row || x.start.col != y.start.col
+            || x.end.row != y.end.row || x.end.col != y.end.col || x.open != y.open || x.exitCode != y.exitCode
+            || x.available != y.available || x.startTrimmed != y.startTrimmed) {
+            return "region " + std::to_string(i);
+        }
+        if (a.semanticRegionText(x.id) != b.semanticRegionText(y.id)) return "the text of region " + std::to_string(i);
+    }
+    return {};
+}
 
 } // namespace
 
@@ -146,6 +188,197 @@ TEST(StateSync, TextStylesLinksAndText)
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(differs(p.source, p.replica), "");
     EXPECT_EQ(p.replica.title(), "the title");
+}
+
+TEST(StateSync, ShellIntegrationMarksAndRegions)
+{
+    Pair p(30, 8, 100);
+    p.source.feed("\x1b]133;A;click_events=1\x1b\\$ \x1b]133;B\x1b\\ls\r\n\x1b]133;C\x1b\\one\r\ntwo\r\n\x1b]133;D;3\x1b\\");
+    p.source.feed("\x1b]133;A;click_events=1\x1b\\$ \x1b]133;B\x1b\\");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    EXPECT_EQ(regionsDiffer(p.source, p.replica), "");
+    ASSERT_FALSE(p.source.semanticRegions().empty());
+    // The last output, and a click at the prompt that moves the cursor.
+    EXPECT_TRUE(p.replica.hasCommandOutput());
+    EXPECT_EQ(p.replica.text(Terminal::TextScope::LastOutput), p.source.text(Terminal::TextScope::LastOutput));
+    EXPECT_NE(p.replica.text(Terminal::TextScope::LastOutput), "");
+    EXPECT_TRUE(p.replica.atShellPrompt());
+    EXPECT_TRUE(p.replica.promptTakesClicks());
+    // A command runs: the replica leaves the prompt with the source.
+    p.source.feed("sleep 1\r\n\x1b]133;C\x1b\\");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_FALSE(p.replica.atShellPrompt());
+    EXPECT_FALSE(p.replica.promptTakesClicks());
+    EXPECT_EQ(regionsDiffer(p.source, p.replica), "");
+    // Output past the screen: the regions keep their rows by stable id.
+    for (int i = 0; i < 20; ++i) p.source.feed("line\r\n");
+    p.source.feed("\x1b]133;D;0\x1b\\");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(regionsDiffer(p.source, p.replica), "");
+    EXPECT_EQ(p.replica.text(Terminal::TextScope::LastOutput), p.source.text(Terminal::TextScope::LastOutput));
+}
+
+TEST(StateSync, ProgramStatusAndContextsReachTheReplicasHost)
+{
+    Pair p(30, 6, 100);
+    ASSERT_TRUE(p.sync());
+    const int statusChanges = p.replicaHost.statusChanges;
+    const int contextChanges = p.replicaHost.contextChanges;
+    p.source.feed("\x1b]7501;state=blocked:kind=permission:app=terraform:msg=QXBwbHkgMz8\x1b\\");
+    p.source.feed("\x1b]7501;id=sub:state=working:progress=40\x1b\\");
+    p.source.feed("\x1b]3008;start=a1;type=shell;user=someone;hostname=box\x1b\\");
+    p.source.feed("\x1b]3008;start=b2;type=elevate;user=someone;targetuser=root;hostname=box\x1b\\");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    const auto& a = p.source.programStatus();
+    const auto& b = p.replica.programStatus();
+    ASSERT_EQ(a.records().size(), 2u);
+    ASSERT_EQ(b.records().size(), a.records().size());
+    for (std::size_t i = 0; i < a.records().size(); ++i) {
+        const StatusRecord& x = a.records()[i];
+        const StatusRecord& y = b.records()[i];
+        EXPECT_EQ(x.id, y.id);
+        EXPECT_EQ(x.state, y.state);
+        EXPECT_EQ(x.kind, y.kind);
+        EXPECT_EQ(x.progress, y.progress);
+        EXPECT_EQ(x.app, y.app);
+        EXPECT_EQ(x.title, y.title);
+        EXPECT_EQ(x.msg, y.msg);
+        EXPECT_EQ(x.serial, y.serial);
+        EXPECT_EQ(a.effectiveApp(x), b.effectiveApp(y));
+    }
+    EXPECT_TRUE(p.source.contexts().stack() == p.replica.contexts().stack());
+    ASSERT_EQ(p.replica.contexts().stack().size(), 2u);
+    // One call for each frame that changed them, as a terminal makes for
+    // each report that changes them.
+    EXPECT_EQ(p.replicaHost.statusChanges, statusChanges + 1);
+    EXPECT_EQ(p.replicaHost.contextChanges, contextChanges + 1);
+    // A frame that changes neither calls nothing.
+    p.source.feed("x");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(p.replicaHost.statusChanges, statusChanges + 1);
+    EXPECT_EQ(p.replicaHost.contextChanges, contextChanges + 1);
+    // A new prompt ends what was in flight, and the outer context ends both.
+    p.source.feed("\x1b]133;A\x1b\\\x1b]3008;end=a1\x1b\\");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(b.records().size(), a.records().size());
+    EXPECT_TRUE(p.replica.contexts().stack().empty());
+    EXPECT_EQ(p.replicaHost.statusChanges, statusChanges + 2);
+    EXPECT_EQ(p.replicaHost.contextChanges, contextChanges + 2);
+}
+
+TEST(StateSync, ExtraCursorsAndTheirColors)
+{
+    Pair p(30, 6, 100);
+    p.source.feed("\x1b[>2;4:2:3:3:5 q\x1b[>29;2:5:1 q\x1b[>40;2:255:0:0 q\x1b[>30;5:12 q");
+    ASSERT_EQ(p.source.extraCursors().size(), 7u);
+    ASSERT_EQ(p.source.extraCursorColor().mode, ExtraCursorColor::Mode::Rgb);
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_TRUE(p.replica.extraCursors() == p.source.extraCursors());
+    EXPECT_TRUE(p.replica.extraCursorColor() == p.source.extraCursorColor());
+    EXPECT_TRUE(p.replica.extraCursorTextColor() == p.source.extraCursorTextColor());
+    p.source.feed("\x1b[>0;4 q");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_TRUE(p.replica.extraCursors().empty());
+}
+
+TEST(StateSync, TheReplicasHostHearsOfRegionScrolls)
+{
+    Pair p(20, 6, 100);
+    p.source.feed("\n\n\n\n\n\n\n\n");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    p.replicaHost.scrolls.clear();
+    p.sourceHost.scrolls.clear();
+    // Two scrolls of one region in one direction, then the other way, then
+    // another region: three scrolls for the replica's host.
+    p.source.feed("\x1b[2;4r\x1b[S\x1b[2S\x1b[T\x1b[3;1H\x1b[2L");
+    ASSERT_EQ(p.sourceHost.scrolls.size(), 4u);
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    ASSERT_EQ(p.replicaHost.scrolls.size(), 3u);
+    EXPECT_EQ(p.replicaHost.scrolls[0].second.delta, -3);
+    EXPECT_EQ(p.replicaHost.scrolls[0].second.top, p.sourceHost.scrolls[0].second.top);
+    EXPECT_EQ(p.replicaHost.scrolls[0].second.bottom, p.sourceHost.scrolls[0].second.bottom);
+    EXPECT_EQ(p.replicaHost.scrolls[1].second.delta, 1);
+    EXPECT_EQ(p.replicaHost.scrolls[2].second.delta, p.sourceHost.scrolls[3].second.delta);
+    EXPECT_EQ(p.replicaHost.scrolls[2].second.top, p.sourceHost.scrolls[3].second.top);
+    for (const auto& [alt, scroll] : p.replicaHost.scrolls) EXPECT_FALSE(alt);
+    // On the alternate screen, which the frame then leaves: the host hears
+    // of the scroll with the screen that scrolled.
+    p.replicaHost.scrolls.clear();
+    p.source.feed("\x1b[?1049h\x1b[2;4r\x1b[S\x1b[?1049l");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    ASSERT_EQ(p.replicaHost.scrolls.size(), 1u);
+    EXPECT_TRUE(p.replicaHost.scrolls[0].first);
+    EXPECT_FALSE(p.replica.modes().altScreen);
+    // A new replica keeps nothing that the scrolls move: its first frame
+    // leaves them out.
+    p.source.feed("\x1b[2;4r\x1b[S");
+    p.writer.reset();
+    p.replicaHost.scrolls.clear();
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_TRUE(p.replicaHost.scrolls.empty());
+}
+
+TEST(StateSync, TooManyRegionScrollsMoveEveryRowOut)
+{
+    Pair p(20, 6, 100);
+    p.source.feed("\n\n\n\n\n\n\n\n");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    p.replicaHost.scrolls.clear();
+    // Two regions in turn: no scroll continues the one before it.
+    for (std::size_t i = 0; i <= RegionScrolls::Max; ++i) p.source.feed(i % 2 ? "\x1b[2;4r\x1b[S" : "\x1b[3;5r\x1b[S");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    ASSERT_EQ(p.replicaHost.scrolls.size(), 2u);
+    // Every row of each screen is in the region, and leaves it.
+    for (const auto& [alt, scroll] : p.replicaHost.scrolls) {
+        EXPECT_TRUE(scroll.fullWidth);
+        EXPECT_EQ(scroll.delta, -int(scroll.bottom - scroll.top + 1));
+        for (std::uint64_t row = scroll.top; row <= scroll.bottom; ++row) {
+            const SelectionPoint at{row, 3};
+            EXPECT_TRUE(scroll.contains(at));
+            EXPECT_FALSE(scroll.map(at).has_value());
+        }
+    }
+    EXPECT_FALSE(p.replicaHost.scrolls[0].first);
+    EXPECT_TRUE(p.replicaHost.scrolls[1].first);
+    const Screen& primary = p.replica.primaryScreen();
+    EXPECT_EQ(p.replicaHost.scrolls[0].second.top, primary.rowsDropped());
+    EXPECT_EQ(p.replicaHost.scrolls[0].second.bottom, primary.rowsDropped() + primary.totalRows() - 1);
+}
+
+TEST(StateSync, ReaderRefusesBadNewSections)
+{
+    Pair p(20, 4, 10);
+    ASSERT_TRUE(p.sync());
+    // A version byte, then one section: a tag, its length, its payload.
+    const auto frame = [](std::uint8_t tag, std::string payload) {
+        std::string out(1, char(1));
+        out.push_back(char(tag));
+        out.push_back(char(payload.size()));
+        return out + payload;
+    };
+    StateReader reader;
+    for (const auto& [name, bytes] : std::vector<std::pair<const char*, std::string>>{
+             {"a scroll of no rows", frame(15, std::string("\x00\x01\x00\x05\x02\x00\x01\x01\x01", 9))},
+             {"a scroll that moves nothing", frame(15, std::string("\x00\x01\x00\x01\x02\x00\x01\x01\x00", 9))},
+             {"a shell zone past Input", frame(11, std::string("\x03\x00\x00\x00\x00\x00\x01\x00", 8))},
+             {"a region id past the next one", frame(11, std::string("\x00\x00\x00\x00\x00\x00\x01\x01\x01\x00\x00\x00\x00\x00", 14))},
+             {"a status state past Error", frame(12, std::string("\x01\x00\x05\x00\x01\x00\x00\x00\x01", 9))},
+             {"a progress past 100", frame(12, std::string("\x01\x00\x01\x00\xca\x01\x00\x00\x00\x01", 10))},
+             {"an extra cursor of shape 4", frame(14, std::string("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x04", 14))},
+             {"an extra cursor color mode 3", frame(14, std::string("\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 11))},
+         }) {
+        Terminal replica(20, 4, p.replicaHost);
+        std::string why;
+        EXPECT_FALSE(reader.apply(replica, bytes, &why)) << name;
+        EXPECT_FALSE(why.empty()) << name;
+    }
 }
 
 TEST(StateSync, NothingChangedIsNoFrame)

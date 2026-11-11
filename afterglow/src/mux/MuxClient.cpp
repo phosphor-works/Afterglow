@@ -12,6 +12,7 @@
 #include <AfterglowVt/StateSync.h>
 #include <PhosphorChannel/Stream.h>
 
+#include <QFile>
 #include <QLoggingCategory>
 #include <QSocketNotifier>
 
@@ -337,6 +338,17 @@ void MuxClient::sendClear(std::uint32_t id)
     sendWaitingInput();
 }
 
+void MuxClient::sendVisible(std::uint32_t id, bool visible)
+{
+    if (!showing()) return;
+    Attach::Input input;
+    input.type = Attach::InputType::Visible;
+    input.pane = id;
+    input.visible = visible;
+    queueInput(Attach::encode(input), false);
+    sendWaitingInput();
+}
+
 void MuxClient::sendWaitingInput()
 {
     while (m_stream && m_input && !m_waitingInput.empty()) {
@@ -364,6 +376,19 @@ QString MuxClient::foregroundJob() const
         }
     }
     return {};
+}
+
+QString MuxClient::directory(std::uint32_t id) const
+{
+    std::string reason;
+    AfterglowMux::Reached reached = AfterglowMux::connectAny(m_sockets, &reason);
+    if (!reached.connection) return {};
+    AfterglowProto::IpcConnection::Error callError;
+    const auto result = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::PaneDirectory,
+                                                 Json::Array{m_session.toStdString(), std::int64_t(id)},
+                                                 AfterglowMux::CallTimeoutMs, &callError);
+    if (!result || !result->isString()) return {};
+    return QFile::decodeName(QByteArray::fromStdString(result->toString()));
 }
 
 bool MuxClient::waitForHostCalls(int waitMs, const std::function<bool()>& done)

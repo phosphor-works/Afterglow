@@ -11,6 +11,8 @@
 
 namespace AfterglowVt {
 
+class StateReader;
+
 /// One context a pane's output comes from (systemd's OSC 3008): a shell, a
 /// command, an elevated (sudo, run0) or remote (ssh) session, a container.
 /// https://uapi-group.org/specifications/specs/osc_context/
@@ -52,6 +54,7 @@ public:
     const std::vector<ShellContext>& stack() const noexcept { return m_stack; }
 
 private:
+    friend class StateReader; ///< a replica takes the contexts of the terminal that it mirrors
     std::vector<ShellContext> m_stack;
 };
 

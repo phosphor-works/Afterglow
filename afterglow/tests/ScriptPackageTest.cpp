@@ -3,7 +3,7 @@
 #include "scripting/ScriptPackage.h"
 #include "scripting/ScriptState.h"
 #include "scripting/ScriptFiles.h"
-#include "QStringPrinter.h"
+#include "QStringPrinter.h" // IWYU pragma: keep (gtest finds PrintTo(QString) by ADL)
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>

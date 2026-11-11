@@ -48,6 +48,8 @@ MuxPane::MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, 
     // once gets the size that the client sent. No window measured it yet,
     // so that is 0 (unknown) from `afterglow mux new`.
     m_terminal.resize(size.cols, size.rows, size.cellWidth, size.cellHeight);
+    // No window shows it yet: one that does says so (setVisible).
+    m_terminal.setVisible(false);
 }
 
 MuxPane::~MuxPane()
@@ -85,6 +87,11 @@ std::string MuxPane::foregroundJob(pid_t caller) const
     if (caller > 0 && leadsForeground(caller, m_pty->pid())) return {};
     if (std::string job = m_pty->foregroundProcess(); !job.empty()) return job;
     return m_launchedProgram;
+}
+
+std::string MuxPane::directory() const
+{
+    return m_pty && !m_exited ? m_pty->currentWorkingDirectory() : std::string();
 }
 
 void MuxPane::writeDirect(std::string_view bytes)
@@ -205,6 +212,24 @@ void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
         m_window = window;
     }
     if (wake) m_wake();
+    // After m_window: a report of the change goes to the program, not to the
+    // window that went.
+    if (!window) setVisible(false);
+}
+
+std::string MuxPane::frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes)
+{
+    std::lock_guard lock(m_mutex);
+    std::string frame = writer.update(m_terminal, maxBytes, &m_scrolls);
+    // The frame carries them, also one that waits for room in the channel.
+    m_scrolls.clear();
+    return frame;
+}
+
+void MuxPane::setVisible(bool visible)
+{
+    std::lock_guard lock(m_mutex);
+    m_terminal.setVisible(visible);
 }
 
 std::vector<std::string> MuxPane::takeHostCalls(std::uint64_t window, std::size_t budget)
@@ -375,6 +400,13 @@ void MuxPane::commandFinished(int exitCode)
         if (std::exchange(m_commandForwarded, false)) (void)queueLocked(Host::encode(call), Host::Kind::CommandFinished, Fit::Always, &wake);
     }
     if (wake) m_wake();
+}
+
+void MuxPane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
+{
+    // Reader thread, m_mutex held. Kept while no window shows the pane too:
+    // the first frame of the next window leaves them out.
+    m_scrolls.add(m_terminal.modes().altScreen, scroll);
 }
 
 void MuxPane::downloadFile(std::string_view name, std::string_view data)

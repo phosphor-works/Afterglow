@@ -659,7 +659,89 @@ bool hasCall(const Window& w, Host::Kind kind)
     return std::any_of(w.calls.begin(), w.calls.end(), [kind](const Host::Call& c) { return c.kind == kind; });
 }
 
+/// The texts of the reports that the window got, oldest first.
+std::vector<std::string> reports(const Window& w)
+{
+    std::vector<std::string> out;
+    for (const Host::Call& c : w.calls) {
+        if (c.kind == Host::Kind::Report) out.push_back(c.text);
+    }
+    return out;
+}
+
 } // namespace
+
+TEST(MuxAttach, TheWindowSaysWhetherThePaneCanBeSeen)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    w.answerReports = false;
+    // Mode 2033 reports at once: the window said nothing yet, so the pane
+    // cannot be seen.
+    ASSERT_TRUE(w.type("printf '\\033[?2033h'\n"));
+    ASSERT_TRUE(w.until([&] { return reports(w).size() == 1; }));
+    EXPECT_EQ(reports(w)[0], "\x1b[?999;2n");
+    Attach::Input visible;
+    visible.type = Attach::InputType::Visible;
+    visible.pane = w.pane;
+    visible.visible = true;
+    ASSERT_TRUE(w.send(visible));
+    ASSERT_TRUE(w.until([&] { return reports(w).size() == 2; }));
+    EXPECT_EQ(reports(w)[1], "\x1b[?999;1n");
+    // No change, no report.
+    ASSERT_TRUE(w.send(visible));
+    ASSERT_TRUE(w.type("echo mark\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nmark "); })) << w.screen();
+    EXPECT_EQ(reports(w).size(), 2u);
+    // A pane that no window shows cannot be seen: the next window that can
+    // see it changes that again.
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"sh"}));
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
+    Window next;
+    next.answerReports = false;
+    ASSERT_EQ(next.attach(daemon, "sh"), "");
+    ASSERT_TRUE(next.until([&] { return next.pane != 0; }));
+    visible.pane = next.pane;
+    ASSERT_TRUE(next.send(visible));
+    ASSERT_TRUE(next.until([&] { return !reports(next).empty(); }));
+    EXPECT_EQ(reports(next).back(), "\x1b[?999;1n");
+}
+
+TEST(MuxAttach, ThePaneDirectoryIsThatOfTheForegroundProgram)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    const auto directory = [&] {
+        const auto result = daemon.call(Fn::PaneDirectory, Json::Array{"sh", std::int64_t(w.pane)});
+        return result && result->isString() ? result->toString() : std::string("(no answer)");
+    };
+    // The shell reports no directory (OSC 7): the system has it.
+    ASSERT_TRUE(w.type("cd / && echo in-root\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nin-root "); })) << w.screen();
+    EXPECT_EQ(directory(), "/");
+    // A program in the foreground in another directory.
+    ASSERT_TRUE(w.type("(cd /usr && echo in-usr && exec sleep 30)\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nin-usr "); })) << w.screen();
+    // The shell puts the program in the foreground after it forked it.
+    EXPECT_TRUE(w.until([&] { return directory() == "/usr"; })) << directory();
+    IpcConnection::Error error;
+    EXPECT_FALSE(daemon.call(Fn::PaneDirectory, Json::Array{"none", 1}, &error));
+    EXPECT_EQ(error.code, Error::NoSuchSession);
+    EXPECT_FALSE(daemon.call(Fn::PaneDirectory, Json::Array{"sh", std::int64_t(w.pane) + 100}, &error));
+    EXPECT_EQ(error.code, Error::NoSuchPane);
+    for (const Json::Array& args : {Json::Array{}, Json::Array{"sh"}, Json::Array{"sh", "1"}, Json::Array{"sh", -1}, Json::Array{1, 1}}) {
+        EXPECT_FALSE(daemon.call(Fn::PaneDirectory, args, &error));
+        EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
+    }
+}
 
 // The calls of a pane's terminal to its host reach the window that shows it,
 // in place of the daemon's answers for a pane that no window shows.

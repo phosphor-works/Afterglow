@@ -12,6 +12,8 @@
 
 namespace AfterglowVt {
 
+class StateReader;
+
 /// Program status (OSC 7501, revision 0.4): programs report what they are
 /// doing (working, blocked on the user, done...) as records the terminal
 /// shows outside the grid. https://www.superlogical.com/rex/docs/build/program-status
@@ -65,6 +67,7 @@ public:
     std::string_view effectiveApp(const StatusRecord& record) const;
 
 private:
+    friend class StateReader; ///< a replica takes the records of the terminal that it mirrors
     void upsert(StatusRecord record);
     bool clear(std::string_view id, bool all);
 

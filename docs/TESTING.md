@@ -608,6 +608,12 @@ The `StateSync.*` tests cover these cases:
 - A damaged frame and a link without a URI, which the reader refuses without a crash
 - After a refused frame, the reader takes the first frame of a writer that starts over
 - Each synchronized update, with its own count
+- The marks and regions of shell integration (OSC 133): the last output, the text of each region, and a click on the prompt, also after the regions scroll into the history
+- The program status and the shell contexts, with one call to the replica's host for each frame that changes them
+- Extra cursors and their colors
+- Region scrolls: the replica's host hears of each, with the screen that scrolled. Two scrolls of one region in one direction come as one. A new replica gets none.
+- Past the limit of scrolls in one frame, every row of each screen leaves its region
+- The new sections with bad values, which the reader refuses
 
 The `Mux.MuxAttach.*` tests cover these cases:
 
@@ -627,6 +633,8 @@ The `Mux.MuxAttach.*` tests cover these cases:
 - A request that waits when the window detaches, in the queue of the session or of the pane, gets that answer once
 - A request whose first part went goes whole when the session ends
 - An `eventQueue` out of range, and an unknown option of the attach call, are refused
+- The window says whether you can see the pane: mode 2033 reports each change, and a pane that no window shows cannot be seen
+- The `paneDirectory` call: the directory of the shell, then of the program in the foreground, and the calls that the daemon refuses
 
 The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow mux new` starts in a session of its own:
 
@@ -646,6 +654,7 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.AWindowThatLosesItsSessionLeavesItRunning` | A detach and a takeover close the pane and kill nothing |
 | `NativeWindow.AMuxSessionCanOutliveItsWindow` | `Mux.onClose` detach |
 | `NativeWindow.AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow` | A bell, a user variable and an OSC 52 write of the session's shell reach the window and its clipboard |
+| `NativeWindow.AMuxSessionsMarksStatusAndDirectoryReachTheWindow` | The last output and the regions of shell integration, the status of a program, and the directory of the shell, which the daemon reads |
 | `NativeWindow.AMuxSessionsReadsAndCommandsReachTheWindowAndBack` | An OSC 52 read gets the clipboard after the prompt. The commands of shell integration come in order, with the time that the daemon measured. |
 | `NativeWindow.AProtocolWaitOfASessionPaneReadsItsStream` | The answer wait of a drag reads the session's stream, and ends when the command comes |
 | `NativeWindow.ALaunchOfASessionPassesItsEventQueue` | A launch of a session passes `Mux.eventQueue` of the configuration to the daemon, in bytes |

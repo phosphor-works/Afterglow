@@ -7,6 +7,7 @@
 #include "MuxProtocol.h"
 
 #include <AfterglowPty/Pty.h>
+#include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
 
 #include <atomic>
@@ -93,6 +94,13 @@ public:
     }
     /// The program exited, or start() failed.
     bool exited() const { return m_exited.load(); }
+    /// The next frame of @p writer (StateWriter::update), with the region
+    /// scrolls since the frame before it.
+    std::string frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes);
+    /// Whether the user can see the pane in its window: mode 2033 reports a
+    /// change to the program. A pane that no window shows cannot be seen
+    /// (setWindow), until its next window says otherwise.
+    void setVisible(bool visible);
 
     /// The program in the foreground, when it is not the shell: the rule of
     /// a normal window's confirmClose. Empty when @p caller leads the
@@ -100,6 +108,9 @@ public:
     /// `afterglow mux kill` typed at its prompt): the caller is no job to ask
     /// about. 0 for no caller.
     std::string foregroundJob(pid_t caller) const;
+    /// The working directory of the program in the foreground, else of the
+    /// first program: Pty::currentWorkingDirectory. Empty once it exited.
+    std::string directory() const;
 
     /// The window that shows the pane, by Attachment::serial(), or 0 for
     /// none. The calls of its terminal to its host (MuxHost.h) wait for that
@@ -136,6 +147,7 @@ public:
     void commandStarted(std::string_view command) override;
     void commandFinished(int exitCode) override;
     void downloadFile(std::string_view name, std::string_view data) override;
+    void regionScrolled(const AfterglowVt::RegionScroll& scroll) override;
     /// A session pane forwards no socket of an ssh session (afterglow ssh
     /// runs in windows only): `aglow run` hears that it is off, not that the
     /// terminal does not know the query.
@@ -152,8 +164,10 @@ private:
     std::atomic<bool> m_changed{false};
     std::atomic<int> m_exitStatus{0};
     const std::string m_notificationCapabilities;
-    mutable std::mutex m_mutex; ///< guards m_terminal, which the reader thread feeds
+    mutable std::mutex m_mutex; ///< guards m_terminal, which the reader thread feeds, and m_scrolls
     AfterglowVt::Terminal m_terminal;
+    /// The region scrolls of the terminal for the next frame.
+    AfterglowVt::RegionScrolls m_scrolls;
     /// After m_terminal: it goes first, and its reader thread ends before
     /// the terminal that the thread feeds.
     std::unique_ptr<AfterglowPty::Pty> m_pty;

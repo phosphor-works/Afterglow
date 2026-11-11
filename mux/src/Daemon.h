@@ -74,6 +74,7 @@ private:
     std::string killSession(const AfterglowProto::IpcRequest& request);
     std::string attach(const AfterglowProto::IpcRequest& request, pid_t caller);
     std::string detach(const AfterglowProto::IpcRequest& request);
+    std::string paneDirectory(const AfterglowProto::IpcRequest& request);
     /// The error of a call whose first argument is not this daemon's
     /// protocol version.
     static std::optional<std::string> versionError(const AfterglowProto::IpcRequest& request);

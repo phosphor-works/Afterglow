@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cmath>
 #include <optional>
 #include <set>
@@ -31,7 +32,16 @@ enum Tag : std::uint8_t {
     AppendTag = 8, ///< history rows, oldest first, and the oldest id that exists
     PrependTag = 9, ///< older history rows, newest first
     CursorTag = 10, ///< the cursor of a screen
+    ShellTag = 11, ///< OSC 133: the zone of the cursor, the marks and the semantic regions
+    StatusTag = 12, ///< the program status records (OSC 7501)
+    ContextsTag = 13, ///< the shell contexts (OSC 3008, iTerm2 RemoteHost)
+    ExtraCursorsTag = 14, ///< the extra cursors and their colors
+    ScrollsTag = 15, ///< the region scrolls since the last frame, oldest first
 };
+
+// The flags of a semantic region: its kind in the low bits.
+constexpr std::uint8_t RegionOpen = 4;
+constexpr std::uint8_t RegionExitCode = 8;
 
 // The row flags.
 constexpr std::uint8_t RowWrapped = 1;
@@ -54,6 +64,8 @@ public:
         }
         m_s.push_back(char(v));
     }
+    /// A signed integer, zigzag encoded.
+    void signedVarint(std::int64_t v) { varint((std::uint64_t(v) << 1) ^ std::uint64_t(v >> 63)); }
     void u32(std::uint32_t v)
     {
         for (int i = 0; i < 4; ++i) m_s.push_back(char((v >> (8 * i)) & 0xff));
@@ -120,6 +132,18 @@ public:
         if (v > max) fail();
         return m_ok ? v : 0;
     }
+    std::int64_t signedVarint()
+    {
+        const std::uint64_t v = varint();
+        return std::int64_t(v >> 1) ^ -std::int64_t(v & 1);
+    }
+    /// A signed varint within [@p min, @p max].
+    std::int64_t signedBounded(std::int64_t min, std::int64_t max)
+    {
+        const std::int64_t v = signedVarint();
+        if (v < min || v > max) fail();
+        return m_ok ? v : 0;
+    }
     std::uint32_t u32()
     {
         std::uint32_t v = 0;
@@ -179,6 +203,9 @@ std::uint64_t fnv(std::string_view bytes)
 // the terminal bounds them, and an OSC 8 link.
 constexpr std::size_t MaxText = 64 * 1024;
 constexpr std::size_t MaxLinkText = StyleTable::MaxLinkBytes;
+/// The fields of a status record and of a context: the terminal takes none
+/// from a sequence longer than this.
+constexpr std::size_t MaxFieldText = 4096;
 
 using StyleDefinitions = std::unordered_map<std::uint32_t, Style>;
 using LinkDefinitions = std::unordered_map<std::uint32_t, std::pair<std::string, std::string>>;
@@ -386,6 +413,37 @@ bool decodeModes(In& in, Modes& m)
 
 // ---------------------------------------------------------------- writer ---
 
+void RegionScrolls::add(bool altScreen, const RegionScroll& scroll)
+{
+    if (m_lost || scroll.delta == 0) return;
+    if (!m_entries.empty()) {
+        Entry& last = m_entries.back();
+        const RegionScroll& l = last.scroll;
+        // Two scrolls of one region in one direction are one longer scroll:
+        // a row that the first moved and kept is on its way out, or to where
+        // the second takes it.
+        const long long delta = (long long)l.delta + scroll.delta;
+        if (last.altScreen == altScreen && l.top == scroll.top && l.bottom == scroll.bottom && l.left == scroll.left
+            && l.right == scroll.right && l.fullWidth == scroll.fullWidth && (l.delta < 0) == (scroll.delta < 0)
+            && delta >= INT_MIN && delta <= INT_MAX) {
+            last.scroll.delta = int(delta);
+            return;
+        }
+    }
+    if (m_entries.size() >= Max) {
+        m_entries.clear();
+        m_lost = true;
+        return;
+    }
+    m_entries.push_back(Entry{altScreen, scroll});
+}
+
+void RegionScrolls::clear()
+{
+    m_entries.clear();
+    m_lost = false;
+}
+
 void StateWriter::reset()
 {
     m_screens[0] = ScreenState();
@@ -394,6 +452,10 @@ void StateWriter::reset()
     m_colors.clear();
     m_text.clear();
     m_cursor.clear();
+    m_shell.clear();
+    m_status.clear();
+    m_contexts.clear();
+    m_extraCursors.clear();
     m_started = false;
 }
 
@@ -402,13 +464,32 @@ bool StateWriter::pending() const
     return m_screens[0].historyPending || m_screens[1].historyPending || m_screens[0].rowsPending || m_screens[1].rowsPending;
 }
 
-std::string StateWriter::update(const Terminal& t, std::size_t maxBytes)
+std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const RegionScrolls* scrolls)
 {
     std::string out(1, char(Version));
     const bool first = !m_started;
     m_started = true;
 
-    std::string payload = encodeModes(t.m_modes);
+    std::string payload;
+    // The scrolls go first, before the modes that may switch away from the
+    // screen that scrolled.
+    if (!first && scrolls && !scrolls->empty()) {
+        Out o(payload);
+        o.byte(scrolls->m_lost ? 1 : 0);
+        o.varint(scrolls->m_entries.size());
+        for (const RegionScrolls::Entry& e : scrolls->m_entries) {
+            o.byte(e.altScreen ? 1 : 0);
+            o.varint(e.scroll.top);
+            o.varint(e.scroll.bottom);
+            o.varint(std::uint64_t(e.scroll.left));
+            o.varint(std::uint64_t(e.scroll.right));
+            o.byte(e.scroll.fullWidth ? 1 : 0);
+            o.signedVarint(e.scroll.delta);
+        }
+        section(out, ScrollsTag, payload);
+    }
+
+    payload = encodeModes(t.m_modes);
     // The updates that programs began (mode 2026): a renderer gives each its
     // own timeout, also one that begins right after another ended.
     Out(payload).varint(t.m_synchronizedOutputSerial);
@@ -447,6 +528,94 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes)
     if (first || payload != m_text) {
         section(out, TextTag, payload);
         m_text = std::move(payload);
+    }
+
+    // OSC 133, for the last output, a click on the prompt and the regions
+    // that `afterglow ctl` lists. The rows are stable ids of the primary
+    // screen, which the replica's are.
+    payload.clear();
+    {
+        Out o(payload);
+        o.byte(std::uint8_t(t.m_semanticZone));
+        o.byte(t.m_promptClickEvents ? 1 : 0);
+        o.byte(t.m_commandRunning ? 1 : 0);
+        for (const Terminal::Mark* m : {&t.m_inputStart, &t.m_outputStart, &t.m_outputEnd}) {
+            o.byte(m->valid ? 1 : 0);
+            if (!m->valid) continue;
+            o.varint(m->row);
+            o.varint(std::uint64_t(m->col));
+        }
+        o.varint(t.m_nextSemanticId);
+        o.varint(t.m_semanticRegions.size());
+        for (const SemanticRegion& r : t.m_semanticRegions) {
+            o.varint(r.id);
+            o.byte(std::uint8_t(std::uint8_t(r.kind) | (r.open ? RegionOpen : 0) | (r.exitCode ? RegionExitCode : 0)));
+            o.varint(r.start.row);
+            o.varint(std::uint64_t(r.start.col));
+            o.varint(r.end.row);
+            o.varint(std::uint64_t(r.end.col));
+            if (r.exitCode) o.signedVarint(*r.exitCode);
+        }
+    }
+    if (first || payload != m_shell) {
+        section(out, ShellTag, payload);
+        m_shell = std::move(payload);
+    }
+
+    payload.clear();
+    {
+        Out o(payload);
+        o.varint(t.m_programStatus.records().size());
+        for (const StatusRecord& r : t.m_programStatus.records()) {
+            o.string(r.id);
+            o.byte(std::uint8_t(r.state));
+            o.byte(std::uint8_t(r.kind));
+            o.signedVarint(r.progress);
+            o.string(r.app);
+            o.string(r.title);
+            o.string(r.msg);
+            o.varint(r.serial);
+        }
+    }
+    if (first || payload != m_status) {
+        section(out, StatusTag, payload);
+        m_status = std::move(payload);
+    }
+
+    payload.clear();
+    {
+        Out o(payload);
+        o.varint(t.m_contexts.stack().size());
+        for (const ShellContext& c : t.m_contexts.stack()) {
+            o.string(c.id);
+            o.byte(c.iterm2RemoteHost ? 1 : 0);
+            for (const std::string* field : {&c.type, &c.user, &c.hostname, &c.targetUser, &c.targetHost, &c.container, &c.vm}) {
+                o.string(*field);
+            }
+        }
+    }
+    if (first || payload != m_contexts) {
+        section(out, ContextsTag, payload);
+        m_contexts = std::move(payload);
+    }
+
+    payload.clear();
+    {
+        Out o(payload);
+        for (const ExtraCursorColor* c : {&t.m_extraCursorColor, &t.m_extraCursorTextColor}) {
+            o.byte(std::uint8_t(c->mode));
+            o.u32(c->color.bits());
+        }
+        o.varint(t.m_extraCursors.size());
+        for (const auto& [point, shape] : t.m_extraCursors) {
+            o.varint(std::uint64_t(point.first));
+            o.varint(std::uint64_t(point.second));
+            o.varint(std::uint64_t(shape));
+        }
+    }
+    if (first || payload != m_extraCursors) {
+        section(out, ExtraCursorsTag, payload);
+        m_extraCursors = std::move(payload);
     }
 
     payload.clear();
@@ -962,6 +1131,186 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             cursors.assign(payload);
             cursorsSeen = true;
             break;
+        case ScrollsTag: {
+            const std::uint8_t lost = p.byte();
+            const std::uint64_t count = p.bounded(RegionScrolls::Max);
+            std::vector<std::pair<bool, RegionScroll>> scrolls;
+            for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
+                const std::uint8_t alt = p.byte();
+                RegionScroll s;
+                s.top = p.varint();
+                s.bottom = p.varint();
+                s.left = int(p.bounded(std::uint64_t(Screen::MaxColumns - 1)));
+                s.right = int(p.bounded(std::uint64_t(Screen::MaxColumns - 1)));
+                const std::uint8_t full = p.byte();
+                s.delta = int(p.signedBounded(INT_MIN, INT_MAX));
+                if (!p.ok() || alt > 1 || full > 1 || s.top > s.bottom || s.left > s.right || s.delta == 0) {
+                    return fail("the state frame has a bad region scroll");
+                }
+                s.fullWidth = full;
+                scrolls.emplace_back(alt == 1, s);
+            }
+            if (!p.ok() || !p.done() || lost > 1) return fail("the state frame has bad region scrolls");
+            // The replica's host hears of each scroll as the writer's did,
+            // with the screen that scrolled active.
+            const bool altScreen = t.m_modes.altScreen;
+            for (const auto& [alt, scroll] : scrolls) {
+                t.m_modes.altScreen = alt;
+                t.m_host.regionScrolled(scroll);
+            }
+            if (lost) {
+                // Too many to carry: every row of each screen left its region.
+                for (const bool alt : {false, true}) {
+                    const Screen& s = alt ? *t.m_alternate : *t.m_primary;
+                    const std::size_t rows = std::min<std::size_t>(s.totalRows(), INT_MAX);
+                    if (rows == 0) continue;
+                    RegionScroll all;
+                    all.top = s.rowsDropped();
+                    all.bottom = all.top + rows - 1;
+                    all.right = s.cols() - 1;
+                    all.delta = -int(rows);
+                    t.m_modes.altScreen = alt;
+                    t.m_host.regionScrolled(all);
+                }
+            }
+            t.m_modes.altScreen = altScreen;
+            break;
+        }
+        case ShellTag: {
+            const std::uint8_t zone = p.byte();
+            const std::uint8_t clicks = p.byte();
+            const std::uint8_t running = p.byte();
+            Terminal::Mark marks[3];
+            for (Terminal::Mark& m : marks) {
+                const std::uint8_t valid = p.byte();
+                if (valid > 1) return fail("the state frame has a bad shell mark");
+                if (!valid) continue;
+                m.row = p.varint();
+                // A mark after a pending wrap is one past the last column.
+                m.col = int(p.bounded(std::uint64_t(Screen::MaxColumns)));
+                m.valid = true;
+            }
+            const std::uint64_t nextId = p.varint();
+            const std::uint64_t count = p.bounded(Terminal::MaxSemanticRegions);
+            std::vector<SemanticRegion> regions;
+            std::uint64_t lastRow = 0;
+            for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
+                SemanticRegion r;
+                r.id = p.varint();
+                const std::uint8_t flags = p.byte();
+                r.start.row = p.varint();
+                r.start.col = int(p.bounded(std::uint64_t(Screen::MaxColumns)));
+                r.end.row = p.varint();
+                r.end.col = int(p.bounded(std::uint64_t(Screen::MaxColumns)));
+                const std::uint8_t kind = flags & 3;
+                if (!p.ok() || kind > std::uint8_t(SemanticZoneKind::Output) || (flags & ~(3 | RegionOpen | RegionExitCode))
+                    || r.id >= nextId) {
+                    return fail("the state frame has a bad semantic region");
+                }
+                r.kind = SemanticZoneKind(kind);
+                r.open = flags & RegionOpen;
+                if (flags & RegionExitCode) r.exitCode = int(p.signedBounded(INT_MIN, INT_MAX));
+                lastRow = std::max({lastRow, r.start.row, r.end.row});
+                regions.push_back(r);
+            }
+            if (!p.ok() || !p.done() || zone > std::uint8_t(Terminal::SemanticZone::Input) || clicks > 1 || running > 1) {
+                return fail("the state frame has bad shell marks");
+            }
+            t.m_semanticZone = Terminal::SemanticZone(zone);
+            t.m_promptClickEvents = clicks;
+            t.m_commandRunning = running;
+            t.m_inputStart = marks[0];
+            t.m_outputStart = marks[1];
+            t.m_outputEnd = marks[2];
+            t.m_nextSemanticId = nextId;
+            t.m_semanticRegions = std::move(regions);
+            t.m_semanticRegionsLastRow = lastRow;
+            break;
+        }
+        case StatusTag: {
+            const std::uint64_t count = p.bounded(ProgramStatus::MaxRecords);
+            std::vector<StatusRecord> records;
+            std::uint64_t serial = 0;
+            for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
+                StatusRecord r;
+                r.id = p.string(MaxFieldText);
+                const std::uint8_t state = p.byte();
+                const std::uint8_t kind = p.byte();
+                r.progress = int(p.signedBounded(-1, 100));
+                r.app = p.string(MaxFieldText);
+                r.title = p.string(MaxFieldText);
+                r.msg = p.string(MaxFieldText);
+                r.serial = p.varint();
+                if (!p.ok() || state > std::uint8_t(StatusState::Error) || kind > std::uint8_t(BlockKind::Auth)) {
+                    return fail("the state frame has a bad status record");
+                }
+                r.state = StatusState(state);
+                r.kind = BlockKind(kind);
+                serial = std::max(serial, r.serial);
+                records.push_back(std::move(r));
+            }
+            if (!p.ok() || !p.done()) return fail("the state frame has bad status records");
+            ProgramStatus& status = t.m_programStatus;
+            const bool changed = !std::equal(records.begin(), records.end(), status.m_records.begin(), status.m_records.end(),
+                                             [](const StatusRecord& a, const StatusRecord& b) { return a.serial == b.serial && a.id == b.id; });
+            status.m_records = std::move(records);
+            status.m_serial = std::max(status.m_serial, serial);
+            if (changed) t.m_host.programStatusChanged();
+            break;
+        }
+        case ContextsTag: {
+            const std::uint64_t count = p.bounded(ShellContexts::MaxDepth + 1);
+            std::vector<ShellContext> stack;
+            for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
+                ShellContext c;
+                c.id = p.string(MaxFieldText);
+                const std::uint8_t remote = p.byte();
+                for (std::string* field : {&c.type, &c.user, &c.hostname, &c.targetUser, &c.targetHost, &c.container, &c.vm}) {
+                    *field = p.string(MaxFieldText);
+                }
+                if (!p.ok() || remote > 1) return fail("the state frame has a bad shell context");
+                c.iterm2RemoteHost = remote;
+                stack.push_back(std::move(c));
+            }
+            if (!p.ok() || !p.done()) return fail("the state frame has bad shell contexts");
+            if (stack != t.m_contexts.m_stack) {
+                t.m_contexts.m_stack = std::move(stack);
+                t.m_host.contextChanged();
+            }
+            break;
+        }
+        case ExtraCursorsTag: {
+            ExtraCursorColor colors[2];
+            for (ExtraCursorColor& c : colors) {
+                const std::uint8_t mode = p.byte();
+                const auto color = colorOf(p.u32());
+                if (!p.ok() || !color
+                    || (mode != std::uint8_t(ExtraCursorColor::Mode::Main) && mode != std::uint8_t(ExtraCursorColor::Mode::Reverse)
+                        && mode != std::uint8_t(ExtraCursorColor::Mode::Rgb) && mode != std::uint8_t(ExtraCursorColor::Mode::Palette))) {
+                    return fail("the state frame has a bad extra cursor color");
+                }
+                c.mode = ExtraCursorColor::Mode(mode);
+                c.color = *color;
+            }
+            const std::uint64_t count = p.bounded(Terminal::MaxExtraCursors);
+            std::map<std::pair<int, int>, int> cursors;
+            for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
+                // The renderer skips a cursor past the screen, as a size
+                // that changed since can leave one.
+                const int y = int(p.bounded(std::uint64_t(Screen::MaxCells)));
+                const int x = int(p.bounded(std::uint64_t(Screen::MaxColumns - 1)));
+                const int shape = int(p.bounded(29));
+                if (!p.ok() || (shape != 1 && shape != 2 && shape != 3 && shape != 29)) {
+                    return fail("the state frame has a bad extra cursor");
+                }
+                cursors[{y, x}] = shape;
+            }
+            if (!p.ok() || !p.done()) return fail("the state frame has bad extra cursors");
+            t.m_extraCursorColor = colors[0];
+            t.m_extraCursorTextColor = colors[1];
+            t.m_extraCursors = std::move(cursors);
+            break;
+        }
         default:
             return fail("the state frame has a section of unknown type " + std::to_string(tag));
         }

@@ -33,7 +33,7 @@
 
 #include <gtest/gtest.h>
 
-#include "QStringPrinter.h"
+#include "QStringPrinter.h" // IWYU pragma: keep (gtest finds PrintTo(QString) by ADL)
 
 using namespace Afterglow;
 

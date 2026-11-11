@@ -873,6 +873,8 @@ QString Pane::workingDirectory() const
     }
     // A shell in a container can report a path that is not on this machine.
     if (!reported.isEmpty() && QFileInfo(reported).isDir()) return reported;
+    // The daemon and the window share the machine: its path is one here.
+    if (m_session) return m_sessionGone ? QString() : m_session->directory(m_sessionPane);
     return m_pty ? QFile::decodeName(QByteArray::fromStdString(m_pty->currentWorkingDirectory())) : QString();
 }
 
@@ -977,6 +979,13 @@ void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, boo
     m_sessionPane = id;
     m_killSessionOnClose = killOnClose;
     m_session->bind(id, this);
+}
+
+void Pane::setSessionVisible(bool visible)
+{
+    if (!m_session || m_sessionGone || m_sessionVisible == int(visible)) return;
+    m_sessionVisible = int(visible);
+    m_session->sendVisible(m_sessionPane, visible);
 }
 
 bool Pane::applySessionFrame(std::string_view frame)

@@ -26,7 +26,7 @@ namespace AfterglowMux {
 /// attach stream (MuxStream.h) and of the host calls on it (MuxHost.h) change
 /// with it. MuxProtocolTest pins the keys of the options to this number, so
 /// that a new key changes it too.
-inline constexpr int ProtocolVersion = 5;
+inline constexpr int ProtocolVersion = 6;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -41,6 +41,11 @@ inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
 inline constexpr const char* Attach = "attach";
 /// (name) -> null: the window of the session closes, and the session keeps running.
 inline constexpr const char* Detach = "detach";
+/// (name, pane) -> string: the working directory of the program in the
+/// foreground of the pane, else of its first program, as the system has it.
+/// Empty when the program exited or its directory is gone. The window asks
+/// when the shell does not report its directory (OSC 7).
+inline constexpr const char* PaneDirectory = "paneDirectory";
 } // namespace Fn
 
 /// The keys of the options of Fn::Attach. The daemon refuses another key.
@@ -55,6 +60,7 @@ inline constexpr const char* EventQueue = "eventQueue";
 /// The error codes of the daemon's calls, besides those of phosphor-ipc.
 namespace Error {
 inline constexpr const char* NoSuchSession = "NO_SUCH_SESSION";
+inline constexpr const char* NoSuchPane = "NO_SUCH_PANE";
 inline constexpr const char* SessionExists = "SESSION_EXISTS";
 inline constexpr const char* VersionMismatch = "VERSION_MISMATCH";
 inline constexpr const char* SpawnFailed = "SPAWN_FAILED";

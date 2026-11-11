@@ -2626,9 +2626,9 @@ void TerminalWindow::updatePaneVisibility()
             const bool visible = shown
                 && ((current && tree->isVisible(p)) || std::find(cards.begin(), cards.end(), p) != cards.end());
             // A session pane's replica must not answer its program: the
-            // daemon's terminal answers the program's own queries, and the
-            // stream carries no visibility yet (docs/MUX.md).
-            if (!p->isSessionPane()) p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
+            // daemon's terminal answers the program's own queries.
+            if (p->isSessionPane()) p->setSessionVisible(visible);
+            else p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
             // An overlay shows where its host does, on a card too.
             if (PaneOverlay* overlay = p->overlay()) overlay->pane()->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
         });
