@@ -183,25 +183,74 @@ void checkStateFrame(std::string_view frame, int cols, int rows, std::size_t scr
     }
 }
 
-/// The frames of @p source in a budget of @p budget bytes, to a replica, as a
-/// session's daemon sends them: each frame that a writer makes applies.
-void checkWriter(const AfterglowVt::Terminal& source, std::size_t budget)
+/// A replica of the fuzzed terminal, as a window of a session keeps one:
+/// a frame of the writer after each control record, so that images are
+/// replaced and dropped while their pixels go. Each frame that a writer makes
+/// must apply.
+struct Mirror
 {
-    QuietHost replicaHost;
-    AfterglowVt::TerminalOptions opts = source.options();
-    AfterglowVt::Terminal replica(20, 8, replicaHost, opts);
+    QuietHost host;
+    AfterglowVt::Terminal replica;
     AfterglowVt::StateWriter writer;
     AfterglowVt::StateReader reader;
-    for (int guard = 0; guard < 4096; ++guard) {
-        const std::string frame = writer.update(source, budget);
-        if (frame.empty() && !writer.pending()) break;
+
+    explicit Mirror(const AfterglowVt::TerminalOptions& options)
+        : replica(20, 8, host, options)
+    {
+    }
+
+    /// Small frames for a small screen, with config's scrollback bits, so
+    /// that rows, history and images wait. A screen of thousands of cells at
+    /// that budget takes thousands of frames, too slow an input to fuzz.
+    static std::size_t budget(const AfterglowVt::Terminal& source, bool small)
+    {
+        const bool smallScreen = std::size_t(source.cols()) * std::size_t(source.rows()) <= 4096;
+        return small && smallScreen ? 4096 : std::size_t(1) << 20;
+    }
+
+    void step(const AfterglowVt::Terminal& source, bool small)
+    {
         std::string error;
-        if (!reader.apply(replica, frame, &error)) {
+        if (!reader.apply(replica, writer.update(source, budget(source, small)), &error)) {
             __builtin_trap();
         }
     }
-    showReplica(replica);
-}
+
+    /// The rest, then the replica shows what the source does.
+    void finish(const AfterglowVt::Terminal& source, bool small)
+    {
+        int guard = 0;
+        for (; guard < 4096; ++guard) {
+            const std::string frame = writer.update(source, budget(source, small));
+            if (frame.empty() && !writer.pending()) break;
+            std::string error;
+            if (!reader.apply(replica, frame, &error)) {
+                __builtin_trap();
+            }
+        }
+        // A writer that never catches up, at a budget that its content fits
+        // many times over, is stuck.
+        if (guard == 4096 && budget(source, small) > 4096) {
+            __builtin_trap();
+        }
+        using Scope = AfterglowVt::Terminal::TextScope;
+        if (guard < 4096 && replica.text(Scope::Screen) != source.text(Scope::Screen)) {
+            __builtin_trap();
+        }
+        if (guard < 4096) {
+            for (const bool alternate : {false, true}) {
+                const auto& a = source.graphics(alternate).images();
+                const auto& b = replica.graphics(alternate).images();
+                if (a.size() != b.size()) __builtin_trap();
+                for (const auto& [id, image] : a) {
+                    const auto it = b.find(id);
+                    if (it == b.end() || it->second.frames.size() != image.frames.size()) __builtin_trap();
+                }
+            }
+        }
+        showReplica(replica);
+    }
+};
 
 } // namespace
 
@@ -228,6 +277,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     AfterglowVt::Terminal t(20, 8, host, opts);
     t.resize(20, 8, 8, 16);
     std::uint64_t now = 0;
+    Mirror mirror(opts);
+    const bool smallFrames = (config & 0x18) != 0;
 
     // 0xFF introduces a control record: [0xFF, op, a, b]. Op 13 feeds a raw
     // 0xFF, which the record marker would otherwise keep out of the stream.
@@ -368,17 +419,13 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             t.setViewportOffset(std::size_t(a) * 4);
             break;
         }
+        mirror.step(t, smallFrames);
         start = i + 4;
         i += 3;
     }
     if (start < size) {
         t.feed(std::string_view(reinterpret_cast<const char*>(data + start), size - start));
     }
-    // What the terminal holds, to a replica in frames: small ones with
-    // config's scrollback bits, so that rows, history and images wait. A
-    // screen of thousands of cells at that budget takes thousands of frames,
-    // too slow an input to fuzz.
-    const bool smallScreen = std::size_t(t.cols()) * std::size_t(t.rows()) <= 4096;
-    checkWriter(t, (config & 0x18) && smallScreen ? 4096 : std::size_t(1) << 20);
+    mirror.finish(t, smallFrames);
     return 0;
 }

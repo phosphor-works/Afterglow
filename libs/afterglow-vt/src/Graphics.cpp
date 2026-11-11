@@ -249,17 +249,21 @@ bool insideDirectory(const std::filesystem::path& path, const std::filesystem::p
 }
 
 /// Whether the protocol hands the file at resolved @p path to the terminal to
-/// delete: it lies in /tmp, /dev/shm or $TMPDIR (each resolved, so a trailing
-/// slash or a symbolic link in the setting still matches), and its path below
-/// that directory carries the tag. This is stricter than kitty, which looks
-/// for the tag in the whole path: with a $TMPDIR whose own name holds the
-/// tag, a command could name any regular file in it for the terminal to
-/// delete.
-bool temporaryFile(const std::filesystem::path& path)
+/// delete: it lies in /tmp, /dev/shm or the programs' $TMPDIR, @p programs
+/// or else the terminal's own (each resolved, so a trailing slash or a
+/// symbolic link in the setting still matches), and its path below that
+/// directory carries the tag. This is stricter than kitty, which looks for
+/// the tag in the whole path: with a $TMPDIR whose own name holds the tag, a
+/// command could name any regular file in it for the terminal to delete.
+bool temporaryFile(const std::filesystem::path& path, const std::string& programs)
 {
     std::error_code ec;
     std::vector<std::filesystem::path> dirs{"/tmp", "/dev/shm"};
-    if (auto tmp = std::filesystem::temp_directory_path(ec); !ec && !tmp.empty()) dirs.push_back(std::move(tmp));
+    if (!programs.empty()) {
+        dirs.emplace_back(programs);
+    } else if (auto tmp = std::filesystem::temp_directory_path(ec); !ec && !tmp.empty()) {
+        dirs.push_back(std::move(tmp));
+    }
     for (const auto& dir : dirs) {
         std::error_code resolved;
         const auto real = std::filesystem::canonical(dir, resolved);
@@ -273,13 +277,13 @@ bool temporaryFile(const std::filesystem::path& path)
 
 /// Deletes @p name in the directory @p parent, whose real path is
 /// @p parentPath, when the protocol hands it to the terminal: a regular file
-/// in a temporary directory, with the tag in its path (temporaryFile()).
-/// With @p opened, only when it is still the file that was read. Returns
-/// whether it deleted the file.
+/// in a temporary directory, with the tag in its path (temporaryFile(), with
+/// @p programs). With @p opened, only when it is still the file that was
+/// read. Returns whether it deleted the file.
 bool deleteTemporaryFile(int parent, const std::filesystem::path& parentPath, const std::filesystem::path& name,
-                         const struct stat* opened)
+                         const struct stat* opened, const std::string& programs)
 {
-    if (!temporaryFile(parentPath / name)) return false;
+    if (!temporaryFile(parentPath / name, programs)) return false;
     struct stat current{};
     if (fstatat(parent, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(current.st_mode)) return false;
     if (opened && (current.st_dev != opened->st_dev || current.st_ino != opened->st_ino)) return false;
@@ -795,7 +799,7 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
         // A temporary file is the terminal's to delete whether or not it
         // could use it, as in kitty, so that refused ones do not pile up;
         // only the file that was opened, though.
-        if (cmd.medium == 't') released = deleteTemporaryFile(parent, actualParent, name, &opened);
+        if (cmd.medium == 't') released = deleteTemporaryFile(parent, actualParent, name, &opened, m_temporaryDirectory);
         close(fd);
         close(parent);
         if (!finish(result)) return false;
@@ -853,7 +857,7 @@ bool GraphicsStore::releaseMedium(const Command& cmd, const std::string& data) c
     const int parent = open(canonical.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (parent < 0) return false;
     const auto actualParent = std::filesystem::read_symlink("/proc/self/fd/" + std::to_string(parent), ec);
-    const bool released = !ec && deleteTemporaryFile(parent, actualParent, canonical.filename(), nullptr);
+    const bool released = !ec && deleteTemporaryFile(parent, actualParent, canonical.filename(), nullptr, m_temporaryDirectory);
     close(parent);
     return released;
 }

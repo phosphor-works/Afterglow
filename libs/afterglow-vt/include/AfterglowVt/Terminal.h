@@ -382,6 +382,14 @@ public:
     void programExited();
     /// Whether the user can see the terminal (mode 2033 reports changes).
     void setVisible(bool visible);
+    /// The $TMPDIR of the programs, where kitty's temporary files (t=t),
+    /// which the terminal deletes, can lie besides /tmp and /dev/shm. Empty,
+    /// the default, for the terminal's own: a session's daemon runs with
+    /// another one than its programs.
+    void setTemporaryDirectory(const std::string& directory)
+    {
+        for (GraphicsStore& store : m_graphics) store.setTemporaryDirectory(directory);
+    }
 
     enum class TextScope : std::uint8_t {
         Screen, ///< the visible rows of the active screen

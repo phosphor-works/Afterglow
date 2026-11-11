@@ -798,34 +798,81 @@ TEST(StateSync, AReaderTakesAWriterThatStartsOver)
 
 TEST(StateSync, ManyImagesComeInFramesThatFit)
 {
-    // 300 images of 64 frames each: their records are far more than a frame
-    // of 8 KiB, and so are the frames that go when they do.
+    // 200 images of 64 frames each: their records are far more than a state
+    // frame of 8 KiB, and so are the frames that go when the images do.
     Pair p(30, 8, 100, 8192);
     p.source.resize(30, 8, 10, 20);
-    for (int id = 1; id <= 300; ++id) {
+    for (int id = 1; id <= 200; ++id) {
         p.source.feed(apc("a=t,f=32,s=1,v=1,i=" + std::to_string(id) + ",q=2", rgba(1, 1, 1, 2, 3)));
         for (int k = 1; k < 64; ++k) p.source.feed(apc("a=f,f=32,s=1,v=1,i=" + std::to_string(id) + ",q=2", rgba(1, 1, 4, 5, 6)));
     }
     std::string error;
     std::size_t largest = 0;
-    for (int guard = 0; guard < 100000; ++guard) {
-        const std::string frame = p.update();
-        if (frame.empty() && !p.writer.pending()) break;
-        largest = std::max(largest, frame.size());
-        ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
-    }
+    const auto drain = [&] {
+        for (int guard = 0; guard < 100000; ++guard) {
+            const std::string frame = p.update();
+            if (frame.empty() && !p.writer.pending()) return true;
+            largest = std::max(largest, frame.size());
+            if (!p.reader.apply(p.replica, frame, &error)) return false;
+        }
+        return false;
+    };
+    ASSERT_TRUE(drain()) << error;
     EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
-    EXPECT_LT(largest, std::size_t(2 * 8192));
-    p.source.feed(apc("a=d,d=A,q=2"));
-    largest = 0;
-    for (int guard = 0; guard < 100000; ++guard) {
-        const std::string frame = p.update();
-        if (frame.empty() && !p.writer.pending()) break;
-        largest = std::max(largest, frame.size());
-        ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
-    }
+    ASSERT_EQ(p.replica.graphics().images().size(), 200u);
+    // A command to each image at once: 200 records again.
+    for (int id = 1; id <= 200; ++id) p.source.feed(apc("a=a,i=" + std::to_string(id) + ",c=2,q=2"));
+    ASSERT_TRUE(drain()) << error;
     EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
-    EXPECT_LT(largest, std::size_t(2 * 8192));
+    // Every image goes: 12,800 frames to drop.
+    for (int id = 1; id <= 200; ++id) p.source.feed(apc("a=d,d=I,i=" + std::to_string(id) + ",q=2"));
+    ASSERT_TRUE(drain()) << error;
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+    EXPECT_TRUE(p.replica.graphics().images().empty());
+    EXPECT_LT(largest, std::size_t(8192 + 4096));
+}
+
+TEST(StateSync, ATransferThatEndsDropsTheFrameThatTheReplicaBuilds)
+{
+    // A sixel of 200 by 200: its pixels go in parts of 8 KiB.
+    Pair p(30, 8, 100, 8192);
+    p.source.resize(30, 8, 10, 20);
+    std::string sixel = "\x1bPq\"1;1;200;200#1;2;100;0;0#1";
+    for (int band = 0; band < 34; ++band) sixel += "!200~-";
+    p.source.feed(sixel + "\x1b\\");
+    std::uint32_t id = 0;
+    for (const auto& [key, image] : p.source.graphics().images()) {
+        if (image.isSixel) id = key;
+    }
+    ASSERT_NE(id, 0u);
+    std::string error;
+    std::string frame = p.update();
+    ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
+    ASSERT_TRUE(p.writer.pending());
+    // A kitty image takes the sixel's id, which moves the sixel with its
+    // frames to another id, and goes. The frame that the replica builds is
+    // still the moved sixel's, and the next image starts.
+    const std::string named = "i=" + std::to_string(id);
+    p.source.feed(apc("a=t,f=32,s=1,v=1," + named + ",q=2", rgba(1, 1, 1, 1, 1)) + apc("a=d,d=I," + named + ",q=2")
+                  + apc("a=T,f=32,s=1,v=1,i=1,q=2", rgba(1, 1, 2, 2, 2)));
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+}
+
+TEST(StateSync, ATransferOfAnImageThatAClearReplacedEnds)
+{
+    Pair p(30, 8, 100, 8192);
+    p.source.resize(30, 8, 10, 20);
+    p.source.feed("\x1b[?1049h" + apc("a=T,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, 1, 2, 3)));
+    std::string error;
+    ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+    ASSERT_TRUE(p.writer.pending());
+    // The alternate screen goes and comes again with another image under
+    // the id: the replica shows that one.
+    p.source.feed("\x1b[?1049l\x1b[?1049h" + apc("a=T,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, 7, 8, 9)));
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+    EXPECT_EQ(p.replica.graphics().images().at(1).frames[0]->rgba[0], 7);
 }
 
 TEST(StateSync, ReaderRefusesBadNewSections)
@@ -1049,6 +1096,8 @@ TEST(StateSync, RandomOutputStaysEqual)
     // Images too, with their placements, frames and animations, which those
     // move, erase and reset.
     const std::string pixels = AfterglowProto::base64Encode(rgba(2, 2, 10, 20, 30));
+    // Larger than the frames of most runs: it comes in parts.
+    const std::string large = AfterglowProto::base64Encode(rgba(40, 40, 40, 50, 60));
     const std::vector<std::string> pieces = {
         "abc", "hello world ", "\r\n", "\n", "\r", "\t", "\b", "\xe4\xb8\xad", "e\xcc\x81", "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd",
         "\x1b[1m", "\x1b[0m", "\x1b[3%dm", "\x1b[4%dm", "\x1b[38;5;%dm", "\x1b[48;2;%d;40;50m", "\x1b[7m", "\x1b[4:2m",
@@ -1066,6 +1115,7 @@ TEST(StateSync, RandomOutputStaysEqual)
         "\x1b]3008;end=c%d\x1b\\", "\x1b]1337;RemoteHost=u@far%d\x07", "\x1b[>%d;2:%d:%d q", "\x1b[>0;4 q",
         "\x1b[>40;2:%d:0:0 q", "\x1b[?69h\x1b[2;%ds", "\x1b[?69l",
         "\x1b_Ga=T,f=32,s=2,v=2,i=%d,q=2;" + pixels + "\x1b\\", "\x1b_Ga=p,i=%d,q=2\x1b\\", "\x1b_Ga=d,d=I,i=%d,q=2\x1b\\",
+        "\x1b_Ga=T,f=32,s=40,v=40,i=%d,q=2;" + large + "\x1b\\",
         "\x1b_Ga=f,f=32,s=2,v=2,i=%d,q=2;" + pixels + "\x1b\\", "\x1b_Ga=a,i=%d,s=3,q=2\x1b\\", "\x1b_Ga=d,d=A,q=2\x1b\\",
         "\x1bPq#1;2;100;0;0#1~~\x1b\\",
     };
@@ -1078,6 +1128,12 @@ TEST(StateSync, RandomOutputStaysEqual)
             std::string piece = pieces[rng() % pieces.size()];
             for (std::size_t at; (at = piece.find("%d")) != std::string::npos;) piece.replace(at, 2, std::to_string(rng() % 20));
             p.source.feed(piece);
+            if (rng() % 5 == 0) {
+                // One frame, which may leave the pixels of an image half sent
+                // when the next output replaces it.
+                std::string error;
+                ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << "seed " << seed << " step " << step << ": " << error;
+            }
             if (rng() % 9 == 0) {
                 std::string error;
                 ASSERT_TRUE(p.sync(&error)) << "seed " << seed << " step " << step << ": " << error;

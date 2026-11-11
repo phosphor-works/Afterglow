@@ -113,8 +113,8 @@ public:
     /// The next frame carries everything again, as the first one does: for
     /// a new replica.
     void reset();
-    /// Visible or history rows, or the pixels of images, that wait for a
-    /// later frame.
+    /// Visible or history rows, or the pixels, records, placements or
+    /// dropped frames of images, that wait for a later frame.
     bool pending() const;
 
 private:
@@ -168,9 +168,10 @@ private:
     void writeDrops(std::string& out, Budget& budget);
     /// Whether the pixels of all of @p image's frames went.
     bool complete(const Image& image) const;
-    /// Whether an item of @p bytes fits the frame: within @p budget, or
-    /// as the first of the frame.
-    bool fits(const std::string& out, const Budget& budget, std::size_t bytes) const;
+    /// Whether an item of @p bytes fits the frame: within @p budget, or,
+    /// @p first of its section, as the first of a frame that has nothing
+    /// else, so that the images move at any budget.
+    bool fits(const std::string& out, const Budget& budget, std::size_t bytes, bool first) const;
 
     /// A frame of an image as the replica has it, by its address while it
     /// lives: a frame is immutable once an image holds it. The writer keeps
@@ -234,14 +235,15 @@ public:
     /// changes. False with @p error for a frame that breaks the codec or does
     /// not fit what the replica has: the replica then needs a frame from a
     /// writer that was reset, which starts the images over. The frames of
-    /// images that the reader keeps are bounded by four times the replica's
-    /// quota (TerminalOptions::graphicsQuota): what both screens show, and
-    /// what comes for them. The replica's host hears of the scrolls, the
+    /// images that the reader keeps are bounded by four times what a store
+    /// holds (GraphicsStore::MaxQuota and MaxStoreFrames): what both screens
+    /// show, and what comes for them. The replica's host hears of the scrolls, the
     /// status and the contexts of a frame once all of it applied, and of
     /// none for a frame that fails.
     bool apply(Terminal& replica, std::string_view frame, std::string* error);
-    /// The last frame that applied changed the visible rows or started a
-    /// screen over: output of the program, not history that catches up.
+    /// The last frame that applied changed the visible rows, started a
+    /// screen over, or changed the images or the placements of the screen
+    /// that shows: output of the program, not history that catches up.
     bool screenChanged() const { return m_screenChanged; }
     /// Every row of the primary screen from stable id @p first to @p last
     /// that the writer has came: none is a blank place of a row on its way,

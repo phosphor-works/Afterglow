@@ -202,6 +202,9 @@ public:
     };
 
     static constexpr std::size_t DefaultQuota = AfterglowProto::GraphicsDefaultQuota;
+    /// The largest quota that a terminal of the application takes
+    /// (Graphics.quota): what a store of a session's terminal can hold.
+    static constexpr std::size_t MaxQuota = std::size_t(4096) << 20;
     static constexpr std::size_t MaxImages = 4096;
     static constexpr std::size_t MaxPlacements = 4096;
     /// Frame edits (a=f on a frame, a=c) copy a whole frame for a command of
@@ -292,6 +295,8 @@ public:
     /// Whether transmissions may read files, temporary files and shared
     /// memory (t=f, t=t, t=s). Off, they are refused and nothing is opened.
     void setFileTransfer(bool allowed) noexcept { m_fileTransfer = allowed; }
+    /// The $TMPDIR of the programs (TerminalOptions::temporaryDirectory).
+    void setTemporaryDirectory(std::string directory) { m_temporaryDirectory = std::move(directory); }
     /// Sets the work budget (chargeWork()) and fills it: @p burst bytes at
     /// once, refilled at @p bytesPerSecond.
     void setWorkBudget(std::size_t burst, std::size_t bytesPerSecond);
@@ -314,9 +319,8 @@ public:
 
 private:
     /// A replica takes the images and placements of the terminal that it
-    /// mirrors (StateSync.h). The codec is part of this library, as is
-    /// Terminal, which is its friend too: it keeps the invariants of the
-    /// store (m_virtual through indexVirtual()).
+    /// mirrors (StateSync.h). The codec is part of this library: it keeps the
+    /// invariants of the store itself (m_virtual through indexVirtual()).
     friend class StateReader;
     struct Command;
     class Origins;
@@ -406,6 +410,7 @@ private:
     std::uint64_t m_changes = 0;
     std::size_t m_quota = DefaultQuota;
     bool m_fileTransfer = true;
+    std::string m_temporaryDirectory;
     double m_workBytes = -1; ///< work budget left; below 0 before first use
     double m_workBurst = double(DefaultWorkBurst);
     double m_workRate = double(DefaultWorkBytesPerSecond);
