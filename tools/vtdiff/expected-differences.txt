@@ -100,3 +100,7 @@
 # xterm ignore the color, and Afterglow does the same. libghostty reads the
 # values that are there as attributes.
 /\\x1b\[([0-9:;]*;)?[345]8;(5|2(;[0-9]*){0,2})m/ a color with too few values: Afterglow follows kitty
+
+# ?2l switches to VT52 mode, where ESC [ is no CSI: Afterglow has the mode, as
+# xterm and kitty do. libghostty has no VT52 mode and goes on with ANSI.
+/\\x1b\[\?2l/ VT52 mode: libghostty has none

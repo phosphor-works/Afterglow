@@ -218,6 +218,40 @@ The run passes when every failure is in `tools/conformance/esctest-expected-fail
 The script exits with a nonzero status on an unexpected failure.
 Extra arguments go to esctest. With a filter, the script reports only unexpected failures.
 
+### Character widths with ucs-detect
+
+[ucs-detect](https://github.com/jquast/ucs-detect) measures how many cells a terminal gives to wide characters, emoji sequences, variation selectors and the grapheme clusters of 85 languages.
+It reads the cursor position after each one, and compares it with the width that wcwidth gives.
+The ucs-detect project publishes the results of other terminals.
+
+The script runs ucs-detect in `afterglow_headless` two times: with grapheme clustering (mode 2027) on and off.
+ucs-detect turns the mode on by itself around its tables of characters, so the mode changes only the language results.
+
+1. Make a Python virtual environment in a directory of your choice, and install ucs-detect and its dependencies into it:
+
+   ```sh
+   python3 -m venv /path/to/venv
+   /path/to/venv/bin/pip install /path/to/ucs-detect
+   ```
+
+2. Run the script with a build that has developer tools:
+
+   ```sh
+   tools/conformance/ucs-detect.sh build /path/to/venv/bin/ucs-detect
+   ```
+
+| Result | Script |
+| --- | --- |
+| More errors than `tools/conformance/ucs-detect-expected.txt` gives | Prints "worse" and exits with status 1. |
+| Fewer errors | Prints "better". Lower the number in the file. |
+| A category or a language that the file does not name | Expects no error. |
+
+A third argument keeps the JSON results of the two runs in that directory.
+The expected numbers are for ucs-detect 2.3.9 with wcwidth 0.9.4 (Unicode 18.0.0).
+Another version can test other characters: run the script, and examine each change before you change the file.
+Afterglow joins characters into grapheme clusters as UAX #29 says, and gives a cluster the widths that glibc's `wcwidth` gives its characters, within two cells.
+A difference that comes from this rule goes into the file with its reason.
+
 ### Fuzzing
 
 The fuzz targets need clang for C and C++, and a separate build directory.
