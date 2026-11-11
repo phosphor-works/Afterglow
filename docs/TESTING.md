@@ -710,6 +710,10 @@ The `StateSync.*` tests cover these cases:
 - A new layout of the writer, also at the same size, numbers the replica's rows anew. A change of height keeps them.
 - Rows of many links: no frame passes its budget by more than the bytes of one row
 - A writer for a replica with less history sends no older rows
+- Images of both screens with their placements: a relative placement, a virtual placement, a sixel, and a deleted image with its placements
+- An image larger than a frame comes in parts and shows only once all of it came. An image of a lower id waits for it. An image deleted before all of it came lets the next one come.
+- An animation runs on the replica's clock: output and a new frame keep its step, and a command that stops it reaches the replica
+- Bad image sections, which the reader refuses
 - The prompt redraw after a resize (OSC 133 `redraw=1`)
 - Shell mark, program status, shell context, extra cursor and region scroll sections with bad values, which the reader refuses
 - A frame that fails after its status and contexts tells the replica's host nothing, and bad modes leave the modes and the screen
@@ -756,6 +760,7 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.AWindowThatLosesItsSessionLeavesItRunning` | A detach and a takeover close the pane and kill nothing |
 | `NativeWindow.AMuxSessionCanOutliveItsWindow` | `Mux.onClose` detach |
 | `NativeWindow.AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow` | A bell, a user variable and an OSC 52 write of the session's shell reach the window and its clipboard |
+| `NativeWindow.AMuxSessionsImageShowsInTheWindow` | A kitty image that the session's shell prints shows in a screenshot of the pane |
 | `NativeWindow.AMuxSessionsMarksStatusAndDirectoryReachTheWindow` | The last output in the pager, and the regions of shell integration. The status of a program, with the `Pane::statusChanged` signal. A shell context. A new tab starts in the directory that the daemon gets from the system, because the shell reports none. |
 | `NativeWindow.ASessionPaneTellsItsProgramWhetherItCanBeSeen` | Mode 2033 reports at the attach, when another tab shows, and when the pane shows again |
 | `NativeWindow.AnAttachShowsTheSessionsStateAndNotifiesNothingOld` | A window that attaches gets the history, the last output and the prompts of the session. It shows no notification for a status from before the attach. |

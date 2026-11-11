@@ -5,7 +5,7 @@
 #include "desktop/FileTransfer.h"
 #include "desktop/DragDrop.h"
 #include "desktop/Accessibility.h"
-#include "DockArea.h"
+#include "DockArea.h" // IWYU pragma: keep (~Pane deletes the docks: unique_ptr needs the type)
 #include "ImageDecode.h"
 #include "PaneLaunch.h"
 #include "PaneDialog.h"
@@ -1049,6 +1049,9 @@ bool Pane::applySessionFrame(std::string_view frame)
         if (m_terminal.title() != title) titleChanged(m_terminal.title());
         if (m_terminal.workingDirectory() != directory) workingDirectoryChanged(m_terminal.workingDirectory());
     }
+    // As after output (ptyData): an animated image that came starts its
+    // clock, and one that went stops it.
+    advanceAnimations();
     Q_EMIT contentChanged();
     return true;
 }

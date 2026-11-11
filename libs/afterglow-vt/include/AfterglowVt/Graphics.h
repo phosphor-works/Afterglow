@@ -23,6 +23,7 @@ namespace AfterglowVt {
 
 class ITerminalHost;
 class Screen;
+class StateReader;
 struct Row;
 
 /// One decoded placeholder cell: which image and placement it shows, and
@@ -292,6 +293,9 @@ public:
     std::size_t totalBytes() const;
 
 private:
+    /// A replica takes the images and placements of the terminal that it
+    /// mirrors (StateSync.h).
+    friend class StateReader;
     struct Command;
     class Origins;
     struct Pending
@@ -356,6 +360,8 @@ private:
     /// After each change: drops orphans and the images nothing can name or
     /// show any more, and rebuilds the lookups that queries use.
     void settle();
+    /// Rebuilds m_virtual from the placements.
+    void indexVirtual();
     /// Charges @p bytes of frame copying, or of a file or shared memory read,
     /// against a budget that refills over time. Both run on the thread that
     /// feeds the terminal. False when the budget is spent.

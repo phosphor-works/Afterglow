@@ -11,7 +11,7 @@
 #include <QPushButton>
 #include <QMessageBox>
 #include <chrono>
-#include <csignal>
+#include <signal.h> // ::kill: POSIX, which <csignal> need not declare
 #include <optional>
 #include <vector>
 #include <QJsonArray>
@@ -10265,6 +10265,47 @@ TEST_F(NativeWindow, AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow) 
 // signal that the tab bar and scripts hear, a shell context, and the
 // directory of a shell that reports none, which the daemon reads for a new
 // tab.
+// An image of a session's program shows in its window: the daemon parses it,
+// and the window draws the replica's copy.
+TEST_F(NativeWindow, AMuxSessionsImageShowsInTheWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "image")) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("image"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    SettingsStore settings(directory.filePath(QStringLiteral("capture.conf")),
+                           QJsonObject{{QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowReadText"), true}}}});
+    Control control(settings, {});
+    control.attachWindow(shown);
+    const auto redPixels = [&] {
+        const Shot shot = captureShot(control, pane, CaptureScope::Pane);
+        EXPECT_TRUE(shot.error.isEmpty()) << shot.error.toStdString();
+        int red = 0;
+        for (int y = 0; y < shot.image.height(); ++y) {
+            for (int x = 0; x < shot.image.width(); ++x) red += reddish(shot.image.pixel(x, y)) ? 1 : 0;
+        }
+        return red;
+    };
+    EXPECT_EQ(redPixels(), 0);
+    // 60 by 60 red pixels in one kitty command: too long for a typed line,
+    // so the shell prints it from a file.
+    QByteArray pixels;
+    for (int i = 0; i < 60 * 60; ++i) pixels.append("\xdc\x14\x14\xff", 4);
+    QFile file(directory.filePath(QStringLiteral("image.kitty")));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("\x1b_Ga=T,f=32,s=60,v=60,i=4,q=2;" + pixels.toBase64() + "\x1b\\");
+    file.close();
+    ASSERT_TRUE(pane->sendInput("cat '" + file.fileName().toStdString() + "'\n"));
+    EXPECT_TRUE(waitFor([&] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return !t.graphics().placements().empty(); }); }, 5000));
+    EXPECT_TRUE(waitFor([&] { return redPixels() >= 60 * 60 / 2; }, 5000));
+    delete shown;
+}
+
 TEST_F(NativeWindow, AMuxSessionsMarksStatusAndDirectoryReachTheWindow) {
     // The pager of the fixture may be missing: tail is not.
     restartApplication(QStringLiteral("pager.conf"),

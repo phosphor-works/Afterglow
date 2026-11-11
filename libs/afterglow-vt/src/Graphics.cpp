@@ -2182,6 +2182,11 @@ void GraphicsStore::settle()
     std::erase_if(m_images, [&](const auto& entry) {
         return (entry.second.isSixel || entry.second.anonymous) && !used.contains(entry.first);
     });
+    indexVirtual();
+}
+
+void GraphicsStore::indexVirtual()
+{
     m_virtual.clear();
     for (std::size_t i = 0; i < m_placements.size(); ++i) {
         const Placement& p = m_placements[i];
