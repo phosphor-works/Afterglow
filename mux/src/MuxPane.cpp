@@ -673,11 +673,13 @@ MuxPane::Input MuxPane::input(std::string_view bytes)
             // of the program that the feed made. Past that, as for a full
             // queue: the window holds it until the wake at the feed's end.
             if (m_deferredInput + bytes.size() + m_pty->pendingInput() > AfterglowPty::Pty::MaxPendingInput / 2) return Input::Full;
-            m_deferredInput += bytes.size();
             m_deferred.push_back([this, data = std::string(bytes)] {
                 m_deferredInput -= data.size();
                 (void)m_pty->write(data);
             });
+            // Counted once it waits: a push that runs out of memory counts
+            // nothing.
+            m_deferredInput += bytes.size();
             return Input::Written;
         }
     }

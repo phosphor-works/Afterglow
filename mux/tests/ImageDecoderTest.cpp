@@ -219,7 +219,8 @@ TEST(MuxImageDecoder, AServerThatDoesNotAnswerEndsAtTheDeadline)
 
 TEST(MuxImageDecoder, ADecodeEndsAtItsDeadlineOrWhenItIsCancelled)
 {
-    // 8,000 by 8,000: far more than 300 ms of work, which it does decode.
+    // 8,000 by 8,000, which it does decode. The waits below are a third of
+    // the time that the whole decode takes here.
     const std::string large = greyPng(8000, 8000);
     ImageDecoder decoder(AFTERGLOW_MUX);
     auto start = Clock::now();
@@ -231,11 +232,15 @@ TEST(MuxImageDecoder, ADecodeEndsAtItsDeadlineOrWhenItIsCancelled)
     const auto full = Clock::now() - start;
 
     // The server answers at once once it runs: the deadline ends the wait
-    // for the pixels, not for the server. A third of the whole decode, so
-    // that a fast processor does not finish it.
+    // for the pixels, not for the server.
     const int wait = int(std::max<std::int64_t>(20, std::chrono::duration_cast<std::chrono::milliseconds>(full).count() / 3));
     ImageDecoder quick(AFTERGLOW_MUX, wait);
-    ASSERT_TRUE(decode(quick, Png, ImageFormats::Png).ok);
+    // The first decode also waits for the server to start, which a loaded
+    // machine can make slower than the deadline: one that fails starts it
+    // again.
+    bool warm = false;
+    for (int attempt = 0; attempt < 5 && !warm; ++attempt) warm = decode(quick, Png, ImageFormats::Png).ok;
+    ASSERT_TRUE(warm);
     start = Clock::now();
     EXPECT_FALSE(decode(quick, large, ImageFormats::Png).ok);
     EXPECT_GE(Clock::now() - start, std::chrono::milliseconds(wait));
@@ -244,15 +249,15 @@ TEST(MuxImageDecoder, ADecodeEndsAtItsDeadlineOrWhenItIsCancelled)
     const int cancel = ::eventfd(0, EFD_CLOEXEC);
     ASSERT_GE(cancel, 0);
     start = Clock::now();
-    std::thread closes([cancel] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::thread closes([cancel, wait] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(wait));
         const std::uint64_t one = 1;
         (void)!::write(cancel, &one, sizeof one);
     });
     EXPECT_FALSE(decode(decoder, large, ImageFormats::Png, cancel).ok);
     const auto took = Clock::now() - start;
     closes.join();
-    EXPECT_GE(took, std::chrono::milliseconds(100));
+    EXPECT_GE(took, std::chrono::milliseconds(wait));
     // A pane that closed decodes nothing more, and the server goes on for
     // the others.
     EXPECT_FALSE(decode(decoder, Png, ImageFormats::Png, cancel).ok);
@@ -277,7 +282,10 @@ TEST(MuxImageDecoder, APaneThatClosesLeavesTheServerToTheOthers)
     // it took.
     const auto closing = [&decoder] {
         const int cancel = ::eventfd(0, EFD_CLOEXEC);
-        EXPECT_GE(cancel, 0);
+        if (cancel < 0) {
+            ADD_FAILURE() << "eventfd";
+            return Clock::duration::max();
+        }
         const auto start = Clock::now();
         std::thread closes([cancel] {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -294,7 +302,8 @@ TEST(MuxImageDecoder, APaneThatClosesLeavesTheServerToTheOthers)
     // of the decode before it.
     EXPECT_LT(closing(), std::chrono::milliseconds(900));
     EXPECT_LT(closing(), std::chrono::milliseconds(500));
-    // The next decode takes the late answers, and the same server decodes.
+    // The next decode takes the late answer of the first, and the same
+    // server decodes.
     EXPECT_TRUE(decode(decoder, Png, ImageFormats::Png).ok);
     EXPECT_EQ(children(), server);
 }

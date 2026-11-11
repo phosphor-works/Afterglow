@@ -18,6 +18,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -55,8 +56,9 @@ struct TempDir
 };
 
 /// A pane whose program prints a PNG with kitty graphics and then runs
-/// @p then (by default, it waits), with a decoder whose server takes the request and never answers: the
-/// decode lasts until the decoder's wait ends.
+/// @p then (by default, it waits), with a decoder whose server takes the
+/// request and never answers: the decode lasts until the decoder's wait
+/// ends. @p before runs before the PNG.
 struct StuckDecode
 {
     TempDir dir;
@@ -64,7 +66,7 @@ struct StuckDecode
     std::unique_ptr<MuxPane> pane;
     AfterglowVt::StateWriter writer;
 
-    explicit StuckDecode(int waitMs, const std::string& then = "exec /bin/sleep 60")
+    explicit StuckDecode(int waitMs, const std::string& then = "exec /bin/sleep 60", const std::string& before = {})
     {
         if (dir.path.empty()) return;
         const std::string server = (dir.path / "server").string();
@@ -76,7 +78,7 @@ struct StuckDecode
         pane = std::make_unique<MuxPane>(1, AfterglowVt::TerminalOptions{}, PaneSize{80, 24, 10, 20}, std::string(), *decoder,
                                          [] {});
         AfterglowPty::SpawnOptions spawn;
-        spawn.argv = {"/bin/sh", "-c", "cat '" + image + "'; " + then};
+        spawn.argv = {"/bin/sh", "-c", before + "cat '" + image + "'; " + then};
         std::string error;
         if (!pane->start(std::move(spawn), std::string(), &error)) pane.reset();
     }
@@ -130,27 +132,35 @@ TEST(MuxPane, TheDaemonDoesNotWaitForADecodeAndItsChangesComeAfter)
 
 TEST(MuxPane, InputWaitsInThePaneBehindAChangeThatWaitsForADecode)
 {
-    // The program reads a line, then writes the size of its terminal.
+    // The program marks a prompt, prints its image, reads a line, then
+    // writes the size of its terminal and the line.
     TempDir out;
     ASSERT_FALSE(out.path.empty());
     const std::string size = (out.path / "size").string();
-    StuckDecode stuck(1500, "IFS= read -r line; stty size > '" + size + "'; exec /bin/sleep 60");
+    const std::string line = (out.path / "line").string();
+    StuckDecode stuck(1500, "IFS= read -r line; stty size > '" + size + "'; printf '%s' \"$line\" > '" + line + "'; exec /bin/sleep 60",
+                      "printf '\\033]133;A\\007'; ");
     ASSERT_TRUE(stuck.pane);
     ASSERT_TRUE(stuck.decoding());
-    // The pane takes the input behind the resize, and the window's other
-    // panes go on. Past half of the PTY's queue, the window holds it.
+    // The pane takes the input behind the resize and the clear, and the
+    // window's other panes go on. Past half of the PTY's queue, the window
+    // holds it.
     stuck.pane->resize(PaneSize{100, 30, 10, 20});
+    stuck.pane->clear();
     EXPECT_EQ(stuck.pane->input("x\n"), MuxPane::Input::Written);
     EXPECT_EQ(stuck.pane->input(std::string(AfterglowPty::Pty::MaxPendingInput / 2, 'a')), MuxPane::Input::Full);
-    // The decode ends: the resize goes first, then the line.
+    // The decode ends: the changes go first, then the line. The clear at a
+    // prompt writes a form feed for the shell, which the line follows: the
+    // PTY's queue has it first (written at once, the line would be first).
+    const auto read = [](const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
     std::string got;
     const auto deadline = Clock::now() + std::chrono::seconds(10);
-    while (Clock::now() < deadline && got.empty()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        std::ifstream file(size);
-        std::getline(file, got);
-    }
-    EXPECT_EQ(got, "30 100");
+    while (Clock::now() < deadline && (got = read(line)).empty()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(got, "\x0cx");
+    EXPECT_EQ(read(size), "30 100\n");
 }
 
 TEST(MuxPane, APaneThatClosesDoesNotWaitForItsDecode)

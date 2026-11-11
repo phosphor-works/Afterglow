@@ -683,8 +683,8 @@ ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|M
 | `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, and session names. The keys and fields that belong to the protocol version. The bytes of the attach stream and of each host call, and the frames and calls that its decoders refuse. |
 | `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own. The cases are sessions, the environment of a pane, the answers to queries, the refused control calls, and when the daemon exits. |
 | `Mux.MuxAttach.*` | `afterglow_mux_tests` | A window of a session, played without Qt. The cases are listed below the table. |
-| `Mux.MuxImageDecoder.*` | `afterglow_mux_tests` | The image decoder of `afterglow-mux`: the pixels of a PNG with alpha, a JPEG, the first frame of a GIF and a BMP. The formats and the files that it refuses (WebP, PNM and TGA, a cut PNG, a side of 10,001 pixels, Apple's CgBI PNG), and a side of 10,000 pixels, which it decodes. A decoder that is missing, ends, or does not answer by its deadline. A decode that passes its deadline or that the pane cancels. A pane that closes while its request waits leaves the same server to the other panes, also while the request waits for the answer to an earlier one. |
-| `Mux.MuxPane.*` | `afterglow_mux_tests` | A pane of `afterglow-mux` while its program's image decodes. The daemon's calls return at once, and a resize that waited reaches the next frame. Input waits in the pane behind the resize, up to half of the PTY's queue, and reaches the program after it. A pane that closes ends its decode at once. |
+| `Mux.MuxImageDecoder.*` | `afterglow_mux_tests` | The image decoder of `afterglow-mux`: the pixels of a PNG with alpha, a JPEG, the first frame of a GIF and a BMP. The formats and the files that it refuses (WebP, PNM and TGA, a cut PNG, a side of 10,001 pixels, Apple's CgBI PNG), and a side of 10,000 pixels, which it decodes. A decoder that is missing, ends, or does not answer by its deadline. A decode that passes its deadline or that the pane cancels. A pane that closes while its request waits leaves the same server to the other panes. This is also true while the request waits for the answer to an earlier one. |
+| `Mux.MuxPane.*` | `afterglow_mux_tests` | A pane of `afterglow-mux` while its program's image decodes. The daemon's calls return at once, and a resize that waited reaches the next frame. Input waits in the pane behind a resize and a clear, up to half of the PTY's queue, and reaches the program after them. A pane that closes ends its decode at once. |
 | `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`). A replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are listed below the table. |
 | `MuxCommandTest.*` | `afterglow_mux_command_tests` | The commands of `afterglow mux`. The cases are listed below the table. |
 
@@ -716,11 +716,11 @@ The `StateSync.*` tests cover these cases:
 - An image larger than a frame comes in parts and shows only once all of it came. An image of a lower id waits for it. An image deleted before all of it came lets the next one come.
 - An animation runs on the replica's clock: output and a new frame keep its step. A command that stops it, jumps to a frame or plays it again reaches the replica, also when it changes no value of the writer's store.
 - A deleted frame keeps the frame that shows, and a new image under an id starts its animation over
-- An image that a program sends again faster than its pixels go still shows
+- An image that a program sends again faster than its pixels go still shows, and the replica keeps only the frames of the last version
 - Many images, a command to each of them, and the frames that go when they go, all in state frames within the budget and one item more
 - A transfer that ends drops the frame that the replica builds, also one that another image still holds
 - A clear that replaces an image ends its transfer
-- An image that a deleted frame completes shows before the pixels of that frame went
+- An image that a frame deletion completes shows at once, and the version with the deleted frame never replaces it, also after a new frame
 - A reader takes a writer that starts over: the images of the old writer go
 - Bad image sections, each to a reader of its own, which refuses them
 - The random runs place, animate and delete images and sixels too, also images larger than a state frame, between state frames

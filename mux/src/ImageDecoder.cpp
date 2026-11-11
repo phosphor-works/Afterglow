@@ -162,8 +162,8 @@ void report(std::chrono::steady_clock::time_point& last, const std::string& text
 #endif
 
 /// The exit status of a decoding process that cannot limit its system calls
-/// (a kernel without seccomp filters): it decodes nothing, and the server
-/// says so.
+/// (a kernel without seccomp filters, or a processor whose system calls the
+/// filter does not know): it decodes nothing, and the server says so.
 constexpr int NoFilterStatus = 3;
 
 /// Past this, the decoding process makes only the system calls that
