@@ -110,17 +110,36 @@ TEST(TextSizing, EraseAndEditTakeWholeBlocks)
     EXPECT_FALSE(t.at(0, 1).isMulticell());
 }
 
-TEST(TextSizing, TextOnABlockThatAMarginScrollCutGoesOn)
+TEST(TextSizing, AScrollWithinMarginsKeepsTheParametersOfTheBlocksItMoves)
 {
-    // A scroll within left and right margins moves the cells of a block that
-    // crosses a margin without its parameters. Text that lands on such a
-    // cell once never moved past it.
+    // A block that needs a row below the region scrolls the region within
+    // the left and right margins. The rows that the scroll leaves held a
+    // copy of the blocks that moved: clearing them took the moved block's
+    // parameters, and text printed on the block then never moved past it.
+    Term t(20, 5);
+    t.feed("\x1b[?69h\x1b[2;6s");
+    t.feed("\x1b[4;4H\x1b]66;s=2;a\x07"); // rows 3-4, columns 3-4
+    t.feed("\x1b[5;2H\x1b]66;s=2;b\x07"); // scrolls a up to rows 2-3
+    const Screen& s = t.t.screen();
+    ASSERT_TRUE(t.at(3, 3).isMulticell());
+    EXPECT_EQ(t.at(3, 3).multicellDy(), 1);
+    EXPECT_NE(s.multicellParams(s.row(2), 3), nullptr);
+    EXPECT_NE(s.multicellParams(s.row(3), 3), nullptr);
+    EXPECT_NE(s.multicellParams(s.row(3), 1), nullptr);
+    // Text on the lower row of a goes past it.
+    t.feed("\x1b[4;5Hx");
+    EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos) << t.t.text(Terminal::TextScope::Screen);
+}
+
+TEST(TextSizing, TextOnABlockThatAMarginScrollMovedGoesOn)
+{
+    // The sequence that a random run found: an image that moves the cursor
+    // down, text that wraps within the margins, then blocks at the bottom.
     Term t(47, 5);
     t.t.resize(47, 5, 10, 20);
     std::string pixels;
     for (int i = 0; i < 40; ++i) pixels += std::string("\x01\x02\x03\xff", 4);
     t.feed("\x1b[?69h\x1b[2;6s");
-    // An image of two rows, which moves the cursor down.
     t.feed("\x1b_Ga=T,f=32,s=1,v=40,i=1,q=2;" + AfterglowProto::base64Encode(pixels) + "\x1b\\");
     t.feed("\rhello world \x1b]66;s=2;ab\x1b\\x");
     EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos) << t.t.text(Terminal::TextScope::Screen);
