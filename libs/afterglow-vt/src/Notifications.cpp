@@ -22,7 +22,6 @@ using AfterglowProto::base64DecodeAppend;
 // lenient with senders that miscount.
 constexpr std::size_t MaxChunkData = 2 * 4096;
 constexpr std::size_t MaxMetadata = 4096;
-constexpr std::size_t MaxText = 64 * 1024; // title, body and buttons together
 constexpr std::size_t MaxIcon = 4 * 1024 * 1024;
 constexpr std::size_t MaxPending = 32;
 // Icon data that all half-sent notifications hold together.
@@ -233,6 +232,14 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
         if (!decodeChunk(carry, data, text)) {
             return reject();
         }
+        // The last chunk completes the carry here, so that the limits below
+        // count the bytes of its tail too.
+        if (done && !carry.empty()) {
+            if (!base64DecodeAppend(text, carry, Base64Check::PaddingOptional)) {
+                return reject();
+            }
+            carry.clear();
+        }
     } else {
         text = std::string(data);
     }
@@ -242,7 +249,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
     const std::size_t textBytes =
         (existing ? existing->request.title.size() + existing->request.body.size() + existing->buttons.size() : 0)
         + added(Payload::Title) + added(Payload::Body) + added(Payload::Buttons);
-    if (iconBytes > MaxIcon || textBytes > MaxText
+    if (iconBytes > MaxIcon || textBytes > NotificationRequest::MaxText
         || (!done && m_pendingIconBytes + added(Payload::Icon) > MaxPendingIcon)) {
         return reject();
     }
@@ -305,7 +312,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
             r.iconCacheId = detail::sanitizeId(value);
             break;
         case 'n':
-            if (std::string s = decoded(); !s.empty() && detail::isCleanText(s) && r.iconNames.size() < 16) {
+            if (std::string s = decoded(); !s.empty() && detail::isCleanText(s) && r.iconNames.size() < NotificationRequest::MaxNames) {
                 r.iconNames.emplace_back(detail::truncateUtf8(s, MaxField));
             }
             break;
@@ -320,7 +327,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
             }
             break;
         case 't':
-            if (std::string s = decoded(); !s.empty() && detail::isCleanText(s) && r.types.size() < 16) {
+            if (std::string s = decoded(); !s.empty() && detail::isCleanText(s) && r.types.size() < NotificationRequest::MaxNames) {
                 r.types.emplace_back(detail::truncateUtf8(s, MaxField));
             }
             break;
@@ -353,18 +360,8 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
         return Result::Pending;
     }
 
-    // The last chunk. A chunk may end inside a character, so the text is
-    // checked whole, after the carry is complete.
-    if (!p->carry.empty()) {
-        std::string tail;
-        if (!base64DecodeAppend(tail, p->carry, Base64Check::PaddingOptional)) {
-            return reject();
-        }
-        target(*p, p->carryPayload) += tail;
-        if (p != &single && p->carryPayload == Payload::Icon) {
-            m_pendingIconBytes += tail.size(); // counted in, as the subtraction below takes the whole icon
-        }
-    }
+    // The last chunk, whose carry is complete. A chunk may end inside a
+    // character, so the text is checked whole.
     if (p != &single) {
         m_pendingIconBytes -= r.iconData.size();
     }

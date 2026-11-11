@@ -210,6 +210,7 @@ Downloads permit 8 MiB of decoded data and one pending application request.
 A `MultipartFile` download stops when its data passes the 8 MiB limit. An inline image in parts can have 96 MiB of base64 data.
 `MultipartFile` arguments have a 4,096-byte limit. Longer arguments refuse the file.
 A new `MultipartFile`, a terminal reset or the end of the pane's program ends a file that has no `FileEnd`.
+In a mux session, a download goes to the window that shows the session, with the other requests of the session. Without a window, the session drops it (see [requests that wait](MUX.md#requests-that-wait)).
 A new shell prompt is a prompt mark (OSC 133 `A` or `N`, or OSC 633 `A`) after a command start mark (`C`).
 One new prompt does not end the file, because a job in the background can still send it.
 A second new prompt with no `FilePart` after the first ends it, because the program that sent it has stopped.

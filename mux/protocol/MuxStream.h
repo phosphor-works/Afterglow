@@ -5,6 +5,7 @@
 
 #include "MuxProtocol.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -48,8 +49,14 @@ enum class EventType : std::uint8_t {
     SessionEnded = 3, ///< the last program ended, or `afterglow mux kill` ended it
     TakenOver = 4, ///< another window attached: this one detaches
     Detached = 5, ///< `afterglow mux detach`: the window closes, the session runs on
-    Host = 6, ///< a call of a pane's terminal to its host, in `payload` (MuxHost.h)
+    Host = 6, ///< a call of a pane's terminal to its host, or a part of one, in `payload` (MuxHost.h)
 };
+
+/// The status of a Host event that holds a part of a call, not its end.
+inline constexpr int HostPart = 1;
+/// The bytes of a call in each Host event but its last, when the call does
+/// not fit one: well under the largest frame of a channel's default window.
+inline constexpr std::size_t HostPartBytes = std::size_t(1) << 20;
 
 struct Event
 {
@@ -58,8 +65,11 @@ struct Event
     /// PaneOpened: the channel of the pane's state.
     std::uint32_t channel = 0;
     /// PaneClosed: the status as waitpid gives it, or -1 when it is unknown.
+    /// Host: HostPart when the call goes on in the next Host event of the
+    /// pane, else -1.
     int status = -1;
-    /// Host: the call, encoded.
+    /// Host: the call, encoded, or its next part. A call larger than one
+    /// frame comes in parts of at most HostPartBytes.
     std::string payload;
 };
 

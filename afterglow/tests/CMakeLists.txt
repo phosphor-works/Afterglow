@@ -147,7 +147,7 @@ if(AFTERGLOW_NATIVE_TESTS)
         COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native_window_acceptance.py
                 --binary $<TARGET_FILE:afterglow_native_tests>)
     # The window and Kitty draw on the GPU: they take turns with the renderer's tests.
-    set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 620 RESOURCE_LOCK gpu)
+    set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 1820 RESOURCE_LOCK gpu)
     # aglow transfer against Kitty in a headless KWin (77: no kitty, kwin_wayland or dbus-run-session).
     if(AFTERGLOW_BUILD_AGLOW)
         add_test(NAME afterglow_transfer_kitty

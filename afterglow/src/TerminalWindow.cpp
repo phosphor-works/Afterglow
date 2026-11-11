@@ -351,11 +351,11 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         const AfterglowVt::ClipboardRequest& r = pending->request;
         if (pending->write) {
             if (answer != 0) writeClipboard(pending->pane, r);
-            else if (!r.osc52) pending->pane->sendReply(AfterglowVt::ClipboardAssembler::writeStatus("EPERM", r.id));
+            else pending->pane->sendReply(r.refusal("EPERM"));
             return;
         }
         if (answer == 0) {
-            pending->pane->sendReply(r.osc52 ? r.osc52Reply({}) : AfterglowVt::ClipboardAssembler::readStatus("EPERM", r));
+            pending->pane->sendReply(r.refusal("EPERM"));
             return;
         }
         if (answer == 2 && !r.password.empty() && !r.name.empty()) {
@@ -449,6 +449,7 @@ TerminalWindow::~TerminalWindow()
     // deferred delete.
     const QList<Pane*> live = findChildren<Pane*>(QString(), Qt::FindDirectChildrenOnly);
     for (Pane* pane : panes()) Q_EMIT paneClosing(pane->id(), tabIdOf(pane), id());
+    dropClipboardPrompt();
     if (m_hintCancel) *m_hintCancel = true;
     finishScriptDialog(false, {});
     s_windows.removeAll(this);
@@ -598,11 +599,16 @@ void TerminalWindow::bindPane(Pane* pane)
     });
     connect(pane, &Pane::clipboardRequested, this,
             [this, guard = QPointer<Pane>(pane)](const AfterglowVt::ClipboardRequest& request) {
+                if (!guard) return;
+                if (takesInput(guard)) {
+                    clipboardRequest(guard, request);
+                    return;
+                }
                 // A request that the pane sent before its tab or its overlay
                 // closed: a prompt now would answer a program that is ending.
-                if (guard && takesInput(guard)) {
-                    clipboardRequest(guard, request);
-                }
+                // A session that the close leaves running still waits for an
+                // answer.
+                if (!guard->closeEndsProgram()) guard->sendReply(request.refusal("EPERM"));
             });
     connect(pane, &Pane::desktopNotificationRequested, this,
             [this, guard = QPointer<Pane>(pane)](const AfterglowVt::NotificationRequest& request) {
@@ -941,11 +947,20 @@ void TerminalWindow::dropTabPrompts(quint32 tabId)
     }
 }
 
+void TerminalWindow::dropClipboardPrompt()
+{
+    // The prompt's reply would go to a pane that is leaving: it goes
+    // unanswered. A session that the close leaves running gets the denial:
+    // its program still waits.
+    const auto pending = std::exchange(m_pendingClipboardRead, std::nullopt);
+    if (!pending || !pending->pane || pending->pane->closeEndsProgram()) return;
+    pending->pane->sendReply(pending->request.refusal("EPERM"));
+}
+
 void TerminalWindow::dropPanePrompts(Pane* pane)
 {
-    // The prompt's reply would go to a pane that is leaving: drop it unanswered.
     if (m_pendingClipboardRead && m_pendingClipboardRead->pane == pane) {
-        m_pendingClipboardRead.reset();
+        dropClipboardPrompt();
         m_controller->answerClipboard(0);
     }
     if (m_pendingPastePane == pane) m_controller->answerPaste(false);
@@ -2924,10 +2939,7 @@ bool TerminalWindow::performAction(Action action)
         close();
         return true;
     case Action::NotifyOnFinish:
-        if (m_focused && m_focused->isSessionPane()) {
-            NotificationCenter::instance().showNotice(m_focused, tr("No command notification"),
-                                                      tr("A window of a mux session does not see the commands of its shell yet."));
-        } else if (m_focused) {
+        if (m_focused) {
             if (!m_notifyOnFinish.remove(m_focused.data())) {
                 m_notifyOnFinish.insert(m_focused.data());
             }
@@ -3003,7 +3015,7 @@ bool TerminalWindow::performAction(Action action)
                                                           : tr("The pager %1 was not found.").arg(command.front()));
         }
         if (m_focused->isSessionPane()) {
-            return fail(tr("No command output"), tr("A window of a mux session does not see the commands of its shell yet."));
+            return fail(tr("No command output"), tr("A window of a mux session does not keep the output of its commands yet."));
         }
         const std::size_t limit = m_settings.settings().lastOutputLimit;
         const auto output = m_focused->readText(Terminal::TextScope::LastOutput, limit);
@@ -3732,9 +3744,8 @@ void TerminalWindow::openContextMenu(const QPointF& pos, const QString& link)
         items << entry(MenuOpenLink, QStringLiteral("Open Link"), "internet-web-browser")
               << entry(MenuCopyLink, QStringLiteral("Copy Link Address"), "insert-link") << separator;
     }
-    // A session window does not see the commands of the session's shell.
     QVariantMap notify = action(Action::NotifyOnFinish, QStringLiteral("Notify on Next Command Finish"),
-                                "preferences-desktop-notification-bell", pane && !m_focused->isSessionPane())
+                                "preferences-desktop-notification-bell", pane)
                              .toMap();
     notify.insert(QStringLiteral("checked"), pane && m_notifyOnFinish.contains(m_focused.data()));
     items << action(Action::Copy, QStringLiteral("Copy"), "edit-copy", pane && inputPane(m_focused)->hasSelection())
@@ -4717,11 +4728,10 @@ void TerminalWindow::copySelection(bool toClipboard)
 
 void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRequest& r)
 {
-    using AfterglowVt::ClipboardAssembler;
     QClipboard* clipboard = QGuiApplication::clipboard();
     if (r.kind == AfterglowVt::ClipboardRequest::Kind::Write) {
         if (r.primary && !clipboard->supportsSelection()) {
-            pane->sendReply(ClipboardAssembler::writeStatus("ENOSYS", r.id));
+            pane->sendReply(r.refusal("ENOSYS"));
             return;
         }
         clipboardWrite(pane, r);
@@ -4733,11 +4743,11 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
         // An OSC 52 read: no name or password to remember a grant by, so
         // the setting decides, or the user does each time.
         if (policy == Settings::Permission::Deny || (r.primary && !clipboard->supportsSelection())) {
-            pane->sendReply(r.osc52Reply({}));
+            pane->sendReply(r.refusal("EPERM"));
         } else if (policy == Settings::Permission::Allow) {
             answerClipboardRead(pane, r);
         } else if (m_pendingClipboardRead) {
-            pane->sendReply(r.osc52Reply({})); // one prompt at a time
+            pane->sendReply(r.refusal("EBUSY")); // one prompt at a time
         } else {
             m_pendingClipboardRead = PendingClipboardRead{pane, r};
             m_controller->askClipboard(tr("%1 wants to read the %2.").arg(clipboardAsker(pane), buffer), {});
@@ -4747,7 +4757,7 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
         return;
     }
     if (r.primary && !clipboard->supportsSelection()) {
-        pane->sendReply(ClipboardAssembler::readStatus("ENOSYS", r));
+        pane->sendReply(r.refusal("ENOSYS"));
         return;
     }
     // Listing the types needs no permission.
@@ -4756,7 +4766,7 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
         return;
     }
     if (policy == Settings::Permission::Deny) {
-        pane->sendReply(ClipboardAssembler::readStatus("EPERM", r));
+        pane->sendReply(r.refusal("EPERM"));
         return;
     }
     auto& grants = m_clipboardGrants[pane];
@@ -4782,7 +4792,7 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
         return;
     }
     if (m_pendingClipboardRead) {
-        pane->sendReply(ClipboardAssembler::readStatus("EBUSY", r));
+        pane->sendReply(r.refusal("EBUSY"));
         return;
     }
     // Ask. The name, when the program gave one with a password, can be remembered.
@@ -4810,19 +4820,18 @@ QString TerminalWindow::clipboardAsker(Pane* pane, const QString& name) const
 
 void TerminalWindow::clipboardWrite(Pane* pane, const AfterglowVt::ClipboardRequest& r)
 {
-    using AfterglowVt::ClipboardAssembler;
     switch (m_settings.settings().clipboardWrite) {
     case Settings::Permission::Allow:
         writeClipboard(pane, r);
         return;
     case Settings::Permission::Deny:
-        if (!r.osc52) pane->sendReply(ClipboardAssembler::writeStatus("EPERM", r.id));
+        pane->sendReply(r.refusal("EPERM"));
         return;
     case Settings::Permission::Ask:
         break;
     }
     if (m_pendingClipboardRead) {
-        if (!r.osc52) pane->sendReply(ClipboardAssembler::writeStatus("EBUSY", r.id));
+        pane->sendReply(r.refusal("EBUSY"));
         return;
     }
     m_pendingClipboardRead = PendingClipboardRead{pane, r, true};

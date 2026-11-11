@@ -13,6 +13,7 @@ dbus-run-session, so that KWin and the tests use a private session bus.
 import argparse
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -35,6 +36,12 @@ parser.add_argument('--platform-theme', default='generic',
                     help='QT_QPA_PLATFORMTHEME of the tests (kde runs the native KDE file dialogs, gtk3 the GTK one)')
 parser.add_argument('--private-bus', action='store_true', help=argparse.SUPPRESS)
 args = parser.parse_args()
+if not re.fullmatch(r'[1-9][0-9]*x[1-9][0-9]*', args.size):
+    parser.error(f'--size takes WIDTHxHEIGHT, such as 1100x750, not {args.size}')
+if args.timeout < 1 or args.outputs < 1:
+    parser.error('--timeout and --outputs take 1 or more')
+if not os.path.isabs(os.environ.get('XDG_RUNTIME_DIR', '')):
+    sys.exit('XDG_RUNTIME_DIR is not an absolute path: KWin makes its socket there')
 
 binary = Path(args.binary).resolve()
 if not binary.exists():
@@ -89,6 +96,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
             ['kwin_wayland', '--virtual', '--socket', socket, '--width', width, '--height', height,
              '--output-count', str(args.outputs), '--no-lockscreen', '--no-global-shortcuts', '--no-kactivities'],
             env=env, stdout=log, stderr=subprocess.STDOUT)
+        tests = None
         try:
             deadline = time.monotonic() + 10
             while not (Path(env['XDG_RUNTIME_DIR']) / socket).exists():
@@ -101,14 +109,20 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
             env.update(QT_QPA_PLATFORM='wayland', WAYLAND_DISPLAY=socket, AFTERGLOW_NATIVE_ISOLATED='1')
             if args.validation:
                 env.update(AFTERGLOW_VULKAN_VALIDATION='1', QT_LOGGING_RULES='qt.vulkan=true;afterglow.gpu=true')
-            result = subprocess.run(
-                ['dbus-run-session', '--', str(binary), f'--gtest_filter={args.filter}'],
-                env=env, cwd=root, timeout=args.timeout + 10)
-            code = result.returncode
-        except subprocess.TimeoutExpired:
-            print(f'Timed out after {args.timeout} s', file=sys.stderr)
-            code = 124
+            # A group of its own: at the timeout, the test binary and its bus stop with the
+            # dbus-run-session that runs them.
+            tests = subprocess.Popen(['dbus-run-session', '--', str(binary), f'--gtest_filter={args.filter}'],
+                                     env=env, cwd=root, start_new_session=True)
+            try:
+                code = tests.wait(timeout=args.timeout + 10)
+            except subprocess.TimeoutExpired:
+                print(f'Timed out after {args.timeout} s', file=sys.stderr)
+                code = 124
         finally:
+            # At the timeout, and on SIGTERM or Ctrl-C: the group is no longer the runner's.
+            if tests is not None and tests.poll() is None:
+                os.killpg(tests.pid, signal.SIGKILL)
+                tests.wait()
             compositor.terminate()
             try:
                 compositor.wait(timeout=5)

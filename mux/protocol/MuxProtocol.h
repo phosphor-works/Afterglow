@@ -23,8 +23,9 @@ namespace AfterglowMux {
 /// Changes when a call, its arguments or its result change. Each end checks
 /// it: the client calls Fn::Version first on each connection, and the daemon
 /// refuses a newSession or an attach of another version. The codecs of the
-/// attach stream (MuxStream.h) change with it. MuxProtocolTest pins the keys of
-/// the options to this number, so that a new key changes it too.
+/// attach stream (MuxStream.h) and of the host calls on it (MuxHost.h) change
+/// with it. MuxProtocolTest pins the keys of the options to this number, so
+/// that a new key changes it too.
 inline constexpr int ProtocolVersion = 5;
 
 /// The phosphor-ipc target of the daemon's calls.
@@ -35,12 +36,21 @@ inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
 inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name}
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
-/// (protocol, name, {takeover}) -> {name, socket}: the window connects to
-/// socket, where the session's stream starts (MuxStream.h).
+/// (protocol, name, {takeover, eventQueue}) -> {name, socket}: the window
+/// connects to socket, where the session's stream starts (MuxStream.h).
 inline constexpr const char* Attach = "attach";
 /// (name) -> null: the window of the session closes, and the session keeps running.
 inline constexpr const char* Detach = "detach";
 } // namespace Fn
+
+/// The keys of the options of Fn::Attach. The daemon refuses another key.
+namespace AttachOption {
+/// A bool: another window that shows the session detaches. Without it, the
+/// call fails while one does.
+inline constexpr const char* Takeover = "takeover";
+/// Mux.eventQueue of the window, in bytes (MinEventQueue to MaxEventQueue).
+inline constexpr const char* EventQueue = "eventQueue";
+} // namespace AttachOption
 
 /// The error codes of the daemon's calls, besides those of phosphor-ipc.
 namespace Error {
@@ -87,9 +97,11 @@ inline constexpr std::int64_t MaxScrollback = 1000000;
 inline constexpr double MinContrast = 1;
 inline constexpr double MaxContrast = 21;
 inline constexpr std::int64_t MaxGraphicsQuota = std::int64_t(4096) << 20;
-/// The bounds of Mux.eventQueue, in bytes, which an attach passes.
+/// The bounds of Mux.eventQueue, in bytes, which an attach passes, and its
+/// default, which an attach without it gets.
 inline constexpr std::int64_t MinEventQueue = std::int64_t(1) << 20;
 inline constexpr std::int64_t MaxEventQueue = std::int64_t(64) << 20;
+inline constexpr std::int64_t DefaultEventQueue = std::int64_t(4) << 20;
 
 /// What runs in a new pane. The client prepares it from its configuration
 /// (the shell, shell integration, TERM and the environment of the launch).

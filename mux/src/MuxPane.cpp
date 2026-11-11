@@ -87,50 +87,124 @@ std::string MuxPane::foregroundJob(pid_t caller) const
     return m_launchedProgram;
 }
 
-void MuxPane::writeToPty(std::string_view bytes)
+void MuxPane::writeDirect(std::string_view bytes)
 {
     // A reply that the PTY's input queue refuses is lost, as in a window:
     // the program reads its input too slowly to wait for it.
     if (m_pty) (void)m_pty->write(bytes);
 }
 
-void MuxPane::setAttached(bool attached, std::size_t queueBytes)
+void MuxPane::writeToPty(std::string_view bytes)
 {
-    std::deque<std::string> left;
-    {
-        std::lock_guard lock(m_hostMutex);
-        if (m_attached == attached && m_hostLimit == queueBytes) return;
-        m_attached = attached;
-        m_hostLimit = queueBytes;
-        if (attached) return;
-        left.swap(m_hostCalls);
-        m_hostBytes = 0;
+    // A report goes through the window, which holds it behind the replies to
+    // the commands that the program wrote before the query (Pane::writeToPty).
+    // A report that does not fit is dropped, as the window drops one over its
+    // budget.
+    if (forward(Host::make(Host::Kind::Report, {}, std::string(bytes))) == Forward::NoWindow) writeDirect(bytes);
+}
+
+bool MuxPane::pushLocked(WaitingCall call)
+{
+    const bool first = m_hostCalls.empty();
+    if (call.cost == 0) call.cost = call.encoded.size() + Host::CallCost;
+    const std::size_t cost = call.cost;
+    // Counted once it waits: a push that runs out of memory counts nothing.
+    m_hostCalls.push_back(std::move(call));
+    m_hostBytes += cost;
+    return first;
+}
+
+std::string MuxPane::encodeLocked(const WaitingCall& waiting) const
+{
+    switch (waiting.kind) {
+    case Host::Kind::PointerShape:
+        return Host::encode(Host::make(Host::Kind::PointerShape, {}, m_pointerShape));
+    case Host::Kind::UserVar: {
+        const auto it = m_userVars.find(waiting.name);
+        return Host::encode(Host::make(Host::Kind::UserVar, waiting.name, it == m_userVars.end() ? std::string() : it->second));
     }
-    // The window went before it got them: a request waits for an answer,
-    // which it gets as when no window shows the pane. The rest go.
-    for (const std::string& encoded : left) {
-        const auto call = Host::decode(encoded);
-        if (!call) continue;
-        if (call->kind == Host::Kind::ClipboardRequest) clipboardWithoutWindow(call->clipboard);
-        else if (call->kind == Host::Kind::TerminalProtocol) protocolWithoutWindow(call->number, call->text);
-        else if (call->kind == Host::Kind::DesktopNotification) notificationWithoutWindow(call->notification);
+    case Host::Kind::ProtocolLost: {
+        Host::Call call = Host::make(Host::Kind::ProtocolLost, {}, {}, m_protocolLost);
+        call.value = m_protocolLostReset ? 1 : 0;
+        return Host::encode(call);
+    }
+    default:
+        return waiting.encoded;
     }
 }
 
-bool MuxPane::forward(const Host::Call& call)
+bool MuxPane::queueLocked(std::string encoded, Host::Kind kind, Fit fit, bool* wake)
 {
-    std::string encoded = Host::encode(call);
-    bool first = false;
+    if (!m_window || encoded.size() > Host::MaxCall) return false;
+    const std::size_t cost = encoded.size() + Host::CallCost;
+    if (fit == Fit::Queue && !m_hostCalls.empty() && m_hostBytes + cost > m_hostLimit) return false;
+    *wake = pushLocked(WaitingCall{kind, std::move(encoded), {}, cost});
+    return true;
+}
+
+MuxPane::Forward MuxPane::forward(const Host::Call& call, Fit fit)
+{
     {
+        // Not encoded for a pane that no window shows: a download or a
+        // clipboard write can be many megabytes.
         std::lock_guard lock(m_hostMutex);
-        if (!m_attached || encoded.size() > Host::MaxCall || m_hostBytes + encoded.size() > m_hostLimit) return false;
-        first = m_hostCalls.empty();
-        m_hostBytes += encoded.size();
-        m_hostCalls.push_back(std::move(encoded));
+        if (!m_window) return Forward::NoWindow;
+    }
+    std::string encoded = Host::encode(call);
+    bool wake = false;
+    Forward result = Forward::Queued;
+    {
+        // Decided under one lock: a window may come or go since the check.
+        std::lock_guard lock(m_hostMutex);
+        if (!m_window) result = Forward::NoWindow;
+        else if (!queueLocked(std::move(encoded), call.kind, fit, &wake)) result = Forward::NoRoom;
     }
     // The daemon sends the calls when it wakes: one wake for each batch.
-    if (first) m_wake();
-    return true;
+    if (wake) m_wake();
+    return result;
+}
+
+void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
+{
+    bool wake = false;
+    {
+        std::lock_guard lock(m_hostMutex);
+        m_hostLimit = queueBytes;
+        if (m_window == window) return;
+        // The window went before it got them. Answered under the lock, before
+        // the answers to newer calls (Pty::write calls nothing back). Each one
+        // goes once answered: a failure leaves the rest for the next try.
+        while (!m_hostCalls.empty()) {
+            const WaitingCall& waiting = m_hostCalls.front();
+            if (!waiting.encoded.empty()) answerWithoutWindow(waiting.encoded);
+            m_hostBytes -= waiting.cost;
+            m_hostCalls.pop_front();
+        }
+        m_bellWaiting = m_flashWaiting = m_pointerWaiting = false;
+        m_userVarsWaiting.clear();
+        m_commandForwarded = false;
+        m_protocolLostWaiting = false;
+        if (window) {
+            // A new window knows nothing of the pane yet: what the program set
+            // before it came.
+            if (!m_pointerShape.empty()) {
+                wake = pushLocked(WaitingCall{Host::Kind::PointerShape, {}, {}, Host::CallCost}) || wake;
+                m_pointerWaiting = true;
+            }
+            for (const auto& [name, value] : m_userVars) {
+                wake = pushLocked(WaitingCall{Host::Kind::UserVar, {}, name, Host::CallCost + name.size() + value.size()}) || wake;
+                m_userVarsWaiting.insert(name);
+            }
+            if (m_commandRunning) {
+                wake = pushLocked(WaitingCall{Host::Kind::CommandStarted, Host::encode(Host::make(Host::Kind::CommandStarted, {}, m_command)), {}, 0}) || wake;
+                m_commandForwarded = true;
+            }
+        }
+        // Last: a failure above leaves the old window, and the next pass tries
+        // again from the start.
+        m_window = window;
+    }
+    if (wake) m_wake();
 }
 
 std::vector<std::string> MuxPane::takeHostCalls(std::size_t budget)
@@ -138,11 +212,26 @@ std::vector<std::string> MuxPane::takeHostCalls(std::size_t budget)
     std::vector<std::string> calls;
     std::lock_guard lock(m_hostMutex);
     std::size_t taken = 0;
-    while (!m_hostCalls.empty() && (calls.empty() || taken + m_hostCalls.front().size() <= budget)) {
-        taken += m_hostCalls.front().size();
-        m_hostBytes -= m_hostCalls.front().size();
-        calls.push_back(std::move(m_hostCalls.front()));
+    while (!m_hostCalls.empty()) {
+        WaitingCall& front = m_hostCalls.front();
+        std::string encoded = encodeLocked(front);
+        if (!calls.empty() && taken + encoded.size() + Host::CallCost > budget) break;
+        taken += encoded.size() + Host::CallCost;
+        switch (front.kind) {
+        case Host::Kind::Bell: m_bellWaiting = false; break;
+        case Host::Kind::Flash: m_flashWaiting = false; break;
+        case Host::Kind::PointerShape: m_pointerWaiting = false; break;
+        case Host::Kind::UserVar: m_userVarsWaiting.erase(front.name); break;
+        case Host::Kind::ProtocolLost:
+            m_protocolLostWaiting = false;
+            m_protocolLost = Host::LostNothing;
+            m_protocolLostReset = false;
+            break;
+        default: break;
+        }
+        m_hostBytes -= front.cost;
         m_hostCalls.pop_front();
+        calls.push_back(std::move(encoded));
     }
     return calls;
 }
@@ -153,14 +242,55 @@ bool MuxPane::hasHostCalls() const
     return !m_hostCalls.empty();
 }
 
+
+void MuxPane::answerWithoutWindow(std::string_view encoded)
+{
+    // Only these get an answer: the others go undecoded, a clipboard write
+    // or a download of many megabytes among them.
+    if (encoded.empty()) return;
+    switch (Host::Kind(std::uint8_t(encoded.front()))) {
+    case Host::Kind::ClipboardRequest:
+    case Host::Kind::TerminalProtocol:
+    case Host::Kind::DesktopNotification:
+    case Host::Kind::Report:
+        break;
+    default:
+        return;
+    }
+    const auto call = Host::decode(encoded);
+    if (!call) return;
+    switch (call->kind) {
+    case Host::Kind::ClipboardRequest: clipboardWithoutWindow(call->clipboard); break;
+    case Host::Kind::TerminalProtocol: protocolWithoutWindow(call->number, call->text); break;
+    case Host::Kind::DesktopNotification: notificationWithoutWindow(call->notification); break;
+    case Host::Kind::Report: writeDirect(call->text); break;
+    default: break;
+    }
+}
+
 void MuxPane::bell()
 {
-    forward(Host::make(Host::Kind::Bell));
+    bool wake = false;
+    {
+        // One bell waits at a time, as a window rings one for a burst.
+        std::lock_guard lock(m_hostMutex);
+        if (!m_window || m_bellWaiting) return;
+        m_bellWaiting = true;
+        wake = pushLocked(WaitingCall{Host::Kind::Bell, Host::encode(Host::make(Host::Kind::Bell)), {}, 0});
+    }
+    if (wake) m_wake();
 }
 
 void MuxPane::flash()
 {
-    forward(Host::make(Host::Kind::Flash));
+    bool wake = false;
+    {
+        std::lock_guard lock(m_hostMutex);
+        if (!m_window || m_flashWaiting) return;
+        m_flashWaiting = true;
+        wake = pushLocked(WaitingCall{Host::Kind::Flash, Host::encode(Host::make(Host::Kind::Flash)), {}, 0});
+    }
+    if (wake) m_wake();
 }
 
 void MuxPane::notify(std::string_view title, std::string_view body)
@@ -175,22 +305,68 @@ void MuxPane::clipboardWrite(std::string_view selection, std::string_view data)
 
 void MuxPane::pointerShapeChanged(std::string_view shape)
 {
-    forward(Host::make(Host::Kind::PointerShape, {}, std::string(shape)));
+    bool wake = false;
+    {
+        // Only the newest shape matters: the one call that waits takes it.
+        std::lock_guard lock(m_hostMutex);
+        m_pointerShape = shape;
+        if (!m_window || m_pointerWaiting) return;
+        m_pointerWaiting = true;
+        wake = pushLocked(WaitingCall{Host::Kind::PointerShape, {}, {}, Host::CallCost});
+    }
+    if (wake) m_wake();
 }
 
 void MuxPane::userVarChanged(std::string_view name, std::string_view value)
 {
-    forward(Host::make(Host::Kind::UserVar, std::string(name), std::string(value)));
+    bool wake = false;
+    {
+        std::lock_guard lock(m_hostMutex);
+        const auto it = m_userVars.find(std::string(name));
+        // Shells set the same values at every prompt.
+        if (it != m_userVars.end() && it->second == value) return;
+        if (it == m_userVars.end() && m_userVars.size() >= MaxUserVars) return;
+        m_userVars[std::string(name)] = value;
+        if (!m_window || m_userVarsWaiting.contains(std::string(name))) return;
+        m_userVarsWaiting.emplace(name);
+        wake = pushLocked(WaitingCall{Host::Kind::UserVar, {}, std::string(name), Host::CallCost + name.size() + value.size()});
+    }
+    if (wake) m_wake();
 }
 
 void MuxPane::commandStarted(std::string_view command)
 {
-    forward(Host::make(Host::Kind::CommandStarted, {}, std::string(command)));
+    std::string encoded = Host::encode(Host::make(Host::Kind::CommandStarted, {}, std::string(command)));
+    bool wake = false;
+    {
+        // With the state that a new window gets, under one lock: setWindow()
+        // sends the start again.
+        std::lock_guard lock(m_hostMutex);
+        m_command = command;
+        m_commandRunning = true;
+        m_commandStart = std::chrono::steady_clock::now();
+        // A start that went before still has its end to come.
+        m_commandForwarded = queueLocked(std::move(encoded), Host::Kind::CommandStarted, Fit::Queue, &wake) || m_commandForwarded;
+    }
+    if (wake) m_wake();
 }
 
 void MuxPane::commandFinished(int exitCode)
 {
-    forward(Host::make(Host::Kind::CommandFinished, {}, {}, exitCode));
+    bool wake = false;
+    {
+        std::lock_guard lock(m_hostMutex);
+        Host::Call call = Host::make(Host::Kind::CommandFinished, {}, {}, exitCode);
+        // Measured here: the window may get the start and the end together.
+        call.value = std::uint64_t(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_commandStart).count());
+        m_commandRunning = false;
+        m_command.clear();
+        // An end alone would end a command that, for the window, never ran.
+        // The end of a start that went always goes: one for each start.
+        if (std::exchange(m_commandForwarded, false)) (void)queueLocked(Host::encode(call), Host::Kind::CommandFinished, Fit::Always, &wake);
+    }
+    if (wake) m_wake();
 }
 
 void MuxPane::downloadFile(std::string_view name, std::string_view data)
@@ -203,7 +379,7 @@ void MuxPane::desktopNotification(const AfterglowVt::NotificationRequest& reques
 {
     Host::Call call = Host::make(Host::Kind::DesktopNotification);
     call.notification = request;
-    if (!forward(call)) notificationWithoutWindow(request);
+    if (forward(call) != Forward::Queued) notificationWithoutWindow(request);
 }
 
 void MuxPane::notificationWithoutWindow(const AfterglowVt::NotificationRequest& request)
@@ -211,38 +387,64 @@ void MuxPane::notificationWithoutWindow(const AfterglowVt::NotificationRequest& 
     // No notification is on screen: a program that asks which are gets an
     // empty list, in the reply of a window. The others are dropped.
     if (request.kind != AfterglowVt::NotificationRequest::Kind::Alive) return;
-    writeToPty("\x1b]99;i=" + (request.id.empty() ? std::string("0") : request.id) + ":p=alive;\x1b\\");
+    writeDirect(request.aliveReply());
 }
 
 bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
 {
-    using AfterglowVt::ClipboardAssembler;
     // The window asks the user and answers, as for a terminal of its own.
     Host::Call call = Host::make(Host::Kind::ClipboardRequest);
     call.clipboard = request;
-    if (!forward(call)) clipboardWithoutWindow(request);
+    if (forward(call) != Forward::Queued) clipboardWithoutWindow(request);
     return true;
 }
 
 void MuxPane::clipboardWithoutWindow(const AfterglowVt::ClipboardRequest& request)
 {
-    using AfterglowVt::ClipboardAssembler;
     // No window has a clipboard to give: the request gets the answer of a
-    // denial. A write is dropped.
-    if (request.kind == AfterglowVt::ClipboardRequest::Kind::Write) {
-        writeToPty(ClipboardAssembler::writeStatus("EPERM", request.id));
-    } else if (request.osc52) {
-        writeToPty(request.osc52Reply({}));
-    } else {
-        writeToPty(ClipboardAssembler::readStatus("EPERM", request));
-    }
+    // denial.
+    if (const std::string refusal = request.refusal("EPERM"); !refusal.empty()) writeDirect(refusal);
 }
+
+namespace {
+/// What a gap holds for drag and drop after it also took a command of
+/// protocol @p code, which the program wrote after the others: the window's
+/// rule (Pane.cpp).
+int lostAfter(int lost, int code)
+{
+    return code == 72 ? Host::LostPackets : code == 0 ? Host::LostReset : lost;
+}
+} // namespace
 
 void MuxPane::terminalProtocol(int code, std::string_view payload)
 {
-    // The window runs the transfer or the drag, and answers the queries
-    // too: the program then hears of one terminal.
-    if (!forward(Host::make(Host::Kind::TerminalProtocol, {}, std::string(payload), code))) protocolWithoutWindow(code, payload);
+    // The window runs the transfer or the drag, and answers the queries too:
+    // the program then hears of one terminal. A command is small
+    // (TransferMaxCommand, DndMaxCommand).
+    std::string encoded = Host::encode(Host::make(Host::Kind::TerminalProtocol, {}, std::string(payload), code));
+    bool wake = false;
+    bool noWindow = false;
+    {
+        // Decided under one lock: a window may come or go meanwhile.
+        std::lock_guard lock(m_hostMutex);
+        if (!m_window) {
+            noWindow = true;
+        } else if (m_protocolLostWaiting || !queueLocked(std::move(encoded), Host::Kind::TerminalProtocol, Fit::Queue, &wake)) {
+            // The window drops the commands of a gap and ends what they
+            // belonged to. The gap lasts until its call goes: the commands
+            // until then go into it.
+            if (!m_protocolLostWaiting) {
+                m_protocolLost = Host::LostNothing;
+                m_protocolLostReset = false;
+                wake = pushLocked(WaitingCall{Host::Kind::ProtocolLost, {}, {}, Host::CallCost});
+                m_protocolLostWaiting = true;
+            }
+            m_protocolLost = lostAfter(m_protocolLost, code);
+            m_protocolLostReset = m_protocolLostReset || code == 0;
+        }
+    }
+    if (wake) m_wake();
+    if (noWindow) protocolWithoutWindow(code, payload);
 }
 
 void MuxPane::protocolWithoutWindow(int code, std::string_view payload)
@@ -251,7 +453,7 @@ void MuxPane::protocolWithoutWindow(int code, std::string_view payload)
         // A program asks which drag and drop types the terminal supports. It
         // gets the answer of a window: a client may attach before a drag.
         if (const std::string reply = AfterglowProto::dndQueryReply(payload); !reply.empty()) {
-            writeToPty(reply);
+            writeDirect(reply);
             return;
         }
         // A drag starts from an offer (t=o without x=1 or x=2) while the
@@ -267,14 +469,16 @@ void MuxPane::protocolWithoutWindow(int code, std::string_view payload)
         if (type == meta->end() || type->second != "o" || (x != meta->end() && (x->second == "1" || x->second == "2"))) return;
         AfterglowProto::DndMeta error{{"t", "E"}};
         if (const auto id = meta->find("i"); id != meta->end()) error.emplace("i", id->second);
-        for (const std::string& packet : AfterglowProto::writeDnd(std::move(error), "EPERM")) writeToPty(packet);
+        for (const std::string& packet : AfterglowProto::writeDnd(std::move(error), "EPERM")) writeDirect(packet);
         return;
     }
     if (code != 5113 || payload.size() > AfterglowProto::TransferMaxCommand) return;
     // A transfer starts with ac=send or ac=receive and waits for the user's
     // answer. Without a window no user answers: it is the answer of a
-    // denial. A session with
-    // q=2 asked for no status, errors included.
+    // denial. A session with q=2 asked for no status, errors included. The
+    // commands of a transfer that a window ran, which went, get none: the
+    // program learns of the end when its terminal answers it no more, as for
+    // a window that closed.
     const auto fields = AfterglowProto::decodeTransfer(payload);
     if (!fields) return;
     const auto action = fields->find("ac");
@@ -286,7 +490,7 @@ void MuxPane::protocolWithoutWindow(int code, std::string_view payload)
         {"id", id->second},
         {"st", "EPERM"},
     }};
-    writeToPty(AfterglowProto::encodeTransfer(status));
+    writeDirect(AfterglowProto::encodeTransfer(status));
 }
 
 void MuxPane::ptyData(std::string_view bytes)
@@ -333,7 +537,7 @@ void MuxPane::clear()
         atPrompt = m_terminal.atShellPrompt() && !m_terminal.modes().altScreen;
     }
     // At a prompt the shell redraws it on the cleared screen, as in a window.
-    if (atPrompt) writeToPty("\x0c");
+    if (atPrompt) writeDirect("\x0c");
     if (!m_changed.exchange(true)) m_wake();
 }
 

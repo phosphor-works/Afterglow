@@ -44,6 +44,10 @@ struct ClipboardRequest
 
     /// The OSC 52 answer: @p text (raw bytes) for the selection asked about.
     std::string osc52Reply(std::string_view text) const;
+    /// The answer that refuses the request with @p status (EPERM, ENOSYS).
+    /// An OSC 52 read gets an empty answer: its protocol has no status. An
+    /// OSC 52 write gets none: empty.
+    std::string refusal(std::string_view status) const;
 
     bool operator==(const ClipboardRequest&) const = default;
 };

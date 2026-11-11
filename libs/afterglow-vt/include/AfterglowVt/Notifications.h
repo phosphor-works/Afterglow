@@ -5,6 +5,7 @@
 
 #include <AfterglowVt/afterglowvt_export.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -23,6 +24,10 @@ struct NotificationRequest
         Alive, ///< report which ids are still open
     };
     enum class Occasion : std::uint8_t { Always, Unfocused, Invisible };
+    /// The most icon names, and the most types, that a request keeps.
+    static constexpr std::size_t MaxNames = 16;
+    /// The most bytes of title, body and buttons together.
+    static constexpr std::size_t MaxText = 64 * 1024;
 
     Kind kind = Kind::Show;
     std::string id; ///< [A-Za-z0-9_+.-] only; empty when the program gave none
@@ -41,6 +46,13 @@ struct NotificationRequest
     Occasion occasion = Occasion::Always;
     int urgency = 1; ///< 0 low, 1 normal, 2 critical
     int expireMs = -1; ///< -1 system default, 0 never, otherwise milliseconds
+
+    /// The answer to an Alive query: @p open lists the ids that are still
+    /// open, joined by commas.
+    std::string aliveReply(std::string_view open = {}) const
+    {
+        return "\x1b]99;i=" + (id.empty() ? std::string("0") : id) + ":p=alive;" + std::string(open) + "\x1b\\";
+    }
 };
 
 /// Assembles OSC 99 sequences into notification requests.

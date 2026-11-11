@@ -113,6 +113,9 @@ Daemon::~Daemon()
     // locks keep a second daemon from starting next to programs that did
     // not get their hangup yet.
     m_sessions.clear();
+    // Their closed panes too, whose reader threads may still wake the daemon:
+    // before the wake descriptor closes.
+    m_attachments.clear();
     m_connections.clear();
     m_listeners.clear();
     if (m_wakeFd >= 0) ::close(m_wakeFd);
@@ -251,6 +254,15 @@ Daemon::Exit Daemon::run()
             // sends it, so a window that another took the session from
             // cannot end it.
             if (attachment->takeKill() && shown) endSession(session);
+        }
+        for (Attachment* attachment : over) {
+            // The calls that the window did not get get the answers of a
+            // session that no window shows.
+            const auto session = find(attachment->session());
+            guarded(*attachment, [&] {
+                attachment->returnHostCalls(session == m_sessions.end() ? nullptr : session->get(), true);
+                return true;
+            });
         }
         std::erase_if(m_attachments, [&over](const auto& a) { return std::find(over.begin(), over.end(), a.get()) != over.end(); });
         pumpAttachments();
@@ -410,14 +422,22 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     // Only the process that calls may connect to the socket: a caller that
     // the kernel did not name could be anyone of the user.
     if (caller <= 0) return ipcError(request.id, IpcErrorCode::CallFailed, "the daemon cannot tell which process called");
-    const Json::Value* takeover = request.args[2].find("takeover");
+    // A key that this daemon does not know is one that the window counts on.
+    for (const auto& [key, value] : request.args[2].toObject()) {
+        if (key != AttachOption::Takeover && key != AttachOption::EventQueue) {
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "the attach option '" + key + "' is unknown");
+        }
+    }
+    const Json::Value* takeover = request.args[2].find(AttachOption::Takeover);
     if (takeover && !takeover->isBool()) return ipcError(request.id, IpcErrorCode::InvalidArg, "'takeover' is not a boolean");
     // Mux.eventQueue of the window, in bytes.
-    std::size_t eventQueue = Attachment::DefaultEventQueue;
-    if (const Json::Value* queue = request.args[2].find("eventQueue")) {
+    std::size_t eventQueue = std::size_t(DefaultEventQueue);
+    if (const Json::Value* queue = request.args[2].find(AttachOption::EventQueue)) {
         const auto bytes = queue->toInteger();
         if (!bytes || *bytes < MinEventQueue || *bytes > MaxEventQueue) {
-            return ipcError(request.id, IpcErrorCode::InvalidArg, "'eventQueue' is not 1 to 64 MiB in bytes");
+            return ipcError(request.id, IpcErrorCode::InvalidArg,
+                            "'eventQueue' is not " + std::to_string(MinEventQueue >> 20) + " to " + std::to_string(MaxEventQueue >> 20)
+                                + " MiB in bytes");
         }
         eventQueue = std::size_t(*bytes);
     }
@@ -435,7 +455,7 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     if (previous) {
         guarded(*previous, [&] {
             previous->pump(session->get());
-            previous->finish(Attach::EventType::TakenOver);
+            previous->finish(Attach::EventType::TakenOver, session->get());
             return true;
         });
     }
@@ -458,7 +478,7 @@ std::string Daemon::detach(const IpcRequest& request)
     // A window that did not connect yet hears it when it does.
     guarded(*attachment, [&] {
         attachment->pump(session->get());
-        attachment->finish(Attach::EventType::Detached);
+        attachment->finish(Attach::EventType::Detached, session->get());
         return true;
     });
     return ipcReply(request.id.value_or(0), nullptr);
@@ -469,7 +489,16 @@ void Daemon::syncAttached()
     for (const auto& session : m_sessions) {
         const Attachment* attachment = shown(session->name());
         const bool showing = attachment && attachment->showing();
-        for (const auto& pane : session->panes()) pane->setAttached(showing, showing ? attachment->eventQueue() : 0);
+        for (const auto& pane : session->panes()) {
+            try {
+                pane->setWindow(showing ? attachment->serial() : 0, showing ? attachment->eventQueue() : 0);
+            } catch (const std::exception& e) {
+                // As for a window (guarded): the answers to the calls of a
+                // window that went, out of memory, must not end the sessions
+                // of all the others. The next pass tries again.
+                std::fprintf(stderr, "afterglow-mux: a pane of session %s failed: %s\n", session->name().c_str(), e.what());
+            }
+        }
     }
 }
 
@@ -501,7 +530,13 @@ bool Daemon::guarded(Attachment& attachment, const std::function<bool()>& work)
         // must not end the sessions of all the others. That window loses
         // its session, which keeps running.
         std::fprintf(stderr, "afterglow-mux: the window of session %s failed: %s\n", attachment.session().c_str(), e.what());
-        attachment.finish(Attach::EventType::Detached);
+        // The calls that waited for it get the answers of a session that no
+        // window shows. Out of memory again, they get none.
+        const auto session = find(attachment.session());
+        try {
+            attachment.finish(Attach::EventType::Detached, session == m_sessions.end() ? nullptr : session->get());
+        } catch (const std::exception&) {
+        }
         return false;
     }
 }

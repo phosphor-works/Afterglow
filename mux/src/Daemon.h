@@ -21,8 +21,9 @@ namespace AfterglowMux {
 /// The headless process that owns the sessions. One thread runs the sockets
 /// of the daemon, the windows that show sessions and the lifetimes of
 /// sessions and panes. Each pane's PTY has its reader thread, which wakes
-/// this one through an eventfd after output, when the PTY's input queue has
-/// room again, and when its program exits (MuxPane).
+/// this one through an eventfd after output, when a call of its terminal
+/// waits for the window, when the PTY's input queue has room again, and when
+/// its program exits (MuxPane).
 class Daemon
 {
 public:
@@ -80,14 +81,15 @@ private:
     void endSession(std::vector<std::unique_ptr<Session>>::iterator session);
     /// Sends what changed in each attached session.
     void pumpAttachments();
-    /// Tells each pane whether a window shows it, for its host calls.
+    /// Tells each pane which window shows it, for its host calls.
     void syncAttached();
     /// The attachment that shows the session @p name, connected or not;
     /// not one that finishes.
     Attachment* shown(const std::string& name) const;
-    /// Runs @p work for @p attachment. An exception finishes the attachment
-    /// and returns false.
-    static bool guarded(Attachment& attachment, const std::function<bool()>& work);
+    /// Runs @p work for @p attachment. An exception finishes the attachment,
+    /// whose host calls go back to the panes of its session, and returns
+    /// false.
+    bool guarded(Attachment& attachment, const std::function<bool()>& work);
     std::string listSessions(const AfterglowProto::IpcRequest& request, pid_t caller);
     /// The socket that session panes name in AFTERGLOW_SOCKET.
     const std::string& paneSocket() const;

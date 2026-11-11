@@ -3,9 +3,10 @@
 
 #include "Settings.h"
 
-#include "MuxProtocol.h"
 #include "Theme.h"
 #include "animation/MomentumScroll.h"
+
+#include "MuxProtocol.h"
 
 #include <AfterglowRender/Snapshot.h>
 #include <AfterglowVt/TextSearch.h>
@@ -411,9 +412,9 @@ PhosphorConfig::Schema buildSchema()
                                  "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
                                  "after the brightness of the color scheme. A mux session runs without the desktop. It takes the "
                                  "dark NAME, and plasma takes only the colors that the color scheme file sets. A theme "
-                                 "replaces each color that it sets, the divider and popup "
-                                 "border colors and the visual bell intensity. Afterglow "
-                                 "reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with "
+                                 "replaces each color and the visual bell intensity that it sets. It also replaces the "
+                                 "divider and popup border colors. Afterglow reads its own JSON themes, Ghostty themes, "
+                                 "Kitty themes and Konsole color schemes. A value with "
                                  "a slash is a file path. A path can start with ~/ for the home directory. A relative path starts "
                                  "at the directory of the config file.")),
         colorKey(QStringLiteral("foreground"), hex(term.defaultForeground),
@@ -499,8 +500,9 @@ PhosphorConfig::Schema buildSchema()
                 QStringLiteral("Where Afterglow copies a new selection. The primary value copies it to the primary selection. "
                                "The clipboard value copies it to the clipboard too. The off value does not copy it.")),
         enumKey(QStringLiteral("bell"), BellChoices, d.bell,
-                QStringLiteral("Response to the bell. The none value does nothing. The attention value marks the window urgent. "
-                               "The visual value flashes the pane. The both value does both.")),
+                QStringLiteral("Response to the bell. The none value does nothing. The attention value marks the window urgent "
+                               "while it is not active. The visual value flashes the pane. The both value does both. Each "
+                               "value but none also plays Terminal.bellSound.")),
         {QStringLiteral("confirmClose"), d.confirmClose, QMetaType::Bool,
          QStringLiteral("Ask before closing a pane, tab or window where a program is running. The command afterglow mux "
                         "kill asks too, before it ends a session where a program is running.")},
@@ -517,9 +519,10 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("ambiguousWide"), term.ambiguousWide, QMetaType::Bool,
          QStringLiteral("Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols.")},
         stringKey(QStringLiteral("bellSound"), {},
-                  QStringLiteral("Bell sound. An empty value turns the bell sound off. The value \"default\" plays the bell of "
-                                 "the desktop sound theme with canberra-gtk-play. Any other value is a sound file that pw-play plays, "
-                                 "or paplay when pw-play is missing. Give an absolute path or a path that starts with ~/.")),
+                  QStringLiteral("Bell sound. An empty value turns the bell sound off, and so does Terminal.bell none. "
+                                 "The value \"default\" plays the bell of the desktop sound theme with canberra-gtk-play. "
+                                 "Any other value is a sound file that pw-play plays, or paplay when pw-play is missing. "
+                                 "Give an absolute path or a path that starts with ~/.")),
         intKey(QStringLiteral("bellSoundInterval"), d.bellSoundInterval, 0, 10000,
                QStringLiteral("Shortest time in milliseconds between two bell sounds. Bells in between make no sound. A value of 0 "
                               "plays every bell.")),
@@ -617,9 +620,9 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("Milliseconds between the rows that a selection scrolls while you extend it past the top or "
                               "bottom of a pane.")),
         doubleKey(QStringLiteral("momentumScroll"), d.mouse.momentumScroll, 0.0, 1.0,
-                  QStringLiteral("Part of the speed of a finger scroll on a touchpad or a touchscreen that the scroll keeps "
-                                 "every %1 milliseconds after the last finger lifts. A higher value scrolls further. A value "
-                                 "of 0 stops the scroll when the finger lifts. A value of 1 does not slow the scroll, which "
+                  QStringLiteral("Part of the speed of a finger scroll that the scroll keeps every %1 milliseconds after the "
+                                 "last finger lifts. It applies to touchpads and touchscreens. A higher value scrolls "
+                                 "further. A value of 0 stops the scroll when the finger lifts. A value of 1 does not slow the scroll, which "
                                  "goes on until a click, a key or a touch stops it.")
                       .arg(MomentumScroll::StepMs)),
         doubleKey(QStringLiteral("touchScrollMultiplier"), d.mouse.touchScrollMultiplier, -10.0, 10.0,
@@ -669,12 +672,13 @@ PhosphorConfig::Schema buildSchema()
                                "running, and afterglow mux attach shows it again. The session also keeps running after "
                                "afterglow mux detach, a takeover by another window, a quit of Afterglow, a crash and a lost "
                                "connection.")),
-        intKey(QStringLiteral("eventQueue"), d.mux.eventQueue, int(AfterglowMux::MinEventQueue >> 20),
+        intKey(QStringLiteral("eventQueue"), int(d.mux.eventQueue >> 20), int(AfterglowMux::MinEventQueue >> 20),
                int(AfterglowMux::MaxEventQueue >> 20),
-               QStringLiteral("Most data in MiB that a session holds for its window while the window is slow, for bells, "
-                              "notifications, clipboard requests, file transfers and drag and drop. A request that does not "
-                              "fit gets the answer of a session that no window shows. Afterglow passes the value when it "
-                              "attaches to a session.")),
+               QStringLiteral("Most mebibytes of requests, such as bells, notifications and clipboard requests, that "
+                              "wait while the window of a session is slow. The session keeps one queue of this size, and each "
+                              "pane keeps another. A request that does not fit gets the answer of a session that no window "
+                              "shows. A request that finds the queue of its pane empty always fits. A change applies when "
+                              "Afterglow next attaches to a session.")),
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
@@ -1859,7 +1863,7 @@ Settings SettingsStore::read()
 
     // Mux
     s.mux.onClose = readEnum(st, MuxGroup, QStringLiteral("onClose"), MuxCloseChoices, s.mux.onClose);
-    s.mux.eventQueue = st.read<int>(MuxGroup, QStringLiteral("eventQueue"));
+    s.mux.eventQueue = std::size_t(st.read<int>(MuxGroup, QStringLiteral("eventQueue"))) << 20;
 
     // Control
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));

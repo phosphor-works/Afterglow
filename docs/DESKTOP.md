@@ -175,6 +175,8 @@ python3 data/examples/compatibility/download.py /path/to/report.txt
 | Decoded data of one download | 8 MiB | Afterglow ignores the request. |
 | Pending requests in the application | 1 | Afterglow ignores other requests while the dialog is open. |
 
+In a mux session, a download goes to the window that shows the session, with the other requests of the session. Without a window, the session drops it (see [requests that wait](MUX.md#requests-that-wait)).
+
 Invalid base64 and declared size mismatches reject the request.
 The suggested name uses only the basename, without control or format characters.
 Writes use `QSaveFile`. The native dialog controls overwrite confirmation.

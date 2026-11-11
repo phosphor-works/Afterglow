@@ -39,6 +39,10 @@
 class QDialog;
 class QWindow;
 
+namespace AfterglowMux::Host {
+struct Call;
+}
+
 namespace Afterglow {
 
 class MuxClient;
@@ -91,6 +95,8 @@ public:
     /// daemon. With @p killOnClose, closing the pane ends the session.
     void showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, bool killOnClose);
     bool isSessionPane() const { return m_session != nullptr; }
+    /// The link to the session of a session pane, else null.
+    const MuxClient* session() const { return m_session.get(); }
     /// The pane shows mux session @p name, and has not lost it.
     bool showsSession(const QString& name) const;
     void setKillSessionOnClose(bool kill) { m_killSessionOnClose = kill; }
@@ -106,10 +112,9 @@ public:
     /// A state frame of the session (MuxClient, GUI thread). False when it
     /// does not apply: the replica no longer matches the daemon's terminal.
     bool applySessionFrame(std::string_view frame);
-    /// A call of the session's terminal to its host (MuxHost.h): the pane
-    /// answers it as it answers its own terminal. False for a call that does
-    /// not decode.
-    bool applySessionHostCall(std::string_view call);
+    /// A call of the session's terminal to its host (MuxHost.h, MuxClient,
+    /// GUI thread): the pane answers it as it answers its own terminal.
+    void applySessionHostCall(const AfterglowMux::Host::Call& call);
     /// The program of the session pane exited, with @p status as waitpid gives it.
     void sessionPaneExited(int status);
     /// The window no longer shows the session (@p loss says why): the pane
@@ -135,7 +140,9 @@ public:
     void setDragAnswerWait(int ms);
     /// GUI thread: delivers the program's protocol commands that wait for the
     /// GUI thread, and no other events. With @p waitMs above 0 and nothing to
-    /// deliver, first waits up to that long for the next one. Runs no event loop.
+    /// deliver, first waits up to that long for the next one. Runs no event
+    /// loop. A session pane's commands come on the session's stream, which
+    /// the wait reads (MuxClient::waitForHostCalls).
     void deliverProtocolCommands(int waitMs = 0);
     /// The program that runs over this pane (an overlay), or null. It
     /// takes the pane's place on screen and its input while it runs. The
@@ -352,13 +359,14 @@ Q_SIGNALS:
     void closed();
 
 private:
-    // ITerminalHost (pty thread, m_mutex held)
+    // ITerminalHost: m_mutex held, on the pty thread, or for a session pane
+    // on the GUI thread (applySessionHostCall).
     void writeToPty(std::string_view bytes) override;
     void reportInputFailure();
     /// An inputRejected is queued or was emitted, and no input got through since.
     std::atomic_bool m_inputFailureReported{false};
     /// m_mutex held, on the pty thread or on the GUI thread (a reset through
-    /// withTerminal): queues @p deliver for the GUI thread unless one of its
+    /// withTerminal, a session pane's host call): queues @p deliver for the GUI thread unless one of its
     /// kind (@p queued) waits already. It waits in the queue of queueEvent,
     /// behind the events queued before it. A delivery that waits already
     /// keeps its place: what it delivers then is the latest state, which
@@ -374,7 +382,7 @@ private:
         std::size_t bytes = 0;
         std::size_t dropped = 0;
     };
-    /// pty thread, m_mutex held: queues @p event, which emits one signal, for
+    /// m_mutex held: queues @p event, which emits one signal, for
     /// the GUI thread, where the pane emits it to the receivers it has then
     /// (a moved pane's new window). @p bytes is about what the event holds:
     /// the memory of its fields that a program sizes (text, data), not of
@@ -437,6 +445,11 @@ private:
     /// Posts @p command to m_protocolCommands and wakes deliverProtocolCommands.
     /// The caller holds m_mutex.
     void postProtocolCommand(std::function<void()> command);
+    /// m_mutex held: protocol commands that the pane could not hold (or, for
+    /// a session pane, the daemon) are gone. @p lost is what they held for
+    /// drag and drop, @p reset whether one was a terminal reset. The commands
+    /// that come until the GUI thread hears of the gap join it.
+    void loseProtocolCommands(DragDrop::Lost lost, bool reset);
     /// GUI thread: writes reports that waited, and frees their budget.
     void writeReports(const std::string& reports);
     /// GUI thread: the file transfer worker wrote the replies of one command.
@@ -470,6 +483,8 @@ private:
     void flash() override;
     void commandStarted(std::string_view command) override;
     void commandFinished(int exitCode) override;
+    /// The end of the running command, which ran @p ms milliseconds.
+    void finishCommand(int exitCode, qint64 ms);
     void contextChanged() override;
     void regionScrolled(const AfterglowVt::RegionScroll& scroll) override;
     void userVarChanged(std::string_view name, std::string_view value) override;
@@ -517,8 +532,7 @@ private:
     QString m_contextKind;
     QString m_reportedDirectory; ///< local, absolute; guarded by m_mutex
     QHash<QString, QString> m_userVars;
-    static constexpr qsizetype MaxUserVars = 256;
-    bool m_userVarsFull = false; ///< the warning about MaxUserVars was given; pty thread
+    bool m_userVarsFull = false; ///< the warning about MaxUserVars was given; guarded by m_mutex
     /// Changed user variables that wait for the GUI thread, guarded by m_mutex.
     std::vector<std::pair<QString, QString>> m_pendingUserVars;
     Signals m_signals{};

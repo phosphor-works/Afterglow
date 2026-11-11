@@ -822,7 +822,7 @@ QString Pane::runningCommand() const
 
 void Pane::commandStarted(std::string_view command)
 {
-    // pty thread, terminal locked
+    // m_mutex held
     m_command = QString::fromUtf8(command.data(), qsizetype(command.size()));
     m_commandStart = std::chrono::steady_clock::now();
     const bool queued = queueEvent([this, command = m_command] { Q_EMIT commandBegan(command); },
@@ -833,10 +833,16 @@ void Pane::commandStarted(std::string_view command)
 void Pane::commandFinished(int exitCode)
 {
     const auto elapsed = std::chrono::steady_clock::now() - m_commandStart;
-    const qint64 ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    finishCommand(exitCode, std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+}
+
+void Pane::finishCommand(int exitCode, qint64 ms)
+{
     const QString command = std::exchange(m_command, QString());
-    // An end alone would end a command that, for the receivers, never ran.
+    // An end alone would end a command that, for the receivers, never ran:
+    // its start was dropped, or a session pane's window never got it.
     const CommandStart start = std::exchange(m_commandStartEvent, CommandStart::None);
+    if (start == CommandStart::None) return;
     if (start == CommandStart::Dropped) {
         ++m_commandBudget.dropped;
         return;
@@ -887,9 +893,10 @@ constexpr qsizetype ProtocolBudget = 16 * 1024 * 1024;
 
 void Pane::writeToPty(std::string_view bytes)
 {
-    // m_mutex held, on the pty thread or the GUI thread (a resize). The
-    // replies to protocol commands are written on the GUI thread when the
-    // commands run, and for file transfer when the worker has handled them.
+    // m_mutex held, on the pty thread or the GUI thread (a resize, a session
+    // pane's host call). The replies to protocol commands are written on the
+    // GUI thread when the commands run, and for file transfer when the worker
+    // has handled them.
     // A report that the terminal answers at once must not pass the replies to
     // commands that the program wrote before it. What a command sends later
     // is not ordered: file data, an answer after a permission dialog, the
@@ -995,38 +1002,38 @@ bool Pane::applySessionFrame(std::string_view frame)
     return true;
 }
 
-bool Pane::applySessionHostCall(std::string_view encoded)
+void Pane::applySessionHostCall(const AfterglowMux::Host::Call& call)
 {
-    const auto call = AfterglowMux::Host::decode(encoded);
-    if (!call) return false;
     using AfterglowMux::Host::Kind;
     // As the terminal makes them: with the lock held, on the thread that
     // holds it, here the GUI thread.
     std::lock_guard lock(m_mutex);
-    switch (call->kind) {
+    switch (call.kind) {
     case Kind::Bell: bell(); break;
     case Kind::Flash: flash(); break;
-    case Kind::Notify: notify(call->title, call->text); break;
-    case Kind::DesktopNotification: desktopNotification(call->notification); break;
-    case Kind::ClipboardWrite: clipboardWrite(call->title, call->text); break;
+    case Kind::Notify: notify(call.title, call.text); break;
+    case Kind::DesktopNotification: desktopNotification(call.notification); break;
+    case Kind::ClipboardWrite: clipboardWrite(call.title, call.text); break;
     case Kind::ClipboardRequest:
         // The terminal answers a request that its host does not take.
-        if (!clipboardRequest(call->clipboard)) {
-            const AfterglowVt::ClipboardRequest& r = call->clipboard;
-            using AfterglowVt::ClipboardAssembler;
-            writeToPty(r.osc52 ? r.osc52Reply({})
-                               : r.kind == AfterglowVt::ClipboardRequest::Kind::Read ? ClipboardAssembler::readStatus("ENOSYS", r)
-                                                                                     : ClipboardAssembler::writeStatus("ENOSYS", r.id));
-        }
+        if (!clipboardRequest(call.clipboard)) writeToPty(call.clipboard.refusal("ENOSYS"));
         break;
-    case Kind::TerminalProtocol: terminalProtocol(call->number, call->text); break;
-    case Kind::PointerShape: pointerShapeChanged(call->text); break;
-    case Kind::UserVar: userVarChanged(call->title, call->text); break;
-    case Kind::CommandStarted: commandStarted(call->text); break;
-    case Kind::CommandFinished: commandFinished(call->number); break;
-    case Kind::Download: downloadFile(call->title, call->text); break;
+    case Kind::TerminalProtocol: terminalProtocol(call.number, call.text); break;
+    case Kind::PointerShape: pointerShapeChanged(call.text); break;
+    case Kind::UserVar: userVarChanged(call.title, call.text); break;
+    case Kind::CommandStarted: commandStarted(call.text); break;
+    // The daemon measured the command: the start and the end can come here
+    // together.
+    case Kind::CommandFinished: finishCommand(call.number, qint64(std::min<std::uint64_t>(call.value, std::numeric_limits<qint64>::max()))); break;
+    case Kind::Download: downloadFile(call.title, call.text); break;
+    case Kind::Report: writeToPty(call.text); break;
+    case Kind::ProtocolLost:
+        loseProtocolCommands(call.number == AfterglowMux::Host::LostPackets ? DragDrop::Lost::Packets
+                                 : call.number == AfterglowMux::Host::LostReset ? DragDrop::Lost::Reset
+                                                                                : DragDrop::Lost::Nothing,
+                             call.value != 0);
+        break;
     }
-    return true;
 }
 
 void Pane::sessionPaneExited(int status)
@@ -1078,9 +1085,9 @@ void Pane::resetTerminal()
 
 void Pane::titleChanged(std::string_view title)
 {
-    // pty thread, terminal locked. Programs set the same title at every
-    // prompt, and a loop can set thousands in a second: the GUI thread gets
-    // the newest one.
+    // m_mutex held: on the pty thread, or for a session pane on the GUI thread
+    // (applySessionFrame). Programs set the same title at every prompt, and a
+    // loop can set thousands in a second: the GUI thread gets the newest one.
     m_title = QString::fromUtf8(title.data(), qsizetype(title.size()));
     const QString shown = m_userTitle.isEmpty() ? m_title : m_userTitle;
     if (shown == m_shownTitle) return;
@@ -1090,9 +1097,10 @@ void Pane::titleChanged(std::string_view title)
 
 void Pane::workingDirectoryChanged(std::string_view directory)
 {
-    // pty thread, terminal locked. OSC 7 sends file://host/path, percent
-    // encoded; the others send a plain path. A directory on another host
-    // leaves /proc to answer, which knows the local end of the session.
+    // m_mutex held: on the pty thread, or for a session pane on the GUI thread
+    // (applySessionFrame). OSC 7 sends file://host/path, percent encoded; the
+    // others send a plain path. A directory on another host leaves /proc to
+    // answer, which knows the local end of the session.
     QByteArray path;
     if (directory.starts_with("file://")) {
         const std::string_view rest = directory.substr(7);
@@ -1194,7 +1202,7 @@ void Pane::bell()
 
 void Pane::clipboardWrite(std::string_view selection, std::string_view data)
 {
-    // pty thread, terminal locked. A burst of writes sets the clipboard once,
+    // m_mutex held. A burst of writes sets the clipboard once,
     // to the last text, instead of once for each sequence.
     const QByteArray decoded = QByteArray::fromBase64(QByteArray(data.data(), qsizetype(data.size())));
     const QString text = QString::fromUtf8(decoded);
@@ -1367,7 +1375,7 @@ void Pane::userVarChanged(std::string_view name, std::string_view value)
     if (const auto it = m_userVars.constFind(n); it != m_userVars.constEnd() && *it == v) {
         return; // shells set the same values at every prompt
     }
-    if (m_userVars.size() >= MaxUserVars && !m_userVars.contains(n)) {
+    if (std::size_t(m_userVars.size()) >= MaxUserVars && !m_userVars.contains(n)) {
         // Enough: the pane keeps its variables for its whole life. Said once,
         // so a program that wonders where its variable went can find out.
         if (!std::exchange(m_userVarsFull, true))
@@ -1439,7 +1447,7 @@ void Pane::notify(std::string_view title, std::string_view body)
 
 void Pane::pointerShapeChanged(std::string_view shape)
 {
-    // pty thread, terminal locked: only the last shape of a burst matters.
+    // m_mutex held: only the last shape of a burst matters.
     m_pendingPointerShape = QString::fromUtf8(shape.data(), qsizetype(shape.size()));
     queueOnce(m_pointerShapeQueued, [this] {
         QString shape;
@@ -1454,8 +1462,11 @@ void Pane::pointerShapeChanged(std::string_view shape)
 void Pane::desktopNotification(const AfterglowVt::NotificationRequest& request)
 {
     // The icon data is what can be large.
-    queueEvent([this, request] { Q_EMIT desktopNotificationRequested(request); },
-               request.title.size() + request.body.size() + request.iconData.size(), m_requestBudget);
+    const bool queued = queueEvent([this, request] { Q_EMIT desktopNotificationRequested(request); },
+                                   request.title.size() + request.body.size() + request.iconData.size(), m_requestBudget);
+    // A query that finds the queue full still gets an answer, as a program
+    // waits for it: none that the window did not show.
+    if (!queued && request.kind == AfterglowVt::NotificationRequest::Kind::Alive) writeToPty(request.aliveReply());
 }
 
 bool Pane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
@@ -1693,8 +1704,9 @@ FileTransfer* Pane::fileTransfers()
         connect(m_fileTransfers.get(), &FileTransfer::answered, this, &Pane::endAnswerHold);
         connect(m_fileTransfers.get(), &FileTransfer::reply, this, [this](const QByteArray& bytes) {
             if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
-            // A held pane's program has exited: no input failed, nothing reads it.
-            if (!isHeld()) reportInputFailure();
+            // A held pane's program has exited, and a session pane's window
+            // no longer shows it: no input failed, nothing reads it.
+            if (hasProgram() && !isHeld()) reportInputFailure();
             m_fileTransfers->reset();
         });
     }
@@ -1718,8 +1730,9 @@ DragDrop* Pane::dragDrop()
         connect(m_dragDrop.get(), &DragDrop::dragStarting, this, &Pane::programDragStarting);
         connect(m_dragDrop.get(), &DragDrop::reply, this, [this](const QByteArray& bytes) {
             if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
-            // A held pane's program has exited: no input failed, nothing reads it.
-            if (!isHeld()) reportInputFailure();
+            // A held pane's program has exited, and a session pane's window
+            // no longer shows it: no input failed, nothing reads it.
+            if (hasProgram() && !isHeld()) reportInputFailure();
             // Not a terminal reset: the chunks that the program still sends are dropped.
             m_dragDrop->end();
         });
@@ -1749,34 +1762,13 @@ void Pane::terminalProtocol(int code, std::string_view payload)
         if (!response.isEmpty()) { writeToPty(std::string_view(response.constData(), std::size_t(response.size()))); return; }
     }
     if (m_protocolBlocked) {
-        m_protocolLost = lostAfter(m_protocolLost, code);
-        m_protocolLostReset = m_protocolLostReset || code == 0;
+        loseProtocolCommands(lostAfter(DragDrop::Lost::Nothing, code), code == 0);
         return;
     }
     const auto charge = bytes.size() + 128;
     if (m_protocolBytes.fetch_add(charge) + charge > ProtocolBudget) {
         m_protocolBytes.fetch_sub(charge);
-        m_protocolBlocked = true;
-        m_protocolLost = lostAfter(DragDrop::Lost::Nothing, code);
-        m_protocolLostReset = code == 0;
-        m_protocolGeneration.fetch_add(1);
-        // Queued after every stale command, so it reads the whole gap. The
-        // lock keeps a command from being dropped after the gap was read.
-        postProtocolCommand([this] {
-            DragDrop::Lost lost;
-            bool reset;
-            {
-                std::lock_guard lock(m_mutex);
-                lost = m_protocolLost == DragDrop::Lost::Nothing ? m_protocolStale : m_protocolLost;
-                reset = m_protocolLostReset || m_protocolStaleReset;
-                m_protocolLost = DragDrop::Lost::Nothing;
-                m_protocolLostReset = false;
-                m_protocolBlocked = false;
-            }
-            m_protocolStale = DragDrop::Lost::Nothing;
-            m_protocolStaleReset = false;
-            Q_EMIT terminalProtocolLost(lost, reset);
-        });
+        loseProtocolCommands(lostAfter(DragDrop::Lost::Nothing, code), code == 0);
         return;
     }
     const auto generation = m_protocolGeneration.load();
@@ -1789,6 +1781,38 @@ void Pane::terminalProtocol(int code, std::string_view payload)
         }
     });
 }
+void Pane::loseProtocolCommands(DragDrop::Lost lost, bool reset)
+{
+    if (m_protocolBlocked) {
+        // Later commands of the same gap: the last that holds something for
+        // drag and drop says what.
+        if (lost != DragDrop::Lost::Nothing) m_protocolLost = lost;
+        m_protocolLostReset = m_protocolLostReset || reset;
+        return;
+    }
+    m_protocolBlocked = true;
+    m_protocolLost = lost;
+    m_protocolLostReset = reset;
+    m_protocolGeneration.fetch_add(1);
+    // Queued after every stale command, so it reads the whole gap. The
+    // lock keeps a command from being dropped after the gap was read.
+    postProtocolCommand([this] {
+        DragDrop::Lost lost;
+        bool reset;
+        {
+            std::lock_guard lock(m_mutex);
+            lost = m_protocolLost == DragDrop::Lost::Nothing ? m_protocolStale : m_protocolLost;
+            reset = m_protocolLostReset || m_protocolStaleReset;
+            m_protocolLost = DragDrop::Lost::Nothing;
+            m_protocolLostReset = false;
+            m_protocolBlocked = false;
+        }
+        m_protocolStale = DragDrop::Lost::Nothing;
+        m_protocolStaleReset = false;
+        Q_EMIT terminalProtocolLost(lost, reset);
+    });
+}
+
 void Pane::postProtocolCommand(std::function<void()> command)
 {
     m_protocolQueued.fetch_add(1);
@@ -1828,7 +1852,18 @@ void Pane::deliverProtocolCommands(int waitMs)
     const bool delivered = std::exchange(m_deliveredSerial, seen) != seen;
     if (waitMs <= 0 || delivered)
         return;
-    {
+    const auto posted = [&] {
+        std::lock_guard lock(m_postedMutex);
+        return m_postedSerial != seen;
+    };
+    if (m_session && !m_sessionGone && m_session->showing()) {
+        // A session pane's commands come on the session's stream, which only
+        // this thread reads: the wait reads it, or it would always time out.
+        // A session that no longer shows sends none: the wait below sleeps.
+        if (!m_session->waitForHostCalls(waitMs, posted)) return;
+        std::lock_guard lock(m_postedMutex);
+        m_deliveredSerial = m_postedSerial;
+    } else {
         // A command posted after the delivery above ends the wait at once.
         std::unique_lock lock(m_postedMutex);
         if (!m_posted.wait_for(lock, std::chrono::milliseconds(waitMs), [&] { return m_postedSerial != seen; }))

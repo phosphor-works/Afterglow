@@ -362,6 +362,9 @@ private:
     /// buttons, a drag on or the pointer over its docks, and a close
     /// confirmation about it alone. Prompts about other panes stay.
     void dropPanePrompts(Pane* pane);
+    /// Ends the clipboard prompt without the chrome: its request gets the
+    /// denial when its pane's session keeps running.
+    void dropClipboardPrompt();
     /// Cancels the title prompt and closes the tab menu when they belong to
     /// tab @p tabId, which is going away: they would have nothing to act on.
     void dropTabPrompts(quint32 tabId);
