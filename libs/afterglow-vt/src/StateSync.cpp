@@ -1072,9 +1072,11 @@ bool StateWriter::prepareImages(std::string& out, const Terminal& t, bool first)
     if (first) section(out, ImagesResetTag, {});
     const bool changed = first || t.m_graphics[0].changes() != m_storeChanges[0] || t.m_graphics[1].changes() != m_storeChanges[1];
     m_imagesWent = false;
+    m_storesChanged = false;
     if (!changed && !m_imagesPending) return false;
     m_storeChanges[0] = t.m_graphics[0].changes();
     m_storeChanges[1] = t.m_graphics[1].changes();
+    m_storesChanged = changed;
     m_imagesPending = false;
     // A version whose image went, or whose id names another image now (a
     // clear, then a new image), is of no use: a transfer of it ends.
@@ -1143,7 +1145,8 @@ void StateWriter::writeDrops(std::string& out, Budget& budget)
     section(out, DropFramesTag, payload);
     m_imagesWent = true;
     m_drops.erase(m_drops.begin(), m_drops.begin() + std::ptrdiff_t(count));
-    if (m_drops.empty()) m_dropsBuilding = false;
+    // The frame that the replica builds is the first of the drops.
+    m_dropsBuilding = false;
     m_imagesPending = m_imagesPending || !m_drops.empty();
 }
 
@@ -1227,6 +1230,10 @@ void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budge
 
 void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budget)
 {
+    // Nothing for a record to say while only pixels go: the stores did not
+    // change, nothing waits, and no version's pixels came.
+    if (!m_storesChanged && !m_recordsWaiting && m_done.empty()) return;
+    m_recordsWaiting = false;
     for (int which = 0; which < 2; ++which) {
         const GraphicsStore& store = t.m_graphics[which];
         std::unordered_map<std::uint32_t, std::string>& sent = m_images[which];
@@ -1277,6 +1284,7 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
             }
             if (!fits(out, budget, records.size() + record.size() + 16, recordCount == 0)) {
                 m_imagesPending = true;
+                m_recordsWaiting = true;
                 break;
             }
             records += record;
@@ -1309,6 +1317,7 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
         if (payload == m_placements[which]) continue;
         if (!fits(out, budget, payload.size(), true)) {
             m_imagesPending = true;
+            m_recordsWaiting = true;
             continue;
         }
         section(out, PlacementsTag, payload);

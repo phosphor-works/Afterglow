@@ -868,9 +868,17 @@ TEST(StateSync, ATransferOfAnImageThatAClearReplacedEnds)
     ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
     ASSERT_TRUE(p.writer.pending());
     // The alternate screen goes and comes again with another image under
-    // the id: the replica shows that one.
+    // the id: the replica shows that one, never the one that the clear took.
     p.source.feed("\x1b[?1049l\x1b[?1049h" + apc("a=T,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, 7, 8, 9)));
-    ASSERT_TRUE(p.sync(&error)) << error;
+    for (int guard = 0; guard < 1000; ++guard) {
+        const std::string frame = p.update();
+        if (frame.empty() && !p.writer.pending()) break;
+        ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
+        const auto& images = p.replica.graphics(true).images();
+        if (const auto it = images.find(1); it != images.end()) {
+            ASSERT_EQ(it->second.frames[0]->rgba[0], 7);
+        }
+    }
     EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
     EXPECT_EQ(p.replica.graphics().images().at(1).frames[0]->rgba[0], 7);
 }
@@ -1096,7 +1104,7 @@ TEST(StateSync, RandomOutputStaysEqual)
     // Images too, with their placements, frames and animations, which those
     // move, erase and reset.
     const std::string pixels = AfterglowProto::base64Encode(rgba(2, 2, 10, 20, 30));
-    // Larger than the frames of most runs: it comes in parts.
+    // Larger than the state frames of every run: it comes in parts.
     const std::string large = AfterglowProto::base64Encode(rgba(40, 40, 40, 50, 60));
     const std::vector<std::string> pieces = {
         "abc", "hello world ", "\r\n", "\n", "\r", "\t", "\b", "\xe4\xb8\xad", "e\xcc\x81", "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd",

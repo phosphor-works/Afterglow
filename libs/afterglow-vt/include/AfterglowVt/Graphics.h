@@ -205,6 +205,7 @@ public:
     /// The largest quota that a terminal of the application takes
     /// (Graphics.quota): what a store of a session's terminal can hold.
     static constexpr std::size_t MaxQuota = std::size_t(4096) << 20;
+    static_assert(sizeof(std::size_t) >= 8, "a 4 GiB quota needs a 64-bit size");
     static constexpr std::size_t MaxImages = 4096;
     static constexpr std::size_t MaxPlacements = 4096;
     /// Frame edits (a=f on a frame, a=c) copy a whole frame for a command of
@@ -295,7 +296,7 @@ public:
     /// Whether transmissions may read files, temporary files and shared
     /// memory (t=f, t=t, t=s). Off, they are refused and nothing is opened.
     void setFileTransfer(bool allowed) noexcept { m_fileTransfer = allowed; }
-    /// The $TMPDIR of the programs (TerminalOptions::temporaryDirectory).
+    /// The $TMPDIR of the programs (Terminal::setTemporaryDirectory).
     void setTemporaryDirectory(std::string directory) { m_temporaryDirectory = std::move(directory); }
     /// Sets the work budget (chargeWork()) and fills it: @p burst bytes at
     /// once, refilled at @p bytesPerSecond.

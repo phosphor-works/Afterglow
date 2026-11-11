@@ -426,6 +426,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     if (start < size) {
         t.feed(std::string_view(reinterpret_cast<const char*>(data + start), size - start));
     }
+    // The codec carries no viewport: the replica's shows the live rows.
+    t.resetViewport();
     mirror.finish(t, smallFrames);
     return 0;
 }

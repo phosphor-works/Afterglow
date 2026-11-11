@@ -211,6 +211,8 @@ private:
     std::uint64_t m_storeChanges[2] = {~std::uint64_t(0), ~std::uint64_t(0)};
     bool m_imagesPending = false; ///< pixels, records, placements or drops wait for a later frame
     bool m_imagesWent = false; ///< this frame has an image section
+    bool m_storesChanged = false; ///< a store changed since the last frame
+    bool m_recordsWaiting = false; ///< a record or the placements wait for room
 
     ScreenState m_screens[2];
     std::string m_modes;
