@@ -7,6 +7,7 @@ add_executable(afterglow_proto_tests
     Base64Test.cpp
     ClientTest.cpp
     ClipboardTest.cpp
+    ColorTest.cpp
     DeltaTest.cpp
     DragDropTest.cpp
     DndUriTest.cpp

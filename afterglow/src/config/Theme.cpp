@@ -5,6 +5,8 @@
 
 #include "app/BuildTree.h"
 
+#include <AfterglowProto/Color.h>
+
 #include <QColor>
 #include <QDir>
 #include <QFile>
@@ -43,7 +45,7 @@ std::optional<AfterglowVt::Rgb> color(QString value)
     if (!isColorName(value)) {
         return std::nullopt;
     }
-    const QColor c = QColor::fromString(value);
+    const QColor c = colorFromName(value);
     return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
 }
 
@@ -168,9 +170,22 @@ std::optional<AfterglowVt::Rgb>* konsoleTarget(Theme& theme, const QString& sect
 
 } // namespace
 
+QColor colorFromName(const QString& name)
+{
+    // Qt reads no form with a parenthesis.
+    if (!name.contains(QLatin1Char('('))) return QColor::fromString(name);
+    const QByteArray utf8 = name.toUtf8();
+    std::uint8_t r = 0, g = 0, b = 0;
+    if (!AfterglowProto::parseWideGamutColor(std::string_view(utf8.constData(), std::size_t(utf8.size())), r, g, b)) {
+        return {};
+    }
+    return QColor(r, g, b);
+}
+
 bool isColorName(const QString& name)
 {
     static const QRegularExpression EightDigits(QStringLiteral("^#[0-9a-fA-F]{8}$"));
+    if (name.contains(QLatin1Char('('))) return colorFromName(name).isValid(); // OKLCH and LAB have no alpha
     // Transparent by its alpha, not by its spelling: Qt drops the spaces and
     // tabs of a name, so "trans parent" is transparent too.
     return QColor::isValidColorName(name) && !EightDigits.match(name).hasMatch()
@@ -386,9 +401,10 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
             count(*target ? Assigned::Set : Assigned::Invalid, section);
         }
     } else {
-        // Ghostty writes "key = value"; kitty "key value".
+        // Ghostty writes "key = value"; kitty "key value", where a value can
+        // be "oklch(0.7 0.1 200)" with spaces.
         static const QRegularExpression Ghostty(QStringLiteral("^([\\w-]+)\\s*=\\s*(.*)$"));
-        static const QRegularExpression Kitty(QStringLiteral("^([\\w-]+)\\s+(\\S+)"));
+        static const QRegularExpression Kitty(QStringLiteral("^([\\w-]+)\\s+(\\w+\\([^)]*\\)|\\S+)"));
         for (const QByteArray& raw : text.split('\n')) {
             const QString line = QString::fromUtf8(raw).trimmed();
             if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {

@@ -261,6 +261,31 @@ TEST(Themes, ReadsKittyThemes)
     EXPECT_TRUE(theme->palette[15] == Rgb(0xc0, 0xca, 0xf5));
 }
 
+TEST(Themes, ReadsOklchAndLabInKittyAndJsonThemes)
+{
+    // As kitty 0.50 writes them, with spaces inside the value. The values
+    // follow CSS Color 4: kitty itself gives lab(10 0 0) as a middle gray.
+    const auto kitty = Themes::parse("foreground   oklch(0.9 0.05 140)\n"
+                                     "background lab(10 0 0)\n"
+                                     "color1     oklch(0.7, 0.25, 25)    \n"
+                                     "color2 #00ff00\n");
+    ASSERT_TRUE(kitty);
+    EXPECT_TRUE(kitty->foreground == Rgb(205, 231, 199));
+    EXPECT_TRUE(kitty->background == Rgb(27, 27, 27));
+    EXPECT_TRUE(kitty->palette[1] == Rgb(255, 86, 85));
+    EXPECT_TRUE(kitty->palette[2] == Rgb(0, 255, 0));
+    const auto json = Themes::parse(R"json({"background": "LAB(50 0 -50)", "palette": ["oklch(70% 0.1 200)"]})json");
+    ASSERT_TRUE(json);
+    EXPECT_TRUE(json->background == Rgb(54, 122, 205));
+    EXPECT_TRUE(json->palette[0] == Rgb(64, 177, 183));
+    EXPECT_TRUE(Themes::isColorName(QStringLiteral("oklch(0.5 0.1 100)")));
+    EXPECT_TRUE(Themes::isColorName(QStringLiteral("lab(50 60 40)")));
+    // Terminal colours have no alpha, in these forms either.
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("oklch(0.5 0.1 100 / 0.5)")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("oklch(0.5 0.1)")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("rgb(1, 2, 3)")));
+}
+
 TEST(Themes, ReadsJsonThemes)
 {
     const auto theme = Themes::parse(R"({"background": "#101010", "selectionBackground": "#334455",
@@ -364,6 +389,22 @@ TEST_F(ConfigTest, ThemeColoursReplaceTheConfigs)
     EXPECT_TRUE(same(s.terminal.defaultBackground, {0xf6, 0xf5, 0xf2}));
     EXPECT_TRUE(s.terminal.selectionBackground == Rgb(0xc9, 0xd6, 0xee));
     EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, ColorSettingsTakeOklchAndLab)
+{
+    const QString config = write(QStringLiteral("config.json"),
+                                 R"json({"Colors": {"background": "lab(10 0 0)", "foreground": "oklch(0.9 0.05 140)",
+                                     "palette": ["oklch(0.5 0.1 100)", "lab(50 60 40)"], "visualBell": "oklch(0.5)"}})json");
+    SettingsStore store(config);
+    const Settings& s = store.settings();
+    EXPECT_TRUE(same(s.terminal.defaultBackground, {27, 27, 27}));
+    EXPECT_TRUE(same(s.terminal.defaultForeground, {205, 231, 199}));
+    EXPECT_TRUE(same(s.terminal.basePalette[0], {113, 100, 11}));
+    EXPECT_TRUE(same(s.terminal.basePalette[1], {214, 60, 55}));
+    // A form that is no colour is reported, as a hex value with a typo is.
+    EXPECT_TRUE(store.problems().join(QLatin1Char('\n')).contains(QLatin1String("visualBell")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
 }
 
 TEST_F(ConfigTest, UserThemesComeFirstAndDeriveADivider)

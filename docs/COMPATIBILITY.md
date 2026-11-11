@@ -252,6 +252,10 @@ Shells and editors measure text with `wcwidth`, so the cursor stays where they e
 OSC 21 supports the [Kitty color-control protocol](https://sw.kovidgoyal.net/kitty/color-stack/).
 Programs can set, query and reset palette colors and dynamic colors.
 Supported values include named X11 colors, hexadecimal colors, `rgb:` values and `rgbi:` values.
+OSC 4, OSC 10 to 19 and OSC 21 also take `oklch(L C H)` and `lab(L a b)`, as Kitty 0.50 does. [Themes](APPEARANCE.md#themes) gives their values.
+A query reports such a color as the sRGB color that Afterglow set.
+Afterglow converts these colors with the code and the gamut mapping of CSS Color 4.
+Kitty clips a color outside sRGB, and it gives other values for LAB colors, for example a middle gray for `lab(10 0 0)`.
 Cursor text, visual-bell color and eight transparent-background slots affect rendering.
 Transparent slots support an explicit opacity or the configured window opacity.
 The color stack saves and restores these settings.

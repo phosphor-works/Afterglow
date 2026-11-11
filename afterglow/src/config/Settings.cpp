@@ -890,7 +890,7 @@ PhosphorConfig::Schema buildSchema()
 AfterglowVt::Rgb toRgb(const QString& name, AfterglowVt::Rgb fallback)
 {
     if (!Themes::isColorName(name)) return fallback;
-    const QColor c = QColor::fromString(name);
+    const QColor c = Themes::colorFromName(name);
     return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
 }
 

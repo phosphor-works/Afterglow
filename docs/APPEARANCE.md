@@ -181,8 +181,21 @@ The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeg
 `searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.
 A color key can have `-` or `_` between its words, in any mix of upper and lower case, such as `popup-border` in a Ghostty theme.
 Afterglow logs other keys in a JSON theme.
-A color in a theme or in `Colors` is a Qt color name, such as `#1e1e2e`, `#fff` or `red`.
-These colors have no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`.
+A color in a theme or in `Colors` has one of these forms:
+
+| Form | Example | Values |
+| --- | --- | --- |
+| A Qt color name or hexadecimal color | `#1e1e2e`, `#fff`, `red` | The forms that Qt reads. |
+| `oklch(L C H)` | `oklch(0.7 0.1 200)` | L from 0 to 1, or 0% to 100%. C from 0 to about 0.4, or a percentage of 0.4. H in degrees, or with the unit `deg`, `rad`, `grad` or `turn`. |
+| `lab(L a b)` | `lab(50 60 40)` | CIE LAB with a D50 white point. L from 0 to 100. a and b from about -125 to 125, or a percentage of 125. |
+
+The three values of `oklch` and `lab` can have spaces or commas between them. The value `none` is 0, as in CSS Color 4.
+Afterglow changes an OKLCH or LAB color to sRGB with 8 bits for each channel.
+A color outside sRGB gets the gamut mapping of CSS Color 4: Afterglow keeps its lightness and hue and decreases its chroma.
+Kitty themes that use these forms work in Afterglow.
+Kitty clips a color outside sRGB, and it converts LAB in a different way, so some of these colors are not the same as in Kitty.
+
+These colors have no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`, or an alpha in an OKLCH or LAB color (`/ 0.5`).
 It also does not accept `transparent`, in any spelling.
 
 Use this value to follow the desktop preference:

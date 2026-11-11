@@ -17,7 +17,8 @@
 //   7 the text checks that sanitize ids and names, and printable text
 //   8 JSON for the phosphor-ipc client, written and read again, and the
 //     stdin parts of `aglow run`
-//   9 X11 colour specs (parseColorSpec), and the colour read written again
+//   9 X11 colour specs, OKLCH and LAB (parseColorSpec), and the colour read
+//     written again
 //  10 OSC 24569 strings (oscPayload, isQuery, parseReply), and the answer
 //     read written again as the pane's reply
 //  11 phosphor-ipc request lines of afterglow-mux: each message parsed as a

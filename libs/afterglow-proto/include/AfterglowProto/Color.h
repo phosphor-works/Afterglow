@@ -17,6 +17,22 @@
 /// and as a client reads them from its command line.
 namespace AfterglowProto {
 
+/// An OKLCH colour (L 0-1, C, H in degrees) in 8-bit sRGB. A colour outside
+/// sRGB is brought in with the gamut mapping of CSS Color 4: lightness and
+/// hue stay, chroma goes down until the clipped colour is less than one
+/// just noticeable difference (deltaE OK 0.02) away.
+void oklchToSrgb(double l, double c, double h, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b);
+/// A CIE LAB colour (D50, L 0-100, as CSS has it) in 8-bit sRGB, with the
+/// same gamut mapping.
+void labToSrgb(double l, double a, double bAxis, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b);
+/// Reads "oklch(L C H)" or "lab(L a b)" as kitty and CSS Color 4 write them:
+/// the function name in any case, the three values apart by spaces or
+/// commas, L as a number or a percentage, a hue in degrees or with the CSS
+/// angle units, "none" for 0. A percentage of C is of 0.4, and of a and b of
+/// 125, as in CSS. An alpha ("/ 0.5") is refused: terminal colours have none.
+/// On failure @p r, @p g and @p b are left as they were.
+bool parseWideGamutColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b);
+
 namespace detail {
 
 struct ColorValue
@@ -106,13 +122,16 @@ bool parseColorTriple(std::string_view spec, std::uint8_t& r, std::uint8_t& g, s
 /// Reads an X11 colour spec: "rgb:r/g/b" (1-4 hex digits each, scaled),
 /// "rgbi:r/g/b" (intensities), "#rgb", "#rrggbb", "#rrrgggbbb",
 /// "#rrrrggggbbbb", or an X11 colour name in any case. The device-independent
-/// CIE and TekHVC spaces of Xcms are not supported. On failure @p r, @p g and
-/// @p b are left as they were.
+/// CIE and TekHVC spaces of Xcms are not supported. kitty's "oklch(...)" and
+/// "lab(...)" are (parseWideGamutColor). On failure @p r, @p g and @p b are
+/// left as they were.
 inline bool parseColorSpec(std::string_view spec, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b)
 {
     std::uint8_t cr = 0, cg = 0, cb = 0;
     bool ok = false;
-    if (spec.starts_with("rgbi:")) {
+    if (spec.find('(') != std::string_view::npos) {
+        ok = parseWideGamutColor(spec, cr, cg, cb);
+    } else if (spec.starts_with("rgbi:")) {
         ok = detail::parseColorTriple(spec.substr(5), cr, cg, cb, detail::parseColorIntensity);
     } else if (spec.starts_with("rgb:")) {
         ok = detail::parseColorTriple(spec.substr(4), cr, cg, cb, detail::parseColorScaled);
