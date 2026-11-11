@@ -1191,3 +1191,41 @@ TEST(MuxAttach, ThePngAndItermImagesOfASessionReachTheWindow)
     EXPECT_EQ(iterm()->frames[0]->height, 8u);
     EXPECT_GT(iterm()->frames[0]->rgba.at(0), 240);
 }
+
+// An image that the program prints while no window shows the session, after
+// a window measured its cells: the daemon keeps it, and the next window gets
+// it with its first frames.
+TEST(MuxAttach, AnImagePrintedWhileDetachedReachesTheNextWindow)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    const std::string image = daemon.dir() + "/image";
+    {
+        std::ofstream out(image, std::ios::binary);
+        out << "\x1b_Ga=T,f=100,i=9,q=2;" << AfterglowProto::base64Encode(MuxTest::Images::Png) << "\x1b\\";
+    }
+    const std::string done = daemon.dir() + "/image-done";
+    {
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "sh"), "");
+        ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+        ASSERT_TRUE(w.resize(40, 10));
+        ASSERT_TRUE(w.until([&] { return w.replica.cellWidth() == 8; }));
+        // Printed once the window went.
+        ASSERT_TRUE(w.type("(sleep 1; cat '" + image + "'; : > " + done + ") &\n"));
+        ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"sh"})) << daemon.lastError();
+        ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
+        EXPECT_FALSE(w.replica.graphics().images().contains(9));
+    }
+    ASSERT_TRUE(waitFor([&] { return exists(done); }));
+    Window again;
+    ASSERT_EQ(again.attach(daemon, "sh"), "");
+    const AfterglowVt::GraphicsStore& store = again.replica.graphics();
+    ASSERT_TRUE(again.until([&] { return store.images().contains(9) && !store.placements().empty(); })) << store.images().size();
+    const AfterglowVt::Image& png = store.images().at(9);
+    ASSERT_EQ(png.frames.size(), 1u);
+    const std::vector<std::uint8_t> expected{255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0,
+                                             10, 20, 30, 255, 200, 100, 50, 255, 1, 2, 3, 4};
+    EXPECT_TRUE(png.frames[0]->rgba == expected);
+}

@@ -31,6 +31,7 @@
 #include <QSysInfo>
 
 #include <algorithm>
+#include <climits>
 #include <chrono>
 #include <QLoggingCategory>
 
@@ -147,7 +148,9 @@ void Pane::setOptions(const AfterglowVt::TerminalOptions& options)
 
 void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
 {
-    if (m_session) {
+    // A session pane whose program ended holds its last screen: no daemon
+    // resizes it any more, and its images take the new cell size here.
+    if (m_session && !m_sessionGone) {
         // The daemon resizes the session's terminal and its PTY. The replica
         // takes the new size with the next frame, so it never shows rows
         // that the program has not drawn for that size.
@@ -247,9 +250,9 @@ bool Pane::refreshSnapshot(int extraRows)
         m_promptTimer.invalidate();
     }
     m_holdDeadline = {};
-    // Animations run only for images the viewport draws, and only PTY output
-    // ticks them, so a viewport that moves must tick them again. Queued: the
-    // tick takes m_mutex.
+    // Animations run only for images the viewport draws, and only output, or
+    // a session pane's frame, ticks them, so a viewport that moves must tick
+    // them again. Queued: the tick takes m_mutex.
     if (const std::size_t top = m_terminal.screen().viewportTop(); top != m_animationViewportTop) {
         m_animationViewportTop = top;
         QMetaObject::invokeMethod(this, &Pane::tickAnimations, Qt::QueuedConnection);
@@ -1042,7 +1045,8 @@ bool Pane::applySessionFrame(std::string_view frame)
             }
         }
         // As for output of a program of its own: a frame that changed the
-        // screen is that output. History that catches up is none.
+        // screen, its images included, is that output. History that catches
+        // up is none.
         if (m_scrollOnOutput.load(std::memory_order_relaxed) && m_stateReader.screenChanged()) m_terminal.resetViewport();
         // The replica takes them as they are: the pane hears of a change
         // as it does from a program of its own.
@@ -1050,8 +1054,14 @@ bool Pane::applySessionFrame(std::string_view frame)
         if (m_terminal.workingDirectory() != directory) workingDirectoryChanged(m_terminal.workingDirectory());
     }
     // As after output (ptyData): an animated image that came starts its
-    // clock, and one that went stops it.
-    advanceAnimations();
+    // clock, and one that went stops it. Once for the frames that came
+    // together, as output is coalesced: each tick scans the viewport.
+    if (!std::exchange(m_sessionTickQueued, true)) {
+        QMetaObject::invokeMethod(this, [this] {
+            m_sessionTickQueued = false;
+            tickAnimations();
+        }, Qt::QueuedConnection);
+    }
     Q_EMIT contentChanged();
     return true;
 }
@@ -1466,8 +1476,23 @@ QString Pane::contextKind() const
     return m_contextKind;
 }
 
+void Pane::setSeen(bool seen)
+{
+    if (seen == m_seen) return;
+    m_seen = seen;
+    if (seen) {
+        tickAnimations();
+    } else {
+        m_animationTimer.stop();
+    }
+}
+
 bool Pane::advanceAnimations()
 {
+    if (!m_seen) {
+        m_animationTimer.stop();
+        return false;
+    }
     using namespace std::chrono;
     const auto now = std::uint64_t(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
     std::uint64_t next = 0;
@@ -1479,7 +1504,9 @@ bool Pane::advanceAnimations()
         changed = m_terminal.generation() != before;
     }
     if (next != 0) {
-        m_animationTimer.start(int(std::max<std::uint64_t>(1, next - std::min(next, now))));
+        // A gap of a replica's image can pass an int of milliseconds.
+        const std::uint64_t wait = std::clamp<std::uint64_t>(next - std::min(next, now), 1, std::uint64_t(INT_MAX));
+        m_animationTimer.start(int(wait));
     } else {
         m_animationTimer.stop();
     }
@@ -1773,7 +1800,8 @@ FileTransfer* Pane::fileTransfers()
 std::pair<std::uint64_t, std::uint64_t> Pane::accessibleSerial() const
 {
     std::lock_guard lock(m_mutex);
-    return {m_terminal.generation(), m_selectionSerial};
+    // A frame of an animated image changes no text that a reader reads.
+    return {m_terminal.textGeneration(), m_selectionSerial};
 }
 
 DragDrop* Pane::dragDrop()

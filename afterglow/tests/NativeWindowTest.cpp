@@ -11,7 +11,7 @@
 #include <QPushButton>
 #include <QMessageBox>
 #include <chrono>
-#include <signal.h> // ::kill: POSIX, which <csignal> need not declare
+#include <csignal>
 #include <optional>
 #include <vector>
 #include <QJsonArray>
@@ -656,6 +656,17 @@ Shot captureShot(Control& control, Pane* pane, CaptureScope scope) {
     EXPECT_TRUE(waitFor([shot] { return shot->done; }));
     return *shot;
 }
+// A Control that may read the text, attached to @p window for screenshots,
+// with its settings in @p name in @p dir.
+struct Capture {
+    SettingsStore settings;
+    Control control;
+    Capture(const QTemporaryDir& dir, const QString& name, TerminalWindow* window)
+        : settings(dir.filePath(name), QJsonObject{{QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowReadText"), true}}}})
+        , control(settings, {}) {
+        control.attachWindow(window);
+    }
+};
 // Mostly red, green or blue, whatever a pane effect does to the shade.
 bool reddish(QRgb c) { return qRed(c) > 120 && qRed(c) > 2 * qGreen(c) && qRed(c) > 2 * qBlue(c); }
 bool greenish(QRgb c) { return qGreen(c) > 120 && qGreen(c) > 2 * qRed(c) && qGreen(c) > 2 * qBlue(c); }
@@ -666,10 +677,8 @@ QRgb pixelAt(const QImage& image, double x, double y) {
 }
 
 TEST_F(NativeWindow, ScreenshotsShowThePaneItsTabAndItsWindow) {
-    SettingsStore settings(directory.filePath(QStringLiteral("capture.conf")),
-                           QJsonObject{{QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowReadText"), true}}}});
-    Control control(settings, {});
-    control.attachWindow(window);
+    Capture capture(directory, QStringLiteral("capture.conf"), window);
+    Control& control = capture.control;
     // Two panes side by side, each filled with its own background colour.
     Pane* left = window->focusedPane();
     PaneLaunchOptions launch;
@@ -7460,10 +7469,8 @@ TEST_F(NativeWindow, AnOverlaysBellFlashesItsHost) {
                                                              {QStringLiteral("visualBellIntensity"), 1.0}}}}),
         {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
     if (HasFatalFailure()) return;
-    SettingsStore settings(directory.filePath(QStringLiteral("bell-capture.conf")),
-                           QJsonObject{{QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowReadText"), true}}}});
-    Control control(settings, {});
-    control.attachWindow(window);
+    Capture capture(directory, QStringLiteral("bell-capture.conf"), window);
+    Control& control = capture.control;
     Pane* pane = window->focusedPane();
     auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sleep"), QStringLiteral("30")}, {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(pane->overlay(), nullptr);
@@ -10178,7 +10185,9 @@ QPointer<TerminalWindow> showSession(Application& application, MuxTest::TestDaem
 struct ShownSession
 {
     QPointer<TerminalWindow> window;
-    Pane* pane = nullptr;
+    /// Gone when the window lets the session go (a frame that the replica
+    /// refused, a daemon that ended): a test that waits on it fails then.
+    QPointer<Pane> pane;
 };
 
 /// showSession, then the wait for the window's first frame and the shell's
@@ -10187,9 +10196,11 @@ struct ShownSession
 ShownSession showSessionAtPrompt(Application& application, MuxTest::TestDaemon& daemon, const QString& name, QString* error) {
     ShownSession shown{showSession(application, daemon, name, error), nullptr};
     if (!shown.window) return shown;
-    if (waitFor([&] { return shown.window->isExposed() && shown.window->submittedFrames() > 0; })) shown.pane = shown.window->focusedPane();
-    if (!shown.pane || !waitFor([&] { return screenOf(shown.pane).startsWith(QLatin1Char('$')); }, 5000)) {
+    if (waitFor([&] { return shown.window && shown.window->isExposed() && shown.window->submittedFrames() > 0; }))
+        shown.pane = shown.window->focusedPane();
+    if (!shown.pane || !waitFor([&] { return shown.pane && screenOf(shown.pane).startsWith(QLatin1Char('$')); }, 5000)) {
         *error = shown.pane ? QStringLiteral("no prompt: ") + screenOf(shown.pane) : QStringLiteral("the window shows no pane");
+        if (!shown.window) return {};
         delete shown.window;
         return {};
     }
@@ -10259,57 +10270,137 @@ TEST_F(NativeWindow, AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow) 
     delete shown;
 }
 
+// An image of a session's program shows in its window at its size: the
+// daemon decodes and parses it, and the window draws the replica's copy.
+TEST_F(NativeWindow, AMuxSessionsImageShowsInTheWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "image")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("image"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    Capture capture(directory, QStringLiteral("capture.conf"), shown);
+    // The red pixels of the pane and the box that holds them, or none when
+    // the screenshot failed or the pane is gone.
+    struct Red {
+        int count = 0;
+        QRect box;
+    };
+    QString shotError;
+    const auto red = [&]() -> std::optional<Red> {
+        if (!pane) return std::nullopt;
+        const Shot shot = captureShot(capture.control, pane, CaptureScope::Pane);
+        shotError = shot.error;
+        if (!shot.error.isEmpty()) return std::nullopt;
+        const QImage image = shot.image.convertToFormat(QImage::Format_RGB32);
+        Red found;
+        for (int y = 0; y < image.height(); ++y) {
+            const auto* line = reinterpret_cast<const QRgb*>(image.constScanLine(y));
+            for (int x = 0; x < image.width(); ++x) {
+                if (!reddish(line[x])) continue;
+                ++found.count;
+                found.box |= QRect(x, y, 1, 1);
+            }
+        }
+        return found;
+    };
+    const std::optional<Red> before = red();
+    ASSERT_TRUE(before) << shotError.toStdString();
+    EXPECT_EQ(before->count, 0);
+    // A PNG of 60 by 60 red pixels, which the daemon decodes, in one kitty
+    // command that the shell prints from a file.
+    QImage image(60, 60, QImage::Format_RGBA8888);
+    image.fill(QColor(0xdc, 0x14, 0x14));
+    QByteArray png;
+    QBuffer buffer(&png);
+    ASSERT_TRUE(buffer.open(QIODevice::WriteOnly));
+    ASSERT_TRUE(image.save(&buffer, "PNG"));
+    const QByteArray command = "\x1b_Ga=T,f=100,i=4,q=2;" + png.toBase64() + "\x1b\\";
+    QFile file(QString::fromStdString(daemon.dir()) + QStringLiteral("/image.kitty"));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    ASSERT_EQ(file.write(command), command.size());
+    ASSERT_TRUE(file.flush());
+    file.close();
+    ASSERT_TRUE(pane->sendInput("cat '" + file.fileName().toStdString() + "'\n"));
+    // The replica holds the decoded image first: a failure here is the
+    // daemon's or the codec's, one after it the window's.
+    const auto decoded = [&] {
+        return pane && pane->withTerminal([](AfterglowVt::Terminal& t) {
+            const auto& images = t.graphics().images();
+            const auto it = images.find(4);
+            return it != images.end() && !t.graphics().placements().empty() && it->second.frames.size() == 1
+                && it->second.frames[0]->width == 60 && it->second.frames[0]->height == 60;
+        });
+    };
+    ASSERT_TRUE(waitFor(decoded, 5000)) << daemon.errors() << (pane ? screenOf(pane).toStdString() : std::string("the pane is gone"));
+    std::optional<Red> drawn;
+    const bool shows = waitFor([&] { return (drawn = red()) && drawn->count >= 60 * 60 / 2; }, 5000);
+    ASSERT_TRUE(shows) << (drawn ? std::to_string(drawn->count) + " red pixels" : shotError.toStdString());
+    // At its own size, not stretched or repeated across the pane.
+    const qreal dpr = shown->devicePixelRatio();
+    EXPECT_NEAR(drawn->box.width(), 60 * dpr, 6 * dpr);
+    EXPECT_NEAR(drawn->box.height(), 60 * dpr, 6 * dpr);
+    delete shown;
+}
+
+// An animated image of a session's program runs on the window's clock,
+// with no output to tick it, and stops for the program's command.
+TEST_F(NativeWindow, AMuxSessionsAnimationRunsInTheWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "animation")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("animation"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    // Two frames of 2 by 2 pixels, 50 ms each, looping.
+    const auto pixels = [](char r, char g) {
+        QByteArray rgba;
+        for (int i = 0; i < 4; ++i) rgba.append(r).append(g).append('\0').append(char(255));
+        return rgba.toBase64();
+    };
+    const QByteArray commands = "\x1b_Ga=T,f=32,s=2,v=2,i=5,q=2;" + pixels(char(255), 0) + "\x1b\\"
+        + "\x1b_Ga=f,f=32,s=2,v=2,i=5,z=50,q=2;" + pixels(0, char(255)) + "\x1b\\"
+        + "\x1b_Ga=a,i=5,r=1,z=50,q=2\x1b\\\x1b_Ga=a,i=5,s=3,q=2\x1b\\";
+    QFile file(QString::fromStdString(daemon.dir()) + QStringLiteral("/animation.kitty"));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    ASSERT_EQ(file.write(commands), commands.size());
+    ASSERT_TRUE(file.flush());
+    file.close();
+    ASSERT_TRUE(pane->sendInput("cat '" + file.fileName().toStdString() + "'\n"));
+    const auto frame = [&]() -> std::optional<std::size_t> {
+        if (!pane) return std::nullopt;
+        return pane->withTerminal([](AfterglowVt::Terminal& t) -> std::optional<std::size_t> {
+            const auto& images = t.graphics().images();
+            const auto it = images.find(5);
+            if (it == images.end() || it->second.frames.size() != 2) return std::nullopt;
+            return it->second.currentFrame;
+        });
+    };
+    ASSERT_TRUE(waitFor([&] { return frame().has_value(); }, 5000)) << daemon.errors();
+    // Both frames show in turn, without output.
+    ASSERT_TRUE(waitFor([&] { return frame() == std::optional<std::size_t>(1); }, 5000));
+    ASSERT_TRUE(waitFor([&] { return frame() == std::optional<std::size_t>(0); }, 5000));
+    // The program stops it: the frame that shows stays.
+    ASSERT_TRUE(pane->sendInput("printf '\\033_Ga=a,i=5,s=1,q=2\\033\\\\'\n"));
+    ASSERT_TRUE(waitFor([&] {
+        return pane && pane->withTerminal([](AfterglowVt::Terminal& t) {
+            const auto& images = t.graphics().images();
+            const auto it = images.find(5);
+            return it != images.end() && it->second.animation == AfterglowVt::Image::Animation::Stopped;
+        });
+    }, 5000));
+    const std::optional<std::size_t> stopped = frame();
+    drain(300);
+    EXPECT_EQ(frame(), stopped);
+    delete shown;
+}
+
 // A session pane has what a pane of the window has, through the entry
 // points that use it: the last output in the pager (Action::ShowLastOutput)
 // and the regions of shell integration, the status of a program with the
 // signal that the tab bar and scripts hear, a shell context, and the
 // directory of a shell that reports none, which the daemon reads for a new
 // tab.
-// An image of a session's program shows in its window: the daemon parses it,
-// and the window draws the replica's copy.
-TEST_F(NativeWindow, AMuxSessionsImageShowsInTheWindow) {
-    MuxTest::TestDaemon daemon;
-    ASSERT_TRUE(daemon.start()) << daemon.errors();
-    ASSERT_TRUE(shellSession(daemon, "image")) << daemon.lastError();
-    QString error;
-    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("image"), &error);
-    ASSERT_NE(shown, nullptr) << error.toStdString();
-    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
-    Pane* pane = shown->focusedPane();
-    ASSERT_NE(pane, nullptr);
-    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
-    SettingsStore settings(directory.filePath(QStringLiteral("capture.conf")),
-                           QJsonObject{{QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowReadText"), true}}}});
-    Control control(settings, {});
-    control.attachWindow(shown);
-    const auto redPixels = [&] {
-        const Shot shot = captureShot(control, pane, CaptureScope::Pane);
-        EXPECT_TRUE(shot.error.isEmpty()) << shot.error.toStdString();
-        int red = 0;
-        for (int y = 0; y < shot.image.height(); ++y) {
-            for (int x = 0; x < shot.image.width(); ++x) red += reddish(shot.image.pixel(x, y)) ? 1 : 0;
-        }
-        return red;
-    };
-    EXPECT_EQ(redPixels(), 0);
-    // A PNG of 60 by 60 red pixels, which the daemon decodes, in one kitty
-    // command: too long for a typed line, so the shell prints it from a file.
-    QImage red(60, 60, QImage::Format_RGBA8888);
-    red.fill(QColor(0xdc, 0x14, 0x14));
-    QByteArray png;
-    QBuffer buffer(&png);
-    ASSERT_TRUE(buffer.open(QIODevice::WriteOnly));
-    ASSERT_TRUE(red.save(&buffer, "PNG"));
-    QFile file(directory.filePath(QStringLiteral("image.kitty")));
-    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
-    file.write("\x1b_Ga=T,f=100,i=4,q=2;" + png.toBase64() + "\x1b\\");
-    file.close();
-    ASSERT_TRUE(pane->sendInput("cat '" + file.fileName().toStdString() + "'\n"));
-    EXPECT_TRUE(waitFor([&] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return !t.graphics().placements().empty(); }); }, 5000));
-    EXPECT_TRUE(waitFor([&] { return redPixels() >= 60 * 60 / 2; }, 5000));
-    delete shown;
-}
-
 TEST_F(NativeWindow, AMuxSessionsMarksStatusAndDirectoryReachTheWindow) {
     // The pager of the fixture may be missing: tail is not.
     restartApplication(QStringLiteral("pager.conf"),

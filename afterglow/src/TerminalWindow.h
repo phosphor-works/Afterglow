@@ -655,6 +655,9 @@ private:
     void syncInputMethodEnabled();
     bool m_modeHeldKeyboard = false; ///< keyboardModeActive() as the input method last heard
     bool m_inputMethodDirty = false; ///< the focused pane's input pane's text changed since the last query
+    /// The pane and the textGeneration() whose text the input method last read.
+    QPointer<Pane> m_inputMethodPane;
+    std::uint64_t m_inputMethodText = 0;
     bool performAction(Action action);
     void updateChrome();
     /// The command palette's list: every action but the palette itself and

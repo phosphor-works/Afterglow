@@ -124,6 +124,8 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     /// Text under a block cursor once it has arrived.
     std::uint32_t cursorTextColor = 0;
 
+    /// The terminal's textGeneration() at the capture: the text that the
+    /// snapshot shows, which a frame of an animated image does not change.
     std::uint64_t generation = 0;
     /// Bumped by every capture, so renderers can reuse work for unchanged snapshots.
     std::uint64_t version = 0;

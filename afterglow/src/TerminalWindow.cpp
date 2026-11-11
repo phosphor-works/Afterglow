@@ -521,12 +521,18 @@ void TerminalWindow::bindPane(Pane* pane)
     });
     connect(pane, &Pane::contentChanged, this, [this, pane] {
         // Hints point at text that just changed: they go (show_hints).
-        if (m_urlMode.active && m_urlMode.generation && pane == m_urlMode.pane
-            && pane->withTerminal([](Terminal& t) { return t.generation(); }) != m_urlMode.generation) {
+        // A frame of an animated image changes no text: they stay.
+        const std::uint64_t text = pane->withTerminal([](Terminal& t) { return t.textGeneration(); });
+        if (m_urlMode.active && m_urlMode.generation && pane == m_urlMode.pane && text != m_urlMode.generation) {
             stopUrlMode();
         }
-        // The input method reads the text again once per frame, not per output batch.
-        if (pane == inputPane(m_focused)) m_inputMethodDirty = true;
+        // The input method reads the text again once per frame, not per
+        // output batch, and only when the text changed.
+        if (pane == inputPane(m_focused) && (pane != m_inputMethodPane || text != m_inputMethodText)) {
+            m_inputMethodPane = pane;
+            m_inputMethodText = text;
+            m_inputMethodDirty = true;
+        }
         // A pane nobody can see is drawn when it shows: its tab becoming
         // current or the overview opening asks for that frame.
         if (paneDrawn(pane)) scheduleRender();
@@ -2651,12 +2657,16 @@ void TerminalWindow::updatePaneVisibility()
         if (!tree) continue;
         tree->forEachPane([&](Pane* p, const QRect&) {
             const bool visible = paneSeen(p, cards);
+            p->setSeen(visible);
             // A session pane's replica must not answer its program: the
             // daemon's terminal answers the program's own queries.
             if (p->isSessionPane()) p->setSessionVisible(visible);
             else p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
             // An overlay shows where its host does, on a card too.
-            if (PaneOverlay* overlay = p->overlay()) overlay->pane()->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
+            if (PaneOverlay* overlay = p->overlay()) {
+                overlay->pane()->setSeen(visible);
+                overlay->pane()->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
+            }
         });
     }
 }
@@ -3967,7 +3977,7 @@ void TerminalWindow::startHints()
         AfterglowVt::TextSnapshot snapshot;
         const auto& screen = terminal.screen();
         firstRow = screen.rowsDropped() + screen.viewportTop();
-        generation = terminal.generation();
+        generation = terminal.textGeneration();
         for (std::size_t row = screen.viewportTop(); row < screen.viewportTop() + std::size_t(screen.rows()); ++row)
             if (!AfterglowVt::appendTextRow(snapshot, screen, row, 65536)) break;
         return snapshot;
@@ -3977,7 +3987,7 @@ void TerminalWindow::startHints()
         auto hints = watcher->result(); watcher->deleteLater();
         // Another mode that took the keyboard meanwhile keeps it.
         if (cancelled != m_hintCancel || *cancelled || !pane || pane != inputPane(m_focused) || keyboardModeActive()
-            || pane->withTerminal([](Terminal& t) { return t.generation(); }) != generation) return;
+            || pane->withTerminal([](Terminal& t) { return t.textGeneration(); }) != generation) return;
         m_hintCancel.reset();
         activateHints(std::move(hints), false);
         m_urlMode.generation = generation;
@@ -4045,7 +4055,7 @@ void TerminalWindow::startUrlMode(bool copy)
     // than its terminal: the labels sit on that drawn text, so they stay
     // until the hold ends, and close then.
     if (m_urlMode.active) {
-        const auto current = inputPane(m_focused)->withTerminal([](Terminal& t) { return t.generation(); });
+        const auto current = inputPane(m_focused)->withTerminal([](Terminal& t) { return t.textGeneration(); });
         if (current == snap.generation) {
             m_urlMode.generation = snap.generation;
         } else {
@@ -4120,7 +4130,7 @@ void TerminalWindow::showUrlHints()
 
 void TerminalWindow::urlModeKey(QKeyEvent* e)
 {
-    if (m_urlMode.generation && (!m_urlMode.pane || m_urlMode.pane->withTerminal([](Terminal& t) { return t.generation(); }) != m_urlMode.generation)) {
+    if (m_urlMode.generation && (!m_urlMode.pane || m_urlMode.pane->withTerminal([](Terminal& t) { return t.textGeneration(); }) != m_urlMode.generation)) {
         stopUrlMode(); return;
     }
     if (e->key() == Qt::Key_Escape) {
@@ -6100,7 +6110,7 @@ QRect TerminalWindow::accessibleCellRect(Pane* pane, AfterglowVt::SelectionPoint
         // The drawn order of a bidi line is the snapshot's: only while it
         // shows the terminal as it is now, or its rows may be others.
         const auto& snap = pane->snapshot();
-        const int column = snap.generation == t.generation() ? snap.visualColumn(point.col, int(row)) : point.col;
+        const int column = snap.generation == t.textGeneration() ? snap.visualColumn(point.col, int(row)) : point.col;
         const double shift = drawnScrollShift(pane) / devicePixelRatio();
         return QRectF(area.x() + column * cw, area.y() + row * ch - shift, width * cw, ch).toAlignedRect();
     });

@@ -353,8 +353,10 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, std::string* e
                                           std::string("--unit=") + Unit, "--description=Afterglow terminal sessions"};
         // The daemon runs in the user manager's environment, and finds its
         // state directory's socket from these: the one that this command and
-        // later clients look for.
-        for (const char* name : {"XDG_STATE_HOME", "HOME"}) {
+        // later clients look for. TMPDIR is the sessions' own: the daemon
+        // deletes the temporary files of kitty images (t=t) that its
+        // programs write there, as a window does.
+        for (const char* name : {"XDG_STATE_HOME", "HOME", "TMPDIR"}) {
             if (const char* value = std::getenv(name); value && *value) start.push_back(std::string("--setenv=") + name + "=" + value);
         }
         start.push_back(daemon);

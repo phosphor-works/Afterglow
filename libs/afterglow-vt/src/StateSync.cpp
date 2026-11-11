@@ -1414,6 +1414,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
     bool statusChanged = false;
     bool contextsChanged = false;
     bool touched = false;
+    bool imagesTouched = false;
     m_screenChanged = false;
     while (!in.done()) {
         const std::uint8_t tag = in.byte();
@@ -1421,8 +1422,12 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         if (!in.ok()) return fail("the state frame is cut short");
         In p(payload);
         // Pixels that come for an image that does not show yet change
-        // nothing that the replica shows.
-        if (tag != FrameTag && tag != DropFramesTag) touched = true;
+        // nothing that the replica shows, and the images change no text.
+        if (tag == ImagesTag || tag == PlacementsTag || tag == ImagesResetTag) {
+            imagesTouched = true;
+        } else if (tag != FrameTag && tag != DropFramesTag) {
+            touched = true;
+        }
         switch (tag) {
         case ModesTag: {
             Modes modes = t.m_modes;
@@ -2128,7 +2133,11 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
     t.m_active = active;
     if (statusChanged) t.m_host.programStatusChanged();
     if (contextsChanged) t.m_host.contextChanged();
-    if (touched) t.touch();
+    if (touched) {
+        t.touch();
+    } else if (imagesTouched) {
+        t.touchImages();
+    }
     return true;
 }
 

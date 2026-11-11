@@ -5071,7 +5071,7 @@ std::uint64_t Terminal::advanceAnimations(std::uint64_t nowMs)
 {
     std::uint64_t next = 0;
     if (m_graphics[m_modes.altScreen ? 1 : 0].advanceAnimations(*m_active, m_cellWidth, m_cellHeight, nowMs, next)) {
-        touch();
+        touchImages();
     }
     return next;
 }

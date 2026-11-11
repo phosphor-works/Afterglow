@@ -309,6 +309,11 @@ public:
 
     /// Bumped on every state change the renderer could see.
     std::uint64_t generation() const noexcept { return m_generation; }
+    /// Bumped on every such change but those of images alone: a frame of
+    /// an animation, the pixels and records that a replica's images take.
+    /// What reads the text (hints, links, the input method, accessibility)
+    /// stays valid across those.
+    std::uint64_t textGeneration() const noexcept { return m_textGeneration; }
 
     const std::string& title() const noexcept { return m_title; }
     const std::string& workingDirectory() const noexcept { return m_cwd; }
@@ -550,7 +555,13 @@ private:
     void popColors(int slot);
     void oscPalette(std::string_view args, bool bel);
     void reply(std::string_view bytes);
-    void touch() noexcept { ++m_generation; }
+    void touch() noexcept
+    {
+        ++m_generation;
+        ++m_textGeneration;
+    }
+    /// A change of the images alone (textGeneration()).
+    void touchImages() noexcept { ++m_generation; }
 
     ITerminalHost& m_host;
     TerminalOptions m_options;
@@ -727,6 +738,7 @@ private:
     void syncKittyFlags();
 
     std::uint64_t m_generation = 0;
+    std::uint64_t m_textGeneration = 0;
 };
 
 } // namespace AfterglowVt

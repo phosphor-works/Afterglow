@@ -51,7 +51,7 @@ tests (`Render.*`) do not: `BUILD_TESTING` builds them.
 ## afterglow-mux
 
 `afterglow-mux` (`mux/`) is the session daemon of `afterglow mux`. It has no Qt and links `afterglow-vt`,
-`afterglow-pty` and `afterglow-proto`. It builds next to `afterglow` (`build/afterglow/afterglow-mux`), because
+`afterglow-pty`, `afterglow-proto` and aglow's stb_image, which its image decoder uses. It builds next to `afterglow` (`build/afterglow/afterglow-mux`), because
 `afterglow mux` runs the daemon from its own directory, and building `afterglow` builds it too. A build of `aglow`
 alone (`AFTERGLOW_AGLOW_ONLY`) does not build it. Its tests are `afterglow_mux_tests` (`Mux.*`) and the client
 tests of `afterglow mux` in `afterglow_mux_command_tests` (`MuxCommandTest.*`), with the server and socket tests of
