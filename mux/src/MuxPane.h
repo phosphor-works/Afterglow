@@ -88,6 +88,12 @@ public:
     Input input(std::string_view bytes);
     /// The size that an attached window measured.
     void resize(const PaneSize& size);
+    /// The programs' TMPDIR (Terminal::setTemporaryDirectory). Before start().
+    void setTemporaryDirectory(const std::string& directory)
+    {
+        std::lock_guard lock(m_mutex);
+        m_terminal.setTemporaryDirectory(directory);
+    }
     /// What the window's Reset and Clear actions do to a terminal of its
     /// own: the window shows the result with the next frame.
     void reset();
@@ -190,8 +196,11 @@ private:
     std::unique_lock<std::mutex>* m_feedLock = nullptr;
     /// An image decodes: the terminal is the reader thread's, without m_mutex.
     bool m_decoding = false;
-    /// The changes of the daemon's thread that wait for the feed's end.
+    /// The changes of the daemon's thread that wait for the feed's end, and
+    /// the input that came after them.
     std::vector<std::function<void()>> m_deferred;
+    /// m_deferred holds something: input looks there before it writes.
+    std::atomic<bool> m_changesWaiting{false};
     /// A frame waited for a decode: the end of the feed wakes the daemon.
     bool m_frameDeferred = false;
     AfterglowVt::Terminal m_terminal;

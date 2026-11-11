@@ -57,6 +57,7 @@ private:
     SessionOptions m_options;
     long m_fileLimit;
     ImageDecoder& m_images;
+    std::string m_temporaryDirectory; ///< the programs' TMPDIR (Terminal::setTemporaryDirectory)
     std::vector<std::unique_ptr<MuxPane>> m_panes;
 };
 

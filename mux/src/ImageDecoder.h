@@ -80,17 +80,24 @@ private:
     /// Ends the server and reaps it. m_mutex held.
     void stopLocked();
     /// Asks the server for a process that decodes @p input into @p output,
-    /// and returns a pidfd of that process. A server that does not take the
-    /// request or answer it by @p deadline, or before @p cancel is readable,
-    /// ends: m_socket is then closed. m_mutex held.
+    /// and returns a pidfd of that process. None, with the server running,
+    /// when it could not fork, when @p deadline passed before the request,
+    /// and when @p cancel is readable (@p cancelled). A server that does not
+    /// take the request or answer it by @p deadline ends: m_socket is then
+    /// closed. m_mutex held.
     AfterglowProto::UniqueFd requestLocked(ImageFormats formats, int input, int output,
-                                           std::chrono::steady_clock::time_point deadline, int cancel);
+                                           std::chrono::steady_clock::time_point deadline, int cancel, bool& cancelled);
+    /// The server's answer to a request: the pidfd of its process, or none.
+    /// m_socket closes when the server ended. m_mutex held.
+    AfterglowProto::UniqueFd answerLocked();
 
     const std::string m_executable;
     const int m_waitMs;
     std::mutex m_mutex; ///< guards the server: its socket takes one request, then its answer
     AfterglowProto::UniqueFd m_socket;
     pid_t m_server = -1;
+    /// Answers that the requests of panes that closed left on the socket.
+    int m_owedAnswers = 0;
     std::chrono::steady_clock::time_point m_lastReport; ///< m_mutex
 };
 

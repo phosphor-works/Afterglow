@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
+#include <cstring>
 
 #include <sys/eventfd.h>
 #include <unistd.h>
@@ -78,6 +80,12 @@ MuxPane::~MuxPane()
 
 bool MuxPane::start(AfterglowPty::SpawnOptions options, std::string launchedProgram, std::string* error)
 {
+    // Without it, a pane that closes waits for each image of its feed.
+    if (!m_stopDecode.valid()) {
+        if (error) *error = std::string("cannot create an eventfd: ") + std::strerror(errno);
+        m_exited = true;
+        return false;
+    }
     {
         std::lock_guard lock(m_mutex);
         options.cols = m_terminal.cols();
@@ -262,6 +270,7 @@ void MuxPane::setVisible(bool visible, std::uint64_t window)
     std::lock_guard lock(m_mutex);
     if (m_decoding) {
         m_deferred.push_back([this, visible, window] { setVisibleLocked(visible, window); });
+        m_changesWaiting.store(true);
         return;
     }
     setVisibleLocked(visible, window);
@@ -621,12 +630,17 @@ void MuxPane::ptyData(std::string_view bytes)
     {
         std::unique_lock lock(m_mutex);
         m_feedLock = &lock;
+        struct Unset
+        {
+            std::unique_lock<std::mutex>*& lock;
+            ~Unset() { lock = nullptr; }
+        } unset{m_feedLock};
         m_terminal.feed(bytes);
-        m_feedLock = nullptr;
         // What the daemon's thread did not wait for while an image decoded,
         // in its order. After the feed: the decode ends in the middle of a
         // command of the program, which the parse finishes first.
         const std::vector<std::function<void()>> changes = std::exchange(m_deferred, {});
+        m_changesWaiting.store(false);
         for (const std::function<void()>& change : changes) change();
         const bool frame = std::exchange(m_frameDeferred, false);
         deferred = frame || !changes.empty();
@@ -646,6 +660,15 @@ void MuxPane::ptyClosed(int status)
 MuxPane::Input MuxPane::input(std::string_view bytes)
 {
     if (!m_pty || m_exited) return Input::Gone;
+    // Input after a resize or a clear that waits for a decode goes after
+    // it, as the window sent them.
+    if (m_changesWaiting.load()) {
+        std::lock_guard lock(m_mutex);
+        if (!m_deferred.empty()) {
+            m_deferred.push_back([this, data = std::string(bytes)] { (void)m_pty->write(data); });
+            return Input::Written;
+        }
+    }
     if (m_pty->write(bytes)) return Input::Written;
     // A terminal that takes no more input (its child side is gone, while the
     // child may still run) never has room again: only a full queue does.
@@ -659,6 +682,7 @@ void MuxPane::change(std::function<void()> change)
         if (m_decoding) {
             // The reader thread makes it after the feed, and wakes the daemon.
             m_deferred.push_back(std::move(change));
+            m_changesWaiting.store(true);
             return;
         }
         change();

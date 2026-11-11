@@ -17,6 +17,7 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <sys/eventfd.h>
@@ -204,22 +205,42 @@ TEST(MuxImageDecoder, AServerThatDoesNotAnswerEndsAtTheDeadline)
 
 TEST(MuxImageDecoder, ADecodeEndsAtItsDeadlineOrWhenItIsCancelled)
 {
-    // 6,000 by 6,000: far more than a few milliseconds of work.
-    const std::string large = greyPng(6000, 6000);
-    ImageDecoder quick(AFTERGLOW_MUX, 5);
-    auto start = Clock::now();
-    EXPECT_FALSE(decode(quick, large, ImageFormats::Png).ok);
-    EXPECT_LT(Clock::now() - start, std::chrono::seconds(10));
-
+    // 8,000 by 8,000: far more than 100 ms of work, which it does decode.
+    const std::string large = greyPng(8000, 8000);
     ImageDecoder decoder(AFTERGLOW_MUX);
-    const int cancel = ::eventfd(1, EFD_CLOEXEC);
+    auto start = Clock::now();
+    const Decoded whole = decode(decoder, large, ImageFormats::Png);
+    const auto full = Clock::now() - start;
+    ASSERT_TRUE(whole.ok);
+    EXPECT_EQ(whole.width, 8000u);
+
+    // The server answers at once once it runs: the deadline ends the wait
+    // for the pixels, not for the server.
+    ImageDecoder quick(AFTERGLOW_MUX, 100);
+    ASSERT_TRUE(decode(quick, Png, ImageFormats::Png).ok);
+    start = Clock::now();
+    EXPECT_FALSE(decode(quick, large, ImageFormats::Png).ok);
+    auto took = Clock::now() - start;
+    EXPECT_GE(took, std::chrono::milliseconds(100));
+    EXPECT_LT(took, full);
+
+    // The pane closes while its image decodes.
+    const int cancel = ::eventfd(0, EFD_CLOEXEC);
     ASSERT_GE(cancel, 0);
+    std::thread closes([cancel] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const std::uint64_t one = 1;
+        (void)!::write(cancel, &one, sizeof one);
+    });
     start = Clock::now();
     EXPECT_FALSE(decode(decoder, large, ImageFormats::Png, cancel).ok);
-    EXPECT_LT(Clock::now() - start, std::chrono::seconds(10));
+    took = Clock::now() - start;
+    closes.join();
+    EXPECT_GE(took, std::chrono::milliseconds(100));
+    EXPECT_LT(took, full);
+    // A pane that closed decodes nothing more, and the server goes on for
+    // the others.
+    EXPECT_FALSE(decode(decoder, Png, ImageFormats::Png, cancel).ok);
     ::close(cancel);
-
-    // A server still decodes after both: the cancelled request ended the
-    // server, and the next one starts another.
     EXPECT_TRUE(decode(decoder, Png, ImageFormats::Png).ok);
 }

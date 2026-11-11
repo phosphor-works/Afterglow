@@ -504,7 +504,9 @@ bool Attachment::busy() const
         // A closed pane whose calls wait for room in the queue waits for the
         // window's credit, which wakes the poll.
         if (l.closed && !(l.closed->hasHostCalls(m_serial) && m_waitingBytes >= m_eventQueue)) return true;
-        if (!l.closed && !m_finish && l.state.pending()) return true;
+        // A frame that waits for a decode is no work: the pane wakes the
+        // daemon when the decode's feed ends.
+        if (!l.closed && !m_finish && !l.deferred && l.state.pending()) return true;
     }
     return false;
 }

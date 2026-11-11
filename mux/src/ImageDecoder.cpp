@@ -156,32 +156,54 @@ constexpr std::uint32_t NativeArch = AUDIT_ARCH_AARCH64;
 constexpr std::uint32_t NativeArch = 0;
 #endif
 
+/// The exit status of a decoding process that cannot limit its system calls
+/// (a kernel without seccomp filters): it decodes nothing, and the server
+/// says so.
+constexpr int NoFilterStatus = 3;
+
 /// Past this, the decoding process makes only the system calls that
-/// decoding needs: memory, its two descriptors, its end. Any other fails
-/// with ENOSYS, so that code that a corrupt file took over can open, run or
-/// connect to nothing. A system call of another architecture kills it.
-void allowOnlyDecoding()
+/// decoding needs: memory, a read of its file, a write of its pixels or of
+/// a sanitizer's report, its end. Any other fails with ENOSYS, so that code
+/// that a corrupt file took over can open, run or connect to nothing, and
+/// read no terminal that standard error may be. A system call of another
+/// architecture kills it. False when the filter cannot be set.
+bool allowOnlyDecoding()
 {
-    ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return false;
     if constexpr (NativeArch == 0) {
-        return;
+        return true;
     } else {
-        const std::array<long, 15> calls{
-            SYS_read, SYS_write, SYS_close, SYS_mmap, SYS_munmap, SYS_mremap, SYS_mprotect, SYS_madvise,
-            SYS_brk, SYS_futex, SYS_getrandom, SYS_clock_gettime, SYS_rt_sigreturn, SYS_exit, SYS_exit_group,
-        };
+        constexpr std::uint32_t Allow = SECCOMP_RET_ALLOW;
+        constexpr std::uint32_t Refuse = SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA);
+        // The low word of the first argument: a descriptor (little endian,
+        // as both architectures here are).
+        constexpr std::uint32_t FirstArgument = offsetof(seccomp_data, args);
         std::vector<sock_filter> filter;
         filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, arch)));
         filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NativeArch, 1, 0));
         filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
         filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)));
-        for (const long call : calls) {
+        // read() of standard input only.
+        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_read, 0, 4));
+        filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
+        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDIN_FILENO, 0, 1));
+        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
+        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
+        // write() of standard output and standard error only.
+        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_write, 0, 5));
+        filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
+        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDOUT_FILENO, 1, 0));
+        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDERR_FILENO, 0, 1));
+        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
+        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
+        for (const long call : {SYS_close, SYS_mmap, SYS_munmap, SYS_mremap, SYS_mprotect, SYS_madvise, SYS_brk, SYS_futex,
+                                SYS_getrandom, SYS_clock_gettime, SYS_rt_sigreturn, SYS_exit, SYS_exit_group}) {
             filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
-            filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+            filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
         }
-        filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA)));
+        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
         const sock_fprog program{static_cast<unsigned short>(filter.size()), filter.data()};
-        ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program);
+        return ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0;
     }
 }
 
@@ -236,7 +258,7 @@ void allowOnlyDecoding()
     AfterglowProto::limit(RLIMIT_AS, memory, memory);
     const auto seconds = rlim_t(5 + (frameBytes >> 24));
     AfterglowProto::limit(RLIMIT_CPU, seconds, seconds + 1);
-    allowOnlyDecoding();
+    if (!allowOnlyDecoding()) ::_exit(NoFilterStatus);
     bool written = false;
     try {
         std::string error;
@@ -315,6 +337,8 @@ void reap(std::chrono::steady_clock::time_point& lastReport)
     while (::waitpid(-1, &status, WNOHANG) > 0) {
         if (WIFSIGNALED(status) && WTERMSIG(status) != SIGKILL)
             report(lastReport, "an image decoder ended with signal " + std::to_string(WTERMSIG(status)) + ": the image does not show");
+        if (WIFEXITED(status) && WEXITSTATUS(status) == NoFilterStatus)
+            report(lastReport, "the image decoder cannot limit its system calls (seccomp): images of sessions do not show");
     }
 }
 
@@ -325,9 +349,10 @@ void reap(std::chrono::steady_clock::time_point& lastReport)
 int runImageServer(std::string_view parent)
 {
     // Its own name in ps and the journal, which /proc/self/exe would make
-    // "exe". The decoding processes take it too.
+    // "exe". The decoding processes take it too. It ends when the daemon's
+    // end of its socket closes, however the daemon ends: no PDEATHSIG, which
+    // follows the thread that started it, and a restart runs on a pane's.
     ::prctl(PR_SET_NAME, "afterglow-image");
-    ::prctl(PR_SET_PDEATHSIG, SIGKILL);
     if (std::to_string(::getppid()) != parent) return 1;
     // A daemon that started without standard error gives the server none: a
     // descriptor that it receives would land there.
@@ -405,13 +430,15 @@ bool ImageDecoder::startLocked()
         return false;
     }
     // The daemon blocks the signals of its signalfd and ignores SIGPIPE.
-    // Both would reach the server through the exec.
+    // Both would reach the server through the exec, as would a SIGCHLD that
+    // a host of this class ignores: the server reaps its processes.
     sigset_t none;
     ::sigemptyset(&none);
     sigset_t pipe;
     ::sigemptyset(&pipe);
     ::sigaddset(&pipe, SIGPIPE);
     ::sigaddset(&pipe, SIGXCPU);
+    ::sigaddset(&pipe, SIGCHLD);
     const bool prepared = ::posix_spawn_file_actions_adddup2(&actions, server.get(), STDIN_FILENO) == 0
         && ::posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0) == 0
         && ::posix_spawnattr_setsigmask(&attributes, &none) == 0 && ::posix_spawnattr_setsigdefault(&attributes, &pipe) == 0
@@ -442,6 +469,7 @@ void ImageDecoder::stopLocked()
 {
     // The server ends with its socket, and its decoding processes with it.
     m_socket.reset();
+    m_owedAnswers = 0;
     if (m_server <= 0) return;
     ::kill(m_server, SIGKILL);
     while (::waitpid(m_server, nullptr, 0) < 0 && errno == EINTR) {
@@ -449,10 +477,84 @@ void ImageDecoder::stopLocked()
     m_server = -1;
 }
 
+namespace {
+
+/// Waits until @p socket is readable, by @p deadline. With @p cancel: also
+/// until it is. 1 for the socket, 2 for the cancel, 0 for the deadline.
+int waitForAnswer(int socket, std::chrono::steady_clock::time_point deadline, int cancel)
+{
+    for (;;) {
+        const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        if (left.count() <= 0) return 0;
+        std::array<pollfd, 2> ready{{{socket, POLLIN, 0}, {cancel, POLLIN, 0}}};
+        const int polled = ::poll(ready.data(), cancel >= 0 ? 2 : 1, int(left.count()));
+        if (polled < 0 && errno == EINTR) continue;
+        if (polled <= 0) return 0;
+        if (cancel >= 0 && ready[1].revents) return 2;
+        return 1;
+    }
+}
+
+bool readable(int fd)
+{
+    pollfd ready{fd, POLLIN, 0};
+    return fd >= 0 && ::poll(&ready, 1, 0) > 0;
+}
+
+} // namespace
+
+AfterglowProto::UniqueFd ImageDecoder::answerLocked()
+{
+    std::uint8_t ok = 0;
+    iovec in{&ok, 1};
+    alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int))] = {};
+    msghdr reply{};
+    reply.msg_iov = &in;
+    reply.msg_iovlen = 1;
+    reply.msg_control = control;
+    reply.msg_controllen = sizeof control;
+    ssize_t n = -1;
+    do {
+        n = ::recvmsg(m_socket.get(), &reply, MSG_CMSG_CLOEXEC);
+    } while (n < 0 && errno == EINTR);
+    if (n != 1) {
+        m_socket.reset();
+        return {};
+    }
+    AfterglowProto::UniqueFd process;
+    for (cmsghdr* r = CMSG_FIRSTHDR(&reply); r; r = CMSG_NXTHDR(&reply, r)) {
+        if (r->cmsg_level != SOL_SOCKET || r->cmsg_type != SCM_RIGHTS || r->cmsg_len < CMSG_LEN(sizeof(int))) continue;
+        int fd = -1;
+        std::memcpy(&fd, CMSG_DATA(r), sizeof fd);
+        process.reset(fd);
+    }
+    return process;
+}
+
 AfterglowProto::UniqueFd ImageDecoder::requestLocked(ImageFormats formats, int input, int output,
-                                                     std::chrono::steady_clock::time_point deadline, int cancel)
+                                                     std::chrono::steady_clock::time_point deadline, int cancel,
+                                                     bool& cancelled)
 {
     if (!m_socket.valid()) return {};
+    // The answers that requests of closed panes left: their processes have
+    // no one to read them. The server answers as soon as it forked: one that
+    // does not by the deadline is stuck, and the next decode starts another.
+    while (m_owedAnswers > 0) {
+        if (waitForAnswer(m_socket.get(), deadline, -1) == 0) {
+            stopLocked();
+            return {};
+        }
+        if (const AfterglowProto::UniqueFd stale = answerLocked(); stale.valid()) pidfdKill(stale.get());
+        if (!m_socket.valid()) return {};
+        --m_owedAnswers;
+    }
+    // A request that waited for the lock past its deadline, or for a pane
+    // that closed meanwhile, goes no further: the server is fine.
+    if (std::chrono::steady_clock::now() >= deadline) return {};
+    if (readable(cancel)) {
+        cancelled = true;
+        return {};
+    }
     std::uint8_t byte = std::uint8_t(formats);
     iovec io{&byte, 1};
     alignas(cmsghdr) char control[CMSG_SPACE(2 * sizeof(int))] = {};
@@ -475,50 +577,27 @@ AfterglowProto::UniqueFd ImageDecoder::requestLocked(ImageFormats formats, int i
         m_socket.reset();
         return {};
     }
-
-    // The server answers as soon as it forked. One that does not by the
-    // deadline is stuck: the next decode starts another. A pane that closes
-    // does not wait for the answer, which would then come to the next
-    // request: the server ends too.
-    for (;;) {
-        const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-        std::array<pollfd, 2> ready{{{m_socket.get(), POLLIN, 0}, {cancel, POLLIN, 0}}};
-        const int polled = left.count() > 0 ? ::poll(ready.data(), cancel >= 0 ? 2 : 1, int(left.count())) : 0;
-        if (polled < 0 && errno == EINTR) continue;
-        if (polled > 0 && !ready[1].revents) break;
+    switch (waitForAnswer(m_socket.get(), deadline, cancel)) {
+    case 0:
         stopLocked();
         return {};
-    }
-    std::uint8_t ok = 0;
-    iovec in{&ok, 1};
-    alignas(cmsghdr) char answerControl[CMSG_SPACE(sizeof(int))] = {};
-    msghdr reply{};
-    reply.msg_iov = &in;
-    reply.msg_iovlen = 1;
-    reply.msg_control = answerControl;
-    reply.msg_controllen = sizeof answerControl;
-    do {
-        n = ::recvmsg(m_socket.get(), &reply, MSG_CMSG_CLOEXEC);
-    } while (n < 0 && errno == EINTR);
-    if (n != 1) {
-        m_socket.reset();
+    case 2:
+        // The pane closes: its answer comes to the next request, which ends
+        // its process. The server goes on for the other panes.
+        ++m_owedAnswers;
+        cancelled = true;
         return {};
+    default:
+        return answerLocked();
     }
-    AfterglowProto::UniqueFd process;
-    for (cmsghdr* r = CMSG_FIRSTHDR(&reply); r; r = CMSG_NXTHDR(&reply, r)) {
-        if (r->cmsg_level != SOL_SOCKET || r->cmsg_type != SCM_RIGHTS || r->cmsg_len < CMSG_LEN(sizeof(int))) continue;
-        int fd = -1;
-        std::memcpy(&fd, CMSG_DATA(r), sizeof fd);
-        process.reset(fd);
-    }
-    return process;
 }
 
 bool ImageDecoder::decode(std::string_view data, ImageFormats formats, std::uint32_t& width, std::uint32_t& height,
                           std::vector<std::uint8_t>& rgba, int cancel)
 {
     const int waitMs = m_waitMs;
-    if (data.empty() || data.size() > MaxBytes || !allowed(data, formats)) return false;
+    // A pane that closes decodes nothing more: its feed may hold images.
+    if (data.empty() || data.size() > MaxBytes || !allowed(data, formats) || readable(cancel)) return false;
     // The image goes in a memory file, which the decoding process maps.
     AfterglowProto::UniqueFd input(::memfd_create("afterglow-image", MFD_CLOEXEC));
     if (!input.valid() || !writeAll(input.get(), data.data(), data.size())) return false;
@@ -531,7 +610,8 @@ bool ImageDecoder::decode(std::string_view data, ImageFormats formats, std::uint
     AfterglowProto::UniqueFd process;
     {
         std::lock_guard lock(m_mutex);
-        for (int attempt = 0; attempt < 2 && !process.valid(); ++attempt) {
+        bool cancelled = false;
+        for (int attempt = 0; attempt < 2 && !process.valid() && !cancelled; ++attempt) {
             if (!m_socket.valid()) {
                 // The server ended: a crash, the OOM killer, or one that got
                 // stuck. The new one has the libraries of now.
@@ -540,9 +620,10 @@ bool ImageDecoder::decode(std::string_view data, ImageFormats formats, std::uint
                 stopLocked();
                 if (!startLocked()) return false;
             }
-            process = requestLocked(formats, input.get(), writer.get(), deadline, cancel);
+            process = requestLocked(formats, input.get(), writer.get(), deadline, cancel, cancelled);
             // A server that answers with no process could not fork: no
-            // memory, or no process left under the user's limit.
+            // memory, or no process left under the user's limit. A request
+            // past its deadline, or of a pane that closes, ends too.
             if (!process.valid() && m_socket.valid()) return false;
         }
         if (!process.valid()) return false;
