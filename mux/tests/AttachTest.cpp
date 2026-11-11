@@ -1166,9 +1166,9 @@ TEST(MuxAttach, ThePngAndItermImagesOfASessionReachTheWindow)
     const std::string images = daemon.dir() + "/images";
     {
         std::ofstream out(images, std::ios::binary);
-        out << "\x1b_Ga=T,f=100,i=7,q=2;" << AfterglowProto::base64Encode(MuxTest::Images::Png) << "\x1b\\";
-        out << "\x1b]1337;File=inline=1;size=" << MuxTest::Images::Jpeg.size() << ':'
-            << AfterglowProto::base64Encode(MuxTest::Images::Jpeg) << '\a';
+        out << "\x1b_Ga=T,f=100,i=7,q=2;" << AfterglowProto::base64Encode(ImageFiles::Png) << "\x1b\\";
+        out << "\x1b]1337;File=inline=1;size=" << ImageFiles::Jpeg.size() << ':'
+            << AfterglowProto::base64Encode(ImageFiles::Jpeg) << '\a';
     }
     ASSERT_TRUE(w.type("cat '" + images + "'; echo im''ages-shown\n"));
     const AfterglowVt::GraphicsStore& store = w.replica.graphics();

@@ -230,7 +230,7 @@ A fuzz build does not build `aglow`, because a static program cannot use the san
 | --- | --- |
 | `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. One control record sends the rest of the input as a state frame to the reader of a replica terminal. |
 | `afterglow_protofuzz` | The protocol readers for remote input. The first byte selects the reader. |
-| `afterglow_imagefuzz` | An image file to the image decoders of `aglow`: the patched stb_image and the GIF reader of `aglow`. |
+| `afterglow_imagefuzz` | An image file to the image decoders of `aglow` and `afterglow-mux` (`libs/afterglow-image`): its GIF and BMP readers, and its calls of libpng, libjpeg-turbo and libwebp, which are not instrumented. |
 | `afterglow_muxfuzz` | The host calls, the events and the input of the attach stream of `afterglow-mux`. The first byte selects the reader. The state frames of panes are in `afterglow_vtfuzz`. |
 
 Build the targets:
@@ -683,7 +683,8 @@ ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|M
 | `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, and session names. The keys and fields that belong to the protocol version. The bytes of the attach stream and of each host call, and the frames and calls that its decoders refuse. |
 | `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own. The cases are sessions, the environment of a pane, the answers to queries, the refused control calls, and when the daemon exits. |
 | `Mux.MuxAttach.*` | `afterglow_mux_tests` | A window of a session, played without Qt. The cases are listed below the table. |
-| `Mux.MuxImageDecoder.*` | `afterglow_mux_tests` | The image decoder of `afterglow-mux`: the pixels of a PNG with alpha, a JPEG, the first frame of a GIF and a BMP. The formats and the files that it refuses (WebP, a cut PNG, a side that is too long, Apple's CgBI PNG). A decoder that is missing, fails or sends data that is not an image. |
+| `Mux.MuxImageDecoder.*` | `afterglow_mux_tests` | The image decoder process of `afterglow-mux`: the pixels of a PNG with alpha, a JPEG, the first frame of a GIF and of a WebP animation, a WebP and a BMP. The formats and the files that it refuses (a format other than PNG for kitty graphics, a cut PNG, a side that is too long, Apple's CgBI PNG). A decoder that is missing, fails or sends data that is not an image. |
+| `Image.ImageDecode.*` | `afterglow_image_tests` | The image decoders of `libs/afterglow-image` in the test process: PNG of each kind (RGBA, 16-bit grey, a palette with transparency), JPEG and Adobe CMYK JPEG, the frames and delays of GIF and WebP animations, BMP of each depth and header (OS/2, 40 bytes, V5 with an alpha mask), the size from each header, and the files that they refuse (compressed BMP, masks that are not valid, cut and corrupt files, CgBI). |
 | `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`). A replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are listed below the table. |
 | `MuxCommandTest.*` | `afterglow_mux_command_tests` | The commands of `afterglow mux`. The cases are listed below the table. |
 
@@ -813,7 +814,6 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `Aglow.*` | The input parser and the command line of `aglow`, in `aglow_tests` | GTest |
 | `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service, also with `--confirm-paths` answered with y and n | Python 3 |
 | `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |
-| `aglow_static` | Checks that `readelf -d` lists no shared library for `aglow` | `readelf`, and a static `aglow` |
 | `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY`), with `find_package(Qt6)` disabled and no Phosphor directory. Builds it and installs it into the build directory. Checks that the installation holds only `bin/aglow`, its license notices and its completions. Uses the compilers, the build type and the flags of the build, also the flags of each build type. Has the label `slow` | A full build, and the source archives of zlib-ng and xxHash or a network connection |
 | `aglow_clipboard_pty` | Plays a terminal for `aglow clipboard` in a pseudo-terminal | Python 3 |
 | `aglow_run_pty` | Plays a terminal and a terminal socket for the OSC 24569 query of `aglow run`. Checks when `aglow run` does not ask, the modes of the terminal after signals and `Ctrl+C`, and what `aglow remote-prune` removes | Python 3 |
@@ -822,7 +822,6 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `aglow_icat_decode` | Sends crafted images to `aglow icat` and checks the pixels that it sends, or its error | Python 3, and a user that cannot read a directory of mode 0 |
 | `aglow_icat_render` | Draws the output of `aglow icat` with `afterglow_renderpng` | Python 3, `AFTERGLOW_BUILD_TOOLS`, a Wayland display and a Vulkan device |
 
-Without `readelf`, the configuration prints a message and leaves out `aglow_static`.
 `aglow_only_build` compiles zlib-ng and xxHash again, which takes some minutes.
 Run the suite without it:
 
@@ -830,11 +829,11 @@ Run the suite without it:
 ctest --test-dir build --output-on-failure -LE slow
 ```
 
-A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` tests and these tests of the table:
+A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` and `Image.*` tests and these tests of the table:
 
 - `aglow_version`, `aglow_run_usage`, `aglow_no_command`, `aglow_unknown_command` and `aglow_help_unknown_command`
 - The three `aglow_remote_prune_*` tests, and `Aglow.*`
-- `aglow_static`, `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_tmux_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`
+- `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_tmux_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`
 
 It has no test that runs `afterglow`.
 

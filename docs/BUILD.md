@@ -14,19 +14,18 @@ To build `aglow` alone, without Qt and the Phosphor libraries, see [build aglow 
 - Qt Core, Gui, Widgets, Qml, Quick, QuickControls2, Concurrent, DBus, Network, Svg, WaylandClient and ShaderTools.
 - Qt CorePrivate, GuiPrivate, ShaderToolsPrivate, WaylandClientPrivate and QuickPrivate headers.
 - FreeType, HarfBuzz, FriBidi and fontconfig.
+- libpng, libjpeg-turbo 3.0 or later and libwebp (with libwebpdemux), for `aglow` and `afterglow-mux`. Qt reads images with the same libraries.
 - xkbcommon, wayland-client, `wayland-scanner` and the 32-bit PCRE2 library.
 - KF6 WindowSystem.
 - GTest, unless you configure with `-DBUILD_TESTING=OFF`.
 - The Phosphor libraries from a PlasmaZones checkout.
-- The static C and C++ runtime libraries (`libc.a` and `libstdc++.a`), for `aglow`.
-  Fedora puts them in the packages `glibc-static` and `libstdc++-static`.
-  Without them, the configuration stops with a message.
-  To build without `aglow`, configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`.
-  Then `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` show an error and exit with status 127.
-  A shell cannot run script commands with their arguments, standard input and exit status.
-  `afterglow ctl action script:ID.COMMAND` still starts a command, with no arguments.
-  The shell completions offer no script commands. For these five commands, they complete file names.
-  A build with `-DAFTERGLOW_BUILD_FUZZERS=ON` does not build `aglow`.
+
+To build without `aglow`, configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`.
+Then `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` show an error and exit with status 127.
+A shell cannot run script commands with their arguments, standard input and exit status.
+`afterglow ctl action script:ID.COMMAND` still starts a command, with no arguments.
+The shell completions offer no script commands. For these five commands, they complete file names.
+A build with `-DAFTERGLOW_BUILD_FUZZERS=ON` does not build `aglow`.
 
 The build compiles zlib-ng and xxHash from their [source archives](#source-archives).
 These are C sources, so the build needs the C compiler.
@@ -102,11 +101,6 @@ This command also puts an empty `.lock` file next to each Afterglow archive that
 With the two options, the configuration downloads nothing.
 If you set only one option, the configuration downloads CPM.cmake and the archives of the other pin file.
 
-The repository includes `tools/aglow/stb/stb_image.h`, which `aglow icat` uses to decode images.
-The file has patches of `aglow`, which the start of `tools/aglow/StbImage.cpp` lists.
-`cmake/AfterglowDependencies.cmake` pins the file to its upstream base commit and to the SHA-256 hash of the patched file.
-When the build includes `aglow`, or the fuzz targets (`AFTERGLOW_BUILD_FUZZERS`), a configuration with a changed file stops with an error.
-
 ## Qt private APIs
 
 Afterglow uses Qt private APIs. CMake reports this dependency during configuration.
@@ -171,7 +165,7 @@ The build compiles the Phosphor libraries with Afterglow.
 
 Build `aglow` alone on a computer that does not run Afterglow, for example a remote host.
 A distribution can also package `aglow` on its own from this build.
-This build needs CMake 3.21 or later, a C compiler, a C++20 compiler and the static C and C++ runtime libraries.
+This build needs CMake 3.21 or later, pkg-config, a C compiler, a C++20 compiler, libpng, libjpeg-turbo 3.0 or later and libwebp.
 It does not need Qt, the other libraries of Afterglow or a PlasmaZones checkout.
 It compiles zlib-ng and xxHash from their [source archives](#source-archives), as the full build does.
 It downloads only CPM.cmake and the archives of `cmake/AfterglowDependencies.cmake`.
@@ -241,16 +235,8 @@ The license notices of the code in `aglow` go in `share/licenses/afterglow`:
 | --- | --- | --- |
 | `LICENSE.zlib-ng` | The notice of zlib-ng, which `afterglow` also contains | Always |
 | `LICENSE.xxHash` | The notice of xxHash, which `afterglow` also contains | Always |
-| `LICENSE.stb_image` | The MIT notice of stb_image | When the build includes `aglow` |
-| `LICENSE.glibc` | The notice of the GNU C Library, with the steps to link `aglow` again with another C library | When `aglow` is static |
-| `LICENSE.libstdc++` | The notice of libstdc++ and libgcc, with the GCC Runtime Library Exception | When `aglow` is static |
 
-A static `aglow` contains parts of glibc, which is LGPL-2.1-or-later.
-To link `aglow` again with a changed C library, build the `aglow` target from the Afterglow source of the same version (`cmake --build build --target aglow`).
-A [build of aglow alone](#build-aglow-alone) also does this, without Qt and the Phosphor libraries.
-When `readelf` is installed, the build of a static `aglow` prints the oldest Linux kernel that it needs, and on x86-64 the processor level.
-When the compiler or linker flags contain `-fsanitize`, such as in the `debug` preset, `aglow` links dynamically.
-A static program cannot use the sanitizer runtimes.
+`aglow` and `afterglow-mux` link libpng, libjpeg-turbo and libwebp of the system, which come with their own notices.
 Private libraries go in an `afterglow` directory in the library directory, for example `lib/afterglow/` or `lib64/afterglow/`.
 This location does not replace libraries from a system Phosphor installation.
 

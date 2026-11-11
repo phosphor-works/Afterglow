@@ -4,8 +4,9 @@
 # libFuzzer targets (clang only, for C and C++): afterglow_vtfuzz for the
 # terminal core and the reader of its state frames, afterglow_protofuzz for
 # the protocol readers that take what a remote program sends,
-# afterglow_imagefuzz for the image decoders of aglow
-# (the patched stb_image and aglow's GIF reader in tools/aglow), and
+# afterglow_imagefuzz for the image decoders of aglow and afterglow-mux
+# (libs/afterglow-image: its GIF and BMP readers, and its calls of the
+# system's libpng, libjpeg-turbo and libwebp), and
 # afterglow_muxfuzz for the readers of the attach stream of afterglow-mux.
 # afterglow_muxfuzz compiles code of mux/, which is GPL-3.0-or-later, so its
 # source is too, and no other target links it. The
@@ -15,8 +16,9 @@
 # so its source list cannot be compiled again here. Every binary in a fuzz
 # build directory that links zlib-ng then needs the sanitizer runtimes. Only
 # the fuzz targets are built and supported there, so the configure turns the
-# tests off, CMakeLists.txt turns aglow off (a static aglow cannot link the
-# runtimes), and the build names its targets.
+# tests off, CMakeLists.txt turns aglow off (it does not link the runtimes),
+# and the build names its targets. The system's image libraries are not
+# instrumented: they are linked as they are.
 #
 #   cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DAFTERGLOW_BUILD_FUZZERS=ON \
 #       -DBUILD_TESTING=OFF
@@ -74,15 +76,12 @@ target_include_directories(afterglow_muxfuzz PRIVATE "${PROJECT_SOURCE_DIR}/mux/
     $<TARGET_PROPERTY:AfterglowVt,INTERFACE_INCLUDE_DIRECTORIES>)
 target_link_libraries(afterglow_muxfuzz PRIVATE afterglow_fuzz_proto)
 
-# The decoders as aglow builds them (tools/aglow/CMakeLists.txt): stb's code
-# without Afterglow's warnings, and with -fwrapv.
-afterglow_vendored_file(stb_image AFTERGLOW_FUZZ_STB_IMAGE)
-get_filename_component(AFTERGLOW_FUZZ_STB_DIR "${AFTERGLOW_FUZZ_STB_IMAGE}" DIRECTORY)
-set(AFTERGLOW_FUZZ_STB_SOURCE "${PROJECT_SOURCE_DIR}/tools/aglow/StbImage.cpp")
-add_executable(afterglow_imagefuzz imagefuzz.cpp "${AFTERGLOW_FUZZ_STB_SOURCE}")
-target_include_directories(afterglow_imagefuzz PRIVATE "${PROJECT_SOURCE_DIR}/tools/aglow")
-target_include_directories(afterglow_imagefuzz SYSTEM PRIVATE "${AFTERGLOW_FUZZ_STB_DIR}")
-set_source_files_properties("${AFTERGLOW_FUZZ_STB_SOURCE}" PROPERTIES COMPILE_OPTIONS "-w;-fwrapv")
+# The decoders, compiled again from the sources of libs/afterglow-image.
+get_target_property(AFTERGLOW_FUZZ_IMAGE_SOURCES AfterglowImage SOURCES)
+list(TRANSFORM AFTERGLOW_FUZZ_IMAGE_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/libs/afterglow-image/")
+add_executable(afterglow_imagefuzz imagefuzz.cpp ${AFTERGLOW_FUZZ_IMAGE_SOURCES})
+target_include_directories(afterglow_imagefuzz PRIVATE $<TARGET_PROPERTY:AfterglowImage,INTERFACE_INCLUDE_DIRECTORIES>)
+target_link_libraries(afterglow_imagefuzz PRIVATE PkgConfig::AFTERGLOW_IMAGE_CODECS)
 
 foreach(target afterglow_fuzz_proto afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz)
     set_target_properties(${target} PROPERTIES AUTOMOC OFF AUTOUIC OFF)

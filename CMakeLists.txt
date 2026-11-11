@@ -53,6 +53,7 @@ if(AFTERGLOW_AGLOW_ONLY)
     endforeach()
     include(cmake/AfterglowDependencies.cmake)
     add_subdirectory(libs/afterglow-proto)
+    add_subdirectory(libs/afterglow-image)
     add_subdirectory(tools/aglow)
     return()
 endif()
@@ -81,8 +82,7 @@ set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
 set(CMAKE_INSTALL_RPATH "$ORIGIN/../${AFTERGLOW_PRIVATE_LIBDIR}")
 
 include(cmake/AfterglowPhosphor.cmake)
-# The pins of zlib-ng and xxHash (libs/afterglow-proto) and of the vendored
-# stb_image (tools/aglow, checked by afterglow_vendored_file), after the
+# The pins of zlib-ng and xxHash (libs/afterglow-proto), after the
 # Phosphor module so that a CPM which that module loaded is used again. Like
 # it, this module is included at the top scope: CPM keeps its state in the
 # variables of the scope that loads it.
@@ -91,13 +91,14 @@ include(cmake/AfterglowDependencies.cmake)
 add_subdirectory(libs/afterglow-proto)  # protocol formats, terminal and client side: transfer, drag and drop, images, clipboard, the phosphor-ipc client and server (no Qt)
 add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, screen, Unicode, input encoding (no Qt)
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
+add_subdirectory(libs/afterglow-image)  # image decoders of aglow and afterglow-mux over the system libpng, libjpeg-turbo and libwebp (no Qt)
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas
 option(AFTERGLOW_BUILD_TOOLS "Build developer tools: benchmarks, afterglow_renderpng and the headless conformance host" OFF)
-option(AFTERGLOW_BUILD_AGLOW "Build aglow, the static client of the Kitty protocols and of script commands (no Qt). Without it, afterglow has no run, transfer, dnd, icat or clipboard command" ON)
+option(AFTERGLOW_BUILD_AGLOW "Build aglow, the client of the Kitty protocols and of script commands (no Qt). Without it, afterglow has no run, transfer, dnd, icat or clipboard command" ON)
 option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core, the protocol library and the image decoders (clang for C and C++)" OFF)
 option(AFTERGLOW_BUILD_VTDIFF "Build afterglow_vtdiff, which compares the terminal core with libghostty-vt (needs libghostty-vt in CMAKE_PREFIX_PATH)" OFF)
-# A fuzz build instruments zlib-ng with the sanitizers (tools/fuzz), and a
-# static aglow cannot link their runtimes. This normal variable hides the
+# A fuzz build instruments zlib-ng with the sanitizers (tools/fuzz), and
+# aglow, which links zlib-ng, does not link their runtimes. This normal variable hides the
 # cached option in every directory, afterglow/ included.
 if(AFTERGLOW_BUILD_FUZZERS AND AFTERGLOW_BUILD_AGLOW)
     message(STATUS "aglow: AFTERGLOW_BUILD_FUZZERS is on, so aglow is not built, and afterglow has no run, transfer, dnd, icat or clipboard command")

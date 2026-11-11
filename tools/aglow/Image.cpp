@@ -4,9 +4,9 @@
 #include "Image.h"
 
 #include "Commands.h"
-#include "StbImage.h"
 #include "Tty.h"
 
+#include <AfterglowImage/Decode.h>
 #include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Graphics.h>
 
@@ -26,8 +26,8 @@
 
 namespace Aglow {
 
-static_assert(std::uint32_t(Stb::MaxSide) == AfterglowProto::GraphicsMaxSide,
-              "stb_image's STBI_MAX_DIMENSIONS must be the longest side that Afterglow takes");
+static_assert(std::uint32_t(AfterglowImage::MaxSide) == AfterglowProto::GraphicsMaxSide,
+              "the decoders must take the longest side that Afterglow takes");
 
 namespace {
 
@@ -292,7 +292,7 @@ struct Limits
         bool written = true;
         std::string error;
         std::string warning;
-        const bool ok = Stb::decode(bytes, [&](const unsigned char* rgba, int width, int height, int delay) {
+        const bool ok = AfterglowImage::decode(bytes, [&](const unsigned char* rgba, int width, int height, int delay) {
             if (++frames > limits.maxFrames) {
                 written = send(fd, { Kind::TooMany });
                 return false;
@@ -381,18 +381,18 @@ std::string childFailure(int status)
 
 bool imageSize(std::string_view bytes, int& width, int& height, std::string& error)
 {
-    switch (Stb::probe(bytes, width, height)) {
-    case Stb::Probe::Unknown:
+    switch (AfterglowImage::probe(bytes, width, height)) {
+    case AfterglowImage::Probe::Unknown:
         error = "not an image that aglow can read";
         return false;
-    case Stb::Probe::TooLarge:
+    case AfterglowImage::Probe::TooLarge:
         error = width > 0 && height > 0
             ? "the image is " + std::to_string(width) + "x" + std::to_string(height) + " pixels, and a terminal takes no side longer than "
                 + std::to_string(AfterglowProto::GraphicsMaxSide)
             : "the image has a side longer than " + std::to_string(AfterglowProto::GraphicsMaxSide)
                 + " pixels, which is more than a terminal takes";
         return false;
-    case Stb::Probe::Image:
+    case AfterglowImage::Probe::Image:
         break;
     }
     if (jpegOrientation(bytes) >= 5) {
@@ -452,8 +452,8 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
     limits.height = image.height;
     limits.maxFrames = std::size_t(std::max<std::uint64_t>(
         1, std::min<std::uint64_t>(AfterglowProto::GraphicsMaxFrames, budget / frameBytes)));
-    // stb_image needs a few times the decoded image while it works (16-bit
-    // PNG, float HDR, a copy of the compressed data). Past this, its
+    // A decoder needs a few times the decoded image while it works (16-bit
+    // PNG, the canvas of an animation). Past this, its
     // allocations fail, whatever a corrupt file asks for.
     limits.memory = 8 * frameBytes + bytes.size() + (std::uint64_t(64) << 20);
     // Seconds of CPU time: decoding runs at well over 16 MiB a second.

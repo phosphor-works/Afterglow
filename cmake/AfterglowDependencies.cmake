@@ -55,23 +55,6 @@ set(AFTERGLOW_DEP_xxhash_URL "https://github.com/Cyan4973/xxHash/archive/refs/ta
 set(AFTERGLOW_DEP_xxhash_FILE "xxHash-0.8.4.tar.gz")
 set(AFTERGLOW_DEP_xxhash_SHA256 "5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32")
 
-# ─── Vendored files ──────────────────────────────────────────────────────────
-# A single-file library is kept in the repository, so that it needs no archive
-# of its own. Its pin is the upstream commit and the SHA-256 of the file,
-# checked at configure time by afterglow_vendored_file(). Bumping it: copy
-# the file from the new commit and change COMMIT and SHA256 together.
-
-# stb_image (MIT, Sean Barrett), v2.30: aglow icat decodes JPEG, BMP and the
-# other formats with it, and afterglow-mux the PNG and iTerm2 images of its
-# sessions. The file carries aglow's patches, which the top of
-# tools/aglow/StbImage.cpp lists, so SHA256 is that of the patched file and
-# COMMIT names the upstream base. REUSE.toml licenses the file.
-set(AFTERGLOW_VENDORED_stb_image_COMMIT "d14d46f6b44456eb88beac58cba833a4135d4c89")
-set(AFTERGLOW_VENDORED_stb_image_URL
-    "https://raw.githubusercontent.com/nothings/stb/${AFTERGLOW_VENDORED_stb_image_COMMIT}/stb_image.h")
-set(AFTERGLOW_VENDORED_stb_image_FILE "tools/aglow/stb/stb_image.h")
-set(AFTERGLOW_VENDORED_stb_image_SHA256 "9ffe0bebf6a68d3fe05ba9a803d611f83c67a4c76acca0a8cf7d73e29d61248b")
-
 # CPM.cmake itself, the same release that PlasmaZones pins.
 set(AFTERGLOW_CPM_VERSION "0.43.2")
 set(AFTERGLOW_CPM_SHA256 "49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c544a2f232aa")
@@ -159,62 +142,6 @@ if(NOT AFTERGLOW_DEPS_ARCHIVES AND NOT COMMAND CPMAddPackage)
     endif()
     include("${_afterglow_cpm_file}")
 endif()
-
-# afterglow_stb_image_notice(<path>)
-#
-# Writes the MIT notice of the vendored stb_image to <path>, for aglow and
-# afterglow-mux, which link it. It is the notice in the vendored header
-# itself, from the MIT alternative up to the next one. A regular expression
-# cannot cut it there: CMake has no lazy match, and ".*" runs on to the end of
-# the Unlicense. The file is written only when its text changes, so that a
-# configure does not make the install copy it again.
-function(afterglow_stb_image_notice path)
-    afterglow_vendored_file(stb_image header)
-    file(READ "${header}" text)
-    string(FIND "${text}" "ALTERNATIVE A - MIT License\n" mit)
-    string(FIND "${text}" "ALTERNATIVE B - " unlicense)
-    if(mit EQUAL -1 OR unlicense LESS_EQUAL mit)
-        message(FATAL_ERROR "The MIT notice was not found in ${header}")
-    endif()
-    math(EXPR length "${unlicense} - ${mit}")
-    string(SUBSTRING "${text}" ${mit} ${length} notice)
-    # Without the heading line and the rule of dashes that ends the alternative.
-    string(REGEX REPLACE "^ALTERNATIVE A - MIT License\n" "" notice "${notice}")
-    string(REGEX REPLACE "-+\n$" "" notice "${notice}")
-    if(NOT notice MATCHES "^Copyright[^\n]*\n.*SOFTWARE\\.\n$")
-        message(FATAL_ERROR "The MIT notice in ${header} does not have the expected form")
-    endif()
-    set(content "stb_image ${AFTERGLOW_VENDORED_stb_image_URL}, with the patches of aglow\n\n${notice}")
-    if(EXISTS "${path}")
-        file(READ "${path}" old)
-        if(old STREQUAL content)
-            return()
-        endif()
-    endif()
-    file(WRITE "${path}" "${content}")
-endfunction()
-
-# afterglow_vendored_file(<name> <variable>)
-#
-# Sets <variable> to the path of the vendored file <name>, after checking it
-# against its pin. A change to the file runs the configure again, so that the
-# check sees it. Works in configure mode only.
-function(afterglow_vendored_file name variable)
-    if(NOT AFTERGLOW_VENDORED_${name}_FILE)
-        message(FATAL_ERROR "afterglow_vendored_file: '${name}' is not pinned in ${CMAKE_CURRENT_FUNCTION_LIST_FILE}")
-    endif()
-    set(path "${_AFTERGLOW_DEPS_ROOT}/${AFTERGLOW_VENDORED_${name}_FILE}")
-    if(NOT EXISTS "${path}")
-        message(FATAL_ERROR "afterglow_vendored_file: ${path}, the vendored file of '${name}', does not exist")
-    endif()
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${path}")
-    file(SHA256 "${path}" have)
-    if(NOT have STREQUAL AFTERGLOW_VENDORED_${name}_SHA256)
-        message(FATAL_ERROR "${path} does not match its pin (commit ${AFTERGLOW_VENDORED_${name}_COMMIT}):\n"
-                            "  expected ${AFTERGLOW_VENDORED_${name}_SHA256}\n  got      ${have}")
-    endif()
-    set(${variable} "${path}" PARENT_SCOPE)
-endfunction()
 
 # afterglow_fetch_dependency(<name>)
 #

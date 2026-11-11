@@ -40,12 +40,12 @@ bool imageSize(std::string_view bytes, int& width, int& height);
 /// The same, with @p error set to the reason when it is false.
 bool imageSize(std::string_view bytes, int& width, int& height, std::string& error);
 /// Whether @p bytes are a PNG file that a terminal can decode itself: a valid
-/// IHDR first, and not Apple's CgBI variant, which only aglow reads.
+/// IHDR first, and not Apple's CgBI variant.
 bool isPng(std::string_view bytes);
-/// Decodes PNG, JPEG, GIF (with every frame), BMP, PSD (RGB), TGA, HDR, PIC
-/// and binary PGM and PPM, when the decoded pixels fit in @p budget bytes and
+/// Decodes PNG, JPEG, GIF and WebP (with every frame) and BMP
+/// (AfterglowImage), when the decoded pixels fit in @p budget bytes and
 /// each side in AfterglowProto::GraphicsMaxSide. A JPEG is turned as its EXIF
-/// orientation says. A GIF whose frames do not all fit in @p budget, or that
+/// orientation says. An animation whose frames do not all fit in @p budget, or that
 /// has more than AfterglowProto::GraphicsMaxFrames, gives its first frame.
 /// The decoder runs in a child process with limits on its memory and CPU
 /// time, so that a corrupt file cannot harm aglow. nullopt with @p error set

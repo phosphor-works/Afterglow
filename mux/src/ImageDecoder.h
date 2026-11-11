@@ -15,12 +15,13 @@ inline constexpr std::string_view DecodeImageArgument = "--decode-image";
 /// The formats that a program may send.
 enum class ImageFormats {
     Png, ///< kitty graphics f=100: PNG only
-    Common, ///< iTerm2 inline images: PNG, JPEG, GIF (its first frame) and BMP
+    Common, ///< iTerm2 inline images: PNG, JPEG, GIF and WebP (their first frame) and BMP
 };
 
 /// Decodes @p data into RGBA8 with straight alpha, as the window's
-/// decodeBoundedImage does with Qt. The daemon has no Qt: the patched
-/// stb_image of aglow decodes, in a process of its own. @p decoder runs with
+/// decodeBoundedImage does with Qt. The daemon has no Qt: AfterglowImage
+/// decodes with the libraries that Qt uses (libpng, libjpeg-turbo, libwebp),
+/// in a process of its own. @p decoder runs with
 /// DecodeImageArgument and limits on its memory, its CPU time and its core
 /// files, so that a corrupt file ends that process, not the daemon and its
 /// sessions. The daemon passes its own executable, which a rebuild cannot

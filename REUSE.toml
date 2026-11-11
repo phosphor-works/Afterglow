@@ -91,22 +91,3 @@ SPDX-FileCopyrightText = ["2011 to Present Mark Badolato and contributors", "The
 SPDX-License-Identifier = "MIT"
 # Converted from mbadolato/iTerm2-Color-Schemes (ghostty/), which collects
 # each scheme from its upstream project.
-
-[[annotations]]
-path = ["tools/aglow/stb/stb_image.h"]
-SPDX-FileCopyrightText = ["2017 Sean Barrett", "2026 fuddlesworth"]
-SPDX-License-Identifier = "MIT"
-# stb_image from nothings/stb, at the upstream commit that
-# cmake/AfterglowDependencies.cmake pins, with aglow's patches. The top of
-# tools/aglow/StbImage.cpp lists the patches, which are MIT like the file.
-# Upstream offers MIT or the Unlicense: Afterglow takes it under MIT.
-
-# The notices that install with a static aglow (tools/aglow/CMakeLists.txt).
-# The text of the GCC Runtime Library Exception goes with them as
-# notices/COPYING.RUNTIME, its name in the GCC sources. It is not in LICENSES/:
-# no file of Afterglow is under the exception, and REUSE allows no licence
-# file there that no file uses. REUSE covers no COPYING.* file.
-[[annotations]]
-path = ["tools/aglow/notices/*.txt"]
-SPDX-FileCopyrightText = "2026 fuddlesworth"
-SPDX-License-Identifier = "CC0-1.0"

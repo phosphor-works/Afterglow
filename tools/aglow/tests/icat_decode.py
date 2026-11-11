@@ -5,17 +5,16 @@
 
 Usage: icat_decode.py AGLOW
 
-Each image is built here, byte by byte, to hit one decoder bug that aglow
-fixed: GIF disposal, background and graphic control extension semantics, the
-two_back read of GHSL-2023-145, the frame limit and its warning, frames that do
-not all fit in the 320 MiB budget of an image and its warning (and frames that
-fit exactly), a frame far larger than its canvas, a frame partly off the
-canvas, interlaced frames, the least code size, LZW without a leading clear
-code, a GIF damaged after its frames, 16-bit PNM, BMP gaps and top-down rows,
-the direction and colour map of a TGA, a 16-bit PSD in RLE, HDR scanlines of
-both kinds, invalid PNG depths and a valid PNG sent as it is, the EXIF
-orientation of a JPEG, a JPEG without Huffman tables (as Motion JPEG), the
-size of a PIC past the limit, and a corrupt file, which the decoder child must
+Each image is built here, byte by byte, to hit one case of the decoders
+(libs/afterglow-image): GIF disposal, background and graphic control
+extension semantics, the two_back read of GHSL-2023-145, the frame limit and
+its warning, frames that do not all fit in the 320 MiB budget of an image and
+its warning (and frames that fit exactly), a frame far larger than its canvas,
+a frame partly off the canvas, interlaced frames, the least code size, LZW
+without a leading clear code, a GIF damaged after its frames, BMP gaps and
+top-down rows, invalid PNG depths and a valid PNG sent as it is, the size of
+a PNG past the limit, the EXIF orientation of a JPEG, a JPEG without Huffman
+tables (as Motion JPEG), and a corrupt file, which the decoder child must
 turn into an error and not a crash of aglow. It also checks that a
 subdirectory that cannot be read leaves out only itself, and that a signal to
 aglow ends a decode that does not end, and the decoder child with it.
@@ -294,7 +293,7 @@ def main():
         red, green, blue, white, clear = (255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255), (255, 255, 255, 255), (0, 0, 0, 0)
 
         # The background colour of the global table fills what the first frame does not cover, in RGB order.
-        # Index 0, stb_image's rule, fills nothing: the canvas stays transparent there.
+        # Index 0 fills nothing: the canvas stays transparent there.
         code, sent, err = show("background.gif", gif(2, 1, 2, [{"rect": (0, 0, 1, 1), "indices": [0]}]))
         check(code == 0 and len(sent) == 1, err, len(sent))
         check(pixels(sent[0]) == [red, blue], pixels(sent[0]))
@@ -397,43 +396,12 @@ def main():
         check(code == 0 and len(sent) == 2 and "stops after frame 2" in err, code, len(sent), err)
         print("GIF damaged after its frames: passed", flush=True)
 
-        # 16-bit PNM is big-endian, and samples scale from the maximum value.
-        code, sent, err = show("deep.ppm", b"P6\n1 1\n1000\n" + struct.pack(">HHH", 1000, 500, 0))
-        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [(255, 128, 0, 255)], err, sent and pixels(sent[0]))
-        code, sent, err = show("low.ppm", b"P6 1 1 100\n" + bytes([100, 50, 0]))
-        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [(255, 128, 0, 255)], err, sent and pixels(sent[0]))
-        print("PNM depth and maximum value: passed", flush=True)
-
         # A BMP with bytes between its header and its pixels, and a top-down BMP.
         code, sent, err = show("gap.bmp", bmp(1, [[(10, 20, 30)]], gap=4))
         check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [(10, 20, 30, 255)], err, sent and pixels(sent[0]))
         code, sent, err = show("top.bmp", bmp(1, [[(255, 0, 0)], [(0, 0, 255)]], top_down=True))
         check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [red, blue], err, sent and pixels(sent[0]))
         print("BMP gap and top-down rows: passed", flush=True)
-
-        # TGA: bit 4 of the descriptor mirrors the rows, and a colour map starts at its first index.
-        header = struct.pack("<BBBHHBHHHHBB", 0, 0, 2, 0, 0, 0, 0, 0, 2, 1, 24, 0x30)
-        code, sent, err = show("mirrored.tga", header + bytes([0, 0, 255, 255, 0, 0]))
-        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [blue, red], err, sent and pixels(sent[0]))
-        header = struct.pack("<BBBHHBHHHHBB", 0, 1, 1, 10, 2, 24, 0, 0, 2, 1, 8, 0x20)
-        code, sent, err = show("mapped.tga", header + bytes([0, 0, 255, 0, 255, 0, 11, 10]))
-        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [green, red], err, sent and pixels(sent[0]))
-        print("TGA direction and colour map: passed", flush=True)
-
-        # PSD: a 16-bit channel in RLE is a run of bytes, two for each sample.
-        psd = b"8BPS" + struct.pack(">H", 1) + b"\0" * 6 + struct.pack(">HIIHH", 3, 1, 1, 16, 3) + struct.pack(">IIIH", 0, 0, 0, 1)
-        psd += struct.pack(">HHH", 3, 3, 3) + b"".join(bytes([1]) + struct.pack(">H", v) for v in (0xFF00, 0x8000, 0))
-        code, sent, err = show("deep.psd", psd)
-        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [(255, 128, 0, 255)], err, sent and pixels(sent[0]))
-        print("PSD 16-bit RLE: passed", flush=True)
-
-        # HDR: a flat scanline after a run-length encoded one is the second row, not the first.
-        row0 = bytes([2, 2, 0, 8]) + b"".join(bytes([128 + 8, v]) for v in (128, 64, 0, 129))
-        hdr = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 2 +X 8\n" + row0 + bytes([64, 128, 0, 129]) * 8
-        code, sent, err = show("mixed.hdr", hdr)
-        rows = pixels(sent[0]) if code == 0 and sent else []
-        check(len(rows) == 16 and rows[0][0] > rows[0][1] and rows[8][1] > rows[8][0], err, rows)
-        print("HDR scanlines of both kinds: passed", flush=True)
 
         # A PNG with a depth that its colour type does not take is refused; a valid one goes as it is.
         code, sent, err = show("bad.png", png(1, 1, 4, 2, b"\0\0\0"))
@@ -442,6 +410,11 @@ def main():
         code, sent, err = show("good.png", valid)
         check(code == 0 and len(sent) == 1 and sent[0]["keys"].get("f") == "100" and sent[0]["pixels"] == valid, err)
         print("PNG depths: passed", flush=True)
+
+        # A PNG past the longest side is too large, with its size, from its header.
+        code, sent, err = show("huge.png", png(20000, 20000, 8, 2, b""))
+        check(code == 1 and not sent and "20000x20000" in err, code, err)
+        print("PNG past the size limit: passed", flush=True)
 
         # EXIF orientation 6: an image 8 wide and 16 high shows 16 wide and 8 high, its top on the right.
         code, sent, err = show("rotated.jpg", jpeg_rotated())
@@ -452,17 +425,11 @@ def main():
         check(all(abs(px[0] - 159) <= 2 for px in row[:8]) and all(abs(px[0] - 128) <= 2 for px in row[8:]), row)
         print("JPEG EXIF orientation: passed", flush=True)
 
-        # A JPEG without DHT takes the Huffman tables of Annex K, as libjpeg does.
+        # A JPEG without DHT takes the Huffman tables of Annex K, as libjpeg-turbo does.
         code, sent, err = show("motion.jpg", jpeg_without_tables())
         check(code == 0 and len(sent) == 1 and all(abs(px[0] - 159) <= 2 for px in pixels(sent[0])), err,
               sent and pixels(sent[0]))
         print("JPEG without Huffman tables: passed", flush=True)
-
-        # A PIC past the longest side is too large, with its size, and not an unknown file.
-        pic = b"\x53\x80\xf6\x34" + b"\0" * 84 + b"PICT" + struct.pack(">HH", 20000, 20000) + b"\0" * 8 + bytes([0, 8, 0, 0xF0])
-        code, sent, err = show("huge.pic", pic)
-        check(code == 1 and not sent and "20000x20000" in err, code, err)
-        print("PIC past the size limit: passed", flush=True)
 
         # Corrupt data is an error from the decoder, and aglow goes on to the next image.
         corrupt = root / "corrupt.png"

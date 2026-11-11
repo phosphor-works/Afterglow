@@ -1,104 +1,22 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-// The implementation of the vendored stb_image, in its own target: it builds
-// without Afterglow's warnings, as zlib-ng and xxHash do. aglow decodes from
-// memory only, in a child process that Image.cpp starts with limits on its
-// memory and CPU time. afterglow-mux compiles this file too, and decodes in a
-// process of its own with limits (mux/src/ImageDecoder.cpp). GIF goes through aglow's own decoder below, as
-// stb_image's animated GIF loader read before its heap block
-// (GHSL-2023-145) and freed its delays twice (GHSL-2023-150).
-//
-// aglow patches tools/aglow/stb/stb_image.h in place. Each patch carries an
-// "aglow patch" comment there:
-//  - JPEG: a scan that uses a Huffman table that no DHT defined takes the
-//    table of Annex K for tables 0 and 1, as libjpeg does (Motion JPEG
-//    leaves them out), and is refused for tables 2 and 3. It decoded as grey.
-//  - JPEG: an image ends at 1000 scans, as each scan walks the whole image
-//    (STBI__AGLOW_MAX_JPEG_SCANS).
-//  - JPEG: a marker that fails after the scans ends the image and runs
-//    stbi__jpeg_finish (a progressive image without EOI kept uninitialized
-//    pixels), and an image without a scan is refused.
-//  - JPEG: four components without an Adobe APP14 marker are CMYK, as in
-//    libjpeg, and transform 1 is YCCK (it was YCbCr with the fourth ignored).
-//  - zlib: a run of fixed-code blocks builds the fixed tables once.
-//  - zlib: the output of a PNG ends at the size that its image data can
-//    have, so that a deflate bomb fails there (stbi__aglow_zlib_cap).
-//  - PNG: the palette starts zeroed (an index past PLTE read the stack).
-//  - PNG: colour types 2, 4 and 6 with a depth below 8 are refused.
-//  - PNG: an IDAT longer than the rest of the input is corrupt, before the
-//    buffer grows for it.
-//  - BMP: a height of -2^31 is refused (abs() of it is undefined).
-//  - BMP: a V3 (56-byte) header gives its masks from the header.
-//  - BMP: 16 bpp BI_RGB has no alpha mask, also with a V4 or V5 header.
-//  - BMP: the palette starts zeroed, an OS/2 1.x palette has the right
-//    length, and a negative palette size is refused.
-//  - BMP: with 16 bpp and more, the gap up to the pixels is skipped once.
-//  - BMP: stbi_info gives the height of a top-down image as positive.
-//  - TGA: the colour map starts at index tga_palette_start, and bit 4 of
-//    the descriptor mirrors the image.
-//  - PSD: 16-bit RLE channels decode byte by byte, and the matte removal
-//    clamps its values.
-//  - HDR: a flat scanline among run-length encoded ones decodes in place.
-//  - PIC: a side longer than STBI_MAX_DIMENSIONS is "too large", as in the
-//    other readers. Past 2^28 pixels, the file was not a PIC.
-//  - PNM: 16-bit samples are big-endian, every sample scales from the
-//    maximum value, and a maximum value of 0 is refused.
-//
-// The configuration: STBI_MAX_DIMENSIONS is the longest side that Afterglow
-// takes, so that no size product overflows an int (convert_format16 needs
-// that). Image.cpp checks the size in the header first, and reports which
-// limit an image breaks. STBI_MALLOC zeroes, and STBI_REALLOC_SIZED zeroes
-// what it adds, so that pixels a corrupt file never writes are black and
-// transparent, never old heap contents. STBI_NO_GIF leaves stb_image's GIF
-// loader out, STBI_NO_LINEAR its float API, which aglow does not use.
-// STBI_FAILURE_USERMSG gives the longer messages. Every AArch64 processor
-// has NEON, and SSE2 is on by itself on x86-64, so the integer IDCT of C
-// runs on neither.
+// aglow's own GIF decoder: no system library composes the frames of an
+// animation, and the LZW reader here bounds its work by the canvas and the
+// data, whatever size a frame claims. tools/fuzz/imagefuzz.cpp fuzzes it.
 
-#include "StbImage.h"
+#include "Formats.h"
 
 #include <algorithm>
 #include <array>
-#include <climits>
+#include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
-#include <memory>
 #include <vector>
 
-namespace {
-
-void* zeroedRealloc(void* p, std::size_t oldSize, std::size_t newSize)
-{
-    auto* q = static_cast<unsigned char*>(std::realloc(p, newSize));
-    if (q && newSize > oldSize) {
-        std::memset(q + oldSize, 0, newSize - oldSize);
-    }
-    return q;
-}
-
-} // namespace
-
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_NO_STDIO
-#define STBI_NO_GIF
-#define STBI_NO_LINEAR
-#define STBI_FAILURE_USERMSG
-#define STBI_MAX_DIMENSIONS (Aglow::Stb::MaxSide)
-#define STBI_MALLOC(size) std::calloc(1, size)
-#define STBI_REALLOC_SIZED(p, oldSize, newSize) zeroedRealloc(p, oldSize, newSize)
-#define STBI_FREE(p) std::free(p)
-#if defined(__aarch64__)
-#define STBI_NEON
-#endif
-#include <stb_image.h>
-
-namespace Aglow::Stb {
+namespace AfterglowImage::detail {
 
 namespace {
-
-bool isGif(std::string_view bytes) { return bytes.starts_with("GIF87a") || bytes.starts_with("GIF89a"); }
 
 // Bytes in order, and 0 past the end.
 class Reader
@@ -154,9 +72,9 @@ private:
 // before left, a graphic control extension that applies to the next frame
 // only, frames clipped to the logical screen, and LZW streams with no
 // leading clear code or with a clear deferred past a full table. One rule is
-// stb_image's and not the browsers': the pixels that the first frame does
-// not cover show the background colour of the global table, where a browser
-// leaves them transparent.
+// not the browsers' (stb_image had it, and aglow kept it): the pixels that
+// the first frame does not cover show the background colour of the global
+// table, where a browser leaves them transparent.
 class GifDecoder
 {
 public:
@@ -499,8 +417,8 @@ bool GifDecoder::run(const FrameSink& sink, std::string& error, std::string& war
             palette[std::size_t(transparent)][3] = 0;
         }
         if (frames == 0 && background > 0 && background < globalCount && int(background) != transparent) {
-            // stb_image's rule, in RGB order: the pixels that the first frame
-            // does not cover show the background colour of the global table.
+            // The pixels that the first frame does not cover show the
+            // background colour of the global table.
             std::array<std::uint8_t, 4> colour = global[background];
             colour[3] = 255;
             fillRect({ 0, 0, m_width, m_height }, colour);
@@ -530,80 +448,16 @@ bool GifDecoder::run(const FrameSink& sink, std::string& error, std::string& war
 
 } // namespace
 
-Probe probe(std::string_view bytes, int& width, int& height)
+Probe probeGif(std::string_view bytes, int& width, int& height)
 {
     width = height = 0;
-    if (isGif(bytes)) {
-        if (bytes.size() < 10) {
-            return Probe::Unknown;
-        }
-        width = int(std::uint8_t(bytes[6]) | std::uint8_t(bytes[7]) << 8);
-        height = int(std::uint8_t(bytes[8]) | std::uint8_t(bytes[9]) << 8);
-    } else {
-        if (bytes.size() > std::size_t(INT_MAX)) {
-            return Probe::Unknown;
-        }
-        // The formats in the order of stbi__info_main, one at a time: a side
-        // past STBI_MAX_DIMENSIONS is refused by its own reader, and a later
-        // reader would replace that reason. The reader has stored the side.
-        using Info = int (*)(stbi__context*, int*, int*, int*);
-        static constexpr Info readers[] = { stbi__jpeg_info, stbi__png_info, stbi__bmp_info, stbi__psd_info,
-            stbi__pic_info, stbi__pnm_info, stbi__hdr_info, stbi__tga_info };
-        stbi__context context;
-        stbi__start_mem(&context, reinterpret_cast<const stbi_uc*>(bytes.data()), int(bytes.size()));
-        bool known = false;
-        for (const Info reader : readers) {
-            int channels = 0;
-            stbi__g_failure_reason = nullptr;
-            // A reader gives its bit depth (8 or 16 for PNM), not only 1.
-            if (reader(&context, &width, &height, &channels) != 0) {
-                known = true;
-                break;
-            }
-            const char* reason = stbi__g_failure_reason;
-            if (reason && std::strcmp(reason, "Very large image (corrupt?)") == 0) {
-                width = int(std::min<stbi__uint32>(context.img_x, INT_MAX));
-                height = int(std::min<stbi__uint32>(context.img_y, INT_MAX));
-                return Probe::TooLarge;
-            }
-            stbi__rewind(&context);
-        }
-        if (!known) {
-            return Probe::Unknown;
-        }
-    }
-    if (width > MaxSide || height > MaxSide) {
-        return Probe::TooLarge;
-    }
-    return width > 0 && height > 0 ? Probe::Image : Probe::Unknown;
+    if (bytes.size() < 10) return Probe::Unknown;
+    return sized(std::uint64_t(at(bytes, 6) | at(bytes, 7) << 8), std::uint64_t(at(bytes, 8) | at(bytes, 9) << 8), width, height);
 }
 
-bool decode(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning)
+bool decodeGif(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning)
 {
-    if (isGif(bytes)) {
-        return GifDecoder(bytes).run(sink, error, warning);
-    }
-    if (bytes.size() > std::size_t(INT_MAX)) {
-        error = "the file is too large";
-        return false;
-    }
-    // Apple's CgBI PNG holds premultiplied BGR: straight RGB, as every other PNG.
-    stbi_convert_iphone_png_to_rgb(1);
-    stbi_set_unpremultiply_on_load(1);
-    stbi__g_failure_reason = nullptr;
-    int width = 0;
-    int height = 0;
-    int channels = 0;
-    std::unique_ptr<stbi_uc, void (*)(void*)> pixels(
-        stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(bytes.data()), int(bytes.size()), &width, &height, &channels, 4),
-        stbi_image_free);
-    if (!pixels) {
-        const char* reason = stbi_failure_reason();
-        error = reason && *reason ? reason : "the image data is corrupt";
-        return false;
-    }
-    sink(pixels.get(), width, height, 0);
-    return true;
+    return GifDecoder(bytes).run(sink, error, warning);
 }
 
-} // namespace Aglow::Stb
+} // namespace AfterglowImage::detail

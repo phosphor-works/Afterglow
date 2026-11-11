@@ -265,7 +265,7 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 `aglow transfer`, `aglow dnd`, `aglow icat` and `aglow clipboard` take the options of the `kitten` command of the same name, with the differences below.
 
 - `aglow transfer` sends the permission password only in the SHA-256 form, which Afterglow and Kitty accept. It does not use Kitty's own form, which encrypts the password with `KITTY_PUBLIC_KEY`.
-- `aglow icat` decodes images with stb_image. It does not use ImageMagick or download images from URLs.
+- `aglow icat` decodes PNG, JPEG, GIF, WebP and BMP images with libpng, libjpeg-turbo, libwebp and readers of its own. It does not use ImageMagick or download images from URLs.
 - The `--engine` option of `aglow icat` takes `auto` and `builtin`, which mean the same. It refuses `magick`.
 - `aglow icat` accepts `--silent` and ignores it, as `kitten icat` does.
 - `aglow icat` compresses pixels with zlib only when it sends them through the terminal connection. A file or shared memory holds raw pixels.

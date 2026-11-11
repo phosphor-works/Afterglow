@@ -3,8 +3,7 @@
 
 #include "ImageDecoder.h"
 
-#include "StbImage.h"
-
+#include <AfterglowImage/Decode.h>
 #include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Graphics.h>
 #include <AfterglowVt/Graphics.h>
@@ -45,21 +44,13 @@ bool fits(std::uint64_t width, std::uint64_t height)
         && width * height * 4 <= MaxBytes;
 }
 
-// The signature, then IHDR as the first chunk: Apple's CgBI chunk comes
-// before IHDR, and Qt does not read CgBI files either.
-bool isPng(std::string_view data)
-{
-    return data.size() >= 16 && data.starts_with("\x89PNG\r\n\x1a\n") && data.substr(12, 4) == "IHDR";
-}
-
 // The formats that the window takes too (imageFormatAllowed), by their
-// signatures. WebP is not among them: stb_image does not read it.
+// signatures.
 bool allowed(std::string_view data, ImageFormats formats)
 {
-    if (isPng(data)) return true;
-    if (formats == ImageFormats::Png) return false;
-    return data.starts_with("\xff\xd8\xff") || data.starts_with("GIF87a") || data.starts_with("GIF89a")
-        || (data.size() >= 14 && data.starts_with("BM"));
+    const AfterglowImage::Format format = AfterglowImage::format(data);
+    if (formats == ImageFormats::Png) return format == AfterglowImage::Format::Png;
+    return format != AfterglowImage::Format::Unknown;
 }
 
 // The decoder, killed and reaped however decodeImage() ends.
@@ -240,10 +231,10 @@ int runImageDecoder()
         }
         int width = 0;
         int height = 0;
-        if (Aglow::Stb::probe(data, width, height) != Aglow::Stb::Probe::Image || !fits(std::uint64_t(width), std::uint64_t(height)))
+        if (AfterglowImage::probe(data, width, height) != AfterglowImage::Probe::Image || !fits(std::uint64_t(width), std::uint64_t(height)))
             return 1;
-        // As aglow: stb_image needs a few times the decoded image while it
-        // works (16-bit PNG, a copy of the compressed data). Past this, its
+        // As aglow: a decoder needs a few times the decoded image while it
+        // works (16-bit PNG, the canvas of an animation). Past this, its
         // allocations fail, whatever a corrupt file asks for. It decodes at
         // well over 16 MiB a second.
         const std::uint64_t frameBytes = std::uint64_t(width) * std::uint64_t(height) * 4;
@@ -254,7 +245,7 @@ int runImageDecoder()
         std::string error;
         std::string warning;
         // The first frame of an animation, as the window shows it.
-        Aglow::Stb::decode(data, [&](const unsigned char* pixels, int w, int h, int) {
+        AfterglowImage::decode(data, [&](const unsigned char* pixels, int w, int h, int) {
             if (fits(std::uint64_t(w), std::uint64_t(h))) {
                 const Header header{std::uint32_t(w), std::uint32_t(h)};
                 written = writeAll(STDOUT_FILENO, &header, sizeof header)

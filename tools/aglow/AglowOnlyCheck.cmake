@@ -94,16 +94,9 @@ endforeach()
 aglow_only_run(build ${CMAKE_COMMAND} --build "${build}" --parallel ${JOBS})
 aglow_only_run(installation ${CMAKE_COMMAND} --install "${build}" --prefix "${prefix}")
 
-# A static aglow also carries the notices of glibc and libstdc++, and the
-# texts of the licences that they name.
-file(STRINGS "${build}/CMakeCache.txt" static REGEX "^AGLOW_STATIC_LINK_WORKS:INTERNAL=1$")
 set(expected bin/aglow share/bash-completion/completions/aglow share/fish/vendor_completions.d/aglow.fish
     share/zsh/site-functions/_aglow share/licenses/aglow/LGPL-2.1-or-later.txt
-    share/licenses/aglow/LICENSE.stb_image share/licenses/aglow/LICENSE.xxHash share/licenses/aglow/LICENSE.zlib-ng)
-if(static)
-    list(APPEND expected share/licenses/aglow/GPL-3.0-or-later.txt share/licenses/aglow/LICENSE.glibc
-         share/licenses/aglow/LICENSE.libstdc++)
-endif()
+    share/licenses/aglow/LICENSE.xxHash share/licenses/aglow/LICENSE.zlib-ng)
 file(GLOB_RECURSE installed LIST_DIRECTORIES false RELATIVE "${prefix}" "${prefix}/*")
 list(SORT expected)
 list(SORT installed)

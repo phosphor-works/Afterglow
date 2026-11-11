@@ -27,22 +27,19 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 | `build-release` | Release | ON | Performance numbers and release checks |
 | `build-prof` | RelWithDebInfo | ON | Profiling with `perf` |
 | `build-fuzz` | RelWithDebInfo, clang for C and C++, `AFTERGLOW_BUILD_FUZZERS=ON`, `BUILD_TESTING=OFF` | OFF | The libFuzzer targets `afterglow_vtfuzz`, `afterglow_protofuzz`, `afterglow_imagefuzz` and `afterglow_muxfuzz` only. Build them by name: the other binaries are not supported there (zlib-ng is instrumented in place). The fuzz option turns `aglow` off. Make it when you fuzz, with the commands in `docs/TESTING.md`. |
-| `build-debug` | Debug with ASan and UBSan at `-O1` (`debug` preset) | — | Make it when you look for memory errors, and before a PR that changes a parser, a protocol or a pane's memory. Build it with `-j2`: at `-j4` the compiles hit the 6 GB cap. `docs/TESTING.md` "Sanitizer build" has the three runs (errors, leaks without `-L gpu`, native). `aglow` links dynamically there, and `aglow_static` is left out. |
+| `build-debug` | Debug with ASan and UBSan at `-O1` (`debug` preset) | — | Make it when you look for memory errors, and before a PR that changes a parser, a protocol or a pane's memory. Build it with `-j2`: at `-j4` the compiles hit the 6 GB cap. `docs/TESTING.md` "Sanitizer build" has the three runs (errors, leaks without `-L gpu`, native). |
 
 ## aglow
 
 `AFTERGLOW_AGLOW_ONLY=ON` builds only `libs/afterglow-proto` and `tools/aglow`: no Qt, no Phosphor checkout, and an
 install of `bin/aglow`, its completions and its notices in `share/licenses/aglow`. `docs/BUILD.md` has the procedure.
 
-`AFTERGLOW_BUILD_AGLOW` is on by default. `aglow` links statically, so the configuration needs `libc.a` and
-`libstdc++.a` (Fedora: `glibc-static` and `libstdc++-static`). Without them, the configuration stops with a message
-that names the packages. Do not install them: tell the user, or configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`. Then
-the `aglow` tests are left out. The `aglow dnd` tests of `afterglow_dnd_tests` and of the native suite skip, and so
+`AFTERGLOW_BUILD_AGLOW` is on by default. `aglow` and `afterglow-mux` link the system's libpng, libjpeg-turbo (3.0
+or later) and libwebp through `libs/afterglow-image`. Without them, the configuration stops at `pkg_check_modules`.
+Do not install them: tell the user. With `-DAFTERGLOW_BUILD_AGLOW=OFF` the `aglow` tests are left out. The `aglow dnd` tests of `afterglow_dnd_tests` and of the native suite skip, and so
 do the `RunBinaryTest.*` tests of `afterglow_command_tests` and the `sshd` test of `afterglow_remote_tests`
 (`RemoteCommandsTest.OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThroughIt`).
 `aglow` builds next to `afterglow` (`build/afterglow/aglow`), and building `afterglow` builds it too.
-`tools/aglow/stb/stb_image.h` is pinned by its SHA-256 in `cmake/AfterglowDependencies.cmake`: after a change to the
-file, set the new hash there and list the patch at the top of `tools/aglow/StbImage.cpp`.
 
 `AFTERGLOW_BUILD_TOOLS=ON` builds `afterglow_renderpng`, `afterglow_headless`, `afterglow_vtbench` and
 `afterglow_native_bench`. Shader previews, `aglow_icat_render` and `afterglow_headless_runner` need it. The renderer

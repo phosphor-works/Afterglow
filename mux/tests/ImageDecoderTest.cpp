@@ -19,7 +19,7 @@
 #include <sys/stat.h>
 
 using AfterglowMux::ImageFormats;
-using namespace MuxTest::Images;
+using namespace ImageFiles;
 
 namespace {
 
@@ -60,7 +60,7 @@ TEST(MuxImageDecoder, APngDecodesToItsPixelsWithStraightAlpha)
     }
 }
 
-TEST(MuxImageDecoder, AnItermImageCanBeJpegGifOrBmp)
+TEST(MuxImageDecoder, AnItermImageCanBeJpegGifWebPOrBmp)
 {
     Decoded d = decode(Bmp, ImageFormats::Common);
     ASSERT_TRUE(d.ok);
@@ -73,6 +73,12 @@ TEST(MuxImageDecoder, AnItermImageCanBeJpegGifOrBmp)
     EXPECT_EQ(d.width, 4u);
     EXPECT_EQ(d.height, 4u);
     EXPECT_EQ(d.rgba, repeat({255, 0, 0, 255}, 16));
+    d = decode(WebpAnimated, ImageFormats::Common);
+    ASSERT_TRUE(d.ok);
+    EXPECT_EQ(d.rgba, repeat({255, 0, 0, 255}, 16));
+    d = decode(Webp, ImageFormats::Common);
+    ASSERT_TRUE(d.ok);
+    EXPECT_EQ(d.rgba, repeat({255, 0, 0, 255}, 4));
     d = decode(Jpeg, ImageFormats::Common);
     ASSERT_TRUE(d.ok);
     EXPECT_EQ(d.width, 8u);
@@ -89,9 +95,7 @@ TEST(MuxImageDecoder, AnItermImageCanBeJpegGifOrBmp)
 TEST(MuxImageDecoder, RefusesOtherFormatsAndBadFiles)
 {
     // kitty's f=100 is PNG only.
-    for (const std::string* file : {&Jpeg, &Gif, &Bmp}) EXPECT_FALSE(decode(*file, ImageFormats::Png).ok);
-    // WebP, which a pane outside a session shows: stb_image does not read it.
-    EXPECT_FALSE(decode(Webp, ImageFormats::Common).ok);
+    for (const std::string* file : {&Jpeg, &Gif, &Bmp, &Webp}) EXPECT_FALSE(decode(*file, ImageFormats::Png).ok);
     EXPECT_FALSE(decode("", ImageFormats::Common).ok);
     EXPECT_FALSE(decode("not an image at all", ImageFormats::Common).ok);
     EXPECT_FALSE(decode(Png.substr(0, 40), ImageFormats::Png).ok);

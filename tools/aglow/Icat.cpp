@@ -5,7 +5,7 @@
 // afterglow-proto. A PNG that needs no change goes as it is. Other formats,
 // and images that must be scaled, mirrored or flattened, go as pixels: RGB
 // when they are opaque, else RGBA, and with zlib when they go in the escape
-// codes. A GIF goes as animation frames.
+// codes. An animated GIF or WebP goes as animation frames.
 
 #include "Cli.h"
 #include "Commands.h"
@@ -54,8 +54,8 @@ using AfterglowProto::GraphicsCommand;
 constexpr long long Unlimited = LLONG_MAX;
 // kitten's z-index origin for "--1": below the cell backgrounds.
 constexpr std::int64_t BelowBackground = -1073741824;
-// The largest file that aglow reads as an image: an uncompressed 16-bit RGBA
-// image (PNM, PSD) as large as the image memory of the terminal.
+// The largest file that aglow reads as an image: twice the image memory of
+// the terminal, which an uncompressed BMP or a lossless PNG reaches.
 constexpr std::uint64_t MaxInput = 2 * std::uint64_t(AfterglowProto::GraphicsDefaultQuota);
 // The bytes of graphics commands that go out between two checks for a signal.
 constexpr std::size_t WriteSlice = 64 * 1024;
@@ -64,9 +64,8 @@ const Cli::Command command {
     "icat",
     "image_file_or_directory ...",
     "Show images in the terminal, with kitty's graphics protocol.",
-    "Shows PNG, JPEG, GIF, BMP, TGA, HDR and PIC images, PSD images in RGB, and binary PGM and PPM images. A "
-    "directory shows every image in it. Image data on standard input is shown too. An animated GIF plays in the "
-    "terminal.",
+    "Shows PNG, JPEG, GIF, WebP and BMP images. A directory shows every image in it. Image data on standard input "
+    "is shown too. An animated GIF or WebP plays in the terminal.",
     {
         { "--align", Cli::Option::Kind::Choice, "center", { "center", "left", "right" },
           "Horizontal alignment of the image." },
@@ -225,8 +224,7 @@ bool hasImageExtension(const std::string& name)
     }
     std::string ext = name.substr(dot + 1);
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-    // stb_image reads binary PGM and PPM, not PBM.
-    static const char* known[] = { "png", "jpg", "jpeg", "gif", "bmp", "psd", "tga", "hdr", "pic", "pnm", "ppm", "pgm" };
+    static const char* known[] = { "png", "jpg", "jpeg", "gif", "webp", "bmp" };
     return std::any_of(std::begin(known), std::end(known), [&](const char* k) { return ext == k; });
 }
 
