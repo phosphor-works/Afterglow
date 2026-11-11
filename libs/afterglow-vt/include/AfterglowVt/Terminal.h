@@ -508,6 +508,9 @@ private:
     /// margin (or the page edge right of it), within a double-width line's
     /// visible half.
     int rightEdge(const Row& row, int x) const;
+    /// IRM shifts the line only from a column between the left and right
+    /// margins, as ICH (xterm). Outside them a character overwrites.
+    bool insertsAt(int x) const { return m_modes.insert && x >= m_margins.left && x <= m_margins.right; }
     void vt52Dispatch(std::uint8_t final);
     void reverseWrapStep();
     void setColumnMode(bool wide);
@@ -667,7 +670,7 @@ private:
 
     // Grapheme clustering and REP: the last printed cell.
     Unicode::GraphemeSegmenter m_segmenter;
-    char32_t m_lastPrinted = 0;
+    char32_t m_lastPrinted = 0; ///< as the program sent it, for REP
     int m_lastX = -1;
     int m_lastY = -1;
     // Recently printed characters and their properties, by the low bits of
