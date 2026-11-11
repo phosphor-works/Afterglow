@@ -276,8 +276,8 @@ void Attachment::readInput(Session& session)
         return;
     }
     // A window that left waits for nothing: the input that the PTY has no
-    // room for is lost, and what came after it still counts (a resize, the
-    // end of the session).
+    // room for, or the pane's waiting input past its bound, is lost, and
+    // what came after it still counts (a resize, the end of the session).
     const bool windowLeft = !m_stream->open();
     if (!windowLeft && !sendHeldInput(session)) return;
     while (input->read(frame) == PhosphorChannel::ReadResult::Frame) {
@@ -297,8 +297,9 @@ void Attachment::readInput(Session& session)
         if (!pane) continue;
         switch (message->type) {
         case Attach::InputType::Bytes:
-            // The program reads slowly: the input waits for room, and the
-            // window's input waits behind it in the channel.
+            // The program reads slowly, or the pane's input that waits
+            // behind a decode reached its bound: the input waits for room,
+            // and the window's input waits behind it in the channel.
             if (pane->input(message->bytes) == MuxPane::Input::Full && !windowLeft) {
                 m_heldInput = std::move(message);
                 return;

@@ -152,15 +152,13 @@ void report(std::chrono::steady_clock::time_point& last, const std::string& text
 // it reads a descriptor from the low word of an argument. On any other, a
 // decoding process decodes nothing (NoFilterStatus).
 #if defined(__x86_64__)
-constexpr std::uint32_t NativeArch = AUDIT_ARCH_X86_64;
+#define AFTERGLOW_MUX_FILTER_ARCH AUDIT_ARCH_X86_64
 #elif defined(__aarch64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-constexpr std::uint32_t NativeArch = AUDIT_ARCH_AARCH64;
+#define AFTERGLOW_MUX_FILTER_ARCH AUDIT_ARCH_AARCH64
 #elif defined(__riscv) && __riscv_xlen == 64
-constexpr std::uint32_t NativeArch = AUDIT_ARCH_RISCV64;
+#define AFTERGLOW_MUX_FILTER_ARCH AUDIT_ARCH_RISCV64
 #elif defined(__powerpc64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-constexpr std::uint32_t NativeArch = AUDIT_ARCH_PPC64LE;
-#else
-constexpr std::uint32_t NativeArch = 0;
+#define AFTERGLOW_MUX_FILTER_ARCH AUDIT_ARCH_PPC64LE
 #endif
 
 /// The exit status of a decoding process that cannot limit its system calls
@@ -170,61 +168,63 @@ constexpr int NoFilterStatus = 3;
 
 /// Past this, the decoding process makes only the system calls that
 /// decoding needs: memory, a read of its file, a write of its pixels or of
-/// a sanitizer's report, its end. Any other fails with ENOSYS, so that code
-/// that a corrupt file took over can open, run or connect to nothing, and
-/// read no terminal that standard error may be. A system call of another
-/// architecture kills it. False when the filter cannot be set.
+/// a sanitizer's report, the lowering of its own limits, its end. Any other
+/// fails with ENOSYS, so that code that a corrupt file took over can open,
+/// run or connect to nothing, and read no terminal that standard error may
+/// be. A system call of another architecture kills it. False when the
+/// filter cannot be set, and on an architecture that it does not know.
 bool allowOnlyDecoding()
 {
     if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return false;
-    if constexpr (NativeArch == 0) {
-        return false;
-    } else {
-        constexpr std::uint32_t Allow = SECCOMP_RET_ALLOW;
-        constexpr std::uint32_t Refuse = SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA);
-        // The low word of the first argument: a descriptor or a process id
-        // (little endian, as the architectures here are).
-        constexpr std::uint32_t FirstArgument = offsetof(seccomp_data, args);
-        std::vector<sock_filter> filter;
-        filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, arch)));
-        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NativeArch, 1, 0));
-        filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
-        filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)));
-        // read() of standard input only.
-        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_read, 0, 4));
-        filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
-        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDIN_FILENO, 0, 1));
-        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
-        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
-        // write() of standard output and standard error only.
-        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_write, 0, 5));
-        filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
-        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDOUT_FILENO, 1, 0));
-        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDERR_FILENO, 0, 1));
-        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
-        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
-        // prlimit64() of this process only: the limits go down once the
-        // image's header is read, and no hard limit can go up.
-        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_prlimit64, 0, 4));
-        filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
-        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 1));
-        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
-        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
+#ifndef AFTERGLOW_MUX_FILTER_ARCH
+    return false;
+#else
+    constexpr std::uint32_t NativeArch = AFTERGLOW_MUX_FILTER_ARCH;
+    constexpr std::uint32_t Allow = SECCOMP_RET_ALLOW;
+    constexpr std::uint32_t Refuse = SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA);
+    // The low word of the first argument: a descriptor or a process id
+    // (little endian, as the architectures here are).
+    constexpr std::uint32_t FirstArgument = offsetof(seccomp_data, args);
+    std::vector<sock_filter> filter;
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, arch)));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NativeArch, 1, 0));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)));
+    // read() of standard input only.
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_read, 0, 4));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDIN_FILENO, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
+    // write() of standard output and standard error only.
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_write, 0, 5));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDOUT_FILENO, 1, 0));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDERR_FILENO, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
+    // prlimit64() of this process only: the limits go down once the
+    // image's header is read, and no hard limit can go up.
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_prlimit64, 0, 4));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
 #ifdef SYS_getrlimit
-        for (const long call : {long(SYS_getrlimit), long(SYS_setrlimit)}) {
-            filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
-            filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
-        }
-#endif
-        for (const long call : {SYS_close, SYS_mmap, SYS_munmap, SYS_mremap, SYS_mprotect, SYS_madvise, SYS_brk, SYS_futex,
-                                SYS_getrandom, SYS_clock_gettime, SYS_rt_sigreturn, SYS_exit, SYS_exit_group}) {
-            filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
-            filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
-        }
-        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
-        const sock_fprog program{static_cast<unsigned short>(filter.size()), filter.data()};
-        return ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0;
+    for (const long call : {long(SYS_getrlimit), long(SYS_setrlimit)}) {
+        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
+        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
     }
+#endif
+    for (const long call : {SYS_close, SYS_mmap, SYS_munmap, SYS_mremap, SYS_mprotect, SYS_madvise, SYS_brk, SYS_futex,
+                            SYS_getrandom, SYS_clock_gettime, SYS_rt_sigreturn, SYS_exit, SYS_exit_group}) {
+        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
+        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
+    }
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
+    const sock_fprog program{static_cast<unsigned short>(filter.size()), filter.data()};
+    return ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0;
+#endif
 }
 
 /// A decoding process: reads the image from @p input, a memory file, and
@@ -365,7 +365,7 @@ void reap(std::chrono::steady_clock::time_point& lastReport)
         if (WIFSIGNALED(status) && WTERMSIG(status) != SIGKILL && WTERMSIG(status) != SIGPIPE)
             report(lastReport, "an image decoder ended with signal " + std::to_string(WTERMSIG(status)) + ": the image does not show");
         if (WIFEXITED(status) && WEXITSTATUS(status) == NoFilterStatus)
-            report(lastReport, "the image decoder cannot limit its system calls (seccomp): images of sessions do not show");
+            report(lastReport, "the image decoder cannot limit its system calls (no seccomp, or a processor that it does not know): images of sessions do not show");
     }
 }
 
@@ -588,6 +588,9 @@ AfterglowProto::UniqueFd ImageDecoder::requestLocked(ImageFormats formats, int i
         if (!m_socket.valid()) return {};
         --m_owedAnswers;
     }
+    // A drain that ended at the deadline leaves the server no time to
+    // answer: it is fine, and the request goes no further.
+    if (std::chrono::steady_clock::now() >= deadline) return {};
     std::uint8_t byte = std::uint8_t(formats);
     iovec io{&byte, 1};
     alignas(cmsghdr) char control[CMSG_SPACE(2 * sizeof(int))] = {};

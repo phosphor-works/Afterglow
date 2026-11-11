@@ -167,7 +167,7 @@ private:
     std::size_t m_replicaHistory = ~std::size_t(0);
     std::uint64_t m_serial = 0;
     std::map<std::uint32_t, PaneLink> m_panes; ///< by pane id
-    std::optional<Attach::Input> m_heldInput; ///< input that a full PTY refused
+    std::optional<Attach::Input> m_heldInput; ///< input that a pane refused (MuxPane::Input::Full)
     bool m_inputDue = false; ///< held input went in pump(): the next handle() reads what follows it
     std::optional<Attach::EventType> m_finish;
     bool m_finishSent = false;

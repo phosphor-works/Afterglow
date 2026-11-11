@@ -9,6 +9,7 @@
 #include "MuxPane.h"
 
 #include <AfterglowProto/Base64.h>
+#include <AfterglowPty/Pty.h>
 #include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
 
@@ -53,8 +54,8 @@ struct TempDir
     }
 };
 
-/// A pane whose program prints a PNG with kitty graphics and then waits,
-/// with a decoder whose server takes the request and never answers: the
+/// A pane whose program prints a PNG with kitty graphics and then runs
+/// @p then (by default, it waits), with a decoder whose server takes the request and never answers: the
 /// decode lasts until the decoder's wait ends.
 struct StuckDecode
 {
@@ -63,7 +64,7 @@ struct StuckDecode
     std::unique_ptr<MuxPane> pane;
     AfterglowVt::StateWriter writer;
 
-    explicit StuckDecode(int waitMs)
+    explicit StuckDecode(int waitMs, const std::string& then = "exec /bin/sleep 60")
     {
         if (dir.path.empty()) return;
         const std::string server = (dir.path / "server").string();
@@ -75,7 +76,7 @@ struct StuckDecode
         pane = std::make_unique<MuxPane>(1, AfterglowVt::TerminalOptions{}, PaneSize{80, 24, 10, 20}, std::string(), *decoder,
                                          [] {});
         AfterglowPty::SpawnOptions spawn;
-        spawn.argv = {"/bin/sh", "-c", "cat '" + image + "'; exec /bin/sleep 60"};
+        spawn.argv = {"/bin/sh", "-c", "cat '" + image + "'; " + then};
         std::string error;
         if (!pane->start(std::move(spawn), std::string(), &error)) pane.reset();
     }
@@ -125,6 +126,31 @@ TEST(MuxPane, TheDaemonDoesNotWaitForADecodeAndItsChangesComeAfter)
     ASSERT_TRUE(reader.apply(replica, *frame, &error)) << error;
     EXPECT_EQ(replica.cols(), 100);
     EXPECT_EQ(replica.rows(), 30);
+}
+
+TEST(MuxPane, InputWaitsInThePaneBehindAChangeThatWaitsForADecode)
+{
+    // The program reads a line, then writes the size of its terminal.
+    TempDir out;
+    ASSERT_FALSE(out.path.empty());
+    const std::string size = (out.path / "size").string();
+    StuckDecode stuck(1500, "IFS= read -r line; stty size > '" + size + "'; exec /bin/sleep 60");
+    ASSERT_TRUE(stuck.pane);
+    ASSERT_TRUE(stuck.decoding());
+    // The pane takes the input behind the resize, and the window's other
+    // panes go on. Past half of the PTY's queue, the window holds it.
+    stuck.pane->resize(PaneSize{100, 30, 10, 20});
+    EXPECT_EQ(stuck.pane->input("x\n"), MuxPane::Input::Written);
+    EXPECT_EQ(stuck.pane->input(std::string(AfterglowPty::Pty::MaxPendingInput / 2, 'a')), MuxPane::Input::Full);
+    // The decode ends: the resize goes first, then the line.
+    std::string got;
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    while (Clock::now() < deadline && got.empty()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::ifstream file(size);
+        std::getline(file, got);
+    }
+    EXPECT_EQ(got, "30 100");
 }
 
 TEST(MuxPane, APaneThatClosesDoesNotWaitForItsDecode)

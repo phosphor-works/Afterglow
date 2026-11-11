@@ -666,9 +666,20 @@ MuxPane::Input MuxPane::input(std::string_view bytes)
     // it, as the window sent them.
     if (m_changesWaiting.load()) {
         std::lock_guard lock(m_mutex);
-        // The window holds it, with what follows, as for a full queue: the
-        // wake at the end of the feed sends it on.
-        if (!m_deferred.empty()) return Input::Full;
+        if (!m_deferred.empty()) {
+            // It waits behind the change, in the pane: the window's other
+            // panes take their input meanwhile. Within half of the PTY's
+            // queue, so that it fits there after the feed beside the replies
+            // of the program that the feed made. Past that, as for a full
+            // queue: the window holds it until the wake at the feed's end.
+            if (m_deferredInput + bytes.size() + m_pty->pendingInput() > AfterglowPty::Pty::MaxPendingInput / 2) return Input::Full;
+            m_deferredInput += bytes.size();
+            m_deferred.push_back([this, data = std::string(bytes)] {
+                m_deferredInput -= data.size();
+                (void)m_pty->write(data);
+            });
+            return Input::Written;
+        }
     }
     if (m_pty->write(bytes)) return Input::Written;
     // A terminal that takes no more input (its child side is gone, while the

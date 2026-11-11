@@ -10387,8 +10387,9 @@ TEST_F(NativeWindow, AMuxSessionsAnimationRunsInTheWindow) {
     ASSERT_TRUE(waitFor([&] { return !shown->tabSwitching(); }));
     drain(100);
     const std::optional<std::size_t> hidden = frame();
-    drain(400);
-    EXPECT_EQ(frame(), hidden);
+    // Polled: its frames step every 50 ms, so two samples could meet on the
+    // same frame of a running loop.
+    EXPECT_FALSE(waitFor([&] { return frame() != hidden; }, 400));
     // Back in sight, it runs again.
     ASSERT_TRUE(shown->runAction(shown->focusedPane(), Action::PreviousTab));
     ASSERT_TRUE(waitFor([&] { return frame() != hidden; }, 5000));
@@ -10402,8 +10403,7 @@ TEST_F(NativeWindow, AMuxSessionsAnimationRunsInTheWindow) {
         });
     }, 5000));
     const std::optional<std::size_t> stopped = frame();
-    drain(300);
-    EXPECT_EQ(frame(), stopped);
+    EXPECT_FALSE(waitFor([&] { return frame() != stopped; }, 300));
     delete shown;
 }
 

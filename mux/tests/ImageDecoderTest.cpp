@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -221,19 +222,23 @@ TEST(MuxImageDecoder, ADecodeEndsAtItsDeadlineOrWhenItIsCancelled)
     // 8,000 by 8,000: far more than 300 ms of work, which it does decode.
     const std::string large = greyPng(8000, 8000);
     ImageDecoder decoder(AFTERGLOW_MUX);
+    auto start = Clock::now();
     {
         const Decoded whole = decode(decoder, large, ImageFormats::Png);
         ASSERT_TRUE(whole.ok);
         EXPECT_EQ(whole.width, 8000u);
     }
+    const auto full = Clock::now() - start;
 
     // The server answers at once once it runs: the deadline ends the wait
-    // for the pixels, not for the server.
-    ImageDecoder quick(AFTERGLOW_MUX, 300);
+    // for the pixels, not for the server. A third of the whole decode, so
+    // that a fast processor does not finish it.
+    const int wait = int(std::max<std::int64_t>(20, std::chrono::duration_cast<std::chrono::milliseconds>(full).count() / 3));
+    ImageDecoder quick(AFTERGLOW_MUX, wait);
     ASSERT_TRUE(decode(quick, Png, ImageFormats::Png).ok);
-    auto start = Clock::now();
+    start = Clock::now();
     EXPECT_FALSE(decode(quick, large, ImageFormats::Png).ok);
-    EXPECT_GE(Clock::now() - start, std::chrono::milliseconds(300));
+    EXPECT_GE(Clock::now() - start, std::chrono::milliseconds(wait));
 
     // The pane closes while its image decodes.
     const int cancel = ::eventfd(0, EFD_CLOEXEC);
@@ -261,26 +266,35 @@ TEST(MuxImageDecoder, APaneThatClosesLeavesTheServerToTheOthers)
     // its request waits for the answer. exec keeps the process.
     TempDir dir;
     ASSERT_FALSE(dir.path.empty());
-    const std::string slow = dir.script("slow", std::string("sleep 1\nexec '") + AFTERGLOW_MUX + "' \"$@\"");
+    const std::string slow = dir.script("slow", std::string("/bin/sleep 1\nexec '") + AFTERGLOW_MUX + "' \"$@\"");
     ASSERT_FALSE(slow.empty());
+    if (!std::filesystem::exists("/proc/self/task/" + std::to_string(::gettid()) + "/children"))
+        GTEST_SKIP() << "the kernel lists no children of a process (CONFIG_PROC_CHILDREN)";
     ImageDecoder decoder(slow);
     const std::set<pid_t> server = children();
     ASSERT_FALSE(server.empty());
-    const int cancel = ::eventfd(0, EFD_CLOEXEC);
-    ASSERT_GE(cancel, 0);
-    const auto start = Clock::now();
-    std::thread closes([cancel] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        const std::uint64_t one = 1;
-        (void)!::write(cancel, &one, sizeof one);
-    });
-    EXPECT_FALSE(decode(decoder, Png, ImageFormats::Png, cancel).ok);
-    const auto took = Clock::now() - start;
-    closes.join();
-    ::close(cancel);
-    // It ended before the answer came.
-    EXPECT_LT(took, std::chrono::milliseconds(900));
-    // The next decode takes the late answer, and the same server decodes.
+    // A decode whose pane closes 100 ms after it began. False, and how long
+    // it took.
+    const auto closing = [&decoder] {
+        const int cancel = ::eventfd(0, EFD_CLOEXEC);
+        EXPECT_GE(cancel, 0);
+        const auto start = Clock::now();
+        std::thread closes([cancel] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            const std::uint64_t one = 1;
+            (void)!::write(cancel, &one, sizeof one);
+        });
+        EXPECT_FALSE(decode(decoder, Png, ImageFormats::Png, cancel).ok);
+        const auto took = Clock::now() - start;
+        closes.join();
+        ::close(cancel);
+        return took;
+    };
+    // It ends before the answer comes, also when it waits for the answer
+    // of the decode before it.
+    EXPECT_LT(closing(), std::chrono::milliseconds(900));
+    EXPECT_LT(closing(), std::chrono::milliseconds(500));
+    // The next decode takes the late answers, and the same server decodes.
     EXPECT_TRUE(decode(decoder, Png, ImageFormats::Png).ok);
     EXPECT_EQ(children(), server);
 }

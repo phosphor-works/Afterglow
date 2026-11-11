@@ -50,18 +50,20 @@ namespace AfterglowMux {
 /// call from any thread. While an image decodes, the reader thread lets
 /// m_mutex go and the terminal stays its own: the daemon's thread does not
 /// wait for it. A frame then waits, and a change waits for the end of the
-/// feed, which makes it. Input after a change that waits waits too, as for a
-/// full queue (Input::Full).
+/// feed, which makes it. Input after a change that waits waits behind it, in
+/// the pane, up to half of the PTY's queue.
 class MuxPane final : public AfterglowVt::ITerminalHost, public AfterglowPty::IPtyListener
 {
 public:
     /// @p wake runs when the program exits, after output, a resize, a reset
     /// or a clear once takeChanged() took the change before it, when
-    /// a host call waits for the window and none waited before, and when the
+    /// a host call waits for the window and none waited before, when the
     /// PTY's input queue has room again after it refused input, or takes no
-    /// more input. The reader thread runs it for output, host calls, the exit
-    /// and the queue. The daemon's thread runs it for the others, and for the
-    /// host calls of a resize, a reset, a visibility change and a new window.
+    /// more input, and at the end of a feed that made the changes and wrote
+    /// the input that waited for its decode. The reader thread runs it for
+    /// output, host calls, the exit, the queue and that feed. The daemon's
+    /// thread runs it for the others, and for the host calls of a resize, a
+    /// reset, a visibility change and a new window.
     /// It must be safe to call from any thread.
     /// @p images decodes the pane's PNG and iTerm2 images, and outlives it.
     MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, const PaneSize& size,
@@ -82,8 +84,10 @@ public:
     /// What input() did.
     enum class Input : std::uint8_t {
         Written,
-        /// the PTY's queue is full, or a change waits for a decode: the wake
-        /// says when it has room again, or takes none (then Gone)
+        /// the PTY's queue is full, or the input that waits behind a change
+        /// for a decode reached its bound: the wake says when it has room
+        /// again (also the wake at the end of that feed), or takes none
+        /// (then Gone)
         Full,
         Gone, ///< the program exited, or its terminal takes no more input
     };
@@ -200,10 +204,13 @@ private:
     std::unique_lock<std::mutex>* m_feedLock = nullptr;
     /// An image decodes: the terminal is the reader thread's, without m_mutex.
     bool m_decoding = false;
-    /// The changes of the daemon's thread that wait for the feed's end.
+    /// The changes of the daemon's thread that wait for the feed's end, and
+    /// the input that came after them.
     std::vector<std::function<void()>> m_deferred;
     /// m_deferred holds something, until its changes ran: input waits.
     std::atomic<bool> m_changesWaiting{false};
+    /// The bytes of input in m_deferred.
+    std::size_t m_deferredInput = 0;
     /// A frame waited for a decode: the end of the feed wakes the daemon.
     bool m_frameDeferred = false;
     AfterglowVt::Terminal m_terminal;
