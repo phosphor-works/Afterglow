@@ -3,8 +3,8 @@
 
 find_package(GTest REQUIRED)
 
-add_executable(afterglow_mux_tests AttachTest.cpp DaemonTest.cpp ImageDecoderTest.cpp MuxProtocolTest.cpp)
-target_link_libraries(afterglow_mux_tests PRIVATE afterglow_mux_protocol afterglow_mux_image GTest::gtest_main)
+add_executable(afterglow_mux_tests AttachTest.cpp DaemonTest.cpp ImageDecoderTest.cpp MuxPaneTest.cpp MuxProtocolTest.cpp)
+target_link_libraries(afterglow_mux_tests PRIVATE afterglow_mux_daemon GTest::gtest_main)
 # The image files of the decoder tests.
 target_include_directories(afterglow_mux_tests PRIVATE "${PROJECT_SOURCE_DIR}/libs/afterglow-image/tests")
 # A test that runs a daemon gives it a runtime directory, a state directory and a

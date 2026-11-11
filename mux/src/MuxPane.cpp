@@ -11,6 +11,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
+#include <cstring>
+
+#include <sys/eventfd.h>
+#include <unistd.h>
 
 namespace AfterglowMux {
 
@@ -41,10 +46,13 @@ bool leadsForeground(pid_t pid, pid_t session)
 } // namespace
 
 MuxPane::MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, const PaneSize& size,
-                 std::string notificationCapabilities, std::function<void()> wake)
+                 std::string notificationCapabilities, ImageDecoder& images, std::function<void()> wake)
     : m_id(id)
     , m_wake(std::move(wake))
     , m_notificationCapabilities(std::move(notificationCapabilities))
+    , m_images(images)
+    , m_stopDecode(::eventfd(0, EFD_CLOEXEC))
+    , m_stopDecodeError(m_stopDecode.valid() ? 0 : errno)
     , m_terminal(size.cols, size.rows, *this, options)
 {
     // Before the program starts: a program that queries the cell size at
@@ -60,13 +68,25 @@ MuxPane::~MuxPane()
     // The reader thread may call back into this pane, writeToPty() among
     // them, until it stops: it stops while m_pty still points at the PTY
     // (reset() clears the pointer before the PTY's destructor runs). Then
-    // the PTY closes, which hangs up the program.
+    // the PTY closes, which hangs up the program. A decode that runs ends
+    // at once, and so does each one after it: the thread does not wait for
+    // an image.
+    if (m_stopDecode.valid()) {
+        const std::uint64_t one = 1;
+        (void)!::write(m_stopDecode.get(), &one, sizeof one);
+    }
     if (m_pty) m_pty->stop();
     m_pty.reset();
 }
 
 bool MuxPane::start(AfterglowPty::SpawnOptions options, std::string launchedProgram, std::string* error)
 {
+    // Without it, a pane that closes waits for each image of its feed.
+    if (!m_stopDecode.valid()) {
+        if (error) *error = std::string("cannot create an eventfd: ") + std::strerror(m_stopDecodeError);
+        m_exited = true;
+        return false;
+    }
     {
         std::lock_guard lock(m_mutex);
         options.cols = m_terminal.cols();
@@ -230,9 +250,16 @@ void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
     setVisible(false, window);
 }
 
-std::string MuxPane::frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes)
+std::optional<std::string> MuxPane::frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes)
 {
     std::lock_guard lock(m_mutex);
+    if (m_decoding) {
+        // The change is the next frame's again, which the reader thread
+        // wakes the daemon for when the feed ends.
+        m_frameDeferred = true;
+        m_changed.store(true);
+        return std::nullopt;
+    }
     std::string frame = writer.update(m_terminal, maxBytes, &m_scrolls);
     // The frame carries them, also one that waits for room in the channel.
     m_scrolls.clear();
@@ -242,6 +269,16 @@ std::string MuxPane::frame(AfterglowVt::StateWriter& writer, std::size_t maxByte
 void MuxPane::setVisible(bool visible, std::uint64_t window)
 {
     std::lock_guard lock(m_mutex);
+    if (m_decoding) {
+        m_deferred.push_back([this, visible, window] { setVisibleLocked(visible, window); });
+        m_changesWaiting.store(true);
+        return;
+    }
+    setVisibleLocked(visible, window);
+}
+
+void MuxPane::setVisibleLocked(bool visible, std::uint64_t window)
+{
     bool current = false;
     {
         // After m_mutex, as the reader thread takes them, and released before
@@ -426,13 +463,35 @@ void MuxPane::commandFinished(int exitCode)
 
 bool MuxPane::decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
-    // Reader thread, m_mutex held, as the window's Pane decodes.
-    return AfterglowMux::decodeImage(png, AfterglowMux::ImageFormats::Png, width, height, rgba);
+    return decodeOutsideLock(png, ImageFormats::Png, width, height, rgba);
 }
 
 bool MuxPane::decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
-    return AfterglowMux::decodeImage(data, AfterglowMux::ImageFormats::Common, width, height, rgba);
+    return decodeOutsideLock(data, ImageFormats::Common, width, height, rgba);
+}
+
+bool MuxPane::decodeOutsideLock(std::string_view data, ImageFormats formats, std::uint32_t& width, std::uint32_t& height,
+                                std::vector<std::uint8_t>& rgba)
+{
+    // Reader thread, in the feed of ptyData(), m_mutex held. A decode can
+    // take seconds, and the daemon's one thread takes m_mutex for the frames
+    // and the changes of this pane: it lets m_mutex go while it decodes.
+    // The terminal stays the reader's, whose parse is in the middle of a
+    // command: the daemon's thread sees m_decoding and leaves it alone.
+    if (!m_feedLock) return m_images.decode(data, formats, width, height, rgba, m_stopDecode.get());
+    m_decoding = true;
+    m_feedLock->unlock();
+    struct Relock
+    {
+        MuxPane& pane;
+        ~Relock()
+        {
+            pane.m_feedLock->lock();
+            pane.m_decoding = false;
+        }
+    } relock{*this};
+    return m_images.decode(data, formats, width, height, rgba, m_stopDecode.get());
 }
 
 void MuxPane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
@@ -568,12 +627,29 @@ void MuxPane::protocolWithoutWindow(int code, std::string_view payload)
 
 void MuxPane::ptyData(std::string_view bytes)
 {
+    bool deferred = false;
     {
-        std::lock_guard lock(m_mutex);
+        std::unique_lock lock(m_mutex);
+        m_feedLock = &lock;
+        struct Unset
+        {
+            std::unique_lock<std::mutex>*& lock;
+            ~Unset() { lock = nullptr; }
+        } unset{m_feedLock};
         m_terminal.feed(bytes);
+        // What the daemon's thread did not wait for while an image decoded,
+        // in its order. After the feed: the decode ends in the middle of a
+        // command of the program, which the parse finishes first.
+        const std::vector<std::function<void()>> changes = std::exchange(m_deferred, {});
+        for (const std::function<void()>& change : changes) change();
+        // After them: input that finds it clear goes after the changes.
+        m_changesWaiting.store(false);
+        const bool frame = std::exchange(m_frameDeferred, false);
+        deferred = frame || !changes.empty();
     }
-    // One wake for each burst: the daemon takes the flag when it sends.
-    if (!m_changed.exchange(true)) m_wake();
+    // One wake for each burst: the daemon takes the flag when it sends. A
+    // frame or a change that waited for a decode wakes it whatever the flag.
+    if (!m_changed.exchange(true) || deferred) m_wake();
 }
 
 void MuxPane::ptyClosed(int status)
@@ -586,47 +662,72 @@ void MuxPane::ptyClosed(int status)
 MuxPane::Input MuxPane::input(std::string_view bytes)
 {
     if (!m_pty || m_exited) return Input::Gone;
+    // Input after a resize or a clear that waits for a decode goes after
+    // it, as the window sent them.
+    if (m_changesWaiting.load()) {
+        std::lock_guard lock(m_mutex);
+        if (!m_deferred.empty()) {
+            // It waits behind the change, in the pane: the window's other
+            // panes take their input meanwhile. Within half of the PTY's
+            // queue, so that it fits there after the feed beside the replies
+            // of the program that the feed made. Past that, as for a full
+            // queue: the window holds it until the wake at the feed's end.
+            if (m_deferredInput + bytes.size() + m_pty->pendingInput() > AfterglowPty::Pty::MaxPendingInput / 2) return Input::Full;
+            m_deferred.push_back([this, data = std::string(bytes)] {
+                m_deferredInput -= data.size();
+                (void)m_pty->write(data);
+            });
+            // Counted once it waits: a push that runs out of memory counts
+            // nothing.
+            m_deferredInput += bytes.size();
+            return Input::Written;
+        }
+    }
     if (m_pty->write(bytes)) return Input::Written;
     // A terminal that takes no more input (its child side is gone, while the
     // child may still run) never has room again: only a full queue does.
     return m_exited || !m_pty->accepting() ? Input::Gone : Input::Full;
 }
 
-void MuxPane::reset()
+void MuxPane::change(std::function<void()> change)
 {
     {
         std::lock_guard lock(m_mutex);
-        m_terminal.reset();
+        if (m_decoding) {
+            // The reader thread makes it after the feed, and wakes the daemon.
+            m_deferred.push_back(std::move(change));
+            m_changesWaiting.store(true);
+            return;
+        }
+        change();
     }
     if (!m_changed.exchange(true)) m_wake();
+}
+
+void MuxPane::reset()
+{
+    change([this] { m_terminal.reset(); });
 }
 
 void MuxPane::clear()
 {
-    bool atPrompt = false;
-    {
-        std::lock_guard lock(m_mutex);
+    change([this] {
         m_terminal.clearScreenAndHistory();
-        atPrompt = m_terminal.atShellPrompt() && !m_terminal.modes().altScreen;
-    }
-    // At a prompt the shell redraws it on the cleared screen, as in a window.
-    if (atPrompt) writeDirect("\x0c");
-    if (!m_changed.exchange(true)) m_wake();
+        // At a prompt the shell redraws it on the cleared screen, as in a
+        // window.
+        if (m_terminal.atShellPrompt() && !m_terminal.modes().altScreen) writeDirect("\x0c");
+    });
 }
 
 void MuxPane::resize(const PaneSize& size)
 {
-    int cols = 0;
-    int rows = 0;
-    {
-        std::lock_guard lock(m_mutex);
-        m_terminal.resize(size.cols, size.rows, size.cellWidth, size.cellHeight);
-        cols = m_terminal.cols();
-        rows = m_terminal.rows();
-    }
-    if (m_pty) m_pty->resize(cols, rows, pixels(cols, size.cellWidth), pixels(rows, size.cellHeight));
     // The window needs the frame of the new size.
-    if (!m_changed.exchange(true)) m_wake();
+    change([this, size] {
+        m_terminal.resize(size.cols, size.rows, size.cellWidth, size.cellHeight);
+        const int cols = m_terminal.cols();
+        const int rows = m_terminal.rows();
+        if (m_pty) m_pty->resize(cols, rows, pixels(cols, size.cellWidth), pixels(rows, size.cellHeight));
+    });
 }
 
 } // namespace AfterglowMux

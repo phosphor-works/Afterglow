@@ -7,11 +7,18 @@
 
 namespace AfterglowMux {
 
-Session::Session(std::string name, SessionOptions options, long fileLimit)
+Session::Session(std::string name, SessionOptions options, long fileLimit, ImageDecoder& images)
     : m_name(std::move(name))
     , m_options(std::move(options))
     , m_fileLimit(fileLimit)
+    , m_images(images)
 {
+    // The programs write kitty's temporary files in their TMPDIR, which is
+    // the client's, not the daemon's: /tmp when they have none.
+    m_temporaryDirectory = "/tmp";
+    for (const auto& [name, value] : m_options.launch.environment) {
+        if (name == "TMPDIR" && !value.empty()) m_temporaryDirectory = value;
+    }
 }
 
 bool Session::addPane(std::uint32_t id, const std::string& daemonSocket, std::function<void()> wake, std::string* error)
@@ -33,7 +40,9 @@ bool Session::addPane(std::uint32_t id, const std::string& daemonSocket, std::fu
     AfterglowPty::setVariable(spawn, "AFTERGLOW_PANE_ID", std::to_string(id));
     AfterglowPty::setVariable(spawn, "AFTERGLOW_SESSION", m_name);
     AfterglowPty::unsetVariable(spawn, "AFTERGLOW_OVERLAY");
-    auto pane = std::make_unique<MuxPane>(id, m_options.terminal, m_options.size, m_options.notificationCapabilities, std::move(wake));
+    auto pane = std::make_unique<MuxPane>(id, m_options.terminal, m_options.size, m_options.notificationCapabilities, m_images,
+                                          std::move(wake));
+    pane->setTemporaryDirectory(m_temporaryDirectory);
     if (!pane->start(std::move(spawn), m_options.launch.launchedProgram, error)) return false;
     m_panes.push_back(std::move(pane));
     return true;

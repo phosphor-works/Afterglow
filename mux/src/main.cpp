@@ -110,8 +110,12 @@ int startFailed(int reportFd, const std::string& message, bool held = false)
 
 int main(int argc, char** argv)
 {
-    // A process of its own for each PNG or iTerm2 image (ImageDecoder.h).
-    if (argc == 2 && argv[1] == AfterglowMux::DecodeImageArgument) return AfterglowMux::runImageDecoder();
+    // The server that decodes the PNG and iTerm2 images of sessions
+    // (ImageDecoder.h).
+    if (argc == 3 && argv[1] == AfterglowMux::DecodeServerArgument) return AfterglowMux::runImageServer(argv[2]);
+    // A daemon that a parent started with SIGCHLD ignored would lose the
+    // status of its children: the kernel reaps them.
+    std::signal(SIGCHLD, SIG_DFL);
     std::atexit(endWithSignal);
     if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
         std::printf("afterglow-mux %s (protocol %d)\n", AFTERGLOW_VERSION, AfterglowMux::ProtocolVersion);

@@ -115,6 +115,11 @@ public:
     /// Whether the user can see this session pane: the daemon's terminal
     /// reports a change to the program (mode 2033). Sends a change only.
     void setSessionVisible(bool visible);
+    /// Whether the window draws the pane where the user can see it, as
+    /// TerminalWindow::paneSeen decides, or as the tab that a switch leaves.
+    /// A pane that nobody sees asks for no frames of its animated images.
+    /// When it shows again, they move on from where their clocks are.
+    void setSeen(bool seen);
     /// False for a session pane until its first frame applied: until then
     /// its replica is a blank terminal, whose cursor, context and status
     /// are none of the program's. GUI thread.
@@ -182,7 +187,7 @@ public:
     std::vector<std::unique_ptr<DockArea>>& docks() noexcept { return m_docks; }
     const std::vector<std::unique_ptr<DockArea>>& docks() const noexcept { return m_docks; }
     /// Changes when what assistive technology reads changes: the terminal's
-    /// generation and the selection serial.
+    /// text generation (textGeneration) and the selection serial.
     std::pair<std::uint64_t, std::uint64_t> accessibleSerial() const;
 
     /// Runs @p fn with the terminal locked.
@@ -344,8 +349,10 @@ Q_SIGNALS:
     /// (the quick terminal does).
     void dialogOpened(QDialog* dialog);
     /// The terminal changed. Emitted on the GUI thread: coalesced for the
-    /// output of the pane's own program, and once for each frame that a
-    /// session pane applies (applySessionFrame).
+    /// output of the pane's own program, once for each frame that a session
+    /// pane applies (applySessionFrame), for each frame of an animated image
+    /// (tickAnimations), and for a search result, a snap of the view to the
+    /// bottom and a change of the hold.
     void contentChanged();
     /// The program's drag offer (OSC 72) starts as a drag of the desktop.
     void programDragStarting();
@@ -636,6 +643,10 @@ private:
 
     std::atomic<bool> m_notifyPending{false};
     QTimer m_animationTimer;
+    bool m_seen = true; ///< setSeen()
+    /// A tick of the animations waits for the frames of a session that came
+    /// in one read: once for all of them.
+    bool m_sessionTickQueued = false;
     // A session pane (showSession): no PTY of its own.
     std::shared_ptr<MuxClient> m_session;
     std::uint32_t m_sessionPane = 0;

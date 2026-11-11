@@ -2418,6 +2418,27 @@ TEST_F(Render, IconsTakeTwoCellsBeforeABlank)
     EXPECT_GT(inkIn(tight, 1), 0);
 }
 
+TEST_F(Render, AnEmojiThatVs15NarrowedStaysInItsCell)
+{
+    // U+3030 WAVY DASH is wide; VS15 makes it one cell, as in kitty. Its
+    // text glyph is as wide as the emoji, and is fitted to the one cell.
+    auto inkIn = [&](const QImage& img, int col) {
+        int ink = 0;
+        for (int y = 0; y < ch; ++y) {
+            for (int x = col * cw; x < (col + 1) * cw; ++x) {
+                ink += img.pixel(x, y) != rgb(snapshot.defaultBg);
+            }
+        }
+        return ink;
+    };
+    if (!hasGlyph(*renderer->fonts().fonts, U'〰')) {
+        GTEST_SKIP() << "no font with U+3030";
+    }
+    const QImage img = render("\x1b[?25l〰︎");
+    EXPECT_GT(inkIn(img, 0), 0);
+    EXPECT_EQ(inkIn(img, 1), 0);
+}
+
 TEST_F(Render, ShaderChainsSurviveTranslucencyChanges)
 {
     // Toggling translucency releases the swapchain; the shaders must stay.

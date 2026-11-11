@@ -9,6 +9,7 @@
 #include <AfterglowImage/Decode.h>
 #include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Graphics.h>
+#include <AfterglowProto/Limits.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -225,34 +226,6 @@ bool readChild(int fd, void* data, std::size_t size, const SignalGate& gate, boo
     return true;
 }
 
-// The address space of this process, from /proc; 0 when it cannot be read.
-std::uint64_t addressSpace()
-{
-    const int fd = ::open("/proc/self/statm", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
-        return 0;
-    }
-    char text[128];
-    const ssize_t n = ::read(fd, text, sizeof text - 1);
-    ::close(fd);
-    if (n <= 0) {
-        return 0;
-    }
-    text[n] = '\0';
-    const long page = ::sysconf(_SC_PAGESIZE);
-    return std::strtoull(text, nullptr, 10) * std::uint64_t(page > 0 ? page : 4096);
-}
-
-void limit(int resource, rlim_t soft, rlim_t hard)
-{
-    rlimit current { };
-    if (::getrlimit(resource, &current) != 0) {
-        return;
-    }
-    rlimit next { std::min(soft, current.rlim_max), std::min(hard, current.rlim_max) };
-    ::setrlimit(resource, &next);
-}
-
 struct Limits
 {
     int orientation = 1;
@@ -281,10 +254,10 @@ struct Limits
         }
     }
     std::signal(SIGPIPE, SIG_DFL);
-    limit(RLIMIT_CORE, 0, 0);
-    limit(RLIMIT_CPU, limits.seconds, limits.seconds + 1);
-    if (const auto base = addressSpace()) {
-        limit(RLIMIT_AS, rlim_t(base + limits.memory), rlim_t(base + limits.memory));
+    AfterglowProto::limit(RLIMIT_CORE, 0, 0);
+    AfterglowProto::limit(RLIMIT_CPU, limits.seconds, limits.seconds + 1);
+    if (const auto base = AfterglowProto::addressSpace()) {
+        AfterglowProto::limit(RLIMIT_AS, rlim_t(base + limits.memory), rlim_t(base + limits.memory));
     }
     int code = 0;
     try {

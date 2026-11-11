@@ -23,8 +23,9 @@ inline constexpr std::size_t GraphicsDefaultQuota = std::size_t(320) << 20;
 /// The most frames that Afterglow keeps for one image, the root frame included.
 inline constexpr std::size_t GraphicsMaxFrames = 1024;
 /// The terminal deletes a temporary file (t=t) with this string in its path
-/// below the temporary directory, and a shared memory object (t=s) with it
-/// in its name, once it has read it.
+/// below the temporary directory once it has read it. Clients put it in the
+/// names of their shared memory objects (t=s) too, which the terminal
+/// deletes whatever their name.
 inline constexpr std::string_view GraphicsTemporaryTag = "tty-graphics-protocol";
 
 /// The control keys of one command. A key that is absent has the default.

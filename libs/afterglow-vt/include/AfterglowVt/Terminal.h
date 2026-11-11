@@ -309,6 +309,11 @@ public:
 
     /// Bumped on every state change the renderer could see.
     std::uint64_t generation() const noexcept { return m_generation; }
+    /// Bumped on every such change but those of images alone: a frame of
+    /// an animation, the pixels and records that a replica's images take.
+    /// What reads the text (hints, links, the input method, accessibility)
+    /// stays valid across those.
+    std::uint64_t textGeneration() const noexcept { return m_textGeneration; }
 
     const std::string& title() const noexcept { return m_title; }
     const std::string& workingDirectory() const noexcept { return m_cwd; }
@@ -363,9 +368,15 @@ public:
     {
         return props.width == 1 && props.ambiguous && m_options.ambiguousWide ? 2 : props.width;
     }
+    /// Cells a grapheme cluster takes, by the rules print() follows as it
+    /// joins the characters: VS15, VS16 and joined characters with a width
+    /// of their own change the width of the first character.
+    int clusterWidth(std::u32string_view cluster) const noexcept;
 
     /// Image state (kitty, sixel, iTerm2) of the active screen.
     const GraphicsStore& graphics() const noexcept { return m_graphics[m_modes.altScreen ? 1 : 0]; }
+    /// Image state of the primary screen, or of the alternate one.
+    const GraphicsStore& graphics(bool alternate) const noexcept { return m_graphics[alternate ? 1 : 0]; }
 
     /// What programs report doing (OSC 7501). Records belong to the terminal,
     /// not a screen.
@@ -375,6 +386,14 @@ public:
     void programExited();
     /// Whether the user can see the terminal (mode 2033 reports changes).
     void setVisible(bool visible);
+    /// The $TMPDIR of the programs, where kitty's temporary files (t=t),
+    /// which the terminal deletes, can lie besides /tmp and /dev/shm. Empty,
+    /// the default, for the terminal's own: a session's daemon runs with
+    /// another one than its programs.
+    void setTemporaryDirectory(const std::string& directory)
+    {
+        for (GraphicsStore& store : m_graphics) store.setTemporaryDirectory(directory);
+    }
 
     enum class TextScope : std::uint8_t {
         Screen, ///< the visible rows of the active screen
@@ -521,6 +540,10 @@ private:
     /// margin (or the page edge right of it), within a double-width line's
     /// visible half.
     int rightEdge(const Row& row, int x) const;
+    /// Writes the cluster at @p x again at @p width (1 or 2), keeping its
+    /// text and style: VS15, VS16 and the characters that join a cluster
+    /// change a cell's width.
+    void setClusterWidth(Row& row, int x, int width);
     /// IRM shifts the line only from a column between the left and right
     /// margins, as ICH (xterm). Outside them a character overwrites.
     bool insertsAt(int x) const { return m_modes.insert && x >= m_margins.left && x <= m_margins.right; }
@@ -548,7 +571,13 @@ private:
     void popColors(int slot);
     void oscPalette(std::string_view args, bool bel);
     void reply(std::string_view bytes);
-    void touch() noexcept { ++m_generation; }
+    void touch() noexcept
+    {
+        ++m_generation;
+        ++m_textGeneration;
+    }
+    /// A change of the images alone (textGeneration()).
+    void touchImages() noexcept { ++m_generation; }
 
     ITerminalHost& m_host;
     TerminalOptions m_options;
@@ -725,6 +754,7 @@ private:
     void syncKittyFlags();
 
     std::uint64_t m_generation = 0;
+    std::uint64_t m_textGeneration = 0;
 };
 
 } // namespace AfterglowVt

@@ -655,6 +655,10 @@ private:
     void syncInputMethodEnabled();
     bool m_modeHeldKeyboard = false; ///< keyboardModeActive() as the input method last heard
     bool m_inputMethodDirty = false; ///< the focused pane's input pane's text changed since the last query
+    /// The pane and its textGeneration() that last marked the input method's
+    /// text dirty: a frame of an animated image does not.
+    QPointer<Pane> m_inputMethodPane;
+    std::uint64_t m_inputMethodText = 0;
     bool performAction(Action action);
     void updateChrome();
     /// The command palette's list: every action but the palette itself and
@@ -974,7 +978,9 @@ private:
     bool m_textBlinkOn = true;
     /// Tells each pane whether it can be seen (paneSeen) for mode 2033
     /// reports: a session pane through the daemon (setSessionVisible), as its
-    /// replica never answers its program.
+    /// replica never answers its program. Pane::setSeen hears it too, and
+    /// the tab that a switch leaves while the window shows: their animated
+    /// images run only then.
     void updatePaneVisibility();
     /// Whether the user can see @p pane: the window shows, and the pane is
     /// drawn in the current tab, or while the overview shows, on one of

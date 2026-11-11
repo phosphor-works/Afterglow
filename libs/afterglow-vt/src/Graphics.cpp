@@ -189,8 +189,10 @@ long long anchorIndex(const Placement& p, const Screen& s)
 bool forbiddenFile(const std::filesystem::path& path)
 {
     const std::string name = path.string();
-    // /dev/shm holds plain files: the protocol names it as a temporary directory.
-    if (name.starts_with("/dev/shm/")) return false;
+    // /dev/shm holds plain files: the protocol names it as a temporary
+    // directory. The directory itself is allowed too, as the parent of a file
+    // in it is checked: kitten icat writes the t=t files of converted images there.
+    if (name == "/dev/shm" || name.starts_with("/dev/shm/")) return false;
     for (const char* deny : {"/proc", "/sys", "/dev"}) {
         if (name == deny || name.starts_with(std::string(deny) + '/')) return true;
     }
@@ -249,17 +251,21 @@ bool insideDirectory(const std::filesystem::path& path, const std::filesystem::p
 }
 
 /// Whether the protocol hands the file at resolved @p path to the terminal to
-/// delete: it lies in /tmp, /dev/shm or $TMPDIR (each resolved, so a trailing
-/// slash or a symbolic link in the setting still matches), and its path below
-/// that directory carries the tag. This is stricter than kitty, which looks
-/// for the tag in the whole path: with a $TMPDIR whose own name holds the
-/// tag, a command could name any regular file in it for the terminal to
-/// delete.
-bool temporaryFile(const std::filesystem::path& path)
+/// delete: it lies in /tmp, /dev/shm or the programs' $TMPDIR, @p programs
+/// or else the terminal's own (each resolved, so a trailing slash or a
+/// symbolic link in the setting still matches), and its path below that
+/// directory carries the tag. This is stricter than kitty, which looks for
+/// the tag in the whole path: with a $TMPDIR whose own name holds the tag, a
+/// command could name any regular file in it for the terminal to delete.
+bool temporaryFile(const std::filesystem::path& path, const std::string& programs)
 {
     std::error_code ec;
     std::vector<std::filesystem::path> dirs{"/tmp", "/dev/shm"};
-    if (auto tmp = std::filesystem::temp_directory_path(ec); !ec && !tmp.empty()) dirs.push_back(std::move(tmp));
+    if (!programs.empty()) {
+        dirs.emplace_back(programs);
+    } else if (auto tmp = std::filesystem::temp_directory_path(ec); !ec && !tmp.empty()) {
+        dirs.push_back(std::move(tmp));
+    }
     for (const auto& dir : dirs) {
         std::error_code resolved;
         const auto real = std::filesystem::canonical(dir, resolved);
@@ -273,13 +279,13 @@ bool temporaryFile(const std::filesystem::path& path)
 
 /// Deletes @p name in the directory @p parent, whose real path is
 /// @p parentPath, when the protocol hands it to the terminal: a regular file
-/// in a temporary directory, with the tag in its path (temporaryFile()).
-/// With @p opened, only when it is still the file that was read. Returns
-/// whether it deleted the file.
+/// in a temporary directory, with the tag in its path (temporaryFile(), with
+/// @p programs). With @p opened, only when it is still the file that was
+/// read. Returns whether it deleted the file.
 bool deleteTemporaryFile(int parent, const std::filesystem::path& parentPath, const std::filesystem::path& name,
-                         const struct stat* opened)
+                         const struct stat* opened, const std::string& programs)
 {
-    if (!temporaryFile(parentPath / name)) return false;
+    if (!temporaryFile(parentPath / name, programs)) return false;
     struct stat current{};
     if (fstatat(parent, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(current.st_mode)) return false;
     if (opened && (current.st_dev != opened->st_dev || current.st_ino != opened->st_ino)) return false;
@@ -470,6 +476,7 @@ private:
 
 void GraphicsStore::handle(std::string_view payload, Context& ctx)
 {
+    ++m_changes;
     if (dispatch(payload, ctx)) {
         settle();
     }
@@ -794,7 +801,7 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
         // A temporary file is the terminal's to delete whether or not it
         // could use it, as in kitty, so that refused ones do not pile up;
         // only the file that was opened, though.
-        if (cmd.medium == 't') released = deleteTemporaryFile(parent, actualParent, name, &opened);
+        if (cmd.medium == 't') released = deleteTemporaryFile(parent, actualParent, name, &opened, m_temporaryDirectory);
         close(fd);
         close(parent);
         if (!finish(result)) return false;
@@ -811,12 +818,12 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
         // would instead deliver SIGBUS to the terminal process.
         const ReadResult result = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, charge);
         close(fd);
-        // Only an object named for the protocol is the terminal's to delete.
-        // Any other name stays: a command must not delete an unrelated object
-        // by naming it, and almost any object decodes as a tiny image.
-        if (name.find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos) {
-            released = shm_unlink(name.c_str()) == 0;
-        }
+        // The kitty spec has the terminal unlink every object it reads, with
+        // no tag in the name as for t=t: kitten icat names its objects
+        // /icat-..., and they would stay in /dev/shm until logout. A program
+        // can name another object of the user's, but a local one could unlink
+        // it itself, and Terminal.graphicsFileTransfer turns the medium off.
+        released = shm_unlink(name.c_str()) == 0;
         if (!finish(result)) return false;
         break;
     }
@@ -837,13 +844,13 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
 
 bool GraphicsStore::releaseMedium(const Command& cmd, const std::string& data) const
 {
-    // The same rules as loadPayload's: the name a t=s command gives, and the
-    // real path of a t=t file below its temporary directory, must carry the tag.
+    // The same rules as loadPayload's: any object that a t=s command names,
+    // and a t=t file whose real path below its temporary directory carries the tag.
     if (!m_fileTransfer || data.size() > 4096 || data.find('\0') != std::string::npos) {
         return false;
     }
     if (cmd.medium == 's') {
-        return data.find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos && shm_unlink(data.c_str()) == 0;
+        return shm_unlink(data.c_str()) == 0;
     }
     if (cmd.medium != 't') return false;
     std::error_code ec;
@@ -852,7 +859,7 @@ bool GraphicsStore::releaseMedium(const Command& cmd, const std::string& data) c
     const int parent = open(canonical.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (parent < 0) return false;
     const auto actualParent = std::filesystem::read_symlink("/proc/self/fd/" + std::to_string(parent), ec);
-    const bool released = !ec && deleteTemporaryFile(parent, actualParent, canonical.filename(), nullptr);
+    const bool released = !ec && deleteTemporaryFile(parent, actualParent, canonical.filename(), nullptr, m_temporaryDirectory);
     close(parent);
     return released;
 }
@@ -931,7 +938,7 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
         return false;
     }
     const std::size_t pixels = std::size_t(out.width) * out.height;
-    const std::size_t kept = out.indexed() ? out.indices.size() : out.rgba.size();
+    const std::size_t kept = out.pixels().size();
     if (pixels * 4 > MaxPayload || kept != pixels * bytesPerPixel(out.format)) {
         error = "EINVAL:invalid decoded image extent";
         return false;
@@ -1534,11 +1541,15 @@ void GraphicsStore::animate(const Command& cmd, Context& ctx)
     if (cmd.r > 0 && std::size_t(cmd.r) <= img->frames.size() && cmd.z != 0) {
         img->gaps[std::size_t(cmd.r - 1)] = cmd.z < 0 ? 0 : std::uint32_t(cmd.z);
     }
-    if (cmd.c > 0 && std::size_t(cmd.c) <= img->frames.size() && std::size_t(cmd.c - 1) != img->currentFrame) {
-        img->currentFrame = std::size_t(cmd.c - 1);
-        img->frameShownAtMs = 0; // the next tick starts the clock
+    if (cmd.c > 0 && std::size_t(cmd.c) <= img->frames.size()) {
+        ++img->frameCommands;
+        if (std::size_t(cmd.c - 1) != img->currentFrame) {
+            img->currentFrame = std::size_t(cmd.c - 1);
+            img->frameShownAtMs = 0; // the next tick starts the clock
+        }
     }
     if (cmd.s != 0) {
+        ++img->stateCommands;
         const Image::Animation before = img->animation;
         switch (cmd.s) {
         case 1: img->animation = Image::Animation::Stopped; break;
@@ -1659,6 +1670,7 @@ bool GraphicsStore::advanceAnimations(const Screen& screen, int cellWidth, int c
             // Catch up without drifting, but never fall far behind real time.
             img.frameShownAtMs = (nowMs - img.frameShownAtMs > 1000) ? nowMs : img.frameShownAtMs + gap;
             changed = true;
+            ++m_changes;
         }
         if (!settled) {
             // More than a whole cycle behind (a late tick): show the current
@@ -2076,6 +2088,7 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
 
 void GraphicsStore::clear()
 {
+    ++m_changes;
     m_images.clear();
     m_placements.clear();
     m_virtual.clear();
@@ -2101,7 +2114,11 @@ std::size_t GraphicsStore::totalBytes() const
 void GraphicsStore::enforceQuota(std::uint32_t keep)
 {
     std::size_t total = totalBytes();
-    if (total <= m_quota && m_images.size() <= MaxImages) {
+    std::size_t frames = 0;
+    for (const auto& [id, img] : m_images) {
+        frames += img.frames.size();
+    }
+    if (total <= m_quota && m_images.size() <= MaxImages && frames <= MaxStoreFrames) {
         return;
     }
     // One pass: rank every image once, unused before used, transient before
@@ -2118,11 +2135,12 @@ void GraphicsStore::enforceQuota(std::uint32_t keep)
         std::uint64_t sequence;
         std::uint32_t id;
         std::size_t bytes;
+        std::size_t frames;
     };
     std::vector<Candidate> order;
     order.reserve(m_images.size());
     for (const auto& [id, img] : m_images) {
-        if (id != keep) order.push_back({used.contains(id), img.transient, img.sequence, id, img.byteSize()});
+        if (id != keep) order.push_back({used.contains(id), img.transient, img.sequence, id, img.byteSize(), img.frames.size()});
     }
     std::sort(order.begin(), order.end(), [](const Candidate& a, const Candidate& b) {
         if (a.used != b.used) return !a.used;
@@ -2132,8 +2150,9 @@ void GraphicsStore::enforceQuota(std::uint32_t keep)
     std::unordered_set<std::uint32_t> evicted;
     std::size_t count = m_images.size();
     for (const Candidate& c : order) {
-        if (total <= m_quota && count <= MaxImages) break;
+        if (total <= m_quota && count <= MaxImages && frames <= MaxStoreFrames) break;
         total -= c.bytes;
+        frames -= c.frames;
         --count;
         evicted.insert(c.id);
     }
@@ -2172,6 +2191,7 @@ bool GraphicsStore::evictUnusedImage()
 
 void GraphicsStore::settle()
 {
+    ++m_changes;
     pruneOrphans();
     // Internal and anonymous images go with their last placement: nothing can
     // name them to show them again. Images with an id or a number stay.

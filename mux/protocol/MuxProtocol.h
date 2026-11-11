@@ -109,7 +109,7 @@ bool validSessionName(std::string_view name);
 inline constexpr std::int64_t MaxScrollback = 1000000;
 inline constexpr double MinContrast = 1;
 inline constexpr double MaxContrast = 21;
-inline constexpr std::int64_t MaxGraphicsQuota = std::int64_t(4096) << 20;
+inline constexpr std::int64_t MaxGraphicsQuota = std::int64_t(AfterglowVt::GraphicsStore::MaxQuota);
 /// The bounds of Mux.eventQueue, in bytes, which an attach passes, and its
 /// default, which an attach without it gets.
 inline constexpr std::int64_t MinEventQueue = std::int64_t(1) << 20;

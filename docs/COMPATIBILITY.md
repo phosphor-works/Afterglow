@@ -34,6 +34,7 @@ Each store has these limits:
 | Images | 4,096 | Afterglow deletes an image without a placement: first an image with the transient hint (`N=1`), then the oldest. When every image has a placement, a Kitty command gets an `ENOSPC` error. |
 | Placements | 4,096 | A Kitty command gets an `ENOSPC` error. A new Sixel or iTerm2 image removes the oldest Sixel or iTerm2 placement. When there is none, Afterglow does not keep the new image. |
 | Frames per image | 1,024 | A Kitty command gets an `ENOSPC` error. |
+| Frames of all images | 16,384 | Afterglow deletes images as for image data. A frame of one pixel costs far more to keep than its 4 bytes. |
 | Image data | `Graphics.quota`, 320 MiB by default, at 4 bytes for each pixel | Afterglow deletes images without a placement: first those with the transient hint (`N=1`), then the oldest. When none is left, it deletes the oldest image with a placement. |
 | Pending transmissions | 320 MiB | The transmission fails with an `EFBIG` error. |
 
@@ -71,9 +72,10 @@ To refuse Kitty transmissions from files, temporary files and shared memory (`t=
 The program then gets an `EPERM` error, and Afterglow opens no file.
 Inline transmissions (`t=d`) always work.
 
-Afterglow deletes a temporary file (`t=t`) or a shared memory object (`t=s`) only when its name holds `tty-graphics-protocol`.
-A temporary file must also be below `/tmp`, `/dev/shm` or `$TMPDIR`, and the tag must be in its path below that directory.
-Afterglow keeps every other file and object that a command names.
+Afterglow deletes a temporary file (`t=t`) only when it is below `/tmp`, `/dev/shm` or `$TMPDIR`, and its path below that directory holds `tty-graphics-protocol`.
+Afterglow keeps every other file that a command names.
+Afterglow deletes the shared memory object of a command (`t=s`) when it has read it or refused the command, whatever its name, as the Kitty specification says.
+`kitten icat` names its objects `/icat-` and a random suffix.
 
 A read from a file or shared memory that fails gives the error `EBADF:failed to read image file`.
 These cases give that error:
@@ -228,6 +230,24 @@ IME context does not permit arbitrary surrounding-text edits.
 Optional primary-screen bidirectional layout has application-grid exclusions and bounded paragraph processing.
 See [bidirectional text](BIDI.md).
 
+## Character widths
+
+The widths come from Unicode 18.0.
+Afterglow joins characters into grapheme clusters as UAX #29 says, when grapheme clustering (mode 2027) is on, which is the default.
+A cluster takes the cells that glibc's `wcwidth` gives its characters, but no more than two.
+Shells and editors measure text with `wcwidth`, so the cursor stays where they expect it.
+
+| Text | Cells | Kitty |
+| --- | --- | --- |
+| A wide emoji, then VS15 (U+FE0E) | 1 | 1 |
+| A text emoji, then VS16 (U+FE0F) | 2 | 2 |
+| A letter and a spacing mark (Hindi का, Tamil கா) | 2 | 1 |
+| A conjunct: a consonant, a virama and a consonant (Hindi क्र) | 2 | 1 |
+| Thai SARA AM or Lao AM after a letter | 2 | 2 |
+| A prepended mark (U+0600 to U+0605, U+06DD, U+070F, U+0890, U+0891, U+08E2, U+110BD, U+110CD) | 1 | 0 |
+
+`tools/conformance/ucs-detect.sh` measures the widths with ucs-detect. See [TESTING.md](TESTING.md#character-widths-with-ucs-detect).
+
 ## Kitty color control and pointer shapes
 
 OSC 21 supports the [Kitty color-control protocol](https://sw.kovidgoyal.net/kitty/color-stack/).
@@ -281,6 +301,18 @@ Run the tests of `aglow`:
 ```sh
 ctest --test-dir build --output-on-failure -R 'aglow|Aglow|^(Client|RunBinaryTest|RemoteCommandsTest)\.|^Proto\.(Client|Hostile|RunClient|RunInput|RunRemote|Remote)\.'
 ```
+
+## kitten interoperability
+
+The `kitten` commands of Kitty are clients of the same protocols as `aglow`.
+The tests below run `kitten` 0.50 against Afterglow. Each test skips when `kitten` is not installed.
+
+| Command | Interoperability checks |
+| --- | --- |
+| `kitten icat` | `afterglow_kitten_icat` runs it in `afterglow_headless`, which answers its queries, and reads the images and placements that reach the terminal. It checks the transfer modes `detect`, `stream`, `file` and `memory`, with a PNG that `kitten` sends as it is and with an image that it converts. Each temporary file and shared memory object must be deleted. It also checks `--place`, Unicode placeholders, the frames of an animated GIF, and `kitten` in a private tmux server. Then it draws the output with the Afterglow renderer. |
+| `kitten clipboard` | `NativeWindow.KittenClipboard*` run it in a pane of a window in a nested KWin: a write of text and of several MIME types, a read that the prompt allows or denies, and a read over the 8 MiB limit (`EFBIG`). |
+| `kitten dnd` | `NativeWindow.Kitty*` drag and drop tests, in a nested KWin with real compositor input: a drag between panes, remote directory trees, and a move or copy to a Wayland application. |
+| `kitten transfer` | `afterglow_transfer_kitten_relay`, against the Afterglow file transfer service in process. |
 
 ## Remote commands (OSC 24569)
 

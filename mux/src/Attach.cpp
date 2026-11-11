@@ -276,8 +276,8 @@ void Attachment::readInput(Session& session)
         return;
     }
     // A window that left waits for nothing: the input that the PTY has no
-    // room for is lost, and what came after it still counts (a resize, the
-    // end of the session).
+    // room for, or the pane's waiting input past its bound, is lost, and
+    // what came after it still counts (a resize, the end of the session).
     const bool windowLeft = !m_stream->open();
     if (!windowLeft && !sendHeldInput(session)) return;
     while (input->read(frame) == PhosphorChannel::ReadResult::Frame) {
@@ -297,8 +297,9 @@ void Attachment::readInput(Session& session)
         if (!pane) continue;
         switch (message->type) {
         case Attach::InputType::Bytes:
-            // The program reads slowly: the input waits for room, and the
-            // window's input waits behind it in the channel.
+            // The program reads slowly, or the pane's input that waits
+            // behind a decode reached its bound: the input waits for room,
+            // and the window's input waits behind it in the channel.
             if (pane->input(message->bytes) == MuxPane::Input::Full && !windowLeft) {
                 m_heldInput = std::move(message);
                 return;
@@ -397,12 +398,19 @@ bool Attachment::sendFrame(PaneLink& l, MuxPane& pane)
     }
     // The first frame of a pane carries everything; later ones what
     // changed, and the history that waits.
+    l.deferred = false;
     const bool changed = pane.takeChanged();
     if (!changed && !l.state.pending() && l.started) return true;
-    l.started = true;
     // History past half the window waits for later frames, and so do rows
     // past it, so that every frame fits.
-    std::string frame = pane.frame(l.state, l.writer->maxFrame() / 2);
+    std::optional<std::string> next = pane.frame(l.state, l.writer->maxFrame() / 2);
+    if (!next) {
+        // An image decodes: the pane wakes the daemon when it is done.
+        l.deferred = true;
+        return false;
+    }
+    l.started = true;
+    std::string frame = std::move(*next);
     if (!frame.empty()) {
         const WriteResult result = l.writer->tryWrite(frame);
         if (result == WriteResult::WouldBlock) {
@@ -436,7 +444,7 @@ void Attachment::pump(Session* session)
             // bell after the text that rang it. The window reads the frames of
             // a pane before it makes a call of it. What does not fit the queue
             // waits in the pane.
-            if (l->started && l->waiting.empty()) sendHostCalls(*pane);
+            if (l->started && l->waiting.empty() && !l->deferred) sendHostCalls(*pane);
             if (m_failed) return;
         }
     }
@@ -497,7 +505,9 @@ bool Attachment::busy() const
         // A closed pane whose calls wait for room in the queue waits for the
         // window's credit, which wakes the poll.
         if (l.closed && !(l.closed->hasHostCalls(m_serial) && m_waitingBytes >= m_eventQueue)) return true;
-        if (!l.closed && !m_finish && l.state.pending()) return true;
+        // A frame that waits for a decode is no work: the pane wakes the
+        // daemon when the decode's feed ends.
+        if (!l.closed && !m_finish && !l.deferred && l.state.pending()) return true;
     }
     return false;
 }
