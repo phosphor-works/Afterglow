@@ -223,6 +223,8 @@ TEST(MuxImageDecoder, ADecodeEndsAtItsDeadlineOrWhenItIsCancelled)
     // the time that the whole decode takes here.
     const std::string large = greyPng(8000, 8000);
     ImageDecoder decoder(AFTERGLOW_MUX);
+    // The server runs before the measure: the time is the decode's alone.
+    ASSERT_TRUE(decode(decoder, Png, ImageFormats::Png).ok);
     auto start = Clock::now();
     {
         const Decoded whole = decode(decoder, large, ImageFormats::Png);
@@ -236,8 +238,9 @@ TEST(MuxImageDecoder, ADecodeEndsAtItsDeadlineOrWhenItIsCancelled)
     const int wait = int(std::max<std::int64_t>(20, std::chrono::duration_cast<std::chrono::milliseconds>(full).count() / 3));
     ImageDecoder quick(AFTERGLOW_MUX, wait);
     // The first decode also waits for the server to start, which a loaded
-    // machine can make slower than the deadline: one that fails starts it
-    // again.
+    // machine can make slower than the deadline. A decode that fails stops
+    // the server, and the next one starts a new one: up to five tries for a
+    // server that answers by the deadline.
     bool warm = false;
     for (int attempt = 0; attempt < 5 && !warm; ++attempt) warm = decode(quick, Png, ImageFormats::Png).ok;
     ASSERT_TRUE(warm);

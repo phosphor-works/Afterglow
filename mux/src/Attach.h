@@ -34,9 +34,9 @@ class Session;
 /// A pane's frame that the channel refuses waits, and no newer frame is made
 /// until it went: a frame covers every change since the one before, so the
 /// output that comes meanwhile is in the next one. A slow window sees fewer
-/// frames, never a growing queue. Input that the program's PTY has no room
-/// for waits too, or that a pane holds past its bound behind a decode, and
-/// the window's input waits behind it.
+/// frames, never a growing queue. Input waits too when the program's PTY has
+/// no room for it, or when a pane that waits for a decode already holds its
+/// bound of input. The window's input waits behind it.
 ///
 /// The daemon never blocks on a window. A pane whose program exited keeps
 /// its terminal here until its last frames and calls went; a takeover, a

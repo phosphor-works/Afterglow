@@ -1194,8 +1194,9 @@ void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budge
         m_imagesWent = true;
         if (f.sent != pixels.size()) return false;
         // A frame that completes can complete an image other than the
-        // transfer's: the store's own, while the version that goes keeps a
-        // frame that the program deleted. Its record goes with these pixels.
+        // transfer's: one of another id that holds the frame too, or the
+        // store's own, while the version that goes keeps a frame that the
+        // program deleted. Its record goes with these pixels.
         m_recordsWaiting = true;
         return true;
     };

@@ -168,6 +168,8 @@ private:
     void writeDrops(std::string& out, Budget& budget);
     /// Whether the pixels of all of @p image's frames went.
     bool complete(const Image& image) const;
+    /// Ends the transfer: the frame that the replica builds of it goes.
+    void endTransfer();
     /// Whether an item of @p bytes fits the frame: within @p budget, or,
     /// @p first of its section, as the first of a frame that has nothing
     /// else, so that the images move at any budget.
@@ -198,8 +200,6 @@ private:
     std::optional<ImageVersion> m_transfer;
     /// Versions whose pixels went and whose records wait for room.
     std::vector<ImageVersion> m_done;
-    /// Ends the transfer: the frame that the replica builds of it goes.
-    void endTransfer();
     /// The ids of frames that the replica drops, which wait for room.
     std::vector<std::uint64_t> m_drops;
     /// A frame that the replica builds is among m_drops: no frame starts
@@ -214,7 +214,7 @@ private:
     bool m_imagesPending = false; ///< pixels, records, placements or drops wait for a later frame
     bool m_imagesWent = false; ///< this frame has an image section
     bool m_storesChanged = false; ///< a store changed since the last frame
-    bool m_recordsWaiting = false; ///< a record or the placements wait for room, or a frame completed an image
+    bool m_recordsWaiting = false; ///< a record or the placements wait for room, or a frame's pixels completed
 
     ScreenState m_screens[2];
     std::string m_modes;

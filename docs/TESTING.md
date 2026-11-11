@@ -721,6 +721,9 @@ The `StateSync.*` tests cover these cases:
 - A transfer that ends drops the frame that the replica builds, also one that another image still holds
 - A clear that replaces an image ends its transfer
 - An image that a frame deletion completes shows at once, and the version with the deleted frame never replaces it, also after a new frame
+- A version that shows gives its place to the store's image once that image is whole, and the replica keeps only the frames of that image
+- A frame deletion that leaves an image whole while its transfer runs ends that transfer at once
+- The frames that only a version that showed held go with its record, also when nothing else waits
 - A reader takes a writer that starts over: the images of the old writer go
 - Bad image sections, each to a reader of its own, which refuses them
 - The random runs place, animate and delete images and sixels too, also images larger than a state frame, between state frames
