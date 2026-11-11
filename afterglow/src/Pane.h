@@ -115,10 +115,10 @@ public:
     /// Whether the user can see this session pane: the daemon's terminal
     /// reports a change to the program (mode 2033). Sends a change only.
     void setSessionVisible(bool visible);
-    /// Whether the user can see the pane: its tab is the current one, or the
-    /// overview shows it. A pane that nobody sees asks for no frames of its
-    /// animated images. When it shows again, they move on from where their
-    /// clocks are.
+    /// Whether the window draws the pane where the user can see it, as
+    /// TerminalWindow::paneSeen decides, or as the tab that a switch leaves.
+    /// A pane that nobody sees asks for no frames of its animated images.
+    /// When it shows again, they move on from where their clocks are.
     void setSeen(bool seen);
     /// False for a session pane until its first frame applied: until then
     /// its replica is a blank terminal, whose cursor, context and status
@@ -187,7 +187,7 @@ public:
     std::vector<std::unique_ptr<DockArea>>& docks() noexcept { return m_docks; }
     const std::vector<std::unique_ptr<DockArea>>& docks() const noexcept { return m_docks; }
     /// Changes when what assistive technology reads changes: the terminal's
-    /// generation and the selection serial.
+    /// text generation (textGeneration) and the selection serial.
     std::pair<std::uint64_t, std::uint64_t> accessibleSerial() const;
 
     /// Runs @p fn with the terminal locked.

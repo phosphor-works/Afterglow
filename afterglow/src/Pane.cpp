@@ -250,9 +250,10 @@ bool Pane::refreshSnapshot(int extraRows)
         m_promptTimer.invalidate();
     }
     m_holdDeadline = {};
-    // Animations run only for images the viewport draws, and only output, or
-    // a session pane's frame, ticks them, so a viewport that moves must tick
-    // them again. Queued: the tick takes m_mutex.
+    // Animations run only for images the viewport draws, and what ticks them
+    // (output, a session pane's frame, their timer, a pane that shows again)
+    // does not follow the viewport, so a viewport that moves must tick them
+    // again. Queued: the tick takes m_mutex.
     if (const std::size_t top = m_terminal.screen().viewportTop(); top != m_animationViewportTop) {
         m_animationViewportTop = top;
         QMetaObject::invokeMethod(this, &Pane::tickAnimations, Qt::QueuedConnection);

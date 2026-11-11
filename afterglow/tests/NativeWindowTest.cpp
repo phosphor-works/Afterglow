@@ -8708,7 +8708,8 @@ TEST_F(NativeWindow, HintsThatOpenWhileTheViewEasesSitOnTheRowsWhereItStops) {
 
 TEST_F(NativeWindow, LinkLabelsOnAHeldFrameStayUntilTheHoldEnds) {
     Pane* pane = window->focusedPane();
-    const auto generation = [pane] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.generation(); }); };
+    // The text that the snapshot shows: PaneSnapshot::generation.
+    const auto generation = [pane] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.textGeneration(); }); };
     pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[H\x1b[2Jhttps://example.com/drawn\r\n"); });
     ASSERT_TRUE(nextFrame(window));
     ASSERT_EQ(pane->snapshot().generation, generation());
@@ -10336,10 +10337,10 @@ TEST_F(NativeWindow, AMuxSessionsImageShowsInTheWindow) {
     std::optional<Red> drawn;
     const bool shows = waitFor([&] { return (drawn = red()) && drawn->count >= 60 * 60 / 2; }, 5000);
     ASSERT_TRUE(shows) << (drawn ? std::to_string(drawn->count) + " red pixels" : shotError.toStdString());
-    // At its own size, not stretched or repeated across the pane.
-    const qreal dpr = shown->devicePixelRatio();
-    EXPECT_NEAR(drawn->box.width(), 60 * dpr, 6 * dpr);
-    EXPECT_NEAR(drawn->box.height(), 60 * dpr, 6 * dpr);
+    // At its own size in device pixels, which the cells measure too, not
+    // stretched or repeated across the pane.
+    EXPECT_NEAR(drawn->box.width(), 60, 6);
+    EXPECT_NEAR(drawn->box.height(), 60, 6);
     delete shown;
 }
 

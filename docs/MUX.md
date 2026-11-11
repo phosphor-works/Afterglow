@@ -13,7 +13,7 @@ A mux session and a normal `afterglow` launch can run at the same time.
 ## The daemon
 
 `afterglow-mux` is a daemon with no Qt. It needs no display and no GPU.
-A second process of it decodes the images of the sessions (see [what the daemon answers](#what-the-daemon-answers)).
+A second process of it starts a process for each image that a session decodes (see [what the daemon answers](#what-the-daemon-answers)).
 It owns the sessions, the PTYs of their panes and the terminal state of each pane.
 It reads no configuration file. `afterglow mux new` sends the values that a session needs (see [environment](#environment)).
 
@@ -327,7 +327,7 @@ While a window shows the session, these answers go through the window, as the an
 | Notification query (OSC 99 `p=?`) | The daemon gives the answer of a window |
 | Query of the socket of an ssh session (OSC 24569) | The daemon answers that there is none (`error=off`) |
 | Visibility report (mode 2033) | The window says whether you can see the pane. Until a window says it, the program hears that you cannot see the pane. This is also true after a takeover, and while no window shows the session. |
-| Images | The daemon keeps the images, also while no window shows the session. It decodes PNG (kitty graphics `f=100`) and iTerm2 images in processes that its decoder (`afterglow-mux --decode-images`) starts, one for each image. Each process has limits on its memory, its CPU time and the system calls that it can make. A decoder process that crashes or takes too long ends, and the daemon and the other sessions go on. The window shows the images that the daemon keeps. |
+| Images | The daemon keeps the images, also while no window shows the session. It decodes PNG (kitty graphics `f=100`) and iTerm2 images in processes that its decoder (`afterglow-mux --decode-images`) starts, one for each image. Each process has limits on its memory, its CPU time and the system calls that it can make. A decoder process that crashes or takes too long ends, and the daemon and the other sessions go on. On a kernel that cannot limit the system calls of a process (seccomp), the images do not decode, and the journal says why. The window shows the images that the daemon keeps. |
 
 While no window shows the session, the daemon also answers these requests.
 
@@ -398,7 +398,8 @@ When the session pane closes in the window, a file transfer that the window ran 
 | Input of a window that the program does not read | 32 MiB in the queue of the PTY, 4 MiB in the daemon, then 32 MiB in the window | The window refuses more input and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
 | Frames to a window | About 2 MiB of state in each frame, and at most 4 MiB, the largest frame of the stream | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
 | History rows to a window | `Terminal.scrollback` of the window, in rows | The daemon sends no older rows |
-| Image file that the daemon decodes | 320 MiB, 10,000 pixels on a side, and 320 MiB of pixels | A kitty command gets an `EBADPNG` error. An iTerm2 image does not show. |
+| Image file that the daemon decodes | 320 MiB | A kitty command gets an `EFBIG` error, as in a pane outside a session. An iTerm2 image does not show. |
+| Image that the daemon decodes | 10,000 pixels on a side, and 320 MiB of pixels | A kitty command gets an `EBADPNG` error. An iTerm2 image does not show. |
 | Time to decode an image | 30 seconds, and a CPU time of 5 seconds and 1 second more for each 16 MiB of pixels | The decoder process ends. The image does not show, as above. The journal gets a line, at most once a minute. |
 | Region scrolls in one frame | 256 | Every row from the top of the highest region that scrolled to the bottom of the lowest leaves its region. A selection or a search match in those rows goes. |
 | Requests that wait for a window | `Mux.eventQueue` (1 to 64 MiB, 4 MiB by default) in the queue of the session, and as much in the queue of each pane. A request that finds the queue of its pane empty passes the limit. The queue of the session also takes one request of any size while it is below the limit. | The answer of a session that no window shows (see [requests that wait](#requests-that-wait)) |

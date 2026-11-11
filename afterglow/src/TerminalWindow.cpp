@@ -521,14 +521,15 @@ void TerminalWindow::bindPane(Pane* pane)
     });
     connect(pane, &Pane::contentChanged, this, [this, pane] {
         // Hints point at text that just changed: they go (show_hints).
-        // A frame of an animated image changes no text: they stay.
-        const std::uint64_t text = pane->withTerminal([](Terminal& t) { return t.textGeneration(); });
-        if (m_urlMode.active && m_urlMode.generation && pane == m_urlMode.pane && text != m_urlMode.generation) {
-            stopUrlMode();
-        }
+        // A frame of an animated image changes no text: they stay. Read only
+        // for the panes that need it: it takes the terminal's lock.
+        const bool urlPane = m_urlMode.active && m_urlMode.generation && pane == m_urlMode.pane;
+        const bool inputPaneChanged = pane == inputPane(m_focused);
+        const std::uint64_t text = urlPane || inputPaneChanged ? pane->withTerminal([](Terminal& t) { return t.textGeneration(); }) : 0;
+        if (urlPane && text != m_urlMode.generation) stopUrlMode();
         // The input method reads the text again once per frame, not per
         // output batch, and only when the text changed.
-        if (pane == inputPane(m_focused) && (pane != m_inputMethodPane || text != m_inputMethodText)) {
+        if (inputPaneChanged && (pane != m_inputMethodPane || text != m_inputMethodText)) {
             m_inputMethodPane = pane;
             m_inputMethodText = text;
             m_inputMethodDirty = true;
@@ -852,6 +853,9 @@ Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QString
     if (paneEffectsAllowed()) m_paneOpening.insert(added, {std::chrono::steady_clock::now(), edge});
     setFocusedPane(added);
     m_layoutSize = QSize();
+    // A split from a script or `afterglow ctl` may come in a window that
+    // nobody sees: the new pane hears it.
+    updatePaneVisibility();
     scheduleRender();
     return added;
 }
@@ -2657,14 +2661,16 @@ void TerminalWindow::updatePaneVisibility()
         if (!tree) continue;
         tree->forEachPane([&](Pane* p, const QRect&) {
             const bool visible = paneSeen(p, cards);
-            p->setSeen(visible);
+            // The tab that a switch leaves is drawn until the switch ends:
+            // its animations run on.
+            p->setSeen(visible || paneDrawn(p));
             // A session pane's replica must not answer its program: the
             // daemon's terminal answers the program's own queries.
             if (p->isSessionPane()) p->setSessionVisible(visible);
             else p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
             // An overlay shows where its host does, on a card too.
             if (PaneOverlay* overlay = p->overlay()) {
-                overlay->pane()->setSeen(visible);
+                overlay->pane()->setSeen(visible || paneDrawn(p));
                 overlay->pane()->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
             }
         });

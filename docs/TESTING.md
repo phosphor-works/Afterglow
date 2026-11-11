@@ -51,7 +51,7 @@ When the tools are there and its own sshd cannot start, the test fails.
 | `BUILD_TESTING` | `ON` | Builds the unit and renderer tests. Requires GTest. |
 | `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng`, the headless conformance host and the [TUI fuzzer](#tui-fuzzing). Adds the regression tests of the host and the fuzzer, and `aglow_icat_render`, to CTest. |
 | `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`, and with `AFTERGLOW_BUILD_AGLOW` also `afterglow_transfer_kitty`. Requires Python 3 and the native test dependencies. |
-| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the image decoders of `aglow` and `afterglow-mux`, and the attach stream of `afterglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
+| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the stb_image and GIF reader that `aglow` and `afterglow-mux` share, and the attach stream of `afterglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
 | `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries. Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests, the `RunBinaryTest.*` tests and the `sshd` test of `RemoteCommandsTest.*` report Skipped. |
 | `AFTERGLOW_BUILD_VTDIFF` | `OFF` | Builds `afterglow_vtdiff`, which compares the terminal core with libghostty-vt. Requires libghostty-vt 1.0 in `CMAKE_PREFIX_PATH`. See [Differences with libghostty-vt](#differences-with-libghostty-vt). |
 
@@ -221,7 +221,7 @@ Extra arguments go to esctest. With a filter, the script reports only unexpected
 ### Fuzzing
 
 The fuzz targets need clang for C and C++, and a separate build directory.
-The targets compile the terminal core, the protocol library, zlib-ng, xxHash, the image decoders of `aglow` and `afterglow-mux`, and the codecs of the attach stream with the sanitizers.
+The targets compile the terminal core, the protocol library, zlib-ng, xxHash, the stb_image and GIF reader that `aglow` and `afterglow-mux` share, and the codecs of the attach stream with the sanitizers.
 Build only the fuzz targets in a fuzz build directory.
 The commands below turn off the tests and build the four targets by name.
 A fuzz build does not build `aglow`, because a static program cannot use the sanitizer runtimes.
@@ -230,7 +230,7 @@ A fuzz build does not build `aglow`, because a static program cannot use the san
 | --- | --- |
 | `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. One control record sends the rest of the input as a state frame to the reader of a replica terminal. At the end, the frames of the terminal go to a replica, which animates and draws its images. |
 | `afterglow_protofuzz` | The protocol readers for remote input. The first byte selects the reader. |
-| `afterglow_imagefuzz` | An image file to the image decoders of `aglow` and `afterglow-mux`: the patched stb_image and the GIF reader of `aglow`. |
+| `afterglow_imagefuzz` | An image file to the patched stb_image and the GIF reader of `aglow`, which `aglow` and `afterglow-mux` share. |
 | `afterglow_muxfuzz` | The host calls, the events and the input of the attach stream of `afterglow-mux`. The first byte selects the reader. The state frames of panes are in `afterglow_vtfuzz`. |
 
 Build the targets:
@@ -717,10 +717,11 @@ The `StateSync.*` tests cover these cases:
 - An animation runs on the replica's clock: output and a new frame keep its step. A command that stops it, jumps to a frame or plays it again reaches the replica, also when it changes no value of the writer's store.
 - A deleted frame keeps the frame that shows, and a new image under an id starts its animation over
 - An image that a program sends again faster than its pixels go still shows
-- Many images and their frames go in frames within the budget, and so do the frames that go when they do
+- Many images, a command to each of them, and the frames that go when they go, all in state frames within the budget
+- A transfer that ends drops the frame that the replica builds, also one that another image still holds, and a clear that replaces an image ends its transfer
 - A reader takes a writer that starts over: the images of the old writer go
 - Bad image sections, each to a reader of its own, which refuses them
-- The random runs place, animate and delete images and sixels too
+- The random runs place, animate and delete images and sixels too, also images larger than a state frame, between state frames
 - The prompt redraw after a resize (OSC 133 `redraw=1`)
 - Shell mark, program status, shell context, extra cursor and region scroll sections with bad values, which the reader refuses
 - A frame that fails after its status and contexts tells the replica's host nothing, and bad modes leave the modes and the screen
