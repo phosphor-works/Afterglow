@@ -10232,9 +10232,10 @@ TEST_F(NativeWindow, AMuxSessionsReadsAndCommandsReachTheWindowAndBack) {
     delete shown;
 }
 
-// A drag waits for the program's answer on the GUI thread (Terminal.
-// dragAnswerWait). A session pane's commands come on the session's stream,
-// which only that thread reads: the wait reads it, and ends when they come.
+// A drag waits for the program's answer on the GUI thread
+// (Terminal.dragAnswerWait). A session pane's commands come on the session's
+// stream, which only that thread reads: the wait reads it, and ends when they
+// come.
 TEST_F(NativeWindow, AProtocolWaitOfASessionPaneReadsItsStream) {
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();

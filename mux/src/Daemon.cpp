@@ -508,6 +508,9 @@ void Daemon::pumpAttachments()
         const auto session = attachment->finishing() ? m_sessions.end() : find(attachment->session());
         guarded(*attachment, [&] {
             attachment->pump(session == m_sessions.end() ? nullptr : session->get());
+            // A window that failed here: its calls get their answers before
+            // syncAttached() answers the newer ones of its panes.
+            if (attachment->failed()) attachment->returnHostCalls(session == m_sessions.end() ? nullptr : session->get(), true);
             return true;
         });
     }

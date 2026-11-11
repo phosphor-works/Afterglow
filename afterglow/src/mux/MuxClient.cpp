@@ -160,14 +160,20 @@ MuxClient::~MuxClient() = default;
 
 bool MuxClient::hostEvent(Attach::Event& event, bool* lostLink)
 {
-    std::string& parts = m_hostParts[event.pane];
-    if (parts.size() + event.payload.size() > AfterglowMux::Host::MaxCall) return false;
+    const auto held = m_hostParts.find(event.pane);
+    const std::size_t heldBytes = held == m_hostParts.end() ? 0 : held->second.size();
+    if (heldBytes + event.payload.size() > AfterglowMux::Host::MaxCall) return false;
     if (event.status == Attach::HostPart) {
-        parts += event.payload;
+        m_hostParts[event.pane] += event.payload;
         return true;
     }
-    const std::string encoded = parts.empty() ? std::move(event.payload) : std::move(parts) + event.payload;
-    m_hostParts.erase(event.pane);
+    std::string encoded;
+    if (held == m_hostParts.end()) {
+        encoded = std::move(event.payload);
+    } else {
+        encoded = std::move(held->second) + event.payload;
+        m_hostParts.erase(held);
+    }
     auto call = AfterglowMux::Host::decode(encoded);
     if (!call) return false;
     // After the frames that the daemon sent before the call: a bell after the
@@ -493,6 +499,8 @@ void MuxClient::paneExited(std::uint32_t id)
     m_exits.erase(exit);
     m_closedChannels.erase(id);
     m_channels.erase(id);
+    // No more of its calls come: the parts of one that did not end go.
+    m_hostParts.erase(id);
     if (const auto it = m_panes.find(id); it != m_panes.end() && it->second) it->second->sessionPaneExited(status);
 }
 

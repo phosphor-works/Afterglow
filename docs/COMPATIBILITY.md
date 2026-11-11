@@ -210,7 +210,6 @@ Downloads permit 8 MiB of decoded data and one pending application request.
 A `MultipartFile` download stops when its data passes the 8 MiB limit. An inline image in parts can have 96 MiB of base64 data.
 `MultipartFile` arguments have a 4,096-byte limit. Longer arguments refuse the file.
 A new `MultipartFile`, a terminal reset or the end of the pane's program ends a file that has no `FileEnd`.
-In a mux session, a download goes to the window that shows the session, with the other requests of the session. Without a window, the session drops it (see [requests that wait](MUX.md#requests-that-wait)).
 A new shell prompt is a prompt mark (OSC 133 `A` or `N`, or OSC 633 `A`) after a command start mark (`C`).
 One new prompt does not end the file, because a job in the background can still send it.
 A second new prompt with no `FilePart` after the first ends it, because the program that sent it has stopped.
@@ -219,6 +218,7 @@ A command end mark (`D`) does not make a new prompt.
 The Bash and Zsh integration of Afterglow sends it after each command, also after Enter on an empty line.
 With a shell that sends no `C` mark, no prompt ends a file.
 A new `MultipartFile`, the size limit, a terminal reset or the end of the pane's program still ends it.
+In a mux session, a download goes to the window that shows the session, with the other requests of the session. Without a window, the mux session drops it (see [requests that wait](MUX.md#requests-that-wait)).
 OSC 1337 downloads are not resumable, and they do not upload files.
 Afterglow supports the Kitty file-transfer protocol separately. See [Kitty file transfer](DESKTOP.md#kitty-file-transfer).
 IME context does not permit arbitrary surrounding-text edits.

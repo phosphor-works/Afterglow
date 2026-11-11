@@ -765,9 +765,10 @@ namespace {
 /// "w" with its index, and waits for a byte: the daemon took the write by
 /// the time that the window sees the text after it. Then it writes an OSC
 /// 52 read and "ready", and " early" or " waited": whether an answer came
-/// within half a second. It saves all that it reads until a second passes
-/// without more, in @p file.
-std::vector<std::string> fillThenRead(const std::vector<std::size_t>& sizes, const std::string& file)
+/// within @p earlyMs. A test that expects an answer waits long, which costs
+/// nothing when it comes. A test that expects none waits briefly. It saves
+/// all that it reads until a second passes without more, in @p file.
+std::vector<std::string> fillThenRead(const std::vector<std::size_t>& sizes, const std::string& file, int earlyMs)
 {
     std::string list;
     for (const std::size_t size : sizes) list += std::to_string(size) + ",";
@@ -780,7 +781,7 @@ for i, size in enumerate(sys.argv[1].split(',')[:-1]):
     os.write(1, b'\x1b]52;c;' + b'A' * int(size) + b'\x07w%d' % i)
     os.read(fd, 1)
 os.write(1, b'\x1b]52;c;?\x07ready')
-ready, _, _ = select.select([fd], [], [], 0.5)
+ready, _, _ = select.select([fd], [], [], int(sys.argv[3]) / 1000)
 os.write(1, b' early\r\n' if ready else b' waited\r\n')
 data = b''
 while True:
@@ -794,7 +795,7 @@ os.rename(sys.argv[2] + '.part', sys.argv[2])
 # The session runs on until the test ends: its end would drop what waits.
 os.read(fd, 1)
 )";
-    return {"python3", "-I", "-c", script, list, file};
+    return {"python3", "-I", "-c", script, list, file, std::to_string(earlyMs)};
 }
 
 /// Lets the program of fillThenRead go through its @p writes writes.
@@ -831,7 +832,7 @@ TEST(MuxAttach, ARequestThatDoesNotFitGetsTheAnswerWithoutAWindow)
     // Two writes take the credit of the channel and fill the daemon's queue,
     // and the third waits in the pane: the read finds no room there.
     const std::size_t mib = std::size_t(1) << 20;
-    ASSERT_TRUE(daemon.newSession(daemon.options(fillThenRead({2 * mib, 5 * mib / 2, 2 * mib}, answer), "full"))) << daemon.lastError();
+    ASSERT_TRUE(daemon.newSession(daemon.options(fillThenRead({2 * mib, 5 * mib / 2, 2 * mib}, answer, 5000), "full"))) << daemon.lastError();
     Window w;
     ASSERT_EQ(w.attach(daemon, "full", true, mib), "");
     ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
@@ -860,7 +861,7 @@ TEST(MuxAttach, RequestsThatWaitWhenTheWindowDetachesGetTheAnswerWithoutAWindow)
         TestDaemon daemon;
         ASSERT_TRUE(daemon.start()) << daemon.errors();
         const std::string answer = daemon.dir() + "/answer";
-        ASSERT_TRUE(daemon.newSession(daemon.options(fillThenRead({2 * mib, 5 * mib / 2}, answer), "detach"))) << daemon.lastError();
+        ASSERT_TRUE(daemon.newSession(daemon.options(fillThenRead({2 * mib, 5 * mib / 2}, answer, 500), "detach"))) << daemon.lastError();
         Window w;
         ASSERT_EQ(w.attach(daemon, "detach", true, queue), "");
         ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
@@ -900,14 +901,17 @@ os.write(1, b'go?')
 os.read(fd, 1)
 os.write(1, b'\x1b]52;c;' + b'A' * (2 << 20) + b'\x07w0')
 os.read(fd, 1)
-os.write(1, b'\x1b]52;c;' + b'A' * (5 << 19) + b'\x07')
+os.write(1, b'\x1b]52;c;' + b'A' * (5 << 19) + b'\x07w1')
+os.read(fd, 1)
 )";
     ASSERT_TRUE(daemon.newSession(daemon.options({"python3", "-I", "-c", script}, "ends"))) << daemon.lastError();
     Window w;
     ASSERT_EQ(w.attach(daemon, "ends", true, mib), "");
     ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
     w.readEvents = false;
-    ASSERT_TRUE(step(w, 1));
+    // The daemon took both writes off the pane once w1 shows: the window's
+    // credit holds the second one's parts back when the program ends.
+    ASSERT_TRUE(step(w, 2));
     // The pane's last frame: the program ended.
     ASSERT_TRUE(w.until([&] { return w.channelClosed; }));
     w.readEvents = true;

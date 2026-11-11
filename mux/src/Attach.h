@@ -64,6 +64,8 @@ public:
     /// finish() ran: the session no longer shows here.
     bool finishing() const { return m_finish.has_value(); }
 
+    /// The stream failed: the attachment is over.
+    bool failed() const { return m_failed; }
     /// The descriptor to poll and its events.
     pollfd pollFd() const;
     /// Handles what the poll saw on pollFd(), and sends what changed in
@@ -153,6 +155,8 @@ private:
     };
     /// The call whose parts go, after its first went: its other parts go too.
     std::shared_ptr<const std::string> m_partSent;
+    /// m_partSent when returnHostCalls() answered it: once.
+    std::shared_ptr<const std::string> m_answeredPart;
     std::deque<WaitingEvent> m_waitingEvents; ///< events that the channel did not take yet
     std::size_t m_waitingBytes = 0; ///< with Host::CallCost for each
     std::size_t m_eventQueue = std::size_t(DefaultEventQueue);

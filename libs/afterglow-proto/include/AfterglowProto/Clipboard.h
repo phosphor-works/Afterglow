@@ -36,15 +36,15 @@ struct ClipboardRequest
     std::vector<std::pair<std::string, std::string>> data;
     /// Write: alias -> MIME type whose data it shares.
     std::vector<std::pair<std::string, std::string>> aliases;
-    /// An OSC 52 read ("?") rather than OSC 5522: answer as OSC 52 with the
-    /// text, for @ref osc52Selection, ending as the request did.
+    /// An OSC 52 request rather than OSC 5522: a read ("?") answers as OSC 52
+    /// with the text, for @ref osc52Selection, ending as the request did.
     bool osc52 = false;
     bool osc52Bel = false;
     std::string osc52Selection;
 
     /// The OSC 52 answer: @p text (raw bytes) for the selection asked about.
     std::string osc52Reply(std::string_view text) const;
-    /// The answer that refuses the request with @p status (EPERM, ENOSYS).
+    /// The answer that refuses the request with @p status (EPERM, EBUSY, ENOSYS).
     /// An OSC 52 read gets an empty answer: its protocol has no status. An
     /// OSC 52 write gets none: empty.
     std::string refusal(std::string_view status) const;

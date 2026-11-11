@@ -293,6 +293,7 @@ Thus `afterglow ctl`, `afterglow ctl watch` and `aglow run` fail with that messa
 The daemon reads the PTY output and parses it into the terminal of the pane, whether or not a window shows the session.
 While no window shows it, the session keeps running, scrollback grows to the `Terminal.scrollback` limit, and the programs do not pause.
 The daemon answers these requests itself, also while a window shows the session.
+While a window shows the session, these answers go through the window, as the answers to queries do (see [what a window answers](#what-a-window-answers)).
 
 | Request of a program | Result |
 | --- | --- |
@@ -338,9 +339,11 @@ The requests wait for the window in a queue of the session and in a queue of eac
 `Mux.eventQueue` sets the size of each queue. A change applies when Afterglow next attaches to a session.
 A request that finds the queue of its pane empty always fits, up to the limit of one request.
 A request that does not fit gets the answer of a session that no window shows (see [what the daemon answers](#what-the-daemon-answers)).
-Thus a notification, a clipboard write and a download that do not fit are dropped.
-An answer to a query that does not fit is dropped, as a window drops one past its own limit.
-When commands of file transfer and drag and drop do not fit, the window ends the transfer or the drag, as for its own panes.
+Thus a notification, an OSC 52 clipboard write and a download that do not fit are dropped.
+These requests are exceptions:
+
+- An answer to a query that does not fit is dropped, as a window drops one past its own limit.
+- When commands of file transfer and drag and drop do not fit, the window ends the transfer or the drag, as for its own panes.
 
 These requests do not take more room when more come:
 
@@ -351,7 +354,7 @@ These requests do not take more room when more come:
 When the window goes, the requests that still wait get the answer of a session that no window shows.
 A request that the window got already gets no answer from the daemon.
 A clipboard read that waits for your answer gets the denial when its window closes and the session keeps running.
-A file transfer that a window ran gets no more answers when the window goes, as when a window closes.
+When the pane of the session closes in the window, a file transfer that the window ran gets no more answers. The same is true when the pane of a program of the window closes.
 
 ## Limits
 
@@ -367,7 +370,7 @@ A file transfer that a window ran gets no more answers when the window goes, as 
 | Wait for a window to connect to its attach socket | 5 seconds | The daemon removes the socket, and `afterglow mux attach` stops with exit status 1 |
 | Input of a window that the program does not read | 32 MiB in the queue of the PTY, 4 MiB in the daemon, then 32 MiB in the window | The window refuses more input and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
 | Frames to a window | About 2 MiB of state in each frame, and at most 4 MiB, the largest frame of the stream | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
-| Requests that wait for a window | `Mux.eventQueue` (1 to 64 MiB, 4 MiB by default) in the queue of the session, and as much in the queue of each pane. A request that finds the queue of its pane empty passes the limit, and so does the first request that the session queue takes while it is below the limit. | The answer of a session that no window shows (see [requests that wait](#requests-that-wait)) |
+| Requests that wait for a window | `Mux.eventQueue` (1 to 64 MiB, 4 MiB by default) in the queue of the session, and as much in the queue of each pane. A request that finds the queue of its pane empty passes the limit. The queue of the session also takes one request of any size while it is below the limit. | The answer of a session that no window shows (see [requests that wait](#requests-that-wait)) |
 | One request to a window | 129 MiB: the largest clipboard write that a terminal takes, and its types | The answer of a session that no window shows |
 
 The daemon sets no limit on the number of sessions or connections. Each session and each connection uses open files.

@@ -172,7 +172,7 @@ void Attachment::flushEvents()
 void Attachment::sendHostCalls(MuxPane& pane)
 {
     if (m_waitingBytes >= m_eventQueue) return;
-    for (std::string& encoded : pane.takeHostCalls(m_eventQueue - m_waitingBytes)) {
+    for (std::string& encoded : pane.takeHostCalls(m_serial, m_eventQueue - m_waitingBytes)) {
         auto call = std::make_shared<const std::string>(std::move(encoded));
         Attach::Event host;
         host.type = Attach::EventType::Host;
@@ -191,19 +191,26 @@ void Attachment::returnHostCalls(Session* session, bool windowGone)
 {
     std::vector<std::pair<std::uint32_t, std::shared_ptr<const std::string>>> calls;
     for (auto it = m_waitingEvents.begin(); it != m_waitingEvents.end();) {
-        // A call whose first parts went goes whole: the window would join
-        // the parts of the next call to it.
-        if (!it->call || (it->call == m_partSent && !windowGone)) {
+        if (!it->call) {
             ++it;
             continue;
         }
-        // The parts of one call wait in a row.
-        if (calls.empty() || calls.back().second != it->call) calls.emplace_back(it->pane, it->call);
+        // The parts of one call wait in a row. One that got its answer here
+        // already gets no second.
+        if (it->call != m_answeredPart && (calls.empty() || calls.back().second != it->call)) calls.emplace_back(it->pane, it->call);
+        // A call whose first parts went goes whole: the window would join
+        // the parts of the next call to it. Its answer is this one all the
+        // same, as the daemon reads the window's input no more.
+        if (it->call == m_partSent && !windowGone) {
+            ++it;
+            continue;
+        }
         m_waitingBytes -= it->encoded.size() + Host::CallCost;
         it = m_waitingEvents.erase(it);
     }
     if (!session) return;
     for (const auto& [id, call] : calls) {
+        if (call == m_partSent) m_answeredPart = call;
         if (MuxPane* pane = session->pane(id)) pane->answerWithoutWindow(*call);
     }
 }
@@ -445,7 +452,7 @@ void Attachment::pump(Session* session)
         // frame and before PaneClosed.
         sendHostCalls(*l.closed);
         if (m_failed) return;
-        if (l.closed->hasHostCalls()) {
+        if (l.closed->hasHostCalls(m_serial)) {
             ++it;
             continue;
         }
@@ -483,7 +490,7 @@ bool Attachment::busy() const
         if (!l.waiting.empty() || !l.writer || l.writer->maxFrame() == 0) continue;
         // A closed pane whose calls wait for room in the queue waits for the
         // window's credit, which wakes the poll.
-        if (l.closed && !(l.closed->hasHostCalls() && m_waitingBytes >= m_eventQueue)) return true;
+        if (l.closed && !(l.closed->hasHostCalls(m_serial) && m_waitingBytes >= m_eventQueue)) return true;
         if (!l.closed && !m_finish && l.state.pending()) return true;
     }
     return false;

@@ -142,7 +142,7 @@ bool MuxPane::queueLocked(std::string encoded, Host::Kind kind, Fit fit, bool* w
     return true;
 }
 
-MuxPane::Forward MuxPane::forward(const Host::Call& call, Fit fit)
+MuxPane::Forward MuxPane::forward(const Host::Call& call)
 {
     {
         // Not encoded for a pane that no window shows: a download or a
@@ -157,7 +157,7 @@ MuxPane::Forward MuxPane::forward(const Host::Call& call, Fit fit)
         // Decided under one lock: a window may come or go since the check.
         std::lock_guard lock(m_hostMutex);
         if (!m_window) result = Forward::NoWindow;
-        else if (!queueLocked(std::move(encoded), call.kind, fit, &wake)) result = Forward::NoRoom;
+        else if (!queueLocked(std::move(encoded), call.kind, Fit::Queue, &wake)) result = Forward::NoRoom;
     }
     // The daemon sends the calls when it wakes: one wake for each batch.
     if (wake) m_wake();
@@ -207,16 +207,24 @@ void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
     if (wake) m_wake();
 }
 
-std::vector<std::string> MuxPane::takeHostCalls(std::size_t budget)
+std::vector<std::string> MuxPane::takeHostCalls(std::uint64_t window, std::size_t budget)
 {
     std::vector<std::string> calls;
     std::lock_guard lock(m_hostMutex);
+    // A setWindow() that failed part of the way left calls for a window that
+    // the pane does not have yet.
+    if (m_window != window) return calls;
     std::size_t taken = 0;
     while (!m_hostCalls.empty()) {
         WaitingCall& front = m_hostCalls.front();
-        std::string encoded = encodeLocked(front);
-        if (!calls.empty() && taken + encoded.size() + Host::CallCost > budget) break;
-        taken += encoded.size() + Host::CallCost;
+        // Moved, not copied: a call can be many megabytes. Only the kinds that
+        // take their newest value encode now.
+        const bool late = front.encoded.empty();
+        std::string encoded = late ? encodeLocked(front) : std::string();
+        const std::size_t size = late ? encoded.size() : front.encoded.size();
+        if (!calls.empty() && taken + size + Host::CallCost > budget) break;
+        if (!late) encoded = std::move(front.encoded);
+        taken += size + Host::CallCost;
         switch (front.kind) {
         case Host::Kind::Bell: m_bellWaiting = false; break;
         case Host::Kind::Flash: m_flashWaiting = false; break;
@@ -236,10 +244,10 @@ std::vector<std::string> MuxPane::takeHostCalls(std::size_t budget)
     return calls;
 }
 
-bool MuxPane::hasHostCalls() const
+bool MuxPane::hasHostCalls(std::uint64_t window) const
 {
     std::lock_guard lock(m_hostMutex);
-    return !m_hostCalls.empty();
+    return m_window == window && !m_hostCalls.empty();
 }
 
 

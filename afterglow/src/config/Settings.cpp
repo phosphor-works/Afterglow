@@ -414,9 +414,9 @@ PhosphorConfig::Schema buildSchema()
                                  "dark NAME, and plasma takes only the colors that the color scheme file sets. A theme "
                                  "replaces each color and the visual bell intensity that it sets. It also replaces the "
                                  "divider and popup border colors. Afterglow reads its own JSON themes, Ghostty themes, "
-                                 "Kitty themes and Konsole color schemes. A value with "
-                                 "a slash is a file path. A path can start with ~/ for the home directory. A relative path starts "
-                                 "at the directory of the config file.")),
+                                 "Kitty themes and Konsole color schemes. A value with a slash is a file path. A path can "
+                                 "start with ~/ for the home directory. A relative path starts at the directory of the "
+                                 "config file.")),
         colorKey(QStringLiteral("foreground"), hex(term.defaultForeground),
                  QStringLiteral("Default text color. An empty value uses the default.")),
         colorKey(QStringLiteral("background"), hex(term.defaultBackground),
@@ -622,8 +622,8 @@ PhosphorConfig::Schema buildSchema()
         doubleKey(QStringLiteral("momentumScroll"), d.mouse.momentumScroll, 0.0, 1.0,
                   QStringLiteral("Part of the speed of a finger scroll that the scroll keeps every %1 milliseconds after the "
                                  "last finger lifts. It applies to touchpads and touchscreens. A higher value scrolls "
-                                 "further. A value of 0 stops the scroll when the finger lifts. A value of 1 does not slow the scroll, which "
-                                 "goes on until a click, a key or a touch stops it.")
+                                 "further. A value of 0 stops the scroll when the finger lifts. A value of 1 does not slow "
+                                 "the scroll, which goes on until a click, a key or a touch stops it.")
                       .arg(MomentumScroll::StepMs)),
         doubleKey(QStringLiteral("touchScrollMultiplier"), d.mouse.touchScrollMultiplier, -10.0, 10.0,
                   QStringLiteral("Multiplier for the distance of a finger scroll on a touchpad or a touchscreen. A negative "

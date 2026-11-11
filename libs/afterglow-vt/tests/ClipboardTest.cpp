@@ -126,7 +126,8 @@ TEST(Clipboard, ARefusalAnswersAsItsRequestAsked)
     ClipboardRequest read;
     read.id = "q";
     read.primary = true;
-    EXPECT_EQ(read.refusal("EPERM"), ClipboardAssembler::readStatus("EPERM", read));
+    // A refusal names no location.
+    EXPECT_EQ(read.refusal("EPERM"), "\x1b]5522;type=read:status=EPERM:id=q\x1b\\");
     ClipboardRequest write;
     write.kind = ClipboardRequest::Kind::Write;
     write.id = "w";

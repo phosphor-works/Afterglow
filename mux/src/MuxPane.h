@@ -47,7 +47,7 @@ class MuxPane final : public AfterglowVt::ITerminalHost, public AfterglowPty::IP
 {
 public:
     /// @p wake runs when the program exits, after output, a resize, a reset
-    /// or a clear while takeChanged() has not taken the last change yet, when
+    /// or a clear once takeChanged() took the change before it, when
     /// a host call waits for the window and none waited before, and when the
     /// PTY's input queue has room again after it refused input, or takes no
     /// more input. The reader thread runs it for output, host calls, the exit
@@ -109,10 +109,13 @@ public:
     /// command again. The calls that wait for a window that goes get
     /// answerWithoutWindow().
     void setWindow(std::uint64_t window, std::size_t queueBytes);
-    /// The calls that wait for the window, encoded, oldest first: as many as
-    /// fit @p budget bytes with their Host::CallCost, and at least one.
-    std::vector<std::string> takeHostCalls(std::size_t budget);
-    bool hasHostCalls() const;
+    /// The calls that wait for @p window, encoded, oldest first: as many as
+    /// fit @p budget bytes with their Host::CallCost, and at least one. None
+    /// while the pane waits for another window.
+    std::vector<std::string> takeHostCalls(std::uint64_t window, std::size_t budget);
+    /// Calls wait for @p window. Those of another window, which the pane's
+    /// program left as it exited, never go: they do not count.
+    bool hasHostCalls(std::uint64_t window) const;
     /// Answers @p encoded, a call that its window did not get, as a pane that
     /// no window shows: a request gets its denial, a report goes to the
     /// program, the others go.
@@ -176,8 +179,8 @@ private:
         NoWindow, ///< the caller answers as a pane that no window shows
         NoRoom, ///< the call does not fit: as without a window, or dropped
     };
-    /// Queues @p call for the window, decided under one lock.
-    Forward forward(const Host::Call& call, Fit fit = Fit::Queue);
+    /// Queues @p call for the window as it fits, decided under one lock.
+    Forward forward(const Host::Call& call);
     /// m_hostMutex held. True when it is the first call that waits: the
     /// caller wakes the daemon, after the lock.
     bool pushLocked(WaitingCall call);

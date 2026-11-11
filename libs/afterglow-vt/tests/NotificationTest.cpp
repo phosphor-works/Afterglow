@@ -284,7 +284,8 @@ TEST(Notification, TheAliveAnswerNamesTheQueryAndTheOpenIds)
 // never holds more than MaxText bytes of text, which a mux window checks.
 TEST(Notification, TheUnpaddedEndOfTheLastChunkCountsAgainstTheLimit)
 {
-    for (const auto& [end, ready] : std::vector<std::pair<std::string, bool>>{{"QUFBQQ", true}, {"QUFBQUE", false}}) {
+    // Each row alone: a failure of the first does not skip the second.
+    const auto feed = [](const std::string& end, bool ready) {
         NotificationAssembler assembler;
         NotificationRequest request;
         // 65532 bytes in whole groups of base64, then 4 or 5 bytes with an
@@ -299,6 +300,10 @@ TEST(Notification, TheUnpaddedEndOfTheLastChunkCountsAgainstTheLimit)
         if (ready) {
             EXPECT_EQ(request.title.size(), NotificationRequest::MaxText);
         }
+    };
+    for (const auto& [end, ready] : std::vector<std::pair<std::string, bool>>{{"QUFBQQ", true}, {"QUFBQUE", false}}) {
+        SCOPED_TRACE(end);
+        feed(end, ready);
     }
 }
 

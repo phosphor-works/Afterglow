@@ -167,8 +167,7 @@ Extra arguments go to esctest. With a filter, the script reports only unexpected
 ### Fuzzing
 
 The fuzz targets need clang for C and C++, and a separate build directory.
-The targets compile with the sanitizers what they test: the terminal core, the protocol library, zlib-ng and xxHash.
-They also compile the image decoders of `aglow` and the codecs of the attach stream.
+The targets compile the terminal core, the protocol library, zlib-ng, xxHash, the image decoders of `aglow` and the codecs of the attach stream with the sanitizers.
 Build only the fuzz targets in a fuzz build directory.
 The commands below turn off the tests and build the four targets by name.
 A fuzz build does not build `aglow`, because a static program cannot use the sanitizer runtimes.
@@ -371,7 +370,7 @@ In other runs, they report Skipped.
 
 CTest runs the relay tests below as `afterglow_transfer_kitten_relay` and `afterglow_transfer_aglow_relay`.
 `afterglow_transfer_kitten_relay` reports Skipped when `kitten` is not installed.
-With `AFTERGLOW_NATIVE_TESTS=ON`, CTest also runs the `--kitty` test as `afterglow_transfer_kitty`.
+With `AFTERGLOW_NATIVE_TESTS=ON` and `AFTERGLOW_BUILD_AGLOW=ON`, CTest also runs the `--kitty` test as `afterglow_transfer_kitty`.
 
 Run interoperability tests with the installed `kitten` client:
 
@@ -497,10 +496,10 @@ The `Mux.MuxAttach.*` tests cover these cases:
 - The calls of the pane's terminal to its host reach the window: a bell, an OSC 52 write and a file transfer, in their order
 - A clipboard read waits for the window's answer, and the daemon gives none
 - The answer to a query (DA1) comes after the drag and drop query before it
-- A call larger than the window's `eventQueue` goes in parts when nothing else waits, and the calls after it follow it
+- A request larger than the window's `eventQueue` goes in parts when nothing else waits, and the requests after it follow it
 - A request that does not fit the queue gets the answer of a session that no window shows, once
-- A request that waits when the window detaches, in the queue of the daemon or of the pane, gets that answer once
-- A call whose first part went goes whole when the session ends
+- A request that waits when the window detaches, in the queue of the session or of the pane, gets that answer once
+- A request whose first part went goes whole when the session ends
 - An `eventQueue` out of range, and an unknown option of the attach call, are refused
 
 The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow mux new` starts in a session of its own:
@@ -523,6 +522,7 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow` | A bell, a user variable and an OSC 52 write of the session's shell reach the window and its clipboard |
 | `NativeWindow.AMuxSessionsReadsAndCommandsReachTheWindowAndBack` | An OSC 52 read gets the clipboard after the prompt. The commands of shell integration come in order, with the time that the daemon measured. |
 | `NativeWindow.AProtocolWaitOfASessionPaneReadsItsStream` | The answer wait of a drag reads the session's stream, and ends when the command comes |
+| `NativeWindow.ALaunchOfASessionPassesItsEventQueue` | A launch of a session passes `Mux.eventQueue` of the configuration to the daemon, in bytes |
 | `NativeWindow.AReadOfASessionThatOutlivesItsWindowGetsTheDenial` | A clipboard read that waits for its prompt gets the denial when the window closes and the session keeps running |
 | `NativeWindow.MuxOnCloseAppliesToAnOpenSessionPane` | A change of `Mux.onClose` reaches an open pane |
 | `NativeWindow.ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow` | A launch of a session that a window shows brings that window to the front and shows the pane of the session. A launch of an unknown session fails with the reason. |
