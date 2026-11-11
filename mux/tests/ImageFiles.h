@@ -3,8 +3,7 @@
 
 #pragma once
 
-// Small image files for the tests of the daemon's image decoder, made with
-// Pillow.
+// Small image files for the tests of the daemon's images, made with Pillow.
 
 #include <string>
 
@@ -66,6 +65,7 @@ inline const std::string Jpeg(
     "\xbe\x8a\x28\xaf\xe5\x33\xfd\xfc\x3f\xff\xd9",
     635);
 
+// A lossless WebP (VP8L), which only a pane outside a session shows.
 inline const std::string Webp(
     "\x52\x49\x46\x46\x1c\x00\x00\x00\x57\x45\x42\x50\x56\x50\x38\x4c\x0f\x00\x00\x00\x2f\x01\x40\x00"
     "\x00\x07\x10\xfd\x8f\xfe\x07\x22\xa2\xff\x01\x00",

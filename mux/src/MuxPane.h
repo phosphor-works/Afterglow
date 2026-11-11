@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "ImageDecoder.h"
 #include "MuxHost.h"
 #include "MuxProtocol.h"
 
@@ -37,14 +38,19 @@ namespace AfterglowMux {
 /// window, the pane answers them as a terminal with no user: a report goes to
 /// the program, a request gets a denial, the rest go. The query of the socket
 /// of an ssh session gets its answer here always. PNG and iTerm2 images
-/// decode in a process of their own (ImageDecoder.h), whether or not a
-/// window shows the pane: the store keeps their pixels.
+/// decode in a process of their own (ImageDecoder), also while no window
+/// shows the pane: the store keeps their pixels. Sixel and iTerm2 images
+/// need a cell size, which only a window measures: before the first window,
+/// they do not show.
 ///
 /// The callbacks of the terminal and of the PTY run on the PTY reader thread,
 /// with m_mutex held for the terminal's, and the terminal's also on the
 /// daemon's thread for a resize, a reset, a clear and a visibility change.
 /// They reach the daemon's thread only through @p wake, which must be safe to
-/// call from any thread.
+/// call from any thread. While an image decodes, the reader thread lets
+/// m_mutex go and the terminal stays its own: the daemon's thread does not
+/// wait for it. A frame then waits, and a change waits for the end of the
+/// feed, which makes it.
 class MuxPane final : public AfterglowVt::ITerminalHost, public AfterglowPty::IPtyListener
 {
 public:
@@ -56,8 +62,9 @@ public:
     /// and the queue. The daemon's thread runs it for the others, and for the
     /// host calls of a resize, a reset, a visibility change and a new window.
     /// It must be safe to call from any thread.
+    /// @p images decodes the pane's PNG and iTerm2 images, and outlives it.
     MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, const PaneSize& size,
-            std::string notificationCapabilities, std::function<void()> wake);
+            std::string notificationCapabilities, ImageDecoder& images, std::function<void()> wake);
     /// Hangs up the program: the PTY's reaper kills it when it stays.
     ~MuxPane() override;
     MuxPane(const MuxPane&) = delete;
@@ -88,8 +95,9 @@ public:
     /// The program exited, or start() failed.
     bool exited() const { return m_exited.load(); }
     /// The next frame of @p writer (StateWriter::update), with the region
-    /// scrolls since the frame before it.
-    std::string frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes);
+    /// scrolls since the frame before it. None while an image decodes: the
+    /// pane is changed again, and @p wake runs when the decode's feed ends.
+    std::optional<std::string> frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes);
     /// Whether the user can see the pane in its window: mode 2033 reports a
     /// change to the program. A pane that no window shows cannot be seen, and
     /// a change of window (setWindow) makes it unseen until the new window
@@ -161,12 +169,31 @@ public:
     void ptyWritable() override { m_wake(); }
 
 private:
+    /// Makes @p change to the terminal, m_mutex held, or leaves it to the
+    /// reader thread while an image decodes. Daemon's thread.
+    void change(std::function<void()> change);
+    void setVisibleLocked(bool visible, std::uint64_t window);
+    bool decodeOutsideLock(std::string_view data, ImageFormats formats, std::uint32_t& width, std::uint32_t& height,
+                           std::vector<std::uint8_t>& rgba);
+
     const std::uint32_t m_id;
     std::function<void()> m_wake;
     std::atomic<bool> m_changed{false};
     std::atomic<int> m_exitStatus{0};
     const std::string m_notificationCapabilities;
-    mutable std::mutex m_mutex; ///< guards m_terminal, which the reader thread feeds, and m_scrolls
+    ImageDecoder& m_images;
+    /// Readable once the pane closes: a decode that runs, and any after it,
+    /// ends at once.
+    AfterglowProto::UniqueFd m_stopDecode;
+    mutable std::mutex m_mutex; ///< guards m_terminal, which the reader thread feeds, m_scrolls and what follows
+    /// The lock of the feed that runs, which a decode lets go. Reader thread.
+    std::unique_lock<std::mutex>* m_feedLock = nullptr;
+    /// An image decodes: the terminal is the reader thread's, without m_mutex.
+    bool m_decoding = false;
+    /// The changes of the daemon's thread that wait for the feed's end.
+    std::vector<std::function<void()>> m_deferred;
+    /// A frame waited for a decode: the end of the feed wakes the daemon.
+    bool m_frameDeferred = false;
     AfterglowVt::Terminal m_terminal;
     /// The region scrolls of the terminal for the next frame.
     AfterglowVt::RegionScrolls m_scrolls;

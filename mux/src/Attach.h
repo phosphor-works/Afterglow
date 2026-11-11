@@ -120,6 +120,7 @@ private:
         AfterglowVt::StateWriter state;
         std::string waiting; ///< a frame that the channel refused
         bool started = false; ///< the first frame went
+        bool deferred = false; ///< the last frame waits for a decode: the host calls after it wait too
         std::unique_ptr<MuxPane> closed; ///< the pane once its program exited
     };
 

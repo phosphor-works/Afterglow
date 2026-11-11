@@ -355,7 +355,7 @@ std::string Daemon::newSession(const IpcRequest& request)
     if (!options) return ipcError(request.id, IpcErrorCode::InvalidArg, error);
     std::string name = options->name.empty() ? freeName() : options->name;
     if (find(name) != m_sessions.end()) return ipcError(request.id, Error::SessionExists, "a session named '" + name + "' exists");
-    auto session = std::make_unique<Session>(name, std::move(*options), m_fileLimit);
+    auto session = std::make_unique<Session>(name, std::move(*options), m_fileLimit, m_images);
     const int wake = m_wakeFd;
     const auto wakeDaemon = [wake] {
         const std::uint64_t one = 1;
