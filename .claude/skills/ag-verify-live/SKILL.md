@@ -28,7 +28,11 @@ closes windows or kills processes there damages their work.
    ```
 
 2. Run it in a headless nested KWin. The runner starts itself under `dbus-run-session`, so KWin gets a private
-   D-Bus. The test binary runs under a second `dbus-run-session`, with a private D-Bus of its own:
+   D-Bus. The test binary runs under a second `dbus-run-session`, with a private D-Bus of its own. The memory cap
+   of `systemd-run` keeps systemd-oomd from killing the user's Afterglow (see `ag-build`). The whole suite takes
+   about 15 minutes, and the Bash tool stops a command in the foreground after 10 minutes: run it with
+   `run_in_background` and wait for its exit notice. A `--filter` subset that ends sooner can run in the
+   foreground.
 
    ```sh
    systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
@@ -40,6 +44,7 @@ The default filter is `NativeWindow.*:KeyMapping.*`: every native test but `Shad
 `KeyMapping.*` runs here and not in the default CTest suite, because it maps keys through the keymap of the
 compositor's seat. With `AFTERGLOW_NATIVE_TESTS=ON`, CTest runs the whole binary in a nested KWin, `KeyMapping.*`
 included.
+
 Options:
 
 | Option | Default | Effect |
@@ -51,7 +56,7 @@ Options:
 | `--validation` | Off | Enables the Vulkan validation layer and GPU logging |
 | `--size 1920x1080` | `1100x750` | Changes the virtual output size |
 | `--outputs 2` | `1` | Gives KWin two virtual outputs. The tests that move a window between screens skip with one. The drag tests expect one output: run them without this option. |
-| `--timeout 600` | 600 | Stops the test binary after this many seconds and 10 more, and reports status 124 |
+| `--timeout 3600` | `1800` | Stops the test binary and its D-Bus after this many seconds and 10 more, and reports status 124. |
 
 The log is long. Read it with `grep`, never in full.
 
@@ -69,7 +74,6 @@ dialog only with a platform theme that makes one:
 
 Without plasma-integration, Qt loads no KDE theme and gives no message. The tests then fail with "the KDE platform
 theme did not load", because the widget dialog would test no native dialog.
-The memory cap of `systemd-run` keeps systemd-oomd from killing the user's Afterglow (see `ag-build`).
 
 ### Expected skips in the headless run
 
@@ -105,6 +109,8 @@ pointer input to the tab bar or an overlay must first wait for `ChromeLayer::roo
 systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
     python3 afterglow/tests/native_window_acceptance.py --binary build/afterglow/afterglow_native_tests
 ```
+
+The whole run also takes about 15 minutes: run it with `run_in_background`, or give it a `--filter`.
 
 This runner opens a nested KWin as a window on the host X11 or XWayland display, and sends synthetic X events
 (`XSendEvent`, not XTest) only to that window. Use it for the drag-and-drop tests, or when the user asks for a

@@ -55,8 +55,8 @@ wrong, and points to the skills that hold the procedures.
   and has no migration notes.
 - **Licenses.** Every file that can hold a comment starts with `SPDX-FileCopyrightText: 2026 fuddlesworth` and an
   `SPDX-License-Identifier`. The application, its tests and tools are `GPL-3.0-or-later`, and so is `mux/` (the
-  daemon, its protocol and its tests). Tools that use only
-  `libs/afterglow-vt` and `libs/afterglow-proto` (the VT benchmark, `tools/conformance`, `tools/fuzz`,
+  daemon, its protocol and its tests), and `tools/fuzz/muxfuzz.cpp`, which compiles `mux/`. Tools that use only
+  `libs/afterglow-vt` and `libs/afterglow-proto` (the VT benchmark, `tools/conformance`, the rest of `tools/fuzz`,
   `tools/aglow` with its tests, the `aglow` completions in `data/completions`, `tools/gen_unicode_tables.py`) are
   `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New shader packs are `LGPL-2.1-or-later`.
   The vendored `tools/aglow/stb/stb_image.h` keeps its MIT license, which `REUSE.toml` records.
@@ -106,7 +106,7 @@ wrong, and points to the skills that hold the procedures.
 | --- | --- |
 | Build | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build -j6` (zero warnings is the bar) |
 | Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j6` (about 1,800, all pass) |
-| Native window tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 .claude/skills/ag-verify-live/headless_native.py` |
+| Native window tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 .claude/skills/ag-verify-live/headless_native.py` (about 15 minutes: run it in the background) |
 | Shader preview | `build/tools/render/afterglow_renderpng --shader PACK - out.png` |
 | Configuration reference | `python3 tools/generate-reference.py build/afterglow/afterglow` |
 
@@ -127,7 +127,7 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 | Shader library | `afterglow/src/shaders/`: `ShaderLibrary.*` (the pack registry, with package packs), `ShaderControls.*`; packs in `data/shaders/`, the contract in `data/shaders/shared/` |
 | Scripting | `afterglow/src/scripting/`: `ScriptHost.*` (Luau VMs, events, effect validation), `ScriptControl.cpp` (effects applied to windows), `ScriptPackage.*`, `ScriptState.*`, `ScriptTasks.*`, `OverlaySpec.*` (the options of an overlay, for scripts and control), the prelude `afterglow.luau` and the declarations `afterglow.d.luau`; examples in `data/examples/scripts/` and `data/examples/packages/` |
 | Control | `afterglow/src/control/`: `Control.cpp`, `ControlSocket.cpp` (the `control` target of the phosphor-ipc socket), `CommandSocket.cpp` (the `commands` target: script commands for `aglow run`, and the `remote` target), `RemoteSockets.cpp` (the sockets that `afterglow ssh` forwards for remote commands), `ControlProject.cpp` (projects and directories), `IpcClient.cpp`, `Ctl.cpp` (`afterglow ctl`); the socket and the launch handoff in `afterglow/src/app/InstanceSocket.cpp` and `main.cpp` |
-| Mux | `mux/`: `afterglow-mux` (no Qt) with `Daemon.cpp` (the daemon socket and the lifetimes), `Session.cpp`, `MuxPane.cpp` (a PTY and its terminal, the answers while no window shows the session); `Attach.cpp` (the daemon's side of a window that shows a session: its socket, its stream, the frames of its panes and its input); `mux/protocol/MuxStream.*` (the events and the input on that stream), `MuxConnect.*` (how a client finds the daemon); `afterglow/src/mux/MuxClient.cpp` (a window's link to a session, for its session panes in `Pane`); `libs/afterglow-vt/src/StateSync.cpp` (the codec `afterglow.state.v1`: a writer that sends what changed in a terminal, and a reader that applies it to a replica terminal in a window); `mux/protocol/MuxProtocol.*` (the calls and their values, linked by the application too); `IpcServer.cpp` in `libs/afterglow-proto` (the server side of the phosphor-ipc wire format); `afterglow/src/control/Mux.cpp` (`afterglow mux`); `afterglow/src/PaneLaunch.cpp` (the program and environment of a new pane, for windows and sessions); tests in `mux/tests/` (`Mux.*`, with `TestDaemon.h`, which the native tests use too); the user document `docs/MUX.md` |
+| Mux | `mux/`: `afterglow-mux` (no Qt) with `Daemon.cpp` (the daemon socket and the lifetimes), `Session.cpp`, `MuxPane.cpp` (a PTY and its terminal, the host calls that wait for the window, and the answers while no window shows the session); `Attach.cpp` (the daemon's side of a window that shows a session: its socket, its stream, the frames of its panes and its input); `mux/protocol/MuxStream.*` (the events and the input on that stream), `MuxHost.*` (the calls of a pane's terminal to its host that the window answers: bells, notifications, the clipboard, transfers, drag and drop, downloads, pointer shapes, user variables, shell integration commands and reports), `MuxCodec.h` (the varints of both codecs), `MuxConnect.*` (how a client finds the daemon); `afterglow/src/mux/MuxClient.cpp` (a window's link to a session, for its session panes in `Pane`); `libs/afterglow-vt/src/StateSync.cpp` (the codec `afterglow.state.v1`: a writer that sends what changed in a terminal, and a reader that applies it to a replica terminal in a window); `mux/protocol/MuxProtocol.*` (the calls and their values, linked by the application too); `IpcServer.cpp` in `libs/afterglow-proto` (the server side of the phosphor-ipc wire format); `afterglow/src/control/Mux.cpp` (`afterglow mux`); `afterglow/src/PaneLaunch.cpp` (the program and environment of a new pane, for windows and sessions); tests in `mux/tests/` (`Mux.*`, with `TestDaemon.h`, which the native tests use too); the user document `docs/MUX.md` |
 | Shell and desktop | `afterglow/src/shell/` (shell integration, `afterglow ssh`, and `Aglow.cpp`, which runs `aglow` for `afterglow run`, `transfer`, `dnd`, `icat` and `clipboard`), `data/shell-integration/`, `data/completions/` (the Bash, Zsh and Fish completions of `afterglow` and `aglow`), `afterglow/src/desktop/` (accessibility, drag and drop, file transfer), `afterglow/src/audio/` |
 | Tests | `libs/*/tests/`, `afterglow/tests/` (GTest, and the Python acceptance runners), `mux/tests/` (`afterglow_mux_tests`), `tools/aglow/tests/` (`aglow_tests` and the Python tests of `aglow`), `tools/conformance/`, `tools/fuzz/` |
 | Tools | `tools/render/` (`afterglow_renderpng`), `tools/bench/`, `tools/generate-reference.py`, `tools/gen_unicode_tables.py`; `tools/aglow/` (`aglow`, the static client of the Kitty protocols and of script commands: no Qt, no Phosphor, only `libs/afterglow-proto` and the vendored stb_image) |
@@ -137,7 +137,7 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 The skills in `.claude/skills/`:
 
 - `ag-build`: build directories, the Phosphor checkout, warnings, the test suite, generated files.
-- `ag-verify-live`: native window tests in a headless nested KWin, and the expected failures there.
+- `ag-verify-live`: native window tests in a headless nested KWin, and the expected skips there.
 - `ag-shader-pack`: pack layout, contract changes and their C++ mirrors, previews with `afterglow_renderpng`.
 - `ag-add-setting`: the files that a new setting touches, and the reference regeneration.
 - `ag-script-api`: a new script effect, event or helper, from the prelude to the docs.

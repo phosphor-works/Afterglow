@@ -35,7 +35,8 @@ target_compile_definitions(afterglow_scripting_tests PRIVATE
 gtest_discover_tests(afterglow_scripting_tests PROPERTIES TIMEOUT 60)
 
 qt_add_executable(afterglow_config_tests ConfigTest.cpp DesktopTest.cpp)
-target_link_libraries(afterglow_config_tests PRIVATE afterglow_config GTest::gtest_main)
+# afterglow_mux_protocol: the bounds of the Mux settings are the daemon's.
+target_link_libraries(afterglow_config_tests PRIVATE afterglow_config afterglow_mux_protocol GTest::gtest_main)
 target_compile_definitions(afterglow_config_tests PRIVATE AFTERGLOW_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes")
 gtest_discover_tests(afterglow_config_tests)
 
@@ -146,7 +147,7 @@ if(AFTERGLOW_NATIVE_TESTS)
         COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/native_window_acceptance.py
                 --binary $<TARGET_FILE:afterglow_native_tests>)
     # The window and Kitty draw on the GPU: they take turns with the renderer's tests.
-    set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 620 RESOURCE_LOCK gpu)
+    set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 1820 RESOURCE_LOCK gpu)
     # aglow transfer against Kitty in a headless KWin (77: no kitty, kwin_wayland or dbus-run-session).
     if(AFTERGLOW_BUILD_AGLOW)
         add_test(NAME afterglow_transfer_kitty

@@ -3,8 +3,11 @@
 #
 # libFuzzer targets (clang only, for C and C++): afterglow_vtfuzz for the
 # terminal core, afterglow_protofuzz for the protocol readers that take what
-# a remote program sends, and afterglow_imagefuzz for the image decoders of
-# aglow (the patched stb_image and aglow's GIF reader in tools/aglow). The
+# a remote program sends, afterglow_imagefuzz for the image decoders of aglow
+# (the patched stb_image and aglow's GIF reader in tools/aglow), and
+# afterglow_muxfuzz for the readers of the attach stream of afterglow-mux.
+# afterglow_muxfuzz compiles code of mux/, which is GPL-3.0-or-later, so its
+# source is too, and no other target links it. The
 # sources of the libraries, xxHash and the decoders are compiled into them
 # again, so that the sanitizers and the coverage instrument them. zlib-ng is
 # instrumented in place: its own build sets CPU flags for each of its files,
@@ -16,7 +19,7 @@
 #
 #   cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DAFTERGLOW_BUILD_FUZZERS=ON \
 #       -DBUILD_TESTING=OFF
-#   cmake --build build-fuzz --target afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz
+#   cmake --build build-fuzz --target afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz
 #   mkdir -p build-fuzz/corpus
 #   ./build-fuzz/tools/fuzz/afterglow_vtfuzz -max_total_time=300 -max_len=65536 \
 #       -dict=tools/fuzz/vt.dict build-fuzz/corpus/
@@ -63,6 +66,13 @@ target_link_libraries(afterglow_vtfuzz PRIVATE afterglow_fuzz_proto PkgConfig::P
 add_executable(afterglow_protofuzz protofuzz.cpp)
 target_link_libraries(afterglow_protofuzz PRIVATE afterglow_fuzz_proto)
 
+# The codecs of the attach stream, as afterglow_mux_protocol compiles them.
+add_executable(afterglow_muxfuzz muxfuzz.cpp "${PROJECT_SOURCE_DIR}/mux/protocol/MuxHost.cpp"
+    "${PROJECT_SOURCE_DIR}/mux/protocol/MuxStream.cpp")
+target_include_directories(afterglow_muxfuzz PRIVATE "${PROJECT_SOURCE_DIR}/mux/protocol"
+    $<TARGET_PROPERTY:AfterglowVt,INTERFACE_INCLUDE_DIRECTORIES>)
+target_link_libraries(afterglow_muxfuzz PRIVATE afterglow_fuzz_proto)
+
 # The decoders as aglow builds them (tools/aglow/CMakeLists.txt): stb's code
 # without Afterglow's warnings, and with -fwrapv.
 afterglow_vendored_file(stb_image AFTERGLOW_FUZZ_STB_IMAGE)
@@ -73,10 +83,10 @@ target_include_directories(afterglow_imagefuzz PRIVATE "${PROJECT_SOURCE_DIR}/to
 target_include_directories(afterglow_imagefuzz SYSTEM PRIVATE "${AFTERGLOW_FUZZ_STB_DIR}")
 set_source_files_properties("${AFTERGLOW_FUZZ_STB_SOURCE}" PROPERTIES COMPILE_OPTIONS "-w;-fwrapv")
 
-foreach(target afterglow_fuzz_proto afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz)
+foreach(target afterglow_fuzz_proto afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz)
     set_target_properties(${target} PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 endforeach()
-foreach(target afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz)
+foreach(target afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz)
     target_compile_options(${target} PRIVATE ${AFTERGLOW_FUZZ_FLAGS})
     target_link_options(${target} PRIVATE -fsanitize=fuzzer,address,undefined)
 endforeach()

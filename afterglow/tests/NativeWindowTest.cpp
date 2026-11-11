@@ -9718,9 +9718,7 @@ TEST_F(NativeWindow, AProgramWhoseTabClosedShowsAndWritesNothing) {
         player.write(QStringLiteral("#!/bin/sh\necho \"${AFTERGLOW_TEST_BELL:-closed}\" >> '%1'\n").arg(bells).toUtf8());
     }
     ASSERT_TRUE(QFile::setPermissions(bin + QStringLiteral("/pw-play"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
-    const QByteArray path = qgetenv("PATH");
-    qputenv("PATH", QFile::encodeName(bin) + ':' + path);
-    const auto restorePath = qScopeGuard([path] { qputenv("PATH", path); });
+    const Saved path("PATH", QFile::encodeName(bin) + ':' + qgetenv("PATH"));
     const auto played = [&] {
         QFile file(bells);
         return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
@@ -9761,8 +9759,7 @@ TEST_F(NativeWindow, AProgramWhoseTabClosedShowsAndWritesNothing) {
     // bell of the closed tab would have started first, with no
     // AFTERGLOW_TEST_BELL: each bell's player writes the value that it
     // inherited.
-    qputenv("AFTERGLOW_TEST_BELL", "open");
-    const auto unsetBell = qScopeGuard([] { qunsetenv("AFTERGLOW_TEST_BELL"); });
+    const Saved bell("AFTERGLOW_TEST_BELL", "open");
     feedFromReader(second, "\a");
     EXPECT_TRUE(waitFor([&] { return played().contains("open"); })) << "no bell plays";
     EXPECT_EQ(played(), QByteArray("open\n")) << "the bell of the closed tab played";
@@ -10102,7 +10099,7 @@ namespace {
 /// Shows session @p name of @p daemon in a new window of @p application.
 QPointer<TerminalWindow> showSession(Application& application, MuxTest::TestDaemon& daemon, const QString& name, QString* error) {
     WindowOptions options;
-    options.session = MuxClient::attach(name, true, error, daemon.sockets());
+    options.session = MuxClient::attach(name, true, error, daemon.sockets(), MuxSettings{}.eventQueue);
     if (!options.session) return nullptr;
     QPointer<TerminalWindow> shown = application.newWindow(options);
     if (shown) shown->show();
@@ -10146,6 +10143,156 @@ TEST_F(NativeWindow, AMuxSessionShowsInAWindowAndEndsWithIt) {
     delete shown;
     // The daemon still answers, with only its own session.
     EXPECT_TRUE(waitFor([&] { return MuxTest::names(daemon.sessions()) == std::vector<std::string>{"keep"}; }, 5000));
+}
+
+// The calls of a session pane's terminal reach the window, as from a program
+// of its own: a bell, a user variable and an OSC 52 write to the clipboard.
+TEST_F(NativeWindow, AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "calls")) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("calls"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    int bells = 0;
+    QStringList vars;
+    QObject listener;
+    QObject::connect(pane, &Pane::bellRang, &listener, [&] { ++bells; });
+    QObject::connect(pane, &Pane::userVarUpdated, &listener, [&](const QString&, const QString& value) { vars.append(value); });
+    QGuiApplication::clipboard()->setText(QStringLiteral("before"));
+    // "done" and "from session" in base64.
+    ASSERT_TRUE(pane->sendInput("printf '\\a\\033]1337;SetUserVar=mark=ZG9uZQ==\\a\\033]52;c;ZnJvbSBzZXNzaW9u\\a'\n"));
+    EXPECT_TRUE(waitFor([&] { return bells > 0; }, 5000));
+    EXPECT_TRUE(waitFor([&] { return vars.contains(QStringLiteral("done")); }, 5000)) << vars.join(QLatin1Char(',')).toStdString();
+    EXPECT_TRUE(waitFor([] { return QGuiApplication::clipboard()->text() == QStringLiteral("from session"); }, 5000))
+        << QGuiApplication::clipboard()->text().toStdString();
+    delete shown;
+}
+
+// The requests of a session's programs reach the window, and its answers
+// reach them back through the daemon: an OSC 52 read gets the clipboard once
+// the user allows it. The commands of shell integration come in order, with
+// the time that the daemon measured.
+TEST_F(NativeWindow, AMuxSessionsReadsAndCommandsReachTheWindowAndBack) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "back")) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("back"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    auto* chrome = shown->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+
+    QStringList order;
+    qint64 ran = -1;
+    QObject listener;
+    QObject::connect(pane, &Pane::commandBegan, &listener, [&](const QString&) { order << QStringLiteral("began"); });
+    QObject::connect(pane, &Pane::userVarUpdated, &listener, [&](const QString& name, const QString&) { order << name; });
+    QObject::connect(pane, &Pane::commandEnded, &listener, [&](const QString&, int, qint64 ms) {
+        order << QStringLiteral("ended");
+        ran = ms;
+    });
+    // A command that sets a user variable while it runs, for 300 ms.
+    ASSERT_TRUE(pane->sendInput("printf '\\033]133;A\\033\\\\$ \\033]133;B\\033\\\\echo test\\033]133;C\\033\\\\"
+                                "\\033]1337;SetUserVar=during=dg==\\a'; sleep 0.3; printf 'result\\033]133;D;0\\033\\\\'\n"));
+    ASSERT_TRUE(waitFor([&] { return order.contains(QStringLiteral("began")); }, 5000)) << order.join(QLatin1Char(',')).toStdString();
+    // A window that is busy gets the end late: the time is still the daemon's.
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    ASSERT_TRUE(waitFor([&] { return order.contains(QStringLiteral("ended")); }, 5000)) << order.join(QLatin1Char(',')).toStdString();
+    EXPECT_EQ(order, (QStringList{QStringLiteral("began"), QStringLiteral("during"), QStringLiteral("ended")}));
+    EXPECT_GE(ran, 250);
+    EXPECT_LT(ran, 650);
+
+    // The reply goes to the program as its input, which dd saves.
+    QGuiApplication::clipboard()->setText(QStringLiteral("for the session"));
+    const QString reply = QString::fromStdString(daemon.dir()) + QStringLiteral("/reply");
+    AfterglowVt::ClipboardRequest read;
+    read.osc52 = true;
+    read.osc52Bel = true;
+    read.osc52Selection = "c";
+    const std::string expected = read.osc52Reply("for the session");
+    ASSERT_TRUE(pane->sendInput(QStringLiteral("stty raw -echo; printf '\\033]52;c;?\\a'; dd bs=1 count=%1 of=%2 2>/dev/null; stty sane\n")
+                                    .arg(expected.size())
+                                    .arg(reply)
+                                    .toStdString()));
+    ASSERT_TRUE(waitFor([&] { return chrome->clipboardPromptOpen(); }, 5000));
+    chrome->answerClipboard(1);
+    ASSERT_TRUE(waitFor([&] { return QFileInfo(reply).size() == qint64(expected.size()); }, 5000));
+    QFile file(reply);
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+    EXPECT_EQ(file.readAll().toStdString(), expected);
+    delete shown;
+}
+
+// A drag waits for the program's answer on the GUI thread
+// (Terminal.dragAnswerWait). A session pane's commands come on the session's
+// stream, which only that thread reads: the wait reads it, and ends when they
+// come.
+TEST_F(NativeWindow, AProtocolWaitOfASessionPaneReadsItsStream) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "wait")) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("wait"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    int commands = 0;
+    QObject listener;
+    QObject::connect(pane, &Pane::terminalProtocolRequested, &listener, [&](int code, const QByteArray&) { commands += code == 5113; });
+    ASSERT_TRUE(pane->sendInput("sleep 0.3; printf '\\033]5113;ac=cancel;id=x\\033\\\\'\n"));
+    QElapsedTimer waited;
+    waited.start();
+    pane->deliverProtocolCommands(4000);
+    EXPECT_EQ(commands, 1);
+    EXPECT_LT(waited.elapsed(), 3000);
+    delete shown;
+}
+
+// A clipboard read that waits for the user when the window closes, while the
+// session keeps running (Mux.onClose detach), gets the denial: its program
+// does not wait for good.
+TEST_F(NativeWindow, AReadOfASessionThatOutlivesItsWindowGetsTheDenial) {
+    restartApplication(QStringLiteral("mux.conf"),
+                       testSettings({{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("onClose"), QStringLiteral("detach")}}}}),
+                       {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "kept")) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("kept"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    auto* chrome = shown->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    const QString reply = QString::fromStdString(daemon.dir()) + QStringLiteral("/reply");
+    AfterglowVt::ClipboardRequest read;
+    read.osc52 = true;
+    read.osc52Bel = true;
+    read.osc52Selection = "c";
+    const std::string denial = read.refusal("EPERM");
+    ASSERT_TRUE(pane->sendInput(QStringLiteral("stty raw -echo; printf '\\033]52;c;?\\a'; dd bs=1 count=%1 of=%2 2>/dev/null; stty sane\n")
+                                    .arg(denial.size())
+                                    .arg(reply)
+                                    .toStdString()));
+    ASSERT_TRUE(waitFor([&] { return chrome->clipboardPromptOpen(); }, 5000));
+    delete shown;
+    ASSERT_TRUE(waitFor([&] { return QFileInfo(reply).size() == qint64(denial.size()); }, 5000));
+    QFile file(reply);
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+    EXPECT_EQ(file.readAll().toStdString(), denial);
 }
 
 // The program of the session exits: the pane closes as a pane whose program
@@ -10194,7 +10341,7 @@ void loseSession(Application& application, MuxTest::TestDaemon& daemon, bool tak
     if (takeover) {
         // This process asks for the session as another window would.
         ASSERT_TRUE(daemon.call(AfterglowMux::Fn::Attach,
-                                MuxTest::Json::Array{AfterglowMux::ProtocolVersion, name, MuxTest::Json::Object{{"takeover", true}}}))
+                                MuxTest::Json::Array{AfterglowMux::ProtocolVersion, name, MuxTest::Json::Object{{AfterglowMux::AttachOption::Takeover, true}}}))
             << daemon.lastError();
     } else {
         ASSERT_TRUE(daemon.call(AfterglowMux::Fn::Detach, MuxTest::Json::Array{name})) << daemon.lastError();
@@ -10215,6 +10362,27 @@ TEST_F(NativeWindow, AWindowThatLosesItsSessionLeavesItRunning) {
         SCOPED_TRACE(takeover ? "a takeover" : "a detach");
         loseSession(*application, daemon, takeover);
     }
+}
+
+// A launch of a session passes Mux.eventQueue of the configuration, in bytes.
+TEST_F(NativeWindow, ALaunchOfASessionPassesItsEventQueue) {
+    restartApplication(QStringLiteral("queue.conf"), testSettings({{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("eventQueue"), 1}}}}),
+                       {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "queue")) << daemon.lastError();
+    const Saved runtime("XDG_RUNTIME_DIR", QByteArray::fromStdString(daemon.runtime()));
+    const Saved state("XDG_STATE_HOME", QByteArray::fromStdString(daemon.dir() + "/state"));
+    const int before = int(TerminalWindow::windows().size());
+    ASSERT_EQ(application->openLaunch(QDir::homePath(), {}, {{QStringLiteral("session"), QStringLiteral("queue")}}), QString());
+    ASSERT_EQ(int(TerminalWindow::windows().size()), before + 1);
+    QPointer<TerminalWindow> shown = TerminalWindow::windows().last();
+    Pane* const pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_NE(pane->session(), nullptr);
+    EXPECT_EQ(pane->session()->eventQueue(), std::size_t(1) << 20);
+    delete shown;
 }
 
 // A launch with --mux-attach (Application::openLaunch) finds the daemon in

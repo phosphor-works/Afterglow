@@ -3,31 +3,39 @@
 
 #pragma once
 
+#include "MuxHost.h"
 #include "MuxProtocol.h"
 
 #include <AfterglowPty/Pty.h>
 #include <AfterglowVt/Terminal.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <sys/types.h>
 
 namespace AfterglowMux {
 
 /// One pane of a session: the program's PTY and the terminal that parses its
-/// output. The daemon parses whether or not a window shows the session, and
-/// answers the queries that the terminal answers itself (DA1, DSR, colors,
-/// sizes, the socket of an ssh session). The terminal keeps the title and the
-/// working directory. The state that a window shows carries no bells,
-/// notifications or clipboard yet (docs/MUX.md): they are dropped or refused
-/// here, also while a window shows the session. Images that need a decoder
+/// output. The daemon parses whether or not a window shows the session. The
+/// terminal keeps the title and the working directory. While a window shows
+/// the pane, the calls of the terminal to its host (MuxHost.h) wait for that
+/// window: bells, notifications, the clipboard, transfers, drags, downloads,
+/// and the reports that answer queries (DA1, DSR, colors, sizes). Without a
+/// window, the pane answers them as a terminal with no user: a report goes to
+/// the program, a request gets a denial, the rest go. The query of the socket
+/// of an ssh session gets its answer here always. Images that need a decoder
 /// (PNG, iTerm2) are refused: Afterglow decodes them with Qt, which the
 /// daemon does not have, and aglow runs stb_image only in a child process
 /// with limits, which a process with PTY threads cannot fork safely.
@@ -39,10 +47,12 @@ class MuxPane final : public AfterglowVt::ITerminalHost, public AfterglowPty::IP
 {
 public:
     /// @p wake runs when the program exits, after output, a resize, a reset
-    /// or a clear while takeChanged() has not taken the last change yet, and
-    /// when the PTY's input queue has room again after it refused input, or
-    /// takes no more input. The reader thread runs it for output, the exit
-    /// and the queue, the daemon's thread for the others: it must be safe to
+    /// or a clear once takeChanged() took the change before it, when
+    /// a host call waits for the window and none waited before, and when the
+    /// PTY's input queue has room again after it refused input, or takes no
+    /// more input. The reader thread runs it for output, host calls, the exit
+    /// and the queue. The daemon's thread runs it for the others, and for the
+    /// host calls of a resize, a reset and a new window. It must be safe to
     /// call from any thread.
     MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, const PaneSize& size,
             std::string notificationCapabilities, std::function<void()> wake);
@@ -91,12 +101,41 @@ public:
     /// about. 0 for no caller.
     std::string foregroundJob(pid_t caller) const;
 
+    /// The window that shows the pane, by Attachment::serial(), or 0 for
+    /// none. The calls of its terminal to its host (MuxHost.h) wait for that
+    /// window, up to @p queueBytes with their Host::CallCost: Mux.eventQueue.
+    /// A call that finds nothing else waiting goes whatever its size. A new
+    /// window gets the pointer shape, the user variables and the running
+    /// command again. The calls that wait for a window that goes get
+    /// answerWithoutWindow().
+    void setWindow(std::uint64_t window, std::size_t queueBytes);
+    /// The calls that wait for @p window, encoded, oldest first: as many as
+    /// fit @p budget bytes with their Host::CallCost, and at least one. None
+    /// while the pane waits for another window.
+    std::vector<std::string> takeHostCalls(std::uint64_t window, std::size_t budget);
+    /// Calls wait for @p window. Those of another window, which the pane's
+    /// program left as it exited, never go: they do not count.
+    bool hasHostCalls(std::uint64_t window) const;
+    /// Answers @p encoded, a call that its window did not get, as a pane that
+    /// no window shows: a request gets its denial, a report goes to the
+    /// program, the others go.
+    void answerWithoutWindow(std::string_view encoded);
+
     // ITerminalHost
     void writeToPty(std::string_view bytes) override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
     std::string notificationCapabilities() override { return m_notificationCapabilities; }
     bool clipboardRequest(const AfterglowVt::ClipboardRequest& request) override;
     void terminalProtocol(int code, std::string_view payload) override;
+    void bell() override;
+    void flash() override;
+    void notify(std::string_view title, std::string_view body) override;
+    void clipboardWrite(std::string_view selection, std::string_view data) override;
+    void pointerShapeChanged(std::string_view shape) override;
+    void userVarChanged(std::string_view name, std::string_view value) override;
+    void commandStarted(std::string_view command) override;
+    void commandFinished(int exitCode) override;
+    void downloadFile(std::string_view name, std::string_view data) override;
     /// A session pane forwards no socket of an ssh session (afterglow ssh
     /// runs in windows only): `aglow run` hears that it is off, not that the
     /// terminal does not know the query.
@@ -120,6 +159,68 @@ private:
     std::unique_ptr<AfterglowPty::Pty> m_pty;
     std::string m_launchedProgram;
     std::atomic<bool> m_exited{false};
+
+    /// A call that waits for the window. PointerShape, UserVar and
+    /// ProtocolLost wait empty, and take their newest value when they go.
+    struct WaitingCall
+    {
+        Host::Kind kind = Host::Kind::Bell;
+        std::string encoded;
+        std::string name; ///< UserVar
+        std::size_t cost = 0; ///< what it counts in m_hostBytes
+    };
+    /// Whether a call that does not fit Mux.eventQueue waits all the same:
+    /// the end of a start that went, as the terminal of a window never drops
+    /// it. Bells, flashes, the pointer shape, user variables and ProtocolLost
+    /// pass the limit too, through pushLocked(): one of each waits at most.
+    enum class Fit : std::uint8_t { Queue, Always };
+    enum class Forward : std::uint8_t {
+        Queued,
+        NoWindow, ///< the caller answers as a pane that no window shows
+        NoRoom, ///< the call does not fit: as without a window, or dropped
+    };
+    /// Queues @p call for the window as it fits, decided under one lock.
+    Forward forward(const Host::Call& call);
+    /// m_hostMutex held. True when it is the first call that waits: the
+    /// caller wakes the daemon, after the lock.
+    bool pushLocked(WaitingCall call);
+    /// forward() with m_hostMutex held, for a call encoded already. @p wake
+    /// as pushLocked() returns it.
+    bool queueLocked(std::string encoded, Host::Kind kind, Fit fit, bool* wake);
+    /// The bytes of @p waiting as it goes now. m_hostMutex held.
+    std::string encodeLocked(const WaitingCall& waiting) const;
+    /// Bytes for the program, past the window.
+    void writeDirect(std::string_view bytes);
+    /// The answers of a pane that no window shows.
+    void clipboardWithoutWindow(const AfterglowVt::ClipboardRequest& request);
+    void protocolWithoutWindow(int code, std::string_view payload);
+    void notificationWithoutWindow(const AfterglowVt::NotificationRequest& request);
+
+    /// Guards what follows: the reader thread queues host calls, and the
+    /// daemon's thread takes them.
+    mutable std::mutex m_hostMutex;
+    std::uint64_t m_window = 0;
+    std::size_t m_hostLimit = 0;
+    std::deque<WaitingCall> m_hostCalls;
+    std::size_t m_hostBytes = 0;
+    bool m_bellWaiting = false;
+    bool m_flashWaiting = false;
+    bool m_pointerWaiting = false;
+    std::set<std::string> m_userVarsWaiting;
+    /// Kept while no window shows the pane: the next window gets them.
+    std::string m_pointerShape;
+    std::map<std::string, std::string> m_userVars;
+    std::string m_command;
+    bool m_commandRunning = false;
+    /// The window got the start of the running command: it gets the end.
+    bool m_commandForwarded = false;
+    std::chrono::steady_clock::time_point m_commandStart;
+    /// While a ProtocolLost call waits, the protocol commands go into it:
+    /// what they held for drag and drop (Host::LostNothing...), and whether
+    /// one was a reset.
+    bool m_protocolLostWaiting = false;
+    int m_protocolLost = Host::LostNothing;
+    bool m_protocolLostReset = false;
 };
 
 } // namespace AfterglowMux

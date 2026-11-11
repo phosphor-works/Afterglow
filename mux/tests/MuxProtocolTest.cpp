@@ -1,10 +1,17 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "MuxHost.h"
 #include "MuxProtocol.h"
 #include "MuxStream.h"
 
 #include <gtest/gtest.h>
+
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <tuple>
+#include <vector>
 
 using namespace AfterglowMux;
 namespace Json = AfterglowProto::Json;
@@ -56,10 +63,57 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 4) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 5) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 5 added the host calls of a pane's terminal (Host events, whole
+    // or in parts), each layout byte for byte, and the eventQueue of the
+    // attach call.
+    Attach::Event bell;
+    bell.type = Attach::EventType::Host;
+    bell.pane = 1;
+    bell.payload = Host::encode(Host::make(Host::Kind::Bell));
+    EXPECT_EQ(Attach::encode(bell), std::string("\x06\x01\x00\x00\x01", 5));
+    bell.status = Attach::HostPart;
+    EXPECT_EQ(Attach::encode(bell), std::string("\x06\x01\x00\x02\x01", 5));
+    EXPECT_EQ(Attach::HostPartBytes, std::size_t(1) << 20);
+    // The number of each kind.
+    for (const auto& [kind, number] : std::vector<std::pair<Host::Kind, int>>{
+             {Host::Kind::Bell, 1}, {Host::Kind::Flash, 2}, {Host::Kind::Notify, 3}, {Host::Kind::DesktopNotification, 4},
+             {Host::Kind::ClipboardWrite, 5}, {Host::Kind::ClipboardRequest, 6}, {Host::Kind::TerminalProtocol, 7},
+             {Host::Kind::PointerShape, 8}, {Host::Kind::UserVar, 9}, {Host::Kind::CommandStarted, 10},
+             {Host::Kind::CommandFinished, 11}, {Host::Kind::Download, 12}, {Host::Kind::Report, 13}, {Host::Kind::ProtocolLost, 14}}) {
+        EXPECT_EQ(int(kind), number);
+    }
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::Notify, "t", "b")), std::string("\x03\x01t\x01" "b"));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::UserVar, "n", "v")), std::string("\x09\x01n\x01v"));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::TerminalProtocol, {}, "x", 5113)), std::string("\x07\xf2\x4f\x01x"));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::Report, {}, "\x1b[?62c")), std::string("\x0d\x06\x1b[?62c"));
+    Host::Call finished = Host::make(Host::Kind::CommandFinished, {}, {}, -1);
+    finished.value = 1500;
+    EXPECT_EQ(Host::encode(finished), std::string("\x0b\x01\xdc\x0b"));
+    Host::Call lost = Host::make(Host::Kind::ProtocolLost, {}, {}, Host::LostPackets);
+    lost.value = 1;
+    EXPECT_EQ(Host::encode(lost), std::string("\x0e\x04\x01"));
+    Host::Call alive = Host::make(Host::Kind::DesktopNotification);
+    alive.notification.kind = AfterglowVt::NotificationRequest::Kind::Alive;
+    alive.notification.id = "a";
+    EXPECT_EQ(Host::encode(alive), std::string("\x04\x02\x01" "a" "\x00\x00\x00\x00\x00\x00\x00\x00\x06system\x01\x00\x00\x00\x02\x01", 25));
+    Host::Call read = Host::make(Host::Kind::ClipboardRequest);
+    read.clipboard.id = "r";
+    read.clipboard.mimes = {"text/plain"};
+    EXPECT_EQ(Host::encode(read), std::string("\x06\x00\x00\x01r\x00\x00\x01\x0atext/plain\x00\x00\x00\x00\x00", 24));
+    // The calls name every field of what they carry: a new field stops this
+    // test compiling until MuxHost.cpp carries it and the version changes.
+    Host::Call call;
+    [[maybe_unused]] auto& [callKind, title, text, number, value, notification, clipboard] = call;
+    [[maybe_unused]] auto& [nKind, nId, nTitle, nBody, buttons, iconNames, iconData, iconCacheId, appName, types, sound, focusOnActivate,
+                            reportActivation, reportClose, occasion, urgency, expireMs] = call.notification;
+    [[maybe_unused]] auto& [cKind, primary, cId, password, cName, mimes, data, aliases, osc52, osc52Bel, osc52Selection] = call.clipboard;
+    // The options of the attach call, which the daemon refuses others of.
+    EXPECT_EQ(std::string(AttachOption::Takeover), "takeover");
+    EXPECT_EQ(std::string(AttachOption::EventQueue), "eventQueue");
     // Version 4 added attach and detach, and the attach stream: its events
-    // and input, byte for byte (the keys of the attach call are in
-    // Mux.MuxAttach.TheAttachCallAnswersWithItsKeys).
+    // and input, byte for byte (the keys of the answer of the attach call are
+    // in Mux.MuxAttach.TheAttachCallAnswersWithItsKeys).
     EXPECT_EQ(std::string(Fn::Attach), "attach");
     EXPECT_EQ(std::string(Fn::Detach), "detach");
     Attach::Event opened;
@@ -93,6 +147,177 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
                                         "ambiguousWide", "bidi", "cursorShape", "cursorBlink", "allowScreenReadback", "graphicsQuota",
                                         "graphicsFileTransfer"}));
     EXPECT_EQ(keys(toJson(SessionInfo{})), (std::vector<std::string>{"name", "attached", "panes", "jobs"}));
+}
+
+namespace {
+
+/// Every field of a notification, to compare two.
+auto fieldsOf(const AfterglowVt::NotificationRequest& n)
+{
+    return std::tie(n.kind, n.id, n.title, n.body, n.buttons, n.iconNames, n.iconData, n.iconCacheId, n.appName, n.types, n.sound,
+                    n.focusOnActivate, n.reportActivation, n.reportClose, n.occasion, n.urgency, n.expireMs);
+}
+
+} // namespace
+
+TEST(MuxProtocol, HostCallsRoundTrip)
+{
+    std::vector<Host::Call> calls;
+    calls.push_back(Host::make(Host::Kind::Bell));
+    calls.push_back(Host::make(Host::Kind::Flash));
+    calls.push_back(Host::make(Host::Kind::Notify, "title", "body \xe2\x80\xa8 line"));
+    calls.push_back(Host::make(Host::Kind::ClipboardWrite, "cp", std::string("data\0with nul", 13)));
+    calls.push_back(Host::make(Host::Kind::TerminalProtocol, {}, "ac=send;id=x", 5113));
+    calls.push_back(Host::make(Host::Kind::TerminalProtocol, {}, "t=q", 72));
+    calls.push_back(Host::make(Host::Kind::TerminalProtocol, {}, {}, 0));
+    calls.push_back(Host::make(Host::Kind::PointerShape, {}, "pointer"));
+    calls.push_back(Host::make(Host::Kind::UserVar, "name", "value"));
+    calls.push_back(Host::make(Host::Kind::CommandStarted, {}, "make -j4"));
+    for (const int code : {-1, 255, std::numeric_limits<int>::min(), std::numeric_limits<int>::max()}) {
+        Host::Call finished = Host::make(Host::Kind::CommandFinished, {}, {}, code);
+        finished.value = std::uint64_t(code < 0 ? 0 : code) * 1000;
+        calls.push_back(finished);
+    }
+    calls.push_back(Host::make(Host::Kind::Download, "file.txt", "contents"));
+    calls.push_back(Host::make(Host::Kind::Report, {}, "\x1b[?62;22c"));
+    for (const int held : {Host::LostNothing, Host::LostReset, Host::LostPackets}) {
+        Host::Call lost = Host::make(Host::Kind::ProtocolLost, {}, {}, held);
+        lost.value = held == Host::LostReset ? 1 : 0;
+        calls.push_back(lost);
+    }
+    Host::Call notification = Host::make(Host::Kind::DesktopNotification);
+    notification.notification.kind = AfterglowVt::NotificationRequest::Kind::Close;
+    notification.notification.id = "n1";
+    notification.notification.title = "t";
+    notification.notification.body = "b\nline";
+    notification.notification.buttons = {"yes", "no"};
+    notification.notification.iconNames = {"dialog-information"};
+    notification.notification.iconData = std::string("\x89PNG", 4);
+    notification.notification.iconCacheId = "cache";
+    notification.notification.appName = "app";
+    notification.notification.types = {"im"};
+    notification.notification.sound = "silent";
+    // Two flags that trade places fail in this row or in the next.
+    notification.notification.focusOnActivate = false;
+    notification.notification.reportActivation = true;
+    notification.notification.reportClose = false;
+    notification.notification.occasion = AfterglowVt::NotificationRequest::Occasion::Invisible;
+    notification.notification.urgency = 2;
+    notification.notification.expireMs = 0;
+    calls.push_back(notification);
+    // The same flags the other way: two that trade places fail in one row.
+    Host::Call flags = notification;
+    flags.notification.focusOnActivate = true;
+    flags.notification.reportActivation = false;
+    flags.notification.reportClose = true;
+    calls.push_back(flags);
+    Host::Call clipboard = Host::make(Host::Kind::ClipboardRequest);
+    clipboard.clipboard.kind = AfterglowVt::ClipboardRequest::Kind::Write;
+    clipboard.clipboard.primary = true;
+    clipboard.clipboard.id = "c1";
+    clipboard.clipboard.password = "pw";
+    clipboard.clipboard.name = "editor";
+    clipboard.clipboard.mimes = {"text/plain", "image/png"};
+    clipboard.clipboard.data = {{"text/plain", "hello"}};
+    clipboard.clipboard.aliases = {{"text/html", "text/plain"}};
+    calls.push_back(clipboard);
+    Host::Call nonPrimary = clipboard;
+    nonPrimary.clipboard.primary = false;
+    calls.push_back(nonPrimary);
+    Host::Call osc52 = Host::make(Host::Kind::ClipboardRequest);
+    osc52.clipboard.mimes = {"text/plain"};
+    osc52.clipboard.osc52 = true;
+    osc52.clipboard.osc52Bel = true;
+    osc52.clipboard.osc52Selection = "cp";
+    calls.push_back(osc52);
+    for (const Host::Call& call : calls) {
+        const std::string bytes = Host::encode(call);
+        const auto back = Host::decode(bytes);
+        if (!back) {
+            ADD_FAILURE() << "kind " << int(call.kind) << " does not decode";
+            continue;
+        }
+        EXPECT_EQ(back->kind, call.kind);
+        EXPECT_EQ(back->title, call.title);
+        EXPECT_EQ(back->text, call.text);
+        EXPECT_EQ(back->number, call.number);
+        EXPECT_EQ(back->value, call.value);
+        EXPECT_TRUE(fieldsOf(back->notification) == fieldsOf(call.notification)) << int(call.kind);
+        EXPECT_TRUE(back->clipboard == call.clipboard) << int(call.kind);
+        EXPECT_TRUE(Host::encode(*back) == bytes) << int(call.kind);
+        // Cut short anywhere, a call does not decode.
+        for (std::size_t n = 0; n < bytes.size(); ++n) EXPECT_FALSE(Host::decode(bytes.substr(0, n))) << int(call.kind) << " " << n;
+        EXPECT_FALSE(Host::decode(bytes + "x")) << int(call.kind);
+    }
+}
+
+// The window answers the program with what it decodes: what the terminal's
+// parser never makes is refused, whole calls and not only short ones.
+TEST(MuxProtocol, HostCallsThatTheParserNeverMakesAreRefused)
+{
+    for (const std::string_view kind : {std::string_view("", 0), std::string_view("\x00", 1), std::string_view("\x0f", 1)}) {
+        EXPECT_FALSE(Host::decode(kind)) << testing::PrintToString(std::string(kind));
+    }
+    const auto refused = [](const Host::Call& call) { return !Host::decode(Host::encode(call)); };
+    EXPECT_TRUE(refused(Host::make(Host::Kind::TerminalProtocol, {}, "x", 99)));
+    EXPECT_TRUE(refused(Host::make(Host::Kind::Notify, "a\x1b]0;b", "body")));
+    EXPECT_TRUE(refused(Host::make(Host::Kind::Notify, "title", "line\nline")));
+    EXPECT_TRUE(refused(Host::make(Host::Kind::ProtocolLost, {}, {}, 3)));
+    Host::Call reset = Host::make(Host::Kind::ProtocolLost);
+    reset.value = 2;
+    EXPECT_TRUE(refused(reset));
+
+    Host::Call good = Host::make(Host::Kind::DesktopNotification);
+    good.notification.id = "n";
+    good.notification.buttons = {"ok"};
+    ASSERT_FALSE(refused(good));
+    const auto with = [&good](auto change) {
+        Host::Call call = good;
+        change(call.notification);
+        return call;
+    };
+    using Request = AfterglowVt::NotificationRequest;
+    EXPECT_TRUE(refused(with([](Request& n) { n.kind = Request::Kind(3); })));
+    EXPECT_TRUE(refused(with([](Request& n) { n.occasion = Request::Occasion(3); })));
+    EXPECT_TRUE(refused(with([](Request& n) { n.urgency = 3; })));
+    EXPECT_TRUE(refused(with([](Request& n) { n.id = "a b"; })));
+    EXPECT_TRUE(refused(with([](Request& n) { n.iconCacheId = "a;b"; })));
+    EXPECT_TRUE(refused(with([](Request& n) { n.title = "\x07"; })));
+    EXPECT_TRUE(refused(with([](Request& n) { n.buttons = {""}; })));
+    EXPECT_TRUE(refused(with([](Request& n) { n.iconNames.assign(Request::MaxNames + 1, "icon"); })));
+    EXPECT_TRUE(refused(with([](Request& n) { n.body.assign(Request::MaxText + 1, 'x'); })));
+    // A flag of 2.
+    std::string flag = Host::encode(good);
+    flag[flag.size() - 6] = 2;
+    EXPECT_FALSE(Host::decode(flag));
+
+    Host::Call request = Host::make(Host::Kind::ClipboardRequest);
+    request.clipboard.id = "c";
+    ASSERT_FALSE(refused(request));
+    request.clipboard.kind = AfterglowVt::ClipboardRequest::Kind(2);
+    EXPECT_TRUE(refused(request));
+    request.clipboard.kind = AfterglowVt::ClipboardRequest::Kind::Read;
+    request.clipboard.id = "c d";
+    EXPECT_TRUE(refused(request));
+    request.clipboard.id = "c";
+    request.clipboard.mimes.assign(AfterglowVt::ClipboardAssembler::MaxParts + 1, "text/plain");
+    EXPECT_TRUE(refused(request));
+    request.clipboard.mimes = {"text/plain"};
+    // OSC 52: reads of the selections that the answer echoes.
+    request.clipboard.osc52 = true;
+    request.clipboard.osc52Selection = "c";
+    ASSERT_FALSE(refused(request));
+    for (const char* selection : {"", "c;x", "\x1b"}) {
+        request.clipboard.osc52Selection = selection;
+        EXPECT_TRUE(refused(request)) << selection;
+    }
+    request.clipboard.osc52Selection = "c";
+    request.clipboard.kind = AfterglowVt::ClipboardRequest::Kind::Write;
+    EXPECT_TRUE(refused(request));
+    // OSC 5522 has none of the fields of OSC 52.
+    request.clipboard.kind = AfterglowVt::ClipboardRequest::Kind::Read;
+    request.clipboard.osc52 = false;
+    EXPECT_TRUE(refused(request));
 }
 
 TEST(MuxProtocol, SessionOptionsRoundTrip)
@@ -314,6 +539,22 @@ TEST(MuxProtocol, AttachEventsRoundTrip)
         ASSERT_TRUE(back);
         EXPECT_EQ(back->type, type);
     }
+    // A host call takes the rest of the frame, whatever its bytes look like.
+    for (const int status : {-1, Attach::HostPart}) {
+        for (const std::string& payload : {std::string(), Host::encode(Host::make(Host::Kind::Notify, "t", "b")), std::string("\x80\x00\xff", 3)}) {
+            Attach::Event host;
+            host.type = Attach::EventType::Host;
+            host.pane = 3;
+            host.status = status;
+            host.payload = payload;
+            const auto back = Attach::decodeEvent(Attach::encode(host));
+            ASSERT_TRUE(back) << status;
+            EXPECT_EQ(back->type, Attach::EventType::Host);
+            EXPECT_EQ(back->pane, 3u);
+            EXPECT_EQ(back->status, status);
+            EXPECT_TRUE(back->payload == payload);
+        }
+    }
 }
 
 TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
@@ -329,6 +570,10 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
         std::string_view("\x01\x00\x01\x00", 4), // PaneOpened of pane 0
         std::string_view("\x01\x01\x00\x00", 4), // PaneOpened on the channel of the events
         std::string_view("\x01\x01\x80\x20\x00", 5), // PaneOpened on channel 4096
+        std::string_view("\x06\x00\x00\x00\x01", 5), // Host of pane 0
+        std::string_view("\x06\x01\x01\x00\x01", 5), // Host on a channel
+        std::string_view("\x06\x01\x00\x01\x01", 5), // Host with status 0
+        std::string_view("\x06\x01\x00\x04\x01", 5), // Host with status 3
     };
     for (const std::string_view frame : bad) EXPECT_FALSE(Attach::decodeEvent(frame)) << testing::PrintToString(std::string(frame));
 }

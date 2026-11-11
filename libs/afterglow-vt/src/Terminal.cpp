@@ -3989,9 +3989,7 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         switch (m_clipboard.feed(rest, request, error)) {
         case ClipboardAssembler::Result::Ready:
             if (!m_host.clipboardRequest(request)) {
-                reply(request.kind == ClipboardRequest::Kind::Read
-                          ? ClipboardAssembler::readStatus("ENOSYS", request)
-                          : ClipboardAssembler::writeStatus("ENOSYS", request.id));
+                reply(request.refusal("ENOSYS"));
             }
             break;
         case ClipboardAssembler::Result::Error:
@@ -4084,7 +4082,7 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         std::string echoed = AfterglowProto::osc52Letters(selection);
         request.osc52Selection = echoed.empty() ? std::string("c") : std::move(echoed);
         if (!m_host.clipboardRequest(request)) {
-            reply(request.osc52Reply({}));
+            reply(request.refusal("ENOSYS"));
         }
         break;
     }

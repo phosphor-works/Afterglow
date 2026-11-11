@@ -221,6 +221,7 @@ A command end mark (`D`) does not make a new prompt.
 The Bash and Zsh integration of Afterglow sends it after each command, also after Enter on an empty line.
 With a shell that sends no `C` mark, no prompt ends a file.
 A new `MultipartFile`, the size limit, a terminal reset or the end of the pane's program still ends it.
+In a mux session, a download goes to the window that shows the session, with the other requests of the session. Without a window, the mux session drops it (see [requests that wait](MUX.md#requests-that-wait)).
 OSC 1337 downloads are not resumable, and they do not upload files.
 Afterglow supports the Kitty file-transfer protocol separately. See [Kitty file transfer](DESKTOP.md#kitty-file-transfer).
 IME context does not permit arbitrary surrounding-text edits.

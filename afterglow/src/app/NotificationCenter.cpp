@@ -236,9 +236,7 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
         for (auto it = m_inFlight.cbegin(); it != m_inFlight.cend(); ++it) {
             if (it.key().first == pane && !it->close && !open.contains(it.key().second)) open.append(it.key().second);
         }
-        const QString reply = QStringLiteral("\x1b]99;i=%1:p=alive;%2\x1b\\")
-                                  .arg(clientId.isEmpty() ? QStringLiteral("0") : clientId, open.join(QLatin1Char(',')));
-        pane->sendReply(reply.toStdString());
+        pane->sendReply(r.aliveReply(open.join(QLatin1Char(',')).toStdString()));
         return;
     }
     // An update of a notification already on screen adds none.

@@ -94,7 +94,7 @@ QString lossText(MuxClient::Loss loss, const QString& name)
 } // namespace
 
 std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover, QString* error,
-                                              const AfterglowProto::MuxSockets& sockets)
+                                              const AfterglowProto::MuxSockets& sockets, std::size_t eventQueue)
 {
     const auto fail = [error](const QString& text) -> std::shared_ptr<MuxClient> {
         if (error) *error = text;
@@ -110,7 +110,7 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
     AfterglowProto::IpcConnection::Error callError;
     const auto result = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::Attach,
                                                  Json::Array{AfterglowMux::ProtocolVersion, name.toStdString(),
-                                                             Json::Object{{"takeover", takeover}}},
+                                                             Json::Object{{AfterglowMux::AttachOption::Takeover, takeover}, {AfterglowMux::AttachOption::EventQueue, eventQueue}}},
                                                  AfterglowMux::CallTimeoutMs, &callError);
     // The daemon's words, which the user reads in a terminal.
     if (!result) return fail(QString::fromStdString(AfterglowProto::printable(callError.message)));
@@ -120,6 +120,7 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
 
     std::shared_ptr<MuxClient> client(new MuxClient);
     client->m_session = name;
+    client->m_eventQueue = eventQueue;
     client->m_sockets = sockets;
     PhosphorChannel::Stream::Options options;
     options.maxChannelId = Attach::MaxChannelId;
@@ -157,9 +158,60 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
 
 MuxClient::~MuxClient() = default;
 
+bool MuxClient::hostEvent(Attach::Event& event, bool* lostLink)
+{
+    const auto held = m_hostParts.find(event.pane);
+    const std::size_t heldBytes = held == m_hostParts.end() ? 0 : held->second.size();
+    if (heldBytes + event.payload.size() > AfterglowMux::Host::MaxCall) return false;
+    if (event.status == Attach::HostPart) {
+        m_hostParts[event.pane] += event.payload;
+        return true;
+    }
+    std::string encoded;
+    if (held == m_hostParts.end()) {
+        encoded = std::move(event.payload);
+    } else {
+        encoded = std::move(held->second) + event.payload;
+        m_hostParts.erase(held);
+    }
+    auto call = AfterglowMux::Host::decode(encoded);
+    if (!call) return false;
+    // After the frames that the daemon sent before the call: a bell after the
+    // text that rang it.
+    if (m_panes.contains(event.pane) && !readState(event.pane)) {
+        *lostLink = true;
+        return true;
+    }
+    return hostCall(event.pane, std::move(*call), encoded.size());
+}
+
+bool MuxClient::hostCall(std::uint32_t id, AfterglowMux::Host::Call call, std::size_t bytes)
+{
+    const auto it = m_panes.find(id);
+    if (it != m_panes.end()) {
+        if (it->second) it->second->applySessionHostCall(call);
+        return true;
+    }
+    // The window makes the pane after the daemon names it: the call waits.
+    if (m_waitingHostBytes + bytes > MaxWaitingHostCalls) return false;
+    WaitingHostCalls& waiting = m_waitingHostCalls[id];
+    waiting.calls.push_back(std::move(call));
+    waiting.bytes += bytes;
+    m_waitingHostBytes += bytes;
+    return true;
+}
+
 void MuxClient::bind(std::uint32_t id, Pane* pane)
 {
     m_panes[id] = pane;
+    if (auto waiting = m_waitingHostCalls.extract(id); !waiting.empty()) {
+        m_waitingHostBytes -= waiting.mapped().bytes;
+        // A session that ended closes the pane at once: its prompts would
+        // answer nobody.
+        if (pane && !m_ended) {
+            for (const auto& call : waiting.mapped().calls) pane->applySessionHostCall(call);
+        }
+    }
     // Frames that came before the pane existed wait in the stream's reader.
     handleFrames();
     // A pane that the session lost before it existed closes at once, unless
@@ -314,6 +366,23 @@ QString MuxClient::foregroundJob() const
     return {};
 }
 
+bool MuxClient::waitForHostCalls(int waitMs, const std::function<bool()>& done)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(waitMs);
+    while (m_stream && !m_ended && !done()) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        if (left.count() <= 0) break;
+        const bool open = m_stream->pump(int(left.count()));
+        handleFrames();
+        if (!open) {
+            lost();
+            break;
+        }
+    }
+    updateNotifiers();
+    return done();
+}
+
 void MuxClient::readable()
 {
     if (!m_stream) return;
@@ -347,7 +416,7 @@ void MuxClient::handleFrames()
             return;
         }
         while (events->read(frame) == ReadResult::Frame) {
-            const auto event = Attach::decodeEvent(frame);
+            auto event = Attach::decodeEvent(frame);
             bool bad = !event;
             if (event && event->type == Attach::EventType::PaneOpened) {
                 for (const auto& [pane, channel] : m_channels) bad = bad || pane == event->pane || channel == event->channel;
@@ -361,6 +430,12 @@ void MuxClient::handleFrames()
                     m_exits[event->pane] = event->status;
                     paneExited(event->pane);
                 }
+            } else if (event && event->type == Attach::EventType::Host) {
+                bad = !m_channels.contains(event->pane);
+                bool lostLink = false;
+                if (!bad) bad = !hostEvent(*event, &lostLink);
+                // A frame of the pane did not apply.
+                if (lostLink) return;
             } else if (event) {
                 ending = event->type == Attach::EventType::SessionEnded ? Loss::Ended
                     : event->type == Attach::EventType::TakenOver      ? Loss::TakenOver
@@ -424,6 +499,8 @@ void MuxClient::paneExited(std::uint32_t id)
     m_exits.erase(exit);
     m_closedChannels.erase(id);
     m_channels.erase(id);
+    // No more of its calls come: the parts of one that did not end go.
+    m_hostParts.erase(id);
     if (const auto it = m_panes.find(id); it != m_panes.end() && it->second) it->second->sessionPaneExited(status);
 }
 
@@ -433,6 +510,10 @@ void MuxClient::end(Loss loss)
         m_ended = true;
         m_loss = loss;
     }
+    // No pane takes the calls that wait any more (bind()).
+    m_waitingHostCalls.clear();
+    m_waitingHostBytes = 0;
+    m_hostParts.clear();
     // A pane whose exit is half known waits for the rest: its last frame or
     // its status still comes, and it closes as a pane whose program
     // exited. A copy: a pane that goes releases itself from the map.

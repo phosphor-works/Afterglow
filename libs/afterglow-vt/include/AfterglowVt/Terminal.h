@@ -173,6 +173,9 @@ public:
     virtual void contextChanged() { }
     /// iTerm2's SetUserVar (OSC 1337): a named value for the host to keep.
     virtual void userVarChanged(std::string_view name, std::string_view value) { }
+    /// The most user variables that a host keeps for a terminal: it ignores
+    /// new names after them.
+    static constexpr std::size_t MaxUserVars = 256;
     /// A kitty clipboard request (OSC 5522): a read to answer (with a prompt)
     /// or a complete write. OSC 52 reads come here too (ClipboardRequest::osc52). Replies go through ClipboardAssembler's encoders.
     /// Returning false means the host has no such clipboard support.
