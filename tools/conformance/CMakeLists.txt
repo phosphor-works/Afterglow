@@ -33,5 +33,11 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/test_tuifuzz.py
                     $<TARGET_FILE:afterglow_tuifuzz>)
         set_tests_properties(afterglow_tuifuzz_runner PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+        # kitten icat of Kitty against the terminal core, and its output drawn
+        # by the renderer (77: no kitten).
+        add_test(NAME afterglow_kitten_icat
+            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/kitten_icat.py
+                    $<TARGET_FILE:afterglow_headless> $<TARGET_FILE:afterglow_renderpng>)
+        set_tests_properties(afterglow_kitten_icat PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 RESOURCE_LOCK gpu)
     endif()
 endif()

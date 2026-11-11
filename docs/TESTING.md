@@ -49,7 +49,7 @@ When the tools are there and its own sshd cannot start, the test fails.
 | Option | Default | Function |
 | --- | --- | --- |
 | `BUILD_TESTING` | `ON` | Builds the unit and renderer tests. Requires GTest. |
-| `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng`, the headless conformance host and the [TUI fuzzer](#tui-fuzzing). Adds the regression tests of the host and the fuzzer, and `aglow_icat_render`, to CTest. |
+| `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng`, the headless conformance host and the [TUI fuzzer](#tui-fuzzing). Adds the regression tests of the host and the fuzzer, [`afterglow_kitten_icat`](#kitten-icat) and `aglow_icat_render` to CTest. |
 | `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`, and with `AFTERGLOW_BUILD_AGLOW` also `afterglow_transfer_kitty`. Requires Python 3 and the native test dependencies. |
 | `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the image decoders of `aglow` and the attach stream of `afterglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
 | `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries. Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests, the `RunBinaryTest.*` tests and the `sshd` test of `RemoteCommandsTest.*` report Skipped. |
@@ -119,7 +119,7 @@ They need this software:
 - An X11 or XWayland display, libX11 and `xprop`.
 - `dbus-run-session`.
 - ImageMagick `import`, for the tests that take screenshots.
-- `kitten`, for the `Kitty*` drag-and-drop tests of the native window suite. Without it, those tests skip.
+- `kitten`, for the `Kitty*` drag-and-drop tests and the `KittenClipboard*` tests of the native window suite. Without it, those tests skip.
 
 A drag-and-drop test of the native window suite that uses a client runs two times. It runs one time with `kitten dnd` and one time with `aglow dnd`.
 The Wayland file drop test (`NativeWaylandFileDrop`) and the selection drag test
@@ -194,6 +194,25 @@ build/tools/conformance/afterglow_screen_checks_tests
 ```
 
 `test_tuifuzz.py` reports Skipped when `bwrap` is not installed.
+
+### kitten icat
+
+`tools/conformance/kitten_icat.py` runs `kitten icat` of Kitty against the terminal core.
+CTest runs it as `afterglow_kitten_icat`, and reports Skipped when `kitten` is not installed.
+
+```sh
+python3 tools/conformance/kitten_icat.py build/tools/conformance/afterglow_headless build/tools/render/afterglow_renderpng
+```
+
+`kitten icat` runs in `afterglow_headless`, which answers its queries.
+With `--graphics FILE`, `afterglow_headless` writes the images, the placements and the Unicode placeholder cells of the terminal to `FILE`.
+It writes the file each time the program stops writing output, and at the end.
+`afterglow_headless` decodes only the PNG files that tests make: 8 bits for each channel, RGB or RGBA, not interlaced.
+
+The script checks each transfer mode, and that the terminal deletes each temporary file and shared memory object that `kitten` makes.
+It also runs `kitten icat` in a private tmux server, when tmux 3.3 or later is installed.
+With the second argument, it draws the output of `kitten icat` with `afterglow_renderpng`.
+That part needs a Wayland display for Vulkan. Without one, the script skips it.
 
 Regenerate the configuration reference after schema changes:
 

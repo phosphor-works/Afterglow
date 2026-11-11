@@ -2656,6 +2656,125 @@ TEST_F(NativeWindow, AglowRemoteDragRefusedByAWaylandTargetKeepsTheFiles) {
     REQUIRE_AGLOW(aglow);
     remoteDragToWaylandTarget(aglow, ready, Qt::MoveAction, true);
 }
+
+// kitten clipboard, the client that kitty users bring, against the window's
+// answers to OSC 5522: the desktop's clipboard, several MIME types, the read
+// prompt and the size limit of a read. They need no compositor input.
+
+// What a run of kitten clipboard left: its exit status and its standard error.
+struct KittenRun
+{
+    int status = -1;
+    QByteArray errors;
+};
+
+// Starts `kitten clipboard ARGUMENTS` in a split of @p window, in @p cwd,
+// with @p input on its standard input. finishKitten waits for its end.
+Pane* startKittenClipboard(TerminalWindow* window, const QString& cwd, const QStringList& arguments, const QByteArray& input = {}) {
+    QFile in(cwd + QStringLiteral("/kitten.in"));
+    if (!in.open(QIODevice::WriteOnly | QIODevice::Truncate) || in.write(input) != input.size()) return nullptr;
+    in.close();
+    QFile::remove(cwd + QStringLiteral("/kitten.status"));
+    PaneLaunchOptions launch;
+    launch.command = QStringList{QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                 QStringLiteral("kitten clipboard \"$@\" <kitten.in 2>kitten.err; echo $? >kitten.status.new; "
+                                                "mv kitten.status.new kitten.status"),
+                                 QStringLiteral("sh")} + arguments;
+    launch.cwd = cwd;
+    return window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr);
+}
+KittenRun finishKitten(const QString& cwd) {
+    KittenRun run;
+    const QString status = cwd + QStringLiteral("/kitten.status");
+    if (!waitFor([&] { return QFileInfo::exists(status); }, 10000)) return run;
+    bool ok = false;
+    run.status = fileContent(status).trimmed().toInt(&ok);
+    if (!ok) run.status = -1;
+    run.errors = fileContent(cwd + QStringLiteral("/kitten.err"));
+    return run;
+}
+
+TEST_F(NativeWindow, KittenClipboardWritesTextAndSeveralTypes) {
+    REQUIRE_KITTEN();
+    const QString cwd = directory.path();
+    // Text from its standard input.
+    QGuiApplication::clipboard()->setText(QStringLiteral("before"));
+    ASSERT_TRUE(waitFor([] { return QGuiApplication::clipboard()->text() == QStringLiteral("before"); }));
+    ASSERT_NE(startKittenClipboard(window, cwd, {}, "hello from kitten\n"), nullptr);
+    KittenRun run = finishKitten(cwd);
+    ASSERT_EQ(run.status, 0) << run.errors.toStdString();
+    EXPECT_TRUE(waitFor([] { return QGuiApplication::clipboard()->text() == QStringLiteral("hello from kitten\n"); }))
+        << QGuiApplication::clipboard()->text().toStdString();
+    // Files, each with the type that its name gives.
+    const QByteArray note = "a note\n";
+    QByteArray image("\x89PNG\r\n\x1a\n", 8);
+    for (int i = 0; i < 300; ++i) image += char(i);
+    QFile noteFile(cwd + QStringLiteral("/note.txt"));
+    QFile imageFile(cwd + QStringLiteral("/picture.png"));
+    ASSERT_TRUE(noteFile.open(QIODevice::WriteOnly) && noteFile.write(note) == note.size());
+    ASSERT_TRUE(imageFile.open(QIODevice::WriteOnly) && imageFile.write(image) == image.size());
+    noteFile.close();
+    imageFile.close();
+    ASSERT_NE(startKittenClipboard(window, cwd, {QStringLiteral("note.txt"), QStringLiteral("picture.png")}), nullptr);
+    run = finishKitten(cwd);
+    ASSERT_EQ(run.status, 0) << run.errors.toStdString();
+    ASSERT_TRUE(waitFor([] {
+        const QMimeData* data = QGuiApplication::clipboard()->mimeData();
+        return data && data->hasFormat(QStringLiteral("image/png"));
+    }));
+    const QMimeData* data = QGuiApplication::clipboard()->mimeData();
+    EXPECT_EQ(data->data(QStringLiteral("text/plain")), note);
+    EXPECT_EQ(data->data(QStringLiteral("image/png")), image);
+}
+
+TEST_F(NativeWindow, KittenClipboardReadsAfterThePromptAllowsIt) {
+    REQUIRE_KITTEN();
+    const QString cwd = directory.path();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    auto* offered = new QMimeData;
+    offered->setText(QStringLiteral("from the desktop"));
+    offered->setHtml(QStringLiteral("<b>bold</b>"));
+    QGuiApplication::clipboard()->setMimeData(offered);
+    ASSERT_TRUE(waitFor([] { return QGuiApplication::clipboard()->text() == QStringLiteral("from the desktop"); }));
+    // Allowed once: kitten writes each type to the file whose name gives it.
+    ASSERT_NE(startKittenClipboard(window, cwd, {QStringLiteral("--get-clipboard"), QStringLiteral("out.txt"), QStringLiteral("out.html")}),
+              nullptr);
+    ASSERT_TRUE(waitFor([&] { return chrome->clipboardPromptOpen(); }, 10000));
+    EXPECT_TRUE(chrome->clipboardPromptText().contains(QStringLiteral("text/html"))) << chrome->clipboardPromptText().toStdString();
+    chrome->answerClipboard(1);
+    KittenRun run = finishKitten(cwd);
+    ASSERT_EQ(run.status, 0) << run.errors.toStdString();
+    EXPECT_EQ(fileContent(cwd + QStringLiteral("/out.txt")), "from the desktop");
+    EXPECT_EQ(fileContent(cwd + QStringLiteral("/out.html")), "<b>bold</b>");
+    // Denied: kitten fails and writes nothing.
+    ASSERT_NE(startKittenClipboard(window, cwd, {QStringLiteral("--get-clipboard"), QStringLiteral("denied.txt")}), nullptr);
+    ASSERT_TRUE(waitFor([&] { return chrome->clipboardPromptOpen(); }, 10000));
+    chrome->answerClipboard(0);
+    run = finishKitten(cwd);
+    EXPECT_NE(run.status, 0);
+    // kitten words the EPERM of the answer.
+    EXPECT_TRUE(run.errors.contains("permission denied")) << run.errors.toStdString();
+    EXPECT_TRUE(fileContent(cwd + QStringLiteral("/denied.txt")).isEmpty());
+}
+
+TEST_F(NativeWindow, KittenClipboardReportsAReadOverTheLimit) {
+    REQUIRE_KITTEN();
+    const QString cwd = directory.path();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    // One byte over the 8 MiB of a reply.
+    const QString large(8 * 1024 * 1024 + 1, QLatin1Char('x'));
+    QGuiApplication::clipboard()->setText(large);
+    ASSERT_TRUE(waitFor([&] { return QGuiApplication::clipboard()->text().size() == large.size(); }));
+    ASSERT_NE(startKittenClipboard(window, cwd, {QStringLiteral("--get-clipboard"), QStringLiteral("large.txt")}), nullptr);
+    ASSERT_TRUE(waitFor([&] { return chrome->clipboardPromptOpen(); }, 10000));
+    chrome->answerClipboard(1);
+    const KittenRun run = finishKitten(cwd);
+    EXPECT_NE(run.status, 0);
+    EXPECT_TRUE(run.errors.contains("EFBIG")) << run.errors.toStdString();
+}
+
 // Selected text that drags out of a pane (Mouse.dragSelection), and text that
 // drops on a pane. Only ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn needs
 // the real compositor input of native_window_acceptance.py. The others send
