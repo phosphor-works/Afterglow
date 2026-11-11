@@ -148,10 +148,17 @@ void report(std::chrono::steady_clock::time_point& last, const std::string& text
 
 // ---------------------------------------------------------- the process ---
 
+// The architectures whose system calls the filter knows, little-endian all:
+// it reads a descriptor from the low word of an argument. On any other, a
+// decoding process decodes nothing (NoFilterStatus).
 #if defined(__x86_64__)
 constexpr std::uint32_t NativeArch = AUDIT_ARCH_X86_64;
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 constexpr std::uint32_t NativeArch = AUDIT_ARCH_AARCH64;
+#elif defined(__riscv) && __riscv_xlen == 64
+constexpr std::uint32_t NativeArch = AUDIT_ARCH_RISCV64;
+#elif defined(__powerpc64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+constexpr std::uint32_t NativeArch = AUDIT_ARCH_PPC64LE;
 #else
 constexpr std::uint32_t NativeArch = 0;
 #endif
@@ -171,12 +178,12 @@ bool allowOnlyDecoding()
 {
     if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return false;
     if constexpr (NativeArch == 0) {
-        return true;
+        return false;
     } else {
         constexpr std::uint32_t Allow = SECCOMP_RET_ALLOW;
         constexpr std::uint32_t Refuse = SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA);
-        // The low word of the first argument: a descriptor (little endian,
-        // as both architectures here are).
+        // The low word of the first argument: a descriptor or a process id
+        // (little endian, as the architectures here are).
         constexpr std::uint32_t FirstArgument = offsetof(seccomp_data, args);
         std::vector<sock_filter> filter;
         filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, arch)));
@@ -196,6 +203,19 @@ bool allowOnlyDecoding()
         filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDERR_FILENO, 0, 1));
         filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
         filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
+        // prlimit64() of this process only: the limits go down once the
+        // image's header is read, and no hard limit can go up.
+        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_prlimit64, 0, 4));
+        filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
+        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 1));
+        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
+        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
+#ifdef SYS_getrlimit
+        for (const long call : {long(SYS_getrlimit), long(SYS_setrlimit)}) {
+            filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
+            filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
+        }
+#endif
         for (const long call : {SYS_close, SYS_mmap, SYS_munmap, SYS_mremap, SYS_mprotect, SYS_madvise, SYS_brk, SYS_futex,
                                 SYS_getrandom, SYS_clock_gettime, SYS_rt_sigreturn, SYS_exit, SYS_exit_group}) {
             filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
@@ -242,23 +262,28 @@ bool allowOnlyDecoding()
     // The daemon checked the signature: a decoding process checks again what
     // it reads.
     if (!allowed(data, formats)) ::_exit(1);
-    int width = 0;
-    int height = 0;
-    if (Aglow::Stb::probe(data, width, height) != Aglow::Stb::Probe::Image || !fits(std::uint64_t(width), std::uint64_t(height)))
-        ::_exit(1);
     // As aglow: stb_image needs a few times the decoded image while it works
     // (16-bit PNG, a copy of the compressed data). Past this, its
     // allocations fail, whatever a corrupt file asks for. The mapped file is
     // in the address space already. Without /proc, the server's start, which
     // is far less, stands for it. It decodes at well over 16 MiB a second.
-    const std::uint64_t frameBytes = std::uint64_t(width) * std::uint64_t(height) * 4;
     std::uint64_t base = AfterglowProto::addressSpace();
     if (base == 0) base = (std::uint64_t(256) << 20) + std::uint64_t(file.st_size);
-    const auto memory = rlim_t(base + 8 * frameBytes + (std::uint64_t(64) << 20));
-    AfterglowProto::limit(RLIMIT_AS, memory, memory);
-    const auto seconds = rlim_t(5 + (frameBytes >> 24));
-    AfterglowProto::limit(RLIMIT_CPU, seconds, seconds + 1);
+    const auto memoryFor = [base](std::uint64_t frameBytes) { return rlim_t(base + 8 * frameBytes + (std::uint64_t(64) << 20)); };
+    const auto secondsFor = [](std::uint64_t frameBytes) { return rlim_t(5 + (frameBytes >> 24)); };
+    // The limits of the largest image, and the filter, before anything of
+    // the file is parsed: the header too comes from the program.
+    AfterglowProto::limit(RLIMIT_AS, memoryFor(MaxBytes), memoryFor(MaxBytes));
+    AfterglowProto::limit(RLIMIT_CPU, secondsFor(MaxBytes), secondsFor(MaxBytes) + 1);
     if (!allowOnlyDecoding()) ::_exit(NoFilterStatus);
+    int width = 0;
+    int height = 0;
+    if (Aglow::Stb::probe(data, width, height) != Aglow::Stb::Probe::Image || !fits(std::uint64_t(width), std::uint64_t(height)))
+        ::_exit(1);
+    // Then those of this image.
+    const std::uint64_t frameBytes = std::uint64_t(width) * std::uint64_t(height) * 4;
+    AfterglowProto::limit(RLIMIT_AS, memoryFor(frameBytes), memoryFor(frameBytes));
+    AfterglowProto::limit(RLIMIT_CPU, secondsFor(frameBytes), secondsFor(frameBytes) + 1);
     bool written = false;
     try {
         std::string error;
@@ -335,7 +360,9 @@ void reap(std::chrono::steady_clock::time_point& lastReport)
 {
     int status = 0;
     while (::waitpid(-1, &status, WNOHANG) > 0) {
-        if (WIFSIGNALED(status) && WTERMSIG(status) != SIGKILL)
+        // SIGKILL is the daemon's own end of a process, and SIGPIPE that of
+        // one whose pane closed before it wrote.
+        if (WIFSIGNALED(status) && WTERMSIG(status) != SIGKILL && WTERMSIG(status) != SIGPIPE)
             report(lastReport, "an image decoder ended with signal " + std::to_string(WTERMSIG(status)) + ": the image does not show");
         if (WIFEXITED(status) && WEXITSTATUS(status) == NoFilterStatus)
             report(lastReport, "the image decoder cannot limit its system calls (seccomp): images of sessions do not show");
@@ -484,10 +511,10 @@ namespace {
 int waitForAnswer(int socket, std::chrono::steady_clock::time_point deadline, int cancel)
 {
     for (;;) {
+        // Once even past the deadline: an answer that came is no stuck server.
         const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-        if (left.count() <= 0) return 0;
         std::array<pollfd, 2> ready{{{socket, POLLIN, 0}, {cancel, POLLIN, 0}}};
-        const int polled = ::poll(ready.data(), cancel >= 0 ? 2 : 1, int(left.count()));
+        const int polled = ::poll(ready.data(), cancel >= 0 ? 2 : 1, int(std::max<long long>(left.count(), 0)));
         if (polled < 0 && errno == EINTR) continue;
         if (polled <= 0) return 0;
         if (cancel >= 0 && ready[1].revents) return 2;
@@ -536,24 +563,30 @@ AfterglowProto::UniqueFd ImageDecoder::requestLocked(ImageFormats formats, int i
                                                      bool& cancelled)
 {
     if (!m_socket.valid()) return {};
-    // The answers that requests of closed panes left: their processes have
-    // no one to read them. The server answers as soon as it forked: one that
-    // does not by the deadline is stuck, and the next decode starts another.
-    while (m_owedAnswers > 0) {
-        if (waitForAnswer(m_socket.get(), deadline, -1) == 0) {
-            stopLocked();
-            return {};
-        }
-        if (const AfterglowProto::UniqueFd stale = answerLocked(); stale.valid()) pidfdKill(stale.get());
-        if (!m_socket.valid()) return {};
-        --m_owedAnswers;
-    }
     // A request that waited for the lock past its deadline, or for a pane
     // that closed meanwhile, goes no further: the server is fine.
     if (std::chrono::steady_clock::now() >= deadline) return {};
     if (readable(cancel)) {
         cancelled = true;
         return {};
+    }
+    // The answers that requests of closed panes left: their processes have
+    // no one to read them. The server answers as soon as it forked: one that
+    // does not by the deadline is stuck, and the next decode starts another.
+    while (m_owedAnswers > 0) {
+        switch (waitForAnswer(m_socket.get(), deadline, cancel)) {
+        case 0:
+            stopLocked();
+            return {};
+        case 2:
+            cancelled = true;
+            return {};
+        default:
+            break;
+        }
+        if (const AfterglowProto::UniqueFd stale = answerLocked(); stale.valid()) pidfdKill(stale.get());
+        if (!m_socket.valid()) return {};
+        --m_owedAnswers;
     }
     std::uint8_t byte = std::uint8_t(formats);
     iovec io{&byte, 1};

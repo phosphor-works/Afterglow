@@ -50,7 +50,8 @@ namespace AfterglowMux {
 /// call from any thread. While an image decodes, the reader thread lets
 /// m_mutex go and the terminal stays its own: the daemon's thread does not
 /// wait for it. A frame then waits, and a change waits for the end of the
-/// feed, which makes it.
+/// feed, which makes it. Input after a change that waits waits too, as for a
+/// full queue (Input::Full).
 class MuxPane final : public AfterglowVt::ITerminalHost, public AfterglowPty::IPtyListener
 {
 public:
@@ -81,7 +82,9 @@ public:
     /// What input() did.
     enum class Input : std::uint8_t {
         Written,
-        Full, ///< the PTY's queue is full: the wake says when it has room again, or takes none (then Gone)
+        /// the PTY's queue is full, or a change waits for a decode: the wake
+        /// says when it has room again, or takes none (then Gone)
+        Full,
         Gone, ///< the program exited, or its terminal takes no more input
     };
     /// Input of an attached window for the program.
@@ -191,15 +194,15 @@ private:
     /// Readable once the pane closes: a decode that runs, and any after it,
     /// ends at once.
     AfterglowProto::UniqueFd m_stopDecode;
+    int m_stopDecodeError = 0; ///< errno of its eventfd(), for start()
     mutable std::mutex m_mutex; ///< guards m_terminal, which the reader thread feeds, m_scrolls and what follows
     /// The lock of the feed that runs, which a decode lets go. Reader thread.
     std::unique_lock<std::mutex>* m_feedLock = nullptr;
     /// An image decodes: the terminal is the reader thread's, without m_mutex.
     bool m_decoding = false;
-    /// The changes of the daemon's thread that wait for the feed's end, and
-    /// the input that came after them.
+    /// The changes of the daemon's thread that wait for the feed's end.
     std::vector<std::function<void()>> m_deferred;
-    /// m_deferred holds something: input looks there before it writes.
+    /// m_deferred holds something, until its changes ran: input waits.
     std::atomic<bool> m_changesWaiting{false};
     /// A frame waited for a decode: the end of the feed wakes the daemon.
     bool m_frameDeferred = false;

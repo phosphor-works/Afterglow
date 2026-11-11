@@ -1214,7 +1214,9 @@ TEST(MuxAttach, AnImagePrintedWhileDetachedReachesTheNextWindow)
         ASSERT_TRUE(w.resize(40, 10));
         ASSERT_TRUE(w.until([&] { return w.replica.cellWidth() == 8; }));
         // Printed once the window went: the test says when.
-        ASSERT_TRUE(w.type("(while [ ! -e '" + go + "' ]; do sleep 0.05; done; cat '" + image + "'; : > '" + done + "') &\n"));
+        // Bounded by the test's directory, which goes with the daemon.
+        ASSERT_TRUE(w.type("(while [ -d '" + daemon.dir() + "' ] && [ ! -e '" + go + "' ]; do sleep 0.05; done; cat '" + image
+                           + "'; : > '" + done + "') &\n"));
         ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"sh"})) << daemon.lastError();
         ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
         EXPECT_FALSE(w.replica.graphics().images().contains(9));

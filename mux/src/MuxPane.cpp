@@ -52,6 +52,7 @@ MuxPane::MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, 
     , m_notificationCapabilities(std::move(notificationCapabilities))
     , m_images(images)
     , m_stopDecode(::eventfd(0, EFD_CLOEXEC))
+    , m_stopDecodeError(m_stopDecode.valid() ? 0 : errno)
     , m_terminal(size.cols, size.rows, *this, options)
 {
     // Before the program starts: a program that queries the cell size at
@@ -82,7 +83,7 @@ bool MuxPane::start(AfterglowPty::SpawnOptions options, std::string launchedProg
 {
     // Without it, a pane that closes waits for each image of its feed.
     if (!m_stopDecode.valid()) {
-        if (error) *error = std::string("cannot create an eventfd: ") + std::strerror(errno);
+        if (error) *error = std::string("cannot create an eventfd: ") + std::strerror(m_stopDecodeError);
         m_exited = true;
         return false;
     }
@@ -640,8 +641,9 @@ void MuxPane::ptyData(std::string_view bytes)
         // in its order. After the feed: the decode ends in the middle of a
         // command of the program, which the parse finishes first.
         const std::vector<std::function<void()>> changes = std::exchange(m_deferred, {});
-        m_changesWaiting.store(false);
         for (const std::function<void()>& change : changes) change();
+        // After them: input that finds it clear goes after the changes.
+        m_changesWaiting.store(false);
         const bool frame = std::exchange(m_frameDeferred, false);
         deferred = frame || !changes.empty();
     }
@@ -664,10 +666,9 @@ MuxPane::Input MuxPane::input(std::string_view bytes)
     // it, as the window sent them.
     if (m_changesWaiting.load()) {
         std::lock_guard lock(m_mutex);
-        if (!m_deferred.empty()) {
-            m_deferred.push_back([this, data = std::string(bytes)] { (void)m_pty->write(data); });
-            return Input::Written;
-        }
+        // The window holds it, with what follows, as for a full queue: the
+        // wake at the end of the feed sends it on.
+        if (!m_deferred.empty()) return Input::Full;
     }
     if (m_pty->write(bytes)) return Input::Written;
     // A terminal that takes no more input (its child side is gone, while the
