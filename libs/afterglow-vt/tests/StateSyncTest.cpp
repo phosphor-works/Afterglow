@@ -718,6 +718,36 @@ TEST(StateSync, AnImageSentAgainFasterThanItsPixelsGoStillShows)
     EXPECT_EQ(p.replica.graphics().images().at(1).frames[0]->rgba[0], 19);
 }
 
+TEST(StateSync, AnImageThatADeletedFrameCompletesShowsBeforeThatFrameWent)
+{
+    // Three frames of 40000 bytes, at 8 KiB a frame of the codec.
+    Pair p(30, 8, 100, 8192);
+    p.source.resize(30, 8, 10, 20);
+    p.source.feed(apc("a=T,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, 1, 0, 0)));
+    for (const std::uint8_t red : {2, 3}) p.source.feed(apc("a=f,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, red, 0, 0)));
+    std::string error;
+    ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+    ASSERT_TRUE(p.writer.pending());
+    // The third frame goes while the first goes to the replica: the version
+    // that the writer sends keeps its three frames, and the image is whole
+    // once two of them went.
+    p.source.feed(apc("a=d,d=f,i=1,r=3,q=2"));
+    int shown = -1;
+    int frames = 0;
+    for (int guard = 0; guard < 1000; ++guard) {
+        const std::string frame = p.update();
+        if (frame.empty() && !p.writer.pending()) break;
+        ++frames;
+        ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
+        if (shown < 0 && p.replica.graphics().images().contains(1)) shown = frames;
+    }
+    ASSERT_GE(shown, 0);
+    // The pixels of the third frame took the frames after it.
+    EXPECT_LT(shown + 3, frames);
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+    EXPECT_EQ(p.replica.graphics().images().at(1).frames.size(), 2u);
+}
+
 TEST(StateSync, ReaderRefusesBadImageSections)
 {
     SyncHost host;
@@ -870,15 +900,19 @@ TEST(StateSync, ATransferOfAnImageThatAClearReplacedEnds)
     // The alternate screen goes and comes again with another image under
     // the id: the replica shows that one, never the one that the clear took.
     p.source.feed("\x1b[?1049l\x1b[?1049h" + apc("a=T,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, 7, 8, 9)));
-    for (int guard = 0; guard < 1000; ++guard) {
+    bool caughtUp = false;
+    for (int guard = 0; guard < 1000 && !caughtUp; ++guard) {
         const std::string frame = p.update();
-        if (frame.empty() && !p.writer.pending()) break;
+        caughtUp = frame.empty() && !p.writer.pending();
+        if (caughtUp) break;
         ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
         const auto& images = p.replica.graphics(true).images();
         if (const auto it = images.find(1); it != images.end()) {
+            ASSERT_FALSE(it->second.frames.empty());
             ASSERT_EQ(it->second.frames[0]->rgba[0], 7);
         }
     }
+    ASSERT_TRUE(caughtUp);
     EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
     EXPECT_EQ(p.replica.graphics().images().at(1).frames[0]->rgba[0], 7);
 }

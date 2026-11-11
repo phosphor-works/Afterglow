@@ -191,8 +191,9 @@ public:
 private:
     /// Clears @p left to @p right of a row that a scroll within the margins
     /// left: its blocks moved with the rows, and what is left of them here is
-    /// a copy, which no erase of a block may follow into the rows that hold
-    /// the block now.
+    /// a copy, or the remnant of a block that left whose other rows the copy
+    /// overwrote. No erase of a block may follow either into the rows that
+    /// hold a block now.
     void clearVacatedSpan(Row& row, int left, int right, std::uint32_t fillStyleId);
     // The mux reader installs rows and history rows in a replica (StateSync.h).
     friend class StateReader;

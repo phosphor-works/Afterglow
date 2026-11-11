@@ -1189,7 +1189,12 @@ void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budge
         out.append(pixels.substr(f.sent, part));
         f.sent += part;
         m_imagesWent = true;
-        return f.sent == pixels.size();
+        if (f.sent != pixels.size()) return false;
+        // A frame that completes can complete an image other than the
+        // transfer's: the live one, whose older version still goes (a
+        // deleted frame keeps its image). Its record goes with these pixels.
+        m_recordsWaiting = true;
+        return true;
     };
     // The images whose pixels the replica lacks, once for the call: those
     // that show first, the active screen's first.
@@ -1231,7 +1236,7 @@ void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budge
 void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budget)
 {
     // Nothing for a record to say while only pixels go: the stores did not
-    // change, nothing waits, and no version's pixels came.
+    // change, nothing waits, and no frame's pixels completed.
     if (!m_storesChanged && !m_recordsWaiting && m_done.empty()) return;
     m_recordsWaiting = false;
     for (int which = 0; which < 2; ++which) {
@@ -1337,7 +1342,18 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
         if (v.recorded || newer || live == images.end() || complete(live->second)) continue;
         keep.push_back(std::move(m_done[i]));
     }
+    const bool released = keep.size() < m_done.size();
     m_done = std::move(keep);
+    // The frames that only those versions held went with them: their drops
+    // go in the next frame, not after the next change of a store.
+    if (released) {
+        for (const auto& [frame, f] : m_frames) {
+            if (f.sent > 0 && f.frame.expired()) {
+                m_imagesPending = true;
+                break;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------- reader ---

@@ -710,9 +710,10 @@ bool Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
 void Screen::clearVacatedSpan(Row& row, int left, int right, std::uint32_t fillStyleId)
 {
     // eraseMulticellsCrossing() took the blocks that a margin cut: every
-    // block cell left in the span is a copy of one that moved. Erased as a
-    // block, it would take the parameters of the block from the rows that
-    // it moved to.
+    // block cell left in the span is a copy of one that moved, or the
+    // remnant of a block that left, whose other rows the copy overwrote.
+    // Erased as a block, it would take the parameters of the block from the
+    // rows that hold one now.
     if (row.multicell) {
         std::erase_if(*row.multicell, [left, right](const auto& kv) { return kv.first >= left && kv.first <= right; });
         for (int x = left; x <= right; ++x) {
