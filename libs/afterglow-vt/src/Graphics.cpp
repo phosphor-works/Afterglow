@@ -189,8 +189,10 @@ long long anchorIndex(const Placement& p, const Screen& s)
 bool forbiddenFile(const std::filesystem::path& path)
 {
     const std::string name = path.string();
-    // /dev/shm holds plain files: the protocol names it as a temporary directory.
-    if (name.starts_with("/dev/shm/")) return false;
+    // /dev/shm holds plain files: the protocol names it as a temporary
+    // directory. The directory itself is allowed too, as the parent of a file
+    // in it is checked: kitten icat writes the t=t files of converted images there.
+    if (name == "/dev/shm" || name.starts_with("/dev/shm/")) return false;
     for (const char* deny : {"/proc", "/sys", "/dev"}) {
         if (name == deny || name.starts_with(std::string(deny) + '/')) return true;
     }
@@ -811,12 +813,12 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
         // would instead deliver SIGBUS to the terminal process.
         const ReadResult result = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, charge);
         close(fd);
-        // Only an object named for the protocol is the terminal's to delete.
-        // Any other name stays: a command must not delete an unrelated object
-        // by naming it, and almost any object decodes as a tiny image.
-        if (name.find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos) {
-            released = shm_unlink(name.c_str()) == 0;
-        }
+        // The kitty spec has the terminal unlink every object it reads, with
+        // no tag in the name as for t=t: kitten icat names its objects
+        // /icat-..., and they would stay in /dev/shm until logout. A program
+        // can name another object of the user's, but a local one could unlink
+        // it itself, and Terminal.graphicsFileTransfer turns the medium off.
+        released = shm_unlink(name.c_str()) == 0;
         if (!finish(result)) return false;
         break;
     }
@@ -837,13 +839,13 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
 
 bool GraphicsStore::releaseMedium(const Command& cmd, const std::string& data) const
 {
-    // The same rules as loadPayload's: the name a t=s command gives, and the
-    // real path of a t=t file below its temporary directory, must carry the tag.
+    // The same rules as loadPayload's: any object that a t=s command names,
+    // and a t=t file whose real path below its temporary directory carries the tag.
     if (!m_fileTransfer || data.size() > 4096 || data.find('\0') != std::string::npos) {
         return false;
     }
     if (cmd.medium == 's') {
-        return data.find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos && shm_unlink(data.c_str()) == 0;
+        return shm_unlink(data.c_str()) == 0;
     }
     if (cmd.medium != 't') return false;
     std::error_code ec;

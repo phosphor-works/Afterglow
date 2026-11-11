@@ -71,9 +71,10 @@ To refuse Kitty transmissions from files, temporary files and shared memory (`t=
 The program then gets an `EPERM` error, and Afterglow opens no file.
 Inline transmissions (`t=d`) always work.
 
-Afterglow deletes a temporary file (`t=t`) or a shared memory object (`t=s`) only when its name holds `tty-graphics-protocol`.
-A temporary file must also be below `/tmp`, `/dev/shm` or `$TMPDIR`, and the tag must be in its path below that directory.
-Afterglow keeps every other file and object that a command names.
+Afterglow deletes a temporary file (`t=t`) only when it is below `/tmp`, `/dev/shm` or `$TMPDIR`, and its path below that directory holds `tty-graphics-protocol`.
+Afterglow keeps every other file that a command names.
+Afterglow deletes the shared memory object of a command (`t=s`) when it has read it or refused the command, whatever its name, as the Kitty specification says.
+`kitten icat` names its objects `/icat-` and a random suffix.
 
 A read from a file or shared memory that fails gives the error `EBADF:failed to read image file`.
 These cases give that error:

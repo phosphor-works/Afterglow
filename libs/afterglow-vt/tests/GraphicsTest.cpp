@@ -127,14 +127,14 @@ struct ShmName
     ~ShmName() { shm_unlink(name.c_str()); }
 };
 
-/// A file in the test's temporary directory, removed when the test ends.
-/// mkstemp picks a name nobody could have planted a link at; the stem keeps
-/// the protocol's tag in it.
+/// A file in the test's temporary directory (or @p directory), removed when
+/// the test ends. mkstemp picks a name nobody could have planted a link at;
+/// the stem keeps the protocol's tag in it.
 struct TempFile
 {
     std::string path;
-    explicit TempFile(std::string_view stem)
-        : path((std::filesystem::temp_directory_path() / (std::string(stem) + "XXXXXX")).string())
+    explicit TempFile(std::string_view stem, const std::filesystem::path& directory = std::filesystem::temp_directory_path())
+        : path((directory / (std::string(stem) + "XXXXXX")).string())
     {
         const int fd = mkstemp(path.data());
         if (fd >= 0) close(fd);
@@ -903,10 +903,10 @@ TEST(Graphics, SharedMemoryOffsetWithoutSizeReadsRemainingBytes)
     EXPECT_EQ(t.g().images().at(7).frames[0]->rgba[0], 'R');
 }
 
-TEST(Graphics, SharedMemoryIsDeletedOnlyWhenNamedForTheProtocol)
+TEST(Graphics, SharedMemoryIsDeletedWhateverItsName)
 {
-    // Almost any object decodes as a tiny image, so a decode proves nothing:
-    // an object without the protocol's tag in its name is never deleted.
+    // As the kitty spec says: the terminal unlinks every object it reads.
+    // kitten icat's names (/icat-...) have no tag.
     const ShmName plain{"/afterglow-graphics-plain-" + std::to_string(getpid())};
     const ShmName tagged{"/afterglow-tty-graphics-protocol-test-" + std::to_string(getpid())};
     for (const ShmName* shm : {&plain, &tagged}) {
@@ -919,9 +919,7 @@ TEST(Graphics, SharedMemoryIsDeletedOnlyWhenNamedForTheProtocol)
     t.t.feed(apc("a=t,i=1,t=s,f=24,s=1,v=1", base64Encode(plain.name)));
     t.t.feed(apc("a=t,i=2,t=s,f=24,s=1,v=1", base64Encode(tagged.name)));
     EXPECT_EQ(t.host.written, "\x1b_Gi=1;OK\x1b\\\x1b_Gi=2;OK\x1b\\");
-    const int survivor = shm_open(plain.name.c_str(), O_RDONLY, 0);
-    EXPECT_GE(survivor, 0);
-    if (survivor >= 0) close(survivor);
+    EXPECT_EQ(shm_open(plain.name.c_str(), O_RDONLY, 0), -1);
     EXPECT_EQ(shm_open(tagged.name.c_str(), O_RDONLY, 0), -1);
 }
 
@@ -1673,6 +1671,22 @@ TEST(Graphics, DeleteDoesNotDependOnTheScrolledBackView)
     EXPECT_TRUE(t.g().placements()[0].isVirtual);
 }
 
+TEST(Graphics, TemporaryFileInDevShmIsReadAndDeleted)
+{
+    // Where kitten icat writes the t=t file of an image it converted.
+    if (!std::filesystem::is_directory("/dev/shm")) {
+        GTEST_SKIP() << "no /dev/shm";
+    }
+    TempFile file("kitty-tty-graphics-protocol-", "/dev/shm");
+    ASSERT_TRUE(file.write("RGBA"));
+    Term t(20, 10);
+    t.t.feed(apc("a=t,t=t,f=32,s=1,v=1,i=1", base64Encode(file.path)));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;OK\x1b\\");
+    ASSERT_EQ(t.g().images().count(1), 1u);
+    EXPECT_EQ(t.g().images().at(1).frames[0]->rgba[0], 'R');
+    EXPECT_FALSE(std::filesystem::exists(file.path));
+}
+
 TEST(Graphics, SharedMemoryFifoDoesNotHang)
 {
     if (!std::filesystem::is_directory("/dev/shm")) {
@@ -1759,7 +1773,7 @@ TEST(Graphics, CommandRefusedBeforeReadingDeletesItsTemporaryFile)
 TEST(Graphics, IdWithNumberStillDeletesItsTemporaryMedium)
 {
     // Refused before its payload is read, like the commands above: the
-    // temporary file and the tagged shared memory object still go.
+    // temporary file and the shared memory object still go.
     TempFile file("afterglow-tty-graphics-protocol-");
     ASSERT_TRUE(file.write("RGBA"));
     const ShmName shm{"/afterglow-tty-graphics-protocol-both-" + std::to_string(getpid())};
@@ -1808,8 +1822,9 @@ TEST(Graphics, ReadOverTheWorkBudgetIsBusy)
     s.apc("a=t,t=t,f=32,s=1,v=1,i=5", base64Encode(untagged.path));
     EXPECT_EQ(s.host.written, "\x1b_Gi=5;EBUSY:too much image data read, try again later\x1b\\");
     EXPECT_TRUE(std::filesystem::exists(untagged.path));
-    // A file read and a shared memory read draw on the same budget. A tagged
-    // object goes with the refusal, and an untagged one stays.
+    // A file read and a shared memory read draw on the same budget. The
+    // object goes with the refusal, whatever its name, so the reply asks for
+    // no retry.
     const auto object = [](const std::string& name) {
         const int fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
         const bool written = fd >= 0 && write(fd, "RGBA", 4) == 4;
@@ -1831,8 +1846,8 @@ TEST(Graphics, ReadOverTheWorkBudgetIsBusy)
     ASSERT_TRUE(object(plain.name));
     s.host.written.clear();
     s.apc("a=t,t=s,f=32,s=1,v=1,i=6", base64Encode(plain.name));
-    EXPECT_EQ(s.host.written, "\x1b_Gi=6;EBUSY:too much image data read, try again later\x1b\\");
-    EXPECT_TRUE(exists(plain.name));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=6;EBUSY:too much image data read\x1b\\");
+    EXPECT_FALSE(exists(plain.name));
 }
 
 TEST(Graphics, FrameEditOverTheWorkBudgetIsBusy)
