@@ -356,6 +356,65 @@ TEST(Themes, BundledThemesLoad)
     }
 }
 
+TEST(ModifierRemap, ReadsKittysRules)
+{
+    using M = Qt::KeyboardModifiers;
+    // A swap is two rules.
+    auto remap = ModifierRemap::parse(QStringLiteral("ctrl:super super:ctrl"));
+    ASSERT_TRUE(remap);
+    EXPECT_EQ(remap->apply(Qt::ControlModifier), M(Qt::MetaModifier));
+    EXPECT_EQ(remap->apply(Qt::MetaModifier), M(Qt::ControlModifier));
+    EXPECT_EQ(remap->apply(Qt::ControlModifier | Qt::MetaModifier | Qt::ShiftModifier),
+              M(Qt::ControlModifier | Qt::MetaModifier | Qt::ShiftModifier));
+    // Other flags stay.
+    EXPECT_EQ(remap->apply(Qt::ControlModifier | Qt::KeypadModifier), M(Qt::MetaModifier | Qt::KeypadModifier));
+    EXPECT_EQ(remap->singleTarget(Qt::ControlModifier), Qt::MetaModifier);
+    EXPECT_EQ(remap->singleTarget(Qt::AltModifier), Qt::AltModifier);
+    // A destination of several modifiers, kitty's aliases, any case, and the
+    // last rule for a source wins.
+    remap = ModifierRemap::parse(QStringLiteral("  OPT:ctrl+shift\tcmd:alt cmd:Control  "));
+    ASSERT_TRUE(remap);
+    EXPECT_EQ(remap->apply(Qt::AltModifier), M(Qt::ControlModifier | Qt::ShiftModifier));
+    EXPECT_EQ(remap->singleTarget(Qt::AltModifier), Qt::NoModifier);
+    EXPECT_EQ(remap->apply(Qt::MetaModifier), M(Qt::ControlModifier));
+    EXPECT_EQ(remap->apply(Qt::ShiftModifier), M(Qt::ShiftModifier));
+    // An empty value remaps nothing.
+    remap = ModifierRemap::parse(QStringLiteral(" "));
+    ASSERT_TRUE(remap);
+    EXPECT_TRUE(remap->isEmpty());
+    EXPECT_EQ(remap->apply(Qt::ControlModifier), M(Qt::ControlModifier));
+}
+
+TEST(ModifierRemap, RefusesWhatKittyRefusesAndHyperAndMeta)
+{
+    for (const char* text : {"ctrl", "ctrl:", ":super", "ctrl+alt:super", "ctrl:ctrl", "none:ctrl", "ctrl:none",
+                             "ctrl:capslock", "kitty_mod:ctrl", "ctrl:super ctrl", "ctrl:super+", "hyper:ctrl", "ctrl:meta"}) {
+        QString error;
+        EXPECT_FALSE(ModifierRemap::parse(QString::fromUtf8(text), &error)) << text;
+        EXPECT_FALSE(error.isEmpty()) << text;
+    }
+    QString error;
+    ModifierRemap::parse(QStringLiteral("hyper:ctrl"), &error);
+    EXPECT_TRUE(error.contains(QLatin1String("super and alt"))) << error.toStdString();
+}
+
+TEST_F(ConfigTest, RemapModifiersIsReadAndAnErrorRemapsNothing)
+{
+    {
+        SettingsStore store(write(QStringLiteral("default.json"), "{}"));
+        EXPECT_TRUE(store.settings().modifierRemap.isEmpty());
+    }
+    {
+        SettingsStore store(write(QStringLiteral("swap.json"), R"({"Keybinds": {"remapModifiers": "ctrl:super super:ctrl"}})"));
+        EXPECT_EQ(store.settings().modifierRemap.apply(Qt::ControlModifier), Qt::KeyboardModifiers(Qt::MetaModifier));
+        EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    SettingsStore store(write(QStringLiteral("bad.json"), R"({"Keybinds": {"remapModifiers": "ctrl:super hyper:alt"}})"));
+    EXPECT_TRUE(store.settings().modifierRemap.isEmpty());
+    EXPECT_TRUE(store.problems().join(QLatin1Char('\n')).contains(QLatin1String("Keybinds.remapModifiers")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
 TEST_F(ConfigTest, ThemeColoursReplaceTheConfigs)
 {
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "afterglow-light", "background": "#000000"}})");
@@ -2659,6 +2718,8 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
                     QJsonObject{{QStringLiteral("pattern"), QStringLiteral("x+")}, {QStringLiteral("action"), QStringLiteral("open")}}};
             } else if (name == QLatin1String("Keybinds.bindings")) {
                 value = QJsonObject{{QStringLiteral("new_tab"), QStringLiteral("Ctrl+Alt+F12")}};
+            } else if (name == QLatin1String("Keybinds.remapModifiers")) {
+                value = QStringLiteral("ctrl:super");
             } else if (name == QLatin1String("Shaders.params")) {
                 value = QJsonObject{{QStringLiteral("bloom"), QJsonObject{{QStringLiteral("strength"), 0.5}}}};
             } else if (name == QLatin1String("Window.workingDirectory")) {

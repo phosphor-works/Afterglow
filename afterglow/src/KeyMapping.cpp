@@ -4,6 +4,7 @@
 #include "KeyMapping.h"
 
 #include "XkbKeyboard.h"
+#include "config/ModifierRemap.h"
 
 #include <QKeyEvent>
 
@@ -369,6 +370,124 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
         break;
     }
     return out;
+}
+
+namespace {
+
+/// The modifier that a Qt modifier key is. Qt names Super Meta.
+Qt::KeyboardModifier modifierOfQtKey(int key)
+{
+    switch (key) {
+    case Qt::Key_Shift:
+        return Qt::ShiftModifier;
+    case Qt::Key_Control:
+        return Qt::ControlModifier;
+    case Qt::Key_Alt:
+        return Qt::AltModifier;
+    case Qt::Key_Meta:
+    case Qt::Key_Super_L:
+    case Qt::Key_Super_R:
+        return Qt::MetaModifier;
+    default:
+        return Qt::NoModifier;
+    }
+}
+
+/// The modifier that QKeyEvent::modifiers() flips for @p key: for a modifier
+/// key it reports the state after the key, not the one stored.
+Qt::KeyboardModifier flippedModifier(int key)
+{
+    switch (key) {
+    case Qt::Key_Shift:
+        return Qt::ShiftModifier;
+    case Qt::Key_Control:
+        return Qt::ControlModifier;
+    case Qt::Key_Alt:
+        return Qt::AltModifier;
+    case Qt::Key_Meta:
+        return Qt::MetaModifier;
+    case Qt::Key_AltGr:
+        return Qt::GroupSwitchModifier;
+    default:
+        return Qt::NoModifier;
+    }
+}
+
+int qtKeyOfModifier(Qt::KeyboardModifier modifier, bool right)
+{
+    switch (modifier) {
+    case Qt::ShiftModifier:
+        return Qt::Key_Shift;
+    case Qt::ControlModifier:
+        return Qt::Key_Control;
+    case Qt::AltModifier:
+        return Qt::Key_Alt;
+    default:
+        return right ? Qt::Key_Super_R : Qt::Key_Super_L;
+    }
+}
+
+} // namespace
+
+std::unique_ptr<QKeyEvent> remappedKeyEvent(const QKeyEvent& event, const ModifierRemap& remap)
+{
+    if (remap.isEmpty()) return nullptr;
+    const Qt::KeyboardModifiers before = event.modifiers();
+    const Qt::KeyboardModifiers after = remap.apply(before);
+    int key = event.key();
+    if (const Qt::KeyboardModifier own = modifierOfQtKey(key); own != Qt::NoModifier) {
+        // The key's own press and release name the modifier it becomes, as
+        // in kitty, when that is one modifier.
+        if (const Qt::KeyboardModifier target = remap.singleTarget(own); target != Qt::NoModifier) {
+            const std::uint32_t keysym = XkbKeyboard::instance().keysym(event.nativeScanCode());
+            const bool right = keysym == XKB_KEY_Shift_R || keysym == XKB_KEY_Control_R || keysym == XKB_KEY_Alt_R
+                || keysym == XKB_KEY_Meta_R || keysym == XKB_KEY_Super_R;
+            key = qtKeyOfModifier(target, right);
+        }
+    }
+    if (after == before && key == event.key()) return nullptr;
+    // The text is the one of the modifiers that the key had. With Ctrl it
+    // goes: the encoder makes control characters from the key. Without Ctrl,
+    // and with Ctrl or Shift changed, it is the layout's character for the
+    // new Shift state.
+    QString text = event.text();
+    if (after & Qt::ControlModifier) {
+        text.clear();
+    } else if ((before & Qt::ControlModifier) || ((before ^ after) & Qt::ShiftModifier)) {
+        const XkbKeyboard& xkb = XkbKeyboard::instance();
+        const char32_t c = (after & Qt::ShiftModifier) ? xkb.shiftedCodepoint(event.nativeScanCode())
+                                                       : xkb.unshiftedCodepoint(event.nativeScanCode());
+        if (c >= 0x20 && c != 0x7F) text = QString::fromUcs4(&c, 1);
+    }
+    // Stored so that the new event's modifiers() reads as the remapped ones.
+    return std::make_unique<QKeyEvent>(event.type(), key, after ^ flippedModifier(key), event.nativeScanCode(),
+                                       event.nativeVirtualKey(), event.nativeModifiers(), text, event.isAutoRepeat(),
+                                       event.count(), event.device());
+}
+
+AfterglowVt::Key remappedModifierKey(Key key, const ModifierRemap& remap)
+{
+    struct Side
+    {
+        Key key;
+        Qt::KeyboardModifier modifier;
+        bool right;
+    };
+    static constexpr Side Keys[] = {
+        {Key::LeftShift, Qt::ShiftModifier, false},    {Key::LeftControl, Qt::ControlModifier, false},
+        {Key::LeftAlt, Qt::AltModifier, false},        {Key::LeftSuper, Qt::MetaModifier, false},
+        {Key::RightShift, Qt::ShiftModifier, true},    {Key::RightControl, Qt::ControlModifier, true},
+        {Key::RightAlt, Qt::AltModifier, true},        {Key::RightSuper, Qt::MetaModifier, true},
+    };
+    for (const Side& from : Keys) {
+        if (from.key != key) continue;
+        const Qt::KeyboardModifier target = remap.singleTarget(from.modifier);
+        if (target == Qt::NoModifier) return key;
+        for (const Side& to : Keys) {
+            if (to.modifier == target && to.right == from.right) return to.key;
+        }
+    }
+    return key;
 }
 
 } // namespace Afterglow

@@ -118,6 +118,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | --- | --- | --- | --- |
 | `bindings` | [default bindings](#default-bindings) |  | Map each action to a key combination or a list of them. An empty string removes the binding. Besides actions, the map can bind script:ID.COMMAND to run a script command, text:BYTES to send text and table:NAME to open a key table. |
 | `leader` | `""` |  | Key that Leader stands for in sequences. With an empty value, a binding that uses Leader is an error. |
+| `remapModifiers` | `""` |  | Modifiers that act as other modifiers, as in kitty, for example "ctrl:super super:ctrl" to swap Ctrl and Super. Each rule is a modifier, a colon and one or more modifiers joined by +, from shift, ctrl, alt and super. Key bindings, mouse actions and programs see the modifier that a key becomes. A value with an error remaps nothing. |
 | `sequenceTimeout` | `1000` | 100–10000 | Milliseconds before Afterglow cancels an incomplete sequence. |
 | `tableTimeout` | `5000` | 100–60000 | Idle milliseconds before leaving a key table. |
 | `tables` | `{}` |  | Named key tables, each a map of actions to keys as in bindings. A binding to table:NAME opens one. Its actions keep it open. The pop_key_table action leaves every open table, and so does Keybinds.tableTimeout. |

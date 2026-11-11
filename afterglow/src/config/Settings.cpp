@@ -879,6 +879,11 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Named key tables, each a map of actions to keys as in bindings. A binding to table:NAME opens one. "
                         "Its actions keep it open. The pop_key_table action leaves every open table, and so does "
                         "Keybinds.tableTimeout.")},
+        stringKey(QStringLiteral("remapModifiers"), {},
+                  QStringLiteral("Modifiers that act as other modifiers, as in kitty, for example \"ctrl:super super:ctrl\" "
+                                 "to swap Ctrl and Super. Each rule is a modifier, a colon and one or more modifiers joined "
+                                 "by +, from shift, ctrl, alt and super. Key bindings, mouse actions and programs see the "
+                                 "modifier that a key becomes. A value with an error remaps nothing.")),
         {QStringLiteral("bindings"), Keybinds::defaultMap(), QMetaType::QVariantMap,
          QStringLiteral("Map each action to a key combination or a list of them. An empty string removes the binding. "
                         "Besides actions, the map can bind script:ID.COMMAND to run a script command, text:BYTES to send "
@@ -1992,6 +1997,12 @@ Settings SettingsStore::read()
         st.read<int>(Keys, QStringLiteral("tableTimeout")), s.keybinds, &errors);
     for (const QString& e : std::as_const(errors)) {
         problem(QStringLiteral("Keybinds: ") + e);
+    }
+    QString remapError;
+    if (const auto remap = ModifierRemap::parse(st.read<QString>(Keys, QStringLiteral("remapModifiers")), &remapError)) {
+        s.modifierRemap = *remap;
+    } else {
+        problem(QStringLiteral("Keybinds.remapModifiers: %1. No modifier is remapped").arg(remapError));
     }
 
     // Logged when it starts: a reload or a theme change that keeps a problem

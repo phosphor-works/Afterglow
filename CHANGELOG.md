@@ -120,6 +120,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Text hints that copy, open or run commands on regular-expression matches, and URL hints, labeled from `Hints.alphabet`.
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.
 - Keybindings with multi-key sequences, a leader key and named key tables.
+- `Keybinds.remapModifiers`, which makes one modifier act as another in Afterglow, as `remap_modifiers` does in Kitty. Bindings, mouse actions and programs get the modifier that a key becomes.
 - Bindings that match Shift+Tab and shifted symbols, and that use the Latin layout for letters on other keyboard layouts.
 - A command palette for actions, projects and script commands.
 

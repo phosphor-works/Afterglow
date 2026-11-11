@@ -27,6 +27,7 @@
 #include "control/ControlSocket.h"
 #include "scripting/ScriptControl.h"
 #include "TerminalWindow.h"
+#include "config/ModifierRemap.h"
 #include "config/Settings.h"
 #include <AfterglowRender/FontSet.h>
 #include <AfterglowRender/Snapshot.h>
@@ -2813,6 +2814,82 @@ void pressLeftWith(QWindow* window, const QPointF& at, Qt::KeyboardModifiers mod
 }
 // A distance that starts a drag, in logical pixels.
 qreal dragDistance() { return 4 * QGuiApplication::styleHints()->startDragDistance(); }
+
+} // namespace
+
+// Keybinds.remapModifiers, as kitty's remap_modifiers: the event that the
+// window reads, and the terminal's name of a modifier key.
+TEST(RemappedKeys, TheEventCarriesTheNewModifiersAndText) {
+    const auto remap = ModifierRemap::parse(QStringLiteral("ctrl:super super:ctrl alt:ctrl+shift"));
+    ASSERT_TRUE(remap);
+    // Super+C becomes Ctrl+C. Its text goes: the encoder takes ^C from the key.
+    QKeyEvent superC(QEvent::KeyPress, Qt::Key_C, Qt::MetaModifier, QStringLiteral("c"));
+    auto event = remappedKeyEvent(superC, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::ControlModifier));
+    EXPECT_EQ(event->key(), int(Qt::Key_C));
+    EXPECT_TRUE(event->text().isEmpty());
+    // The press of the Ctrl key itself is the Super key's, as in kitty. Qt
+    // stores the state before a modifier key and reports the one after it.
+    QKeyEvent ctrl(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier);
+    ASSERT_EQ(ctrl.modifiers(), Qt::KeyboardModifiers(Qt::ControlModifier));
+    event = remappedKeyEvent(ctrl, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Super_L));
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::MetaModifier));
+    // Alt becomes two modifiers: its key stays Alt.
+    QKeyEvent alt(QEvent::KeyPress, Qt::Key_Alt, Qt::NoModifier);
+    event = remappedKeyEvent(alt, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Alt));
+    EXPECT_EQ(event->modifiers(), Qt::ControlModifier | Qt::ShiftModifier);
+    // A key with no remapped modifier is not made again.
+    QKeyEvent shiftA(QEvent::KeyPress, Qt::Key_A, Qt::ShiftModifier, QStringLiteral("A"));
+    EXPECT_FALSE(remappedKeyEvent(shiftA, *remap));
+    EXPECT_FALSE(remappedKeyEvent(superC, ModifierRemap{}));
+    // The terminal's modifier keys keep their side.
+    using AfterglowVt::Key;
+    EXPECT_EQ(remappedModifierKey(Key::LeftControl, *remap), Key::LeftSuper);
+    EXPECT_EQ(remappedModifierKey(Key::RightSuper, *remap), Key::RightControl);
+    EXPECT_EQ(remappedModifierKey(Key::LeftAlt, *remap), Key::LeftAlt);
+    EXPECT_EQ(remappedModifierKey(Key::RightShift, *remap), Key::RightShift);
+    EXPECT_EQ(remappedModifierKey(Key::Text, *remap), Key::Text);
+}
+
+// The remap acts before anything reads an event: a program gets Ctrl+C from
+// the Super key, a click with Super reports Ctrl, and a binding on
+// Ctrl+Shift fires from Super+Shift and not from Ctrl+Shift.
+TEST_F(NativeWindow, RemappedModifiersReachProgramsTheMouseAndBindings) {
+    const QString received = directory.filePath(QStringLiteral("received"));
+    restartApplication(QStringLiteral("remap.conf"),
+        testSettings({{QStringLiteral("Keybinds"), QJsonObject{{QStringLiteral("remapModifiers"), QStringLiteral("ctrl:super super:ctrl")}}}}),
+        mouseReporter(received));
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received) && reportsMouse(pane); }));
+    sendKey(window, Qt::Key_C, Qt::MetaModifier, QStringLiteral("c"));
+    // Ctrl+C is Super+C now: no ^C.
+    sendKey(window, Qt::Key_C, Qt::ControlModifier, QStringLiteral("\x03"));
+    sendKey(window, Qt::Key_X, Qt::NoModifier, QStringLiteral("x"));
+    ASSERT_TRUE(waitFor([&] { return fileContent(received).endsWith('x'); })) << fileContent(received).toStdString();
+    EXPECT_EQ(fileContent(received), QByteArray("\x03x"));
+    // A press with Super is reported with the Ctrl bit (16).
+    const QPointF at = cellCentre(window, pane, 2, 1);
+    pressLeftWith(window, at, Qt::MetaModifier);
+    ASSERT_TRUE(waitFor([&] { return fileContent(received).contains("\x1b[<"); })) << fileContent(received).toStdString();
+    EXPECT_TRUE(fileContent(received).contains("\x1b[<16;3;2M")) << fileContent(received).toStdString();
+    QMouseEvent release(QEvent::MouseButtonRelease, at, at, window->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, Qt::MetaModifier);
+    QCoreApplication::sendEvent(window, &release);
+    // New Tab is on Ctrl+Shift+T.
+    const auto tabs = window->tabs().size();
+    sendKey(window, Qt::Key_T, Qt::ControlModifier | Qt::ShiftModifier, QStringLiteral("\x14"));
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(window->tabs().size(), tabs);
+    sendKey(window, Qt::Key_T, Qt::MetaModifier | Qt::ShiftModifier, QStringLiteral("T"));
+    EXPECT_TRUE(waitFor([&] { return window->tabs().size() == tabs + 1; }));
+}
+
+namespace {
 // Fails the test when @p window starts a drag, which it cancels so that the
 // test goes on. A drag that ended leaves its QDrag: its deleteLater came from
 // no event loop, so only an explicit send of the deferred deletes takes it.

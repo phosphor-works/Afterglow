@@ -102,6 +102,32 @@ A binding can name a symbol that needs Shift, such as `%` or `+`.
 Shift+Tab matches bindings that name `Shift+Tab`.
 On a non-Latin layout, a key without Ctrl matches the key that the first Latin layout puts there.
 
+### Remap modifiers
+
+`Keybinds.remapModifiers` makes one modifier act as another in Afterglow, as `remap_modifiers` does in Kitty.
+The desktop and other applications keep their modifiers.
+This example swaps Ctrl and Super:
+
+```json
+{"Keybinds": {"remapModifiers": "ctrl:super super:ctrl"}}
+```
+
+| Part | Rule |
+| --- | --- |
+| Rule | A source modifier, a colon and the destination, such as `ctrl:super`. Spaces separate the rules. |
+| Source | One modifier: `shift`, `ctrl`, `alt` or `super`. |
+| Destination | One or more of the same modifiers, joined by `+`, such as `alt:ctrl+shift`. |
+| Names | Kitty's other names also work: `control`, `opt`, `option`, `cmd` and `command`, in any letter case. |
+| Two rules for one source | The last rule applies. |
+| Error | Afterglow shows the problem and remaps no modifier. |
+
+Afterglow remaps the modifiers before anything else reads a key or mouse event.
+Key bindings, mouse actions, the keys that programs get and mouse reports all use the modifier that a key becomes.
+Write the bindings for the modifier that a key becomes, not the one on the key cap.
+With `super:ctrl`, the default `Ctrl+Shift` bindings move to the Super key.
+The press and release of a modifier key report the key of the destination modifier when the destination is one modifier.
+Afterglow does not tell Hyper and Meta apart from Super and Alt, so it does not remap them.
+
 ## Pane controls
 
 | Action | Default shortcut | Function |

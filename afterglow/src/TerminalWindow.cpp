@@ -2373,6 +2373,22 @@ bool TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)
 
 bool TerminalWindow::event(QEvent* e)
 {
+    // Keybinds.remapModifiers, before anything reads the event, as in kitty:
+    // bindings, mouse actions, the chrome and programs see the modifiers that
+    // the keys become. A key event is made again with the new text, and goes
+    // on without this function, which would remap it a second time.
+    if (const ModifierRemap& remap = m_settings.settings().modifierRemap; !remap.isEmpty() && e->isInputEvent()) {
+        if (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease || e->type() == QEvent::ShortcutOverride) {
+            if (const std::unique_ptr<QKeyEvent> remapped = remappedKeyEvent(*static_cast<QKeyEvent*>(e), remap)) {
+                const bool handled = QWindow::event(remapped.get());
+                e->setAccepted(remapped->isAccepted());
+                return handled;
+            }
+        } else {
+            auto* input = static_cast<QInputEvent*>(e);
+            input->setModifiers(remap.apply(input->modifiers()));
+        }
+    }
     switch (e->type()) {
     case QEvent::UpdateRequest:
         renderNow();
@@ -3445,7 +3461,7 @@ void TerminalWindow::openLink(const QString& url)
 bool TerminalWindow::linkModifierHeld() const
 {
     const Qt::KeyboardModifiers modifier = m_settings.settings().links.modifier;
-    return modifier == Qt::NoModifier || (QGuiApplication::queryKeyboardModifiers() & modifier);
+    return modifier == Qt::NoModifier || (m_settings.settings().modifierRemap.apply(QGuiApplication::queryKeyboardModifiers()) & modifier);
 }
 
 void TerminalWindow::revealPane(Pane* pane)
@@ -4681,7 +4697,7 @@ void TerminalWindow::releaseSentKeys()
     auto sent = std::exchange(m_sentKeys, {}).asKeyValueRange();
     std::vector<std::pair<quint32, SentKey>> keys(sent.begin(), sent.end());
     std::sort(keys.begin(), keys.end(), [](const auto& a, const auto& b) { return a.second.order > b.second.order; });
-    const Qt::KeyboardModifiers modifiers = QGuiApplication::queryKeyboardModifiers();
+    const Qt::KeyboardModifiers modifiers = m_settings.settings().modifierRemap.apply(QGuiApplication::queryKeyboardModifiers());
     for (const auto& [physicalKey, key] : keys) {
         m_consumedKeys.insert(physicalKey, false);
         QKeyEvent release(QEvent::KeyRelease, key.key, modifiers, key.nativeScanCode, 0, 0, key.text);
@@ -4702,7 +4718,10 @@ void TerminalWindow::sendKey(QKeyEvent* e, Pane* pane)
         if (sent != m_sentKeys.constEnd() && sent->pane.data() != target) return;
     }
     QByteArray storage;
-    const AfterglowVt::KeyEvent ev = mapKeyEvent(e, storage);
+    AfterglowVt::KeyEvent ev = mapKeyEvent(e, storage);
+    // The key event is remapped already (event()); the terminal's name of a
+    // modifier key comes from the layout, so it is remapped here.
+    ev.key = remappedModifierKey(ev.key, m_settings.settings().modifierRemap);
     const std::string bytes = target->withTerminal([&ev](Terminal& t) { return AfterglowVt::encodeKey(ev, t.modes()); });
     if (bytes.empty()) {
         return;
@@ -5995,7 +6014,7 @@ void TerminalWindow::leaveChrome()
     // chrome took: its drag goes on.
     if (!chromeVisible() || m_chromeGrab) return;
     QMouseEvent outside(QEvent::MouseMove, QPointF(-1, -1), QPointF(-1, -1), Qt::NoButton, Qt::NoButton,
-                        QGuiApplication::keyboardModifiers());
+                        m_settings.settings().modifierRemap.apply(QGuiApplication::keyboardModifiers()));
     m_chrome->deliver(&outside);
 }
 
