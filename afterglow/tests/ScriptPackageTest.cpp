@@ -6,16 +6,26 @@
 #include "QStringPrinter.h" // IWYU pragma: keep (gtest finds PrintTo(QString) by ADL)
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 #include <algorithm>
 #include <limits>
 using namespace Afterglow;
 namespace {
-void put(const QString& path, const QByteArray& bytes) { QDir().mkpath(QFileInfo(path).absolutePath()); QFile f(path); ASSERT_TRUE(f.open(QIODevice::WriteOnly)); ASSERT_EQ(f.write(bytes), bytes.size()); }
+void put(const QString& path, const QByteArray& bytes)
+{
+    ASSERT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath())) << path.toStdString();
+    QFile f(path);
+    ASSERT_TRUE(f.open(QIODevice::WriteOnly)) << path.toStdString();
+    // A short write would leave a cut manifest or module, refused for another reason than the one under test.
+    ASSERT_EQ(f.write(bytes), bytes.size()) << path.toStdString();
+    ASSERT_TRUE(f.flush()) << path.toStdString();
+}
 QByteArray manifest(const QJsonObject& extra = {}) {
     QJsonObject doc{{"id","test"},{"version","1.0.0"},{"api_version",1},{"entry","main"},{"modules",QJsonObject{{"main","init.luau"}}}};
     for (auto it = extra.begin(); it != extra.end(); ++it) doc[it.key()] = it.value();
@@ -27,6 +37,7 @@ QByteArray manifest(const QJsonObject& extra = {}) {
 TEST(ScriptPackage, BoundsSourcesAndRejectsEscapesAndIncompatibleVersions)
 {
     QTemporaryDir parent;
+    ASSERT_TRUE(parent.isValid());
     const QString root = parent.filePath("package");
     QDir dir(root);
     const auto file = dir.filePath("package.json");
@@ -49,7 +60,9 @@ TEST(ScriptPackage, BoundsSourcesAndRejectsEscapesAndIncompatibleVersions)
     // An id that `aglow run` would read as an option.
     PUT(file, manifest({{"id", "-test"}}));
     EXPECT_TRUE(ScriptPackage::read(file, p).startsWith("package.json: id must be 1 to 64"));
-    QTemporaryDir outside; PUT(outside.filePath("module.luau"), "return {}");
+    QTemporaryDir outside;
+    ASSERT_TRUE(outside.isValid());
+    PUT(outside.filePath("module.luau"), "return {}");
     ASSERT_TRUE(QFile::link(outside.filePath("module.luau"), dir.filePath("link.luau")));
     PUT(file, manifest({{"modules",QJsonObject{{"main","link.luau"}}}}));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("escapes its root"));
@@ -57,6 +70,7 @@ TEST(ScriptPackage, BoundsSourcesAndRejectsEscapesAndIncompatibleVersions)
 TEST(ScriptPackage, ReadsAndChecksItsCommands)
 {
     QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     const auto file = dir.filePath("package.json");
     PUT(dir.filePath("init.luau"), "return {}");
     PUT(file, manifest({{"commands", QJsonObject{
@@ -115,7 +129,9 @@ TEST(ScriptFiles, Utf8PrefixKeepsACharacterThatEndsAtTheLimit)
 }
 TEST(ScriptState, AtomicRevisionChecksAndRoundTrip)
 {
-    QTemporaryDir dir; ScriptState store(dir.path()); ScriptState::Snapshot s;
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    ScriptState store(dir.path()); ScriptState::Snapshot s;
     ASSERT_TRUE(store.read("navigator", s).isEmpty()); EXPECT_EQ(s.revision,0);
     const QVariantMap value{{"favorites",QVariantList{QStringLiteral("/tmp/project")}}, {"count",2}};
     ASSERT_TRUE(store.write("navigator",1,0,value,s).isEmpty()); EXPECT_EQ(s.revision,1);
@@ -127,7 +143,9 @@ TEST(ScriptState, AtomicRevisionChecksAndRoundTrip)
 }
 TEST(ScriptState, RejectsCorruptionSymlinksAndUnserializableValues)
 {
-    QTemporaryDir dir; ScriptState store(dir.path()); ScriptState::Snapshot s;
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    ScriptState store(dir.path()); ScriptState::Snapshot s;
     PUT(dir.filePath("bad.json"), "{oops");
     EXPECT_FALSE(store.read("bad",s).isEmpty()); EXPECT_FALSE(store.write("bad",1,0,{},s).isEmpty());
     // A link to a valid state: only the symlink rule can refuse it.
@@ -167,6 +185,7 @@ TEST(ScriptState, LimitsSizeCountAndDepth)
 TEST(ScriptPackage, ConfigOverridesAndDeclaredAssetsStayLocal)
 {
     QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     PUT(dir.filePath("init.luau"),"return {}");
     PUT(dir.filePath("theme.json"),"{}");
     PUT(dir.filePath("package.json"),manifest({{"config",QJsonObject{{"label","default"}}},{"assets",QJsonObject{{"theme","theme.json"}}}}));
@@ -175,7 +194,9 @@ TEST(ScriptPackage, ConfigOverridesAndDeclaredAssetsStayLocal)
     ASSERT_TRUE(ScriptPackage::read(dir.filePath("package.json"),p).isEmpty());
     EXPECT_EQ(p.config.value("label"),"user"); EXPECT_EQ(p.assets.value("theme").toString(),dir.filePath("theme.json"));
     // A real file outside the package, so only the containment rule refuses it.
-    QTemporaryDir outer; const QString nested = outer.filePath("package");
+    QTemporaryDir outer;
+    ASSERT_TRUE(outer.isValid());
+    const QString nested = outer.filePath("package");
     PUT(outer.filePath("theme.json"),"{}");
     PUT(nested + "/init.luau","return {}");
     PUT(nested + "/package.json",manifest({{"assets",QJsonObject{{"escape","../theme.json"}}}}));
@@ -185,6 +206,7 @@ TEST(ScriptPackage, ConfigOverridesAndDeclaredAssetsStayLocal)
 TEST(ScriptFiles, RejectsSpecialFilesAndChecksOpenedContainment)
 {
     QTemporaryDir inside, outside;
+    ASSERT_TRUE(inside.isValid() && outside.isValid());
     const auto fifo = inside.filePath("fifo");
     ASSERT_EQ(::mkfifo(QFile::encodeName(fifo).constData(), 0600), 0);
     QByteArray bytes("unchanged");
@@ -202,6 +224,7 @@ TEST(ScriptFiles, RejectsSpecialFilesAndChecksOpenedContainment)
 TEST(ScriptPackage, ShaderPacksCarryThePackageNameAndSuggestionsNameThem)
 {
     QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     const auto file = dir.filePath("package.json");
     PUT(dir.filePath("init.luau"), "return {}");
     PUT(dir.filePath("shaders/wall/metadata.json"), R"({"id":"test.wall","name":"Wall","fragmentShader":"effect.frag"})");
@@ -230,23 +253,26 @@ TEST(ScriptPackage, ShaderPacksCarryThePackageNameAndSuggestionsNameThem)
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("test.wall"));
     PUT(dir.filePath("shaders/wall/metadata.json"), R"({"id":"test.wall","name":"Wall","fragmentShader":"effect.frag"})");
     // A real pack directory outside the package, so only the containment rule refuses it.
-    QTemporaryDir parent; const QString root = parent.filePath("package");
+    QTemporaryDir parent;
+    ASSERT_TRUE(parent.isValid());
+    const QString root = parent.filePath("package");
     PUT(root + "/init.luau", "return {}");
     PUT(parent.filePath("elsewhere/wall/metadata.json"), R"({"id":"test.wall","name":"Wall","fragmentShader":"effect.frag"})");
     PUT(root + "/package.json", manifest({{"shaders", QJsonObject{{"path", "../elsewhere"}}}}));
     EXPECT_TRUE(ScriptPackage::read(root + "/package.json", p).contains("must remain inside"));
     // A symlinked pack that points out of the package is checked like a directory.
     QTemporaryDir outside;
+    ASSERT_TRUE(outside.isValid());
     PUT(outside.filePath("crt/metadata.json"), R"({"id":"crt","name":"CRT","fragmentShader":"effect.frag"})");
     ASSERT_TRUE(QFile::link(outside.filePath("crt"), dir.filePath("shaders/crt")));
     PUT(file, manifest({{"shaders", shaders}}));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("escapes its root"));
-    QFile::remove(dir.filePath("shaders/crt"));
+    ASSERT_TRUE(QFile::remove(dir.filePath("shaders/crt")));
     // So is the packs' include directory, although it is not a pack.
     PUT(outside.filePath("include/common.glsl"), "");
     ASSERT_TRUE(QFile::link(outside.filePath("include"), dir.filePath("shaders/shared")));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("escapes its root"));
-    QFile::remove(dir.filePath("shaders/shared"));
+    ASSERT_TRUE(QFile::remove(dir.filePath("shaders/shared")));
     // A non-string path is an error, not the default directory.
     PUT(file, manifest({{"shaders", QJsonObject{{"path", 5}}}}));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("shaders.path"));
@@ -267,6 +293,7 @@ TEST(ScriptPackage, ShaderPacksCarryThePackageNameAndSuggestionsNameThem)
 TEST(ScriptPackage, RejectsBadManifestsWithTheRealError)
 {
     QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     const auto file = dir.filePath("package.json");
     PUT(dir.filePath("init.luau"), "return {}");
     ScriptPackage p;
@@ -283,7 +310,7 @@ TEST(ScriptPackage, RejectsBadManifestsWithTheRealError)
     PUT(file, manifest());
     PUT(dir.filePath("config.json"), "[1]");
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("Invalid package JSON"));
-    QFile::remove(dir.filePath("config.json"));
+    ASSERT_TRUE(QFile::remove(dir.filePath("config.json")));
     // A dependency with another version than declared.
     PUT(dir.filePath("vendor/lib/package.json"), R"({"id":"lib","version":"2.0.0","api_version":1,"entry":"main","modules":{"main":"lib.luau"}})");
     PUT(dir.filePath("vendor/lib/lib.luau"), "return {}");
@@ -320,16 +347,40 @@ TEST(ScriptPackage, RejectsBadManifestsWithTheRealError)
     EXPECT_TRUE(ScriptPackage::read(file, p).isEmpty());
     ASSERT_NO_FATAL_FAILURE(chain(16));
     EXPECT_EQ(ScriptPackage::read(file, p), "A package tree has at most 16 packages");
-    // Assets: a count and a size limit.
+    // Assets: 32 files, 4 MiB for each and 16 MiB in total, each limit included.
     QJsonObject assets;
-    for (int i = 0; i < 33; ++i) assets.insert(QStringLiteral("a%1").arg(i), "init.luau");
+    for (int i = 0; i < 32; ++i) assets.insert(QStringLiteral("a%1").arg(i), "init.luau");
     PUT(file, manifest({{"assets", assets}}));
-    EXPECT_TRUE(ScriptPackage::read(file, p).contains("at most 32"));
-    PUT(dir.filePath("big.bin"), QByteArray(4 * 1024 * 1024 + 1, 'x'));
+    EXPECT_TRUE(ScriptPackage::read(file, p).isEmpty());
+    assets.insert("a32", "init.luau");
+    PUT(file, manifest({{"assets", assets}}));
+    EXPECT_EQ(ScriptPackage::read(file, p), "package.json: assets must declare at most 32 files");
+    const auto sizeRule = [](const char* name) {
+        return QStringLiteral("package.json: asset %1 must have a name of 1 to 64 letters, digits, _ and -, and be a file "
+                              "of at most 4 MiB. All assets together have at most 16 MiB")
+            .arg(QLatin1String(name));
+    };
+    constexpr qsizetype MiB = 1024 * 1024;
+    PUT(dir.filePath("big.bin"), QByteArray(4 * MiB, 'x'));
     PUT(file, manifest({{"assets", QJsonObject{{"big", "big.bin"}}}}));
-    EXPECT_TRUE(ScriptPackage::read(file, p).contains("asset"));
+    EXPECT_TRUE(ScriptPackage::read(file, p).isEmpty());
+    PUT(dir.filePath("big.bin"), QByteArray(4 * MiB + 1, 'x'));
+    EXPECT_EQ(ScriptPackage::read(file, p), sizeRule("big"));
+    // Four files of 4 MiB fill the total. A fifth of one byte is under its own
+    // limit, so only the total refuses it. Keys are read in order: a4 is last.
+    QJsonObject full;
+    for (int i = 0; i < 4; ++i) {
+        PUT(dir.filePath(QStringLiteral("full%1.bin").arg(i)), QByteArray(4 * MiB, 'x'));
+        full.insert(QStringLiteral("a%1").arg(i), QStringLiteral("full%1.bin").arg(i));
+    }
+    PUT(file, manifest({{"assets", full}}));
+    EXPECT_TRUE(ScriptPackage::read(file, p).isEmpty());
+    PUT(dir.filePath("byte.bin"), "x");
+    full.insert("a4", "byte.bin");
+    PUT(file, manifest({{"assets", full}}));
+    EXPECT_EQ(ScriptPackage::read(file, p), sizeRule("a4"));
     // Shader packs: at least one, at most 16.
-    QDir().mkpath(dir.filePath("empty"));
+    ASSERT_TRUE(QDir().mkpath(dir.filePath("empty")));
     PUT(file, manifest({{"shaders", QJsonObject{{"path", "empty"}}}}));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("1 to 16 packs"));
     for (int i = 0; i < 17; ++i)
@@ -341,6 +392,7 @@ TEST(ScriptPackage, RejectsBadManifestsWithTheRealError)
 TEST(ScriptPackage, ModuleErrorsNameTheirFileAndLine)
 {
     QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     const auto file = dir.filePath("package.json");
     PUT(dir.filePath("init.luau"), "local util = require('util')\nreturn {}");
     PUT(dir.filePath("util.luau"), "local x = 1\nlocal y = 2\nerror('broken')\nreturn {}");
@@ -362,6 +414,7 @@ TEST(ScriptPackage, ModuleErrorsNameTheirFileAndLine)
 TEST(ScriptPackage, EachManifestRuleHasItsOwnError)
 {
     QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     const auto file = dir.filePath("package.json");
     PUT(dir.filePath("init.luau"), "return {}");
     ScriptPackage p;
@@ -398,6 +451,7 @@ TEST(ScriptPackage, EachManifestRuleHasItsOwnError)
 TEST(ScriptPackage, ASymlinkBackIntoTheTreeIsACycle)
 {
     QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     const auto file = dir.filePath("package.json");
     PUT(dir.filePath("init.luau"), "return {}");
     PUT(dir.filePath("a/package.json"),
@@ -413,6 +467,7 @@ TEST(ScriptPackage, ASymlinkBackIntoTheTreeIsACycle)
 TEST(ScriptPackage, ADependencyErrorIsNotReplacedByALaterOne)
 {
     QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     const auto file = dir.filePath("package.json");
     PUT(dir.filePath("init.luau"), "return {}");
     PUT(dir.filePath("vendor/lib/package.json"), R"({"id":"lib","version":"1.0.0","api_version":2,"entry":"main","modules":{"main":"lib.luau"}})");
@@ -430,6 +485,7 @@ TEST(ScriptPackage, ADependencyErrorIsNotReplacedByALaterOne)
 TEST(ScriptPackage, AnEscapingPathIsWatchedSoItsFixLoads)
 {
     QTemporaryDir dir, outside;
+    ASSERT_TRUE(dir.isValid() && outside.isValid());
     const auto file = dir.filePath("package.json");
     PUT(outside.filePath("module.luau"), "return {}");
     ASSERT_TRUE(QFile::link(outside.filePath("module.luau"), dir.filePath("init.luau")));
@@ -442,6 +498,7 @@ TEST(ScriptPackage, AnEscapingPathIsWatchedSoItsFixLoads)
 TEST(ScriptPackage, CommandTextRefusesSeparatorsAndBidirectionalControls)
 {
     QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     const auto file = dir.filePath("package.json");
     PUT(dir.filePath("init.luau"), "return {}");
     ScriptPackage p;
@@ -451,17 +508,18 @@ TEST(ScriptPackage, CommandTextRefusesSeparatorsAndBidirectionalControls)
         EXPECT_TRUE(ScriptPackage::read(file, p).contains("bidirectional controls")) << int(c);
     }
     // Other formatting characters stay: a zero-width joiner is part of an emoji.
-    PUT(file, manifest({{"commands", QJsonObject{{"go", QJsonObject{{"summary", QStringLiteral("a‍b")}}}}}}));
+    PUT(file, manifest({{"commands", QJsonObject{{"go", QJsonObject{{"summary", QStringLiteral("a") + QChar(u'\u200d') + QStringLiteral("b")}}}}}}));
     EXPECT_TRUE(ScriptPackage::read(file, p).isEmpty());
 }
 
 TEST(ScriptPackage, APackDirectoryNameIsCheckedFirst)
 {
     QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     const auto file = dir.filePath("package.json");
     PUT(dir.filePath("init.luau"), "return {}");
     // No metadata.json: only the name can refuse it.
-    QDir().mkpath(dir.filePath("shaders/bad name"));
+    ASSERT_TRUE(QDir().mkpath(dir.filePath("shaders/bad name")));
     PUT(file, manifest({{"shaders", QJsonObject{{"path", "shaders"}}}}));
     ScriptPackage p;
     EXPECT_EQ(ScriptPackage::read(file, p), "package.json: shader pack directory bad name must be 1 to 64 letters, digits, _ and -");
@@ -470,6 +528,7 @@ TEST(ScriptPackage, APackDirectoryNameIsCheckedFirst)
 TEST(ScriptPackage, ErrorsAtTheEndOfAModuleNameTheModule)
 {
     QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     const auto file = dir.filePath("package.json");
     PUT(dir.filePath("init.luau"), "return {}");
     PUT(dir.filePath("util.luau"), "local x = 1\nif x then end\nreturn {}");

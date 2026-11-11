@@ -314,7 +314,9 @@ void Attachment::readInput(Session& session)
             pane->clear();
             break;
         case Attach::InputType::Visible:
-            pane->setVisible(message->visible);
+            // Only while this window is the pane's: one that went, or failed,
+            // says nothing about what the user sees now.
+            pane->setVisible(message->visible, m_serial);
             break;
         case Attach::InputType::Kill:
             break; // refused above: a Kill comes on the action channel only
@@ -368,6 +370,7 @@ Attachment::PaneLink* Attachment::link(MuxPane& pane)
         PaneLink& l = m_panes[pane.id()];
         l.channel = channel;
         l.writer = writer;
+        l.state.setReplicaHistory(m_replicaHistory);
         Attach::Event opened;
         opened.type = Attach::EventType::PaneOpened;
         opened.pane = pane.id();

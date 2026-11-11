@@ -36,6 +36,14 @@ class AFTERGLOWVT_EXPORT ProgramStatus
 {
 public:
     static constexpr std::size_t MaxRecords = 256;
+    /// The longest fields of a record, in bytes, from the specification: a
+    /// report over one is discarded.
+    static constexpr std::size_t MaxId = 128;
+    static constexpr std::size_t MaxApp = 32;
+    static constexpr std::size_t MaxTitle = 192;
+    static constexpr std::size_t MaxMessage = 2048;
+    /// Increases with every change of the records (and with a reset).
+    std::uint64_t serial() const noexcept { return m_serial; }
 
     enum class Result : std::uint8_t {
         Ignored, ///< malformed or over a limit: nothing applied

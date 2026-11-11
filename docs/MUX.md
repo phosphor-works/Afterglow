@@ -68,6 +68,11 @@ Its command waits for the first daemon, because the first daemon can take some t
 When the unit `afterglow-mux.service` is still loaded because its daemon ends, `afterglow mux new` waits for the end of that unit.
 When the unit is gone, the command starts the unit again one time, in the same 5 seconds.
 
+A daemon of another build of Afterglow can speak another protocol.
+Then `afterglow mux new`, `attach`, `detach`, `ls` and `kill` stop with exit status 1, and no window opens.
+The message is `afterglow-mux speaks protocol N and this afterglow speaks M: end its sessions with the afterglow that started it, or wait until they end`.
+`afterglow mux attach NAME` writes it after `afterglow: `, and the other commands after `afterglow mux COMMAND: `.
+
 ### End
 
 The daemon exits when it has no session and no open connection.
@@ -82,7 +87,7 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 | --- | --- |
 | `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `-- COMMAND...`. |
 | `afterglow mux attach [NAME]` | Shows a session in a window. Option: `--no-takeover`. |
-| `afterglow mux detach [NAME]` | Closes the pane of the session in its window. The session keeps running. |
+| `afterglow mux detach [NAME]` | Closes the session pane in its window. The session keeps running. |
 | `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES` |
 | `afterglow mux kill NAME` | Ends a session and its programs. Option: `--force`. |
 | `afterglow mux server` | Runs `afterglow-mux` in the foreground |
@@ -97,20 +102,21 @@ The daemon does not give the same number two times while it runs. A number that 
 A name that a session has already is refused.
 
 `afterglow mux ls` shows `attached` in the `STATE` column when a window shows the session, else `detached`.
-The `PANES` column shows the number of panes of the session.
+The `PANES` column shows the number of panes in the session.
 Without a daemon, `afterglow mux ls` and `afterglow mux kill` report that there are no sessions.
 
 When `Terminal.confirmClose` is on and a program runs in the session, `afterglow mux kill` asks first.
 It asks only when its standard input is a terminal.
 Without a terminal, it refuses and names `--force`.
-The command itself is not a running program when it runs in the foreground of a pane of that session.
+The command itself is not a running program when it runs in the foreground of a session pane of that session.
 `--force` ends the session without a question.
 
 ### Windows of a session
 
 `afterglow mux attach NAME` opens a window that shows session `NAME`.
+The window has a pane for the session, the session pane.
 The window opens in the Afterglow that runs on your display, as the window of any launch.
-When a window of that Afterglow shows the session already, that window shows the pane of the session and comes to the front.
+When a window of that Afterglow shows the session already, that window shows the session pane and comes to the front.
 No new window opens then.
 Without `NAME`, the command shows the only session. When no session runs, it creates one, as `afterglow mux new` does.
 When more than one session runs, it stops and names them.
@@ -120,10 +126,10 @@ It then stays in the foreground of its terminal until you close its last window,
 Later launches on the display open their windows in it.
 
 One window at a time shows a session.
-When another window shows the session, its pane of the session closes, and the session moves to the new window.
+When another window shows the session, its session pane closes, and the session moves to the new window.
 A window that has no other pane closes with it.
 With `--no-takeover`, the command refuses instead, with exit status 1.
-A window of the same Afterglow does not count: it shows the pane of the session and comes to the front, also with `--no-takeover`.
+A window of the same Afterglow does not count: it shows the session pane and comes to the front, also with `--no-takeover`.
 
 `afterglow mux attach` and `afterglow mux new` without `--detach` need a Wayland display.
 The display is `WAYLAND_DISPLAY`, by default `wayland-0`, as a socket in `XDG_RUNTIME_DIR` unless it is a path.
@@ -133,35 +139,47 @@ When the window fails after it started, the session keeps running. `afterglow mu
 
 The window shows the screen and the scrollback of the session, and sends what you type to its programs.
 The window measures the pane with its own font, and the daemon resizes the pane to that size.
-The session keeps the terminal settings and the colors of the `afterglow mux new` that created it.
 The Reset and Clear actions of the window reset or clear the terminal of the session.
 
 | Event | Result |
 | --- | --- |
-| You close the window, the tab or the pane of the session | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running. |
+| You close the window, the tab or the session pane | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running. |
 | You quit Afterglow | The session keeps running, whatever `Mux.onClose` says. At your last logout, the daemon can end too (see [start](#start)). |
-| `afterglow mux detach NAME` | The pane of the session closes. The session keeps running. In a pane of a session, `NAME` defaults to that session. |
-| Another window shows the session (`afterglow mux attach`) | The pane of the session closes, with a notice. The session keeps running. |
+| `afterglow mux detach NAME` | The session pane closes. The session keeps running. In a session pane, `NAME` defaults to that session. |
+| Another window shows the session (`afterglow mux attach`) | The session pane closes, with a notice. The session keeps running. |
 | The window crashes, or its connection to the daemon breaks | The session keeps running. A window that still runs closes the pane, with a notice. |
 | The program of the pane exits | The pane shows the last output of the program, then closes as a pane does in a window outside a session. The session ends. |
 | `afterglow mux kill NAME` | The session ends, and its pane closes |
 
-In each case, a window that has no other pane closes with the pane of the session.
+In each case, a window that has no other pane closes with the session pane.
 
 A new tab or a split in the window of a session runs a program of the window, not of the session.
 These programs end with the window.
-They start in the directory of the pane of the session, as `Window.workingDirectory` sets.
-When its shell does not report its directory (OSC 7), the window asks the daemon for the directory of the program in the foreground.
-A project saves the pane of a session as a shell in the directory of that pane. A project does not keep sessions.
+With `Window.workingDirectory` at `inherit`, the default, they start in the directory of the session pane.
+The shell of the session pane reports its directory with OSC 7, OSC 9;9, OSC 633 or iTerm2 `CurrentDir`.
+When it reports no directory that exists on this computer, the window asks the daemon.
+The daemon gives the directory of the program in the foreground.
+When the daemon gives none, the new programs start in your home directory.
+A project saves the session pane as a shell in the directory of that pane. A project does not keep sessions.
+The `cwd` that scripts and `afterglow ctl` read is the directory that the shell reported, when it exists on this computer.
+For it, the window does not ask the daemon, because scripts read every pane often.
 
-The pane of a session shows the same things as a pane outside a session, with one exception: the window does not show images yet.
 These features work as in a pane outside a session:
 
 - The marks of shell integration (OSC 133): the last output, the jumps between prompts, and a click on the prompt
-- The status of programs (OSC 7501), and the shell contexts in the title
+- Program status (OSC 7501), and the shell contexts (OSC 3008) in the title
 - Extra cursors
 - A selection or a search match in a region that a program scrolls, as an editor does: it moves with its text
 - Visibility reports (mode 2033): the program hears whether you can see the pane
+
+You can see a pane when its window shows on the screen and is not minimized, and the pane is in the current tab.
+A pane that another pane hides with its zoom cannot be seen.
+While the pane overview is open, you can see only the panes that it shows as cards.
+
+A session pane differs from a pane outside a session in these ways:
+
+- The window does not show images.
+- The session keeps the terminal settings and the colors of the `afterglow mux new` that started it (see [environment](#environment)).
 
 These commands and options are not available. Each stops with exit status 1 and writes this message on standard error:
 
@@ -256,7 +274,7 @@ A variable that `Terminal.env` sets stays.
 
 `PWD` stays. `SSH_TTY`, `SSH_CONNECTION`, `SSH_CLIENT` and `GPG_TTY` stay too, because they describe the login, not a terminal.
 
-The daemon sets these variables in each pane of a session:
+The daemon sets these variables in each session pane:
 
 | Variable | Value |
 | --- | --- |
@@ -302,7 +320,8 @@ While a window shows the session, these answers go through the window, as the an
 | Title and working directory | The daemon keeps the last value |
 | Notification query (OSC 99 `p=?`) | The daemon gives the answer of a window |
 | Query of the socket of an ssh session (OSC 24569) | The daemon answers that there is none (`error=off`) |
-| Images | RGB, RGBA and sixel images work in the daemon. PNG (kitty graphics `f=100`) and iTerm2 images are refused, because the daemon decodes no compressed images. A window does not show images yet. |
+| Visibility report (mode 2033) | The window says whether you can see the pane. Until a window says it, the program hears that you cannot see the pane. This is also true after a takeover, and while no window shows the session. |
+| Images | RGB, RGBA and sixel images work in the daemon. PNG (kitty graphics `f=100`) and iTerm2 images are refused, because the daemon decodes no compressed images. A window does not show the images. |
 
 While no window shows the session, the daemon also answers these requests.
 
@@ -316,7 +335,6 @@ While no window shows the session, the daemon also answers these requests.
 | Drag and drop (OSC 72) | A program that asks which types the terminal supports gets the answer of a window. A drag offer (`t=o`) gets `EPERM`. No drop arrives, and no drag starts. |
 | File download (OSC 1337 `File`) | Dropped |
 | Pointer shape (OSC 22), user variables (OSC 1337 `SetUserVar`), commands of shell integration (OSC 133) | The daemon keeps the last pointer shape, the user variables and the running command for the next window |
-| Visibility report (mode 2033) | The program hears that you cannot see the pane. The next window that shows the session reports whether you can. |
 
 ## What a window answers
 
@@ -357,7 +375,7 @@ These requests do not take more room when more come:
 When the window goes, the requests that still wait get the answer of a session that no window shows.
 A request that the window got already gets no answer from the daemon.
 A clipboard read that waits for your answer gets the denial when its window closes and the session keeps running.
-When the pane of the session closes in the window, a file transfer that the window ran gets no more answers. The same is true when the pane of a program of the window closes.
+When the session pane closes in the window, a file transfer that the window ran gets no more answers. The same is true when the pane of a program of the window closes.
 
 ## Limits
 
@@ -373,6 +391,8 @@ When the pane of the session closes in the window, a file transfer that the wind
 | Wait for a window to connect to its attach socket | 5 seconds | The daemon removes the socket, and `afterglow mux attach` stops with exit status 1 |
 | Input of a window that the program does not read | 32 MiB in the queue of the PTY, 4 MiB in the daemon, then 32 MiB in the window | The window refuses more input and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
 | Frames to a window | About 2 MiB of state in each frame, and at most 4 MiB, the largest frame of the stream | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
+| History rows to a window | `Terminal.scrollback` of the window, in rows | The daemon sends no older rows |
+| Region scrolls in one frame | 256 | Every row from the top of the highest region that scrolled to the bottom of the lowest leaves its region. A selection or a search match in those rows goes. |
 | Requests that wait for a window | `Mux.eventQueue` (1 to 64 MiB, 4 MiB by default) in the queue of the session, and as much in the queue of each pane. A request that finds the queue of its pane empty passes the limit. The queue of the session also takes one request of any size while it is below the limit. | The answer of a session that no window shows (see [requests that wait](#requests-that-wait)) |
 | One request to a window | 129 MiB: the largest clipboard write that a terminal takes, and its types | The answer of a session that no window shows |
 

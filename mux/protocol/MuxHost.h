@@ -21,9 +21,10 @@
 // the window makes the same call on its session pane. The pane's answers to
 // the program come back as its input.
 //
-// The title, the directory, the modes and the colors go in the state frames
-// instead. Program status (OSC 9;4) and contexts (OSC 3008) go in neither
-// yet (docs/MUX.md).
+// The title, the directory, the modes, the colors, the marks of shell
+// integration (OSC 133), program status (OSC 9;4 and 7501), shell contexts
+// (OSC 3008), extra cursors and region scrolls go in the state frames
+// instead (AfterglowVt/StateSync.h).
 //
 // The layout of each call changes with ProtocolVersion (MuxProtocol.h).
 

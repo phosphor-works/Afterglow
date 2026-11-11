@@ -319,6 +319,8 @@ When a program clears its last status, or the terminal resets, `ev.state` is `id
 
 `cwd` is the local directory that the shell reported last, or the working directory of the pane's foreground process.
 It is `""` when it is not known.
+For a session pane of a mux session, `cwd` is only the directory that the shell reported.
+Afterglow does not ask the mux daemon for it, because scripts read every pane often (see [MUX.md](MUX.md#windows-of-a-session)).
 Afterglow ignores a reported directory that names another host, such as the directory of an `ssh` session.
 A reported path without a host is used when that path exists on this machine.
 
@@ -1146,6 +1148,7 @@ Results contain `text`, `available` and `truncated`.
 `max_bytes` limits UTF-8 output to 1 to 1,048,576 bytes (1 MiB). The default is 65,536 bytes.
 Another value is refused with `invalid_effect`.
 A missing selection or unavailable region returns `available=false`.
+So does the last output of a session pane while its rows still come from the mux daemon, right after a window shows the session.
 
 `semantic_regions` returns up to 1,024 retained shell regions in chronological order.
 Afterglow removes a region when a line deletion, a scroll in a scroll region or a resize destroys its start row.

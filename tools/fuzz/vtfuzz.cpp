@@ -9,12 +9,15 @@
 // selection, search the text as the search bar does, advance animations,
 // reset, clear, read text, reload options, end the program, change
 // visibility, encode a paste, and read the images as the renderer does. The
-// host that supports everything answers aglow's remote socket query too.
+// host that supports everything answers aglow's remote socket query too. One
+// record gives the rest of the input to the reader of the mux state codec
+// (StateSync.h), as a frame for a fresh replica.
 //
 //   clang++ -std=c++20 -g -O1 -fsanitize=fuzzer,address,undefined ...
 
 #include <AfterglowVt/Input.h>
 #include <AfterglowVt/Selection.h>
+#include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
 #include <AfterglowVt/TextSearch.h>
 
@@ -128,6 +131,43 @@ void checkPaste(std::string_view text, bool bracketed)
     }
 }
 
+/// A replica's host, and the host of the terminal that the replica copies:
+/// neither has a program to answer.
+struct QuietHost : AfterglowVt::ITerminalHost
+{
+    void writeToPty(std::string_view) override {}
+};
+
+/// @p frame to the StateReader of a fresh replica, as a window applies what a
+/// session sends. A refused frame must leave the reader able to take the first
+/// frame of a writer that starts over, since that is how a window recovers
+/// (StateSyncTest's ReaderRefusesBrokenFrames).
+void checkStateFrame(std::string_view frame, int cols, int rows, std::size_t scrollback)
+{
+    QuietHost replicaHost;
+    AfterglowVt::TerminalOptions opts;
+    opts.maxScrollback = scrollback;
+    AfterglowVt::Terminal replica(cols, rows, replicaHost, opts);
+    AfterglowVt::StateReader reader;
+    std::string error;
+    if (reader.apply(replica, frame, &error)) {
+        return;
+    }
+    QuietHost sourceHost;
+    AfterglowVt::TerminalOptions sourceOpts;
+    sourceOpts.maxScrollback = 10;
+    AfterglowVt::Terminal source(20, 4, sourceHost, sourceOpts);
+    source.feed("\x1b[31mred\x1b[0m\r\nmore");
+    AfterglowVt::StateWriter writer;
+    if (!reader.apply(replica, writer.update(source, 1 << 20), &error)) {
+        __builtin_trap();
+    }
+    using Scope = AfterglowVt::Terminal::TextScope;
+    if (replica.text(Scope::Screen) != source.text(Scope::Screen)) {
+        __builtin_trap();
+    }
+}
+
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
@@ -156,6 +196,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
 
     // 0xFF introduces a control record: [0xFF, op, a, b]. Op 13 feeds a raw
     // 0xFF, which the record marker would otherwise keep out of the stream.
+    // Op 11 with bit 4 set ends the stream: the rest of the input, 0xFF bytes
+    // included, is a state frame.
     std::size_t start = 0;
     for (std::size_t i = 0; i < size; ++i) {
         if (data[i] != 0xFF || i + 3 >= size) {
@@ -247,6 +289,12 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             t.setVisible((a & 1) != 0);
             break;
         case 11: {
+            if ((op / 16) & 1) {
+                // An a by b replica, with the scrollback of bits 5-6.
+                checkStateFrame(std::string_view(reinterpret_cast<const char*>(data + i + 4), size - (i + 4)),
+                                1 + a % 60, 1 + b % 30, Scrollbacks[(op / 32) & 3]);
+                return 0;
+            }
             // The next chunk as a paste.
             std::size_t end = i + 4;
             while (end < size && data[end] != 0xFF) {

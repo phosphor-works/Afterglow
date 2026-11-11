@@ -146,7 +146,14 @@ void TerminalWindow::applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuil
         params.pulseColor = pulse->color;
         animating |= params.pulseProgress < 1.0f;
     }
-    // A change of host, user or container animates; the first sighting does not.
+    // A change of host, user or container animates; the first sighting does
+    // not. A session pane's first sighting is that of its first frame: the
+    // blank replica before it is in no context of the program's.
+    if (!pane->sessionSynced()) {
+        params.context = params.previousContext = 0;
+        params.contextProgress = 1.0f;
+        return;
+    }
     const QString kind = pane->contextKind();
     const int context = kind == QLatin1String("remote") ? 1 : kind == QLatin1String("elevated") ? 2
         : kind == QLatin1String("container") ? 3 : 0;

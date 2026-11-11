@@ -65,8 +65,9 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
     ASSERT_EQ(ProtocolVersion, 6) << "a new protocol version: update the key lists and the calls of this test";
     // Version 6 added the visibility of a pane in the window's input, the
-    // paneDirectory call, and the shell marks, status, contexts, extra
-    // cursors and region scrolls of the state codec (StateSyncTest).
+    // paneDirectory call, the history option of the attach call, and the
+    // shell marks, status, contexts, extra cursors, region scrolls, layout
+    // epochs and first visible rows of the state codec (StateSyncTest).
     EXPECT_EQ(std::string(Fn::PaneDirectory), "paneDirectory");
     EXPECT_EQ(std::string(Error::NoSuchPane), "NO_SUCH_PANE");
     Attach::Input visible;
@@ -121,6 +122,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // The options of the attach call, which the daemon refuses others of.
     EXPECT_EQ(std::string(AttachOption::Takeover), "takeover");
     EXPECT_EQ(std::string(AttachOption::EventQueue), "eventQueue");
+    EXPECT_EQ(std::string(AttachOption::History), "history");
     // Version 4 added attach and detach, and the attach stream: its events
     // and input, byte for byte (the keys of the answer of the attach call are
     // in Mux.MuxAttach.TheAttachCallAnswersWithItsKeys).
@@ -606,15 +608,19 @@ TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)
         EXPECT_EQ(decoded->type, type);
         EXPECT_EQ(decoded->pane, 2u);
     }
-    for (const bool visible : {false, true}) {
-        Attach::Input input;
-        input.type = Attach::InputType::Visible;
-        input.pane = 2;
-        input.visible = visible;
-        const auto decoded = Attach::decodeInput(Attach::encode(input));
-        ASSERT_TRUE(decoded);
-        EXPECT_EQ(decoded->type, Attach::InputType::Visible);
-        EXPECT_EQ(decoded->visible, visible);
+    // The value follows a pane of one varint byte, and one of two.
+    for (const std::uint32_t pane : {2u, 300u}) {
+        for (const bool visible : {false, true}) {
+            Attach::Input input;
+            input.type = Attach::InputType::Visible;
+            input.pane = pane;
+            input.visible = visible;
+            const auto decoded = Attach::decodeInput(Attach::encode(input));
+            ASSERT_TRUE(decoded);
+            EXPECT_EQ(decoded->type, Attach::InputType::Visible);
+            EXPECT_EQ(decoded->pane, pane);
+            EXPECT_EQ(decoded->visible, visible);
+        }
     }
     // A size past what a terminal takes still decodes: the terminal clamps
     // it, and the window does not lose its session for it.

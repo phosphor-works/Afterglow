@@ -24,11 +24,7 @@ constexpr std::size_t MaxSequence = 4096; // the whole OSC, introducer and termi
 constexpr std::size_t Introducer = 7; // ESC ] 7 5 0 1 ;
 constexpr std::size_t MaxKey = 16;
 constexpr std::size_t MaxMsgEncoded = 2732;
-constexpr std::size_t MaxMsgDecoded = 2048;
 constexpr std::size_t MaxTitleEncoded = 256;
-constexpr std::size_t MaxTitleDecoded = 192;
-constexpr std::size_t MaxApp = 32;
-constexpr std::size_t MaxId = 128;
 constexpr std::size_t MaxIdSegment = 32;
 constexpr int MaxIdDepth = 8;
 
@@ -45,7 +41,7 @@ std::string_view trim(std::string_view s)
 
 bool validId(std::string_view id)
 {
-    if (id.empty() || id.size() > MaxId) {
+    if (id.empty() || id.size() > ProgramStatus::MaxId) {
         return false;
     }
     int depth = 0;
@@ -162,21 +158,21 @@ ProgramStatus::Result ProgramStatus::apply(std::string_view body, std::size_t te
         }
     }
     if (app) {
-        if (app->size() > MaxApp || !detail::isCleanText(*app)) {
+        if (app->size() > ProgramStatus::MaxApp || !detail::isCleanText(*app)) {
             return Result::Ignored;
         }
         r.app = std::string(*app);
     }
     if (title) {
         const auto decoded = title->size() <= MaxTitleEncoded ? base64Decode(*title, Base64Check::PaddingOptional) : std::nullopt;
-        if (!decoded || decoded->size() > MaxTitleDecoded || !detail::isCleanText(*decoded)) {
+        if (!decoded || decoded->size() > ProgramStatus::MaxTitle || !detail::isCleanText(*decoded)) {
             return Result::Ignored;
         }
         r.title = *decoded;
     }
     if (msg) {
         const auto decoded = msg->size() <= MaxMsgEncoded ? base64Decode(*msg, Base64Check::PaddingOptional) : std::nullopt;
-        if (!decoded || decoded->size() > MaxMsgDecoded || !detail::isCleanText(*decoded)) {
+        if (!decoded || decoded->size() > ProgramStatus::MaxMessage || !detail::isCleanText(*decoded)) {
             return Result::Ignored;
         }
         r.msg = *decoded;

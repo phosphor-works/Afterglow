@@ -224,10 +224,10 @@ A fuzz build does not build `aglow`, because a static program cannot use the san
 
 | Target | Input |
 | --- | --- |
-| `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. |
+| `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. One control record sends the rest of the input as a state frame to the reader of a replica terminal. |
 | `afterglow_protofuzz` | The protocol readers for remote input. The first byte selects the reader. |
 | `afterglow_imagefuzz` | An image file to the image decoders of `aglow`: the patched stb_image and the GIF reader of `aglow`. |
-| `afterglow_muxfuzz` | The host calls, the events and the input of the attach stream of `afterglow-mux`. The first byte selects the reader. The state frames of panes are not in it. |
+| `afterglow_muxfuzz` | The host calls, the events and the input of the attach stream of `afterglow-mux`. The first byte selects the reader. The state frames of panes are in `afterglow_vtfuzz`. |
 
 Build the targets:
 
@@ -608,12 +608,23 @@ The `StateSync.*` tests cover these cases:
 - A damaged frame and a link without a URI, which the reader refuses without a crash
 - After a refused frame, the reader takes the first frame of a writer that starts over
 - Each synchronized update, with its own count
-- The marks and regions of shell integration (OSC 133): the last output, the text of each region, and a click on the prompt, also after the regions scroll into the history
-- The program status and the shell contexts, with one call to the replica's host for each frame that changes them
+- The marks and regions of shell integration (OSC 133): the last output, the text of each region, and whether the prompt takes clicks
+- The same marks and regions after they scroll into the history
+- Program status and the shell contexts, with one call to the replica's host for each frame that changes them
 - Extra cursors and their colors
-- Region scrolls: the replica's host hears of each, with the screen that scrolled. Two scrolls of one region in one direction come as one. A new replica gets none.
-- Past the limit of scrolls in one frame, every row of each screen leaves its region
-- The new sections with bad values, which the reader refuses
+- Region scrolls: the replica's host hears of each, with the screen that scrolled. A new replica gets none.
+- Two scrolls of one region in one direction, one right after the other, come as one
+- Exactly 256 region scrolls in one frame all go.
+- Past 256, the rows from the top of the highest region that scrolled to the bottom of the lowest leave their region. The history stays.
+- A scroll within margins, an iTerm2 remote host, an exit code of two varint bytes, and a mark one past the last column
+- While the history comes over many frames, each row of the replica has the writer's id
+- A new layout of the writer, also at the same size, numbers the replica's rows anew. A change of height keeps them.
+- Rows of many links: no frame passes its budget by more than the bytes of one row
+- A writer for a replica with less history sends no older rows
+- The prompt redraw after a resize (OSC 133 `redraw=1`)
+- Shell mark, program status, shell context, extra cursor and region scroll sections with bad values, which the reader refuses
+- A frame that fails after its status and contexts tells the replica's host nothing, and bad modes leave the modes and the screen
+- The reader tells a frame of output from one of history that catches up
 
 The `Mux.MuxAttach.*` tests cover these cases:
 
@@ -632,9 +643,11 @@ The `Mux.MuxAttach.*` tests cover these cases:
 - A request that does not fit the queue gets the answer of a session that no window shows, once
 - A request that waits when the window detaches, in the queue of the session or of the pane, gets that answer once
 - A request whose first part went goes whole when the session ends
-- An `eventQueue` out of range, and an unknown option of the attach call, are refused
-- The window says whether you can see the pane: mode 2033 reports each change, and a pane that no window shows cannot be seen
-- The `paneDirectory` call: the directory of the shell, then of the program in the foreground, and the calls that the daemon refuses
+- An `eventQueue` or a `history` out of range, and an unknown option of the attach call, are refused
+- The window says whether you can see the pane, and mode 2033 reports each change
+- When the window detaches, the program hears that you cannot see the pane. The next window, and a window that takes the session over, report whether you can see it.
+- The `paneDirectory` call: the directory of the shell, a directory that was removed, then the program in the foreground, and the calls that the daemon refuses
+- The frames carry the region scrolls since the frame before, and the first frame of a window carries none of a time when no window showed the pane
 
 The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow mux new` starts in a session of its own:
 
@@ -654,13 +667,16 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.AWindowThatLosesItsSessionLeavesItRunning` | A detach and a takeover close the pane and kill nothing |
 | `NativeWindow.AMuxSessionCanOutliveItsWindow` | `Mux.onClose` detach |
 | `NativeWindow.AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow` | A bell, a user variable and an OSC 52 write of the session's shell reach the window and its clipboard |
-| `NativeWindow.AMuxSessionsMarksStatusAndDirectoryReachTheWindow` | The last output and the regions of shell integration, the status of a program, and the directory of the shell, which the daemon reads |
+| `NativeWindow.AMuxSessionsMarksStatusAndDirectoryReachTheWindow` | The last output in the pager, and the regions of shell integration. The status of a program, with the `Pane::statusChanged` signal. A shell context. A new tab starts in the directory that the daemon gets from the system, because the shell reports none. |
+| `NativeWindow.ASessionPaneTellsItsProgramWhetherItCanBeSeen` | Mode 2033 reports at the attach, when another tab shows, and when the pane shows again |
+| `NativeWindow.AnAttachShowsTheSessionsStateAndNotifiesNothingOld` | A window that attaches gets the history, the last output and the prompts of the session. It shows no notification for a status from before the attach. |
+| `NativeWindow.ASelectionInASessionPaneFollowsTheScrollsOfItsProgram` | A selection moves with its text when the program deletes a line, and goes when a region scroll pushes it out. The extra cursors of the program show. |
 | `NativeWindow.AMuxSessionsReadsAndCommandsReachTheWindowAndBack` | An OSC 52 read gets the clipboard after the prompt. The commands of shell integration come in order, with the time that the daemon measured. |
 | `NativeWindow.AProtocolWaitOfASessionPaneReadsItsStream` | The answer wait of a drag reads the session's stream, and ends when the command comes |
 | `NativeWindow.ALaunchOfASessionPassesItsEventQueue` | A launch of a session passes `Mux.eventQueue` of the configuration to the daemon, in bytes |
 | `NativeWindow.AReadOfASessionThatOutlivesItsWindowGetsTheDenial` | A clipboard read that waits for its prompt gets the denial when the window closes and the session keeps running |
 | `NativeWindow.MuxOnCloseAppliesToAnOpenSessionPane` | A change of `Mux.onClose` reaches an open pane |
-| `NativeWindow.ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow` | A launch of a session that a window shows brings that window to the front and shows the pane of the session. A launch of an unknown session fails with the reason. |
+| `NativeWindow.ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow` | A launch of a session that a window shows brings that window to the front and shows the session pane. A launch of an unknown session fails with the reason. |
 | `NativeWindow.ALargePasteReachesTheProgramOfASessionWhole` | Input larger than a frame goes in parts, in order |
 
 Not every test starts a daemon. A test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.

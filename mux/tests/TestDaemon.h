@@ -123,7 +123,9 @@ public:
     const std::string& dir() const { return m_dir; }
     std::string runtime() const { return m_dir + "/run"; }
     std::string socket() const { return runtime() + "/afterglow-mux/socket"; }
-    std::string stateDirectory() const { return m_dir + "/state/afterglow-mux"; }
+    /// XDG_STATE_HOME of the daemon and of the clients that find it.
+    std::string stateHome() const { return m_dir + "/state"; }
+    std::string stateDirectory() const { return stateHome() + "/afterglow-mux"; }
     std::string stateSocket() const { return stateDirectory() + "/" + AfterglowProto::muxStateSocketName(); }
     pid_t pid() const { return m_pid; }
     /// The socket that call() connects to.
@@ -146,7 +148,7 @@ public:
         }
         env.emplace_back("XDG_RUNTIME_DIR", runtime());
         // The daemon listens under the state directory too: never the user's.
-        env.emplace_back("XDG_STATE_HOME", m_dir + "/state");
+        env.emplace_back("XDG_STATE_HOME", stateHome());
         env.emplace_back("HOME", m_dir + "/home");
         return env;
     }

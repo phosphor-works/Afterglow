@@ -340,7 +340,7 @@ TEST(MuxDaemon, ListensOnTheStateDirectoryToo)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    for (const std::string& directory : {daemon.runtime() + "/afterglow-mux", daemon.stateDirectory(), daemon.dir() + "/state"}) {
+    for (const std::string& directory : {daemon.runtime() + "/afterglow-mux", daemon.stateDirectory(), daemon.stateHome()}) {
         struct stat info{};
         if (::lstat(directory.c_str(), &info) != 0) {
             ADD_FAILURE() << "no " << directory;

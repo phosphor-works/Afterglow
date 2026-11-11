@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # libFuzzer targets (clang only, for C and C++): afterglow_vtfuzz for the
-# terminal core, afterglow_protofuzz for the protocol readers that take what
-# a remote program sends, afterglow_imagefuzz for the image decoders of aglow
+# terminal core and the reader of its state frames, afterglow_protofuzz for
+# the protocol readers that take what a remote program sends,
+# afterglow_imagefuzz for the image decoders of aglow
 # (the patched stb_image and aglow's GIF reader in tools/aglow), and
 # afterglow_muxfuzz for the readers of the attach stream of afterglow-mux.
 # afterglow_muxfuzz compiles code of mux/, which is GPL-3.0-or-later, so its

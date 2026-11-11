@@ -11,8 +11,6 @@ namespace AfterglowVt {
 
 namespace {
 
-constexpr std::size_t MaxField = 256;
-
 /// A field shown in labels and titles: one with control characters, line
 /// separators or invalid UTF-8 could forge a second line, so it is dropped.
 std::string field(std::string_view value)
@@ -20,7 +18,7 @@ std::string field(std::string_view value)
     if (!detail::isCleanText(value)) {
         return {};
     }
-    return std::string(detail::truncateUtf8(value, MaxField));
+    return std::string(detail::truncateUtf8(value, ShellContexts::MaxField));
 }
 
 /// The OSC 3008 context with @p id; never the iTerm2 entry.

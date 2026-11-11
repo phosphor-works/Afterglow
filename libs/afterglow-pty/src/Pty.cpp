@@ -14,6 +14,7 @@
 #include <fstream>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 #include <unordered_set>
 #include <utility>
@@ -215,14 +216,22 @@ private:
     std::thread m_thread;
 };
 
-// /proc/PID/cwd when it is a directory that exists. A removed directory reads
-// as "PATH (deleted)", and a new pane cannot start there.
+// /proc/PID/cwd unless the directory was removed: the kernel then reads it as
+// "PATH (deleted)", and a new pane cannot start there. Only the link is read,
+// from the kernel's own record: a stat of the path would wait as long as its
+// file system does (a network mount that does not answer), and the mux
+// daemon asks from the thread that runs every session. A live directory
+// whose own name ends in " (deleted)" reads the same, and is refused too:
+// only a stat could tell them apart.
 std::optional<std::string> directoryOf(pid_t pid)
 {
+    static constexpr std::string_view Deleted = " (deleted)";
     std::error_code ec;
     const auto link = std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/cwd", ec);
-    if (ec || !std::filesystem::is_directory(link, ec)) return std::nullopt;
-    return link.string();
+    if (ec) return std::nullopt;
+    std::string path = link.string();
+    if (path.empty() || path.ends_with(Deleted)) return std::nullopt;
+    return path;
 }
 
 // Whether PID belongs to SESSION. The foreground group's leader may have

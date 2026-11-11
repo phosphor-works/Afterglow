@@ -103,6 +103,9 @@ public:
     /// least one call, so the queue can pass it by one call.
     void setEventQueue(std::size_t bytes) { m_eventQueue = bytes; }
     std::size_t eventQueue() const { return m_eventQueue; }
+    /// The most history rows that the window keeps for each pane: the
+    /// frames carry no older ones (StateWriter::setReplicaHistory).
+    void setReplicaHistory(std::size_t rows) { m_replicaHistory = rows; }
     /// A window shows the session's panes now: connected, and not finishing.
     bool showing() const { return m_stream && !m_finish && !m_failed; }
     /// A number that no other attachment of the daemon has: which window a
@@ -160,6 +163,7 @@ private:
     std::deque<WaitingEvent> m_waitingEvents; ///< events that the channel did not take yet
     std::size_t m_waitingBytes = 0; ///< with Host::CallCost for each
     std::size_t m_eventQueue = std::size_t(DefaultEventQueue);
+    std::size_t m_replicaHistory = ~std::size_t(0);
     std::uint64_t m_serial = 0;
     std::map<std::uint32_t, PaneLink> m_panes; ///< by pane id
     std::optional<Attach::Input> m_heldInput; ///< input that a full PTY refused

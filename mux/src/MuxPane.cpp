@@ -4,6 +4,7 @@
 #include "MuxPane.h"
 
 #include <AfterglowProto/DragDrop.h>
+#include <AfterglowProto/Text.h>
 #include <AfterglowProto/Transfer.h>
 
 #include <algorithm>
@@ -91,7 +92,15 @@ std::string MuxPane::foregroundJob(pid_t caller) const
 
 std::string MuxPane::directory() const
 {
-    return m_pty && !m_exited ? m_pty->currentWorkingDirectory() : std::string();
+    if (!m_pty || m_exited) return {};
+    std::string path = m_pty->currentWorkingDirectory();
+    // The answer is JSON text, which would replace each byte that is not
+    // UTF-8 and so name another path.
+    for (std::size_t i = 0; i < path.size();) {
+        char32_t cp = 0;
+        if (!AfterglowProto::nextUtf8(path, i, cp)) return {};
+    }
+    return path;
 }
 
 void MuxPane::writeDirect(std::string_view bytes)
@@ -212,9 +221,11 @@ void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
         m_window = window;
     }
     if (wake) m_wake();
-    // After m_window: a report of the change goes to the program, not to the
-    // window that went.
-    if (!window) setVisible(false);
+    // After m_window: a report of the change goes to the program, or through
+    // the window that came, not to the window that went. Whether the user can
+    // see the pane is for the new window to say. A report that fails (no
+    // memory to queue it) is not tried again: the next window says anew.
+    setVisible(false, window);
 }
 
 std::string MuxPane::frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes)
@@ -226,10 +237,19 @@ std::string MuxPane::frame(AfterglowVt::StateWriter& writer, std::size_t maxByte
     return frame;
 }
 
-void MuxPane::setVisible(bool visible)
+void MuxPane::setVisible(bool visible, std::uint64_t window)
 {
     std::lock_guard lock(m_mutex);
-    m_terminal.setVisible(visible);
+    bool current = false;
+    {
+        // After m_mutex, as the reader thread takes them, and released before
+        // the terminal's report, which forward() takes it for.
+        std::lock_guard host(m_hostMutex);
+        current = window != 0 && m_window == window;
+    }
+    // A pane that no window shows cannot be seen, and a window that is not
+    // the pane's says nothing about it.
+    m_terminal.setVisible(visible && current);
 }
 
 std::vector<std::string> MuxPane::takeHostCalls(std::uint64_t window, std::size_t budget)

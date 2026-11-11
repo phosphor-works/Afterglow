@@ -29,6 +29,7 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 
 #include <gtest/gtest.h>
@@ -1212,7 +1213,7 @@ TEST(ScriptTasksTest, ProcessesReportSuccessFailureLimitsAndCancellationOnce)
     // not complete them again.
     ASSERT_TRUE(await([&] { return children().subtract(before).isEmpty(); }));
     pump();
-    for (const auto& values : results) EXPECT_EQ(values.size(), 1);
+    for (auto it = results.cbegin(); it != results.cend(); ++it) EXPECT_EQ(it.value().size(), 1) << it.key().toStdString();
 }
 
 TEST(ScriptTasksTest, FileReadsAreBoundedAndRejectSpecialFiles)
@@ -1880,7 +1881,7 @@ TEST_F(ScriptHostTest, ProjectExampleChainsListingSelectionAndLaunch)
 
 TEST_F(ScriptHostTest, PackagesCacheModulesAndRetainLastGoodOnBrokenModuleEdits)
 {
-    QDir().mkpath(user.filePath("bundle"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("bundle")));
     WRITE(user,"bundle/package.json",R"({"id":"bundle","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau","counter":"counter.luau"}})");
     WRITE(user,"bundle/init.luau",R"(
 local count=require("counter")
@@ -1897,7 +1898,7 @@ return {on_bell=function() return afterglow.copy(count.next()) end}
 }
 TEST_F(ScriptHostTest, PackageMigrationAndInitializationAreTransactional)
 {
-    QDir().mkpath(user.filePath("bundle"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("bundle")));
     auto manifest=[&](int schema) { WRITE(user,"bundle/package.json",QString(R"({"id":"bundle","version":"1.0.0","api_version":1,"state_version":%1,"entry":"main","modules":{"main":"init.luau"},"config":{"label":"test"}})").arg(schema).toUtf8()); };
     ASSERT_NO_FATAL_FAILURE(manifest(1));
     WRITE(user,"bundle/init.luau",R"(
@@ -1930,7 +1931,7 @@ on_bell=function() return afterglow.copy("migrated") end}
 }
 TEST_F(ScriptHostTest, PackagesRejectMissingDependenciesAndCycles)
 {
-    QDir().mkpath(user.filePath("bundle/vendor/lib"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("bundle/vendor/lib")));
     WRITE(user,"bundle/package.json",R"({"id":"bundle","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"},"dependencies":{"lib":{"path":"vendor/lib","version":"1.0.0"}}})");
     WRITE(user,"bundle/init.luau","local lib=require('@lib'); return {on_bell=function() return afterglow.copy(lib.label) end}");
     host->setEnabled(true); EXPECT_TRUE(host->scriptIds().isEmpty());
@@ -1957,7 +1958,7 @@ TEST_F(ScriptHostTest, PackagesRejectMissingDependenciesAndCycles)
 // expectAndConsumeFail(Eof): "Expected <eof>, got 'end'".
 TEST_F(ScriptHostTest, AParseErrorNamesTheModuleThatHasIt)
 {
-    QDir().mkpath(user.filePath("parsing"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("parsing")));
     // alpha sorts first and is not the last module of the chunk.
     WRITE(user, "parsing/package.json", R"({"id":"parsing","version":"1.0.0","api_version":1,"entry":"main",
         "modules":{"alpha":"alpha.luau","main":"init.luau","zeta":"zeta.luau"}})");
@@ -2031,7 +2032,7 @@ TEST_F(ScriptHostTest, NavigatorLaunchesChosenLayoutAndPersistsFavoritesAcrossRe
 
 TEST_F(ScriptHostTest, NavigatorParsesBoundedProviderRecords)
 {
-    QDir().mkpath(user.filePath("providers"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("providers")));
     ASSERT_TRUE(QFile::copy(QStringLiteral(AFTERGLOW_EXAMPLE_PACKAGES)+"/project-navigator/providers.luau",user.filePath("providers/providers.luau")));
     WRITE(user,"providers/package.json",R"({"id":"providers","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"main.luau","providers":"providers.luau"}})");
     WRITE(user,"providers/main.luau",R"(
@@ -2117,7 +2118,7 @@ TEST_F(ScriptHostTest, NavigatorNamesAProviderThatTimedOut)
 
 TEST_F(ScriptHostTest, PackageReloadAndRemovalRetireJobsTimersWatchesAndUi)
 {
-    QDir().mkpath(user.filePath("lifecycle"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("lifecycle")));
     WRITE(user, "lifecycle/package.json", R"({"id":"lifecycle","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"},
         "commands":{"dialog":{"summary":"dialog","palette":"dialog"}}})");
     WRITE(files, "watched", "original");
@@ -3434,7 +3435,7 @@ return {
 
 TEST_F(ScriptHostTest, PackageLoadCanAwaitItsStateWrite)
 {
-    QDir().mkpath(user.filePath("counter"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("counter")));
     WRITE(user, "counter/package.json", R"({"id":"counter","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"main.luau"}})");
     WRITE(user, "counter/main.luau", R"(
 return {
@@ -3556,7 +3557,7 @@ return {
 TEST_F(ScriptHostTest, PackagesShareTheirShadersSuggestionsAndPulseNames)
 {
     ASSERT_NO_FATAL_FAILURE(installPackage("scripted-overview"));
-    QDir().mkpath(user.filePath("ripples/shaders/rings"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("ripples/shaders/rings")));
     WRITE(user, "ripples/package.json", R"({"id":"ripples","version":"1.0.0","api_version":1,"entry":"main",
         "modules":{"main":"init.luau"},"shaders":{"path":"shaders","suggests":{"paneEffects":"rings"}},"pulses":{"ripple":7}})");
     WRITE(user, "ripples/shaders/rings/metadata.json", R"({"id":"ripples.rings","name":"Rings","fragmentShader":"effect.frag"})");
@@ -3675,7 +3676,7 @@ TEST_F(ScriptHostTest, TurningScriptsOffDuringAScanWaitsForTheScan)
 
 TEST_F(ScriptHostTest, PackageManifestChangesReplaceTheInstance)
 {
-    QDir().mkpath(user.filePath("ripples/shaders/rings"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("ripples/shaders/rings")));
     auto manifest = [&](int number) {
         WRITE(user, "ripples/package.json", QStringLiteral(R"({"id":"ripples","version":"1.0.0","api_version":1,"entry":"main",
             "modules":{"main":"init.luau"},"shaders":{"path":"shaders"},"pulses":{"ripple":%1}})").arg(number).toUtf8());
@@ -3721,7 +3722,7 @@ TEST_F(ScriptHostTest, EventsOverTheCallbackBudgetBuildNoSnapshot)
 
 TEST_F(ScriptHostTest, RuntimeDisableWithdrawsPackageShadersAndCommands)
 {
-    QDir().mkpath(user.filePath("broken/shaders/wall"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("broken/shaders/wall")));
     WRITE(user, "broken/package.json", R"({"id":"broken","version":"1.0.0","api_version":1,"entry":"main",
         "modules":{"main":"init.luau"},"shaders":{"path":"shaders"},"commands":{"go":{"summary":"go"}}})");
     WRITE(user, "broken/shaders/wall/metadata.json", R"({"id":"broken.wall","name":"Wall","fragmentShader":"effect.frag"})");
@@ -3745,7 +3746,7 @@ return {run_command = function() end, on_bell = function() error("broken") end}
 
 TEST_F(ScriptHostTest, PackageShadersExistBeforeOnLoadEffects)
 {
-    QDir().mkpath(user.filePath("early/shaders/wall"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("early/shaders/wall")));
     WRITE(user, "early/package.json", R"({"id":"early","version":"1.0.0","api_version":1,"entry":"main",
         "modules":{"main":"init.luau"},"shaders":{"path":"shaders"}})");
     WRITE(user, "early/shaders/wall/metadata.json", R"({"id":"early.wall","name":"Wall","fragmentShader":"effect.frag"})");
@@ -3764,7 +3765,7 @@ TEST_F(ScriptHostTest, PackageShadersExistBeforeOnLoadEffects)
 
 TEST_F(ScriptHostTest, PackageErrorsNameTheModuleFileAndLine)
 {
-    QDir().mkpath(user.filePath("lines"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("lines")));
     WRITE(user, "lines/package.json", R"({"id":"lines","version":"1.0.0","api_version":1,"entry":"main",
         "modules":{"main":"init.luau","util":"util.luau"}})");
     WRITE(user, "lines/init.luau", "local util = require('util')\nreturn {on_bell = function() util.fail() end}");
@@ -3779,7 +3780,7 @@ TEST_F(ScriptHostTest, PackageErrorsNameTheModuleFileAndLine)
 
 TEST_F(ScriptHostTest, PackageModulesTakeVarargsAndCannotReplaceTheLoader)
 {
-    QDir().mkpath(user.filePath("loader"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("loader")));
     WRITE(user, "loader/package.json", R"({"id":"loader","version":"1.0.0","api_version":1,"entry":"main",
         "modules":{"main":"init.luau","util":"util.luau"}})");
     // A forgotten "local" must not reach the loader's own variables.
@@ -4587,15 +4588,15 @@ return {
 
 TEST_F(ScriptHostTest, PackageCommandsComeFromItsManifest)
 {
-    QDir().mkpath(user.filePath("pkg"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("pkg")));
     WRITE(user, "pkg/package.json", R"({"id":"pkg","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"},
         "commands":{"go":{"summary":"Go","usage":"WHERE","stdin":true,"remote":true}}})");
     WRITE(user, "pkg/init.luau", "return {run_command = function(_, ev) return afterglow.output(ev, ev.args[1]) end}");
-    QDir().mkpath(user.filePath("typed"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("typed")));
     WRITE(user, "typed/package.json", R"({"id":"typed","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"},
         "commands":{"go":{"summary":"Go","remote":"yes"}}})");
     WRITE(user, "typed/init.luau", "return {run_command = function() end}");
-    QDir().mkpath(user.filePath("meta"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("meta")));
     WRITE(user, "meta/package.json", R"({"id":"meta","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
     WRITE(user, "meta/init.luau", "return {metadata = {commands = {go = {summary = 'Go'}}}, run_command = function() end}");
     host->setEnabled(true);
@@ -5168,7 +5169,7 @@ TEST_F(ScriptHostTest, ScriptsWithDifferentIdsLoadDespiteTheSameFileName)
     WRITE(system, "notify.luau", "return {metadata = {id = 'notify'}}");
     WRITE(user, "notify.luau", "return {metadata = {id = 'my-notify'}}");
     WRITE(user, "same.luau", "return {metadata = {id = 'pkg'}}");
-    QDir().mkpath(user.filePath("pkg"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("pkg")));
     WRITE(user, "pkg/package.json", R"({"id":"pkg","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
     WRITE(user, "pkg/init.luau", "return {}");
     host->setEnabled(true);
@@ -5197,10 +5198,10 @@ TEST_F(ScriptHostTest, SymlinkedPackageDirectoriesLoad)
 
 TEST_F(ScriptHostTest, PackageIdentityRulesAreReported)
 {
-    QDir().mkpath(user.filePath("wrong-dir"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("wrong-dir")));
     WRITE(user, "wrong-dir/package.json", R"({"id":"other","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
     WRITE(user, "wrong-dir/init.luau", "return {}");
-    QDir().mkpath(user.filePath("entry"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("entry")));
     WRITE(user, "entry/package.json", R"({"id":"entry","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
     WRITE(user, "entry/init.luau", "return {metadata = {id = 'different'}}");
     host->setEnabled(true);
@@ -5213,7 +5214,7 @@ TEST_F(ScriptHostTest, PackageIdentityRulesAreReported)
 
 TEST_F(ScriptHostTest, PackageStateRefusalsAndMigrationAreReported)
 {
-    QDir().mkpath(user.filePath("stored"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("stored")));
     WRITE(user, "stored/package.json", R"({"id":"stored","version":"1.0.0","api_version":1,"state_version":2,"entry":"main","modules":{"main":"init.luau"}})");
     WRITE(user, "stored/init.luau", "return {}");
     ScriptState::Snapshot saved;
@@ -5242,7 +5243,7 @@ TEST_F(ScriptHostTest, PackageStateRefusalsAndMigrationAreReported)
 
 TEST_F(ScriptHostTest, PackageWithRefusedStateRetriesWhenTheStateFileChangesAfterARescan)
 {
-    QDir().mkpath(user.filePath("stored"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("stored")));
     WRITE(user, "stored/package.json", R"({"id":"stored","version":"1.0.0","api_version":1,"state_version":2,"entry":"main","modules":{"main":"init.luau"}})");
     WRITE(user, "stored/init.luau", "return {}");
     ScriptState::Snapshot saved;
@@ -5267,7 +5268,7 @@ TEST_F(ScriptHostTest, SupersededPackageNeverLoadsAgainstTheWinnersState)
     // Both copies share dup.json. The winner writes it at a newer version
     // than the loser can read, so loading the loser would fail.
     auto install = [&](const QTemporaryDir& dir, int stateVersion, const QByteArray& source) {
-        QDir().mkpath(dir.filePath("dup"));
+        ASSERT_TRUE(QDir().mkpath(dir.filePath("dup")));
         WRITE(dir, "dup/package.json", QString(R"({"id":"dup","version":"1.0.0","api_version":1,"state_version":%1,"entry":"main","modules":{"main":"init.luau"}})")
             .arg(stateVersion).toUtf8());
         WRITE(dir, "dup/init.luau", source);
@@ -6136,7 +6137,10 @@ protected:
             return false;
         }
         manifest.close();
-        QDir().mkpath(files.filePath(QStringLiteral("src")));
+        if (!QDir().mkpath(files.filePath(QStringLiteral("src")))) {
+            ADD_FAILURE() << "cannot create src";
+            return false;
+        }
         for (const char* name : {"notes.txt", "src/it's.c", "evil\x04.txt"}) {
             QFile file(files.filePath(QString::fromUtf8(name)));
             if (!file.open(QIODevice::WriteOnly)) {
@@ -6599,7 +6603,7 @@ return {
 
 TEST_F(ScriptHostTest, AModuleThatWaitsWhileItLoadsFailsWithoutLeavingACycle)
 {
-    QDir().mkpath(user.filePath("lazy"));
+    ASSERT_TRUE(QDir().mkpath(user.filePath("lazy")));
     WRITE(user, "lazy/package.json", R"({"id":"lazy","version":"1.0.0","api_version":1,"entry":"main",
         "modules":{"main":"init.luau","slow":"slow.luau"},"commands":{"go":{"summary":"Go"}}})");
     WRITE(user, "lazy/init.luau", R"(return { run_command = function(command, ev)
@@ -6814,8 +6818,8 @@ TEST_F(ScriptHostTest, AScriptLinkPointedElsewhereReloadsOnEditsOfItsNewTarget)
 TEST_F(ScriptHostTest, APackageLinkPointedElsewhereReloadsOnEditsOfItsNewTarget)
 {
     const QByteArray manifest = R"({"id":"linked","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})";
-    QDir().mkpath(files.filePath("a"));
-    QDir().mkpath(files.filePath("b"));
+    ASSERT_TRUE(QDir().mkpath(files.filePath("a")));
+    ASSERT_TRUE(QDir().mkpath(files.filePath("b")));
     WRITE(files, "a/package.json", manifest);
     WRITE(files, "a/init.luau", "return {on_bell = function() return afterglow.copy('a') end}");
     WRITE(files, "b/package.json", manifest);
@@ -6859,7 +6863,7 @@ TEST_F(ScriptHostTest, ARemoteReadWithABadLimitStaysAnInvalidEffect)
     EXPECT_EQ(client.out, QStringLiteral("invalid_effect\n"));
 }
 
-TEST_F(ScriptHostTest, ACommandRunThatWaitedForCpuTimeGetsTheStateOfItsStart)
+TEST_F(ScriptHostTest, ACommandRunThatWaitedForCpuTimeGetsTheStateWhenItsHandlerRuns)
 {
     WRITE(user, "late.luau", R"(return {
     metadata = { commands = { title = { summary = "Title" } } },

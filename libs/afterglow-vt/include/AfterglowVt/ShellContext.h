@@ -39,6 +39,8 @@ class AFTERGLOWVT_EXPORT ShellContexts
 {
 public:
     static constexpr std::size_t MaxDepth = 64;
+    /// The longest field of a context, in bytes: a longer one is cut.
+    static constexpr std::size_t MaxField = 256;
 
     /// Applies an OSC 3008 payload. A field that is not clean text is
     /// dropped; a sequence whose id is not clean does nothing. Returns true
