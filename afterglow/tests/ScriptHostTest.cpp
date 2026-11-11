@@ -3355,10 +3355,13 @@ return {
     for (int round = 0; round < 6; ++round) {
         for (int i = 0; i < 3; ++i) ASSERT_TRUE(run("large.large", 7));
         ASSERT_TRUE(run("large.small", 7));
+        // Each round converts three values up to Phosphor's limit of 2^18
+        // values, an allocation each: 0.2 s here, about 4 s under the
+        // sanitizers (the build-debug preset), where allocation is slow.
         ASSERT_TRUE(await([&] {
             return std::count_if(rec.applied.cbegin(), rec.applied.cend(),
                                  [](const QVariantMap& e) { return e["kind"] == QLatin1String("copy"); }) == round + 1;
-        }));
+        }, 30000));
         EXPECT_EQ(rec.applied.last()["text"], "ok") << "round " << round;
     }
     for (const QVariantMap& e : std::as_const(rec.applied)) EXPECT_NE(e["text"], "unreachable");
