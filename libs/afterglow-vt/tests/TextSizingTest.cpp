@@ -3,6 +3,7 @@
 
 #include "TestUtil.h"
 
+#include <AfterglowProto/Base64.h>
 #include <AfterglowVt/Selection.h>
 
 #include <gtest/gtest.h>
@@ -107,6 +108,22 @@ TEST(TextSizing, EraseAndEditTakeWholeBlocks)
     ASSERT_TRUE(t.at(0, 1).isMulticell()); // the block is back before the DCH
     t.feed("\x1b[1;1H\x1b[P"); // DCH through it
     EXPECT_FALSE(t.at(0, 1).isMulticell());
+}
+
+TEST(TextSizing, TextOnABlockThatAMarginScrollCutGoesOn)
+{
+    // A scroll within left and right margins moves the cells of a block that
+    // crosses a margin without its parameters. Text that lands on such a
+    // cell once never moved past it.
+    Term t(47, 5);
+    t.t.resize(47, 5, 10, 20);
+    std::string pixels;
+    for (int i = 0; i < 40; ++i) pixels += std::string("\x01\x02\x03\xff", 4);
+    t.feed("\x1b[?69h\x1b[2;6s");
+    // An image of two rows, which moves the cursor down.
+    t.feed("\x1b_Ga=T,f=32,s=1,v=40,i=1,q=2;" + AfterglowProto::base64Encode(pixels) + "\x1b\\");
+    t.feed("\rhello world \x1b]66;s=2;ab\x1b\\x");
+    EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos) << t.t.text(Terminal::TextScope::Screen);
 }
 
 TEST(TextSizing, EraseCharactersAndDisplayTakeWholeBlocks)

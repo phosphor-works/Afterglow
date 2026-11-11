@@ -762,6 +762,13 @@ void Terminal::print(char32_t cp)
         }
         const MulticellParams* p = scr.multicellParams(*line, cur.x);
         const int next = cur.x - c.multicellDx() + (p ? p->columns() : 1);
+        if (next <= cur.x) {
+            // A block whose cells do not lead past it (its parameters went):
+            // the text would never move on. It goes, as a block that does
+            // not fit does.
+            scr.eraseMulticell(cur.y, cur.x);
+            break;
+        }
         if (next <= right) {
             cur.x = next;
         } else if (m_modes.autowrap && !wrapped) {
