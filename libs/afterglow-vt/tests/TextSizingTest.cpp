@@ -173,6 +173,22 @@ TEST(TextSizing, ALongClusterOfNaturalWidthStaysWhole)
     EXPECT_EQ(t.t.screen().cursor.x, 2);
 }
 
+TEST(TextSizing, ACodeWithNoTextChangesNothing)
+{
+    // As in kitty: no text, whatever the metadata, draws nothing and moves
+    // no cursor. afterglow_vtdiff found that Afterglow drew a space.
+    for (std::string_view code : {"\x1b]66;;\x07", "\x1b]66;w=2;\x07", "\x1b]66;s=2;\x07", "\x1b]66;w=3:s=2;\x1b\\",
+                                  "\x1b]66;w=2;\x01\x02\x07"}) {
+        Term t(20, 5);
+        t.feed("ab");
+        t.feed(code);
+        t.feed("cd");
+        EXPECT_EQ(rowText(t.t, 0), "abcd") << code;
+        EXPECT_EQ(t.t.screen().cursor.x, 4) << code;
+        EXPECT_FALSE(t.at(2, 0).isMulticell()) << code;
+    }
+}
+
 TEST(TextSizing, WrapsAndScrollsToFit)
 {
     Term t(5, 3);
