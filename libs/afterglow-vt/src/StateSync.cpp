@@ -46,6 +46,7 @@ enum Tag : std::uint8_t {
     PlacementsTag = 18, ///< the placements of a screen
     DropFramesTag = 19, ///< frames that no image holds any more
     CellSizeTag = 20, ///< the size of a cell in pixels, which places the images
+    ImagesResetTag = 21, ///< the images start over: the first frame of a writer
 };
 
 // The flags of a semantic region: its kind in the low bits.
@@ -234,12 +235,16 @@ constexpr std::size_t MaxLinkText = StyleTable::MaxLinkBytes;
 // that is not a flag changes the size (a flag can fit in padding); the sizes
 // are those of a 64-bit build with libstdc++, the build that runs the tests.
 // The startTrimmed and available of a SemanticRegion are not state: the
-// terminal computes them when it gives the regions (semanticRegions).
+// terminal computes them when it gives the regions (semanticRegions). The
+// frameShownAtMs of an Image is the replica's clock, not the writer's.
 #if defined(__GLIBCXX__) && __SIZEOF_POINTER__ == 8
 static_assert(sizeof(SemanticRegion) == 64, "a field of SemanticRegion that the codec does not carry");
 static_assert(sizeof(StatusRecord) == 144, "a field of StatusRecord that the codec does not carry");
 static_assert(sizeof(ShellContext) == 264, "a field of ShellContext that the codec does not carry");
 static_assert(sizeof(RegionScroll) == 32, "a field of RegionScroll that the codec does not carry");
+static_assert(sizeof(Image) == 128, "a field of Image that the codec does not carry");
+static_assert(sizeof(Placement) == 88, "a field of Placement that the codec does not carry");
+static_assert(sizeof(ImageFrame) == 64, "a field of ImageFrame that the codec does not carry");
 #endif
 
 /// The bytes of @p v as a varint.
@@ -755,10 +760,26 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
             m_cellSize = std::move(cells);
         }
     }
-    // Images before the history: they show on the screen.
-    writeImages(out, t, budget, changed);
+    // The images that show go before the history, the others after it.
+    const bool images = prepareImages(out, t, first);
+    if (images) {
+        writeDrops(out, budget);
+        writePixels(out, t, budget, true);
+        writeRecords(out, t, budget);
+    }
     writeHistory(out, t, 0, m_screens[0], budget);
     writeHistory(out, t, 1, m_screens[1], budget);
+    if (images) {
+        writePixels(out, t, budget, false);
+        writeRecords(out, t, budget);
+        writeDrops(out, budget);
+        // What waits for a later frame.
+        bool incomplete = false;
+        for (const GraphicsStore& store : t.m_graphics) {
+            for (const auto& [id, image] : store.images()) incomplete = incomplete || !complete(image);
+        }
+        m_imagesPending = m_imagesPending || incomplete || m_transfer || !m_done.empty() || !m_drops.empty();
+    }
     // The cursors go after the rows, which the reader checks them against.
     // A screen that started over lost its cursor on the replica.
     if (first || reset || payload != m_cursor) {
@@ -979,13 +1000,16 @@ namespace {
 /// The bytes of @p frame: RGBA, or the indices of an indexed frame.
 std::string_view pixelsOf(const ImageFrame& frame)
 {
-    const std::vector<std::uint8_t>& bytes = frame.indexed() ? frame.indices : frame.rgba;
+    const std::vector<std::uint8_t>& bytes = frame.pixels();
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 
 /// The smallest part of a frame's pixels worth a section: less room than
-/// this waits for the next frame.
+/// this waits for the next frame, unless the frame has nothing else.
 constexpr std::size_t MinPixelPart = 4096;
+
+/// The room that a frame leaves for the tag and the length of a section.
+constexpr std::size_t SectionSlack = 64;
 
 constexpr std::uint8_t ImageSixel = 1;
 constexpr std::uint8_t ImageAnonymous = 2;
@@ -1009,121 +1033,215 @@ void encodePlacement(Out& o, const Placement& p)
 
 } // namespace
 
-void StateWriter::writeImages(std::string& out, const Terminal& t, Budget& budget, bool changed)
+bool StateWriter::complete(const Image& image) const
 {
-    if (!changed && !m_imagesPending) return;
-    // The frames that the images hold now: a new one gets an id.
-    std::unordered_set<const ImageFrame*> held;
+    return std::all_of(image.frames.begin(), image.frames.end(), [this](const FramePtr& frame) {
+        const auto it = m_frames.find(frame.get());
+        // A frame of no pixels never goes: no writer makes one.
+        return it != m_frames.end() && it->second.sent > 0 && it->second.sent == pixelsOf(*frame).size();
+    });
+}
+
+bool StateWriter::fits(const std::string& out, const Budget& budget, std::size_t bytes) const
+{
+    return out.size() + bytes + SectionSlack <= budget.max || (!budget.anyRow && !m_imagesWent);
+}
+
+bool StateWriter::prepareImages(std::string& out, const Terminal& t, bool first)
+{
+    // A writer that was reset starts the replica's images over, also those
+    // of a reader that applied the frames of the writer before.
+    if (first) section(out, ImagesResetTag, {});
+    const bool changed = first || t.m_graphics[0].changes() != m_storeChanges[0] || t.m_graphics[1].changes() != m_storeChanges[1];
+    m_imagesWent = false;
+    if (!changed && !m_imagesPending) return false;
+    m_storeChanges[0] = t.m_graphics[0].changes();
+    m_storeChanges[1] = t.m_graphics[1].changes();
+    m_imagesPending = false;
+    // A transfer whose image went ends: what the replica got of it goes.
+    const bool abandoned = m_transfer && !t.m_graphics[m_transfer->which].images().contains(m_transfer->image.id);
+    if (abandoned) m_transfer.reset();
+    std::erase_if(m_done, [&t](const ImageVersion& v) { return !t.m_graphics[v.which].images().contains(v.image.id); });
+    // The frames that went: no image and no version holds them. A frame
+    // that the replica got a part of goes there too, the one that it builds
+    // first.
+    for (auto it = m_frames.begin(); it != m_frames.end();) {
+        if (!it->second.frame.expired()) {
+            ++it;
+            continue;
+        }
+        if (it->second.sent > 0) m_drops.push_back(it->second.id);
+        it = m_frames.erase(it);
+    }
+    // Only the transfer's frames are ever in part on the replica, and the
+    // transfer holds them: a frame that the replica builds goes only with a
+    // transfer that ended here. Until its drop went, no frame starts.
+    m_dropsBuilding = m_dropsBuilding || (abandoned && !m_drops.empty());
+    // The frames that are new get an id.
     for (const GraphicsStore& store : t.m_graphics) {
         for (const auto& [id, image] : store.images()) {
             for (const FramePtr& frame : image.frames) {
-                held.insert(frame.get());
                 auto [it, added] = m_frames.try_emplace(frame.get());
-                if (added) {
-                    it->second.frame = frame;
-                    it->second.id = m_nextFrameId++;
-                }
+                if (added) it->second = SentFrame{frame, m_nextFrameId++, 0};
             }
         }
     }
-    // The next part of @p frame's pixels, if the budget leaves room for one.
+    const int active = t.m_modes.altScreen ? 1 : 0;
+    m_shown = t.m_graphics[active].shownImages(*t.m_active, t.m_cellWidth, t.m_cellHeight);
+    return true;
+}
+
+void StateWriter::writeDrops(std::string& out, Budget& budget)
+{
+    if (m_drops.empty()) return;
+    std::string ids;
+    std::size_t count = 0;
+    for (const std::uint64_t id : m_drops) {
+        if (count > 0 && !fits(out, budget, ids.size() + varintSize(id) + 10)) break;
+        Out(ids).varint(id);
+        ++count;
+    }
+    std::string payload;
+    Out(payload).varint(count);
+    payload += ids;
+    section(out, DropFramesTag, payload);
+    m_imagesWent = true;
+    m_drops.erase(m_drops.begin(), m_drops.begin() + std::ptrdiff_t(count));
+    if (m_drops.empty()) m_dropsBuilding = false;
+    m_imagesPending = m_imagesPending || !m_drops.empty();
+}
+
+void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budget, bool shown)
+{
+    if (m_dropsBuilding) {
+        m_imagesPending = true;
+        return;
+    }
+    const int active = t.m_modes.altScreen ? 1 : 0;
+    const auto shows = [&](int which, std::uint32_t id) { return which == active && m_shown.contains(id); };
+    // The next part of @p f's pixels, if the budget leaves room for one.
     // True once all of them went.
-    const auto sendPart = [&](SentFrame& f) {
-        const std::string_view pixels = pixelsOf(*f.frame);
+    const auto sendPart = [&](SentFrame& f, const ImageFrame& frame) {
+        const std::string_view pixels = pixelsOf(frame);
         if (f.sent == pixels.size()) return true;
-        const std::size_t used = out.size() + 64;
-        const std::size_t room = budget.max > used ? budget.max - used : 0;
-        const std::size_t left = pixels.size() - f.sent;
-        if (room < std::min(left, MinPixelPart)) return false;
-        const std::size_t part = std::min(room, left);
-        std::string payload;
-        Out o(payload);
+        std::string header;
+        Out o(header);
         o.varint(f.id);
         o.varint(f.sent);
         if (f.sent == 0) {
-            o.varint(f.frame->width);
-            o.varint(f.frame->height);
-            o.byte(std::uint8_t(f.frame->format));
+            o.varint(frame.width);
+            o.varint(frame.height);
+            o.byte(std::uint8_t(frame.format));
         }
-        payload.append(pixels.substr(f.sent, part));
-        section(out, FrameTag, payload);
+        const std::size_t used = out.size() + header.size() + SectionSlack;
+        std::size_t room = budget.max > used ? budget.max - used : 0;
+        const std::size_t left = pixels.size() - f.sent;
+        if (room < std::min(left, MinPixelPart)) {
+            // A frame that has nothing else takes a part all the same, so
+            // that the pixels move at any budget.
+            if (budget.anyRow || m_imagesWent) return false;
+            room = std::min(left, MinPixelPart);
+        }
+        const std::size_t part = std::min(room, left);
+        // The pixels go straight into the frame.
+        out.push_back(char(FrameTag));
+        Out(out).varint(header.size() + part);
+        out += header;
+        out.append(pixels.substr(f.sent, part));
         f.sent += part;
+        m_imagesWent = true;
         return f.sent == pixels.size();
     };
-    // One frame after the other: the replica builds one at a time, so the
-    // frame that the last frames began goes on first. One that no image
-    // holds any more ends below, and the next frame starts after that.
-    bool waiting = false;
-    if (m_sending) {
-        if (!held.contains(m_sending)) {
-            waiting = true;
-        } else if (sendPart(m_frames[m_sending])) {
-            m_sending = nullptr;
-        } else {
-            waiting = true;
+    for (;;) {
+        if (!m_transfer) {
+            // The next image whose pixels the replica lacks: one that shows
+            // first, the active screen's first.
+            for (const int which : {active, 1 - active}) {
+                for (const auto& [id, image] : t.m_graphics[which].images()) {
+                    // A frame of no pixels never goes: no writer makes one.
+                    const bool empty = std::any_of(image.frames.begin(), image.frames.end(),
+                                                   [](const FramePtr& frame) { return pixelsOf(*frame).empty(); });
+                    if (empty || complete(image) || (shown && !shows(which, id))) continue;
+                    m_transfer = ImageVersion{which, image};
+                    break;
+                }
+                if (m_transfer) break;
+            }
+            if (!m_transfer) return;
         }
-    }
-    for (const GraphicsStore& store : t.m_graphics) {
-        for (const auto& [id, image] : store.images()) {
-            for (const FramePtr& frame : image.frames) {
-                if (waiting) break;
-                SentFrame& f = m_frames[frame.get()];
-                if (sendPart(f)) continue;
-                waiting = true;
-                if (f.sent > 0) m_sending = frame.get();
+        if (shown && !shows(m_transfer->which, m_transfer->image.id)) return;
+        for (const FramePtr& frame : m_transfer->image.frames) {
+            SentFrame& f = m_frames[frame.get()];
+            if (f.id == 0) f = SentFrame{frame, m_nextFrameId++, 0};
+            if (!sendPart(f, *frame)) {
+                m_imagesPending = true;
+                return;
             }
         }
+        // All of its pixels went: its record goes with the next records.
+        m_done.push_back(std::move(*m_transfer));
+        m_transfer.reset();
     }
-    const auto complete = [this](const Image& image) {
-        return std::all_of(image.frames.begin(), image.frames.end(), [this](const FramePtr& frame) {
-            return m_frames[frame.get()].sent == pixelsOf(*frame).size();
-        });
-    };
+}
+
+void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budget)
+{
     for (int which = 0; which < 2; ++which) {
         const GraphicsStore& store = t.m_graphics[which];
         std::unordered_map<std::uint32_t, std::string>& sent = m_images[which];
-        // An image shows once all of its frames came. One that the replica
-        // has keeps its last record while a new frame of it comes.
+        // An image shows once all of its frames came: the version in the
+        // store, else the newest one whose pixels went. One that the replica
+        // has keeps its record until then.
+        const auto version = [&](std::uint32_t id, const Image& image) -> std::pair<const Image*, ImageVersion*> {
+            if (complete(image)) return {&image, nullptr};
+            for (auto it = m_done.rbegin(); it != m_done.rend(); ++it) {
+                if (it->which == which && it->image.id == id) return {&it->image, &*it};
+            }
+            return {nullptr, nullptr};
+        };
+        std::vector<std::uint32_t> removed;
+        for (const auto& [id, record] : sent) {
+            if (!store.images().contains(id)) removed.push_back(id);
+        }
+        for (const std::uint32_t id : removed) sent.erase(id);
         std::string records;
         std::size_t recordCount = 0;
-        std::unordered_map<std::uint32_t, bool> present;
-        for (const auto& [id, image] : store.images()) {
-            const bool ready = complete(image);
-            if (!ready && !sent.contains(id)) continue;
-            present[id] = true;
-            if (!ready) continue;
+        for (const auto& [id, live] : store.images()) {
+            const auto [image, done] = version(id, live);
+            if (!image) continue;
             std::string record;
             Out o(record);
-            o.varint(image.id);
-            o.varint(image.number);
-            o.byte(std::uint8_t((image.isSixel ? ImageSixel : 0) | (image.anonymous ? ImageAnonymous : 0)
-                                | (image.transient ? ImageTransient : 0)));
-            o.varint(image.width);
-            o.varint(image.height);
-            o.varint(image.frames.size());
-            for (const FramePtr& frame : image.frames) o.varint(m_frames[frame.get()].id);
-            o.varint(image.gaps.size());
-            for (const std::uint32_t gap : image.gaps) o.varint(gap);
-            o.byte(std::uint8_t(image.animation));
-            o.varint(image.maxLoops);
-            o.varint(image.loopsDone);
-            o.varint(image.currentFrame);
-            o.varint(image.sequence);
-            o.varint(image.order);
+            o.varint(image->id);
+            o.varint(image->number);
+            o.byte(std::uint8_t((image->isSixel ? ImageSixel : 0) | (image->anonymous ? ImageAnonymous : 0)
+                                | (image->transient ? ImageTransient : 0)));
+            o.varint(image->width);
+            o.varint(image->height);
+            o.varint(image->frames.size());
+            for (const FramePtr& frame : image->frames) o.varint(m_frames[frame.get()].id);
+            o.varint(image->gaps.size());
+            for (const std::uint32_t gap : image->gaps) o.varint(gap);
+            o.byte(std::uint8_t(image->animation));
+            o.varint(image->maxLoops);
+            o.varint(image->loopsDone);
+            o.varint(image->currentFrame);
+            o.varint(image->stateCommands);
+            o.varint(image->frameCommands);
+            o.varint(image->sequence);
+            o.varint(image->order);
             const auto it = sent.find(id);
-            if (it != sent.end() && it->second == record) continue;
+            if (it != sent.end() && it->second == record) {
+                if (done) done->recorded = true;
+                continue;
+            }
+            if (recordCount > 0 && !fits(out, budget, records.size() + record.size() + 16)) {
+                m_imagesPending = true;
+                break;
+            }
             records += record;
             ++recordCount;
             sent[id] = std::move(record);
-        }
-        std::vector<std::uint32_t> removed;
-        for (auto it = sent.begin(); it != sent.end();) {
-            if (present.contains(it->first)) {
-                ++it;
-                continue;
-            }
-            removed.push_back(it->first);
-            it = sent.erase(it);
+            if (done) done->recorded = true;
         }
         if (recordCount || !removed.empty()) {
             std::string payload(1, char(which));
@@ -1133,12 +1251,13 @@ void StateWriter::writeImages(std::string& out, const Terminal& t, Budget& budge
             o.varint(recordCount);
             payload += records;
             section(out, ImagesTag, payload);
+            m_imagesWent = true;
         }
         // The placements of the images that the replica has.
         std::string placements;
         std::size_t count = 0;
         for (const Placement& p : store.placements()) {
-            if (!present.contains(p.imageId) || (p.parentImage && !present.contains(p.parentImage))) continue;
+            if (!sent.contains(p.imageId) || (p.parentImage && !sent.contains(p.parentImage))) continue;
             Out o(placements);
             encodePlacement(o, p);
             ++count;
@@ -1146,30 +1265,29 @@ void StateWriter::writeImages(std::string& out, const Terminal& t, Budget& budge
         std::string payload(1, char(which));
         Out(payload).varint(count);
         payload += placements;
-        if (payload != m_placements[which]) {
-            section(out, PlacementsTag, payload);
-            m_placements[which] = std::move(payload);
-        }
-    }
-    // Last: the records above no longer name them.
-    std::vector<std::uint64_t> dropped;
-    for (auto it = m_frames.begin(); it != m_frames.end();) {
-        if (held.contains(it->first)) {
-            ++it;
+        if (payload == m_placements[which]) continue;
+        if (!fits(out, budget, payload.size())) {
+            m_imagesPending = true;
             continue;
         }
-        if (it->second.sent > 0) dropped.push_back(it->second.id);
-        if (it->first == m_sending) m_sending = nullptr;
-        it = m_frames.erase(it);
+        section(out, PlacementsTag, payload);
+        m_imagesWent = true;
+        m_placements[which] = std::move(payload);
     }
-    if (!dropped.empty()) {
-        std::string payload;
-        Out o(payload);
-        o.varint(dropped.size());
-        for (const std::uint64_t id : dropped) o.varint(id);
-        section(out, DropFramesTag, payload);
+    // A version is done once the replica has its record, once the store's
+    // own went whole, and once a newer version of its image replaced it.
+    std::vector<ImageVersion> keep;
+    for (std::size_t i = 0; i < m_done.size(); ++i) {
+        const ImageVersion& v = m_done[i];
+        const bool newer = std::any_of(m_done.begin() + std::ptrdiff_t(i) + 1, m_done.end(), [&v](const ImageVersion& other) {
+            return other.which == v.which && other.image.id == v.image.id;
+        });
+        const auto& images = t.m_graphics[v.which].images();
+        const auto live = images.find(v.image.id);
+        if (v.recorded || newer || live == images.end() || complete(live->second)) continue;
+        keep.push_back(std::move(m_done[i]));
     }
-    m_imagesPending = waiting;
+    m_done = std::move(keep);
 }
 
 // ---------------------------------------------------------------- reader ---
@@ -1295,12 +1413,16 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
     std::vector<std::pair<bool, RegionScroll>> scrolled;
     bool statusChanged = false;
     bool contextsChanged = false;
+    bool touched = false;
     m_screenChanged = false;
     while (!in.done()) {
         const std::uint8_t tag = in.byte();
         const std::string_view payload = in.bytes(std::size_t(in.bounded(frame.size())));
         if (!in.ok()) return fail("the state frame is cut short");
         In p(payload);
+        // Pixels that come for an image that does not show yet change
+        // nothing that the replica shows.
+        if (tag != FrameTag && tag != DropFramesTag) touched = true;
         switch (tag) {
         case ModesTag: {
             Modes modes = t.m_modes;
@@ -1753,6 +1875,18 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             t.m_extraCursors = std::move(cursors);
             break;
         }
+        case ImagesResetTag: {
+            // A writer that starts over: nothing that it named before stays.
+            if (!p.done()) return fail("the state frame has a bad images reset");
+            m_frames.clear();
+            m_frameBytes = 0;
+            m_building = 0;
+            for (int which = 0; which < 2; ++which) {
+                t.m_graphics[which].clear();
+                m_animations[which].clear();
+            }
+            break;
+        }
         case FrameTag: {
             const std::uint64_t id = p.varint();
             const std::uint64_t offset = p.varint();
@@ -1761,8 +1895,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 const std::uint64_t width = p.bounded(AfterglowProto::GraphicsMaxSide);
                 const std::uint64_t height = p.bounded(AfterglowProto::GraphicsMaxSide);
                 const std::uint8_t format = p.byte();
-                // The writer finishes each frame before it starts the next,
-                // and names each once.
+                // The writer finishes or drops each frame before it starts
+                // the next, and names each once.
                 if (!p.ok() || width == 0 || height == 0 || format > std::uint8_t(PixelFormat::IndexedAlpha)
                     || m_building != 0 || m_frames.contains(id)) {
                     return fail("the state frame has a bad image frame");
@@ -1772,8 +1906,14 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 frame->height = std::uint32_t(height);
                 frame->format = PixelFormat(format);
                 const std::size_t size = std::size_t(width) * std::size_t(height) * bytesPerPixel(frame->format);
-                (frame->indexed() ? frame->indices : frame->rgba).reserve(size);
+                // What both screens show and what comes for them: a writer
+                // keeps no more.
+                if (m_frameBytes + size > 4 * std::max<std::size_t>(t.m_options.graphicsQuota, GraphicsStore::DefaultQuota)) {
+                    return fail("the state frame has more image frames than the quota takes");
+                }
+                frame->pixels().reserve(size);
                 m_frames[id] = ReceivedFrame{std::move(frame), size, 0};
+                m_frameBytes += size;
                 m_building = id;
             } else if (id != m_building) {
                 return fail("the state frame continues an image frame that it did not start");
@@ -1783,7 +1923,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             if (!p.ok() || offset != f.received || part.empty() || part.size() > f.size - f.received) {
                 return fail("the state frame has a bad part of an image frame");
             }
-            std::vector<std::uint8_t>& bytes = f.frame->indexed() ? f.frame->indices : f.frame->rgba;
+            std::vector<std::uint8_t>& bytes = f.frame->pixels();
             bytes.insert(bytes.end(), part.begin(), part.end());
             f.received += part.size();
             if (f.complete()) m_building = 0;
@@ -1816,37 +1956,78 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 const std::uint64_t frames = p.bounded(GraphicsStore::MaxFrames);
                 for (std::uint64_t k = 0; k < frames && p.ok(); ++k) {
                     const auto it = m_frames.find(p.varint());
-                    if (!p.ok() || it == m_frames.end() || !it->second.complete()) {
+                    // A writer keeps each frame of an image at its size.
+                    if (!p.ok() || it == m_frames.end() || !it->second.complete() || it->second.frame->width != image.width
+                        || it->second.frame->height != image.height) {
                         return fail("the state frame has an image with a frame that did not come");
                     }
                     image.frames.push_back(it->second.frame);
                 }
+                // One gap for each frame, of what a command can give (z=, an
+                // int): the replica's animation reads the gap of each frame.
                 const std::uint64_t gaps = p.bounded(GraphicsStore::MaxFrames);
-                for (std::uint64_t k = 0; k < gaps && p.ok(); ++k) image.gaps.push_back(std::uint32_t(p.bounded(0xffffffffu)));
+                for (std::uint64_t k = 0; k < gaps && p.ok(); ++k) image.gaps.push_back(std::uint32_t(p.bounded(INT_MAX)));
                 const std::uint8_t state = p.byte();
                 image.maxLoops = std::uint32_t(p.bounded(0xffffffffu));
-                const Animation sent{Image::Animation(state), std::uint32_t(p.bounded(0xffffffffu)),
-                                     std::size_t(p.bounded(frames ? frames - 1 : 0))};
-                image.sequence = p.varint();
+                const std::uint32_t loopsDone = std::uint32_t(p.bounded(0xffffffffu));
+                const std::size_t currentFrame = std::size_t(p.bounded(frames ? frames - 1 : 0));
+                const Animation sent{std::uint32_t(p.bounded(0xffffffffu)), std::uint32_t(p.bounded(0xffffffffu)), p.varint()};
+                image.sequence = sent.sequence;
                 image.order = p.varint();
-                if (!p.ok() || (flags & ~(ImageSixel | ImageAnonymous | ImageTransient))
+                if (!p.ok() || frames == 0 || gaps != frames || (flags & ~(ImageSixel | ImageAnonymous | ImageTransient))
                     || state > std::uint8_t(Image::Animation::Running)) {
                     return fail("the state frame has a bad image");
                 }
                 image.isSixel = flags & ImageSixel;
                 image.anonymous = flags & ImageAnonymous;
                 image.transient = flags & ImageTransient;
-                // The replica's clock moves the animation: what the writer
-                // changed, a command of the program changed.
+                image.stateCommands = sent.stateCommands;
+                image.frameCommands = sent.frameCommands;
+                // The replica's clock moves the animation. It takes the
+                // writer's state and frame for a command of the program, and
+                // all of the writer's animation for an image sent again.
                 const auto old = store.m_images.find(image.id);
                 const auto last = animations.find(image.id);
-                const bool known = old != store.m_images.end() && last != animations.end();
-                const bool restart = !known || last->second.currentFrame != sent.currentFrame || last->second.state != sent.state;
-                image.animation = !known || last->second.state != sent.state ? sent.state : old->second.animation;
-                image.loopsDone = !known || last->second.loopsDone != sent.loopsDone ? sent.loopsDone : old->second.loopsDone;
-                image.currentFrame = restart || old->second.currentFrame >= image.frames.size() ? sent.currentFrame
-                                                                                                : old->second.currentFrame;
-                image.frameShownAtMs = restart ? 0 : old->second.frameShownAtMs;
+                const bool known = old != store.m_images.end() && last != animations.end() && last->second.sequence == sent.sequence;
+                if (!known) {
+                    image.animation = Image::Animation(state);
+                    image.loopsDone = loopsDone;
+                    image.currentFrame = currentFrame;
+                    image.frameShownAtMs = 0;
+                } else {
+                    const Image& before = old->second;
+                    // The frame that the replica shows, in the frames as they
+                    // are now: one that a delete moved keeps showing, one
+                    // that an edit replaced keeps its place, and one that
+                    // went gives its place to the next, as the writer's
+                    // store does.
+                    const std::size_t shownIndex = std::min(before.currentFrame, before.frames.size() - 1);
+                    const auto found = std::find(image.frames.begin(), image.frames.end(), before.frames[shownIndex]);
+                    std::size_t current = shownIndex;
+                    bool restart = false;
+                    if (found != image.frames.end()) {
+                        current = std::size_t(found - image.frames.begin());
+                    } else if (image.frames.size() != before.frames.size()) {
+                        current = std::min(shownIndex, image.frames.size() - 1);
+                        restart = true;
+                    }
+                    if (sent.frameCommands != last->second.frameCommands && currentFrame != current) {
+                        current = currentFrame;
+                        restart = true;
+                    }
+                    if (sent.stateCommands != last->second.stateCommands) {
+                        image.animation = Image::Animation(state);
+                        image.loopsDone = loopsDone;
+                        // A running animation keeps its clock when only its
+                        // mode changes.
+                        restart = restart || (before.animation == Image::Animation::Stopped && image.animation != Image::Animation::Stopped);
+                    } else {
+                        image.animation = before.animation;
+                        image.loopsDone = before.loopsDone;
+                    }
+                    image.currentFrame = current;
+                    image.frameShownAtMs = restart ? 0 : before.frameShownAtMs;
+                }
                 animations[image.id] = sent;
                 store.m_images[image.id] = std::move(image);
             }
@@ -1854,6 +2035,9 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 return fail("the state frame has bad images");
             }
             store.indexVirtual();
+            // An image that a program sent, or changed, on the screen that
+            // shows: output, as a local pane's scroll-on-output takes it.
+            if (which == (t.m_modes.altScreen ? 1 : 0) && (removed > 0 || count > 0)) m_screenChanged = true;
             break;
         }
         case PlacementsTag: {
@@ -1867,7 +2051,9 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 Placement pl;
                 pl.imageId = std::uint32_t(p.bounded(0xffffffffu));
                 pl.placementId = std::uint32_t(p.bounded(0xffffffffu));
-                pl.row = p.varint();
+                // A stable row id, which a placement multiplies by the cell
+                // height: past this, the arithmetic of a row overflows.
+                pl.row = p.bounded(std::uint64_t(INT64_MAX) / 65536);
                 for (int* v : {&pl.col, &pl.offsetX, &pl.offsetY, &pl.srcX, &pl.srcY, &pl.srcW, &pl.srcH, &pl.cols, &pl.rows}) *v = value();
                 pl.z = std::int32_t(value());
                 pl.parentImage = std::uint32_t(p.bounded(0xffffffffu));
@@ -1887,6 +2073,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             if (!p.ok() || !p.done()) return fail("the state frame has bad image placements");
             store.m_placements = std::move(placements);
             store.indexVirtual();
+            if (which == (t.m_modes.altScreen ? 1 : 0)) m_screenChanged = true;
             break;
         }
         case CellSizeTag: {
@@ -1902,7 +2089,10 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
                 const std::uint64_t id = p.varint();
                 if (id == m_building) m_building = 0;
-                m_frames.erase(id);
+                if (const auto it = m_frames.find(id); it != m_frames.end()) {
+                    m_frameBytes -= it->second.size;
+                    m_frames.erase(it);
+                }
             }
             if (!p.ok() || !p.done()) return fail("the state frame drops bad image frames");
             break;
@@ -1938,7 +2128,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
     t.m_active = active;
     if (statusChanged) t.m_host.programStatusChanged();
     if (contextsChanged) t.m_host.contextChanged();
-    t.touch();
+    if (touched) t.touch();
     return true;
 }
 

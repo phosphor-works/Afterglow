@@ -470,6 +470,7 @@ private:
 
 void GraphicsStore::handle(std::string_view payload, Context& ctx)
 {
+    ++m_changes;
     if (dispatch(payload, ctx)) {
         settle();
     }
@@ -931,7 +932,7 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
         return false;
     }
     const std::size_t pixels = std::size_t(out.width) * out.height;
-    const std::size_t kept = out.indexed() ? out.indices.size() : out.rgba.size();
+    const std::size_t kept = out.pixels().size();
     if (pixels * 4 > MaxPayload || kept != pixels * bytesPerPixel(out.format)) {
         error = "EINVAL:invalid decoded image extent";
         return false;
@@ -1534,11 +1535,15 @@ void GraphicsStore::animate(const Command& cmd, Context& ctx)
     if (cmd.r > 0 && std::size_t(cmd.r) <= img->frames.size() && cmd.z != 0) {
         img->gaps[std::size_t(cmd.r - 1)] = cmd.z < 0 ? 0 : std::uint32_t(cmd.z);
     }
-    if (cmd.c > 0 && std::size_t(cmd.c) <= img->frames.size() && std::size_t(cmd.c - 1) != img->currentFrame) {
-        img->currentFrame = std::size_t(cmd.c - 1);
-        img->frameShownAtMs = 0; // the next tick starts the clock
+    if (cmd.c > 0 && std::size_t(cmd.c) <= img->frames.size()) {
+        ++img->frameCommands;
+        if (std::size_t(cmd.c - 1) != img->currentFrame) {
+            img->currentFrame = std::size_t(cmd.c - 1);
+            img->frameShownAtMs = 0; // the next tick starts the clock
+        }
     }
     if (cmd.s != 0) {
+        ++img->stateCommands;
         const Image::Animation before = img->animation;
         switch (cmd.s) {
         case 1: img->animation = Image::Animation::Stopped; break;
@@ -1659,6 +1664,7 @@ bool GraphicsStore::advanceAnimations(const Screen& screen, int cellWidth, int c
             // Catch up without drifting, but never fall far behind real time.
             img.frameShownAtMs = (nowMs - img.frameShownAtMs > 1000) ? nowMs : img.frameShownAtMs + gap;
             changed = true;
+            ++m_changes;
         }
         if (!settled) {
             // More than a whole cycle behind (a late tick): show the current
@@ -2076,6 +2082,7 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
 
 void GraphicsStore::clear()
 {
+    ++m_changes;
     m_images.clear();
     m_placements.clear();
     m_virtual.clear();
@@ -2101,7 +2108,11 @@ std::size_t GraphicsStore::totalBytes() const
 void GraphicsStore::enforceQuota(std::uint32_t keep)
 {
     std::size_t total = totalBytes();
-    if (total <= m_quota && m_images.size() <= MaxImages) {
+    std::size_t frames = 0;
+    for (const auto& [id, img] : m_images) {
+        frames += img.frames.size();
+    }
+    if (total <= m_quota && m_images.size() <= MaxImages && frames <= MaxStoreFrames) {
         return;
     }
     // One pass: rank every image once, unused before used, transient before
@@ -2118,11 +2129,12 @@ void GraphicsStore::enforceQuota(std::uint32_t keep)
         std::uint64_t sequence;
         std::uint32_t id;
         std::size_t bytes;
+        std::size_t frames;
     };
     std::vector<Candidate> order;
     order.reserve(m_images.size());
     for (const auto& [id, img] : m_images) {
-        if (id != keep) order.push_back({used.contains(id), img.transient, img.sequence, id, img.byteSize()});
+        if (id != keep) order.push_back({used.contains(id), img.transient, img.sequence, id, img.byteSize(), img.frames.size()});
     }
     std::sort(order.begin(), order.end(), [](const Candidate& a, const Candidate& b) {
         if (a.used != b.used) return !a.used;
@@ -2132,8 +2144,9 @@ void GraphicsStore::enforceQuota(std::uint32_t keep)
     std::unordered_set<std::uint32_t> evicted;
     std::size_t count = m_images.size();
     for (const Candidate& c : order) {
-        if (total <= m_quota && count <= MaxImages) break;
+        if (total <= m_quota && count <= MaxImages && frames <= MaxStoreFrames) break;
         total -= c.bytes;
+        frames -= c.frames;
         --count;
         evicted.insert(c.id);
     }
@@ -2172,6 +2185,7 @@ bool GraphicsStore::evictUnusedImage()
 
 void GraphicsStore::settle()
 {
+    ++m_changes;
     pruneOrphans();
     // Internal and anonymous images go with their last placement: nothing can
     // name them to show them again. Images with an id or a number stay.

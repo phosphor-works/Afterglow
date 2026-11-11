@@ -138,6 +138,20 @@ struct QuietHost : AfterglowVt::ITerminalHost
     void writeToPty(std::string_view) override {}
 };
 
+/// As a window's session pane does after each frame: the replica animates
+/// its images on its own clock, and the renderer draws them.
+void showReplica(AfterglowVt::Terminal& replica)
+{
+    for (const std::uint64_t now : {std::uint64_t(1000), std::uint64_t(1100), std::uint64_t(5000)}) {
+        (void)replica.advanceAnimations(now);
+    }
+    const auto placements = replica.graphics().visible(replica.screen(), 8, 16, 1);
+    for (const auto& placement : replica.graphics().placements()) {
+        if (placement.isVirtual) (void)replica.graphics().placeholderSlice(placement.imageId, 0, 0, 0, 0, 0, 8, 16);
+    }
+    (void)placements;
+}
+
 /// @p frame to the StateReader of a fresh replica, as a window applies what a
 /// session sends. A refused frame must leave the reader able to take the first
 /// frame of a writer that starts over, since that is how a window recovers
@@ -151,6 +165,7 @@ void checkStateFrame(std::string_view frame, int cols, int rows, std::size_t scr
     AfterglowVt::StateReader reader;
     std::string error;
     if (reader.apply(replica, frame, &error)) {
+        showReplica(replica);
         return;
     }
     QuietHost sourceHost;
@@ -166,6 +181,26 @@ void checkStateFrame(std::string_view frame, int cols, int rows, std::size_t scr
     if (replica.text(Scope::Screen) != source.text(Scope::Screen)) {
         __builtin_trap();
     }
+}
+
+/// The frames of @p source in a budget of @p budget bytes, to a replica, as a
+/// session's daemon sends them: each frame that a writer makes applies.
+void checkWriter(const AfterglowVt::Terminal& source, std::size_t budget)
+{
+    QuietHost replicaHost;
+    AfterglowVt::TerminalOptions opts = source.options();
+    AfterglowVt::Terminal replica(20, 8, replicaHost, opts);
+    AfterglowVt::StateWriter writer;
+    AfterglowVt::StateReader reader;
+    for (int guard = 0; guard < 4096; ++guard) {
+        const std::string frame = writer.update(source, budget);
+        if (frame.empty() && !writer.pending()) break;
+        std::string error;
+        if (!reader.apply(replica, frame, &error)) {
+            __builtin_trap();
+        }
+    }
+    showReplica(replica);
 }
 
 } // namespace
@@ -339,5 +374,11 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     if (start < size) {
         t.feed(std::string_view(reinterpret_cast<const char*>(data + start), size - start));
     }
+    // What the terminal holds, to a replica in frames: small ones with
+    // config's scrollback bits, so that rows, history and images wait. A
+    // screen of thousands of cells at that budget takes thousands of frames,
+    // too slow an input to fuzz.
+    const bool smallScreen = std::size_t(t.cols()) * std::size_t(t.rows()) <= 4096;
+    checkWriter(t, (config & 0x18) && smallScreen ? 4096 : std::size_t(1) << 20);
     return 0;
 }

@@ -366,6 +366,8 @@ public:
 
     /// Image state (kitty, sixel, iTerm2) of the active screen.
     const GraphicsStore& graphics() const noexcept { return m_graphics[m_modes.altScreen ? 1 : 0]; }
+    /// Image state of the primary screen, or of the alternate one.
+    const GraphicsStore& graphics(bool alternate) const noexcept { return m_graphics[alternate ? 1 : 0]; }
 
     /// What programs report doing (OSC 7501). Records belong to the terminal,
     /// not a screen.

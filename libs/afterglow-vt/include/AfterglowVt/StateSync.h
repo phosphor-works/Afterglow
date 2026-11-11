@@ -11,9 +11,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // The state of a terminal, carried to a replica in another process: the
@@ -39,8 +41,9 @@
 // the modes, the colors, the cursor shape, the title and the working
 // directory, the extra cursors, the OSC 133 marks and semantic regions, the
 // program status, the shell contexts, the region scrolls since the last
-// frame, and the images with their placements: the pixels of each frame go
-// once, in parts, and an image shows once all of its frames came.
+// frame, the cell size, and the images with their placements: the pixels of
+// each frame go once, in parts, and an image shows once all of its frames
+// came.
 
 namespace AfterglowVt {
 
@@ -95,7 +98,10 @@ public:
     /// they need, wait for the next frames past @p maxBytes. The first row
     /// of a frame goes past it by its own bytes at most: definitions too
     /// many for one frame go ahead of their row in frames of their own. The
-    /// other sections are not in the budget, and go whole: together they
+    /// images are in the budget too: the pixels of their frames, their
+    /// records, their placements and the frames that went, each of which
+    /// goes past it by its own bytes at most when the frame has nothing else.
+    /// The other sections are not in the budget, and go whole: together they
     /// are under 1 MiB (the bounds of the status records, the contexts, the
     /// semantic regions, the extra cursors, the title and the scrolls).
     /// @p scrolls: the region scrolls since the last frame, which the first
@@ -146,29 +152,64 @@ private:
     bool writeRows(std::string& out, const Terminal& terminal, int which, ScreenState& state, Budget& budget, bool changed);
     /// The history rows that the replica lacks, within @p budget.
     void writeHistory(std::string& out, const Terminal& terminal, int which, ScreenState& state, Budget& budget);
-    /// The images of both screens: the pixels of each frame once, in parts
-    /// within @p budget, then the records of the images whose frames the
-    /// replica has, their placements, and the frames that no image holds
-    /// any more. @p changed: the terminal changed since the last frame.
-    void writeImages(std::string& out, const Terminal& terminal, Budget& budget, bool changed);
+    /// Before the images of a frame: what the replica must drop, and the
+    /// frames that are new. False when nothing of the images is to send:
+    /// neither store changed (GraphicsStore::changes()) and nothing waits.
+    bool prepareImages(std::string& out, const Terminal& terminal, bool first);
+    /// The pixels of the frames of one image after another, in parts within
+    /// @p budget. @p shown: only those of an image that shows on the active
+    /// screen, which go before the history; the others go after it.
+    void writePixels(std::string& out, const Terminal& terminal, Budget& budget, bool shown);
+    /// The records of the images whose frames the replica has, those that
+    /// went, and the placements of the images that the replica has.
+    void writeRecords(std::string& out, const Terminal& terminal, Budget& budget);
+    /// The frames that the replica got a part of and no image holds any
+    /// more: before any frame starts, as the replica builds one at a time.
+    void writeDrops(std::string& out, Budget& budget);
+    /// Whether the pixels of all of @p image's frames went.
+    bool complete(const Image& image) const;
+    /// Whether an item of @p bytes fits the frame: within @p budget, or
+    /// as the first of the frame.
+    bool fits(const std::string& out, const Budget& budget, std::size_t bytes) const;
 
-    /// A frame of an image as the replica has it. A frame is immutable once
-    /// an image holds it, so its address names it while the writer holds it.
+    /// A frame of an image as the replica has it, by its address while it
+    /// lives: a frame is immutable once an image holds it. The writer keeps
+    /// it alive only while it sends it (Transfer).
     struct SentFrame
     {
-        std::shared_ptr<const ImageFrame> frame;
+        std::weak_ptr<const ImageFrame> frame;
         std::uint64_t id = 0;
         std::size_t sent = 0; ///< its bytes that went
     };
     std::unordered_map<const ImageFrame*, SentFrame> m_frames;
     std::uint64_t m_nextFrameId = 1;
-    /// The frame whose first parts went and whose others wait: the replica
-    /// builds one frame at a time, so it goes on before any other starts.
-    const ImageFrame* m_sending = nullptr;
+    /// A version of an image whose frames go, one image at a time: the
+    /// replica builds one frame at a time. It holds the frames, so that the
+    /// version finishes, and shows, also when the program replaces it while
+    /// its pixels go: an image that a program sends again faster than its
+    /// pixels go still shows, at the pace that the channel takes.
+    struct ImageVersion
+    {
+        int which = 0;
+        Image image;
+        bool recorded = false; ///< the replica has its record
+    };
+    std::optional<ImageVersion> m_transfer;
+    /// Versions whose pixels went and whose records wait for room.
+    std::vector<ImageVersion> m_done;
+    /// The ids of frames that the replica drops, which wait for room.
+    std::vector<std::uint64_t> m_drops;
+    /// A frame that the replica builds is among m_drops: no frame starts
+    /// before they went.
+    bool m_dropsBuilding = false;
     /// The record of each image of a screen as the replica has it.
     std::unordered_map<std::uint32_t, std::string> m_images[2];
     std::string m_placements[2]; ///< the placements of each screen as the replica has them
-    bool m_imagesPending = false; ///< the pixels of a frame wait for a later frame
+    /// The images that show on the active screen, at the last prepareImages().
+    std::unordered_set<std::uint32_t> m_shown;
+    std::uint64_t m_storeChanges[2] = {~std::uint64_t(0), ~std::uint64_t(0)};
+    bool m_imagesPending = false; ///< pixels, records, placements or drops wait for a later frame
+    bool m_imagesWent = false; ///< this frame has an image section
 
     ScreenState m_screens[2];
     std::string m_modes;
@@ -192,7 +233,10 @@ public:
     /// Applies @p frame to @p replica, a terminal that only this reader
     /// changes. False with @p error for a frame that breaks the codec or does
     /// not fit what the replica has: the replica then needs a frame from a
-    /// writer that was reset. The replica's host hears of the scrolls, the
+    /// writer that was reset, which starts the images over. The frames of
+    /// images that the reader keeps are bounded by four times the replica's
+    /// quota (TerminalOptions::graphicsQuota): what both screens show, and
+    /// what comes for them. The replica's host hears of the scrolls, the
     /// status and the contexts of a frame once all of it applied, and of
     /// none for a frame that fails.
     bool apply(Terminal& replica, std::string_view frame, std::string* error);
@@ -238,7 +282,7 @@ private:
     };
 
     /// A frame of an image that comes in parts (FrameTag). The writer
-    /// finishes each frame before it starts the next.
+    /// finishes each frame, or drops it, before it starts the next.
     struct ReceivedFrame
     {
         std::shared_ptr<ImageFrame> frame;
@@ -246,20 +290,22 @@ private:
         std::size_t received = 0;
         bool complete() const { return received == size; }
     };
-    /// The animation of an image as the writer last sent it. The replica
-    /// runs the animation on its own clock: it takes a value only when the
-    /// writer's changed, as a command of the program changes it.
+    /// What the writer last sent of an image's animation. The replica runs
+    /// the animation on its own clock: it takes the state or the current
+    /// frame only for a command of the program (Image::stateCommands and
+    /// frameCommands), and starts over for an image sent again (sequence).
     struct Animation
     {
-        Image::Animation state = Image::Animation::Stopped;
-        std::uint32_t loopsDone = 0;
-        std::size_t currentFrame = 0;
+        std::uint32_t stateCommands = 0;
+        std::uint32_t frameCommands = 0;
+        std::uint64_t sequence = 0;
     };
 
     ScreenState m_screens[2];
     Epoch m_epochs[2];
     bool m_screenChanged = false;
     std::unordered_map<std::uint64_t, ReceivedFrame> m_frames;
+    std::size_t m_frameBytes = 0; ///< the pixels of m_frames
     std::uint64_t m_building = 0; ///< the frame whose parts still come, or 0
     std::unordered_map<std::uint32_t, Animation> m_animations[2];
 };
