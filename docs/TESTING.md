@@ -228,7 +228,7 @@ A fuzz build does not build `aglow`, because a static program cannot use the san
 
 | Target | Input |
 | --- | --- |
-| `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. One control record sends the rest of the input as a state frame to the reader of a replica terminal. At the end, the frames of the terminal go to a replica, which animates and draws its images. |
+| `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. One control record sends the rest of the input as a state frame to the reader of a replica terminal. A replica follows the terminal with a state frame after each control record. At the end it must show the text and the images of the terminal, and the writer must catch up. |
 | `afterglow_protofuzz` | The protocol readers for remote input. The first byte selects the reader. |
 | `afterglow_imagefuzz` | An image file to the patched stb_image and the GIF reader of `aglow`, which `aglow` and `afterglow-mux` share. |
 | `afterglow_muxfuzz` | The host calls, the events and the input of the attach stream of `afterglow-mux`. The first byte selects the reader. The state frames of panes are in `afterglow_vtfuzz`. |
@@ -683,7 +683,7 @@ ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|M
 | `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, and session names. The keys and fields that belong to the protocol version. The bytes of the attach stream and of each host call, and the frames and calls that its decoders refuse. |
 | `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own. The cases are sessions, the environment of a pane, the answers to queries, the refused control calls, and when the daemon exits. |
 | `Mux.MuxAttach.*` | `afterglow_mux_tests` | A window of a session, played without Qt. The cases are listed below the table. |
-| `Mux.MuxImageDecoder.*` | `afterglow_mux_tests` | The image decoder of `afterglow-mux`: the pixels of a PNG with alpha, a JPEG, the first frame of a GIF and a BMP. The formats and the files that it refuses (WebP, PNM and TGA, a cut PNG, a side of 10,001 pixels, Apple's CgBI PNG), and a side of 10,000 pixels, which it decodes. A decoder that is missing, ends, or does not answer by its deadline. A decode that passes its deadline or that the pane cancels. |
+| `Mux.MuxImageDecoder.*` | `afterglow_mux_tests` | The image decoder of `afterglow-mux`: the pixels of a PNG with alpha, a JPEG, the first frame of a GIF and a BMP. The formats and the files that it refuses (WebP, PNM and TGA, a cut PNG, a side of 10,001 pixels, Apple's CgBI PNG), and a side of 10,000 pixels, which it decodes. A decoder that is missing, ends, or does not answer by its deadline. A decode that passes its deadline or that the pane cancels. A pane that closes while its request waits leaves the same server to the other panes. |
 | `Mux.MuxPane.*` | `afterglow_mux_tests` | A pane of `afterglow-mux` while its program's image decodes. The daemon's calls return at once, and a resize that waited reaches the next frame. A pane that closes ends its decode at once. |
 | `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`). A replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are listed below the table. |
 | `MuxCommandTest.*` | `afterglow_mux_command_tests` | The commands of `afterglow mux`. The cases are listed below the table. |
@@ -717,8 +717,9 @@ The `StateSync.*` tests cover these cases:
 - An animation runs on the replica's clock: output and a new frame keep its step. A command that stops it, jumps to a frame or plays it again reaches the replica, also when it changes no value of the writer's store.
 - A deleted frame keeps the frame that shows, and a new image under an id starts its animation over
 - An image that a program sends again faster than its pixels go still shows
-- Many images, a command to each of them, and the frames that go when they go, all in state frames within the budget
-- A transfer that ends drops the frame that the replica builds, also one that another image still holds, and a clear that replaces an image ends its transfer
+- Many images, a command to each of them, and the frames that go when they go, all in state frames within the budget and one item more
+- A transfer that ends drops the frame that the replica builds, also one that another image still holds.
+- A clear that replaces an image ends its transfer.
 - A reader takes a writer that starts over: the images of the old writer go
 - Bad image sections, each to a reader of its own, which refuses them
 - The random runs place, animate and delete images and sixels too, also images larger than a state frame, between state frames

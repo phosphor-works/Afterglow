@@ -10381,6 +10381,17 @@ TEST_F(NativeWindow, AMuxSessionsAnimationRunsInTheWindow) {
     // Both frames show in turn, without output.
     ASSERT_TRUE(waitFor([&] { return frame() == std::optional<std::size_t>(1); }, 5000));
     ASSERT_TRUE(waitFor([&] { return frame() == std::optional<std::size_t>(0); }, 5000));
+    // In a tab that nobody sees, it waits: no frame of it moves. Once the
+    // switch ends, the window tells the pane.
+    ASSERT_TRUE(shown->runAction(pane, Action::NewTab));
+    ASSERT_TRUE(waitFor([&] { return !shown->tabSwitching(); }));
+    drain(100);
+    const std::optional<std::size_t> hidden = frame();
+    drain(400);
+    EXPECT_EQ(frame(), hidden);
+    // Back in sight, it runs again.
+    ASSERT_TRUE(shown->runAction(shown->focusedPane(), Action::PreviousTab));
+    ASSERT_TRUE(waitFor([&] { return frame() != hidden; }, 5000));
     // The program stops it: the frame that shows stays.
     ASSERT_TRUE(pane->sendInput("printf '\\033_Ga=a,i=5,s=1,q=2\\033\\\\'\n"));
     ASSERT_TRUE(waitFor([&] {

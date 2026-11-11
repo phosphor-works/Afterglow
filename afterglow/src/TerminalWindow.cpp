@@ -524,12 +524,12 @@ void TerminalWindow::bindPane(Pane* pane)
         // A frame of an animated image changes no text: they stay. Read only
         // for the panes that need it: it takes the terminal's lock.
         const bool urlPane = m_urlMode.active && m_urlMode.generation && pane == m_urlMode.pane;
-        const bool inputPaneChanged = pane == inputPane(m_focused);
-        const std::uint64_t text = urlPane || inputPaneChanged ? pane->withTerminal([](Terminal& t) { return t.textGeneration(); }) : 0;
+        const bool isInputPane = pane == inputPane(m_focused);
+        const std::uint64_t text = urlPane || isInputPane ? pane->withTerminal([](Terminal& t) { return t.textGeneration(); }) : 0;
         if (urlPane && text != m_urlMode.generation) stopUrlMode();
         // The input method reads the text again once per frame, not per
         // output batch, and only when the text changed.
-        if (inputPaneChanged && (pane != m_inputMethodPane || text != m_inputMethodText)) {
+        if (isInputPane && (pane != m_inputMethodPane || text != m_inputMethodText)) {
             m_inputMethodPane = pane;
             m_inputMethodText = text;
             m_inputMethodDirty = true;
@@ -2656,21 +2656,23 @@ bool TerminalWindow::paneSeen(const Pane* pane, const std::vector<Pane*>& cards)
 void TerminalWindow::updatePaneVisibility()
 {
     const std::vector<Pane*> cards = overviewCards();
+    const bool shows = isExposed() && windowState() != Qt::WindowMinimized;
     for (std::size_t i = 0; i < m_tabs.size(); ++i) {
         const SplitTree* tree = m_tabs[i]->splits.get();
         if (!tree) continue;
+        // The tab that a switch leaves is drawn until the switch ends: its
+        // animations run on, while the window shows.
+        const bool leaving = shows && m_tabTransition.progress.isAnimating() && m_tabs[i]->id == m_tabTransition.from;
         tree->forEachPane([&](Pane* p, const QRect&) {
             const bool visible = paneSeen(p, cards);
-            // The tab that a switch leaves is drawn until the switch ends:
-            // its animations run on.
-            p->setSeen(visible || paneDrawn(p));
+            p->setSeen(visible || leaving);
             // A session pane's replica must not answer its program: the
             // daemon's terminal answers the program's own queries.
             if (p->isSessionPane()) p->setSessionVisible(visible);
             else p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
             // An overlay shows where its host does, on a card too.
             if (PaneOverlay* overlay = p->overlay()) {
-                overlay->pane()->setSeen(visible || paneDrawn(p));
+                overlay->pane()->setSeen(visible || leaving);
                 overlay->pane()->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
             }
         });
