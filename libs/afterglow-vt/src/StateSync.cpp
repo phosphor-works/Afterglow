@@ -1085,20 +1085,7 @@ bool StateWriter::prepareImages(std::string& out, const Terminal& t, bool first)
         const auto it = images.find(v.image.id);
         return it == images.end() || it->second.order != v.image.order;
     };
-    if (m_transfer && gone(*m_transfer)) {
-        // The frame that the replica builds goes, also when another image
-        // holds it still (a sixel that a kitty id moved): its entry goes, so
-        // that it starts over under a new id. No frame starts before the
-        // replica dropped it.
-        for (const FramePtr& frame : m_transfer->image.frames) {
-            const auto it = m_frames.find(frame.get());
-            if (it == m_frames.end() || it->second.sent == 0 || it->second.sent == pixelsOf(*frame).size()) continue;
-            m_drops.insert(m_drops.begin(), it->second.id);
-            m_dropsBuilding = true;
-            m_frames.erase(it);
-        }
-        m_transfer.reset();
-    }
+    if (m_transfer && gone(*m_transfer)) endTransfer();
     std::erase_if(m_done, gone);
     // The frames that went: no image and no version holds them. The
     // replica drops those that it got pixels of. Only the transfer's frames
@@ -1123,6 +1110,22 @@ bool StateWriter::prepareImages(std::string& out, const Terminal& t, bool first)
     const int active = t.m_modes.altScreen ? 1 : 0;
     m_shown = t.m_graphics[active].shownImages(*t.m_active, t.m_cellWidth, t.m_cellHeight);
     return true;
+}
+
+void StateWriter::endTransfer()
+{
+    // The frame that the replica builds goes, also when another image holds
+    // it still (a sixel that a kitty id moved): its entry goes, so that it
+    // starts over under a new id. No frame starts before the replica
+    // dropped it.
+    for (const FramePtr& frame : m_transfer->image.frames) {
+        const auto it = m_frames.find(frame.get());
+        if (it == m_frames.end() || it->second.sent == 0 || it->second.sent == pixelsOf(*frame).size()) continue;
+        m_drops.insert(m_drops.begin(), it->second.id);
+        m_dropsBuilding = true;
+        m_frames.erase(it);
+    }
+    m_transfer.reset();
 }
 
 void StateWriter::writeDrops(std::string& out, Budget& budget)
@@ -1191,8 +1194,8 @@ void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budge
         m_imagesWent = true;
         if (f.sent != pixels.size()) return false;
         // A frame that completes can complete an image other than the
-        // transfer's: the live one, whose older version still goes (a
-        // deleted frame keeps its image). Its record goes with these pixels.
+        // transfer's: the store's own, while the version that goes keeps a
+        // frame that the program deleted. Its record goes with these pixels.
         m_recordsWaiting = true;
         return true;
     };
@@ -1219,11 +1222,45 @@ void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budge
             ++at;
         }
         if (shown && !shows(m_transfer->which, m_transfer->image.id)) return;
+        // The store's own image of the id, when it is another version of
+        // the same image (the program deleted a frame of it): the frames
+        // that the replica lacks of it. Once they went, with this version's,
+        // it shows with the next records, and this version must not replace
+        // it later, also once a new frame leaves it incomplete again. No
+        // more of this version's pixels go, and the replica drops its part
+        // of a frame first.
+        std::unordered_set<const ImageFrame*> liveMissing;
+        bool watching = false;
+        {
+            const auto& images = t.m_graphics[m_transfer->which].images();
+            const auto live = images.find(m_transfer->image.id);
+            if (live != images.end() && live->second.order == m_transfer->image.order
+                && live->second.frames != m_transfer->image.frames) {
+                watching = true;
+                for (const FramePtr& frame : live->second.frames) {
+                    const auto it = m_frames.find(frame.get());
+                    if (it == m_frames.end() || it->second.sent == 0 || it->second.sent != pixelsOf(*frame).size())
+                        liveMissing.insert(frame.get());
+                }
+            }
+        }
+        const auto superseded = [&] {
+            endTransfer();
+            m_imagesPending = true;
+        };
+        if (watching && liveMissing.empty()) {
+            superseded();
+            return;
+        }
         for (const FramePtr& frame : m_transfer->image.frames) {
             SentFrame& f = m_frames[frame.get()];
             if (f.id == 0) f = SentFrame{frame, m_nextFrameId++, 0};
             if (!sendPart(f, *frame)) {
                 m_imagesPending = true;
+                return;
+            }
+            if (watching && liveMissing.erase(frame.get()) && liveMissing.empty()) {
+                superseded();
                 return;
             }
         }

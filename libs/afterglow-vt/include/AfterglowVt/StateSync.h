@@ -198,6 +198,8 @@ private:
     std::optional<ImageVersion> m_transfer;
     /// Versions whose pixels went and whose records wait for room.
     std::vector<ImageVersion> m_done;
+    /// Ends the transfer: the frame that the replica builds of it goes.
+    void endTransfer();
     /// The ids of frames that the replica drops, which wait for room.
     std::vector<std::uint64_t> m_drops;
     /// A frame that the replica builds is among m_drops: no frame starts
@@ -212,7 +214,7 @@ private:
     bool m_imagesPending = false; ///< pixels, records, placements or drops wait for a later frame
     bool m_imagesWent = false; ///< this frame has an image section
     bool m_storesChanged = false; ///< a store changed since the last frame
-    bool m_recordsWaiting = false; ///< a record or the placements wait for room
+    bool m_recordsWaiting = false; ///< a record or the placements wait for room, or a frame completed an image
 
     ScreenState m_screens[2];
     std::string m_modes;
@@ -247,6 +249,8 @@ public:
     /// screen over, or changed the images or the placements of the screen
     /// that shows: output of the program, not history that catches up.
     bool screenChanged() const { return m_screenChanged; }
+    /// The frames of images that the writer sent and did not drop yet.
+    std::size_t frames() const { return m_frames.size(); }
     /// Every row of the primary screen from stable id @p first to @p last
     /// that the writer has came: none is a blank place of a row on its way,
     /// and none is an older row that the writer still sends (PrependTag).

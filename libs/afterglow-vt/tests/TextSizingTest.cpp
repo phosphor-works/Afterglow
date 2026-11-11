@@ -157,22 +157,22 @@ TEST(TextSizing, AScrollDownWithinMarginsKeepsTheParametersOfTheBlocksItMoves)
 
 TEST(TextSizing, AScrollOfSeveralRowsWithinMarginsKeepsTheBlocksItMoves)
 {
-    // Two rows up: both rows that the scroll leaves held the block's rows,
-    // and the block's rows now hold its copy.
+    // Two rows up: the block goes from rows 2-4 to rows 0-2. Rows 3 and 4,
+    // which the scroll clears, keep the remnant of its lower rows: erased as
+    // a block, it would reach up into row 2, which holds its bottom row now.
     Term t(20, 5);
     t.feed("\x1b[?69h\x1b[2;6s");
-    t.feed("\x1b[3;3H\x1b]66;s=2;a\x07"); // rows 2-3, columns 2-3
-    t.feed("\x1b[2S");                     // to rows 0-1
+    t.feed("\x1b[3;3H\x1b]66;s=3;a\x07"); // rows 2-4, columns 2-4
+    t.feed("\x1b[2S");                     // to rows 0-2
     const Screen& s = t.t.screen();
-    ASSERT_TRUE(t.at(2, 0).isMulticell());
-    ASSERT_TRUE(t.at(2, 1).isMulticell());
-    EXPECT_EQ(t.at(2, 0).multicellDy(), 0);
-    EXPECT_EQ(t.at(2, 1).multicellDy(), 1);
-    EXPECT_NE(s.multicellParams(s.row(0), 2), nullptr);
-    EXPECT_NE(s.multicellParams(s.row(1), 2), nullptr);
-    EXPECT_FALSE(t.at(2, 2).isMulticell());
+    for (int y = 0; y < 3; ++y) {
+        ASSERT_TRUE(t.at(2, y).isMulticell()) << y;
+        EXPECT_EQ(t.at(2, y).multicellDy(), y);
+        EXPECT_NE(s.multicellParams(s.row(y), 2), nullptr) << y;
+    }
     EXPECT_FALSE(t.at(2, 3).isMulticell());
-    t.feed("\x1b[2;4Hx");
+    EXPECT_FALSE(t.at(2, 4).isMulticell());
+    t.feed("\x1b[3;4Hx");
     EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos) << t.t.text(Terminal::TextScope::Screen);
 }
 

@@ -712,13 +712,15 @@ TEST(StateSync, AnImageSentAgainFasterThanItsPixelsGoStillShows)
     // A version that the writer began finished, and shows.
     ASSERT_TRUE(p.replica.graphics().images().contains(1));
     EXPECT_EQ(p.replica.graphics().images().at(1).width, 100u);
-    // Once the program stops, the last version comes.
+    // Once the program stops, the last version comes, and the replica drops
+    // the frames of the others.
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
     EXPECT_EQ(p.replica.graphics().images().at(1).frames[0]->rgba[0], 19);
+    EXPECT_EQ(p.reader.frames(), 1u);
 }
 
-TEST(StateSync, AnImageThatADeletedFrameCompletesShowsBeforeThatFrameWent)
+TEST(StateSync, AnImageThatAFrameDeletionCompletesShowsAtOnceAndStaysNewest)
 {
     // Three frames of 40000 bytes, at 8 KiB a frame of the codec.
     Pair p(30, 8, 100, 8192);
@@ -729,23 +731,65 @@ TEST(StateSync, AnImageThatADeletedFrameCompletesShowsBeforeThatFrameWent)
     ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
     ASSERT_TRUE(p.writer.pending());
     // The third frame goes while the first goes to the replica: the version
-    // that the writer sends keeps its three frames, and the image is whole
-    // once two of them went.
+    // that the writer sends keeps its three frames, and the store's image is
+    // whole once two of them went. It shows then, and the third frame's
+    // pixels stop.
     p.source.feed(apc("a=d,d=f,i=1,r=3,q=2"));
+    // Each frame of the codec: the replica never shows the deleted frame.
+    const auto apply = [&](const std::string& frame) {
+        ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
+        const auto& images = p.replica.graphics().images();
+        if (const auto it = images.find(1); it != images.end()) {
+            for (const FramePtr& f : it->second.frames) ASSERT_NE(f->rgba[0], 3);
+        }
+    };
     int shown = -1;
     int frames = 0;
-    for (int guard = 0; guard < 1000; ++guard) {
+    bool caughtUp = false;
+    for (int guard = 0; guard < 1000 && !caughtUp; ++guard) {
         const std::string frame = p.update();
-        if (frame.empty() && !p.writer.pending()) break;
+        caughtUp = frame.empty() && !p.writer.pending();
+        if (caughtUp) break;
         ++frames;
-        ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
-        if (shown < 0 && p.replica.graphics().images().contains(1)) shown = frames;
+        apply(frame);
+        if (HasFatalFailure()) return;
+        // No pixels of the third frame go once the first two went.
+        if (shown < 0) {
+            EXPECT_LE(p.reader.frames(), 2u) << frames;
+        }
+        if (shown < 0 && p.replica.graphics().images().contains(1)) {
+            shown = frames;
+            // A new frame comes while the writer would still send the third.
+            p.source.feed(apc("a=f,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, 4, 0, 0)));
+        }
     }
+    ASSERT_TRUE(caughtUp);
     ASSERT_GE(shown, 0);
-    // The pixels of the third frame took the frames after it.
-    EXPECT_LT(shown + 3, frames);
     EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
-    EXPECT_EQ(p.replica.graphics().images().at(1).frames.size(), 2u);
+    ASSERT_EQ(p.replica.graphics().images().at(1).frames.size(), 3u);
+    EXPECT_EQ(p.replica.graphics().images().at(1).frames[2]->rgba[0], 4);
+    // The replica dropped the part of the third frame that it got.
+    EXPECT_EQ(p.reader.frames(), 3u);
+}
+
+TEST(StateSync, AVersionThatShowedLeavesTheReplicaOnceTheStoresImageShows)
+{
+    // Two frames of 40000 bytes, at 8 KiB a frame of the codec.
+    Pair p(30, 8, 100, 8192);
+    p.source.resize(30, 8, 10, 20);
+    p.source.feed(apc("a=T,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, 1, 0, 0))
+                  + apc("a=f,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, 2, 0, 0)));
+    std::string error;
+    ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+    ASSERT_TRUE(p.writer.pending());
+    // The second frame goes, and a third takes its place, while the first
+    // goes: the version that goes shows first, then the store's.
+    p.source.feed(apc("a=d,d=f,i=1,r=2,q=2") + apc("a=f,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, 3, 0, 0)));
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+    EXPECT_EQ(p.replica.graphics().images().at(1).frames[1]->rgba[0], 3);
+    // The replica keeps only the frames of the store's image.
+    EXPECT_EQ(p.reader.frames(), 2u);
 }
 
 TEST(StateSync, ReaderRefusesBadImageSections)
