@@ -169,7 +169,7 @@ These features work as in a pane outside a session:
 - The marks of shell integration (OSC 133): the last output, the jumps between prompts, and a click on the prompt
 - Program status (OSC 7501), and the shell contexts (OSC 3008) in the title
 - Extra cursors
-- Images (kitty graphics, sixel) and their animations. See [what the daemon answers](#what-the-daemon-answers) for the images that the daemon refuses.
+- Images (kitty graphics, sixel, iTerm2) and their animations. See [what the daemon answers](#what-the-daemon-answers) for the formats.
 - A selection or a search match in a region that a program scrolls, as an editor does: it moves with its text
 - Visibility reports (mode 2033): the program hears whether you can see the pane
 
@@ -179,7 +179,8 @@ While the pane overview is open, you can see only the panes that it shows as car
 
 A session pane differs from a pane outside a session in these ways:
 
-- The daemon refuses PNG and iTerm2 images.
+- An iTerm2 image can be PNG, JPEG, GIF or BMP. A pane outside a session also shows WebP.
+- An iTerm2 image does not show when the program prints it before a window first showed the session. The size of an iTerm2 image is in cells, and only a window measures a cell.
 - An image shows when all of its pixels came from the daemon. A large image can show some frames after the text around it.
 - The session keeps the terminal settings and the colors of the `afterglow mux new` that started it (see [environment](#environment)).
 
@@ -323,7 +324,7 @@ While a window shows the session, these answers go through the window, as the an
 | Notification query (OSC 99 `p=?`) | The daemon gives the answer of a window |
 | Query of the socket of an ssh session (OSC 24569) | The daemon answers that there is none (`error=off`) |
 | Visibility report (mode 2033) | The window says whether you can see the pane. Until a window says it, the program hears that you cannot see the pane. This is also true after a takeover, and while no window shows the session. |
-| Images | RGB, RGBA and sixel images work in the daemon. PNG (kitty graphics `f=100`) and iTerm2 images are refused, because the daemon decodes no compressed images. The window shows the images that the daemon keeps. |
+| Images | The daemon keeps the images, also while no window shows the session. It decodes PNG (kitty graphics `f=100`) and iTerm2 images in a process of its own (`afterglow-mux --decode-image`), with limits on its memory and its time. A corrupt file ends that process, not the daemon. The window shows the images that the daemon keeps. |
 
 While no window shows the session, the daemon also answers these requests.
 

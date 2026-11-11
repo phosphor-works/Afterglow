@@ -7,9 +7,12 @@
 
 #include "TestDaemon.h"
 
+#include "ImageFiles.h"
 #include "MuxHost.h"
 #include "MuxStream.h"
 
+#include <AfterglowProto/Base64.h>
+#include <AfterglowVt/Graphics.h>
 #include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
 #include <PhosphorChannel/Stream.h>
@@ -1144,4 +1147,47 @@ TEST(MuxAttach, AWindowGetsNoMoreHistoryThanItKeeps)
     ASSERT_EQ(all.attach(daemon, "sh"), "");
     ASSERT_TRUE(all.until([&] { return all.pane != 0 && contains(all.screen(), "\nEND") && all.replica.primaryScreen().historySize() > 100; }))
         << all.replica.primaryScreen().historySize();
+}
+
+// The daemon decodes a PNG (kitty f=100) and an iTerm2 image in a process of
+// its own, and the window's replica gets their pixels.
+TEST(MuxAttach, ThePngAndItermImagesOfASessionReachTheWindow)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    // The size of a cell, which a window measures: an iTerm2 image is sized
+    // in cells, and a session that no window measured refuses it.
+    ASSERT_TRUE(w.resize(40, 10));
+    ASSERT_TRUE(w.until([&] { return w.replica.cols() == 40 && w.replica.cellWidth() == 8; }));
+    const std::string images = daemon.dir() + "/images";
+    {
+        std::ofstream out(images, std::ios::binary);
+        out << "\x1b_Ga=T,f=100,i=7,q=2;" << AfterglowProto::base64Encode(MuxTest::Images::Png) << "\x1b\\";
+        out << "\x1b]1337;File=inline=1;size=" << MuxTest::Images::Jpeg.size() << ':'
+            << AfterglowProto::base64Encode(MuxTest::Images::Jpeg) << '\a';
+    }
+    ASSERT_TRUE(w.type("cat '" + images + "'; echo im''ages-shown\n"));
+    const AfterglowVt::GraphicsStore& store = w.replica.graphics();
+    const auto iterm = [&]() -> const AfterglowVt::Image* {
+        for (const auto& [id, image] : store.images())
+            if (image.isSixel) return &image;
+        return nullptr;
+    };
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "images-shown") && store.images().contains(7) && iterm(); }))
+        << w.screen() << store.images().size();
+    const AfterglowVt::Image& png = store.images().at(7);
+    ASSERT_EQ(png.frames.size(), 1u);
+    EXPECT_EQ(png.frames[0]->width, 3u);
+    EXPECT_EQ(png.frames[0]->height, 2u);
+    const std::vector<std::uint8_t> expected{255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0,
+                                             10, 20, 30, 255, 200, 100, 50, 255, 1, 2, 3, 4};
+    EXPECT_TRUE(png.frames[0]->rgba == expected);
+    ASSERT_EQ(iterm()->frames.size(), 1u);
+    EXPECT_EQ(iterm()->frames[0]->width, 8u);
+    EXPECT_EQ(iterm()->frames[0]->height, 8u);
+    EXPECT_GT(iterm()->frames[0]->rgba.at(0), 240);
 }

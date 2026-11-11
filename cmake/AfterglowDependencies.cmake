@@ -62,7 +62,8 @@ set(AFTERGLOW_DEP_xxhash_SHA256 "5738270935e7c3d38a79b3adf7c9692566ce7895a25f67d
 # the file from the new commit and change COMMIT and SHA256 together.
 
 # stb_image (MIT, Sean Barrett), v2.30: aglow icat decodes JPEG, BMP and the
-# other formats with it. The file carries aglow's patches, which the top of
+# other formats with it, and afterglow-mux the PNG and iTerm2 images of its
+# sessions. The file carries aglow's patches, which the top of
 # tools/aglow/StbImage.cpp lists, so SHA256 is that of the patched file and
 # COMMIT names the upstream base. REUSE.toml licenses the file.
 set(AFTERGLOW_VENDORED_stb_image_COMMIT "d14d46f6b44456eb88beac58cba833a4135d4c89")
@@ -158,6 +159,40 @@ if(NOT AFTERGLOW_DEPS_ARCHIVES AND NOT COMMAND CPMAddPackage)
     endif()
     include("${_afterglow_cpm_file}")
 endif()
+
+# afterglow_stb_image_notice(<path>)
+#
+# Writes the MIT notice of the vendored stb_image to <path>, for aglow and
+# afterglow-mux, which link it. It is the notice in the vendored header
+# itself, from the MIT alternative up to the next one. A regular expression
+# cannot cut it there: CMake has no lazy match, and ".*" runs on to the end of
+# the Unlicense. The file is written only when its text changes, so that a
+# configure does not make the install copy it again.
+function(afterglow_stb_image_notice path)
+    afterglow_vendored_file(stb_image header)
+    file(READ "${header}" text)
+    string(FIND "${text}" "ALTERNATIVE A - MIT License\n" mit)
+    string(FIND "${text}" "ALTERNATIVE B - " unlicense)
+    if(mit EQUAL -1 OR unlicense LESS_EQUAL mit)
+        message(FATAL_ERROR "The MIT notice was not found in ${header}")
+    endif()
+    math(EXPR length "${unlicense} - ${mit}")
+    string(SUBSTRING "${text}" ${mit} ${length} notice)
+    # Without the heading line and the rule of dashes that ends the alternative.
+    string(REGEX REPLACE "^ALTERNATIVE A - MIT License\n" "" notice "${notice}")
+    string(REGEX REPLACE "-+\n$" "" notice "${notice}")
+    if(NOT notice MATCHES "^Copyright[^\n]*\n.*SOFTWARE\\.\n$")
+        message(FATAL_ERROR "The MIT notice in ${header} does not have the expected form")
+    endif()
+    set(content "stb_image ${AFTERGLOW_VENDORED_stb_image_URL}, with the patches of aglow\n\n${notice}")
+    if(EXISTS "${path}")
+        file(READ "${path}" old)
+        if(old STREQUAL content)
+            return()
+        endif()
+    endif()
+    file(WRITE "${path}" "${content}")
+endfunction()
 
 # afterglow_vendored_file(<name> <variable>)
 #

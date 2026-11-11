@@ -3,6 +3,8 @@
 
 #include "MuxPane.h"
 
+#include "ImageDecoder.h"
+
 #include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Text.h>
 #include <AfterglowProto/Transfer.h>
@@ -420,6 +422,17 @@ void MuxPane::commandFinished(int exitCode)
         if (std::exchange(m_commandForwarded, false)) (void)queueLocked(Host::encode(call), Host::Kind::CommandFinished, Fit::Always, &wake);
     }
     if (wake) m_wake();
+}
+
+bool MuxPane::decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
+{
+    // Reader thread, m_mutex held, as the window's Pane decodes.
+    return AfterglowMux::decodeImage(png, AfterglowMux::ImageFormats::Png, width, height, rgba);
+}
+
+bool MuxPane::decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
+{
+    return AfterglowMux::decodeImage(data, AfterglowMux::ImageFormats::Common, width, height, rgba);
 }
 
 void MuxPane::regionScrolled(const AfterglowVt::RegionScroll& scroll)

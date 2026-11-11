@@ -683,6 +683,7 @@ ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|M
 | `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, and session names. The keys and fields that belong to the protocol version. The bytes of the attach stream and of each host call, and the frames and calls that its decoders refuse. |
 | `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own. The cases are sessions, the environment of a pane, the answers to queries, the refused control calls, and when the daemon exits. |
 | `Mux.MuxAttach.*` | `afterglow_mux_tests` | A window of a session, played without Qt. The cases are listed below the table. |
+| `Mux.MuxImageDecoder.*` | `afterglow_mux_tests` | The image decoder of `afterglow-mux`: the pixels of a PNG with alpha, a JPEG, the first frame of a GIF and a BMP. The formats and the files that it refuses (WebP, a cut PNG, a side that is too long, Apple's CgBI PNG). A decoder that is missing, fails or sends data that is not an image. |
 | `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`). A replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are listed below the table. |
 | `MuxCommandTest.*` | `afterglow_mux_command_tests` | The commands of `afterglow mux`. The cases are listed below the table. |
 
@@ -741,6 +742,7 @@ The `Mux.MuxAttach.*` tests cover these cases:
 - When the window detaches, the program hears that you cannot see the pane. The next window, and a window that takes the session over, report whether you can see it.
 - The `paneDirectory` call: the directory of the shell, a directory that was removed, then the program in the foreground, and the calls that the daemon refuses
 - The frames carry the region scrolls since the frame before, and the first frame of a window carries none of a time when no window showed the pane
+- A PNG (kitty graphics `f=100`) and an iTerm2 JPEG that the session's shell prints reach the window with their pixels
 
 The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow mux new` starts in a session of its own:
 
@@ -760,7 +762,7 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.AWindowThatLosesItsSessionLeavesItRunning` | A detach and a takeover close the pane and kill nothing |
 | `NativeWindow.AMuxSessionCanOutliveItsWindow` | `Mux.onClose` detach |
 | `NativeWindow.AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow` | A bell, a user variable and an OSC 52 write of the session's shell reach the window and its clipboard |
-| `NativeWindow.AMuxSessionsImageShowsInTheWindow` | A kitty image that the session's shell prints shows in a screenshot of the pane |
+| `NativeWindow.AMuxSessionsImageShowsInTheWindow` | A PNG that the session's shell prints with kitty graphics, which the daemon decodes, shows in a screenshot of the pane |
 | `NativeWindow.AMuxSessionsMarksStatusAndDirectoryReachTheWindow` | The last output in the pager, and the regions of shell integration. The status of a program, with the `Pane::statusChanged` signal. A shell context. A new tab starts in the directory that the daemon gets from the system, because the shell reports none. |
 | `NativeWindow.ASessionPaneTellsItsProgramWhetherItCanBeSeen` | Mode 2033 reports at the attach, when another tab shows, and when the pane shows again |
 | `NativeWindow.AnAttachShowsTheSessionsStateAndNotifiesNothingOld` | A window that attaches gets the history, the last output and the prompts of the session. It shows no notification for a status from before the attach. |

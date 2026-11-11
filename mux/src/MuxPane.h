@@ -36,10 +36,9 @@ namespace AfterglowMux {
 /// and the reports that answer queries (DA1, DSR, colors, sizes). Without a
 /// window, the pane answers them as a terminal with no user: a report goes to
 /// the program, a request gets a denial, the rest go. The query of the socket
-/// of an ssh session gets its answer here always. Images that need a decoder
-/// (PNG, iTerm2) are refused: Afterglow decodes them with Qt, which the
-/// daemon does not have, and aglow runs stb_image only in a child process
-/// with limits, which a process with PTY threads cannot fork safely.
+/// of an ssh session gets its answer here always. PNG and iTerm2 images
+/// decode in a process of their own (ImageDecoder.h), whether or not a
+/// window shows the pane: the store keeps their pixels.
 ///
 /// The callbacks of the terminal and of the PTY run on the PTY reader thread,
 /// with m_mutex held for the terminal's, and the terminal's also on the
@@ -147,6 +146,10 @@ public:
     void commandFinished(int exitCode) override;
     void downloadFile(std::string_view name, std::string_view data) override;
     void regionScrolled(const AfterglowVt::RegionScroll& scroll) override;
+    bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
+                   std::vector<std::uint8_t>& rgba) override;
+    bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
+                     std::vector<std::uint8_t>& rgba) override;
     /// A session pane forwards no socket of an ssh session (afterglow ssh
     /// runs in windows only): `aglow run` hears that it is off, not that the
     /// terminal does not know the query.

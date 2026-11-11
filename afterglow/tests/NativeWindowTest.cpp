@@ -10292,13 +10292,17 @@ TEST_F(NativeWindow, AMuxSessionsImageShowsInTheWindow) {
         return red;
     };
     EXPECT_EQ(redPixels(), 0);
-    // 60 by 60 red pixels in one kitty command: too long for a typed line,
-    // so the shell prints it from a file.
-    QByteArray pixels;
-    for (int i = 0; i < 60 * 60; ++i) pixels.append("\xdc\x14\x14\xff", 4);
+    // A PNG of 60 by 60 red pixels, which the daemon decodes, in one kitty
+    // command: too long for a typed line, so the shell prints it from a file.
+    QImage red(60, 60, QImage::Format_RGBA8888);
+    red.fill(QColor(0xdc, 0x14, 0x14));
+    QByteArray png;
+    QBuffer buffer(&png);
+    ASSERT_TRUE(buffer.open(QIODevice::WriteOnly));
+    ASSERT_TRUE(red.save(&buffer, "PNG"));
     QFile file(directory.filePath(QStringLiteral("image.kitty")));
     ASSERT_TRUE(file.open(QIODevice::WriteOnly));
-    file.write("\x1b_Ga=T,f=32,s=60,v=60,i=4,q=2;" + pixels.toBase64() + "\x1b\\");
+    file.write("\x1b_Ga=T,f=100,i=4,q=2;" + png.toBase64() + "\x1b\\");
     file.close();
     ASSERT_TRUE(pane->sendInput("cat '" + file.fileName().toStdString() + "'\n"));
     EXPECT_TRUE(waitFor([&] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return !t.graphics().placements().empty(); }); }, 5000));

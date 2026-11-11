@@ -6,6 +6,7 @@
 // starts it, in a systemd user unit or in a session of its own.
 
 #include "Daemon.h"
+#include "ImageDecoder.h"
 #include "MuxProtocol.h"
 
 #include <AfterglowProto/Socket.h>
@@ -109,6 +110,8 @@ int startFailed(int reportFd, const std::string& message, bool held = false)
 
 int main(int argc, char** argv)
 {
+    // A process of its own for each PNG or iTerm2 image (ImageDecoder.h).
+    if (argc == 2 && argv[1] == AfterglowMux::DecodeImageArgument) return AfterglowMux::runImageDecoder();
     std::atexit(endWithSignal);
     if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
         std::printf("afterglow-mux %s (protocol %d)\n", AFTERGLOW_VERSION, AfterglowMux::ProtocolVersion);
