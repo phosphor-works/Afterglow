@@ -60,6 +60,55 @@ With `AFTERGLOW_NATIVE_TESTS=ON`, run only the native suite:
 ctest --test-dir build -L native --output-on-failure
 ```
 
+## Sanitizer build
+
+The `debug` preset builds Afterglow and its tests with AddressSanitizer and UndefinedBehaviorSanitizer in `build-debug`.
+It compiles at `-O1`, as the sanitizer documentation recommends. At `-O0` the tests are too slow for their waits.
+It turns off `-Wmaybe-uninitialized`, because GCC gives false warnings for instrumented code.
+Run the sanitizer build before a pull request that changes a parser, a protocol or the memory of a pane.
+
+1. Configure the build directory with the Phosphor checkout of `build` (see `AFTERGLOW_PHOSPHOR_LIBS_DIR` in `build/CMakeCache.txt`):
+
+   ```sh
+   cmake --preset debug -DAFTERGLOW_PHOSPHOR_LIBS_DIR=../PlasmaZones/phosphor-libs
+   ```
+
+2. Build it with two jobs. Each sanitizer compile needs more memory than a normal compile:
+
+   ```sh
+   systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build-debug -j2
+   ```
+
+3. Run the suite for memory errors and undefined behavior:
+
+   ```sh
+   ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+       ctest --test-dir build-debug --output-on-failure -j4
+   ```
+
+4. Run the suite for leaks, without the tests that have the label `gpu`:
+
+   ```sh
+   ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS=suppressions=$PWD/tools/sanitizers/lsan.supp \
+       ctest --test-dir build-debug -LE gpu --output-on-failure -j4
+   ```
+
+5. Run the native window tests on the sanitizer build:
+
+   ```sh
+   ASAN_OPTIONS=detect_leaks=0 python3 .claude/skills/ag-verify-live/headless_native.py \
+       --binary build-debug/afterglow/afterglow_native_tests --timeout 1500
+   ```
+
+`UBSAN_OPTIONS=halt_on_error=1` makes a test fail at the first finding. Without it, the test prints the finding and passes.
+
+| Leaks that the leak run does not report | Reason |
+| --- | --- |
+| The tests with the label `gpu` | The Vulkan driver frees its last memory in code that it unloads before the check. The stacks have no names. |
+| The Vulkan loader, libdbus and the default input devices of Qt | They keep their memory until the process ends. `tools/sanitizers/lsan.supp` lists them, with the reason for each. |
+
+Keep the default unwinder for the leak run. The full unwinder (`fast_unwind_on_malloc=0`) makes the tests that measure time fail.
+
 ## Native test dependencies
 
 The native window suite, the shader scene tests, the project and navigator tests and the native benchmark use a nested KWin desktop.

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# LeakSanitizer suppressions for the sanitizer build (the build-debug preset).
+# Each entry is memory that a library keeps for the life of the process, which
+# it never frees, so LeakSanitizer reports it when a test exits. The entries
+# match a function or library in the allocation's stack.
+#
+# The tests labelled gpu are left out of the leak pass (docs/TESTING.md): the
+# Vulkan driver frees its last allocations in code that it unloads before the
+# leak check, so those stacks have no name to match or to blame.
+
+# The Vulkan loader and the driver keep their instance and layer data until the
+# process ends. Every test that makes a GPU device reports it.
+leak:vkEnumerateInstanceExtensionProperties
+
+# libdbus keeps the session bus connection, its registration and its message
+# loader until the process ends.
+leak:libdbus-1.so
+
+# A key or pointer event made with no QGuiApplication (the config and key mode
+# tests) gets Qt's default input device, which Qt creates once and keeps.
+leak:QInputDevice::primaryKeyboard
+leak:QPointingDevice::primaryPointingDevice
