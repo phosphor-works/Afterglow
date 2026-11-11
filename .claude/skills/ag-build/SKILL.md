@@ -27,19 +27,26 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 | `build-release` | Release | ON | Performance numbers and release checks |
 | `build-prof` | RelWithDebInfo | ON | Profiling with `perf` |
 | `build-fuzz` | RelWithDebInfo, clang for C and C++, `AFTERGLOW_BUILD_FUZZERS=ON`, `BUILD_TESTING=OFF` | OFF | The libFuzzer targets `afterglow_vtfuzz`, `afterglow_protofuzz`, `afterglow_imagefuzz` and `afterglow_muxfuzz` only. Build them by name: the other binaries are not supported there (zlib-ng is instrumented in place). The fuzz option turns `aglow` off. Make it when you fuzz, with the commands in `docs/TESTING.md`. |
-| `build-debug` | Debug with ASan and UBSan at `-O1` (`debug` preset) | — | Make it when you look for memory errors, and before a PR that changes a parser, a protocol or a pane's memory. Build it with `-j2`: at `-j4` the compiles hit the 6 GB cap. `docs/TESTING.md` "Sanitizer build" has the three runs (errors, leaks without `-L gpu`, native). |
+| `build-debug` | Debug with ASan and UBSan at `-O1` (`debug` preset) | — | Make it when you look for memory errors, and before a PR that changes a parser, a protocol or a pane's memory. Build it with `-j2`: at `-j4` the compiles hit the 6 GB cap. `docs/TESTING.md` "Sanitizer build" has the three runs (errors, leaks without `-L gpu`, native). `aglow` links dynamically there, and `aglow_static` is left out. |
 
 ## aglow
 
-`AFTERGLOW_AGLOW_ONLY=ON` builds only `libs/afterglow-proto` and `tools/aglow`: no Qt, no Phosphor checkout, and an
-install of `bin/aglow`, its completions and its notices in `share/licenses/aglow`. `docs/BUILD.md` has the procedure.
+`AFTERGLOW_AGLOW_ONLY=ON` builds only `libs/afterglow-proto`, `libs/afterglow-image` and `tools/aglow`: no Qt, no
+Phosphor checkout, and an install of `bin/aglow`, its completions and its notices in `share/licenses/aglow`.
+`docs/BUILD.md` has the procedure.
 
-`AFTERGLOW_BUILD_AGLOW` is on by default. `aglow` and `afterglow-mux` link the system's libpng, libjpeg-turbo (3.0
-or later) and libwebp through `libs/afterglow-image`. Without them, the configuration stops at `pkg_check_modules`.
-Do not install them: tell the user. With `-DAFTERGLOW_BUILD_AGLOW=OFF` the `aglow` tests are left out. The `aglow dnd` tests of `afterglow_dnd_tests` and of the native suite skip, and so
+`AFTERGLOW_BUILD_AGLOW` is on by default. `aglow` links statically, so the configuration needs `libc.a` and
+`libstdc++.a` (Fedora: `glibc-static` and `libstdc++-static`). Without them, the configuration stops with a message
+that names the packages. Do not install them: tell the user, or configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`. Then
+the `aglow` tests are left out. The `aglow dnd` tests of `afterglow_dnd_tests` and of the native suite skip, and so
 do the `RunBinaryTest.*` tests of `afterglow_command_tests` and the `sshd` test of `afterglow_remote_tests`
 (`RemoteCommandsTest.OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThroughIt`).
 `aglow` builds next to `afterglow` (`build/afterglow/aglow`), and building `afterglow` builds it too.
+
+`libs/afterglow-image` builds libpng, libjpeg-turbo and libwebp from their pinned archives into `aglow` and
+`afterglow-mux`, also with `-DAFTERGLOW_BUILD_AGLOW=OFF`. No image library of the system is used. libjpeg-turbo
+builds with its own CMake during the build, in `build/_afterglow_deps/libjpeg-turbo-build`. When that step fails,
+its output is in the logs under `build/_afterglow_deps/libjpeg-turbo-steps`. It uses NASM when NASM is installed.
 
 `AFTERGLOW_BUILD_TOOLS=ON` builds `afterglow_renderpng`, `afterglow_headless`, `afterglow_vtbench` and
 `afterglow_native_bench`. Shader previews, `aglow_icat_render` and `afterglow_headless_runner` need it. The renderer
@@ -82,8 +89,8 @@ checkout first:
   goes through a PlasmaZones branch and pull request. Tell the user what Phosphor needs.
 - The renderer uses Qt private APIs. After a Qt update, rebuild everything in the capped scope:
   `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build --clean-first -j6`.
-- The pinned archives (Luau and valijson from `PhosphorDependencies.cmake` in PlasmaZones, zlib-ng and xxHash from
-  `cmake/AfterglowDependencies.cmake`) download into the CPM cache. By default that is `.cache/cpm` in the
+- The pinned archives (Luau and valijson from `PhosphorDependencies.cmake` in PlasmaZones, zlib-ng, xxHash, libpng,
+  libjpeg-turbo and libwebp from `cmake/AfterglowDependencies.cmake`) download into the CPM cache. By default that is `.cache/cpm` in the
   PlasmaZones checkout that the build uses, and Afterglow's own `.cache/cpm` when only `PHOSPHOR_DEPS_ARCHIVES` is
   set (`docs/BUILD.md` has the order). A configure without network works once that cache holds them. A build of
   `aglow` alone loads no PlasmaZones module, so its default cache is Afterglow's own `.cache/cpm`.
@@ -122,8 +129,8 @@ The suite has about 1,800 tests. All of them must pass. Use `-R PATTERN` while y
 before a commit.
 
 - `aglow_only_build` (label `slow`) configures, builds and installs `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) in
-  `build/tools/aglow/aglow-only`, with Qt hidden and no Phosphor directory. It compiles zlib-ng again and takes some
-  minutes. `-LE slow` leaves it out while you work. The whole suite before a commit includes it.
+  `build/tools/aglow/aglow-only`, with Qt hidden and no Phosphor directory. It compiles zlib-ng and the image codecs again and
+  takes some minutes. `-LE slow` leaves it out while you work. The whole suite before a commit includes it.
 - The renderer tests (`libs/afterglow-render/tests`), `afterglow/tests/PopupLookTest.cpp` and
   `afterglow/tests/PointerMapTest.cpp` (`afterglow_pointer_map_tests`) need a Wayland display and a working Vulkan
   driver. They skip only on a machine with no Wayland display or no Vulkan. A device that cannot be made fails them.

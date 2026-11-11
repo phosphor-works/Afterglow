@@ -5,20 +5,22 @@
 # terminal core and the reader of its state frames, afterglow_protofuzz for
 # the protocol readers that take what a remote program sends,
 # afterglow_imagefuzz for the image decoders of aglow and afterglow-mux
-# (libs/afterglow-image: its GIF and BMP readers, and its calls of the
-# system's libpng, libjpeg-turbo and libwebp), and
+# (libs/afterglow-image: its GIF and BMP readers, and libpng, libjpeg-turbo
+# and libwebp behind it), and
 # afterglow_muxfuzz for the readers of the attach stream of afterglow-mux.
 # afterglow_muxfuzz compiles code of mux/, which is GPL-3.0-or-later, so its
 # source is too, and no other target links it. The
 # sources of the libraries, xxHash and the decoders are compiled into them
-# again, so that the sanitizers and the coverage instrument them. zlib-ng is
-# instrumented in place: its own build sets CPU flags for each of its files,
-# so its source list cannot be compiled again here. Every binary in a fuzz
-# build directory that links zlib-ng then needs the sanitizer runtimes. Only
-# the fuzz targets are built and supported there, so the configure turns the
-# tests off, CMakeLists.txt turns aglow off (it does not link the runtimes),
-# and the build names its targets. The system's image libraries are not
-# instrumented: they are linked as they are.
+# again, so that the sanitizers and the coverage instrument them. zlib-ng and
+# the image codecs are instrumented in place: their builds set CPU flags for
+# single files, so their source lists cannot be compiled again here.
+# libjpeg-turbo builds apart, and gets the flags when libs/afterglow-image
+# sets that build up: CMakeLists.txt holds AFTERGLOW_FUZZ_FLAGS for both.
+# Every binary in a fuzz build directory that links one of them then needs
+# the sanitizer runtimes. Only the fuzz targets are built and supported
+# there, so the configure turns the tests off, CMakeLists.txt turns aglow off
+# (a static program cannot link the runtimes), and the build names its
+# targets.
 #
 #   cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DAFTERGLOW_BUILD_FUZZERS=ON \
 #       -DBUILD_TESTING=OFF
@@ -34,8 +36,6 @@ endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-32)
 
-set(AFTERGLOW_FUZZ_FLAGS -g -O1 -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined)
-
 # Sets OUT to the sources of TARGET with absolute paths, so the fuzz targets
 # compile what the library compiles.
 function(afterglow_fuzz_sources target out)
@@ -45,8 +45,12 @@ function(afterglow_fuzz_sources target out)
     set(${out} ${sources} PARENT_SCOPE)
 endfunction()
 
-target_compile_options(zlib-ng PRIVATE ${AFTERGLOW_FUZZ_FLAGS})
-target_link_options(zlib-ng INTERFACE -fsanitize=address,undefined)
+foreach(target zlib-ng afterglow_png afterglow_webp)
+    target_compile_options(${target} PRIVATE ${AFTERGLOW_FUZZ_FLAGS})
+    target_link_options(${target} INTERFACE -fsanitize=address,undefined)
+endforeach()
+# An imported target: its code has the flags already (libs/afterglow-image).
+set_property(TARGET afterglow_turbojpeg APPEND PROPERTY INTERFACE_LINK_OPTIONS -fsanitize=address,undefined)
 
 # The protocol library with xxHash, for both targets: the terminal core calls
 # it too.
@@ -77,11 +81,10 @@ target_include_directories(afterglow_muxfuzz PRIVATE "${PROJECT_SOURCE_DIR}/mux/
 target_link_libraries(afterglow_muxfuzz PRIVATE afterglow_fuzz_proto)
 
 # The decoders, compiled again from the sources of libs/afterglow-image.
-get_target_property(AFTERGLOW_FUZZ_IMAGE_SOURCES AfterglowImage SOURCES)
-list(TRANSFORM AFTERGLOW_FUZZ_IMAGE_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/libs/afterglow-image/")
-add_executable(afterglow_imagefuzz imagefuzz.cpp ${AFTERGLOW_FUZZ_IMAGE_SOURCES})
+afterglow_fuzz_sources(AfterglowImage IMAGE_SOURCES)
+add_executable(afterglow_imagefuzz imagefuzz.cpp ${IMAGE_SOURCES})
 target_include_directories(afterglow_imagefuzz PRIVATE $<TARGET_PROPERTY:AfterglowImage,INTERFACE_INCLUDE_DIRECTORIES>)
-target_link_libraries(afterglow_imagefuzz PRIVATE PkgConfig::AFTERGLOW_IMAGE_CODECS)
+target_link_libraries(afterglow_imagefuzz PRIVATE afterglow_png afterglow_turbojpeg afterglow_webp)
 
 foreach(target afterglow_fuzz_proto afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz)
     set_target_properties(${target} PROPERTIES AUTOMOC OFF AUTOUIC OFF)

@@ -29,8 +29,8 @@ enum class ImageFormats : std::uint8_t {
 
 /// Decodes the images of the programs of sessions into RGBA8 with straight
 /// alpha, as the window's decodeBoundedImage does with Qt. The daemon has no
-/// Qt: AfterglowImage decodes, with the libraries that Qt uses (libpng,
-/// libjpeg-turbo, libwebp).
+/// Qt: AfterglowImage decodes, with libpng, libjpeg-turbo and libwebp built
+/// in.
 ///
 /// Each image decodes in a process of its own, so that a corrupt file ends
 /// that process, not the daemon and its sessions. Those processes fork from

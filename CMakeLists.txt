@@ -36,10 +36,11 @@ endif()
 
 # aglow alone, for a computer that runs no Afterglow: a remote host, or a
 # package of its own. It needs CMake, the C and C++20 compilers and the static
-# C and C++ runtime libraries, but no Qt and no Phosphor checkout. zlib-ng and
-# xxHash come from their pinned archives, as in the whole build. It installs
-# aglow, its completions and its licence notices, nothing of the application.
-option(AFTERGLOW_AGLOW_ONLY "Build only aglow and the protocol library that it uses: no Qt and no Phosphor libraries" OFF)
+# C and C++ runtime libraries, but no Qt and no Phosphor checkout. zlib-ng,
+# xxHash and the image codecs come from their pinned archives, as in the whole
+# build. It installs aglow, its completions and its licence notices, nothing
+# of the application.
+option(AFTERGLOW_AGLOW_ONLY "Build only aglow and the two libraries that it uses (protocol and image): no Qt and no Phosphor libraries" OFF)
 if(AFTERGLOW_AGLOW_ONLY)
     if(DEFINED AFTERGLOW_BUILD_AGLOW AND NOT AFTERGLOW_BUILD_AGLOW)
         message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds aglow. Turn AFTERGLOW_BUILD_AGLOW on, or AFTERGLOW_AGLOW_ONLY off.")
@@ -82,28 +83,38 @@ set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
 set(CMAKE_INSTALL_RPATH "$ORIGIN/../${AFTERGLOW_PRIVATE_LIBDIR}")
 
 include(cmake/AfterglowPhosphor.cmake)
-# The pins of zlib-ng and xxHash (libs/afterglow-proto), after the
-# Phosphor module so that a CPM which that module loaded is used again. Like
-# it, this module is included at the top scope: CPM keeps its state in the
-# variables of the scope that loads it.
+# The pins of zlib-ng and xxHash (libs/afterglow-proto) and of the image
+# codecs (libs/afterglow-image), after the Phosphor module so that a CPM
+# which that module loaded is used again. Like it, this module is included
+# at the top scope: CPM keeps its state in the variables of the scope that
+# loads it.
 include(cmake/AfterglowDependencies.cmake)
+
+option(AFTERGLOW_BUILD_TOOLS "Build developer tools: benchmarks, afterglow_renderpng and the headless conformance host" OFF)
+option(AFTERGLOW_BUILD_AGLOW "Build aglow, the static client of the Kitty protocols and of script commands (no Qt). Without it, afterglow has no run, transfer, dnd, icat or clipboard command" ON)
+option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core, the protocol library, the image decoders and the attach stream of afterglow-mux (clang for C and C++)" OFF)
+option(AFTERGLOW_BUILD_VTDIFF "Build afterglow_vtdiff, which compares the terminal core with libghostty-vt (needs libghostty-vt in CMAKE_PREFIX_PATH)" OFF)
+if(AFTERGLOW_BUILD_FUZZERS)
+    # The instrumentation of the fuzz targets and of the third-party code
+    # that they link (tools/fuzz). It is set before the libraries:
+    # libs/afterglow-image hands it to the build of libjpeg-turbo, which
+    # runs apart and takes no options afterwards.
+    set(AFTERGLOW_FUZZ_FLAGS -g -O1 -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined)
+    # A fuzz build instruments zlib-ng and the image codecs with the
+    # sanitizers, and aglow links them statically: a static program cannot
+    # link the sanitizer runtimes. This normal variable hides the cached
+    # option in every directory, afterglow/ included.
+    if(AFTERGLOW_BUILD_AGLOW)
+        message(STATUS "aglow: AFTERGLOW_BUILD_FUZZERS is on, so aglow is not built, and afterglow has no run, transfer, dnd, icat or clipboard command")
+        set(AFTERGLOW_BUILD_AGLOW OFF)
+    endif()
+endif()
 
 add_subdirectory(libs/afterglow-proto)  # protocol formats, terminal and client side: transfer, drag and drop, images, clipboard, the phosphor-ipc client and server (no Qt)
 add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, screen, Unicode, input encoding (no Qt)
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
-add_subdirectory(libs/afterglow-image)  # image decoders of aglow and afterglow-mux over the system libpng, libjpeg-turbo and libwebp (no Qt)
+add_subdirectory(libs/afterglow-image)  # image decoders of aglow and afterglow-mux, with libpng, libjpeg-turbo and libwebp built in (no Qt)
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas
-option(AFTERGLOW_BUILD_TOOLS "Build developer tools: benchmarks, afterglow_renderpng and the headless conformance host" OFF)
-option(AFTERGLOW_BUILD_AGLOW "Build aglow, the client of the Kitty protocols and of script commands (no Qt). Without it, afterglow has no run, transfer, dnd, icat or clipboard command" ON)
-option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core, the protocol library and the image decoders (clang for C and C++)" OFF)
-option(AFTERGLOW_BUILD_VTDIFF "Build afterglow_vtdiff, which compares the terminal core with libghostty-vt (needs libghostty-vt in CMAKE_PREFIX_PATH)" OFF)
-# A fuzz build instruments zlib-ng with the sanitizers (tools/fuzz), and
-# aglow, which links zlib-ng, does not link their runtimes. This normal variable hides the
-# cached option in every directory, afterglow/ included.
-if(AFTERGLOW_BUILD_FUZZERS AND AFTERGLOW_BUILD_AGLOW)
-    message(STATUS "aglow: AFTERGLOW_BUILD_FUZZERS is on, so aglow is not built, and afterglow has no run, transfer, dnd, icat or clipboard command")
-    set(AFTERGLOW_BUILD_AGLOW OFF)
-endif()
 add_subdirectory(mux)                   # afterglow-mux, the session daemon, and the protocol that afterglow shares with it (no Qt)
 add_subdirectory(afterglow)             # the application
 if(AFTERGLOW_BUILD_AGLOW)

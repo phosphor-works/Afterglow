@@ -47,21 +47,7 @@ add_library(afterglow_zlib INTERFACE)
 target_link_libraries(afterglow_zlib INTERFACE zlib-ng)
 target_include_directories(afterglow_zlib SYSTEM INTERFACE ${AFTERGLOW_ZLIB_NG_BINARY_DIR} ${AFTERGLOW_ZLIB_NG_SOURCE_DIR})
 
-foreach(bundled zlib-ng afterglow_xxhash)
-    # PIC: they link into the shared afterglow-vt. Hidden: a shared library
-    # must not export inflate() or XXH3_*(). -w: upstream code is not ours to
-    # fix. No LTO, even with CMAKE_INTERPROCEDURAL_OPTIMIZATION: the optimizer
-    # would work on upstream code again when afterglow-vt links, and warnings
-    # found then do not come under -w. qt_standard_project_setup() turns
-    # AUTOMOC and AUTOUIC on for every target, and these have no Qt.
-    set_target_properties(${bundled} PROPERTIES
-        POSITION_INDEPENDENT_CODE ON
-        C_VISIBILITY_PRESET hidden
-        INTERPROCEDURAL_OPTIMIZATION OFF
-        AUTOMOC OFF
-        AUTOUIC OFF)
-    target_compile_options(${bundled} PRIVATE -w)
-endforeach()
+afterglow_third_party_target(zlib-ng afterglow_xxhash)
 # Both are linked into the binaries, so their notices go with them. They
 # install with the other licence texts (afterglow/CMakeLists.txt).
 set(AFTERGLOW_ZLIB_LICENSE "${AFTERGLOW_ZLIB_NG_SOURCE_DIR}/LICENSE.md" PARENT_SCOPE)

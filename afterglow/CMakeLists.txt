@@ -274,6 +274,9 @@ install(FILES ${AFTERGLOW_LICENSE_TEXTS} DESTINATION ${CMAKE_INSTALL_DATADIR}/li
 install(FILES "${AFTERGLOW_ZLIB_LICENSE}" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow RENAME LICENSE.zlib-ng)
 install(FILES "${AFTERGLOW_XXHASH_LICENSE}" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
         RENAME LICENSE.xxHash)
+# libpng, libjpeg-turbo and libwebp are linked into afterglow-mux, and into
+# aglow when it is built (libs/afterglow-image).
+afterglow_install_image_notices(${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
 # A system Luau (PLASMAZONES_SYSTEM_LUAU) is a separate package with its own
 # notices, and phosphor-scripting fetches no archive for it.
 if(NOT PLASMAZONES_SYSTEM_LUAU)

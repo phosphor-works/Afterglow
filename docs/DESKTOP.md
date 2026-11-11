@@ -190,7 +190,11 @@ Afterglow does not open or execute received files automatically.
 This document describes each of them.
 `aglow run` also runs the commands of scripts in the Afterglow on the same computer (see [script commands](CONTROL.md#script-commands)).
 On a remote host, `aglow run` runs the commands that a script marks `remote`, through `afterglow ssh` (see [remote commands](CONTROL.md#remote-commands)).
-`aglow` needs no Qt and no Phosphor library. It links libpng, libjpeg-turbo and libwebp of the system, to decode images.
+`aglow` is one static binary with no shared libraries.
+It runs on a Linux computer of its architecture whose kernel is as new as the static C library of the build host needs.
+On x86-64, the processor must also have the instruction level that the build needs.
+When `readelf` is installed, the build prints both requirements, for example "needs Linux 6.1.0 or later".
+When the compiler or linker flags contain `-fsanitize`, `aglow` links dynamically. See [build and install](BUILD.md#install).
 Afterglow installs it next to `afterglow`. To use the protocols over SSH, install `aglow` on the remote host (see [remote hosts](#remote-hosts)).
 The `kitten` client of Kitty also works with Afterglow.
 `aglow transfer`, `aglow dnd`, `aglow icat` and `aglow clipboard` take the options of the `kitten` command of the same name.
@@ -226,7 +230,8 @@ Run `aglow COMMAND --help` for the options of a command.
 ### Remote hosts
 
 Afterglow does not copy `aglow` to a remote host.
-Install `aglow` on the remote host from a package, or build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow alone](BUILD.md#build-aglow-alone)).
+Copy the static `aglow` of your build to a remote host whose kernel and processor it supports.
+You can also install `aglow` on the remote host from a package, or build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow alone](BUILD.md#build-aglow-alone)).
 That build does not need Qt or the Phosphor libraries.
 For file transfer, drag and drop, images and the clipboard, the remote host needs `aglow` or `kitten`, because these are Kitty protocols.
 For script commands, the remote host needs `aglow`, because `kitten` has no counterpart of `aglow run`.
@@ -236,7 +241,7 @@ See [remote commands](CONTROL.md#remote-commands).
 ### aglow icat
 
 `aglow icat` shows PNG, JPEG, GIF, WebP and BMP images.
-It decodes PNG, JPEG and WebP with libpng, libjpeg-turbo and libwebp of the system, and GIF and BMP with readers of its own.
+It decodes PNG, JPEG and WebP with libpng, libjpeg-turbo and libwebp, which the build includes, and GIF and BMP with readers of its own.
 It does not show a BMP that is compressed with run-length encoding, or Apple's CgBI PNG.
 It sends a PNG image that needs no change as it is.
 It decodes the other images to pixels. It also decodes a PNG image that it must scale or mirror, or draw on a color (`--background`).

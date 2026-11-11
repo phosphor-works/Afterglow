@@ -9,9 +9,9 @@
 
 // The image decoders of aglow and afterglow-mux: PNG (libpng), JPEG
 // (libjpeg-turbo), WebP (libwebp), and GIF and BMP, which this library reads
-// itself. No Qt. The system's libraries decode, and they still parse what a
-// remote program sends: aglow and afterglow-mux call decode() only in a
-// child process with limits on its memory and CPU time.
+// itself. No Qt. The three libraries are built in from pinned archives, and
+// they still parse what a remote program sends: aglow and afterglow-mux call
+// decode() only in a child process with limits on its memory and CPU time.
 namespace AfterglowImage {
 
 /// The longest side that the decoders take, the same as

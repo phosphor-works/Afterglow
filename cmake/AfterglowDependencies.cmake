@@ -2,14 +2,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # The third-party sources that Afterglow builds into its own binaries. Each
-# archive is pinned by version, URL and SHA-256. Each vendored file (a
-# single-file library kept in the repository) is pinned by its upstream commit
-# and the SHA-256 of the file. This file is the only place a pin lives. It
-# works as cmake/PhosphorDependencies.cmake in PlasmaZones does, which pins the
-# archives of the Phosphor libraries.
+# archive is pinned by version, URL and SHA-256. This file is the only place
+# a pin lives. It works as cmake/PhosphorDependencies.cmake in PlasmaZones
+# does, which pins the archives of the Phosphor libraries.
 #
 # The archives are built into the tree, not taken from the system, so that the
-# terminal and a static client of libs/afterglow-proto use the same code.
+# terminal and the static aglow use the same code, and so that aglow needs no
+# library of the host that runs it.
 #
 # How an archive is obtained, in order:
 #
@@ -39,7 +38,7 @@
 include_guard(GLOBAL)
 
 # ─── Pins ────────────────────────────────────────────────────────────────────
-set(AFTERGLOW_DEPS zlib-ng xxhash)
+set(AFTERGLOW_DEPS zlib-ng xxhash libpng libjpeg-turbo libwebp)
 
 # zlib-ng (Zlib license), in its zlib-compatible build: o=z images, file
 # transfer compression. The hash matches Homebrew's zlib-ng formula.
@@ -54,6 +53,30 @@ set(AFTERGLOW_DEP_xxhash_VERSION "0.8.4")
 set(AFTERGLOW_DEP_xxhash_URL "https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz")
 set(AFTERGLOW_DEP_xxhash_FILE "xxHash-0.8.4.tar.gz")
 set(AFTERGLOW_DEP_xxhash_SHA256 "5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32")
+
+# The image codecs of libs/afterglow-image, which aglow and afterglow-mux link
+# statically. Each is the release archive of its project, and each hash
+# matches the Homebrew formula of the same version.
+#
+# libpng (libpng-2.0 license): PNG, through its simplified API.
+set(AFTERGLOW_DEP_libpng_VERSION "1.6.59")
+set(AFTERGLOW_DEP_libpng_URL "https://downloads.sourceforge.net/project/libpng/libpng16/1.6.59/libpng-1.6.59.tar.xz")
+set(AFTERGLOW_DEP_libpng_FILE "libpng-1.6.59.tar.xz")
+set(AFTERGLOW_DEP_libpng_SHA256 "d80dd2a38a37f803cb9b6ac7b14bd6e74ddc3b654780a8380bdf93523fdb4389")
+
+# libjpeg-turbo (IJG and BSD-3-Clause licenses): JPEG, through the TurboJPEG 3
+# API. The decoder needs 3.0.2 or later, for TJPARAM_MAXPIXELS.
+set(AFTERGLOW_DEP_libjpeg-turbo_VERSION "3.2.1")
+set(AFTERGLOW_DEP_libjpeg-turbo_URL "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.1/libjpeg-turbo-3.2.1.tar.gz")
+set(AFTERGLOW_DEP_libjpeg-turbo_FILE "libjpeg-turbo-3.2.1.tar.gz")
+set(AFTERGLOW_DEP_libjpeg-turbo_SHA256 "c27ad72a68da151177929aa969ae773a2da5ac2af9ce946079314fdac8cece7f")
+
+# libwebp (BSD-3-Clause, with a patent grant): WebP, and its animations
+# through the demux library.
+set(AFTERGLOW_DEP_libwebp_VERSION "1.6.0")
+set(AFTERGLOW_DEP_libwebp_URL "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz")
+set(AFTERGLOW_DEP_libwebp_FILE "libwebp-1.6.0.tar.gz")
+set(AFTERGLOW_DEP_libwebp_SHA256 "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564")
 
 # CPM.cmake itself, the same release that PlasmaZones pins.
 set(AFTERGLOW_CPM_VERSION "0.43.2")
@@ -205,4 +228,27 @@ function(afterglow_fetch_dependency name)
                             "'${${name}_SOURCE_DIR}'). Check CPM_${name}_SOURCE and CPM_SOURCE_CACHE.")
     endif()
     set(${name}_SOURCE_DIR "${${name}_SOURCE_DIR}" PARENT_SCOPE)
+endfunction()
+
+# afterglow_third_party_target(<target>...)
+#
+# The properties of a library that is built from a pinned archive. PIC: it can
+# link into the shared afterglow-vt. Hidden: an executable or a shared library
+# that holds it must not export inflate(), XXH3_*() or png_*(), which the
+# system's copy of the library in the same process (Qt loads zlib, libpng and
+# libjpeg) could then take, or the reverse. -w: upstream code is not ours to
+# fix. No LTO, even with CMAKE_INTERPROCEDURAL_OPTIMIZATION: the optimizer
+# would work on upstream code again at each link, and warnings found then do
+# not come under -w. qt_standard_project_setup() turns AUTOMOC and AUTOUIC on
+# for every target, and these have no Qt.
+function(afterglow_third_party_target)
+    foreach(target IN LISTS ARGN)
+        set_target_properties(${target} PROPERTIES
+            POSITION_INDEPENDENT_CODE ON
+            C_VISIBILITY_PRESET hidden
+            INTERPROCEDURAL_OPTIMIZATION OFF
+            AUTOMOC OFF
+            AUTOUIC OFF)
+        target_compile_options(${target} PRIVATE -w)
+    endforeach()
 endfunction()
