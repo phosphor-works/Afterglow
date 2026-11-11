@@ -19,7 +19,8 @@
 // Screen readback (DECRQCRA) is on, as the suites read the screen through it.
 // Exits with the command's status, or 2 when the runner itself fails.
 
-#include <AfterglowProto/Text.h>
+#include "PtyHost.h"
+
 #include <AfterglowVt/Terminal.h>
 
 #include <poll.h>
@@ -43,80 +44,8 @@
 
 namespace {
 
-class Host : public AfterglowVt::ITerminalHost
-{
-public:
-    explicit Host(int fd)
-        : m_fd(fd)
-    {
-    }
-    void writeToPty(std::string_view bytes) override
-    {
-        if (bytes.size() > MaxPending - (m_pending.size() - m_offset)) {
-            overflowed = true;
-            return;
-        }
-        if (!pending()) m_progress = std::chrono::steady_clock::now();
-        m_pending.erase(0, m_offset);
-        m_offset = 0;
-        m_pending.append(bytes);
-    }
-    bool pending() const { return m_offset < m_pending.size(); }
-    void flush()
-    {
-        if (!pending()) return;
-        const ssize_t n = ::write(m_fd, m_pending.data() + m_offset, m_pending.size() - m_offset);
-        if (n > 0) {
-            m_offset += std::size_t(n);
-            m_progress = std::chrono::steady_clock::now();
-            if (!pending()) { m_pending.clear(); m_offset = 0; }
-        } else if (n < 0 && errno == EIO) {
-            // The program closed its side after a last query: nobody reads
-            // the reply. The read path sees the hangup and ends the run.
-            m_pending.clear();
-            m_offset = 0;
-        } else if (n == 0 || (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) failed = true;
-    }
-    bool stalled() const
-    {
-        return pending() && std::chrono::steady_clock::now() - m_progress > std::chrono::seconds(5);
-    }
-    bool failed = false;
-    bool overflowed = false;
-
-    // Size changes asked for by the program (DECCOLM, XTWINOPS) are granted,
-    // as xterm does with window ops allowed; the pty follows.
-    bool requestResize(int cols, int rows) override
-    {
-        if (cols < MinCols || cols > 1000 || rows < 1 || rows > 500) return false;
-        winsize ws{};
-        ws.ws_col = std::uint16_t(cols);
-        ws.ws_row = std::uint16_t(rows);
-        ws.ws_xpixel = std::uint16_t(cols * CellWidth);
-        ws.ws_ypixel = std::uint16_t(rows * CellHeight);
-        return ::ioctl(m_fd, TIOCSWINSZ, &ws) == 0;
-    }
-
-    // A 1920x1080 display, so maximum sizes and screen reports have answers.
-    bool screenSize(int& width, int& height) override
-    {
-        width = 1920;
-        height = 1080;
-        return true;
-    }
-
-    static constexpr int CellWidth = 10;
-    static constexpr int CellHeight = 20;
-    /// The terminal core keeps at least two columns; the pty must agree.
-    static constexpr int MinCols = 2;
-
-private:
-    static constexpr std::size_t MaxPending = 1024 * 1024;
-    int m_fd;
-    std::string m_pending;
-    std::size_t m_offset = 0;
-    std::chrono::steady_clock::time_point m_progress{};
-};
+using Host = AfterglowConformance::PtyHost;
+using AfterglowConformance::screenText;
 
 bool dimension(const char* value, int minimum, int maximum, int& result)
 {
@@ -185,35 +114,6 @@ const char* respond(const std::string& command, const std::string& path, std::st
     }
     if (!ok) return why;
     return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? nullptr : "responder failed";
-}
-
-using AfterglowProto::appendUtf8;
-
-/// The screen as the user reads it, so that --reply text in CJK or with
-/// combining marks matches: wide tails are skipped, cluster marks kept.
-std::string screenText(const AfterglowVt::Terminal& terminal)
-{
-    std::string out;
-    const AfterglowVt::Screen& screen = terminal.screen();
-    for (int y = 0; y < screen.rows(); ++y) {
-        const AfterglowVt::Row& row = screen.row(y);
-        for (int x = 0; x < screen.cols(); ++x) {
-            const AfterglowVt::Cell& cell = row.at(x);
-            if (cell.isTail()) {
-                continue;
-            }
-            if (cell.isMulticell() && (cell.multicellDx() != 0 || cell.multicellDy() != 0)) {
-                out += ' '; // a sized block's text is in its top-left cell
-                continue;
-            }
-            appendUtf8(out, cell.codepoint() == 0 ? U' ' : cell.codepoint());
-            for (char32_t extra : screen.graphemeExtra(row, x)) {
-                appendUtf8(out, extra);
-            }
-        }
-        out += '\n';
-    }
-    return out;
 }
 
 /// Expands C escapes (\r, \n, \t, \e, \xHH, \\).

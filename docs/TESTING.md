@@ -49,7 +49,7 @@ When the tools are there and its own sshd cannot start, the test fails.
 | Option | Default | Function |
 | --- | --- | --- |
 | `BUILD_TESTING` | `ON` | Builds the unit and renderer tests. Requires GTest. |
-| `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng` and the headless conformance host. Adds the host's regression test and `aglow_icat_render` to CTest. |
+| `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng`, the headless conformance host and the [TUI fuzzer](#tui-fuzzing). Adds the regression tests of the host and the fuzzer, and `aglow_icat_render`, to CTest. |
 | `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`, and with `AFTERGLOW_BUILD_AGLOW` also `afterglow_transfer_kitty`. Requires Python 3 and the native test dependencies. |
 | `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the image decoders of `aglow` and the attach stream of `afterglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
 | `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries. Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests, the `RunBinaryTest.*` tests and the `sshd` test of `RemoteCommandsTest.*` report Skipped. |
@@ -189,7 +189,11 @@ CTest runs the headless-tool regressions. To run them alone:
 
 ```sh
 python3 tools/conformance/test_headless.py build/tools/conformance/afterglow_headless
+python3 tools/conformance/test_tuifuzz.py build/tools/conformance/afterglow_tuifuzz
+build/tools/conformance/afterglow_screen_checks_tests
 ```
+
+`test_tuifuzz.py` reports Skipped when `bwrap` is not installed.
 
 Regenerate the configuration reference after schema changes:
 
@@ -341,6 +345,91 @@ Examine each new difference before you add it to the file:
 2. If Afterglow is wrong, fix Afterglow and add a regression test.
 3. If libghostty-vt is wrong, or the terminals disagree with reason, add a pattern for the class of input. Write the reason and the terminal that Afterglow follows.
 4. Do not change Afterglow only so that it agrees with libghostty-vt.
+
+### TUI fuzzing
+
+`afterglow_tuifuzz` runs a full-screen program in a pseudo-terminal against the terminal core, and sends it random input.
+Real programs write the screens that users see.
+The tool checks the screen after each step:
+
+| Check | Fails when |
+| --- | --- |
+| Size | A screen has a size other than the terminal's. |
+| Cursor | The cursor is outside its screen. |
+| Rows | A row of the screen does not have one cell for each column, or a row of the scrollback has more. |
+| Wide characters | A wide character has no tail cell, or a tail cell has no wide character. |
+| Sized text (OSC 66) | A block of sized text lost a cell, or a cell of a block has no first cell. |
+
+A step is one of these actions: text, a key in the encoding that the program asked for (Kitty keyboard protocol included), Ctrl and a letter, mouse reports while the program tracks the mouse, a paste, a focus change, a resize, a scroll of the scrollback, or a selection and a search over it.
+After the action, the tool reads the output of the program until the program is quiet for 30 milliseconds, or for no more than 400 milliseconds.
+When the program exits, the tool starts it again in the same terminal.
+
+The program runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox, because random keys can make a program run shell commands, write files or stop processes.
+The tool does not run without `bwrap`.
+
+| Item | In the sandbox |
+| --- | --- |
+| Root file system | Read-only |
+| `/home`, `/run`, `/tmp` | Empty and private. The sockets of your sessions are not there. |
+| Home directory | `/tmp/home`, from `--home DIR`, or an empty directory that the run deletes |
+| Processes, network, IPC | Namespaces of their own. A program sees and stops only the processes of the sandbox. |
+| Environment | Cleared, then `HOME`, `PATH`, `TERM=xterm-256color`, `COLORTERM`, `LANG=C.UTF-8`, `SHELL=/bin/sh` and the `--env` values |
+
+Fuzz the installed programs, 500 steps each:
+
+```sh
+tools/conformance/tuifuzz.sh build 500
+```
+
+The script runs vim, nvim, less, nano, tmux, btop and top, and skips a program that is not installed.
+It gives each program a home with a sample text file, and uses the restricted mode of the program where it has one.
+The arguments after the build directory are the steps, the seed and a directory for recordings.
+
+Fuzz one program:
+
+```sh
+build/tools/conformance/afterglow_tuifuzz --seed 7 --steps 2000 --env LESSSECURE=1 -- less /etc/os-release
+```
+
+| Option | Default | Function |
+| --- | --- | --- |
+| `--cols N`, `--rows N` | 80, 24 | The size at the start. |
+| `--seed N` | 1 | The seed of the input. The same seed sends the same input, but the timing of a program can change its output. |
+| `--steps N` | 1000 | The number of steps. |
+| `--seconds N` | None | Stops the run after this time. |
+| `--home DIR` | A new empty directory | The home directory of the program. |
+| `--env NAME=VALUE` | None | An environment variable for the program. |
+| `--record DIR` | None | Writes the output of the program to `DIR/SEED-NNNN-COLSxROWS.vt`, a new file at each resize. |
+
+A failure prints the program, the seed, the step, the last action and the screen, and the tool exits with status 1.
+The tool exits with status 2 when the program does not start.
+A program that crashes is reported, and the run continues.
+
+The recordings are input for the other tools:
+
+1. Compare them with libghostty-vt. `afterglow_vtdiff` takes the size of each file from its name:
+
+   ```sh
+   build/tools/vtdiff/afterglow_vtdiff --expected tools/vtdiff/expected-differences.txt recordings/vim
+   ```
+
+2. Copy them into the corpus directory of `afterglow_vtfuzz`.
+
+Run the fuzzer on the [sanitizer build](#sanitizer-build) before a pull request that changes the parser or the screen:
+
+1. Turn on the tools in the sanitizer build, and build the fuzzer with two jobs:
+
+   ```sh
+   cmake -B build-debug -DAFTERGLOW_BUILD_TOOLS=ON
+   systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build-debug -j2 --target afterglow_tuifuzz
+   ```
+
+2. Run the programs:
+
+   ```sh
+   ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS=suppressions=$PWD/tools/sanitizers/lsan.supp \
+       UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 tools/conformance/tuifuzz.sh build-debug 2000
+   ```
 
 ### Unicode tables
 
