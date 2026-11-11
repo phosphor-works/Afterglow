@@ -568,9 +568,14 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 const std::uint32_t color = colorAt(col, y, cell.fg);
                 // Icons (Nerd Font symbols) are fitted to the grid: two cells
                 // when the next one is blank, as prompts expect, else one.
-                const bool icon = cell.grapheme == 0 && isIcon(cell.cp);
+                // A wide emoji that VS15 made narrow shows a text glyph that
+                // is often as wide as the emoji: it is fitted to its cell.
+                const bool narrowed = cell.grapheme != 0 && cell.width == 1
+                    && AfterglowVt::Unicode::props(cell.cp).narrowsWithVs15
+                    && s.graphemes[cell.grapheme - 1].find(AfterglowVt::Unicode::VariationSelector15) != std::u32string::npos;
+                const bool icon = (cell.grapheme == 0 && isIcon(cell.cp)) || narrowed;
                 int span = rtl ? clusterRight - col : std::max<int>(1, cell.width);
-                if (icon && span == 1 && col + 1 < s.cols) {
+                if (icon && !narrowed && span == 1 && col + 1 < s.cols) {
                     const SnapshotCell& next = s.at(col + 1, y);
                     if ((next.cp == 0 || next.cp == U' ') && next.width == 1 && next.mcScale == 0) {
                         span = 2;

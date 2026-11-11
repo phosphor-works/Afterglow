@@ -228,6 +228,24 @@ IME context does not permit arbitrary surrounding-text edits.
 Optional primary-screen bidirectional layout has application-grid exclusions and bounded paragraph processing.
 See [bidirectional text](BIDI.md).
 
+## Character widths
+
+The widths come from Unicode 18.0.
+Afterglow joins characters into grapheme clusters as UAX #29 says, when grapheme clustering (mode 2027) is on, which is the default.
+A cluster takes the cells that glibc's `wcwidth` gives its characters, but no more than two.
+Shells and editors measure text with `wcwidth`, so the cursor stays where they expect it.
+
+| Text | Cells | Kitty |
+| --- | --- | --- |
+| A wide emoji, then VS15 (U+FE0E) | 1 | 1 |
+| A text emoji, then VS16 (U+FE0F) | 2 | 2 |
+| A letter and a spacing mark (Hindi का, Tamil கா) | 2 | 1 |
+| A conjunct: a consonant, a virama and a consonant (Hindi क्र) | 2 | 1 |
+| Thai SARA AM or Lao AM after a letter | 2 | 2 |
+| A prepended mark (U+0600 to U+0605, U+06DD, U+070F, U+0890, U+0891, U+08E2, U+110BD, U+110CD) | 1 | 0 |
+
+`tools/conformance/ucs-detect.sh` measures the widths with ucs-detect. See [TESTING.md](TESTING.md#character-widths-with-ucs-detect).
+
 ## Kitty color control and pointer shapes
 
 OSC 21 supports the [Kitty color-control protocol](https://sw.kovidgoyal.net/kitty/color-stack/).

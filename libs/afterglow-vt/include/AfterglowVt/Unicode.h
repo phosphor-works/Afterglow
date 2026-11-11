@@ -42,12 +42,16 @@ struct Props
     bool extendedPictographic = false;
     /// Emoji with text-default presentation: VS16 (U+FE0F) widens it to two cells.
     bool widensWithVs16 = false;
+    /// A wide emoji, not a regional indicator: VS15 (U+FE0E) narrows it to
+    /// one cell.
+    bool narrowsWithVs15 = false;
     /// Terminal cell width: 0, 1 or 2.
     std::uint8_t width = 1;
     /// East Asian Ambiguous: width 1, but 2 for terminals set up for CJK text.
     bool ambiguous = false;
 };
 
+inline constexpr char32_t VariationSelector15 = 0xFE0E;
 inline constexpr char32_t VariationSelector16 = 0xFE0F;
 inline constexpr char32_t ReplacementCharacter = 0xFFFD;
 

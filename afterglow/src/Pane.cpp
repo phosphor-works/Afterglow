@@ -636,20 +636,23 @@ void Pane::applyPreedit()
     std::vector<std::pair<std::u32string, int>> cells;
     int total = 0;
     int caretCol = -1;
-    const QString text = QString::fromStdU32String(m_preedit);
-    QTextBoundaryFinder boundaries(QTextBoundaryFinder::Grapheme, text);
-    int startOffset = 0, codepointOffset = 0;
-    for (int end = boundaries.toNextBoundary(); end >= 0; end = boundaries.toNextBoundary()) {
-        auto cluster = text.mid(startOffset, end - startOffset).toStdU32String();
-        int width = 0;
-        for (const char32_t cp : cluster) width = std::max(width, m_terminal.charWidth(AfterglowVt::Unicode::props(cp)));
-        width = std::clamp(width, 1, 2);
-        if (m_preeditCursor >= codepointOffset && m_preeditCursor < codepointOffset + int(cluster.size())) caretCol = total;
-        codepointOffset += int(cluster.size());
+    // The terminal's own clusters and widths, so that the composition takes
+    // the cells that the committed text will: Qt's grapheme boundaries put
+    // a variation selector in a cluster of its own.
+    AfterglowVt::Unicode::GraphemeSegmenter segmenter;
+    std::size_t clusterStart = 0;
+    const auto flush = [&](std::size_t end) {
+        std::u32string cluster = m_preedit.substr(clusterStart, end - clusterStart);
+        const int width = std::clamp(m_terminal.clusterWidth(cluster), 1, 2);
+        if (m_preeditCursor >= int(clusterStart) && m_preeditCursor < int(end)) caretCol = total;
         cells.emplace_back(std::move(cluster), width);
         total += width;
-        startOffset = end;
+        clusterStart = end;
+    };
+    for (std::size_t i = 0; i < m_preedit.size(); ++i) {
+        if (segmenter.breaksBefore(m_preedit[i]) && i > clusterStart) flush(i);
     }
+    if (clusterStart < m_preedit.size()) flush(m_preedit.size());
     if (caretCol < 0) {
         caretCol = total;
     }
