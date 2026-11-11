@@ -23,10 +23,11 @@ namespace AfterglowMux {
 /// Changes when a call, its arguments or its result change. Each end checks
 /// it: the client calls Fn::Version first on each connection, and the daemon
 /// refuses a newSession or an attach of another version. The codecs of the
-/// attach stream (MuxStream.h) and of the host calls on it (MuxHost.h) change
-/// with it. MuxProtocolTest pins the keys of the options to this number, so
-/// that a new key changes it too.
-inline constexpr int ProtocolVersion = 5;
+/// attach stream (MuxStream.h), of the host calls on it (MuxHost.h) and of the
+/// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
+/// MuxProtocolTest pins the keys of the options to this number, so that a new
+/// key changes it too.
+inline constexpr int ProtocolVersion = 6;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -36,11 +37,18 @@ inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
 inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name}
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
-/// (protocol, name, {takeover, eventQueue}) -> {name, socket}: the window
+/// (protocol, name, {takeover, eventQueue, history}) -> {name, socket}: the window
 /// connects to socket, where the session's stream starts (MuxStream.h).
 inline constexpr const char* Attach = "attach";
 /// (name) -> null: the window of the session closes, and the session keeps running.
 inline constexpr const char* Detach = "detach";
+/// (name, pane) -> string: the working directory of the program in the
+/// foreground of the pane, else of its first program, as the system has it.
+/// Empty when the program exited, when neither directory remains, and for a
+/// path that is not UTF-8. The window asks, for a new tab or split, when the
+/// shell reported no directory that exists on its machine (OSC 7, 9;9, 633,
+/// 1337).
+inline constexpr const char* PaneDirectory = "paneDirectory";
 } // namespace Fn
 
 /// The keys of the options of Fn::Attach. The daemon refuses another key.
@@ -50,11 +58,16 @@ namespace AttachOption {
 inline constexpr const char* Takeover = "takeover";
 /// Mux.eventQueue of the window, in bytes (MinEventQueue to MaxEventQueue).
 inline constexpr const char* EventQueue = "eventQueue";
+/// Terminal.scrollback of the window: the most history rows that its replica
+/// of a pane keeps (0 to MaxHistory). The daemon sends no older rows.
+/// Without it, the daemon sends all that it has.
+inline constexpr const char* History = "history";
 } // namespace AttachOption
 
 /// The error codes of the daemon's calls, besides those of phosphor-ipc.
 namespace Error {
 inline constexpr const char* NoSuchSession = "NO_SUCH_SESSION";
+inline constexpr const char* NoSuchPane = "NO_SUCH_PANE";
 inline constexpr const char* SessionExists = "SESSION_EXISTS";
 inline constexpr const char* VersionMismatch = "VERSION_MISMATCH";
 inline constexpr const char* SpawnFailed = "SPAWN_FAILED";
@@ -102,6 +115,9 @@ inline constexpr std::int64_t MaxGraphicsQuota = std::int64_t(4096) << 20;
 inline constexpr std::int64_t MinEventQueue = std::int64_t(1) << 20;
 inline constexpr std::int64_t MaxEventQueue = std::int64_t(64) << 20;
 inline constexpr std::int64_t DefaultEventQueue = std::int64_t(4) << 20;
+/// The most history rows that an attach can name: Terminal.scrollback, as
+/// for a session's own terminal.
+inline constexpr std::int64_t MaxHistory = MaxScrollback;
 
 /// What runs in a new pane. The client prepares it from its configuration
 /// (the shell, shell integration, TERM and the environment of the launch).

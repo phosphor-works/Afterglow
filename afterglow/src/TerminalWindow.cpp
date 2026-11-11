@@ -628,7 +628,7 @@ void TerminalWindow::bindPane(Pane* pane)
                     // An overlay's program is on its host, which shows it.
                     Pane* const place = hostOf(guard);
                     const bool focused = isActive() && place == m_focused;
-                    const bool visible = isExposed() && windowState() != Qt::WindowMinimized && tabOf(place) == m_currentTab && m_splits && m_splits->isVisible(place);
+                    const bool visible = paneSeen(place, overviewCards());
                     if ((request.occasion == Occasion::Unfocused && focused)
                         || (request.occasion == Occasion::Invisible && visible)) {
                         return;
@@ -815,7 +815,7 @@ Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QString
     } else {
         area.setHeight(int(available * fraction));
     }
-    Pane* added = createPane(options.cwd.isEmpty() ? startDirectory(m_focused->workingDirectory()) : options.cwd, area, command, error, options.environment);
+    Pane* added = createPane(options.cwd.isEmpty() ? startDirectory(inheritedDirectory(m_focused)) : options.cwd, area, command, error, options.environment);
     // A shell that did not start leaves the zoom too.
     if (!added) return nullptr;
     if (zoomed) {
@@ -1171,8 +1171,8 @@ Pane* TerminalWindow::splitPane(Pane* pane, SplitTree::Direction direction, cons
 Pane* TerminalWindow::openTab(const PaneLaunchOptions& options, QString* error, Pane* from)
 {
     const int beside = from ? tabOf(from) : -1;
-    const QString inherited = beside >= 0 ? from->workingDirectory() : focusedDirectory();
-    return newTab(options.cwd.isEmpty() ? startDirectory(inherited) : options.cwd, options.command, options.environment, error,
+    const QString start = options.cwd.isEmpty() ? startDirectory(inheritedDirectory(beside >= 0 ? from : m_focused.data())) : options.cwd;
+    return newTab(start, options.command, options.environment, error,
                   beside >= 0 ? beside + 1 : -1);
 }
 
@@ -1182,18 +1182,21 @@ void TerminalWindow::openShellTab(Pane* from)
     if (!openTab({}, &error, from)) NotificationCenter::instance().showNotice(m_focused, tr("Could not open a tab"), error);
 }
 
+QString TerminalWindow::inheritedDirectory(const Pane* from) const
+{
+    return from && !fixedStartDirectory(false) ? from->workingDirectory() : QString();
+}
+
 QString TerminalWindow::focusedDirectory() const
 {
     return m_focused ? m_focused->workingDirectory() : QString();
 }
 
-QString TerminalWindow::startDirectory(const QString& inherited) const
+std::optional<QString> TerminalWindow::fixedStartDirectory(bool warn) const
 {
-    // A pane whose directory is unknown or gone hands on the home directory.
-    const QString fallback = !inherited.isEmpty() && QFileInfo(inherited).isDir() ? inherited : QDir::homePath();
     const QString setting = m_settings.settings().window.workingDirectory;
     if (setting.isEmpty() || setting == QLatin1String("inherit")) {
-        return fallback;
+        return std::nullopt;
     }
     if (setting == QLatin1String("home")) {
         return QDir::homePath();
@@ -1204,8 +1207,16 @@ QString TerminalWindow::startDirectory(const QString& inherited) const
     if (QFileInfo(path).isDir()) {
         return path;
     }
-    qCWarning(lcWindow).noquote() << "workingDirectory" << setting << "is not a directory";
-    return fallback;
+    // A path that is not a directory inherits (Window.workingDirectory).
+    if (warn) qCWarning(lcWindow).noquote() << "workingDirectory" << setting << "is not a directory";
+    return std::nullopt;
+}
+
+QString TerminalWindow::startDirectory(const QString& inherited) const
+{
+    if (const auto fixed = fixedStartDirectory(true)) return *fixed;
+    // A pane whose directory is unknown or gone hands on the home directory.
+    return !inherited.isEmpty() && QFileInfo(inherited).isDir() ? inherited : QDir::homePath();
 }
 
 QStringList TerminalWindow::closingJobs(const QList<Pane*>& panes) const
@@ -1470,6 +1481,9 @@ void TerminalWindow::moveTab(int from, int to)
         }
     }
     rebaseOverview(cards);
+    // The cards go in tab order up to their limit, so a move can take a pane
+    // out of the overview, or put one in.
+    if (overviewShowing()) updatePaneVisibility();
     // A drag in the tab bar counts tabs by place: a move from elsewhere
     // (a key, a script) ends it.
     m_controller->notifyTabsMoved();
@@ -2237,7 +2251,9 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     const QPointF step = cellTarget - m.cursorTarget;
     const bool smallMove = cellTarget != m.cursorTarget && std::abs(step.y()) < 0.5 && std::abs(step.x()) <= 2.0 * metrics.cellWidth;
     if (!m.cursorKnown || !glide || smallMove) {
-        m.cursorKnown = true;
+        // A session pane's blank replica has its cursor at the top left: the
+        // cursor of the first frame drawn is its first sighting, not a move.
+        m.cursorKnown = pane->snapshotSynced();
         m.cursorTarget = cellTarget;
         m.cursor.start(cellTarget, cellTarget, cursorSpec);
     } else if (cellTarget != m.cursorTarget) {
@@ -2613,22 +2629,32 @@ void TerminalWindow::exposeEvent(QExposeEvent*)
     updatePaneVisibility();
 }
 
+std::vector<Pane*> TerminalWindow::overviewCards() const
+{
+    return overviewShowing() ? overviewPanes() : std::vector<Pane*>{};
+}
+
+bool TerminalWindow::paneSeen(const Pane* pane, const std::vector<Pane*>& cards) const
+{
+    if (!pane || !isExposed() || windowState() == Qt::WindowMinimized) return false;
+    // The overview draws the panes of every tab as live cards, up to its
+    // limit: those are what the user sees, the current tab's too.
+    if (overviewShowing()) return std::find(cards.begin(), cards.end(), pane) != cards.end();
+    return tabOf(pane) == m_currentTab && m_splits && m_splits->isVisible(pane);
+}
+
 void TerminalWindow::updatePaneVisibility()
 {
-    const bool shown = isExposed() && windowState() != Qt::WindowMinimized;
-    // The overview draws other tabs' panes as live cards: they can be seen too.
-    const std::vector<Pane*> cards = overviewShowing() ? overviewPanes() : std::vector<Pane*>{};
+    const std::vector<Pane*> cards = overviewCards();
     for (std::size_t i = 0; i < m_tabs.size(); ++i) {
-        const bool current = int(i) == m_currentTab;
         const SplitTree* tree = m_tabs[i]->splits.get();
         if (!tree) continue;
         tree->forEachPane([&](Pane* p, const QRect&) {
-            const bool visible = shown
-                && ((current && tree->isVisible(p)) || std::find(cards.begin(), cards.end(), p) != cards.end());
+            const bool visible = paneSeen(p, cards);
             // A session pane's replica must not answer its program: the
-            // daemon's terminal answers the program's own queries, and the
-            // stream carries no visibility yet (docs/MUX.md).
-            if (!p->isSessionPane()) p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
+            // daemon's terminal answers the program's own queries.
+            if (p->isSessionPane()) p->setSessionVisible(visible);
+            else p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
             // An overlay shows where its host does, on a card too.
             if (PaneOverlay* overlay = p->overlay()) overlay->pane()->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
         });
@@ -2960,7 +2986,7 @@ bool TerminalWindow::performAction(Action action)
         }
         return true;
     case Action::NewWindow:
-        Q_EMIT newWindowRequested(focusedDirectory());
+        Q_EMIT newWindowRequested(inheritedDirectory(m_focused));
         return true;
     case Action::NewTab:
         openShellTab(m_focused);
@@ -3014,11 +3040,11 @@ bool TerminalWindow::performAction(Action action)
             return fail(tr("No pager"), command.isEmpty() ? tr("Terminal.pager is empty.")
                                                           : tr("The pager %1 was not found.").arg(command.front()));
         }
-        if (m_focused->isSessionPane()) {
-            return fail(tr("No command output"), tr("A window of a mux session does not keep the output of its commands yet."));
-        }
         const std::size_t limit = m_settings.settings().lastOutputLimit;
         const auto output = m_focused->readText(Terminal::TextScope::LastOutput, limit);
+        if (m_focused->lastOutputArriving()) {
+            return fail(tr("No command output"), tr("The output of the command is still on its way from the session. Try again in a moment."));
+        }
         if (!output.value(QStringLiteral("available")).toBool()) {
             return fail(tr("No command output"), tr("Shell integration has not recorded a command yet."));
         }
@@ -3526,7 +3552,11 @@ void TerminalWindow::paneStatusChanged(Pane* pane)
     for (const PaneStatusRecord& r : view.records) {
         states.insert(r.id, int(r.state));
         using AfterglowVt::StatusState;
-        const bool notable = r.state == StatusState::Blocked || r.state == StatusState::Done || r.state == StatusState::Error;
+        // A session pane's first frame brings the records as the daemon kept
+        // them: a window showed them, or none did while they changed. Either
+        // way they are no change that this window saw happen.
+        const bool notable = (r.state == StatusState::Blocked || r.state == StatusState::Done || r.state == StatusState::Error)
+            && r.serial > pane->statusBaseline();
         if (notable && view.lastStates.value(r.id, -1) != int(r.state)
             && (!attention || statusPriority(r, 0) > statusPriority(*attention, 0))) {
             attention = &r;
@@ -4126,9 +4156,11 @@ void TerminalWindow::urlModeKey(QKeyEvent* e)
         const QStringList configuredCommand = exact->command;
         const bool copy = m_urlMode.copy;
         // The pane the hints were found in, not whichever has the focus now.
-        const QString directory = m_urlMode.pane ? m_urlMode.pane->workingDirectory() : QString();
+        const QPointer<Pane> found = m_urlMode.pane;
         stopUrlMode();
         if (action == QLatin1String("command") || action == QLatin1String("open")) {
+            // Only these use it: a session pane asks its daemon.
+            const QString directory = found ? found->workingDirectory() : QString();
             QString path = url, line = QStringLiteral("1"), column = QStringLiteral("1");
             static const QRegularExpression location(QStringLiteral(R"(^(.*?):(\d+)(?::(\d+))?$)"));
             const auto match = location.match(path);

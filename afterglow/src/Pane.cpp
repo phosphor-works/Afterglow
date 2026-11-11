@@ -266,6 +266,7 @@ bool Pane::refreshSnapshot(int extraRows)
             highlight.textColor = m_searchColors.text;
         }
         m_snapshot.capture(m_terminal, selectionHere ? &m_selection : nullptr, highlight, extraRows, false);
+        m_snapshotSynced = m_sessionSynced;
         applyPreedit();
         m_snapshot.applyBidi(m_terminal);
         m_snapshotSelectionSerial = m_selectionSerial;
@@ -807,11 +808,30 @@ QVariantMap Pane::readText(AfterglowVt::Terminal::TextScope scope, std::size_t l
         std::lock_guard lock(m_mutex);
         text = m_terminal.text(scope, limit, &truncated);
         available = scope != AfterglowVt::Terminal::TextScope::LastOutput || m_terminal.hasCommandOutput();
+        if (scope == AfterglowVt::Terminal::TextScope::LastOutput && lastOutputArrivingLocked()) {
+            available = false;
+            text.clear();
+        }
     }
     // Converted after the lock: the text can be many megabytes, and the
     // reader thread waits on the lock.
     return {{QStringLiteral("text"), QString::fromStdString(text)}, {QStringLiteral("truncated"), truncated},
             {QStringLiteral("available"), available}};
+}
+
+bool Pane::lastOutputArriving() const
+{
+    std::lock_guard lock(m_mutex);
+    return lastOutputArrivingLocked();
+}
+
+bool Pane::lastOutputArrivingLocked() const
+{
+    // A session pane's history comes over several frames: newer rows that did
+    // not come yet are blank places, and after an attach, older rows are
+    // missing until they come (StateReader::received).
+    const auto rows = m_terminal.lastOutputRows();
+    return m_session && rows && !m_stateReader.received(rows->first, rows->second);
 }
 
 QString Pane::runningCommand() const
@@ -864,7 +884,7 @@ QString Pane::foregroundJob() const
     return m_launchedProgram;
 }
 
-QString Pane::workingDirectory() const
+QString Pane::knownDirectory() const
 {
     QString reported;
     {
@@ -872,8 +892,24 @@ QString Pane::workingDirectory() const
         reported = m_reportedDirectory;
     }
     // A shell in a container can report a path that is not on this machine.
-    if (!reported.isEmpty() && QFileInfo(reported).isDir()) return reported;
+    // Checked once for each path that the shell reports: scripts read every
+    // pane for each event, and a stat waits as long as its mount does.
+    if (reported != m_checkedDirectory) {
+        m_checkedDirectory = reported;
+        m_checkedDirectoryExists = !reported.isEmpty() && QFileInfo(reported).isDir();
+    }
+    if (m_checkedDirectoryExists) return reported;
     return m_pty ? QFile::decodeName(QByteArray::fromStdString(m_pty->currentWorkingDirectory())) : QString();
+}
+
+QString Pane::workingDirectory() const
+{
+    const QString known = knownDirectory();
+    if (!known.isEmpty() || !m_session || m_sessionGone) return known;
+    // The daemon and the window share the machine, so its path is one here,
+    // though the directory can go before the window uses it.
+    const QString asked = m_session->directory(m_sessionPane);
+    return QFileInfo(asked).isDir() ? asked : QString();
 }
 
 void Pane::reportInputFailure()
@@ -979,6 +1015,13 @@ void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, boo
     m_session->bind(id, this);
 }
 
+void Pane::setSessionVisible(bool visible)
+{
+    if (!m_session || m_sessionGone || m_sessionVisible == int(visible)) return;
+    m_sessionVisible = int(visible);
+    m_session->sendVisible(m_sessionPane, visible);
+}
+
 bool Pane::applySessionFrame(std::string_view frame)
 {
     std::string error;
@@ -991,8 +1034,16 @@ bool Pane::applySessionFrame(std::string_view frame)
                               << QString::fromStdString(error);
             return false;
         }
-        // As for output of a program of its own: the frame is that output.
-        if (m_scrollOnOutput.load(std::memory_order_relaxed)) m_terminal.resetViewport();
+        if (!m_sessionSynced) {
+            m_sessionSynced = true;
+            // Before the queued statusChanged of this frame reads it.
+            for (const AfterglowVt::StatusRecord& r : m_terminal.programStatus().records()) {
+                m_statusBaseline = std::max<quint64>(m_statusBaseline, r.serial);
+            }
+        }
+        // As for output of a program of its own: a frame that changed the
+        // screen is that output. History that catches up is none.
+        if (m_scrollOnOutput.load(std::memory_order_relaxed) && m_stateReader.screenChanged()) m_terminal.resetViewport();
         // The replica takes them as they are: the pane hears of a change
         // as it does from a program of its own.
         if (m_terminal.title() != title) titleChanged(m_terminal.title());
@@ -1100,7 +1151,8 @@ void Pane::workingDirectoryChanged(std::string_view directory)
     // m_mutex held: on the pty thread, or for a session pane on the GUI thread
     // (applySessionFrame). OSC 7 sends file://host/path, percent encoded; the
     // others send a plain path. A directory on another host leaves /proc to
-    // answer, which knows the local end of the session.
+    // answer, which knows the local end of the session (for a session pane,
+    // the daemon's, through workingDirectory).
     QByteArray path;
     if (directory.starts_with("file://")) {
         const std::string_view rest = directory.substr(7);
@@ -1254,7 +1306,8 @@ bool Pane::decodeImage(std::string_view data, std::uint32_t& width, std::uint32_
 
 void Pane::contextChanged()
 {
-    // pty thread, terminal locked. The innermost context says who and where.
+    // m_mutex held: on the pty thread, or for a session pane on the GUI thread
+    // (applySessionFrame). The innermost context says who and where.
     static const QString hereHost = QSysInfo::machineHostName();
     static const QString hereUser = localUser();
     QString user;
@@ -1307,8 +1360,9 @@ void Pane::contextChanged()
 
 void Pane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
 {
-    // pty thread, terminal locked. What the pane keeps by stable row id on
-    // the active screen moves with the rows; what leaves the region goes.
+    // m_mutex held: on the pty thread, or for a session pane on the GUI thread
+    // (applySessionFrame). What the pane keeps by stable row id on the
+    // screen that scrolled moves with the rows; what leaves the region goes.
     const bool altScreen = m_terminal.modes().altScreen;
     bool changed = false;
     // A running search may have taken rows before the text moved between
@@ -1491,7 +1545,8 @@ void Pane::flash()
 void Pane::programStatusChanged()
 {
     // Called on the pty thread, or on the GUI thread by a reset through
-    // withTerminal: either way m_mutex is held, and the receivers read status().
+    // withTerminal or a session pane's frame: either way m_mutex is held, and
+    // the receivers read status().
     queueOnce(m_statusQueued, [this] { Q_EMIT statusChanged(); });
 }
 

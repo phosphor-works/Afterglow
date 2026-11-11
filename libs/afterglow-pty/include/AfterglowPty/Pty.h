@@ -148,7 +148,9 @@ public:
     /// gone or the Pty stopped, although the child may still run. Thread-safe.
     bool accepting() const noexcept { return m_accepting.load(); }
     /// The foreground job's working directory, else the child's, read from
-    /// /proc. Empty when neither is a directory that exists.
+    /// /proc. Empty when neither has one that was not removed. It reads no
+    /// file system but /proc, so a mount that does not answer cannot block it;
+    /// a caller that starts a program there checks that the path exists.
     std::string currentWorkingDirectory() const;
     /// The name of the job in the foreground when it is not the child itself
     /// (a program the shell is running); empty while the shell has the terminal.

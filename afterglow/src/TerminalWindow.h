@@ -415,6 +415,15 @@ private:
     /// Where a new tab, split or window starts, given the directory it
     /// would inherit (the workingDirectory setting).
     QString startDirectory(const QString& inherited) const;
+    /// The directory that a new tab, split or window takes from @p from: its
+    /// workingDirectory unless Window.workingDirectory names a directory of
+    /// its own (fixedStartDirectory), else empty, so that no session pane
+    /// waits for the daemon for nothing.
+    QString inheritedDirectory(const Pane* from) const;
+    /// The directory that Window.workingDirectory names: home, or a path that
+    /// is a directory. None for inherit, and for a path that is not a
+    /// directory, which inherits too (with a warning when @p warn).
+    std::optional<QString> fixedStartDirectory(bool warn) const;
     QString focusedDirectory() const;
     /// Moves the tab at @p from to @p to; the current tab stays current.
     void moveTab(int from, int to);
@@ -963,9 +972,17 @@ private:
     QTimer m_holdRetry; ///< a frame again when a pane's held frame times out
     qint64 m_holdWait = 0; ///< this frame: the milliseconds until the first held frame times out
     bool m_textBlinkOn = true;
-    /// Tells each pane whether it can be seen (mode 2033 reports), except a
-    /// session pane: its replica never answers its program (docs/MUX.md).
+    /// Tells each pane whether it can be seen (paneSeen) for mode 2033
+    /// reports: a session pane through the daemon (setSessionVisible), as its
+    /// replica never answers its program.
     void updatePaneVisibility();
+    /// Whether the user can see @p pane: the window shows, and the pane is
+    /// drawn in the current tab, or while the overview shows, on one of
+    /// @p cards (overviewCards). The one rule of mode 2033 and of a
+    /// notification for an unseen pane.
+    bool paneSeen(const Pane* pane, const std::vector<Pane*>& cards) const;
+    /// The panes that the overview draws as cards, none while it is closed.
+    std::vector<Pane*> overviewCards() const;
     bool m_blinkOn = true;
     double m_wheelAccumulator = 0;
     QPointer<Pane> m_wheelPane; ///< the pane m_wheelAccumulator belongs to

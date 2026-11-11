@@ -10,7 +10,10 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QMessageBox>
+#include <chrono>
+#include <csignal>
 #include <optional>
+#include <vector>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLocalSocket>
@@ -79,7 +82,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
-#include "QStringPrinter.h"
+#include "QStringPrinter.h" // IWYU pragma: keep (gtest finds PrintTo(QString) by ADL)
 #include "SavedEnvironment.h"
 #include "TestDaemon.h"
 #include "mux/MuxClient.h"
@@ -130,26 +133,29 @@ bool waitDeleted(const QPointer<T>& object) {
     return waitDeleting([&] { return object.isNull(); });
 }
 // The visible top-level dialog of type @p T whose title starts with
-// @p title, once one shows. Null when none shows in time.
+// @p title, once one shows. Null when none shows in @p ms.
 template <class T>
-QPointer<T> waitForDialog(const QString& title) {
+QPointer<T> waitForDialog(const QString& title, int ms = 3000) {
     QPointer<T> found;
     waitFor([&] {
         for (auto* widget : QApplication::topLevelWidgets())
             if (auto* dialog = qobject_cast<T*>(widget); dialog && dialog->isVisible() && dialog->windowTitle().startsWith(title)) found = dialog;
         return !found.isNull();
-    });
+    }, ms);
     return found;
 }
 // Feeds @p bytes to @p pane's terminal as its program's output, from a
-// thread that stands in for the PTY reader: a receiver on the GUI thread
-// takes the pane's mutex, which a feed from the GUI thread would hold.
+// thread that stands in for the PTY reader. The terminal's callbacks then
+// run off the GUI thread, and each delivery crosses to the GUI thread as it
+// does in use, which a feed on the GUI thread would not show.
 void feedFromReader(Pane* pane, std::string_view bytes) {
     std::thread reader([pane, bytes] { pane->withTerminal([bytes](AfterglowVt::Terminal& t) { t.feed(bytes); }); });
     reader.join();
 }
 // A program's request to read the clipboard (OSC 52).
 void requestClipboardRead(Pane* pane) { feedFromReader(pane, "\x1b]52;c;?\x07"); }
+// The text on @p pane's screen, without its history.
+QString screenOf(Pane* pane) { return pane->text(AfterglowVt::Terminal::TextScope::Screen); }
 // Runs the event loop until every call posted before this one has run:
 // queued calls and zero timers run in the order they were posted. A call
 // that one of them posts in turn runs in the drain that follows.
@@ -161,20 +167,31 @@ bool settleQueued() {
     QTimer::singleShot(0, &context, [&ran] { ran = true; });
     return waitFor([&ran] { return ran; });
 }
-// Expects the window to stop asking for frames once nothing moves: 300 ms
-// with no frame. Springs advance at most 100 ms of motion per frame, so a
-// loaded machine that gives few frames stretches them in wall time. The
-// deadline allows for that; an animation that never stops still fails.
-void expectIdle(TerminalWindow* window) {
-    drain(1500);
-    QElapsedTimer deadline; deadline.start();
-    bool idle = false;
-    while (!idle && deadline.elapsed() < 5000) {
+// Waits until @p window renders no frame for 300 ms, and fails when it
+// still renders after @p deadlineMs. Springs advance at most 100 ms of
+// motion per frame, so a loaded machine that gives few frames stretches
+// them in wall time. The deadline allows for that; an animation that never
+// stops still fails. No wait for a first frame comes before: a coast asks
+// for frames from the event that starts it.
+void waitIdle(TerminalWindow* window, int deadlineMs = 10000) {
+    QElapsedTimer deadline;
+    deadline.start();
+    for (;;) {
         const auto frames = window->submittedFrames();
         drain(300);
-        idle = window->submittedFrames() == frames;
+        if (window->submittedFrames() == frames) return;
+        if (deadline.elapsed() > deadlineMs) {
+            ADD_FAILURE() << "the window still renders with nothing moving";
+            return;
+        }
     }
-    EXPECT_TRUE(idle) << "the window still renders with nothing moving";
+}
+// Expects the window to stop asking for frames once nothing moves, after a
+// change whose motion can start some frames later: 1.5 s pass first, so
+// that a quiet spell before the motion starts is not taken for its end.
+void expectIdle(TerminalWindow* window) {
+    drain(1500);
+    waitIdle(window, 5000);
 }
 // Renders a frame and waits until it is submitted. A check that nothing
 // changed then sees the layout and the chrome of a frame after the change.
@@ -523,9 +540,9 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
     EXPECT_EQ(detached->tabIdOf(original), tabId);
     EXPECT_EQ(window->panes(), QList<Pane*>{other});
     // The pane runs cat with no echo: only the program's output shows.
-    original->sendInput("detached-process-alive\n");
+    ASSERT_TRUE(original->sendInput("detached-process-alive\n"));
     EXPECT_TRUE(waitFor([&] {
-        return original->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("detached-process-alive"));
+        return screenOf(original).contains(QStringLiteral("detached-process-alive"));
     }));
     auto* background = window->openTab(launch, nullptr);
     ASSERT_NE(background, nullptr);
@@ -869,8 +886,8 @@ TEST_F(NativeWindow, LaunchOptionsAndClosedIdentity) {
     auto* added = window->focusedPane();
     EXPECT_EQ(added->id(), created);
     const QString expected = QStringLiteral("native-options|unset|unset|%1").arg(created);
-    EXPECT_TRUE(waitFor([&] { return added->text(AfterglowVt::Terminal::TextScope::Screen).contains(expected); }))
-        << added->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    EXPECT_TRUE(waitFor([&] { return screenOf(added).contains(expected); }))
+        << screenOf(added).toStdString();
     EXPECT_EQ(added->workingDirectory(), directory.path());
     // The window lays the split out at its next frame, and the shell can
     // print before that frame.
@@ -933,9 +950,9 @@ TEST_F(NativeWindow, PasteConfirmationRetainsOriginalPane) {
     QCoreApplication::sendEvent(window, &accept);
     EXPECT_FALSE(chrome->pasteConfirmOpen());
     EXPECT_TRUE(waitFor([&] {
-        return first->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("original-pane-line-one"));
+        return screenOf(first).contains(QStringLiteral("original-pane-line-one"));
     }));
-    EXPECT_FALSE(second->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("original-pane-line-one")));
+    EXPECT_FALSE(screenOf(second).contains(QStringLiteral("original-pane-line-one")));
 }
 TEST_F(NativeWindow, PasteConfirmsRawLineTerminatorsAndHonorsBracketedMode) {
     auto* pane = window->focusedPane();
@@ -969,8 +986,8 @@ TEST_F(NativeWindow, PasteConfirmsRawLineTerminatorsAndHonorsBracketedMode) {
     ASSERT_TRUE(window->runAction(shown, Action::Paste));
     EXPECT_FALSE(chrome->pasteConfirmOpen());
     EXPECT_TRUE(waitFor([&] {
-        return shown->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("^[[200~bracketed"));
-    })) << shown->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+        return screenOf(shown).contains(QStringLiteral("^[[200~bracketed"));
+    })) << screenOf(shown).toStdString();
 }
 
 TEST_F(NativeWindow, ChromeTreatsTitlesAndMenuLabelsLiterally) {
@@ -1264,7 +1281,7 @@ TEST_F(NativeWindow, ClosingStatusWindowRepublishesLauncherAggregate) {
     options.command = {QStringLiteral("/bin/cat")};
     auto* contributor = application->newWindow(options);
     ASSERT_NE(contributor, nullptr);
-    // Terminal status originates on the PTY thread; its GUI receiver takes the pane mutex.
+    // Terminal status comes from the PTY reader thread and crosses to the GUI thread.
     feedFromReader(contributor->focusedPane(), "\x1b]7501;state=working:progress=50\x1b\\");
     // A window that closed in an earlier test can still have an update on
     // the bus: wait for the one that this progress sends.
@@ -1303,7 +1320,7 @@ TEST_F(NativeWindow, InputMethodPreservesGraphemesAndCommitsToPty) {
     QInputMethodEvent commit; commit.setCommitString(QStringLiteral("native-ime-accepted\n"));
     QCoreApplication::sendEvent(window, &commit);
     EXPECT_TRUE(waitFor([&] {
-        return pane->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("native-ime-accepted"));
+        return screenOf(pane).contains(QStringLiteral("native-ime-accepted"));
     }));
 }
 TEST_F(NativeWindow, InputMethodQueriesFollowChromeEditor) {
@@ -1496,21 +1513,18 @@ return {
         << second->userTitle().toStdString();
 
     // A key runs the command that the palette does not list: once for a
-    // press, also when the key is held and repeats.
+    // press, also when the key is held and repeats. A run that a repeat
+    // started would take a number, which the titles of the runs after it
+    // show.
     holdKey(window, Qt::Key_M, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("m"), 4);
     EXPECT_TRUE(waitFor([&] { return second->userTitle() == QLatin1String("keyed 2 from key with 0"); }))
         << second->userTitle().toStdString();
-    // The runs that the repeats would start have had their time.
-    drain(200);
-    EXPECT_EQ(second->userTitle(), QStringLiteral("keyed 2 from key with 0"));
 
     // A key table runs it too, also once for a held key.
     sendKey(window, Qt::Key_T, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("t"));
     holdKey(window, Qt::Key_K, Qt::NoModifier, QStringLiteral("k"), 4);
     EXPECT_TRUE(waitFor([&] { return second->userTitle() == QLatin1String("keyed 3 from key with 0"); }))
         << second->userTitle().toStdString();
-    drain(200);
-    EXPECT_EQ(second->userTitle(), QStringLiteral("keyed 3 from key with 0"));
     // The table took the key of a command that no script has: the refusal
     // shows, with the command's title.
     sendKey(window, Qt::Key_J, Qt::NoModifier, QStringLiteral("j"));
@@ -1541,10 +1555,12 @@ return {
     EXPECT_EQ(second->userTitle(), QStringLiteral("keyed 3 from key with 0"));
 
     // The runs wrote only to stdout, which no client reads: no notice but
-    // the refusal.
+    // the refusal. The notices arrive in the order sent: all of them are in
+    // once a marker sent after them is.
     ASSERT_TRUE(settleQueued());
-    drain(200);
-    EXPECT_EQ(notices.server.titles, QStringList{QStringLiteral("Could not run marker missing")});
+    NotificationCenter::instance().showNotice(nullptr, QStringLiteral("Test"), QStringLiteral("last"));
+    ASSERT_TRUE(waitFor([&] { return notices.server.bodies.contains(QStringLiteral("last")); }));
+    EXPECT_EQ(notices.server.titles, (QStringList{QStringLiteral("Could not run marker missing"), QStringLiteral("Test")}));
 }
 TEST_F(NativeWindow, AnOpenPromptKeepsItsAnswerFromOutsideActionsAndChords) {
     Pane* pane = window->focusedPane();
@@ -2051,16 +2067,16 @@ TEST_F(NativeWindow, NativeWaylandFileDrop) {
     DragSender sender; sender.url = QUrl::fromLocalFile(path);
     sender.pressedMarker = ready + QStringLiteral(".pressed");
     window->installEventFilter(&sender);
-    ASSERT_TRUE(writeDragMarker(ready, window, QPointF(window->width() / 4, window->height() / 3),
-                                QPointF(window->width() * 3 / 4, window->height() * 2 / 3), false));
+    ASSERT_TRUE(writeDragMarker(ready, window, QPoint(window->width() / 4, window->height() / 3),
+                                QPoint(window->width() * 3 / 4, window->height() * 2 / 3), false));
     waitFor([&] { return sender.completed; }, 15000);
     window->removeEventFilter(&sender);
     EXPECT_TRUE(sender.started);
     ASSERT_TRUE(sender.completed);
     EXPECT_EQ(sender.result, Qt::CopyAction);
     ASSERT_TRUE(window->focusedPane()->sendInput("\n"));
-    waitFor([&] { return window->focusedPane()->text(AfterglowVt::Terminal::TextScope::Screen).contains(QString::fromUtf8("café.txt")); });
-    const auto text = window->focusedPane()->text(AfterglowVt::Terminal::TextScope::Screen);
+    waitFor([&] { return screenOf(window->focusedPane()).contains(QString::fromUtf8("café.txt")); });
+    const auto text = screenOf(window->focusedPane());
     EXPECT_TRUE(text.contains(QString::fromUtf8("café.txt"))) << text.toStdString();
     EXPECT_TRUE(text.contains(QStringLiteral("'\\''"))) << text.toStdString();
 }
@@ -2139,9 +2155,9 @@ void NativeWindow::openDragClients(const QStringList& sourceCommand, const QStri
     ASSERT_TRUE(showFullScreenForDrag(window));
     // Both clients start at once: wait for each one's command.
     waitFor([&] { return drag.source->dragDrop()->offersDrags() && drag.receiver->dragDrop()->acceptsDrops(); }, 5000);
-    ASSERT_TRUE(drag.source->dragDrop()->offersDrags()) << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    ASSERT_TRUE(drag.source->dragDrop()->offersDrags()) << screenOf(drag.source).toStdString();
     ASSERT_TRUE(drag.receiver->dragDrop()->acceptsDrops()) << drag.dropped.toStdString()
-        << drag.receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+        << screenOf(drag.receiver).toStdString();
 }
 
 // Drags with the runner's compositor input from the left quarter of the
@@ -2164,8 +2180,8 @@ void NativeWindow::runClientDrag(const QString& ready, ClientDrag& drag, const s
     PressMarker input; input.path = ready + QStringLiteral(".pressed"); window->installEventFilter(&input);
     const auto removeInput = qScopeGuard([&] { window->removeEventFilter(&input); });
     // The runner releases only after the receiver's program has accepted the drag.
-    ASSERT_TRUE(writeDragMarker(ready, window, QPointF(window->width() / 4, window->height() / 3),
-                                QPointF(window->width() * 3 / 4, window->height() * 2 / 3), true));
+    ASSERT_TRUE(writeDragMarker(ready, window, QPoint(window->width() / 4, window->height() / 3),
+                                QPoint(window->width() * 3 / 4, window->height() * 2 / 3), true));
     // A timer, because the drag runs in QDrag::exec's own event loop.
     QTimer hover;
     QObject::connect(&hover, &QTimer::timeout, &drag.listener, [&] {
@@ -2176,7 +2192,7 @@ void NativeWindow::runClientDrag(const QString& ready, ClientDrag& drag, const s
     hover.start(5);
     waitFor([&] { return drag.complete; }, 15000);
     hover.stop();
-    EXPECT_TRUE(drag.complete) << drag.protocol.toStdString() << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    EXPECT_TRUE(drag.complete) << drag.protocol.toStdString() << screenOf(drag.source).toStdString();
 }
 
 QByteArray fileContent(const QString& path) {
@@ -2304,7 +2320,7 @@ TEST_F(NativeWindow, AClickThroughABentWindowReachesThePaneDrawnThere) {
     EXPECT_NEAR(drawn, int(std::floor((source.x() - rightGrid.left()) / cell.width())) + 1, 1);
     EXPECT_EQ(window->focusedPane(), right);
     // The middle pane got nothing: its program echoes a marker afterwards.
-    middle->sendInput("\x1b[<0;0;0Mdone");
+    ASSERT_TRUE(middle->sendInput("\x1b[<0;0;0Mdone"));
     ASSERT_TRUE(waitFor([&] { return fileContent(middleReports).mid(middleBefore).contains("done"); }));
     EXPECT_EQ(fileContent(middleReports).mid(middleBefore), QByteArray("\x1b[<0;0;0Mdone"));
 }
@@ -2369,7 +2385,7 @@ void NativeWindow::dragAndDropClient(const QString& client, const QString& ready
     // The file exists before the receiver has written all of it.
     EXPECT_TRUE(waitFor([&] { return fileContent(destination) == text; }, 5000))
         << drag.protocol.toStdString() << "\n" << drag.dropped.toStdString()
-        << drag.receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+        << screenOf(drag.receiver).toStdString();
     EXPECT_FALSE(QFileInfo::exists(sourceDrop)) << "the source pane took the drop";
 }
 
@@ -2403,7 +2419,7 @@ void NativeWindow::remoteDragDirectory(const QString& client, const QString& rea
         return fileContent(root + QStringLiteral("/nested/file")) == data && QFileInfo::exists(root + QStringLiteral("/empty"))
             && QFileInfo(root + QStringLiteral("/link")).isSymLink();
     }, 5000)) << drag.protocol.toStdString() << "\n" << drag.dropped.toStdString()
-              << drag.receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+              << screenOf(drag.receiver).toStdString();
     EXPECT_EQ(fileContent(root + QStringLiteral("/nested/file")), data);
     EXPECT_EQ(QFileInfo(root + QStringLiteral("/empty")).size(), 0);
     EXPECT_EQ(QFileInfo(root + QStringLiteral("/link")).readSymLink(), QStringLiteral("nested/file"));
@@ -2533,7 +2549,7 @@ void NativeWindow::remoteDragToWaylandTarget(const QString& client, const QStrin
     ASSERT_NE(drag.source, nullptr);
     ASSERT_TRUE(showFullScreenForDrag(window));
     waitFor([&] { return drag.source->dragDrop()->offersDrags(); }, 5000);
-    ASSERT_TRUE(drag.source->dragDrop()->offersDrags()) << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    ASSERT_TRUE(drag.source->dragDrop()->offersDrags()) << screenOf(drag.source).toStdString();
     // A machine id that is not this computer's: the source is remote.
     drag.source->dragDrop()->handle("t=o:x=1;1:remote-test-machine");
     QObject::connect(drag.source->dragDrop(), &DragDrop::reply, &drag.listener, [&](const QByteArray& bytes) {
@@ -2558,7 +2574,7 @@ void NativeWindow::remoteDragToWaylandTarget(const QString& client, const QStrin
         << "the drop target got no drop";
     EXPECT_EQ(fileContent(report + QStringLiteral(".dropped")), taken);
     ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(exited); }, 5000))
-        << drag.protocol.toStdString() << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+        << drag.protocol.toStdString() << screenOf(drag.source).toStdString();
     EXPECT_EQ(fileContent(source + QStringLiteral("/nested/file")), data) << "the client removed its files";
 }
 TEST_F(NativeWindow, KittyDragAndDropClient) {
@@ -2722,22 +2738,6 @@ void setLive(TerminalWindow* window, const QString& config, const QString& group
     ASSERT_TRUE(file.write(group, key, value.toVariant()));
     ASSERT_TRUE(window->runAction(window->focusedPane(), Action::ReloadConfig));
 }
-// Waits until @p window renders no frame for 300 ms, and fails when it
-// still renders after 10 s. A coast asks for frames from the event that
-// starts it, so no wait for a first frame comes before, as in expectIdle.
-void waitIdle(TerminalWindow* window) {
-    QElapsedTimer deadline;
-    deadline.start();
-    for (;;) {
-        const auto frames = window->submittedFrames();
-        drain(300);
-        if (window->submittedFrames() == frames) return;
-        if (deadline.elapsed() > 10000) {
-            ADD_FAILURE() << "the window still renders";
-            return;
-        }
-    }
-}
 // The offset of @p pane's view once its window renders no more frames:
 // a coast has ended then, or stopped.
 std::size_t settledOffset(TerminalWindow* window, Pane* pane) {
@@ -2879,19 +2879,23 @@ TEST_F(NativeWindow, AFingerScrollGivesAProgramOneWheelReportOrKeyForEachRow) {
         fingerScroll(window, gridOf(window, pane).center(), 30, 10);
         return rowsOf(window, pane, 300);
     };
+    // The reports and the pane's input share the PTY's write queue: once a
+    // marker sent after the scroll is in the file, every report is too.
+    const auto allIn = [&](const QString& file) {
+        if (!window->focusedPane()->sendInput("@m@")) return false;
+        return waitFor([&] { return fileContent(file).endsWith("@m@"); });
+    };
     const QString reports = directory.filePath(QStringLiteral("reports"));
     const double rows = scrollIn(mouseReporter(reports), reports);
     if (HasFatalFailure()) return;
-    ASSERT_TRUE(waitFor([&] { return fileContent(reports).count("\x1b[<64;") >= qsizetype(rows) - 1; }));
-    drain(200);
+    ASSERT_TRUE(allIn(reports)) << fileContent(reports).toStdString();
     EXPECT_LE(std::abs(double(fileContent(reports).count("\x1b[<64;")) - rows), 1.0) << fileContent(reports).toStdString();
     // On the alternate screen with alternate scroll, a row is one Up key.
     // A wheel notch is Terminal.scrollLines of them.
     const QString keys = directory.filePath(QStringLiteral("keys"));
     const double keyRows = scrollIn(alternateScreenReader(keys), keys);
     if (HasFatalFailure()) return;
-    ASSERT_TRUE(waitFor([&] { return upKeys(fileContent(keys)) >= qsizetype(keyRows) - 1; }));
-    drain(200);
+    ASSERT_TRUE(allIn(keys)) << fileContent(keys).toStdString();
     const qsizetype fromFinger = upKeys(fileContent(keys));
     EXPECT_LE(std::abs(double(fromFinger) - keyRows), 1.0) << fromFinger;
     wheelAt(window, gridOf(window, window->focusedPane()).center());
@@ -3768,10 +3772,10 @@ TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom) {
     // A line through the same input ends what it held: an "x" shows with it.
     ASSERT_TRUE(first->sendInput("overview-closed\n"));
     ASSERT_TRUE(waitFor([&] {
-        return first->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("overview-closed"));
+        return screenOf(first).contains(QStringLiteral("overview-closed"));
     }));
-    EXPECT_FALSE(first->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('x')))
-        << first->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    EXPECT_FALSE(screenOf(first).contains(QLatin1Char('x')))
+        << screenOf(first).toStdString();
     // The tab was zoomed: it returns zoomed, on the chosen pane.
     EXPECT_TRUE(waitFor([&] { return window->accessiblePaneRect(first).isEmpty(); }));
     EXPECT_FALSE(window->accessiblePaneRect(third).isEmpty());
@@ -4370,8 +4374,8 @@ TEST_F(NativeWindow, KeyRepeatsOfAKeyThatClosedAModeStayOutOfTheShell) {
     // A new press does reach the shell.
     sendKey(window, Qt::Key_Y, Qt::NoModifier, QStringLiteral("y"));
     sendKey(window, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
-    EXPECT_TRUE(waitFor([&] { return second->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('y')); }));
-    EXPECT_FALSE(second->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('2')));
+    EXPECT_TRUE(waitFor([&] { return screenOf(second).contains(QLatin1Char('y')); }));
+    EXPECT_FALSE(screenOf(second).contains(QLatin1Char('2')));
 }
 
 TEST_F(NativeWindow, SearchDropsMatchesOfTextThatMovedAndStartsAgain) {
@@ -4412,8 +4416,7 @@ TEST_F(NativeWindow, KeyRepeatsStayWithThePaneThatGotThePress) {
     auto* right = window->splitPane(middle, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(right, nullptr);
     for (Pane* pane : {middle, right}) {
-        const auto screen = [pane] { return pane->text(AfterglowVt::Terminal::TextScope::Screen); };
-        ASSERT_TRUE(waitFor([&] { return screen().contains(QStringLiteral("started")); })) << screen().toStdString();
+        ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("started")); })) << screenOf(pane).toStdString();
     }
     window->revealPane(middle);
     ASSERT_TRUE(settleQueued());
@@ -4431,14 +4434,14 @@ TEST_F(NativeWindow, KeyRepeatsStayWithThePaneThatGotThePress) {
     QCoreApplication::sendEvent(window, &up);
     sendKey(window, Qt::Key_Y, Qt::NoModifier, QStringLiteral("y"));
     sendKey(window, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
-    EXPECT_TRUE(waitFor([&] { return right->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('y')); }));
-    EXPECT_FALSE(right->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('q')));
+    EXPECT_TRUE(waitFor([&] { return screenOf(right).contains(QLatin1Char('y')); }));
+    EXPECT_FALSE(screenOf(right).contains(QLatin1Char('q')));
     // The press reached the pane that got it. Its repeats after the focus
     // moved went to no pane: the user no longer types there.
     ASSERT_TRUE(middle->sendInput("\n"));
-    EXPECT_TRUE(waitFor([&] { return middle->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('q')); }));
-    EXPECT_FALSE(middle->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("qq")))
-        << middle->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    EXPECT_TRUE(waitFor([&] { return screenOf(middle).contains(QLatin1Char('q')); }));
+    EXPECT_FALSE(screenOf(middle).contains(QStringLiteral("qq")))
+        << screenOf(middle).toStdString();
 }
 
 // Opens a second tab and the overview on it, and chooses the first tab's
@@ -4472,8 +4475,8 @@ TEST_F(NativeWindow, TypingWhileTheOverviewClosesReachesTheChosenTab) {
     sendKey(window, Qt::Key_Z, Qt::NoModifier, QStringLiteral("z"));
     EXPECT_EQ(window->focusedPane(), first);
     sendKey(window, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
-    EXPECT_TRUE(waitFor([&] { return first->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('z')); }))
-        << first->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    EXPECT_TRUE(waitFor([&] { return screenOf(first).contains(QLatin1Char('z')); }))
+        << screenOf(first).toStdString();
     expectIdle(window);
     EXPECT_EQ(window->focusedPane(), first);
 }
@@ -4560,7 +4563,7 @@ TEST_F(NativeWindow, ClipboardReadFromABackgroundTabAsksWithoutSwitching) {
     const quint32 tab = window->activeTabId();
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
-    // The request originates on the PTY thread; its GUI receiver reads the pane title under the pane mutex.
+    // The request comes from the PTY reader thread and crosses to the GUI thread.
     requestClipboardRead(background);
     ASSERT_TRUE(waitFor([&] { return chrome->clipboardPromptOpen(); }));
     // The prompt names where the program is; the user's tab and focus stay.
@@ -4672,7 +4675,7 @@ TEST_F(NativeWindow, ATabThatClosesTakesItsTabMenuWithIt) {
     chrome->tabMenu(1, 50, 15);
     ASSERT_TRUE(chrome->contextMenuOpen());
     // Its program ends: the tab closes, and a menu left open would act on nothing.
-    other->sendInput("\n");
+    ASSERT_TRUE(other->sendInput("\n"));
     ASSERT_TRUE(waitFor([&] { return window->tabs().size() == 1; }));
     EXPECT_FALSE(chrome->contextMenuOpen());
 }
@@ -4699,7 +4702,7 @@ TEST_F(NativeWindow, ATabThatClosesLeavesAPaneMenuOpen) {
     ASSERT_TRUE(chrome->contextMenuOpen());
     // The other tab's program ends: its tab closes, and the pane menu, which
     // belongs to the first tab, stays open.
-    other->sendInput("\n");
+    ASSERT_TRUE(other->sendInput("\n"));
     ASSERT_TRUE(waitFor([&] { return window->tabs().size() == 1; }));
     EXPECT_TRUE(chrome->contextMenuOpen());
 }
@@ -4756,7 +4759,7 @@ TEST_F(NativeWindow, ScriptDocksTakeCellsFromThePanesAndCanReplaceTheTabBar) {
     window->clearScriptOwner(QStringLiteral("b@1"));
     EXPECT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
     window->clearScriptOwner(QStringLiteral("a@1"));
-    other->sendInput("\x04"); // its cat ends, and the tab with it
+    ASSERT_TRUE(other->sendInput("\x04")); // its cat ends, and the tab with it
     ASSERT_TRUE(waitFor([&] { return window->tabs().size() == 1; }));
     EXPECT_TRUE(waitFor([&] { return pane->rows() == rows && pane->cols() == cols; }))
         << pane->rows() << "x" << pane->cols();
@@ -4804,14 +4807,13 @@ TEST_F(NativeWindow, DockClicksReachTheScriptThroughControlAndNoPointerInputReac
     EXPECT_EQ(window->focusedPane(), pane);
 
     // The wheel over the dock scrolls no pane; over the pane it does.
-    const auto offset = [pane] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }); };
     // A scroll eases from where it is: its first frame can still show the
     // bottom. Once nothing moves, any scroll would show.
     wheelAt(window, onItem);
     expectIdle(window);
-    EXPECT_EQ(offset(), 0u);
+    EXPECT_EQ(viewportOffset(pane), 0u);
     wheelAt(window, onPane);
-    EXPECT_TRUE(waitFor([&] { return offset() > 0; }));
+    EXPECT_TRUE(waitFor([&] { return viewportOffset(pane) > 0; }));
     pane->withTerminal([](AfterglowVt::Terminal& t) { t.scrollViewport(-int(t.screen().viewportOffset())); });
 
     // A right click on the dock while the left button selects in the pane:
@@ -5077,8 +5079,7 @@ TEST_F(NativeWindow, ADragOnADockItemTellsItsScriptOfEachNewItemOrCell) {
     launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty raw -echo; printf ready; exec cat -v")};
     auto* reporting = window->splitPane(first, SplitTree::Direction::Down, launch, nullptr);
     ASSERT_NE(reporting, nullptr);
-    const auto screen = [reporting] { return reporting->text(AfterglowVt::Terminal::TextScope::Screen); };
-    ASSERT_TRUE(waitFor([&] { return screen().contains(QLatin1String("ready")); }));
+    ASSERT_TRUE(waitFor([&] { return screenOf(reporting).contains(QLatin1String("ready")); }));
     reporting->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[?1003h\x1b[?1006h"); });
     window->revealPane(reporting);
     DockEvents events(window);
@@ -5242,17 +5243,17 @@ TEST_F(NativeWindow, ADragOnADockItemTellsItsScriptOfEachNewItemOrCell) {
     // reached it.
     // A marker goes through the same input after anything the moves sent,
     // so once it shows, every report they made shows too.
-    reporting->sendInput("@marker@");
-    ASSERT_TRUE(waitFor([&] { return screen().contains(QLatin1String("@marker@")); }));
-    EXPECT_EQ(screen().count(QStringLiteral("^[[<")), 0) << screen().toStdString();
+    ASSERT_TRUE(reporting->sendInput("@marker@"));
+    ASSERT_TRUE(waitFor([&] { return screenOf(reporting).contains(QLatin1String("@marker@")); }));
+    EXPECT_EQ(screenOf(reporting).count(QStringLiteral("^[[<")), 0) << screenOf(reporting).toStdString();
     const QPointF onPane = window->mapFromGlobal(QPointF(window->accessiblePaneRect(reporting).center()));
     hoverAt(window, onPane);
     // A move with no button held: SGR button code 35.
-    ASSERT_TRUE(waitFor([&] { return screen().contains(QLatin1String("^[[<35;")); }));
+    ASSERT_TRUE(waitFor([&] { return screenOf(reporting).contains(QLatin1String("^[[<35;")); }));
     // A second marker: a later copy of the report would show before it.
     ASSERT_TRUE(reporting->sendInput("@marker2@"));
-    ASSERT_TRUE(waitFor([&] { return screen().contains(QLatin1String("@marker2@")); }));
-    EXPECT_EQ(screen().count(QStringLiteral("^[[<")), 1) << screen().toStdString();
+    ASSERT_TRUE(waitFor([&] { return screenOf(reporting).contains(QLatin1String("@marker2@")); }));
+    EXPECT_EQ(screenOf(reporting).count(QStringLiteral("^[[<")), 1) << screenOf(reporting).toStdString();
     window->clearScriptOwner(QStringLiteral("a@1"));
 }
 
@@ -5815,7 +5816,7 @@ TEST_F(NativeWindow, ControlDocksAtAPaneAndFindsNoPaneOnceItClosed) {
     // A pane that closes takes its area. A pane area keeps no record to
     // undock through, so its pane is not found.
     QPointer<Pane> gone(second);
-    second->sendInput("\x04"); // its cat ends, and the pane with it
+    ASSERT_TRUE(second->sendInput("\x04")); // its cat ends, and the pane with it
     ASSERT_TRUE(waitDeleted(gone));
     const auto undocked = apply(untitle, created);
     EXPECT_FALSE(undocked.error.isEmpty());
@@ -6303,7 +6304,7 @@ TEST_F(NativeWindow, ControlUndocksThroughAPaneThatMovedOrClosed) {
     ASSERT_TRUE(control.scriptDock(QStringLiteral("a@1"), created, bar).isEmpty());
     ASSERT_TRUE(waitFor([&] { return chrome->paneArea().height() < height; }));
     QPointer<Pane> gone(closing);
-    closing->sendInput("\x04"); // its cat ends, and the pane with it
+    ASSERT_TRUE(closing->sendInput("\x04")); // its cat ends, and the pane with it
     ASSERT_TRUE(waitDeleted(gone));
     // The area stays with its pane gone, until the undock.
     ASSERT_TRUE(nextFrame(window));
@@ -6568,6 +6569,27 @@ TEST_F(NativeWindow, StatusAndContextChangesOnTheGuiThreadDoNotDeadlock) {
     EXPECT_EQ(pane->contextKind(), QStringLiteral("remote"));
 }
 
+// Window.workingDirectory names a directory that does not exist: a new tab
+// inherits the directory of the pane that it comes from, as the setting's
+// own description says, not the home directory. A split takes the same path
+// (inheritedDirectory).
+TEST_F(NativeWindow, AWorkingDirectoryThatIsNoDirectoryInherits) {
+    restartApplication(QStringLiteral("gone.conf"),
+        testSettings({{QStringLiteral("Window"), QJsonObject{{QStringLiteral("workingDirectory"), directory.filePath(QStringLiteral("gone"))}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    const QString here = QDir(directory.path()).canonicalPath();
+    feedFromReader(pane, "\x1b]1337;CurrentDir=" + here.toStdString() + "\x07");
+    ASSERT_TRUE(waitFor([&] { return pane->workingDirectory() == here; })) << pane->workingDirectory().toStdString();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    Pane* tab = window->openTab(launch, nullptr, pane);
+    ASSERT_NE(tab, nullptr);
+    EXPECT_TRUE(waitFor([&] { return tab->workingDirectory() == here; })) << tab->workingDirectory().toStdString();
+}
+
 TEST_F(NativeWindow, ReportedDirectoryWinsWhenLocalAndANewTabStartsThere) {
     SettingsStore settings(directory.filePath(QStringLiteral("dirs.conf")));
     Control control(settings, {});
@@ -6610,13 +6632,12 @@ TEST_F(NativeWindow, ProtocolRepliesLeaveTheViewWhereItIs) {
         for (int i = 0; i < 200; ++i) t.feed("line\r\n");
         t.scrollViewport(10);
     });
-    const auto offset = [pane] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }); };
-    ASSERT_GT(offset(), 0u);
+    ASSERT_GT(viewportOffset(pane), 0u);
     EXPECT_TRUE(pane->sendReply("\x1b[I"));
-    EXPECT_GT(offset(), 0u);
+    EXPECT_GT(viewportOffset(pane), 0u);
     // Typing snaps back to the bottom.
     EXPECT_TRUE(pane->sendInput("x"));
-    EXPECT_EQ(offset(), 0u);
+    EXPECT_EQ(viewportOffset(pane), 0u);
 }
 
 TEST_F(NativeWindow, SelectionFollowsLinesThatInsertAndDeleteMove) {
@@ -6668,7 +6689,7 @@ TEST_F(NativeWindow, ClosingTheOverviewEndsTheScriptKeyModeItDrove) {
     ASSERT_NE(chosen, nullptr);
     sendKey(window, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"));
     sendKey(window, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
-    EXPECT_TRUE(waitFor([&] { return chosen->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('q')); }));
+    EXPECT_TRUE(waitFor([&] { return screenOf(chosen).contains(QLatin1Char('q')); }));
     EXPECT_EQ(keys, 0);
 }
 
@@ -6707,7 +6728,6 @@ std::shared_ptr<OverlayAnswer> runOverlay(TerminalWindow* window, Pane* pane, co
     if (refusalCode) *refusalCode = code;
     return answer;
 }
-QString screenOf(Pane* pane) { return pane->text(AfterglowVt::Terminal::TextScope::Screen); }
 void typeText(TerminalWindow* window, const QString& text) {
     for (const QChar c : text) {
         const int key = c == QLatin1Char('\r') ? int(Qt::Key_Return) : c.isLetter() ? int(Qt::Key_A) + (c.toLower().unicode() - u'a') : int(c.unicode());
@@ -6991,12 +7011,18 @@ TEST_F(NativeWindow, AnOverlayOnAPaneInAnotherTabShowsThatTabAndOpensAtOnce) {
 }
 
 TEST_F(NativeWindow, AnOverlayStartsInItsDirectoryOrInHome) {
+    // A home of the test's own, which the window reads from $HOME: no
+    // program of a test starts in the user's home. It is not the test's
+    // directory, so that the two starts below differ.
+    const QString homeDirectory = directory.filePath(QStringLiteral("home"));
+    ASSERT_TRUE(QDir().mkpath(homeDirectory));
+    const Saved home("HOME", QFile::encodeName(homeDirectory));
     Pane* pane = window->focusedPane();
     const QStringList pwd{QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("pwd -P")};
     // A path that a remote shell reported is no directory here.
     auto remote = runOverlay(window, pane, pwd, {{QStringLiteral("cwd"), QStringLiteral("/nonexistent/afterglow/remote")}});
     ASSERT_TRUE(waitFor([&] { return remote->done; }));
-    EXPECT_EQ(remote->result.value(QStringLiteral("stdout")).toString(), QDir(QDir::homePath()).canonicalPath() + QLatin1Char('\n'));
+    EXPECT_EQ(remote->result.value(QStringLiteral("stdout")).toString(), QDir(homeDirectory).canonicalPath() + QLatin1Char('\n'));
     ASSERT_TRUE(waitFor([&] { return pane->overlay() == nullptr; }));
     auto local = runOverlay(window, pane, pwd, {{QStringLiteral("cwd"), directory.path()}});
     ASSERT_TRUE(waitFor([&] { return local->done; }));
@@ -8297,7 +8323,7 @@ TEST_F(NativeWindow, APopupOverOnePaneTakesThePointerInItsOwnCellsOnly) {
     EXPECT_FALSE(answer->done);
     EXPECT_FALSE(pane->hasSelection());
     EXPECT_FALSE(program->hasSelection());
-    EXPECT_EQ(pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }), 0u);
+    EXPECT_EQ(viewportOffset(pane), 0u);
     EXPECT_EQ(window->focusedPane(), pane);
     // In it, its own cells: column 3, row 2 from 1. The reports arrive in
     // order, so one from outside would come first.
@@ -8376,11 +8402,14 @@ TEST_F(NativeWindow, APopupTooBigForItsPaneFillsTheGridBesideThePanesDock) {
     ASSERT_TRUE(waitFor([&] { return shownDock(window, "bar", pane->id()) != nullptr; }));
     const QString log = directory.filePath(QStringLiteral("mouse.log"));
     // Bigger than the pane, and a border alone: each fills the pane's grid,
-    // its border on the pane's edge cells.
-    for (const QVariantMap& options : {QVariantMap{{QStringLiteral("width"), 500}, {QStringLiteral("height"), 500}},
-                                       QVariantMap{{QStringLiteral("border"), true}}}) {
-        SCOPED_TRACE(QJsonDocument(QJsonObject::fromVariantMap(options)).toJson(QJsonDocument::Compact).toStdString());
+    // its border on the pane's edge cells. A failed check ends its own
+    // case only.
+    const auto fills = [&](const QVariantMap& options) {
         QFile::remove(log);
+        // A case that fails part way leaves no overlay to the next one.
+        const auto close = qScopeGuard([&] {
+            if (pane->overlay()) window->closeOverlays(QStringLiteral("test@1"), QString(), QStringLiteral("done"));
+        });
         auto answer = runOverlay(window, pane, reportingClicks(log), options);
         ASSERT_NE(pane->overlay(), nullptr);
         Pane* program = pane->overlay()->pane();
@@ -8405,6 +8434,11 @@ TEST_F(NativeWindow, APopupTooBigForItsPaneFillsTheGridBesideThePanesDock) {
         window->closeOverlays(QStringLiteral("test@1"), QString(), QStringLiteral("done"));
         ASSERT_TRUE(answer->done);
         ASSERT_TRUE(overlaySettled(window, pane));
+    };
+    for (const QVariantMap& options : {QVariantMap{{QStringLiteral("width"), 500}, {QStringLiteral("height"), 500}},
+                                       QVariantMap{{QStringLiteral("border"), true}}}) {
+        SCOPED_TRACE(QJsonDocument(QJsonObject::fromVariantMap(options)).toJson(QJsonDocument::Compact).toStdString());
+        fills(options);
     }
     expectIdle(window);
 }
@@ -8602,7 +8636,7 @@ TEST_F(NativeWindow, APointerOverAViewScrolledByPartOfARowIsOnTheRowDrawnUnderIt
                       Qt::NoScrollPhase, false, Qt::MouseEventSynthesizedBySystem);
     QCoreApplication::sendEvent(window, &wheel);
     ASSERT_TRUE(nextFrame(window));
-    ASSERT_EQ(pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }), 1u);
+    ASSERT_EQ(viewportOffset(pane), 1u);
     // The terminal shows a whole row back, drawn up by the rest of a row: a
     // point three quarters of a row below the top is on the second row drawn.
     const auto cell = window->accessibleCellAt(pane, top.topLeft() + QPoint(1, int(row * 0.75)));
@@ -8635,30 +8669,29 @@ TEST_F(NativeWindow, HintsThatOpenWhileTheViewEasesSitOnTheRowsWhereItStops) {
     });
     expectIdle(window);
     const double gridTop = window->mapFromGlobal(window->accessibleCellRect(pane, pane->selectionPointAt(0, 0)).topLeft()).y();
-    const auto offset = [pane] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }); };
     const auto page = std::size_t(std::max(1, pane->rows() - 1));
     ASSERT_TRUE(window->runAction(pane, Action::ScrollPageUp));
     ASSERT_TRUE(nextFrame(window));
-    ASSERT_LT(offset(), page);
+    ASSERT_LT(viewportOffset(pane), page);
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(window->runAction(pane, Action::UrlsCopy));
     // The view stops a page back at once, and the labels sit on its rows:
     // the highest on the top row.
-    EXPECT_EQ(offset(), page);
+    EXPECT_EQ(viewportOffset(pane), page);
     ASSERT_FALSE(chrome->urlHints().isEmpty());
     QVariantMap highest;
     for (const QVariant& hint : chrome->urlHints())
         if (highest.isEmpty() || hint.toMap().value(QStringLiteral("y")).toDouble() < highest.value(QStringLiteral("y")).toDouble())
             highest = hint.toMap();
     EXPECT_NEAR(highest.value(QStringLiteral("y")).toDouble(), gridTop, 1.0);
-    const QString top = pane->text(AfterglowVt::Terminal::TextScope::Screen).section(QLatin1Char('\n'), 0, 0);
+    const QString top = screenOf(pane).section(QLatin1Char('\n'), 0, 0);
     const QString url = top.section(QLatin1Char(' '), 2, 2);
     ASSERT_TRUE(url.startsWith(QLatin1String("https://"))) << top.toStdString();
     // Frames go on, and the view stays under the labels.
     ASSERT_TRUE(nextFrame(window));
     ASSERT_TRUE(nextFrame(window));
-    EXPECT_EQ(offset(), page);
+    EXPECT_EQ(viewportOffset(pane), page);
     // The label of the top row copies that row's URL.
     for (const QChar letter : highest.value(QStringLiteral("label")).toString())
         sendKey(window, Qt::Key_A + (letter.toLower().unicode() - u'a'), Qt::NoModifier, QString(letter));
@@ -8845,7 +8878,7 @@ TEST_F(NativeWindow, APanesDialogsMoveWithItAndOutliveTheWindowItLeft) {
     // (keepDialogOverPane).
     ASSERT_NO_FATAL_FAILURE(expectDialogsOver(dialogs, source));
     // The pane that stayed ends: its window closes.
-    stays->sendInput("\x04");
+    ASSERT_TRUE(stays->sendInput("\x04"));
     ASSERT_TRUE(waitDeleted(source));
     ASSERT_TRUE(settleQueued());
     ASSERT_NO_FATAL_FAILURE(expectDialogsOver(dialogs, destination));
@@ -8854,11 +8887,19 @@ TEST_F(NativeWindow, APanesDialogsMoveWithItAndOutliveTheWindowItLeft) {
 
 TEST_F(NativeWindow, APanesDialogsFollowItToANewWindow) {
     // Moved alone or with its tab, the only pane of a window goes to a new
-    // window, which shows only after the window it left closed.
-    for (const Action action : {Action::MovePaneToWindow, Action::DetachTab}) {
-        SCOPED_TRACE(Keybinds::title(action).toStdString());
+    // window, which shows only after the window it left closed. A failed
+    // check ends its own case only.
+    const auto follows = [&](Action action) {
         WindowOptions options; options.command = {QStringLiteral("/bin/cat")};
         QPointer<TerminalWindow> source = application->newWindow(options); ASSERT_TRUE(source);
+        QPointer<TerminalWindow> moved;
+        // A case that fails part way leaves no window, and no dialog, to the
+        // next one.
+        const auto close = qScopeGuard([&] {
+            delete moved.data();
+            delete source.data();
+            settleQueued();
+        });
         source->show();
         ASSERT_TRUE(waitFor([&] { return source->isExposed(); }));
         QPointer<Pane> pane = source->focusedPane(); ASSERT_TRUE(pane);
@@ -8866,7 +8907,6 @@ TEST_F(NativeWindow, APanesDialogsFollowItToANewWindow) {
         openPaneDialogs(pane, directory.filePath(QStringLiteral("sent-%1").arg(int(action))), dialogs);
         ASSERT_TRUE(dialogs.prompt && dialogs.save);
         ASSERT_TRUE(source->runAction(pane, action));
-        QPointer<TerminalWindow> moved;
         ASSERT_TRUE(waitDeleting([&] {
             moved = pane ? qobject_cast<TerminalWindow*>(pane->parent()) : nullptr;
             return moved && moved != source && source.isNull();
@@ -8879,6 +8919,10 @@ TEST_F(NativeWindow, APanesDialogsFollowItToANewWindow) {
         ASSERT_TRUE(moved && pane);
         moved->requestClosePane(pane);
         ASSERT_TRUE(waitDeleted(moved));
+    };
+    for (const Action action : {Action::MovePaneToWindow, Action::DetachTab}) {
+        SCOPED_TRACE(Keybinds::title(action).toStdString());
+        follows(action);
     }
 }
 
@@ -8904,13 +8948,15 @@ TEST_F(NativeWindow, AnOverlaysDialogsMoveWithItsHost) {
     ASSERT_TRUE(source->movePaneTo(host, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
     ASSERT_TRUE(source);
     ASSERT_NO_FATAL_FAILURE(expectDialogsOver(dialogs, source));
-    stays->sendInput("\x04");
+    ASSERT_TRUE(stays->sendInput("\x04"));
     ASSERT_TRUE(waitDeleted(source));
     ASSERT_TRUE(settleQueued());
     ASSERT_NO_FATAL_FAILURE(expectDialogsOver(dialogs, destination));
     ASSERT_NO_FATAL_FAILURE(expectPromptAnswers(dialogs));
     ASSERT_TRUE(host);
-    if (host->overlay()) host->overlay()->pane()->sendInput("\x04");
+    if (host->overlay()) {
+        EXPECT_TRUE(host->overlay()->pane()->sendInput("\x04"));
+    }
 }
 
 TEST_F(NativeWindow, APanesDialogsCloseWithTheWindowItIsIn) {
@@ -9011,8 +9057,10 @@ TEST_F(NativeWindow, ARequestFromAClosedPaneOpensNoDialog) {
     // later, so they still find it.
     window->requestClosePane(closing);
     ASSERT_TRUE(closing);
-    drain(300);
-    EXPECT_TRUE(waitForDialog<QMessageBox>(QStringLiteral("File transfer")).isNull());
+    // The transfer's worker thread posts its request to the window, and the
+    // clipboard write comes through the pane's queue: both take a few
+    // milliseconds. A second is the bound for a dialog that would show.
+    EXPECT_TRUE(waitForDialog<QMessageBox>(QStringLiteral("File transfer"), 1000).isNull());
     EXPECT_FALSE(chrome->clipboardPromptOpen());
     EXPECT_FALSE(QFileInfo::exists(sent));
     // The other pane still asks.
@@ -9052,13 +9100,15 @@ TEST_F(NativeWindow, ADownloadsNameFitsAFileName) {
         feedFromReader(pane, "\x1b]1337;File=name=" + name.toUtf8().toBase64().toStdString() + ";size=5;inline=0:"
                                  + QByteArray("hello").toBase64().toStdString() + "\x07");
         QPointer<QFileDialog> save = waitForDialog<QFileDialog>(QStringLiteral("Save file received from"));
-        ASSERT_TRUE(save);
+        EXPECT_TRUE(save);
+        if (!save) continue;
         const auto refuse = qScopeGuard([&save] {
             if (save && save->testAttribute(Qt::WA_DeleteOnClose)) save->reject();
             // The dialog goes, and with it the one download at a time.
             drainDeferredDeletes();
         });
-        ASSERT_EQ(save->selectedFiles().size(), 1);
+        EXPECT_EQ(save->selectedFiles().size(), 1);
+        if (save->selectedFiles().size() != 1) continue;
         EXPECT_TRUE(QFileInfo(save->selectedFiles().front()).fileName() == expected)
             << QFileInfo(save->selectedFiles().front()).fileName().toStdString();
     }
@@ -9081,7 +9131,7 @@ TEST_F(NativeWindow, TheScrollBarAtTheBottomShowsTheLiveScreen) {
     while (target < history + 100000 && !shortOfTop(target)) ++target;
     ASSERT_TRUE(shortOfTop(target));
     feedFromReader(pane, std::string(std::size_t(rows - 1 - cursor) + (target - history), '\n'));
-    ASSERT_EQ(pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().historySize(); }), target);
+    ASSERT_EQ(historySize(pane), target);
     pane->scrollHistory(0.0);
     const double size = pane->historyPosition().value(QStringLiteral("size")).toDouble();
     pane->scrollHistory(1.0 - size);
@@ -9097,13 +9147,13 @@ TEST_F(NativeWindow, AHeldFrameIsDrawnWhenItsHoldTimesOutAndNotBefore) {
     const auto before = window->submittedFrames();
     QElapsedTimer held; held.start();
     // Through the program, as the PTY reader tells the window of output.
-    pane->sendInput("\x1b[?2026hheld\n");
+    ASSERT_TRUE(pane->sendInput("\x1b[?2026hheld\n"));
     drain(700);
     const auto during = window->submittedFrames();
     EXPECT_LE(during - before, 1u) << "frames while the frame was held";
     EXPECT_TRUE(waitFor([&] { return window->submittedFrames() > during; }, 2000));
     EXPECT_GE(held.elapsed(), 900);
-    pane->sendInput("\x1b[?2026l\n");
+    ASSERT_TRUE(pane->sendInput("\x1b[?2026l\n"));
     expectIdle(window);
 }
 
@@ -9361,8 +9411,8 @@ TEST_F(NativeWindow, ADownloadsSaveDialogStaysWhileItsWindowHides) {
     // quick terminal slides out on its own while the dialog asks, hides
     // when it has slid out, and slides in again when the dialog closes.
     if (const std::string why = untypableDialog(); !why.empty()) GTEST_SKIP() << why;
-    for (const bool quick : {false, true}) {
-        SCOPED_TRACE(quick ? "quick terminal" : "window");
+    // A failed check ends its own case only.
+    const auto stays = [&](bool quick) {
         QPointer<TerminalWindow> source;
         QPointer<QFileDialog> dialog = openDownloadDialog(*application, source, directory.path(), {}, quick);
         const auto rejectAll = qScopeGuard([&dialog] {
@@ -9382,7 +9432,13 @@ TEST_F(NativeWindow, ADownloadsSaveDialogStaysWhileItsWindowHides) {
             source->hide();
         }
         ASSERT_TRUE(waitFor([&] { return source && !source->isVisible(); }, 5000));
-        drain(200);
+        // A cancel is the keeper's reject, at once when the surface goes, or
+        // a close that the platform posts to the windows transient for it.
+        // Once the calls posted before now ran, either has run, and the
+        // reject's deleteLater is sent here: outside an event loop nothing
+        // else sends it.
+        ASSERT_TRUE(settleQueued());
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         ASSERT_TRUE(dialog) << "the dialog was cancelled";
         ASSERT_TRUE(shown);
         EXPECT_TRUE(shown->isVisible());
@@ -9399,6 +9455,10 @@ TEST_F(NativeWindow, ADownloadsSaveDialogStaysWhileItsWindowHides) {
         if (quick) {
             EXPECT_TRUE(waitFor([&] { return source && source->quickShown() && source->isExposed(); }, 5000));
         }
+    };
+    for (const bool quick : {false, true}) {
+        SCOPED_TRACE(quick ? "quick terminal" : "window");
+        stays(quick);
     }
 }
 
@@ -9495,17 +9555,24 @@ TEST_F(NativeWindow, AQuickTerminalToggledBackMidSlideEndsWhereItWasSent) {
     }
 }
 
+// A program in @p directory that shows each byte it gets as text (cat -v
+// in raw mode), after "ready": a program to run by its path, as a shell
+// is. Empty when it could not be written.
+QString catVScript(const QTemporaryDir& directory) {
+    const QString program = directory.filePath(QStringLiteral("cat-v.sh"));
+    QFile script(program);
+    if (!script.open(QIODevice::WriteOnly) || script.write("#!/bin/sh\nstty raw -echo; printf ready; exec cat -v\n") < 0) return {};
+    script.close();
+    if (!QFile::setPermissions(program, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner)) return {};
+    return program;
+}
+
 TEST_F(NativeWindow, AHeldChordWithNothingToDoRepeatsIntoTheProgram) {
     // Fullscreen has nothing to do in a quick terminal: F11 reaches the
     // program, which must get its repeats too. cat -v in raw mode shows
     // each F11 as "^[[23~".
-    const QString program = directory.filePath(QStringLiteral("cat-v.sh"));
-    {
-        QFile script(program);
-        ASSERT_TRUE(script.open(QIODevice::WriteOnly));
-        script.write("#!/bin/sh\nstty raw -echo; printf ready; exec cat -v\n");
-    }
-    ASSERT_TRUE(QFile::setPermissions(program, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    const QString program = catVScript(directory);
+    ASSERT_FALSE(program.isEmpty());
     WindowOptions options;
     options.command = {program};
     options.quick = true;
@@ -9655,7 +9722,13 @@ TEST_F(NativeWindow, ANativeGtkSaveDialogKeepsItsNameWhenItsWindowCloses) {
     QPointer<Pane> pane = source->focusedPane(); ASSERT_TRUE(pane);
     ASSERT_TRUE(source->movePaneTo(pane, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
     ASSERT_TRUE(closeAndWait(source));
+    // The GTK chooser runs in GTK's loop: a response that cancels it would
+    // come from GTK's handling of the compositor's events, which no call
+    // posted to Qt's queue orders, so no barrier shows that none came.
+    // The drain gives GTK that time. The reject's deleteLater is sent
+    // after it: outside an event loop nothing else sends it.
     drain(200);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     ASSERT_TRUE(dialog) << "the dialog was cancelled";
     EXPECT_EQ(dialog->windowHandle()->transientParent(), destination);
     ASSERT_EQ(gtk.shown(), std::vector<void*>{chooser});
@@ -9778,13 +9851,8 @@ TEST_F(NativeWindow, AHeldChordSplitsOpensAndClosesOnce) {
     // of the configuration show its problems again.
     RegisteredNotificationServer notices;
     ASSERT_TRUE(notices.registered);
-    const QString program = directory.filePath(QStringLiteral("cat-v.sh"));
-    {
-        QFile script(program);
-        ASSERT_TRUE(script.open(QIODevice::WriteOnly));
-        script.write("#!/bin/sh\nstty raw -echo; printf ready; exec cat -v\n");
-    }
-    ASSERT_TRUE(QFile::setPermissions(program, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    const QString program = catVScript(directory);
+    ASSERT_FALSE(program.isEmpty());
     restartApplication(QStringLiteral("held.conf"),
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}, {QStringLiteral("shell"), program}}},
                       {QStringLiteral("Keybinds"), QJsonObject{{QStringLiteral("bindings"), QJsonObject{
@@ -10015,8 +10083,7 @@ TEST_F(NativeWindow, ARefusedMoveToANewTabKeepsItsKeyAndSaysWhy) {
     RegisteredNotificationServer notices;
     ASSERT_TRUE(notices.registered);
     Pane* lone = window->focusedPane();
-    const auto screen = [lone] { return lone->text(AfterglowVt::Terminal::TextScope::Screen); };
-    ASSERT_TRUE(waitFor([&] { return screen().contains(QStringLiteral("ready")); })) << screen().toStdString();
+    ASSERT_TRUE(waitFor([&] { return screenOf(lone).contains(QStringLiteral("ready")); })) << screenOf(lone).toStdString();
     const quint32 tab = window->tabIdOf(lone);
     // A pane alone in its tab: the move would only replace the tab. The
     // chord is held: its repeats do not try again.
@@ -10027,8 +10094,8 @@ TEST_F(NativeWindow, ARefusedMoveToANewTabKeepsItsKeyAndSaysWhy) {
     // The next key is the first that the program gets: it shows right
     // after "ready".
     sendKey(window, Qt::Key_Z, Qt::NoModifier, QStringLiteral("z"));
-    EXPECT_TRUE(waitFor([&] { return screen().contains(QLatin1Char('z')); })) << screen().toStdString();
-    EXPECT_TRUE(screen().contains(QStringLiteral("readyz"))) << screen().toStdString();
+    EXPECT_TRUE(waitFor([&] { return screenOf(lone).contains(QLatin1Char('z')); })) << screenOf(lone).toStdString();
+    EXPECT_TRUE(screenOf(lone).contains(QStringLiteral("readyz"))) << screenOf(lone).toStdString();
     // afterglow ctl and scripts hear that it failed, and the user hears why
     // once more.
     EXPECT_FALSE(window->runAction(lone, Action::MovePaneToTab));
@@ -10099,10 +10166,33 @@ namespace {
 /// Shows session @p name of @p daemon in a new window of @p application.
 QPointer<TerminalWindow> showSession(Application& application, MuxTest::TestDaemon& daemon, const QString& name, QString* error) {
     WindowOptions options;
-    options.session = MuxClient::attach(name, true, error, daemon.sockets(), MuxSettings{}.eventQueue);
+    options.session = MuxClient::attach(name, true, error, daemon.sockets(), MuxSettings{}.eventQueue,
+                                        AfterglowVt::TerminalOptions{}.maxScrollback);
     if (!options.session) return nullptr;
     QPointer<TerminalWindow> shown = application.newWindow(options);
     if (shown) shown->show();
+    return shown;
+}
+
+/// A session's window, and its pane once the shell showed its prompt ("$").
+struct ShownSession
+{
+    QPointer<TerminalWindow> window;
+    Pane* pane = nullptr;
+};
+
+/// showSession, then the wait for the window's first frame and the shell's
+/// prompt. A null pane, with @p error, when one does not come: the window
+/// is closed then.
+ShownSession showSessionAtPrompt(Application& application, MuxTest::TestDaemon& daemon, const QString& name, QString* error) {
+    ShownSession shown{showSession(application, daemon, name, error), nullptr};
+    if (!shown.window) return shown;
+    if (waitFor([&] { return shown.window->isExposed() && shown.window->submittedFrames() > 0; })) shown.pane = shown.window->focusedPane();
+    if (!shown.pane || !waitFor([&] { return screenOf(shown.pane).startsWith(QLatin1Char('$')); }, 5000)) {
+        *error = shown.pane ? QStringLiteral("no prompt: ") + screenOf(shown.pane) : QStringLiteral("the window shows no pane");
+        delete shown.window;
+        return {};
+    }
     return shown;
 }
 
@@ -10128,12 +10218,12 @@ TEST_F(NativeWindow, AMuxSessionShowsInAWindowAndEndsWithIt) {
     ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
     // The window measured the pane, and the program got that size.
     ASSERT_LT(pane->cols(), 60);
-    pane->sendInput("stty size\n");
+    ASSERT_TRUE(pane->sendInput("stty size\n"));
     ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("%1 %2").arg(pane->rows()).arg(pane->cols())); }, 5000))
         << screenOf(pane).toStdString();
     // A key typed into the window reaches the program, and its output the window.
     const auto frames = shown->submittedFrames();
-    pane->sendInput("echo li''ve\n");
+    ASSERT_TRUE(pane->sendInput("echo li''ve\n"));
     ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("\nlive")); }, 5000)) << screenOf(pane).toStdString();
     EXPECT_TRUE(waitFor([&] { return shown->submittedFrames() > frames; }));
     ASSERT_TRUE(waitFor([&] {
@@ -10152,12 +10242,8 @@ TEST_F(NativeWindow, AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow) 
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "calls")) << daemon.lastError();
     QString error;
-    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("calls"), &error);
-    ASSERT_NE(shown, nullptr) << error.toStdString();
-    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
-    Pane* pane = shown->focusedPane();
-    ASSERT_NE(pane, nullptr);
-    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("calls"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
     int bells = 0;
     QStringList vars;
     QObject listener;
@@ -10173,6 +10259,189 @@ TEST_F(NativeWindow, AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow) 
     delete shown;
 }
 
+// A session pane has what a pane of the window has, through the entry
+// points that use it: the last output in the pager (Action::ShowLastOutput)
+// and the regions of shell integration, the status of a program with the
+// signal that the tab bar and scripts hear, a shell context, and the
+// directory of a shell that reports none, which the daemon reads for a new
+// tab.
+TEST_F(NativeWindow, AMuxSessionsMarksStatusAndDirectoryReachTheWindow) {
+    // The pager of the fixture may be missing: tail is not.
+    restartApplication(QStringLiteral("pager.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("pager"), QStringLiteral("/usr/bin/tail -f")}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "marks")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("marks"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    int statusChanges = 0;
+    QObject listener;
+    QObject::connect(pane, &Pane::statusChanged, &listener, [&] { ++statusChanges; });
+    ASSERT_TRUE(pane->sendInput("cd / && printf '\\033]133;C\\aout1\\nout2\\n\\033]133;D;4\\a\\033]7501;state=working:app=build:progress=30\\a"
+                                "\\033]3008;start=c1;type=remote;user=u;hostname=far-away-host\\033\\\\'\n"));
+    EXPECT_TRUE(waitFor([&] { return pane->text(AfterglowVt::Terminal::TextScope::LastOutput) == QStringLiteral("out1\nout2\n"); }, 5000))
+        << pane->text(AfterglowVt::Terminal::TextScope::LastOutput).toStdString();
+    // The status reaches the window as a change, which the tab bar and
+    // scripts hear of.
+    EXPECT_TRUE(waitFor([&] { return statusChanges > 0; }, 5000));
+    const QList<PaneStatusRecord> records = pane->status();
+    ASSERT_EQ(records.size(), 1);
+    EXPECT_EQ(records[0].app, QStringLiteral("build"));
+    EXPECT_EQ(records[0].progress, 30);
+    EXPECT_EQ(records[0].state, AfterglowVt::StatusState::Working);
+    EXPECT_TRUE(waitFor([&] { return pane->contextKind() == QStringLiteral("remote"); }, 5000)) << pane->contextKind().toStdString();
+    // The D mark came in the frame of the status or before it: the printf
+    // wrote it first.
+    const QVariantList regions = pane->semanticRegions().value(QStringLiteral("regions")).toList();
+    EXPECT_TRUE(std::any_of(regions.begin(), regions.end(), [](const QVariant& r) {
+        const QVariantMap region = r.toMap();
+        return region.value(QStringLiteral("kind")) == QStringLiteral("output") && region.value(QStringLiteral("exit_code")).toInt() == 4;
+    })) << QJsonDocument(QJsonArray::fromVariantList(regions)).toJson(QJsonDocument::Compact).toStdString();
+    // The shell (ENV=/dev/null, PS1 "$ ") reports no directory: scripts and
+    // afterglow ctl get none, and a new tab asks the daemon for the shell's.
+    EXPECT_TRUE(pane->knownDirectory().isEmpty()) << pane->knownDirectory().toStdString();
+    EXPECT_EQ(pane->workingDirectory(), QStringLiteral("/"));
+    SettingsStore settings(directory.filePath(QStringLiteral("marks.conf")));
+    Control control(settings, {});
+    control.attachWindow(shown);
+    quint32 created = 0;
+    ASSERT_TRUE(control.newTab(pane->id(), {}, {QStringLiteral("/bin/cat")}, created).isEmpty());
+    Pane* added = nullptr;
+    for (Pane* p : shown->panes()) if (p->id() == created) added = p;
+    ASSERT_NE(added, nullptr);
+    EXPECT_TRUE(waitFor([&] { return added->workingDirectory() == QStringLiteral("/"); })) << added->workingDirectory().toStdString();
+    // The last output in the pager, as for a pane of the window's own.
+    shown->revealPane(pane);
+    const int tabs = int(shown->tabs().size());
+    ASSERT_TRUE(shown->runAction(pane, Action::ShowLastOutput));
+    ASSERT_EQ(int(shown->tabs().size()), tabs + 1);
+    Pane* pager = shown->focusedPane();
+    ASSERT_NE(pager, pane);
+    EXPECT_TRUE(waitFor([&] { return screenOf(pager).contains(QStringLiteral("out2")); }, 5000)) << screenOf(pager).toStdString();
+    delete shown;
+}
+
+// The window tells the daemon whether the user can see a session pane, and
+// the daemon's terminal reports each change to the program (mode 2033): at
+// the attach, when another tab shows, and when the pane shows again.
+TEST_F(NativeWindow, ASessionPaneTellsItsProgramWhetherItCanBeSeen) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // The program turns the mode on and reads the daemon's first report
+    // ("cannot be seen", from before any window), then says so in a file.
+    const std::string on = daemon.dir() + "/on";
+    auto options = daemon.options(
+        {"/bin/sh", "-c",
+         "stty raw -echo; printf '\\033[?2033h'; dd bs=1 count=9 2>/dev/null | cat -v; touch '" + on + "'; printf ready; exec cat -v"},
+        "seen");
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(QString::fromStdString(on)); }, 5000));
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("seen"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    const auto reports = [&](const char* state) { return screenOf(pane).count(QLatin1String(state)); };
+    // The program's first report is the daemon's, from before any window
+    // ("cannot be seen"); then the window says that it shows the pane.
+    ASSERT_TRUE(waitFor([&] { return reports("^[[?999;2n") == 1 && reports("^[[?999;1n") == 1; }, 5000)) << screenOf(pane).toStdString();
+    // A tab of its own hides the pane: the switch tells the daemon.
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    Pane* other = shown->openTab(launch, nullptr);
+    ASSERT_NE(other, nullptr);
+    shown->revealPane(other);
+    EXPECT_TRUE(waitFor([&] { return reports("^[[?999;2n") == 2; }, 5000)) << screenOf(pane).toStdString();
+    shown->revealPane(pane);
+    EXPECT_TRUE(waitFor([&] { return reports("^[[?999;1n") == 2; }, 5000)) << screenOf(pane).toStdString();
+    delete shown;
+}
+
+// A window that attaches to a session shows what the session holds already:
+// its history, the last output, the jumps between prompts. Its status
+// records are no news to the window: a Done or a Failed from before the
+// attach shows no notification.
+TEST_F(NativeWindow, AnAttachShowsTheSessionsStateAndNotifiesNothingOld) {
+    RegisteredNotificationServer notices;
+    ASSERT_TRUE(notices.registered);
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // The program writes it all, then says so in a file, before any window
+    // comes.
+    const std::string written = daemon.dir() + "/written";
+    auto options = daemon.options(
+        {"/bin/sh", "-c",
+         "seq 300; printf '\\033]133;A\\a$ \\033]133;B\\a\\033]133;C\\a'; seq 100; printf '\\033]133;D;4\\a"
+         "\\033]7501;state=error:app=build\\a\\033]7501;id=x:state=done:app=test\\a'; touch '" + written + "'; exec /bin/sh"},
+        "old");
+    options.launch.environment.emplace_back("PS1", "$ ");
+    options.launch.environment.emplace_back("ENV", "/dev/null");
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(QString::fromStdString(written)); }, 5000));
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("old"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    EXPECT_TRUE(waitFor([&] {
+        const QString output = pane->text(AfterglowVt::Terminal::TextScope::LastOutput);
+        return output.startsWith(QStringLiteral("1\n2\n")) && output.endsWith(QStringLiteral("\n100\n"));
+    }, 5000)) << pane->text(AfterglowVt::Terminal::TextScope::LastOutput).toStdString();
+    EXPECT_TRUE(waitFor([&] { return pane->status().size() == 2; }, 5000));
+    // The jump to the prompt before lands on it, in the history that came.
+    EXPECT_TRUE(waitFor([&] { return historySize(pane) > 250; }, 5000));
+    ASSERT_TRUE(shown->runAction(pane, Action::JumpPromptUp));
+    EXPECT_GT(viewportOffset(pane), 0u);
+    // The notices arrive in the order sent: none came before this one.
+    NotificationCenter::instance().showNotice(nullptr, QStringLiteral("Test"), QStringLiteral("last"));
+    ASSERT_TRUE(waitFor([&] { return notices.server.bodies.contains(QStringLiteral("last")); }));
+    EXPECT_EQ(notices.server.bodies, QStringList{QStringLiteral("last")});
+    delete shown;
+}
+
+// A selection in a region that the session's program scrolls moves with its
+// text, as in a pane of the window's own: the frames carry the scrolls. The
+// extra cursors of the program show too.
+TEST_F(NativeWindow, ASelectionInASessionPaneFollowsTheScrollsOfItsProgram) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    auto options = daemon.options(
+        {"/bin/sh", "-c",
+         "stty -echo; printf '\\033[2J\\033[Hzero\\r\\none\\r\\ntwo\\r\\nthree\\r\\n\\033[>29;2:6:3 q'; read a; "
+         "printf '\\033[1;1H\\033[M'; read b; printf '\\033[1;4r\\033[1;1H\\033[3M\\033[r'; read c"},
+        "scrolls");
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("scrolls"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("three")); }, 5000)) << screenOf(pane).toStdString();
+    EXPECT_TRUE(waitFor([&] {
+        pane->refreshSnapshot();
+        return !pane->snapshot().extraCursors.empty();
+    }, 5000));
+    pane->startSelection(pane->selectionPointAt(0, 2), AfterglowVt::SelectionMode::Normal, true);
+    pane->extendSelection(pane->selectionPointAt(2, 2));
+    ASSERT_EQ(pane->selectedText(), QStringLiteral("two"));
+    // DL at the first row: "two" moves up a row, and the selection with it.
+    ASSERT_TRUE(pane->sendInput("\n"));
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QStringLiteral("one")); }, 5000)) << screenOf(pane).toStdString();
+    EXPECT_TRUE(pane->hasSelection());
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("two"));
+    // A region scroll that pushes it out of the region clears it.
+    ASSERT_TRUE(pane->sendInput("\n"));
+    ASSERT_TRUE(waitFor([&] { return !screenOf(pane).contains(QStringLiteral("two")); }, 5000)) << screenOf(pane).toStdString();
+    EXPECT_FALSE(pane->hasSelection());
+    delete shown;
+}
+
 // The requests of a session's programs reach the window, and its answers
 // reach them back through the daemon: an OSC 52 read gets the clipboard once
 // the user allows it. The commands of shell integration come in order, with
@@ -10182,14 +10451,10 @@ TEST_F(NativeWindow, AMuxSessionsReadsAndCommandsReachTheWindowAndBack) {
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "back")) << daemon.lastError();
     QString error;
-    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("back"), &error);
-    ASSERT_NE(shown, nullptr) << error.toStdString();
-    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
-    Pane* pane = shown->focusedPane();
-    ASSERT_NE(pane, nullptr);
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("back"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
     auto* chrome = shown->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
-    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
 
     QStringList order;
     qint64 ran = -1;
@@ -10205,11 +10470,13 @@ TEST_F(NativeWindow, AMuxSessionsReadsAndCommandsReachTheWindowAndBack) {
                                 "\\033]1337;SetUserVar=during=dg==\\a'; sleep 0.3; printf 'result\\033]133;D;0\\033\\\\'\n"));
     ASSERT_TRUE(waitFor([&] { return order.contains(QStringLiteral("began")); }, 5000)) << order.join(QLatin1Char(',')).toStdString();
     // A window that is busy gets the end late: the time is still the daemon's.
-    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    // The stall is far longer than the command, so that a time the window
+    // measured fails however slow the machine is.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
     ASSERT_TRUE(waitFor([&] { return order.contains(QStringLiteral("ended")); }, 5000)) << order.join(QLatin1Char(',')).toStdString();
     EXPECT_EQ(order, (QStringList{QStringLiteral("began"), QStringLiteral("during"), QStringLiteral("ended")}));
     EXPECT_GE(ran, 250);
-    EXPECT_LT(ran, 650);
+    EXPECT_LT(ran, 1500);
 
     // The reply goes to the program as its input, which dd saves.
     QGuiApplication::clipboard()->setText(QStringLiteral("for the session"));
@@ -10316,7 +10583,7 @@ TEST_F(NativeWindow, AMuxSessionWhoseProgramExitsClosesItsPane) {
         status = raw->exitCode();
         last = screenOf(raw);
     });
-    pane->sendInput("echo good''bye; exit 3\n");
+    ASSERT_TRUE(pane->sendInput("echo good''bye; exit 3\n"));
     ASSERT_TRUE(waitFor([&] { return !shown; }, 5000));
     EXPECT_EQ(status, 3);
     // The last output reached the window before the exit did.
@@ -10373,9 +10640,10 @@ TEST_F(NativeWindow, ALaunchOfASessionPassesItsEventQueue) {
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "queue")) << daemon.lastError();
     const Saved runtime("XDG_RUNTIME_DIR", QByteArray::fromStdString(daemon.runtime()));
-    const Saved state("XDG_STATE_HOME", QByteArray::fromStdString(daemon.dir() + "/state"));
+    const Saved state("XDG_STATE_HOME", QByteArray::fromStdString(daemon.stateHome()));
     const int before = int(TerminalWindow::windows().size());
-    ASSERT_EQ(application->openLaunch(QDir::homePath(), {}, {{QStringLiteral("session"), QStringLiteral("queue")}}), QString());
+    // In the test's directory: no program of a test starts in the user's home.
+    ASSERT_EQ(application->openLaunch(directory.path(), {}, {{QStringLiteral("session"), QStringLiteral("queue")}}), QString());
     ASSERT_EQ(int(TerminalWindow::windows().size()), before + 1);
     QPointer<TerminalWindow> shown = TerminalWindow::windows().last();
     Pane* const pane = shown->focusedPane();
@@ -10394,9 +10662,10 @@ TEST_F(NativeWindow, ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow) {
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "launched")) << daemon.lastError();
     const Saved runtime("XDG_RUNTIME_DIR", QByteArray::fromStdString(daemon.runtime()));
-    const Saved state("XDG_STATE_HOME", QByteArray::fromStdString(daemon.dir() + "/state"));
+    const Saved state("XDG_STATE_HOME", QByteArray::fromStdString(daemon.stateHome()));
+    // In the test's directory: no program of a test starts in the user's home.
     const auto launch = [&](const QString& name, bool takeover) {
-        return application->openLaunch(QDir::homePath(), {}, {{QStringLiteral("session"), name}, {QStringLiteral("takeover"), takeover}});
+        return application->openLaunch(directory.path(), {}, {{QStringLiteral("session"), name}, {QStringLiteral("takeover"), takeover}});
     };
     const int before = int(TerminalWindow::windows().size());
     ASSERT_EQ(launch(QStringLiteral("launched"), true), QString());
@@ -10436,7 +10705,7 @@ TEST_F(NativeWindow, ALargePasteReachesTheProgramOfASessionWhole) {
     ASSERT_NE(pane, nullptr);
     ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
     const std::string file = daemon.dir() + "/pasted";
-    pane->sendInput("stty -echo; cat > " + file + "\n");
+    ASSERT_TRUE(pane->sendInput("stty -echo; cat > " + file + "\n"));
     // Lines of 100 bytes, as a terminal in canonical mode takes them: 2000 of
     // them are three parts and more.
     std::string text;
@@ -10448,7 +10717,7 @@ TEST_F(NativeWindow, ALargePasteReachesTheProgramOfASessionWhole) {
     ASSERT_TRUE(pane->sendInput(text));
     ASSERT_TRUE(waitFor([&] { return MuxTest::readFile(file).size() == text.size(); }, 10000)) << MuxTest::readFile(file).size();
     EXPECT_TRUE(MuxTest::readFile(file) == text);
-    pane->sendInput("\x04");
+    ASSERT_TRUE(pane->sendInput("\x04"));
     delete shown;
 }
 

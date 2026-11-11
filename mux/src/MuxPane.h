@@ -7,6 +7,7 @@
 #include "MuxProtocol.h"
 
 #include <AfterglowPty/Pty.h>
+#include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
 
 #include <atomic>
@@ -41,8 +42,10 @@ namespace AfterglowMux {
 /// with limits, which a process with PTY threads cannot fork safely.
 ///
 /// The callbacks of the terminal and of the PTY run on the PTY reader thread,
-/// with m_mutex held for the terminal's. They reach the daemon's thread only
-/// through @p wake, which must be safe to call from any thread.
+/// with m_mutex held for the terminal's, and the terminal's also on the
+/// daemon's thread for a resize, a reset, a clear and a visibility change.
+/// They reach the daemon's thread only through @p wake, which must be safe to
+/// call from any thread.
 class MuxPane final : public AfterglowVt::ITerminalHost, public AfterglowPty::IPtyListener
 {
 public:
@@ -52,8 +55,8 @@ public:
     /// PTY's input queue has room again after it refused input, or takes no
     /// more input. The reader thread runs it for output, host calls, the exit
     /// and the queue. The daemon's thread runs it for the others, and for the
-    /// host calls of a resize, a reset and a new window. It must be safe to
-    /// call from any thread.
+    /// host calls of a resize, a reset, a visibility change and a new window.
+    /// It must be safe to call from any thread.
     MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, const PaneSize& size,
             std::string notificationCapabilities, std::function<void()> wake);
     /// Hangs up the program: the PTY's reaper kills it when it stays.
@@ -83,16 +86,18 @@ public:
     /// own: the window shows the result with the next frame.
     void reset();
     void clear();
-    /// Runs @p fn with the terminal, under the lock that the reader thread
-    /// takes to feed it.
-    template<typename F>
-    auto withTerminal(F&& fn) const
-    {
-        std::lock_guard lock(m_mutex);
-        return fn(m_terminal);
-    }
     /// The program exited, or start() failed.
     bool exited() const { return m_exited.load(); }
+    /// The next frame of @p writer (StateWriter::update), with the region
+    /// scrolls since the frame before it.
+    std::string frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes);
+    /// Whether the user can see the pane in its window: mode 2033 reports a
+    /// change to the program. A pane that no window shows cannot be seen, and
+    /// a change of window (setWindow) makes it unseen until the new window
+    /// says otherwise.
+    /// @p window: the Attachment::serial() of the window that says so; only
+    /// the pane's window (setWindow) can make it seen.
+    void setVisible(bool visible, std::uint64_t window);
 
     /// The program in the foreground, when it is not the shell: the rule of
     /// a normal window's confirmClose. Empty when @p caller leads the
@@ -100,6 +105,11 @@ public:
     /// `afterglow mux kill` typed at its prompt): the caller is no job to ask
     /// about. 0 for no caller.
     std::string foregroundJob(pid_t caller) const;
+    /// The working directory of the program in the foreground, else of the
+    /// first program: Pty::currentWorkingDirectory, which reads only /proc.
+    /// Empty once the program exited, when neither directory remains, and
+    /// for a path that is not UTF-8.
+    std::string directory() const;
 
     /// The window that shows the pane, by Attachment::serial(), or 0 for
     /// none. The calls of its terminal to its host (MuxHost.h) wait for that
@@ -136,6 +146,7 @@ public:
     void commandStarted(std::string_view command) override;
     void commandFinished(int exitCode) override;
     void downloadFile(std::string_view name, std::string_view data) override;
+    void regionScrolled(const AfterglowVt::RegionScroll& scroll) override;
     /// A session pane forwards no socket of an ssh session (afterglow ssh
     /// runs in windows only): `aglow run` hears that it is off, not that the
     /// terminal does not know the query.
@@ -152,8 +163,10 @@ private:
     std::atomic<bool> m_changed{false};
     std::atomic<int> m_exitStatus{0};
     const std::string m_notificationCapabilities;
-    mutable std::mutex m_mutex; ///< guards m_terminal, which the reader thread feeds
+    mutable std::mutex m_mutex; ///< guards m_terminal, which the reader thread feeds, and m_scrolls
     AfterglowVt::Terminal m_terminal;
+    /// The region scrolls of the terminal for the next frame.
+    AfterglowVt::RegionScrolls m_scrolls;
     /// After m_terminal: it goes first, and its reader thread ends before
     /// the terminal that the thread feeds.
     std::unique_ptr<AfterglowPty::Pty> m_pty;

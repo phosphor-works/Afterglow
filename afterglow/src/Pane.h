@@ -112,6 +112,20 @@ public:
     /// A state frame of the session (MuxClient, GUI thread). False when it
     /// does not apply: the replica no longer matches the daemon's terminal.
     bool applySessionFrame(std::string_view frame);
+    /// Whether the user can see this session pane: the daemon's terminal
+    /// reports a change to the program (mode 2033). Sends a change only.
+    void setSessionVisible(bool visible);
+    /// False for a session pane until its first frame applied: until then
+    /// its replica is a blank terminal, whose cursor, context and status
+    /// are none of the program's. GUI thread.
+    bool sessionSynced() const { return !m_session || m_sessionSynced; }
+    /// sessionSynced for the snapshot (snapshot()): a frame that the window
+    /// holds (a synchronized update, a prompt redraw) leaves the blank one.
+    bool snapshotSynced() const { return !m_session || m_snapshotSynced; }
+    /// The serial of the newest status record that a session pane's first
+    /// frame brought, 0 for none and for other panes: the window showed those
+    /// records before (or none did), so they are no news to tell the user.
+    quint64 statusBaseline() const { return m_statusBaseline; }
     /// A call of the session's terminal to its host (MuxHost.h, MuxClient,
     /// GUI thread): the pane answers it as it answers its own terminal.
     void applySessionHostCall(const AfterglowMux::Host::Call& call);
@@ -203,13 +217,21 @@ public:
     QString userTitle() const;
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
     /// is local and exists, else the foreground job's directory from /proc.
-    /// A session pane has only what its shell reported: its program runs
-    /// under the daemon.
+    /// A session pane's program runs under the daemon, which reads that
+    /// directory: the GUI thread waits for its answer (MuxClient::directory),
+    /// so this is for a user's action, such as a new tab.
     QString workingDirectory() const;
+    /// workingDirectory without a call to the daemon, for what reads every
+    /// pane often (Control::describe, the snapshot of each script event): a
+    /// session pane gives only what its shell reported.
+    QString knownDirectory() const;
     QString text(AfterglowVt::Terminal::TextScope scope);
     /// At most `limit` bytes of text. The caller bounds the limit: scripts
     /// to their max_bytes range, show_last_output to Terminal.lastOutputLimit.
     QVariantMap readText(AfterglowVt::Terminal::TextScope scope, std::size_t limit);
+    /// A session pane's last output spans history rows that are still on
+    /// their way from the daemon: readText gives it as not available.
+    bool lastOutputArriving() const;
     /// The command running now (OSC 133), empty at the prompt.
     QString runningCommand() const;
     /// The program closing the pane would end: the shell's foreground job, or
@@ -321,7 +343,9 @@ Q_SIGNALS:
     /// for an overlay's dialog. The window can change how the dialog shows
     /// (the quick terminal does).
     void dialogOpened(QDialog* dialog);
-    /// The terminal changed. Emitted on the GUI thread, coalesced.
+    /// The terminal changed. Emitted on the GUI thread: coalesced for the
+    /// output of the pane's own program, and once for each frame that a
+    /// session pane applies (applySessionFrame).
     void contentChanged();
     /// The program's drag offer (OSC 72) starts as a drag of the desktop.
     void programDragStarting();
@@ -360,13 +384,14 @@ Q_SIGNALS:
 
 private:
     // ITerminalHost: m_mutex held, on the pty thread, or for a session pane
-    // on the GUI thread (applySessionHostCall).
+    // on the GUI thread (applySessionHostCall, and the replica's callbacks in
+    // applySessionFrame).
     void writeToPty(std::string_view bytes) override;
     void reportInputFailure();
     /// An inputRejected is queued or was emitted, and no input got through since.
     std::atomic_bool m_inputFailureReported{false};
     /// m_mutex held, on the pty thread or on the GUI thread (a reset through
-    /// withTerminal, a session pane's host call): queues @p deliver for the GUI thread unless one of its
+    /// withTerminal, a session pane's host call or frame): queues @p deliver for the GUI thread unless one of its
     /// kind (@p queued) waits already. It waits in the queue of queueEvent,
     /// behind the events queued before it. A delivery that waits already
     /// keeps its place: what it delivers then is the latest state, which
@@ -415,7 +440,8 @@ private:
     std::atomic_bool m_clipboardQueued{false};
     std::atomic_bool m_pointerShapeQueued{false};
     // Status and context also change on the GUI thread (a reset through
-    // withTerminal): queued, so no receiver reads them under m_mutex.
+    // withTerminal, a session pane's frame): queued, so no receiver reads
+    // them under m_mutex.
     std::atomic_bool m_statusQueued{false};
     std::atomic_bool m_contextQueued{false};
     std::optional<QString> m_pendingClipboard; ///< guarded by m_mutex
@@ -615,6 +641,15 @@ private:
     std::uint32_t m_sessionPane = 0;
     bool m_killSessionOnClose = false;
     std::atomic<bool> m_sessionGone{false};
+    bool lastOutputArrivingLocked() const; ///< m_mutex held
+    int m_sessionVisible = -1; ///< the last state given to the daemon (setSessionVisible), -1 for none yet
+    bool m_sessionSynced = false; ///< GUI thread: a frame of the session applied (sessionSynced)
+    bool m_snapshotSynced = false; ///< GUI thread: m_snapshot is of a frame of the session
+    /// GUI thread: the last reported directory that knownDirectory checked,
+    /// and whether it was a directory then.
+    mutable QString m_checkedDirectory;
+    mutable bool m_checkedDirectoryExists = false;
+    quint64 m_statusBaseline = 0; ///< GUI thread: statusBaseline
     /// The size last sent to the daemon: cols, rows, cell width and height.
     std::array<int, 4> m_sentSize{0, 0, 0, 0};
     AfterglowVt::StateReader m_stateReader;

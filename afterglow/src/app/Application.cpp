@@ -237,7 +237,8 @@ QString Application::openLaunch(const QString& workingDirectory, const QStringLi
         }
         QString error;
         window.session = MuxClient::attach(session, options.value(QStringLiteral("takeover"), true).toBool(), &error,
-                                           AfterglowProto::muxSockets(), m_settings.settings().mux.eventQueue);
+                                           AfterglowProto::muxSockets(), m_settings.settings().mux.eventQueue,
+                                           m_settings.settings().terminal.maxScrollback);
         if (!window.session) return error;
     }
     TerminalWindow* w = newWindow(window);

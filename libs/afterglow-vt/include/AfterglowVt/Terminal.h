@@ -195,7 +195,10 @@ public:
     /// whole screen into the history keeps every row's id and is not
     /// reported. The terminal has moved its own images and shell marks; a
     /// host that keeps positions on that screen by stable row id (a
-    /// selection: Selection::followScroll) moves them too.
+    /// selection: Selection::followScroll) moves them too. A replica's host
+    /// hears of the scrolls of a frame once the frame applied (StateReader),
+    /// with the screen that scrolled active: its rows, marks and modes are
+    /// then those of the frame's end, not of the moment of the scroll.
     virtual void regionScrolled(const RegionScroll& scroll) {}
     /// A program asks for a new size in cells (DECCOLM, DECSCPP, DECSLPP,
     /// DECSNLS, XTWINOPS 4 and 8, and RIS after DECCOLM). Return true to let
@@ -381,6 +384,13 @@ public:
     /// Plain text; soft-wrapped rows join, trailing blanks are trimmed.
     std::string text(TextScope scope, std::size_t maxBytes = 1024 * 1024, bool* truncated = nullptr) const;
     bool hasCommandOutput() const noexcept { return m_outputStart.valid; }
+    /// The stable ids of the first and the last row of the primary screen
+    /// that the last output (TextScope::LastOutput) spans, if there is one.
+    std::optional<std::pair<std::uint64_t, std::uint64_t>> lastOutputRows() const
+    {
+        if (!m_outputStart.valid) return std::nullopt;
+        return std::pair{m_outputStart.row, (m_outputEnd.valid ? m_outputEnd : cursorMark()).row};
+    }
     /// Selection colours: set by OSC 17/19, else configured; unset ones invert the cell.
     const Rgb* selectionForeground() const noexcept
     {

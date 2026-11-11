@@ -12,6 +12,8 @@
 
 namespace AfterglowVt {
 
+class StateReader;
+
 /// Program status (OSC 7501, revision 0.4): programs report what they are
 /// doing (working, blocked on the user, done...) as records the terminal
 /// shows outside the grid. https://www.superlogical.com/rex/docs/build/program-status
@@ -34,6 +36,14 @@ class AFTERGLOWVT_EXPORT ProgramStatus
 {
 public:
     static constexpr std::size_t MaxRecords = 256;
+    /// The longest fields of a record, in bytes, from the specification: a
+    /// report over one is discarded.
+    static constexpr std::size_t MaxId = 128;
+    static constexpr std::size_t MaxApp = 32;
+    static constexpr std::size_t MaxTitle = 192;
+    static constexpr std::size_t MaxMessage = 2048;
+    /// Increases with every change of the records (and with a reset).
+    std::uint64_t serial() const noexcept { return m_serial; }
 
     enum class Result : std::uint8_t {
         Ignored, ///< malformed or over a limit: nothing applied
@@ -65,6 +75,7 @@ public:
     std::string_view effectiveApp(const StatusRecord& record) const;
 
 private:
+    friend class StateReader; ///< a replica takes the records of the terminal that it mirrors
     void upsert(StatusRecord record);
     bool clear(std::string_view id, bool all);
 

@@ -180,7 +180,7 @@ Pane* Control::find(quint32 id, TerminalWindow** window) const
 
 PaneInfo Control::describe(TerminalWindow* w, Pane* p)
 {
-    return PaneInfo{p->id(), w->id(), w->tabIndexOf(p), p->title(), p->workingDirectory(),
+    return PaneInfo{p->id(), w->id(), w->tabIndexOf(p), p->title(), p->knownDirectory(),
                     p->runningCommand(), p->cols(), p->rows(), w->isActive() && w->focusedPane() == p,
                     p->contextLabel(), w->tabIdOf(p)};
 }

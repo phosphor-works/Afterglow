@@ -15,8 +15,13 @@
 #include <PhosphorChannel/Stream.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 using namespace MuxTest;
 
@@ -25,6 +30,8 @@ namespace {
 struct NullHost : AfterglowVt::ITerminalHost
 {
     void writeToPty(std::string_view) override {}
+    void regionScrolled(const AfterglowVt::RegionScroll& scroll) override { scrolls.push_back(scroll); }
+    std::vector<AfterglowVt::RegionScroll> scrolls; ///< what the replica's frames scrolled, oldest first
 };
 
 int connectTo(const std::string& path)
@@ -46,20 +53,23 @@ class Window
 public:
     /// The attach call and the connection to its socket. Empty on success,
     /// else the error code or message of the call, or why the connection
-    /// failed. Without @p eventQueue, the call passes none.
-    std::string attach(TestDaemon& daemon, const std::string& name, bool takeover = true, std::optional<std::size_t> eventQueue = {})
+    /// failed. Without @p eventQueue or @p history, the call passes none.
+    std::string attach(TestDaemon& daemon, const std::string& name, bool takeover = true, std::optional<std::size_t> eventQueue = {},
+                       std::optional<std::size_t> history = {})
     {
-        if (std::string error = call(daemon, name, takeover, eventQueue); !error.empty()) return error;
+        if (std::string error = call(daemon, name, takeover, eventQueue, history); !error.empty()) return error;
         return connect();
     }
 
     /// The attach call alone. Empty on success, else the error code, or the
     /// message of an error without one.
-    std::string call(TestDaemon& daemon, const std::string& name, bool takeover = true, std::optional<std::size_t> eventQueue = {})
+    std::string call(TestDaemon& daemon, const std::string& name, bool takeover = true, std::optional<std::size_t> eventQueue = {},
+                     std::optional<std::size_t> history = {})
     {
         IpcConnection::Error error;
         Json::Object options{{AttachOption::Takeover, takeover}};
         if (eventQueue) options.emplace_back(AttachOption::EventQueue, *eventQueue);
+        if (history) options.emplace_back(AttachOption::History, *history);
         const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, name, std::move(options)}, &error);
         if (!result) return error.code.empty() ? error.message : error.code;
         socket = (*result)["socket"].toString();
@@ -659,7 +669,171 @@ bool hasCall(const Window& w, Host::Kind kind)
     return std::any_of(w.calls.begin(), w.calls.end(), [kind](const Host::Call& c) { return c.kind == kind; });
 }
 
+/// The texts of the reports that the window got, oldest first.
+std::vector<std::string> reports(const Window& w)
+{
+    std::vector<std::string> out;
+    for (const Host::Call& c : w.calls) {
+        if (c.kind == Host::Kind::Report) out.push_back(c.text);
+    }
+    return out;
+}
+
 } // namespace
+
+TEST(MuxAttach, TheWindowSaysWhetherThePaneCanBeSeen)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    w.answerReports = false;
+    // Mode 2033 reports at once: the window said nothing yet, so the pane
+    // cannot be seen.
+    ASSERT_TRUE(w.type("printf '\\033[?2033h'\n"));
+    ASSERT_TRUE(w.until([&] { return reports(w).size() == 1; }));
+    EXPECT_EQ(reports(w)[0], "\x1b[?999;2n");
+    Attach::Input visible;
+    visible.type = Attach::InputType::Visible;
+    visible.pane = w.pane;
+    visible.visible = true;
+    ASSERT_TRUE(w.send(visible));
+    ASSERT_TRUE(w.until([&] { return reports(w).size() == 2; }));
+    EXPECT_EQ(reports(w)[1], "\x1b[?999;1n");
+    // No change, no report.
+    ASSERT_TRUE(w.send(visible));
+    ASSERT_TRUE(w.type("echo mark\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nmark "); })) << w.screen();
+    EXPECT_EQ(reports(w).size(), 2u);
+    // A pane that no window shows cannot be seen, and the program hears so
+    // from the daemon: a reader in the foreground keeps what comes.
+    const std::string kept = daemon.dir() + "/report";
+    ASSERT_TRUE(w.type("stty raw -echo; echo armed; head -c 9 > '" + kept + "'; stty sane\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\narmed"); })) << w.screen();
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"sh"}));
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
+    EXPECT_TRUE(waitFor([&] { return readFile(kept).size() == 9; }));
+    EXPECT_TRUE(readFile(kept) == "\x1b[?999;2n") << readFile(kept);
+    // The next window that can see it changes that again, and its report is
+    // the only one that goes through it.
+    Window next;
+    next.answerReports = false;
+    ASSERT_EQ(next.attach(daemon, "sh"), "");
+    ASSERT_TRUE(next.until([&] { return next.pane != 0; }));
+    visible.pane = next.pane;
+    ASSERT_TRUE(next.send(visible));
+    ASSERT_TRUE(next.until([&] { return !reports(next).empty(); }));
+    EXPECT_TRUE(reports(next) == std::vector<std::string>{"\x1b[?999;1n"});
+    // A window that takes the session over has not said yet whether the user
+    // can see the pane: the pane is unseen until it does. The daemon goes
+    // through no window between the two, or straight from one to the other,
+    // as the takeover meets its loop: either way, the new window's report is
+    // a change.
+    Window over;
+    over.answerReports = false;
+    ASSERT_EQ(over.attach(daemon, "sh"), "");
+    ASSERT_TRUE(over.until([&] { return over.pane != 0; }));
+    visible.pane = over.pane;
+    ASSERT_TRUE(over.send(visible));
+    ASSERT_TRUE(over.until([&] { return !reports(over).empty() && reports(over).back() == "\x1b[?999;1n"; }));
+}
+
+TEST(MuxAttach, ThePaneDirectoryIsThatOfTheForegroundProgram)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    const auto directory = [&] {
+        const auto result = daemon.call(Fn::PaneDirectory, Json::Array{"sh", std::int64_t(w.pane)});
+        return result && result->isString() ? result->toString() : std::string("(no answer)");
+    };
+    // The shell reports no directory (OSC 7): the system has it.
+    ASSERT_TRUE(w.type("cd / && echo in-root\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nin-root "); })) << w.screen();
+    EXPECT_EQ(directory(), "/");
+    // A directory that was removed is none.
+    ASSERT_TRUE(w.type("cd '" + daemon.dir() + "' && mkdir gone && cd gone && rmdir ../gone && echo removed\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nremoved "); })) << w.screen();
+    EXPECT_EQ(directory(), "");
+    ASSERT_TRUE(w.type("cd / && echo back\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nback "); })) << w.screen();
+    // A program in the foreground in another directory.
+    ASSERT_TRUE(w.type("(cd /usr && echo in-usr && exec sleep 30)\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nin-usr "); })) << w.screen();
+    // The shell puts the program in the foreground after it forked it.
+    EXPECT_TRUE(w.until([&] { return directory() == "/usr"; })) << directory();
+    IpcConnection::Error error;
+    EXPECT_FALSE(daemon.call(Fn::PaneDirectory, Json::Array{"none", 1}, &error));
+    EXPECT_EQ(error.code, Error::NoSuchSession);
+    EXPECT_FALSE(daemon.call(Fn::PaneDirectory, Json::Array{"sh", std::int64_t(w.pane) + 100}, &error));
+    EXPECT_EQ(error.code, Error::NoSuchPane);
+    // Pane ids are the daemon's, but a session answers for its own panes only.
+    ASSERT_TRUE(shellSession(daemon, "other")) << daemon.lastError();
+    EXPECT_FALSE(daemon.call(Fn::PaneDirectory, Json::Array{"other", std::int64_t(w.pane)}, &error));
+    EXPECT_EQ(error.code, Error::NoSuchPane);
+    for (const Json::Array& args : {Json::Array{}, Json::Array{"sh"}, Json::Array{"sh", "1"}, Json::Array{"sh", -1}, Json::Array{1, 1},
+                                    Json::Array{"sh", 1.5}, Json::Array{"sh", std::int64_t(1) << 32}, Json::Array{"sh", 1, 2}}) {
+        EXPECT_FALSE(daemon.call(Fn::PaneDirectory, args, &error));
+        EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
+    }
+}
+
+// The scrolls of a region since the last frame go with the next frame, and
+// the replica's host hears of them. Those of a time when no window showed the
+// pane stay out of the first frame of the next window, whose replica keeps
+// nothing that they move.
+TEST(MuxAttach, TheFramesCarryTheRegionScrollsSinceTheLastFrame)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    // Rows 2 to 4 scroll up two rows, and the cursor goes below them (a
+    // region's end puts it at the top). A scroll of the whole screen is none
+    // of a region's, so the prompt and the echo add none.
+    ASSERT_TRUE(w.type("printf '\\033[2;4r\\033[4;1H\\n\\n\\033[r\\033[10;1H'; echo scrolled\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nscrolled"); })) << w.screen();
+    ASSERT_FALSE(w.host.scrolls.empty());
+    int rows = 0;
+    for (const AfterglowVt::RegionScroll& scroll : w.host.scrolls) {
+        EXPECT_EQ(scroll.bottom - scroll.top, 2u);
+        EXPECT_TRUE(scroll.fullWidth);
+        rows += std::abs(scroll.delta);
+    }
+    EXPECT_EQ(rows, 2);
+
+    // The same while no window shows the pane: the program waits on a FIFO
+    // until the window went.
+    const std::string go = daemon.dir() + "/go";
+    const std::string done = daemon.dir() + "/done";
+    ASSERT_EQ(::mkfifo(go.c_str(), 0600), 0);
+    ASSERT_TRUE(w.type("echo armed; cat '" + go + "' > /dev/null; printf '\\033[2;4r\\033[4;1H\\n\\033[r\\033[12;1H'; "
+                       // The daemon's answer to DSR comes once it parsed all before it.
+                       "stty raw -echo; printf '\\033[5n'; dd bs=1 count=4 > /dev/null 2>&1; stty sane; touch '" + done + "'; echo fed\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\narmed"); })) << w.screen();
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"sh"}));
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
+    // The shell opens the FIFO to read once it runs cat: a writer that opens
+    // it first gets ENXIO, without a wait.
+    int fifo = -1;
+    ASSERT_TRUE(waitFor([&] { return (fifo = ::open(go.c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC)) >= 0; }));
+    ASSERT_EQ(::write(fifo, "go", 2), 2);
+    ::close(fifo);
+    ASSERT_TRUE(waitFor([&] { return std::filesystem::exists(done); }));
+    // The daemon's terminal parsed the scroll before it answered the DSR,
+    // which the program read before it touched the file.
+    Window next;
+    ASSERT_EQ(next.attach(daemon, "sh"), "");
+    ASSERT_TRUE(next.until([&] { return next.pane != 0 && contains(next.screen(), "\nfed"); })) << next.screen();
+    EXPECT_TRUE(next.host.scrolls.empty());
+}
 
 // The calls of a pane's terminal to its host reach the window that shows it,
 // in place of the daemon's answers for a pane that no window shows.
@@ -923,7 +1097,7 @@ os.read(fd, 1)
     EXPECT_EQ(sizes, (std::vector<std::size_t>{2 * mib, 5 * mib / 2}));
 }
 
-TEST(MuxAttach, RefusesAnEventQueueOutOfRangeAndAnUnknownOption)
+TEST(MuxAttach, RefusesAnEventQueueOrHistoryOutOfRangeAndAnUnknownOption)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
@@ -934,12 +1108,40 @@ TEST(MuxAttach, RefusesAnEventQueueOutOfRangeAndAnUnknownOption)
         EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep", Json::Object{{AttachOption::EventQueue, refused[i]}}}, &error));
         EXPECT_EQ(error.code, IpcErrorCode::InvalidArg) << i;
     }
+    for (const Json::Value& rows : {Json::Value(-1), Json::Value(MaxHistory + 1), Json::Value("10"), Json::Value(1.5)}) {
+        IpcConnection::Error error;
+        EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep", Json::Object{{AttachOption::History, rows}}}, &error));
+        EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
+    }
     IpcConnection::Error error;
     EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep", Json::Object{{"eventQueues", MinEventQueue}}}, &error));
     EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
-    // The bounds themselves are values of the setting.
+    // The bounds themselves are values of the settings.
     for (const std::int64_t bytes : {MinEventQueue, MaxEventQueue}) {
         Window w;
         EXPECT_EQ(w.attach(daemon, "keep", true, std::size_t(bytes)), "") << bytes;
     }
+    for (const std::int64_t rows : {std::int64_t(0), MaxHistory}) {
+        Window w;
+        EXPECT_EQ(w.attach(daemon, "keep", true, {}, std::size_t(rows)), "") << rows;
+    }
+}
+
+// A window that keeps no history gets none: the frames carry the screen.
+TEST(MuxAttach, AWindowGetsNoMoreHistoryThanItKeeps)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh", true, {}, 0), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    ASSERT_TRUE(w.type("seq 200; echo E''ND\n"));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nEND"); })) << w.screen();
+    EXPECT_EQ(w.replica.primaryScreen().historySize(), 0u);
+    // Another window, with the default: the history comes.
+    Window all;
+    ASSERT_EQ(all.attach(daemon, "sh"), "");
+    ASSERT_TRUE(all.until([&] { return all.pane != 0 && contains(all.screen(), "\nEND") && all.replica.primaryScreen().historySize() > 100; }))
+        << all.replica.primaryScreen().historySize();
 }

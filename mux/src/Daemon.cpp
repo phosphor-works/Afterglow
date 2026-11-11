@@ -333,6 +333,7 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller)
     if (request.fn == Fn::KillSession) return killSession(request);
     if (request.fn == Fn::Attach) return attach(request, caller);
     if (request.fn == Fn::Detach) return detach(request);
+    if (request.fn == Fn::PaneDirectory) return paneDirectory(request);
     return ipcError(request.id, IpcErrorCode::NoSuchFn, "no function '" + request.fn + "' on target '" + request.target + "'");
 }
 
@@ -424,7 +425,7 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     if (caller <= 0) return ipcError(request.id, IpcErrorCode::CallFailed, "the daemon cannot tell which process called");
     // A key that this daemon does not know is one that the window counts on.
     for (const auto& [key, value] : request.args[2].toObject()) {
-        if (key != AttachOption::Takeover && key != AttachOption::EventQueue) {
+        if (key != AttachOption::Takeover && key != AttachOption::EventQueue && key != AttachOption::History) {
             return ipcError(request.id, IpcErrorCode::InvalidArg, "the attach option '" + key + "' is unknown");
         }
     }
@@ -440,6 +441,15 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
                                 + " MiB in bytes");
         }
         eventQueue = std::size_t(*bytes);
+    }
+    // Terminal.scrollback of the window, in rows.
+    std::size_t history = ~std::size_t(0);
+    if (const Json::Value* rows = request.args[2].find(AttachOption::History)) {
+        const auto count = rows->toInteger();
+        if (!count || *count < 0 || *count > MaxHistory) {
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "'history' is not 0 to " + std::to_string(MaxHistory) + " rows");
+        }
+        history = std::size_t(*count);
     }
     Attachment* const previous = shown(name);
     if (previous && (!takeover || !takeover->toBool())) {
@@ -460,6 +470,7 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
         });
     }
     attachment->setEventQueue(eventQueue);
+    attachment->setReplicaHistory(history);
     const std::string path = attachment->path();
     m_attachments.push_back(std::move(attachment));
     return ipcReply(request.id.value_or(0), Json::Object{{"name", name}, {"socket", path}});
@@ -482,6 +493,18 @@ std::string Daemon::detach(const IpcRequest& request)
         return true;
     });
     return ipcReply(request.id.value_or(0), nullptr);
+}
+
+std::string Daemon::paneDirectory(const IpcRequest& request)
+{
+    const auto id = request.args.size() == 2 && request.args[0].isString() ? request.args[1].toInteger() : std::nullopt;
+    if (!id || *id < 0 || *id > 0xffffffffLL) return ipcError(request.id, IpcErrorCode::InvalidArg, "paneDirectory takes (name, pane)");
+    const std::string& name = request.args[0].toString();
+    const auto session = find(name);
+    if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    const MuxPane* pane = (*session)->pane(std::uint32_t(*id));
+    if (!pane) return ipcError(request.id, Error::NoSuchPane, "session '" + name + "' has no pane " + std::to_string(*id));
+    return ipcReply(request.id.value_or(0), pane->directory());
 }
 
 void Daemon::syncAttached()

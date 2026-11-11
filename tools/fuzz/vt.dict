@@ -19,6 +19,11 @@
 "\x1b("
 "\xff"
 
+# A state frame record (op 11 with bit 4, a 21 by 9 replica), then the codec
+# version and a reset section of the primary screen
+"\xff\x1b\x14\x08\x01"
+"\x01\x04"
+
 # CSI parameters
 ";"
 ":"

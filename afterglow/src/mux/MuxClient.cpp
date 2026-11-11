@@ -12,9 +12,11 @@
 #include <AfterglowVt/StateSync.h>
 #include <PhosphorChannel/Stream.h>
 
+#include <QFile>
 #include <QLoggingCategory>
 #include <QSocketNotifier>
 
+#include <algorithm>
 #include <chrono>
 #include <cerrno>
 #include <cstring>
@@ -94,7 +96,8 @@ QString lossText(MuxClient::Loss loss, const QString& name)
 } // namespace
 
 std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover, QString* error,
-                                              const AfterglowProto::MuxSockets& sockets, std::size_t eventQueue)
+                                              const AfterglowProto::MuxSockets& sockets, std::size_t eventQueue,
+                                              std::size_t history)
 {
     const auto fail = [error](const QString& text) -> std::shared_ptr<MuxClient> {
         if (error) *error = text;
@@ -110,7 +113,10 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
     AfterglowProto::IpcConnection::Error callError;
     const auto result = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::Attach,
                                                  Json::Array{AfterglowMux::ProtocolVersion, name.toStdString(),
-                                                             Json::Object{{AfterglowMux::AttachOption::Takeover, takeover}, {AfterglowMux::AttachOption::EventQueue, eventQueue}}},
+                                                             Json::Object{{AfterglowMux::AttachOption::Takeover, takeover},
+                                                                          {AfterglowMux::AttachOption::EventQueue, eventQueue},
+                                                                          {AfterglowMux::AttachOption::History,
+                                                                           std::min<std::size_t>(history, std::size_t(AfterglowMux::MaxHistory))}}},
                                                  AfterglowMux::CallTimeoutMs, &callError);
     // The daemon's words, which the user reads in a terminal.
     if (!result) return fail(QString::fromStdString(AfterglowProto::printable(callError.message)));
@@ -319,19 +325,29 @@ void MuxClient::sendResize(std::uint32_t id, const AfterglowMux::PaneSize& size)
 
 void MuxClient::sendReset(std::uint32_t id)
 {
-    if (!showing()) return;
     Attach::Input input;
     input.type = Attach::InputType::Reset;
-    input.pane = id;
-    queueInput(Attach::encode(input), false);
-    sendWaitingInput();
+    sendPaneInput(id, input);
 }
 
 void MuxClient::sendClear(std::uint32_t id)
 {
-    if (!showing()) return;
     Attach::Input input;
     input.type = Attach::InputType::Clear;
+    sendPaneInput(id, input);
+}
+
+void MuxClient::sendVisible(std::uint32_t id, bool visible)
+{
+    Attach::Input input;
+    input.type = Attach::InputType::Visible;
+    input.visible = visible;
+    sendPaneInput(id, input);
+}
+
+void MuxClient::sendPaneInput(std::uint32_t id, Attach::Input& input)
+{
+    if (!showing()) return;
     input.pane = id;
     queueInput(Attach::encode(input), false);
     sendWaitingInput();
@@ -348,14 +364,28 @@ void MuxClient::sendWaitingInput()
     updateNotifiers();
 }
 
-QString MuxClient::foregroundJob() const
+std::optional<Json::Value> MuxClient::callDaemon(const char* fn, Json::Array args) const
 {
+    // A session that ended can have a new one of its name already.
+    if (!showing()) return std::nullopt;
     std::string reason;
     AfterglowMux::Reached reached = AfterglowMux::connectAny(m_sockets, &reason);
-    if (!reached.connection) return {};
+    if (!reached.connection) {
+        qCDebug(lcMux) << "no daemon of session" << m_session << "answers" << fn << ":" << QString::fromStdString(reason);
+        return std::nullopt;
+    }
     AfterglowProto::IpcConnection::Error callError;
-    const auto list = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::ListSessions, {},
-                                               AfterglowMux::CallTimeoutMs, &callError);
+    auto result = reached.connection->call(AfterglowMux::Target, fn, std::move(args), AfterglowMux::CallTimeoutMs, &callError);
+    if (!result) {
+        qCDebug(lcMux) << "the daemon of session" << m_session << "refused" << fn << ":"
+                       << QString::fromStdString(callError.code) << QString::fromStdString(callError.message);
+    }
+    return result;
+}
+
+QString MuxClient::foregroundJob() const
+{
+    const auto list = callDaemon(AfterglowMux::Fn::ListSessions, {});
     if (!list) return {};
     for (const Json::Value& item : list->toArray()) {
         const auto info = AfterglowMux::sessionInfo(item);
@@ -364,6 +394,13 @@ QString MuxClient::foregroundJob() const
         }
     }
     return {};
+}
+
+QString MuxClient::directory(std::uint32_t id) const
+{
+    const auto result = callDaemon(AfterglowMux::Fn::PaneDirectory, Json::Array{m_session.toStdString(), std::int64_t(id)});
+    if (!result || !result->isString()) return {};
+    return QFile::decodeName(QByteArray::fromStdString(result->toString()));
 }
 
 bool MuxClient::waitForHostCalls(int waitMs, const std::function<bool()>& done)

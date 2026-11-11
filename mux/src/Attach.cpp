@@ -313,6 +313,11 @@ void Attachment::readInput(Session& session)
         case Attach::InputType::Clear:
             pane->clear();
             break;
+        case Attach::InputType::Visible:
+            // Only while this window is the pane's: one that went, or failed,
+            // says nothing about what the user sees now.
+            pane->setVisible(message->visible, m_serial);
+            break;
         case Attach::InputType::Kill:
             break; // refused above: a Kill comes on the action channel only
         }
@@ -365,6 +370,7 @@ Attachment::PaneLink* Attachment::link(MuxPane& pane)
         PaneLink& l = m_panes[pane.id()];
         l.channel = channel;
         l.writer = writer;
+        l.state.setReplicaHistory(m_replicaHistory);
         Attach::Event opened;
         opened.type = Attach::EventType::PaneOpened;
         opened.pane = pane.id();
@@ -396,7 +402,7 @@ bool Attachment::sendFrame(PaneLink& l, MuxPane& pane)
     l.started = true;
     // History past half the window waits for later frames, and so do rows
     // past it, so that every frame fits.
-    std::string frame = pane.withTerminal([&](const AfterglowVt::Terminal& t) { return l.state.update(t, l.writer->maxFrame() / 2); });
+    std::string frame = pane.frame(l.state, l.writer->maxFrame() / 2);
     if (!frame.empty()) {
         const WriteResult result = l.writer->tryWrite(frame);
         if (result == WriteResult::WouldBlock) {

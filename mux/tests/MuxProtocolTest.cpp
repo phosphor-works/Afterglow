@@ -63,7 +63,18 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 5) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 6) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 6 added the visibility of a pane in the window's input, the
+    // paneDirectory call, the history option of the attach call, and the
+    // shell marks, status, contexts, extra cursors, region scrolls, layout
+    // epochs and first visible rows of the state codec (StateSyncTest).
+    EXPECT_EQ(std::string(Fn::PaneDirectory), "paneDirectory");
+    EXPECT_EQ(std::string(Error::NoSuchPane), "NO_SUCH_PANE");
+    Attach::Input visible;
+    visible.type = Attach::InputType::Visible;
+    visible.pane = 3;
+    visible.visible = true;
+    EXPECT_EQ(Attach::encode(visible), std::string("\x06\x03\x01", 3));
     // Version 5 added the host calls of a pane's terminal (Host events, whole
     // or in parts), each layout byte for byte, and the eventQueue of the
     // attach call.
@@ -111,6 +122,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // The options of the attach call, which the daemon refuses others of.
     EXPECT_EQ(std::string(AttachOption::Takeover), "takeover");
     EXPECT_EQ(std::string(AttachOption::EventQueue), "eventQueue");
+    EXPECT_EQ(std::string(AttachOption::History), "history");
     // Version 4 added attach and detach, and the attach stream: its events
     // and input, byte for byte (the keys of the answer of the attach call are
     // in Mux.MuxAttach.TheAttachCallAnswersWithItsKeys).
@@ -596,6 +608,20 @@ TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)
         EXPECT_EQ(decoded->type, type);
         EXPECT_EQ(decoded->pane, 2u);
     }
+    // The value follows a pane of one varint byte, and one of two.
+    for (const std::uint32_t pane : {2u, 300u}) {
+        for (const bool visible : {false, true}) {
+            Attach::Input input;
+            input.type = Attach::InputType::Visible;
+            input.pane = pane;
+            input.visible = visible;
+            const auto decoded = Attach::decodeInput(Attach::encode(input));
+            ASSERT_TRUE(decoded);
+            EXPECT_EQ(decoded->type, Attach::InputType::Visible);
+            EXPECT_EQ(decoded->pane, pane);
+            EXPECT_EQ(decoded->visible, visible);
+        }
+    }
     // A size past what a terminal takes still decodes: the terminal clamps
     // it, and the window does not lose its session for it.
     Attach::Input resize;
@@ -614,10 +640,14 @@ TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
     const std::string_view bad[] = {
         {},
         std::string_view("\x09\x01", 2),         // an unknown type
+        std::string_view("\x07\x01", 2),         // the type after Visible
         std::string_view("\x01", 1),             // no pane
         std::string_view("\x02\x01\x50\x18\x08", 5), // a Resize that ends early
         std::string_view("\x02\x01\x50\x18\x08\x10\x00", 7), // a byte after the Resize
         std::string_view("\x03\x01\x00", 3),     // a byte after a Reset
+        std::string_view("\x06\x01", 2),         // a Visible without its value
+        std::string_view("\x06\x01\x02", 3),     // a Visible that is neither
+        std::string_view("\x06\x01\x01\x00", 4), // a byte after a Visible
         std::string_view("\x02\x01\x80\x00\x18\x08\x10", 7), // a varint in a longer form than needed
     };
     for (const std::string_view frame : bad) EXPECT_FALSE(Attach::decodeInput(frame)) << testing::PrintToString(std::string(frame));

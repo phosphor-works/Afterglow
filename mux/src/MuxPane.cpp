@@ -4,6 +4,7 @@
 #include "MuxPane.h"
 
 #include <AfterglowProto/DragDrop.h>
+#include <AfterglowProto/Text.h>
 #include <AfterglowProto/Transfer.h>
 
 #include <algorithm>
@@ -48,6 +49,8 @@ MuxPane::MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, 
     // once gets the size that the client sent. No window measured it yet,
     // so that is 0 (unknown) from `afterglow mux new`.
     m_terminal.resize(size.cols, size.rows, size.cellWidth, size.cellHeight);
+    // No window shows it yet: one that does says so (setVisible).
+    m_terminal.setVisible(false);
 }
 
 MuxPane::~MuxPane()
@@ -85,6 +88,19 @@ std::string MuxPane::foregroundJob(pid_t caller) const
     if (caller > 0 && leadsForeground(caller, m_pty->pid())) return {};
     if (std::string job = m_pty->foregroundProcess(); !job.empty()) return job;
     return m_launchedProgram;
+}
+
+std::string MuxPane::directory() const
+{
+    if (!m_pty || m_exited) return {};
+    std::string path = m_pty->currentWorkingDirectory();
+    // The answer is JSON text, which would replace each byte that is not
+    // UTF-8 and so name another path.
+    for (std::size_t i = 0; i < path.size();) {
+        char32_t cp = 0;
+        if (!AfterglowProto::nextUtf8(path, i, cp)) return {};
+    }
+    return path;
 }
 
 void MuxPane::writeDirect(std::string_view bytes)
@@ -205,6 +221,35 @@ void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
         m_window = window;
     }
     if (wake) m_wake();
+    // After m_window: a report of the change goes to the program, or through
+    // the window that came, not to the window that went. Whether the user can
+    // see the pane is for the new window to say. A report that fails (no
+    // memory to queue it) is not tried again: the next window says anew.
+    setVisible(false, window);
+}
+
+std::string MuxPane::frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes)
+{
+    std::lock_guard lock(m_mutex);
+    std::string frame = writer.update(m_terminal, maxBytes, &m_scrolls);
+    // The frame carries them, also one that waits for room in the channel.
+    m_scrolls.clear();
+    return frame;
+}
+
+void MuxPane::setVisible(bool visible, std::uint64_t window)
+{
+    std::lock_guard lock(m_mutex);
+    bool current = false;
+    {
+        // After m_mutex, as the reader thread takes them, and released before
+        // the terminal's report, which forward() takes it for.
+        std::lock_guard host(m_hostMutex);
+        current = window != 0 && m_window == window;
+    }
+    // A pane that no window shows cannot be seen, and a window that is not
+    // the pane's says nothing about it.
+    m_terminal.setVisible(visible && current);
 }
 
 std::vector<std::string> MuxPane::takeHostCalls(std::uint64_t window, std::size_t budget)
@@ -375,6 +420,13 @@ void MuxPane::commandFinished(int exitCode)
         if (std::exchange(m_commandForwarded, false)) (void)queueLocked(Host::encode(call), Host::Kind::CommandFinished, Fit::Always, &wake);
     }
     if (wake) m_wake();
+}
+
+void MuxPane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
+{
+    // Reader thread, m_mutex held. Kept while no window shows the pane too:
+    // the first frame of the next window leaves them out.
+    m_scrolls.add(m_terminal.modes().altScreen, scroll);
 }
 
 void MuxPane::downloadFile(std::string_view name, std::string_view data)

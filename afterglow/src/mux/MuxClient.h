@@ -7,6 +7,7 @@
 #include "MuxProtocol.h"
 #include "MuxStream.h"
 
+#include <AfterglowProto/Json.h>
 #include <AfterglowProto/Socket.h>
 #include <AfterglowPty/Pty.h>
 
@@ -65,9 +66,11 @@ public:
     /// shows it, which then detaches. Waits until the daemon names the
     /// session's panes. Nullptr with @p error on a failure. @p sockets are
     /// the daemon's: the user's, or a test's. @p eventQueue is Mux.eventQueue
-    /// in bytes.
+    /// in bytes, and @p history Terminal.scrollback, the history rows that
+    /// the window keeps of each pane.
     static std::shared_ptr<MuxClient> attach(const QString& name, bool takeover, QString* error,
-                                             const AfterglowProto::MuxSockets& sockets, std::size_t eventQueue);
+                                             const AfterglowProto::MuxSockets& sockets, std::size_t eventQueue,
+                                             std::size_t history);
     ~MuxClient() override;
 
     const QString& session() const { return m_session; }
@@ -97,13 +100,21 @@ public:
     /// the session's terminal.
     void sendReset(std::uint32_t id);
     void sendClear(std::uint32_t id);
+    /// Whether the user can see pane @p id: its terminal in the daemon
+    /// reports a change to the program (mode 2033).
+    void sendVisible(std::uint32_t id, bool visible);
     /// The input that waits for the channel, in bytes: the backlog that a
     /// file transfer or a drag holds back for. Any thread.
     std::size_t pendingInput() const { return m_waitingBytes.load(std::memory_order_relaxed); }
     /// The program in the foreground of the session, for the question before
-    /// a close. Empty when none runs, or when the daemon does not answer.
-    /// It calls the daemon and waits for the answer.
+    /// a close. Empty when none runs, when the session ended, or when the
+    /// daemon does not answer. It calls the daemon and waits for the answer.
     QString foregroundJob() const;
+    /// The working directory of the program of pane @p id, as the system has
+    /// it (Fn::PaneDirectory): for a shell that reported no directory that
+    /// exists on this machine. Empty when the session ended, or when the
+    /// daemon does not answer. It calls the daemon and waits for the answer.
+    QString directory(std::uint32_t id) const;
     /// Reads the stream for up to @p waitMs, and handles what comes, until
     /// @p done: a pane that waits for the answer of a host call on the GUI
     /// thread, which alone reads the stream (a drag's answer wait). True
@@ -130,6 +141,13 @@ private:
     /// MaxWaitingHostCalls.
     bool hostCall(std::uint32_t id, AfterglowMux::Host::Call call, std::size_t bytes);
     void queueInput(std::string frame, bool resize);
+    /// Queues @p input for pane @p id after the input that waits, while the
+    /// session shows.
+    void sendPaneInput(std::uint32_t id, AfterglowMux::Attach::Input& input);
+    /// One call of the daemon's on a connection of its own, while the session
+    /// shows: the GUI thread waits for the answer. A failure is logged and
+    /// gives nothing.
+    std::optional<AfterglowProto::Json::Value> callDaemon(const char* fn, AfterglowProto::Json::Array args) const;
     void sendWaitingInput();
     void updateNotifiers();
     void end(Loss loss);
@@ -137,7 +155,7 @@ private:
 
     QString m_session;
     std::size_t m_eventQueue = 0;
-    AfterglowProto::MuxSockets m_sockets; ///< the daemon's, for the job
+    AfterglowProto::MuxSockets m_sockets; ///< the daemon's, for callDaemon
     std::unique_ptr<PhosphorChannel::Stream> m_stream;
     PhosphorChannel::StreamWriter* m_input = nullptr;
     PhosphorChannel::StreamWriter* m_actions = nullptr; ///< Attach::ActionChannel: the kill
