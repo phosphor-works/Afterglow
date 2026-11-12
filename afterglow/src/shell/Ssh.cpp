@@ -755,6 +755,24 @@ Arguments parseArguments(const QStringList& args)
     return result;
 }
 
+QByteArrayList sharedCommand(const QString& destination, QString* error)
+{
+    const QByteArray host = destination.toLocal8Bit();
+    // ssh would read it as an option.
+    if (host.isEmpty() || host.startsWith('-')) {
+        *error = QStringLiteral("'%1' is no ssh destination").arg(destination);
+        return {};
+    }
+    const IgnoredSignals signals;
+    const auto resolved = capture(QByteArrayList{"ssh", "-G", "--", host}, signals, {}, true);
+    if (!resolved || resolved->status != 0) {
+        *error = QStringLiteral("ssh cannot read the destination '%1' (ssh -G)").arg(destination);
+        return {};
+    }
+    // No terminal: the command's standard streams carry a connection.
+    return QByteArrayList{"ssh", "-T"} + sharing(parseConfig(resolved->output)) + QByteArrayList{"--", host};
+}
+
 Config parseConfig(const QByteArray& resolved)
 {
     Config config;

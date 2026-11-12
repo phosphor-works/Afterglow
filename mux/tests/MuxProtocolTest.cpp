@@ -64,7 +64,9 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 10) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 11) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 11 carries the stream of an attach on the connection of its
+    // call, whose answer names no socket (Mux.MuxAttach.TheAttachCallAnswersWithItsKeys).
     // Version 10 added the control target of a session (`afterglow ctl
     // --session`): the selectSession and selectPane calls, the Control event
     // and its ControlReply, and the Control settings of a session.

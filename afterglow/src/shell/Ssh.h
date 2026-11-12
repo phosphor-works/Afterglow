@@ -63,6 +63,13 @@ struct Probe {
 /// `aglow --version`, and with aglow there makes the remote directory and
 /// runs `aglow remote-prune` in it. It exits with 0 once it ran.
 QByteArray probeScript();
+
+/// The ssh command that runs a command on @p destination over the connection
+/// that `afterglow ssh` shares with it, so that the user authenticates once:
+/// ssh, -T, the options that share the connection, "--" and the
+/// destination. The command's words follow. Empty, with @p error, when ssh
+/// cannot read the destination (ssh -G).
+QByteArrayList sharedCommand(const QString& destination, QString* error);
 Probe parseProbe(const QByteArray& output);
 
 /// Runs ssh with ARGS, byte for byte, and returns its exit status. When ssh

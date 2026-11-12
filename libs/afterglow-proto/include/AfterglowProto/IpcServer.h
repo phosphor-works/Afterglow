@@ -137,6 +137,12 @@ public:
     int fd() const { return m_fd; }
     bool open() const { return m_fd >= 0; }
     void close();
+    /// Gives the descriptor up, for another protocol on the same connection
+    /// (the stream of a mux attach), with the output that did not go yet in
+    /// @p unsent. -1, and the connection stays, when the client sent more
+    /// than the lines that the caller took: the next protocol would lose
+    /// those bytes.
+    int release(std::string* unsent);
 
     /// The next complete line in @p line, without its '\n' and the '\r'
     /// before it. Fills the buffer at most once (reads until the socket has

@@ -39,19 +39,6 @@ struct NullHost : AfterglowVt::ITerminalHost
     std::vector<AfterglowVt::RegionScroll> scrolls; ///< what the replica's frames scrolled, oldest first
 };
 
-int connectTo(const std::string& path)
-{
-    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    std::memcpy(address.sun_path, path.data(), std::min(path.size(), sizeof address.sun_path - 1));
-    if (fd < 0 || ::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof address) != 0) {
-        if (fd >= 0) ::close(fd);
-        return -1;
-    }
-    return fd;
-}
-
 /// What a window of a session does, without the window.
 class Window
 {
@@ -66,7 +53,8 @@ public:
         return connect();
     }
 
-    /// The attach call alone. Empty on success, else the error code, or the
+    /// The attach call alone, on a connection of its own, which the stream
+    /// takes (connect()). Empty on success, else the error code, or the
     /// message of an error without one.
     std::string call(TestDaemon& daemon, const std::string& name, bool takeover = true, std::optional<std::size_t> eventQueue = {},
                      std::optional<std::size_t> history = {})
@@ -75,17 +63,19 @@ public:
         Json::Object options{{AttachOption::Takeover, takeover}};
         if (eventQueue) options.emplace_back(AttachOption::EventQueue, *eventQueue);
         if (history) options.emplace_back(AttachOption::History, *history);
-        const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, name, std::move(options)}, &error);
+        connection = std::make_unique<IpcConnection>();
+        if (!connection->connect(daemon.socket(), &error, 2000)) return "no connection: " + error.message;
+        const auto result = connection->call(Target, Fn::Attach, Json::Array{ProtocolVersion, name, std::move(options)}, 5000, &error);
         if (!result) return error.code.empty() ? error.message : error.code;
-        socket = (*result)["socket"].toString();
         return {};
     }
 
-    /// The connection to the socket of the call.
+    /// The window's stream, on the connection of the call.
     std::string connect()
     {
-        const int fd = connectTo(socket);
-        if (fd < 0) return "no connection";
+        IpcConnection::Error error;
+        const int fd = connection->release(&error);
+        if (fd < 0) return "no stream: " + error.message;
         stream = std::make_unique<PhosphorChannel::Stream>(fd);
         std::string why;
         input = stream->openWriter(Attach::ControlChannel, Attach::InputCodec, &why);
@@ -262,7 +252,7 @@ public:
         return send(message);
     }
 
-    std::string socket;
+    std::unique_ptr<IpcConnection> connection; ///< the attach call's, until the stream takes it
     std::unique_ptr<PhosphorChannel::Stream> stream;
     PhosphorChannel::StreamWriter* input = nullptr;
     PhosphorChannel::StreamWriter* actions = nullptr;
@@ -328,8 +318,6 @@ TEST(MuxAttach, AWindowSeesTheScreenAndTypes)
     ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
     ASSERT_TRUE(w.type("echo hel''lo\n"));
     ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nhello"); })) << w.screen();
-    // The socket of the attach is gone once the window connected.
-    EXPECT_NE(::access(w.socket.c_str(), F_OK), 0);
     const auto info = sessionNamed(daemon, "sh");
     ASSERT_TRUE(info);
     EXPECT_TRUE(info->attached);
@@ -576,7 +564,7 @@ TEST(MuxAttach, TheAttachCallAnswersWithItsKeys)
     std::vector<std::string> keys;
     for (const auto& [key, value] : result->toObject()) keys.push_back(key);
     std::sort(keys.begin(), keys.end());
-    EXPECT_EQ(keys, (std::vector<std::string>{"name", "socket"}));
+    EXPECT_EQ(keys, (std::vector<std::string>{"name"}));
     EXPECT_EQ((*result)["name"].toString(), "keep");
 }
 
@@ -663,76 +651,50 @@ TEST(MuxAttach, AKillGoesPastInputThatWaitsForAFullPty)
     EXPECT_FALSE(sessionNamed(daemon, "stuck"));
 }
 
-TEST(MuxAttach, OnlyTheCallerMayConnect)
+// The stream starts after the answer: bytes that came with the call would be
+// lost between the two readers, and the daemon refuses them.
+TEST(MuxAttach, AStreamThatComesWithTheAttachCallIsRefused)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
-    IpcConnection::Error error;
-    const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "sh", Json::Object{}}, &error);
-    ASSERT_TRUE(result) << error.message;
-    const std::string socket = (*result)["socket"].toString();
-    // Another process of the user: the daemon closes its connection.
-    const pid_t child = ::fork();
-    ASSERT_GE(child, 0) << std::strerror(errno);
-    if (child == 0) {
-        const int fd = connectTo(socket);
-        if (fd < 0) ::_exit(2);
-        pollfd p{fd, POLLIN, 0};
-        char byte = 0;
-        const bool closed = ::poll(&p, 1, 3000) == 1 && ::read(fd, &byte, 1) == 0;
-        ::_exit(closed ? 0 : 1);
-    }
-    int status = 0;
-    ASSERT_EQ(::waitpid(child, &status, 0), child);
-    EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0) << status;
-    // The caller still can.
-    const int fd = connectTo(socket);
-    ASSERT_GE(fd, 0);
-    PhosphorChannel::Stream stream(fd);
-    const auto deadline = std::chrono::steady_clock::now() + 5s;
-    while (!stream.reader(Attach::ControlChannel) && std::chrono::steady_clock::now() < deadline) stream.pump(20);
-    EXPECT_TRUE(stream.reader(Attach::ControlChannel));
-}
-
-TEST(MuxAttach, AWindowThatDoesNotConnectLosesItsSocket)
-{
-    TestDaemon daemon;
-    ASSERT_TRUE(daemon.start()) << daemon.errors();
-    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
-    IpcConnection::Error error;
-    // Before the call: the daemon's connect wait starts before it answers.
-    const auto made = std::chrono::steady_clock::now();
-    const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "sh", Json::Object{{AttachOption::Takeover, false}}}, &error);
-    ASSERT_TRUE(result) << error.message;
-    const std::string socket = (*result)["socket"].toString();
-    EXPECT_EQ(::access(socket.c_str(), F_OK), 0);
-    // The socket stays for the connect wait of the daemon, then goes.
-    const auto gone = [&] {
-        const auto deadline = made + std::chrono::milliseconds(Attach::ConnectWaitMs + 5000);
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (::access(socket.c_str(), F_OK) != 0) return true;
-            std::this_thread::sleep_for(50ms);
-        }
-        return false;
-    };
-    ASSERT_TRUE(gone());
-    EXPECT_GE(std::chrono::steady_clock::now() - made, std::chrono::milliseconds(Attach::ConnectWaitMs));
-    // The session is free for a window that asks for no takeover.
+    RawClient raw(daemon.socket());
+    ASSERT_TRUE(raw.connected());
+    const std::string call = Json::write(Json::Object{{"type", "call"}, {"id", 1}, {"target", Target}, {"fn", Fn::Attach},
+                                                      {"args", Json::Array{ProtocolVersion, "sh", Json::Object{}}}});
+    ASSERT_TRUE(raw.send(call + "\nstream bytes"));
+    const auto reply = Json::parse(raw.line());
+    ASSERT_TRUE(reply);
+    EXPECT_EQ((*reply)["type"].toString(), "reply") << Json::write(*reply);
+    EXPECT_TRUE(waitFor([&] { return daemon.errors().find("sent its stream before the answer") != std::string::npos; })) << daemon.errors();
+    // The session is free for the next window.
     Window w;
     EXPECT_EQ(w.attach(daemon, "sh", false), "");
 }
 
-TEST(MuxAttach, ADaemonRemovesTheAttachSocketsThatItsPredecessorLeft)
+TEST(MuxAttach, AWindowThatDoesNotStartItsStreamLetsTheSessionGo)
 {
     TestDaemon daemon;
-    // A socket of a daemon that was killed while a window did not connect.
-    const std::string stale = daemon.runtime() + "/afterglow-mux/attach-0123456789abcdef.sock";
-    ASSERT_EQ(::mkdir((daemon.runtime() + "/afterglow-mux").c_str(), 0700), 0);
-    std::ofstream(stale).put('x');
-    ASSERT_TRUE(exists(stale));
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    EXPECT_FALSE(exists(stale));
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    // Before the call: the daemon's wait starts before it answers.
+    const auto made = std::chrono::steady_clock::now();
+    Window silent;
+    ASSERT_EQ(silent.call(daemon, "sh", false), "");
+    // Until the wait ends, the session is the silent window's.
+    Window early;
+    EXPECT_EQ(early.call(daemon, "sh", false), Error::Attached);
+    const auto freed = [&] {
+        const auto deadline = made + std::chrono::milliseconds(Attach::ConnectWaitMs + 5000);
+        while (std::chrono::steady_clock::now() < deadline) {
+            Window w;
+            if (w.call(daemon, "sh", false).empty()) return true;
+            std::this_thread::sleep_for(100ms);
+        }
+        return false;
+    };
+    ASSERT_TRUE(freed());
+    EXPECT_GE(std::chrono::steady_clock::now() - made, std::chrono::milliseconds(Attach::ConnectWaitMs));
 }
 
 TEST(MuxAttach, RefusesBadAttachCalls)

@@ -5,16 +5,13 @@
 
 #include "Session.h"
 
-#include <AfterglowProto/Socket.h>
-
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
-#include <sys/random.h>
+#include <fcntl.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/un.h>
 #include <unistd.h>
 
 namespace AfterglowMux {
@@ -22,19 +19,6 @@ namespace AfterglowMux {
 using PhosphorChannel::WriteResult;
 
 namespace {
-
-std::string randomName()
-{
-    unsigned char bytes[8];
-    if (::getrandom(bytes, sizeof bytes, 0) != ssize_t(sizeof bytes)) return {};
-    static const char hex[] = "0123456789abcdef";
-    std::string out = "attach-";
-    for (const unsigned char b : bytes) {
-        out.push_back(hex[b >> 4]);
-        out.push_back(hex[b & 15]);
-    }
-    return out + ".sock";
-}
 
 /// The serial of the last attachment: the daemon has one thread.
 std::uint64_t lastSerial = 0;
@@ -45,54 +29,30 @@ static_assert(Attach::HostPartBytes + 32 <= PhosphorChannel::Stream::Options{}.w
 
 } // namespace
 
-std::unique_ptr<Attachment> Attachment::listen(const std::string& directory, std::string session, pid_t caller,
-                                                std::string* error)
+Attachment::Attachment(std::string session)
+    : m_session(std::move(session))
+    , m_deadline(std::chrono::steady_clock::now() + std::chrono::milliseconds(Attach::ConnectWaitMs))
+    , m_serial(++lastSerial)
 {
-    const auto fail = [error](std::string text) -> std::unique_ptr<Attachment> {
-        if (error) *error = std::move(text);
-        return nullptr;
-    };
-    const std::string name = randomName();
-    if (name.empty()) return fail("cannot make the name of the attach socket");
-    const std::string path = directory + "/" + name;
-    if (path.size() > AfterglowProto::MaxSocketPathBytes) return fail("the attach socket path is too long: " + path);
-    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-    if (fd < 0) return fail(std::string("cannot make the attach socket: ") + std::strerror(errno));
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    std::memcpy(address.sun_path, path.data(), path.size());
-    // 0600 from the moment it exists, as the daemon's own sockets.
-    const mode_t mask = ::umask(0177);
-    const bool bound = ::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0;
-    const int bindErrno = errno;
-    ::umask(mask);
-    if (!bound || ::listen(fd, 1) != 0) {
-        const int failure = bound ? errno : bindErrno;
-        ::close(fd);
-        if (bound) ::unlink(path.c_str());
-        return fail("cannot listen on " + path + ": " + std::strerror(failure));
-    }
-    std::unique_ptr<Attachment> attachment(new Attachment);
-    attachment->m_listenFd = fd;
-    attachment->m_session = std::move(session);
-    attachment->m_path = path;
-    attachment->m_caller = caller;
-    attachment->m_serial = ++lastSerial;
-    attachment->m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(Attach::ConnectWaitMs);
-    return attachment;
 }
 
 Attachment::~Attachment()
 {
-    if (m_listenFd >= 0) {
-        ::close(m_listenFd);
-        ::unlink(m_path.c_str());
-    }
+    // The stream closes the connection once it has it.
+    if (m_fd >= 0) ::close(m_fd);
+}
+
+void Attachment::adopt(int fd, std::string unsent)
+{
+    m_fd = fd;
+    m_unsent = std::move(unsent);
+    ::fcntl(m_fd, F_SETFL, ::fcntl(m_fd, F_GETFL) | O_NONBLOCK);
 }
 
 pollfd Attachment::pollFd() const
 {
-    if (!m_stream) return {m_listenFd, POLLIN, 0};
+    // No connection yet: nothing to wait for but the deadline.
+    if (!m_stream) return {m_fd, short(m_fd < 0 ? 0 : POLLIN | (m_unsent.empty() ? 0 : POLLOUT)), 0};
     return {m_stream->readFd(), short(POLLIN | (m_stream->wantsWrite() ? POLLOUT : 0)), 0};
 }
 
@@ -103,43 +63,21 @@ int Attachment::timeoutMs() const
     return left.count() > 0 ? int(left.count()) : 0;
 }
 
-void Attachment::accept()
+void Attachment::startStream()
 {
-    while (true) {
-        const int fd = ::accept4(m_listenFd, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
-        if (fd < 0) {
-            if (errno == EINTR || errno == ECONNABORTED) continue;
-            // Out of descriptors or memory: the connection stays in the
-            // backlog and the socket stays readable, so the poll would spin.
-            // The window hears that its connection ended.
-            if (errno != EAGAIN && errno != EWOULDBLOCK) m_failed = true;
-            return;
-        }
-        ucred peer{};
-        socklen_t size = sizeof peer;
-        // Only the process that made the attach call: the socket's name is
-        // no secret from other processes of the user.
-        if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &size) != 0 || peer.uid != ::geteuid() || peer.pid != m_caller) {
-            ::close(fd);
-            continue;
-        }
-        ::close(m_listenFd);
-        ::unlink(m_path.c_str());
-        m_listenFd = -1;
-        // The window writes only its input, on the control channel, and its
-        // Kill on the action channel.
-        PhosphorChannel::Stream::Options options;
-        options.maxChannels = 2;
-        options.maxChannelId = Attach::ActionChannel + 1;
-        m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
-        std::string error;
-        m_events = m_stream->openWriter(Attach::ControlChannel, Attach::EventCodec, &error);
-        if (!m_events) m_failed = true;
-        // A finished attachment that the window reaches only now: the
-        // window still learns why the session does not show.
-        if (m_finish) m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FinishWaitMs);
-        return;
-    }
+    const int fd = std::exchange(m_fd, -1);
+    // The window writes only its input, on the control channel, and its
+    // Kill and ClosePane on the action channel.
+    PhosphorChannel::Stream::Options options;
+    options.maxChannels = 2;
+    options.maxChannelId = Attach::ActionChannel + 1;
+    m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
+    std::string error;
+    m_events = m_stream->openWriter(Attach::ControlChannel, Attach::EventCodec, &error);
+    if (!m_events) m_failed = true;
+    // A finished attachment whose window starts only now: the window still
+    // learns why the session does not show.
+    if (m_finish) m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FinishWaitMs);
 }
 
 void Attachment::sendEvent(const Attach::Event& event, std::shared_ptr<const std::string> call)
@@ -403,7 +341,20 @@ void Attachment::readInput(Session& session)
 bool Attachment::handle(short revents, Session* session)
 {
     if (!m_stream) {
-        if (revents & POLLIN) accept();
+        if (m_fd < 0) return timeoutMs() > 0;
+        // The end of the answer to the attach call goes first.
+        while (!m_unsent.empty()) {
+            const ssize_t n = ::send(m_fd, m_unsent.data(), m_unsent.size(), MSG_NOSIGNAL);
+            if (n < 0 && errno == EINTR) continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+            if (n <= 0) return false;
+            m_unsent.erase(0, std::size_t(n));
+        }
+        // The window's first bytes, or its end: the stream reads them.
+        if (m_unsent.empty() && (revents & (POLLIN | POLLHUP | POLLERR))) {
+            startStream();
+            m_stream->readable();
+        }
         if (m_failed) return false;
         if (!m_stream) return timeoutMs() > 0;
     } else {

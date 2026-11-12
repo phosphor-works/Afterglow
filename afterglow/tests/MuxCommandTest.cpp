@@ -10,6 +10,7 @@
 #include "SavedEnvironment.h"
 #include "config/Settings.h"
 
+#include "MuxConnect.h"
 #include "MuxProtocol.h"
 
 #include <AfterglowProto/IpcServer.h>
@@ -196,7 +197,9 @@ protected:
         return run(words, AFTERGLOW_BINARY);
     }
 
-    Result run(const std::vector<std::string>& words, const std::string& binary) const
+    /// @p binary with @p words, in the test's environment. Its standard input
+    /// is @p input, else /dev/null.
+    Result run(const std::vector<std::string>& words, const std::string& binary, const std::string& input = {}) const
     {
         std::vector<std::string> argv{binary};
         argv.insert(argv.end(), words.begin(), words.end());
@@ -206,21 +209,24 @@ protected:
         std::vector<char*> envp;
         for (const auto& e : m_environment) envp.push_back(const_cast<char*>(e.c_str()));
         envp.push_back(nullptr);
-        int out[2], err[2];
+        int out[2], err[2], in[2] = {-1, -1};
         if (::pipe2(out, O_CLOEXEC) != 0) return {};
-        if (::pipe2(err, O_CLOEXEC) != 0) {
-            ::close(out[0]);
-            ::close(out[1]);
+        if (::pipe2(err, O_CLOEXEC) != 0 || (!input.empty() && ::pipe2(in, O_CLOEXEC) != 0)) {
+            for (const int fd : {out[0], out[1], err[0], err[1], in[0], in[1]}) {
+                if (fd >= 0) ::close(fd);
+            }
             return {};
         }
         const pid_t pid = ::fork();
         if (pid < 0) {
-            for (const int fd : {out[0], out[1], err[0], err[1]}) ::close(fd);
+            for (const int fd : {out[0], out[1], err[0], err[1], in[0], in[1]}) {
+                if (fd >= 0) ::close(fd);
+            }
             return {};
         }
         if (pid == 0) {
             const int null = ::open("/dev/null", O_RDONLY);
-            ::dup2(null, 0);
+            ::dup2(input.empty() ? null : in[0], 0);
             ::dup2(out[1], 1);
             ::dup2(err[1], 2);
             ::execve(argp[0], argp.data(), envp.data());
@@ -228,6 +234,12 @@ protected:
         }
         ::close(out[1]);
         ::close(err[1]);
+        if (!input.empty()) {
+            // Small: the pipe takes it whole.
+            ::close(in[0]);
+            (void)!::write(in[1], input.data(), input.size());
+            ::close(in[1]);
+        }
         Result result;
         const auto deadline = std::chrono::steady_clock::now() + 15s;
         pollfd fds[2] = {{out[0], POLLIN, 0}, {err[0], POLLIN, 0}};
@@ -263,6 +275,29 @@ protected:
         ::waitpid(pid, &status, 0);
         result.status = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
         return result;
+    }
+
+    /// A directory with an ssh for `afterglow mux --ssh`, first on PATH from
+    /// now on: `ssh -G -- HOST` prints a configuration, and any other run
+    /// runs its command here, after "--" and the destination. So the proxy
+    /// runs on this computer, in the test's environment, and reaches its
+    /// daemon. With @p mux, the build's afterglow-mux is on its PATH; without,
+    /// no afterglow-mux is.
+    void fakeSsh(bool mux)
+    {
+        const std::string directory = m_dir + "/ssh-bin";
+        ASSERT_EQ(::mkdir(directory.c_str(), 0700), 0);
+        const std::string path = mux ? directory + ":" + std::filesystem::path(AFTERGLOW_BINARY).parent_path().string() + ":/usr/bin:/bin"
+                                     : directory;
+        std::ofstream(directory + "/ssh") << "#!/bin/sh\n"
+                                             "if [ \"$1\" = -G ]; then printf 'host %s\\nhostname %s\\nuser me\\nport 22\\n' \"$3\" \"$3\"; exit 0; fi\n"
+                                             "while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
+                                             "shift 2\n"
+                                             "PATH='" + path + "' exec /bin/sh -c \"$*\"\n";
+        ASSERT_EQ(::chmod((directory + "/ssh").c_str(), 0700), 0);
+        for (std::string& entry : m_environment) {
+            if (entry.starts_with("PATH=")) entry = "PATH=" + directory + ":" + entry.substr(5);
+        }
     }
 
     /// An afterglow whose afterglow-mux is @p script: a link to the build's
@@ -392,13 +427,13 @@ TEST_F(MuxCommandTest, UsageErrorsAndCommandsThatAreNotAvailable)
              {{"detach"}, 2, "afterglow mux: detach takes the name of a session, outside a session pane\n"},
              {{"detach", "a", "b"}, 2, "afterglow mux: unknown argument of detach: b\n"},
              {{"detach", "bad name"}, 2, "afterglow mux detach: the name must be "},
-             {{"detach", "--ssh", "host"}, 1, "afterglow mux detach: sessions on other hosts are not available yet\n"},
+             // A pane of this computer names no session of another host.
+             {{"detach", "--ssh", "host"}, 2, "afterglow mux: detach --ssh takes the name of a session\n"},
              // No daemon: no session to detach, and none starts.
              {{"detach", "work"}, 1, "afterglow mux detach: no sessions\n"},
              {{"new", "--ssh", "host"}, 1, "afterglow mux new: sessions on other hosts are not available yet\n"},
-             {{"ls", "--ssh", "host"}, 1, "afterglow mux ls: sessions on other hosts are not available yet\n"},
-             {{"kill", "--ssh", "host"}, 1, "afterglow mux kill: sessions on other hosts are not available yet\n"},
-             {{"ls", "x"}, 2, "afterglow mux: ls takes no arguments\n"},
+             {{"kill", "--ssh", "host"}, 2, "afterglow mux: kill takes the name of a session\n"},
+             {{"ls", "x"}, 2, "afterglow mux: ls takes no arguments but --ssh DESTINATION\n"},
              // Bytes that are not UTF-8 come back as '?', at once.
              {{"new", "--bad\xff\xfe"}, 2, "afterglow mux: unknown option of new: --bad??\n"},
              {{"\xff"}, 2, "afterglow mux: unknown command: ?\n"},
@@ -434,6 +469,61 @@ TEST_F(MuxCommandTest, DetachInASessionPaneFindsTheSessionOfThePane)
     const Result bad = mux({"detach"});
     EXPECT_EQ(bad.status, 1);
     EXPECT_EQ(bad.err, "afterglow mux detach: AFTERGLOW_PANE_ID names no pane of the mux daemon\n");
+}
+
+// afterglow mux --ssh reaches the daemon of another host through
+// `afterglow-mux proxy`, which ssh runs there. A fake ssh runs it here.
+TEST_F(MuxCommandTest, ListsDetachesAndKillsTheSessionsOfAnotherHost)
+{
+    fakeSsh(true);
+    // No daemon there, and none starts.
+    const Result empty = mux({"ls", "--ssh", "far"});
+    EXPECT_EQ(empty.status, 0) << empty.err;
+    EXPECT_EQ(empty.err, "afterglow mux ls: no sessions\n");
+    EXPECT_TRUE(daemons().empty());
+    std::vector<std::string> args{"new", "--detach", "--name", "there"};
+    for (const std::string& arg : waitsForTheTest()) args.push_back(arg);
+    ASSERT_EQ(mux(args).status, 0);
+    const Result listed = mux({"ls", "--ssh", "far"});
+    EXPECT_EQ(listed.status, 0) << listed.err;
+    EXPECT_NE(listed.out.find("there  detached      1"), std::string::npos) << listed.out;
+    const Result detached = mux({"detach", "there", "--ssh", "far"});
+    EXPECT_EQ(detached.status, 1);
+    EXPECT_EQ(detached.err, "afterglow mux detach: no window shows session 'there'\n");
+    const Result killed = mux({"kill", "--ssh", "far", "--force", "there"});
+    EXPECT_EQ(killed.status, 0) << killed.err;
+    EXPECT_TRUE(waitFor([this] { return daemons().empty(); }));
+    // Usage errors.
+    EXPECT_EQ(mux({"ls", "--ssh"}).status, 2);
+    EXPECT_EQ(mux({"ls", "--ssh", "a", "--ssh", "b"}).status, 2);
+    EXPECT_EQ(mux({"detach", "--ssh", "far"}).status, 2);
+    const Result notHost = mux({"ls", "--ssh", "-oProxyCommand=x"});
+    EXPECT_EQ(notHost.status, 1);
+    EXPECT_NE(notHost.err.find("is no ssh destination"), std::string::npos) << notHost.err;
+}
+
+TEST_F(MuxCommandTest, AHostWithoutAfterglowMuxSaysSo)
+{
+    fakeSsh(false);
+    const Result r = mux({"ls", "--ssh", "far"});
+    EXPECT_EQ(r.status, 1);
+    EXPECT_EQ(r.err, "afterglow mux ls: far has no afterglow-mux (afterglow-mux): install it there\n");
+}
+
+// The proxy carries one connection to the daemon of its host on its
+// standard streams, and starts that daemon with --start.
+TEST_F(MuxCommandTest, TheProxyStartsTheDaemonAndCarriesAConnection)
+{
+    const std::string proxy = (std::filesystem::path(AFTERGLOW_BINARY).parent_path() / "afterglow-mux").string();
+    const std::string version = R"({"type":"call","id":1,"target":"mux","fn":"version","args":[]})" "\n";
+    const Result none = run({"proxy"}, proxy, version);
+    EXPECT_EQ(none.status, AfterglowMux::ProxyNoDaemon) << none.err;
+    EXPECT_TRUE(none.out.empty()) << none.out;
+    EXPECT_EQ(run({"proxy", "--other"}, proxy).status, 2);
+    const Result started = run({"proxy", "--start"}, proxy, version);
+    EXPECT_EQ(started.status, 0) << started.err;
+    EXPECT_NE(started.out.find("\"protocol\":" + std::to_string(AfterglowMux::ProtocolVersion)), std::string::npos) << started.out;
+    EXPECT_EQ(daemons().size(), 1u);
 }
 
 // `afterglow ctl --session` acts on a session that no window shows, with the

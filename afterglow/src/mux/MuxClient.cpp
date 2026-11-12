@@ -20,11 +20,7 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cerrno>
-#include <cstring>
 
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <unistd.h>
 
 Q_LOGGING_CATEGORY(lcMux, "afterglow.mux")
@@ -40,45 +36,6 @@ namespace {
 
 /// How long a window that lets a session go waits for its input to leave.
 constexpr int ReleaseWaitMs = 200;
-
-/// Connects to the attach socket @p path that the daemon named. It must be
-/// in the directory of one of the daemon's sockets, which only the user
-/// opens: another path could be anyone's.
-int connectTo(const std::string& path, const AfterglowProto::MuxSockets& sockets, QString* error)
-{
-    bool inDirectory = false;
-    for (const AfterglowProto::MuxSocket& socket : sockets.candidates) {
-        inDirectory = inDirectory || (path.size() > socket.directory.size() + 1 && path.starts_with(socket.directory)
-                                      && path[socket.directory.size()] == '/'
-                                      && path.find('/', socket.directory.size() + 1) == std::string::npos);
-    }
-    if (!inDirectory) {
-        *error = QStringLiteral("the daemon named an attach socket outside its directory: '%1'").arg(QString::fromStdString(path));
-        return -1;
-    }
-    if (const std::string reason = AfterglowProto::socketPathError(path); !reason.empty()) {
-        *error = QString::fromStdString(reason);
-        return -1;
-    }
-    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) {
-        *error = QString::fromUtf8(std::strerror(errno));
-        return -1;
-    }
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    std::memcpy(address.sun_path, path.data(), path.size());
-    int result;
-    do {
-        result = ::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof address);
-    } while (result != 0 && errno == EINTR);
-    if (result != 0) {
-        *error = QStringLiteral("cannot connect to %1: %2").arg(QString::fromStdString(path), QString::fromUtf8(std::strerror(errno)));
-        ::close(fd);
-        return -1;
-    }
-    return fd;
-}
 
 QString lossText(MuxClient::Loss loss, const QString& name)
 {
@@ -122,9 +79,10 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
                                                  AfterglowMux::CallTimeoutMs, &callError);
     // The daemon's words, which the user reads in a terminal.
     if (!result) return fail(QString::fromStdString(AfterglowProto::printable(callError.message)));
-    QString connectError;
-    const int fd = connectTo((*result)["socket"].toString(), sockets, &connectError);
-    if (fd < 0) return fail(QStringLiteral("cannot show session '%1': %2").arg(name, connectError));
+    // The connection of the call carries the session's stream from here.
+    AfterglowProto::IpcConnection::Error releaseError;
+    const int fd = reached.connection->release(&releaseError);
+    if (fd < 0) return fail(QStringLiteral("cannot show session '%1': %2").arg(name, QString::fromStdString(releaseError.message)));
 
     std::shared_ptr<MuxClient> client(new MuxClient);
     client->m_session = name;

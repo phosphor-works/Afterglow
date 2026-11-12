@@ -75,7 +75,9 @@ private:
     std::string answer(const AfterglowProto::IpcRequest& request, pid_t caller, AfterglowProto::IpcServerConnection& connection);
     std::string newSession(const AfterglowProto::IpcRequest& request);
     std::string killSession(const AfterglowProto::IpcRequest& request);
-    std::string attach(const AfterglowProto::IpcRequest& request, pid_t caller);
+    /// The connection of the call becomes the window's stream once the
+    /// answer went (m_attaching).
+    std::string attach(const AfterglowProto::IpcRequest& request);
     std::string detach(const AfterglowProto::IpcRequest& request);
     std::string paneDirectory(const AfterglowProto::IpcRequest& request);
     std::string newPane(const AfterglowProto::IpcRequest& request);
@@ -149,6 +151,9 @@ private:
     /// session, and those that finish while they send what waits. An
     /// attachment holds no session: it may outlive its session.
     std::vector<std::unique_ptr<Attachment>> m_attachments;
+    /// The attachment of the attach call that read() answers: it takes the
+    /// call's connection after the answer.
+    std::unique_ptr<Attachment> m_attaching;
     std::uint32_t m_nextPane = 1;
     /// The session that the control calls of each connection act on.
     std::map<const AfterglowProto::IpcServerConnection*, std::string> m_selected;

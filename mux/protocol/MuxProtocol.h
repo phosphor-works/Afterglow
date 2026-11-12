@@ -27,7 +27,7 @@ namespace AfterglowMux {
 /// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
 /// MuxProtocolTest pins the keys of the options to this number, so that a new
 /// key changes it too.
-inline constexpr int ProtocolVersion = 10;
+inline constexpr int ProtocolVersion = 11;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -37,8 +37,12 @@ inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
 inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name}
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
-/// (protocol, name, {takeover, eventQueue, history}) -> {name, socket}: the window
-/// connects to socket, where the session's stream starts (MuxStream.h).
+/// (protocol, name, {takeover, eventQueue, history}) -> {name}: after the
+/// answer, the connection of the call carries the session's stream
+/// (MuxStream.h). The client sends nothing after the call until the answer
+/// came, and then starts the stream, which writes first: the daemon sends
+/// nothing after the answer until then. So neither side's line reader takes
+/// a byte of the stream, also through a proxy (`afterglow-mux proxy`).
 inline constexpr const char* Attach = "attach";
 /// (name) -> null: the window of the session closes, and the session keeps running.
 inline constexpr const char* Detach = "detach";
