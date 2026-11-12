@@ -284,6 +284,7 @@ The proxy connects to the daemon there, and carries that connection on its stand
 You authenticate once for the shared connection. ssh needs no port forward.
 
 The host needs `aglow-mux` on the `PATH` of your login there, for example from a package of Afterglow.
+The host does not need Qt or the rest of Afterglow: see [build aglow and aglow-mux alone](BUILD.md#build-aglow-and-aglow-mux-alone).
 The daemon of the host must speak the protocol of this Afterglow.
 
 | Result | Message |

@@ -31,10 +31,29 @@ set_target_properties(afterglow_mux_daemon PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 add_executable(aglow-mux src/main.cpp)
 target_compile_definitions(aglow-mux PRIVATE AFTERGLOW_VERSION="${PROJECT_VERSION}")
 target_link_libraries(aglow-mux PRIVATE afterglow_mux_daemon)
-# Next to afterglow, which runs the aglow-mux of its own directory.
-set_target_properties(aglow-mux PROPERTIES AUTOMOC OFF AUTOUIC OFF
-    RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:afterglow>")
+set_target_properties(aglow-mux PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 install(TARGETS aglow-mux RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(AFTERGLOW_AGLOW_ONLY)
+    # Alone, aglow-mux installs the private libraries that it links, which
+    # afterglow installs in a whole build (afterglow/CMakeLists.txt), and the
+    # notices of what it holds: its own license and that of the libraries,
+    # zlib-ng and xxHash (libs/afterglow-proto) and the image codecs
+    # (libs/afterglow-image). They go in a directory named for aglow-mux, as
+    # a package of its own has. PCRE2 and the C and C++ runtime libraries
+    # are the system's, with their own notices.
+    set(AFTERGLOW_MUX_PRIVATE_LIBS AfterglowVt AfterglowPty PhosphorChannel)
+    set_target_properties(${AFTERGLOW_MUX_PRIVATE_LIBS} PROPERTIES INSTALL_RPATH "$ORIGIN")
+    install(TARGETS ${AFTERGLOW_MUX_PRIVATE_LIBS} LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)
+    set(AFTERGLOW_MUX_LICENSE_DIR "${CMAKE_INSTALL_DATADIR}/licenses/aglow-mux")
+    install(FILES "${PROJECT_SOURCE_DIR}/LICENSES/GPL-3.0-or-later.txt" "${PROJECT_SOURCE_DIR}/LICENSES/LGPL-2.1-or-later.txt"
+            DESTINATION ${AFTERGLOW_MUX_LICENSE_DIR})
+    install(FILES "${AFTERGLOW_ZLIB_LICENSE}" DESTINATION ${AFTERGLOW_MUX_LICENSE_DIR} RENAME LICENSE.zlib-ng)
+    install(FILES "${AFTERGLOW_XXHASH_LICENSE}" DESTINATION ${AFTERGLOW_MUX_LICENSE_DIR} RENAME LICENSE.xxHash)
+    afterglow_install_image_notices(${AFTERGLOW_MUX_LICENSE_DIR})
+else()
+    # Next to afterglow, which runs the aglow-mux of its own directory.
+    set_target_properties(aglow-mux PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:afterglow>")
+endif()
 
 if(BUILD_TESTING)
     add_subdirectory(tests)
