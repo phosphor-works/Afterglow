@@ -779,6 +779,13 @@ void Terminal::print(char32_t cp)
         }
         const MulticellParams* p = scr.multicellParams(*line, cur.x);
         const int next = cur.x - c.multicellDx() + (p ? p->columns() : 1);
+        if (next <= cur.x) {
+            // A block whose cells do not lead past it, as one whose
+            // parameters went would: the text would never move on. It goes,
+            // as a block that does not fit does.
+            scr.eraseMulticell(cur.y, cur.x);
+            break;
+        }
         if (next <= right) {
             cur.x = next;
         } else if (m_modes.autowrap && !wrapped) {
@@ -5121,7 +5128,7 @@ std::uint64_t Terminal::advanceAnimations(std::uint64_t nowMs)
 {
     std::uint64_t next = 0;
     if (m_graphics[m_modes.altScreen ? 1 : 0].advanceAnimations(*m_active, m_cellWidth, m_cellHeight, nowMs, next)) {
-        touch();
+        touchImages();
     }
     return next;
 }

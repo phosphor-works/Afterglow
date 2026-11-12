@@ -4,20 +4,22 @@
 #include "Image.h"
 
 #include "Commands.h"
-#include "StbImage.h"
 #include "Tty.h"
 
+#include <AfterglowImage/Decode.h>
 #include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Graphics.h>
+#include <AfterglowProto/Limits.h>
+#include <AfterglowProto/Zlib.h>
 
 #include <algorithm>
 #include <cerrno>
-#include <climits>
 #include <cmath>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <new>
 #include <poll.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
@@ -26,8 +28,8 @@
 
 namespace Aglow {
 
-static_assert(std::uint32_t(Stb::MaxSide) == AfterglowProto::GraphicsMaxSide,
-              "stb_image's STBI_MAX_DIMENSIONS must be the longest side that Afterglow takes");
+static_assert(std::uint32_t(AfterglowImage::MaxSide) == AfterglowProto::GraphicsMaxSide,
+              "the decoders must take the longest side that Afterglow takes");
 
 namespace {
 
@@ -39,7 +41,15 @@ std::uint32_t big32(std::string_view bytes, std::size_t index)
         | std::uint32_t(at(bytes, index + 2)) << 8 | at(bytes, index + 3);
 }
 
+std::uint32_t little32(std::string_view bytes, std::size_t index)
+{
+    return std::uint32_t(at(bytes, index)) | std::uint32_t(at(bytes, index + 1)) << 8 | std::uint32_t(at(bytes, index + 2)) << 16
+        | std::uint32_t(at(bytes, index + 3)) << 24;
+}
+
 // The Orientation tag (0x0112) of the first IFD of a TIFF block, 1 without it.
+// Each read is inside the block: the sums cannot wrap, as the block is a
+// part of a file in memory and each term is far below the size of a size_t.
 int tiffOrientation(std::string_view tiff)
 {
     if (tiff.size() < 8) {
@@ -62,13 +72,13 @@ int tiffOrientation(std::string_view tiff)
         return 1;
     }
     const std::size_t ifd = u32(4);
-    if (ifd > tiff.size() - 2) {
+    if (ifd + 2 > tiff.size()) {
         return 1;
     }
     const std::size_t entries = u16(ifd);
     for (std::size_t i = 0; i < entries; ++i) {
         const std::size_t entry = ifd + 2 + i * 12;
-        if (entry > tiff.size() - 12) {
+        if (entry + 12 > tiff.size()) {
             break;
         }
         // Type 3 is SHORT: the value is in the first two bytes of the field.
@@ -80,12 +90,9 @@ int tiffOrientation(std::string_view tiff)
     return 1;
 }
 
-// The EXIF orientation of a JPEG: 1 is upright, 5 to 8 swap its sides.
+// The EXIF orientation of a JPEG, from its APP1 segment.
 int jpegOrientation(std::string_view bytes)
 {
-    if (bytes.size() < 4 || at(bytes, 0) != 0xFF || at(bytes, 1) != 0xD8) {
-        return 1;
-    }
     std::size_t i = 2;
     while (i + 4 <= bytes.size()) {
         if (at(bytes, i) != 0xFF) {
@@ -115,6 +122,58 @@ int jpegOrientation(std::string_view bytes)
         i += 2 + length;
     }
     return 1;
+}
+
+// The EXIF orientation of a PNG, from its eXIf chunk, which comes before the
+// image data and holds a TIFF block.
+int pngOrientation(std::string_view bytes)
+{
+    for (std::size_t i = 8; i + 8 <= bytes.size();) {
+        const std::size_t length = big32(bytes, i);
+        const std::string_view type = bytes.substr(i + 4, 4);
+        if (type == "IDAT" || type == "IEND" || length > bytes.size() - i - 8) {
+            return 1;
+        }
+        if (type == "eXIf") {
+            return tiffOrientation(bytes.substr(i + 8, length));
+        }
+        i += 12 + length;
+    }
+    return 1;
+}
+
+// The EXIF orientation of a WebP, from its EXIF chunk: a TIFF block, which
+// some writers put after the "Exif" header of a JPEG.
+int webpOrientation(std::string_view bytes)
+{
+    for (std::size_t i = 12; i + 8 <= bytes.size();) {
+        const std::size_t length = little32(bytes, i + 4);
+        if (length > bytes.size() - i - 8) {
+            return 1;
+        }
+        if (bytes.substr(i, 4) == "EXIF") {
+            std::string_view tiff = bytes.substr(i + 8, length);
+            if (tiff.starts_with(std::string_view("Exif\0\0", 6))) {
+                tiff.remove_prefix(6);
+            }
+            return tiffOrientation(tiff);
+        }
+        // Chunks have an even size.
+        i += 8 + length + (length & 1);
+    }
+    return 1;
+}
+
+// The EXIF orientation of an image: 1 is upright, 5 to 8 swap its sides. As
+// kitten icat, aglow reads it in a JPEG, a PNG and a WebP.
+int exifOrientation(std::string_view bytes)
+{
+    switch (AfterglowImage::format(bytes)) {
+    case AfterglowImage::Format::Jpeg: return jpegOrientation(bytes);
+    case AfterglowImage::Format::Png: return pngOrientation(bytes);
+    case AfterglowImage::Format::WebP: return webpOrientation(bytes);
+    default: return 1;
+    }
 }
 
 // The frame turned upright: @p width and @p height are those of @p rgba, and
@@ -147,8 +206,9 @@ std::string orient(const unsigned char* rgba, int width, int height, int orienta
     return out;
 }
 
-// What the decoder child sends its parent, in this order: frames, then one of
-// Warning and End, or Error, or TooMany.
+// What the decoder child sends its parent, in this order: frames, then Error,
+// or TooMany, or an optional Warning and End. The parent stops reading at
+// Error and at TooMany.
 enum class Kind : std::uint32_t { Frame, Warning, Error, TooMany, End };
 
 struct Record
@@ -225,43 +285,20 @@ bool readChild(int fd, void* data, std::size_t size, const SignalGate& gate, boo
     return true;
 }
 
-// The address space of this process, from /proc; 0 when it cannot be read.
-std::uint64_t addressSpace()
-{
-    const int fd = ::open("/proc/self/statm", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
-        return 0;
-    }
-    char text[128];
-    const ssize_t n = ::read(fd, text, sizeof text - 1);
-    ::close(fd);
-    if (n <= 0) {
-        return 0;
-    }
-    text[n] = '\0';
-    const long page = ::sysconf(_SC_PAGESIZE);
-    return std::strtoull(text, nullptr, 10) * std::uint64_t(page > 0 ? page : 4096);
-}
-
-void limit(int resource, rlim_t soft, rlim_t hard)
-{
-    rlimit current { };
-    if (::getrlimit(resource, &current) != 0) {
-        return;
-    }
-    rlimit next { std::min(soft, current.rlim_max), std::min(hard, current.rlim_max) };
-    ::setrlimit(resource, &next);
-}
-
 struct Limits
 {
     int orientation = 1;
     int width = 0; ///< upright
     int height = 0;
     std::size_t maxFrames = 1;
+    bool stopAtMax = false; ///< the caller asked for maxFrames: the frames after them are no loss
     std::uint64_t memory = 0; ///< what the decoder may allocate, past the address space at the fork
     rlim_t seconds = 0; ///< of CPU time
 };
+
+// The exit status of a decoder child that ran out of the memory that aglow
+// allows. Any other status but 0 is a crash, also the 1 of a sanitizer.
+constexpr int OutOfMemoryStatus = 3;
 
 [[noreturn]] void runChild(int fd, std::string_view bytes, const Limits& limits, pid_t parent)
 {
@@ -269,7 +306,7 @@ struct Limits
     // before it can kill the child.
     ::prctl(PR_SET_PDEATHSIG, SIGKILL);
     if (::getppid() != parent) {
-        ::_exit(1);
+        ::_exit(0);
     }
     // The signals that the parent catches kill the child, so that Ctrl+C
     // stops a long decode, and SIGCONT no longer runs the parent's handler.
@@ -281,34 +318,44 @@ struct Limits
         }
     }
     std::signal(SIGPIPE, SIG_DFL);
-    limit(RLIMIT_CORE, 0, 0);
-    limit(RLIMIT_CPU, limits.seconds, limits.seconds + 1);
-    if (const auto base = addressSpace()) {
-        limit(RLIMIT_AS, rlim_t(base + limits.memory), rlim_t(base + limits.memory));
-    }
+    AfterglowProto::limit(RLIMIT_CORE, 0, 0);
+    AfterglowProto::limit(RLIMIT_CPU, limits.seconds, limits.seconds + 1);
+    // The address space at the fork holds aglow and the file.
+    const std::uint64_t base = AfterglowProto::addressSpaceOr(bytes.size());
+    AfterglowProto::limit(RLIMIT_AS, rlim_t(base + limits.memory), rlim_t(base + limits.memory));
     int code = 0;
     try {
         std::size_t frames = 0;
         bool written = true;
         std::string error;
         std::string warning;
-        const bool ok = Stb::decode(bytes, [&](const unsigned char* rgba, int width, int height, int delay) {
+        // The size that the decoder gives, before the turn.
+        const bool swap = limits.orientation >= 5;
+        const int sourceWidth = swap ? limits.height : limits.width;
+        const int sourceHeight = swap ? limits.width : limits.height;
+        bool mismatch = false;
+        const bool ok = AfterglowImage::decode(bytes, [&](const unsigned char* rgba, int width, int height, int delay) {
+            if (width != sourceWidth || height != sourceHeight) {
+                mismatch = true;
+                return false;
+            }
             if (++frames > limits.maxFrames) {
                 written = send(fd, { Kind::TooMany });
                 return false;
             }
             const std::size_t size = std::size_t(width) * std::size_t(height) * 4;
-            Record record { Kind::Frame, limits.width, limits.height, delay, size };
+            const Record record { Kind::Frame, limits.width, limits.height, delay, size };
             if (limits.orientation != 1) {
                 written = send(fd, record, orient(rgba, width, height, limits.orientation));
             } else {
-                record.width = width;
-                record.height = height;
                 written = send(fd, record, std::string_view(reinterpret_cast<const char*>(rgba), size));
             }
-            return written;
+            return written && !(limits.stopAtMax && frames == limits.maxFrames);
         }, error, warning);
-        if (!ok) {
+        if (mismatch) {
+            error = "the image is not what its header says";
+        }
+        if (!ok || mismatch) {
             error.resize(std::min<std::size_t>(error.size(), MaxMessage));
             send(fd, { Kind::Error, 0, 0, 0, error.size() }, error);
         } else if (written) {
@@ -318,8 +365,8 @@ struct Limits
             }
             send(fd, { Kind::End });
         }
-    } catch (...) {
-        code = 1; // std::bad_alloc under the memory limit: the parent reads why from the exit
+    } catch (const std::bad_alloc&) {
+        code = OutOfMemoryStatus; // under the memory limit: the parent reads why from the exit
     }
     ::_exit(code);
 }
@@ -374,28 +421,28 @@ std::string childFailure(int status)
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
         return "the image decoder stopped early";
     }
-    return "the image needs more memory to decode than aglow allows";
+    if (WIFEXITED(status) && WEXITSTATUS(status) == OutOfMemoryStatus) {
+        return "the image needs more memory to decode than aglow allows";
+    }
+    return "the decoder crashed on this file, which is corrupt";
 }
 
 } // namespace
 
 bool imageSize(std::string_view bytes, int& width, int& height, std::string& error)
 {
-    switch (Stb::probe(bytes, width, height)) {
-    case Stb::Probe::Unknown:
+    switch (AfterglowImage::probe(bytes, width, height)) {
+    case AfterglowImage::Probe::Unknown:
         error = "not an image that aglow can read";
         return false;
-    case Stb::Probe::TooLarge:
-        error = width > 0 && height > 0
-            ? "the image is " + std::to_string(width) + "x" + std::to_string(height) + " pixels, and a terminal takes no side longer than "
-                + std::to_string(AfterglowProto::GraphicsMaxSide)
-            : "the image has a side longer than " + std::to_string(AfterglowProto::GraphicsMaxSide)
-                + " pixels, which is more than a terminal takes";
+    case AfterglowImage::Probe::TooLarge:
+        error = "the image is " + std::to_string(width) + "x" + std::to_string(height) + " pixels, and a terminal takes no side longer than "
+            + std::to_string(AfterglowProto::GraphicsMaxSide);
         return false;
-    case Stb::Probe::Image:
+    case AfterglowImage::Probe::Image:
         break;
     }
-    if (jpegOrientation(bytes) >= 5) {
+    if (exifOrientation(bytes) >= 5) {
         std::swap(width, height);
     }
     return true;
@@ -413,6 +460,34 @@ bool isPng(std::string_view bytes)
     // chunk comes before IHDR, so a CgBI file is not a PNG to a terminal.
     if (bytes.size() < 33 || !bytes.starts_with("\x89PNG\r\n\x1a\n") || big32(bytes, 8) != 13
         || bytes.substr(12, 4) != "IHDR") {
+        return false;
+    }
+    // Every chunk whole and with its checksum, image data, and IEND at the
+    // end: the terminal reports nothing for a PNG that it cannot decode, so
+    // a damaged file goes to the decoder, which says what is wrong.
+    bool data = false;
+    std::size_t i = 8;
+    for (;;) {
+        if (i + 12 > bytes.size()) {
+            return false;
+        }
+        const std::size_t length = big32(bytes, i);
+        if (length > bytes.size() - i - 12) {
+            return false;
+        }
+        const std::string_view chunk = bytes.substr(i + 4, 4 + length);
+        if (AfterglowProto::crc32Of(chunk) != big32(bytes, i + 8 + length)) {
+            return false;
+        }
+        data |= chunk.starts_with("IDAT");
+        i += 12 + length;
+        if (chunk.starts_with("IEND")) {
+            break;
+        }
+    }
+    // A terminal does not turn a PNG by its EXIF orientation: one that it
+    // turns is decoded and turned here.
+    if (!data || pngOrientation(bytes) != 1) {
         return false;
     }
     const auto width = big32(bytes, 16);
@@ -433,7 +508,7 @@ bool isPng(std::string_view bytes)
         && height <= AfterglowProto::GraphicsMaxSide;
 }
 
-std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std::string& error)
+std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std::string& error, std::size_t maxFrames)
 {
     Image image;
     if (!imageSize(bytes, image.width, image.height, error)) {
@@ -447,17 +522,18 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
         return std::nullopt;
     }
     Limits limits;
-    limits.orientation = jpegOrientation(bytes);
+    limits.orientation = exifOrientation(bytes);
     limits.width = image.width;
     limits.height = image.height;
-    limits.maxFrames = std::size_t(std::max<std::uint64_t>(
-        1, std::min<std::uint64_t>(AfterglowProto::GraphicsMaxFrames, budget / frameBytes)));
-    // stb_image needs a few times the decoded image while it works (16-bit
-    // PNG, float HDR, a copy of the compressed data). Past this, its
-    // allocations fail, whatever a corrupt file asks for.
-    limits.memory = 8 * frameBytes + bytes.size() + (std::uint64_t(64) << 20);
-    // Seconds of CPU time: decoding runs at well over 16 MiB a second.
-    limits.seconds = rlim_t(5 + (std::uint64_t(limits.maxFrames) * frameBytes >> 24));
+    const std::uint64_t fit = std::max<std::uint64_t>(1, std::min<std::uint64_t>(AfterglowProto::GraphicsMaxFrames, budget / frameBytes));
+    limits.maxFrames = std::size_t(std::min<std::uint64_t>(fit, std::max<std::size_t>(1, maxFrames)));
+    // The caller's own limit stops the decode quietly, also where it is what
+    // fits: past what fits, the frames left out are a warning.
+    limits.stopAtMax = std::max<std::size_t>(1, maxFrames) <= fit;
+    // The file is in the address space at the fork already, and no decoder
+    // copies it.
+    limits.memory = AfterglowProto::decodeMemory(frameBytes);
+    limits.seconds = AfterglowProto::decodeSeconds(std::uint64_t(limits.maxFrames) * frameBytes);
 
     int fds[2] = { -1, -1 };
     if (::pipe2(fds, O_CLOEXEC) != 0) {
@@ -549,11 +625,13 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
         }
         return std::nullopt;
     }
-    if (image.m_frames.size() > 1) {
-        // Browsers show a GIF delay under 20 ms as 100 ms, as kitty does.
-        for (auto& delay : image.m_delays) {
-            delay = delay < 20 ? 100 : delay;
-        }
+    // As in kitty: a GIF animation whose frames all have no delay plays at
+    // 100 ms a frame, as browsers play it. Else the delays are those of the
+    // file, also short ones, and a frame without a delay shows with the next
+    // (Image::delay() says 0).
+    if (image.m_frames.size() > 1 && AfterglowImage::format(bytes) == AfterglowImage::Format::Gif
+        && std::all_of(image.m_delays.begin(), image.m_delays.end(), [](int delay) { return delay <= 0; })) {
+        image.m_delays.assign(image.m_delays.size(), 100);
     }
     return image;
 }

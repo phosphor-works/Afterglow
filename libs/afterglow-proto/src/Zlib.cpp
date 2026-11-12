@@ -97,4 +97,10 @@ std::string zlibCompress(std::string_view in)
     return out;
 }
 
+std::uint32_t crc32Of(std::string_view in)
+{
+    // crc32_z takes the whole length, where crc32 counts in 32 bits.
+    return std::uint32_t(::crc32_z(0, reinterpret_cast<const Bytef*>(in.data()), in.size()));
+}
+
 } // namespace AfterglowProto

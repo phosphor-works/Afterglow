@@ -12,7 +12,8 @@ A mux session and a normal `afterglow` launch can run at the same time.
 
 ## The daemon
 
-`afterglow-mux` is one process with no Qt. It needs no display and no GPU.
+`afterglow-mux` is a daemon with no Qt. It needs no display and no GPU.
+A second process of it starts a process for each image that a session decodes (see [what the daemon answers](#what-the-daemon-answers)).
 It owns the sessions, the PTYs of their panes and the terminal state of each pane.
 It reads no configuration file. `afterglow mux new` sends the values that a session needs (see [environment](#environment)).
 
@@ -169,6 +170,7 @@ These features work as in a pane outside a session:
 - The marks of shell integration (OSC 133): the last output, the jumps between prompts, and a click on the prompt
 - Program status (OSC 7501), and the shell contexts (OSC 3008) in the title
 - Extra cursors
+- Images (Kitty graphics, Sixel, iTerm2) and their animations. The list below gives the differences.
 - A selection or a search match in a region that a program scrolls, as an editor does: it moves with its text
 - Visibility reports (mode 2033): the program hears whether you can see the pane
 
@@ -178,7 +180,15 @@ While the pane overview is open, you can see only the panes that it shows as car
 
 A session pane differs from a pane outside a session in these ways:
 
-- The window does not show images.
+- A Sixel or iTerm2 image does not show when the program prints it before any window shows the session. A Kitty image that the program places then does not move the cursor. The daemon places images in cells, and only a window measures a cell.
+- An image shows when all of its pixels came from the daemon. The pixels of a large image come in more than one frame, so the image can show a short time after the text around it.
+- A bell, a notification or another request of the program comes after the text on the screen that the program wrote before it. It can come before history and before the pixels of an image that the program sent before it.
+- When a program sends an image again before its pixels came, the window shows each version that came whole.
+- A pane outside a session decodes images with Qt, and a session pane with the decoders of its daemon. They show some images in a different way:
+  - A pane outside a session shows a WebP image only when the Qt Image Formats plugin is installed. A session pane always shows it.
+  - A pane outside a session shows a compressed BMP (run-length encoding) and a GIF whose screen has an empty side. A session pane does not show them.
+  - A session pane shows a BMP with a header of 52 or 56 bytes, or with its masks after the header (compression 6). A pane outside a session does not show it.
+  - Where the first frame of a GIF does not draw, a session pane shows nothing, as Kitty and browsers do. A pane outside a session can show the background color of the GIF there.
 - The session keeps the terminal settings and the colors of the `afterglow mux new` that started it (see [environment](#environment)).
 
 These commands and options are not available. Each stops with exit status 1 and writes this message on standard error:
@@ -312,6 +322,7 @@ Thus `afterglow ctl`, `afterglow ctl watch` and `aglow run` fail with that messa
 
 The daemon reads the PTY output and parses it into the terminal of the pane, whether or not a window shows the session.
 While no window shows it, the session keeps running, scrollback grows to the `Terminal.scrollback` limit, and the programs do not pause.
+While an image of a pane decodes, the daemon reads no more output of that pane. A program that writes a lot then waits, as in a pane outside a session.
 The daemon answers these requests itself, also while a window shows the session.
 While a window shows the session, these answers go through the window, as the answers to queries do (see [what a window answers](#what-a-window-answers)).
 
@@ -321,7 +332,7 @@ While a window shows the session, these answers go through the window, as the an
 | Notification query (OSC 99 `p=?`) | The daemon gives the answer of a window |
 | Query of the socket of an ssh session (OSC 24569) | The daemon answers that there is none (`error=off`) |
 | Visibility report (mode 2033) | The window says whether you can see the pane. Until a window says it, the program hears that you cannot see the pane. This is also true after a takeover, and while no window shows the session. |
-| Images | RGB, RGBA and sixel images work in the daemon. PNG (kitty graphics `f=100`) and iTerm2 images are refused, because the daemon decodes no compressed images. A window does not show the images. |
+| Images | The daemon keeps the images, also while no window shows the session. It decodes PNG (Kitty graphics `f=100`) and iTerm2 images (PNG, JPEG, GIF, WebP and BMP). Each image decodes in a process of its own, which the decoder of the daemon (`afterglow-mux --decode-images`) starts. It decodes with libpng, libjpeg-turbo and libwebp, which the build includes. Each process has limits on its memory, its CPU time and the system calls that it can make. A decoder process that crashes or takes too long ends, and the daemon and the other sessions go on. The images do not decode on a kernel without seccomp filters, or on a kernel older than Linux 5.3 (`pidfd_open`). They also do not decode on a processor other than x86-64, little-endian AArch64, RISC-V 64 and little-endian POWER. The daemon then writes why on its standard error, which is the journal when it runs in `afterglow-mux.service`. When the decoder cannot start, images do not decode for a minute, and the daemon writes why. The window shows the images that the daemon keeps. |
 
 While no window shows the session, the daemon also answers these requests.
 
@@ -383,7 +394,7 @@ When the session pane closes in the window, a file transfer that the window ran 
 | --- | --- | --- |
 | Session name | 1 to 64 characters: ASCII letters, digits, `_` and `-`. The first character is an ASCII letter, a digit or `_`. | `afterglow mux new` refuses the name with exit status 2 |
 | Socket path | 107 bytes | The daemon and the client leave out a socket with a longer path. When no socket is left, they stop and name the path. |
-| Open files | The hard limit of `RLIMIT_NOFILE`. The daemon raises its soft limit to the hard limit when it starts. | A new connection closes at once. A new session gets an error that says why its program cannot start. |
+| Open files | The hard limit of `RLIMIT_NOFILE`. The daemon raises its soft limit to the hard limit when it starts. | A new connection closes at once. A new session gets an error that says why its program cannot start. A PNG or iTerm2 image does not decode. |
 | Request line | 1 MiB, with its newline | The daemon answers `MALFORMED_REQUEST` and closes the connection |
 | Lines that do not parse, one after the other | 16 | Each line gets `MALFORMED_REQUEST`. The daemon closes the connection after its answer to the 17th line. |
 | Waiting output to one client | 32 MiB | The daemon closes the connection to a client that does not read its answers |
@@ -392,6 +403,11 @@ When the session pane closes in the window, a file transfer that the window ran 
 | Input of a window that the program does not read | 32 MiB in the queue of the PTY, 4 MiB in the daemon, then 32 MiB in the window | The window refuses more input and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
 | Frames to a window | About 2 MiB of state in each frame, and at most 4 MiB, the largest frame of the stream | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
 | History rows to a window | `Terminal.scrollback` of the window, in rows | The daemon sends no older rows |
+| Image file that the daemon decodes | The limits of a pane outside a session (see [COMPATIBILITY.md](COMPATIBILITY.md)): 320 MiB of Kitty data, and 96 MiB of iTerm2 base64 | The error of a pane outside a session: `EFBIG` for data in the command, `EBADF` for a file or shared memory. An iTerm2 image does not show. |
+| Image that the daemon decodes | 10,000 pixels on a side, and 320 MiB of pixels | A Kitty command gets an `EBADPNG` error. An iTerm2 image does not show. |
+| Time to decode an image | 30 seconds, and a CPU time of 5 seconds and 1 second more for each 16 MiB of pixels | The decoder process ends. The image does not show, as above. The daemon writes a line on its standard error, at most once a minute. |
+| Memory of a decoder process | Its memory at its start, and 8 times the decoded pixels and 64 MiB more | The decode fails. The image does not show, as above. |
+| Scans of a progressive JPEG | 1,000 | The image does not show, as above. |
 | Region scrolls in one frame | 256 | Every row from the top of the highest region that scrolled to the bottom of the lowest leaves its region. A selection or a search match in those rows goes. |
 | Requests that wait for a window | `Mux.eventQueue` (1 to 64 MiB, 4 MiB by default) in the queue of the session, and as much in the queue of each pane. A request that finds the queue of its pane empty passes the limit. The queue of the session also takes one request of any size while it is below the limit. | The answer of a session that no window shows (see [requests that wait](#requests-that-wait)) |
 | One request to a window | 129 MiB: the largest clipboard write that a terminal takes, and its types | The answer of a session that no window shows |

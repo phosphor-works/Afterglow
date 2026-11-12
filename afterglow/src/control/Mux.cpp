@@ -15,6 +15,7 @@
 #include <AfterglowProto/Lock.h>
 #include <AfterglowProto/Socket.h>
 #include <AfterglowProto/Text.h>
+#include <AfterglowPty/CloseFrom.h>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -239,7 +240,7 @@ bool startDetached(const std::string& daemon, int reportFd, std::string* error)
         // whose reader waits for its end.
         if (reportFd != 3) ::dup2(reportFd, 3);
         else ::fcntl(3, F_SETFD, 0);
-        ::close_range(4, ~0U, 0);
+        AfterglowPty::closeFrom(4);
         const int null = ::open("/dev/null", O_RDWR);
         for (int fd = 0; fd < 3; ++fd) {
             if (fd != null) ::dup2(null, fd);

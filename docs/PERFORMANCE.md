@@ -13,7 +13,7 @@ Measurement date: 30 October 2026.
 Source commit: `2aa71e7`. Build type: `RelWithDebInfo`.
 The recorded set contains 72 case runs: three repeats of each workload at each resolution.
 Timed cases request 15 seconds. CPU rates use actual elapsed time.
-Input cases use 100 acknowledgements per run. Script cases use 10,000 callbacks per run.
+Input cases use 100 acknowledgments per run. Script cases use 10,000 callbacks per run.
 Tables show medians of per-run statistics. Maximum columns contain the largest observed sample.
 Percentiles are not pooled across runs.
 See the [summary and ranges](../data/benchmarks/native-2026-10-30.summary.json) and [compressed raw samples](../data/benchmarks/native-2026-10-30.raw.json.gz).
@@ -88,13 +88,13 @@ It includes parser storage, viewport content and font-cache changes.
 
 ### Input response
 
-All 1,200 acknowledgement requests completed. These times end at terminal frame submission.
+All 1,200 acknowledgment requests completed. These times end at terminal frame submission.
 
 | Viewport | Output | p50 (ms) | p95 (ms) | p99 (ms) | Maximum (ms) | Achieved output (MiB/s) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 1080p | Acknowledgements only | 1.52 | 5.52 | 6.34 | 7.20 | — |
+| 1080p | Acknowledgments only | 1.52 | 5.52 | 6.34 | 7.20 | — |
 | 1080p | 4 MiB/s target | 33.93 | 50.55 | 50.68 | 66.87 | 4.00 |
-| 4K | Acknowledgements only | 2.31 | 4.31 | 5.24 | 6.34 | — |
+| 4K | Acknowledgments only | 2.31 | 4.31 | 5.24 | 6.34 | — |
 | 4K | 4 MiB/s target | 13.75 | 18.64 | 30.76 | 50.33 | 4.00 |
 
 The observed maximum is not a worst-case latency bound.
@@ -311,7 +311,7 @@ Before the throughput work, Afterglow `46c2cb7` gave 414 to 422 frames per secon
 | Scroll | `scroll` | Repeated scrollbar traversal through 100,000 history rows, with a request every 16 ms |
 | Resize | `resize` | Width changes in 16-pixel steps across a 160-pixel range, and height changes in 8-pixel steps across 80 pixels, with a request every 50 ms |
 | History | `history` | Retain exactly 0, 100,000 or 1,000,000 rows, then measure idle memory |
-| Input | `input` | Send ASCII key events through Qt and the PTY and wait for a visible acknowledgement |
+| Input | `input` | Send ASCII key events through Qt and the PTY and wait for a visible acknowledgment |
 | Input with output | `input-load` | Repeat the input case while the child targets 4 MiB/s of colored output |
 | Scripts | `scripts` | Run the Phosphor scene's command-finished callback 10,000 times with 1, 8 or 32 pane snapshots |
 
@@ -319,8 +319,8 @@ Resize uses 100,000 history rows and enables normal text reflow.
 History population feeds the terminal parser directly, before measurement.
 Each history line has 75 ASCII characters and a carriage return/newline pair.
 The input cases use a real PTY child.
-They send one acknowledgement request every 100 ms, with at most one outstanding request.
-The child reserves the first screen row for acknowledgements.
+They send one acknowledgment request every 100 ms, with at most one outstanding request.
+The child reserves the first screen row for acknowledgments.
 Its partial scrolling region does not add output to scrollback.
 The recorded output rate covers the interval between the first and last requests.
 
@@ -340,7 +340,7 @@ It does not measure effect application, real pane creation or a complete plugin 
 | RSS | Resident process memory, including shared pages |
 | PSS | Resident memory with shared pages divided between their users |
 | Peak RSS | Largest resident allocation since process startup |
-| Input response | Synthetic Qt key dispatch until a submitted terminal snapshot contains the child acknowledgement |
+| Input response | Synthetic Qt key dispatch until a submitted terminal snapshot contains the child acknowledgment |
 | Callback duration | ScriptHost's measured callback invocation time |
 
 Frame service includes scheduling waits inside the event handler.

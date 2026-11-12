@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -137,6 +138,10 @@ int run(int argc, char** argv);
 // end the program without unwinding, so main catches them all.
 int main(int argc, char** argv)
 {
+    // A parent that ignores SIGCHLD passes that on through exec, and then the
+    // kernel reaps the children of aglow (its decoder, tmux) before waitpid()
+    // can read how they ended.
+    std::signal(SIGCHLD, SIG_DFL);
     Aglow::Cli::setProgram(argc > 0 && argv[0] ? argv[0] : "");
     try {
         return run(argc, argv);
@@ -153,7 +158,7 @@ namespace {
 int run(int argc, char** argv)
 {
     // No command and an unknown command are usage errors: status 2, as in
-    // the commands themselves.
+    // run and remote-prune. The other commands give 1, as kitten does.
     if (argc < 2) {
         std::fputs(usage().c_str(), stderr);
         return 2;

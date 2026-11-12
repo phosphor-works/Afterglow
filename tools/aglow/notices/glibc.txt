@@ -6,11 +6,11 @@ Foundation, Inc. and the other authors of glibc.
 
 glibc is free software under the GNU Lesser General Public License, version
 2.1 or any later version. LGPL-2.1-or-later.txt in this directory holds the
-text of that licence. Some parts of glibc carry other permissive notices. The
+text of that license. Some parts of glibc carry other permissive notices. The
 source of each glibc release, with all of its notices, is at
 https://sourceware.org/glibc/ and in the source package of your distribution.
 
-Section 6 of that licence lets you change glibc and link aglow again with your
+Section 6 of that license lets you change glibc and link aglow again with your
 changed copy. The source of aglow is in the Afterglow source tree, at
 https://github.com/phosphor-works/Afterglow, in tools/aglow. To link aglow
 again with another C library:

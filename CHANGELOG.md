@@ -13,8 +13,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - VT100 to VT500 control sequences, with conformance levels and the `afterglow` terminfo entry.
 - Scrollback with reflow on resize. Rows that still fit keep their cells, styles and graphemes.
 - Unicode graphemes, wide characters, color emoji, font shaping and optional primary-screen bidirectional layout.
-- Character widths from Unicode 18.0. As in kitty, VS15 shows a wide emoji as text in one cell, and VS16 shows a text emoji in two cells.
-- A grapheme cluster takes the cells that glibc's `wcwidth` gives its characters, within two cells, so shells and editors that measure text with it put the cursor in the right place. A spacing mark, a consonant after a virama (Hindi क्र) and Thai SARA AM make a one-cell cluster two cells wide. A prepended mark such as U+0600 ARABIC NUMBER SIGN takes a cell.
+- Character widths from Unicode 18.0. As in Kitty, VS15 shows a wide emoji as text in one cell, and VS16 shows a text emoji in two cells.
+- A grapheme cluster takes the cells that glibc's `wcwidth` gives its characters, within two cells. Shells and editors that measure text with it then put the cursor in the right place. A spacing mark, a consonant after a virama (Hindi क्र) and Thai SARA AM make a one-cell cluster two cells wide. A prepended mark such as U+0600 ARABIC NUMBER SIGN takes a cell.
 - Afterglow draws box drawing, block elements, Braille and the Powerline separators to fill the cell, with no font. It draws the block shapes of Symbols for Legacy Computing (sextants, octants, smooth mosaics, diagonals) the same way.
 - Text attributes, including curly, dotted and dashed underlines, underline colors, overlines and OSC 8 hyperlinks.
 - Rectangular editing (DECFRA, DECCRA), character repeat (REP) and cursor shapes (DECSCUSR).
@@ -90,7 +90,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Received file transfers keep the read, write and execute bits of a mode. Afterglow drops the set-user-ID, set-group-ID and sticky bits.
 - Local file drops, quoted for the shell and sent as bracketed paste.
 - Text drops, pasted with the size limit and the question of a paste, unless the program in the pane accepts drops.
-- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. Its `transfer`, `dnd`, `icat` and `clipboard` commands take the options of `kitten`, with a few differences that the compatibility document lists.
+- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. `aglow icat` shows PNG, JPEG, GIF, WebP and BMP images, and plays GIF and WebP animations. Its `transfer`, `dnd`, `icat` and `clipboard` commands take the options of `kitten`, with a few differences that the compatibility document lists.
 - `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard`, which run the `aglow` that is installed with Afterglow.
 - `AFTERGLOW_AGLOW_ONLY` builds `aglow` alone, for a remote host or a package of its own. This build needs no Qt and no Phosphor libraries, and it installs only `aglow`, its completions and its license notices.
 
@@ -108,7 +108,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Saved projects that store a window's tabs, splits, directories and launch arguments.
 - Terminal sessions that keep running without a window, in the `afterglow-mux` daemon. `afterglow mux new` starts a session with one pane and shows it in a window. `afterglow mux attach` shows a session in a window, and `afterglow mux detach` closes the session pane. One window at a time shows a session, and a second one takes it over. `Mux.onClose` decides whether closing that pane, its tab or its window ends the session. `afterglow mux ls` and `afterglow mux kill` list and end the sessions.
 - The window that shows a session answers the requests of its programs, as for its own panes. These are bells, notifications, the clipboard, file transfers, drag and drop, downloads, pointer shapes, user variables and the commands of shell integration. The window asks its usual questions first. `Mux.eventQueue` sets how much waits for a slow window.
-- A session pane shows the marks of shell integration, program status, shell contexts and extra cursors. A selection moves with its text in a region that a program scrolls. The program hears whether you can see the pane (mode 2033).
+- A session pane shows the marks of shell integration, program status, shell contexts, extra cursors and images. Each image decodes in a process of its own, so a decoder that crashes cannot end your sessions. The daemon decodes PNG and iTerm2 images (PNG, JPEG, GIF, WebP and BMP). A selection moves with its text in a region that a program scrolls. The program hears whether you can see the pane (mode 2033).
 - A quick terminal on a Wayland layer surface, toggled by a global shortcut. It slides from the top or bottom edge of a chosen screen. It slides away while a file transfer prompt or a Save dialog of one of its panes is open. It comes back when the dialog closes.
 - Optional background blur on KWin, window transparency and a history scrollbar over the pane that fades when idle.
 - `Window.tabBarHeight` sets the height of the tab bar, and `Window.scrollbarWidth` sets the width of the scrollbar.
@@ -144,7 +144,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 ### Scripting and control
 
 - Luau scripts in a sandbox with time and memory limits, which reload when they change.
-- A CPU budget for each script (`Scripts.cpuBudget`, 250 ms in each second by default). Past it, Afterglow drops the events of the script, and delays its results, timers, keys and command runs. A script that has to wait in 5 seconds, each less than 3 seconds after the one before, is disabled. Dropped events do not count.
+- A CPU budget for each script (`Scripts.cpuBudget`, 250 ms in each second by default). Past it, Afterglow drops the events of the script, and delays its results, timers, keys and command runs. Each second in which a call of the script waits counts. After 5 such seconds, each less than 3 seconds after the one before, Afterglow disables the script. Dropped events do not count.
 - Script packages with manifests, configuration, assets and saved state with migrations.
 - Script packages that ship their own shader packs, suggest shader settings and name pulse effects.
 - Script effects for panes, tabs, windows, shader parameters and presets, with results and tasks.

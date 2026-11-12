@@ -12,7 +12,7 @@
 
 namespace Aglow {
 
-/// A decoded image: one RGBA canvas for each frame (a GIF can have many),
+/// A decoded image: one RGBA canvas for each frame (an animation has many),
 /// with straight (not premultiplied) alpha.
 class Image
 {
@@ -20,7 +20,8 @@ public:
     int width = 0;
     int height = 0;
     int frameCount() const { return int(m_frames.size()); }
-    /// Milliseconds that frame @p index shows, for an animation.
+    /// Milliseconds that frame @p index shows, for an animation. 0 for a
+    /// frame that shows with the next one, with no time of its own.
     int delay(int index) const { return m_delays[std::size_t(index)]; }
     /// Frame @p index, as RGBA bytes.
     const std::string& frame(int index) const { return m_frames[std::size_t(index)]; }
@@ -28,7 +29,7 @@ public:
     const std::string& warning() const { return m_warning; }
 
 private:
-    friend std::optional<Image> decodeImage(std::string_view, std::size_t, std::string&);
+    friend std::optional<Image> decodeImage(std::string_view, std::size_t, std::string&, std::size_t);
     std::vector<std::string> m_frames;
     std::vector<int> m_delays;
     std::string m_warning;
@@ -39,18 +40,21 @@ private:
 bool imageSize(std::string_view bytes, int& width, int& height);
 /// The same, with @p error set to the reason when it is false.
 bool imageSize(std::string_view bytes, int& width, int& height, std::string& error);
-/// Whether @p bytes are a PNG file that a terminal can decode itself: a valid
-/// IHDR first, and not Apple's CgBI variant, which only aglow reads.
+/// Whether @p bytes are a PNG file that a terminal can decode and show
+/// itself: a valid IHDR first (not Apple's CgBI variant), image data, IEND,
+/// every chunk whole with its checksum, and no EXIF orientation that turns it.
 bool isPng(std::string_view bytes);
-/// Decodes PNG, JPEG, GIF (with every frame), BMP, PSD (RGB), TGA, HDR, PIC
-/// and binary PGM and PPM, when the decoded pixels fit in @p budget bytes and
-/// each side in AfterglowProto::GraphicsMaxSide. A JPEG is turned as its EXIF
-/// orientation says. A GIF whose frames do not all fit in @p budget, or that
-/// has more than AfterglowProto::GraphicsMaxFrames, gives its first frame.
-/// The decoder runs in a child process with limits on its memory and CPU
-/// time, so that a corrupt file cannot harm aglow. nullopt with @p error set
-/// otherwise.
-std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std::string& error);
+/// Decodes PNG, JPEG, GIF and WebP (with every frame) and BMP
+/// (AfterglowImage), when the decoded pixels fit in @p budget bytes and
+/// each side in AfterglowProto::GraphicsMaxSide. A JPEG, a PNG and a WebP
+/// are turned as their EXIF orientation says. At most @p maxFrames frames
+/// are decoded, with no warning. An animation whose frames do not all fit in
+/// @p budget, or that has more than AfterglowProto::GraphicsMaxFrames, gives
+/// its first frame, with a warning. The decoder runs in a child process with
+/// limits on its memory and CPU time, so that a corrupt file cannot harm
+/// aglow. nullopt with @p error set otherwise.
+std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std::string& error,
+                                 std::size_t maxFrames = SIZE_MAX);
 
 /// Scales RGBA frames of one size to another. The filter weights are worked
 /// out once, for all the frames of an animation.

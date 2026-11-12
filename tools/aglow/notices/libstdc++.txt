@@ -7,6 +7,6 @@ built it. Copyright (C) the Free Software Foundation, Inc.
 These libraries are free software under the GNU General Public License,
 version 3 or any later version, with the GCC Runtime Library Exception,
 version 3.1. GPL-3.0-or-later.txt in this directory holds the text of that
-licence. The exception lets a program contain these parts under the terms of
-the program's own licence. The text of the exception follows.
+license. The exception lets a program contain these parts under the terms of
+the program's own license. The text of the exception follows.
 

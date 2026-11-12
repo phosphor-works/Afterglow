@@ -63,7 +63,11 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 6) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 8) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 8 added the frames of its pane before each Host event, which
+    // the window reads before it makes the call (below).
+    // Version 7 added the images and the cell size of the state codec
+    // (StateSyncTest).
     // Version 6 added the visibility of a pane in the window's input, the
     // paneDirectory call, the history option of the attach call, and the
     // shell marks, status, contexts, extra cursors, region scrolls, layout
@@ -82,9 +86,10 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     bell.type = Attach::EventType::Host;
     bell.pane = 1;
     bell.payload = Host::encode(Host::make(Host::Kind::Bell));
-    EXPECT_EQ(Attach::encode(bell), std::string("\x06\x01\x00\x00\x01", 5));
+    EXPECT_EQ(Attach::encode(bell), std::string("\x06\x01\x00\x00\x00\x01", 6));
     bell.status = Attach::HostPart;
-    EXPECT_EQ(Attach::encode(bell), std::string("\x06\x01\x00\x02\x01", 5));
+    bell.frames = 300;
+    EXPECT_EQ(Attach::encode(bell), std::string("\x06\x01\x00\x02\xac\x02\x01", 7));
     EXPECT_EQ(Attach::HostPartBytes, std::size_t(1) << 20);
     // The number of each kind.
     for (const auto& [kind, number] : std::vector<std::pair<Host::Kind, int>>{
@@ -558,12 +563,14 @@ TEST(MuxProtocol, AttachEventsRoundTrip)
             host.type = Attach::EventType::Host;
             host.pane = 3;
             host.status = status;
+            host.frames = 1u << 20;
             host.payload = payload;
             const auto back = Attach::decodeEvent(Attach::encode(host));
             ASSERT_TRUE(back) << status;
             EXPECT_EQ(back->type, Attach::EventType::Host);
             EXPECT_EQ(back->pane, 3u);
             EXPECT_EQ(back->status, status);
+            EXPECT_EQ(back->frames, 1u << 20);
             EXPECT_TRUE(back->payload == payload);
         }
     }

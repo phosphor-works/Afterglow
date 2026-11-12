@@ -183,46 +183,81 @@ bool MuxClient::hostEvent(Attach::Event& event, bool* lostLink)
     auto call = AfterglowMux::Host::decode(encoded);
     if (!call) return false;
     // After the frames that the daemon sent before the call: a bell after the
-    // text that rang it.
+    // text that rang it. A frame that is still on its way holds the call.
     if (m_panes.contains(event.pane) && !readState(event.pane)) {
         *lostLink = true;
         return true;
     }
-    return hostCall(event.pane, std::move(*call), encoded.size());
+    return hostCall(event.pane, std::move(*call), encoded.size(), event.frames);
 }
 
-bool MuxClient::hostCall(std::uint32_t id, AfterglowMux::Host::Call call, std::size_t bytes)
+bool MuxClient::hostCall(std::uint32_t id, AfterglowMux::Host::Call call, std::size_t bytes, std::uint64_t frames)
 {
-    const auto it = m_panes.find(id);
-    if (it != m_panes.end()) {
-        if (it->second) it->second->applySessionHostCall(call);
-        return true;
-    }
-    // The window makes the pane after the daemon names it: the call waits.
+    // It waits for its pane, which the window makes after the daemon names
+    // it, and for the frames before it.
     if (m_waitingHostBytes + bytes > MaxWaitingHostCalls) return false;
     WaitingHostCalls& waiting = m_waitingHostCalls[id];
-    waiting.calls.push_back(std::move(call));
+    waiting.calls.push_back(WaitingHostCall{std::move(call), frames, bytes});
     waiting.bytes += bytes;
     m_waitingHostBytes += bytes;
+    releaseHostCalls(id);
     return true;
+}
+
+void MuxClient::releaseHostCalls(std::uint32_t id)
+{
+    const auto pane = m_panes.find(id);
+    const auto it = m_waitingHostCalls.find(id);
+    if (pane == m_panes.end() || it == m_waitingHostCalls.end()) return;
+    const std::uint64_t read = m_framesRead[id];
+    // Out of the map before the pane answers them: an answer can reach this
+    // client again.
+    std::vector<AfterglowMux::Host::Call> ready;
+    std::deque<WaitingHostCall>& calls = it->second.calls;
+    while (!calls.empty() && calls.front().frames <= read) {
+        it->second.bytes -= calls.front().bytes;
+        m_waitingHostBytes -= calls.front().bytes;
+        ready.push_back(std::move(calls.front().call));
+        calls.pop_front();
+    }
+    if (calls.empty()) m_waitingHostCalls.erase(it);
+    const QPointer<Pane> target = pane->second;
+    for (const AfterglowMux::Host::Call& call : ready) {
+        // Once the session ended, the daemon reads no input: a request of the
+        // program would ask the user for nothing. A terminal reset (code 0)
+        // still clears a drag or a drop target of the pane.
+        using Kind = AfterglowMux::Host::Kind;
+        const bool answers = call.kind == Kind::Report || call.kind == Kind::ClipboardRequest
+            || (call.kind == Kind::TerminalProtocol && call.number != 0);
+        if (target && !(m_ended && answers)) target->applySessionHostCall(call);
+    }
 }
 
 void MuxClient::bind(std::uint32_t id, Pane* pane)
 {
     m_panes[id] = pane;
-    if (auto waiting = m_waitingHostCalls.extract(id); !waiting.empty()) {
-        m_waitingHostBytes -= waiting.mapped().bytes;
-        // A session that ended closes the pane at once: its prompts would
-        // answer nobody.
-        if (pane && !m_ended) {
-            for (const auto& call : waiting.mapped().calls) pane->applySessionHostCall(call);
-        }
+    // A session that ended closes the pane at once: its prompts would
+    // answer nobody. A pane whose exit is half known gets its last calls.
+    const bool exiting = m_exits.contains(id) || m_closedChannels.contains(id);
+    if (!pane || (m_ended && !exiting)) {
+        if (auto waiting = m_waitingHostCalls.extract(id); !waiting.empty()) m_waitingHostBytes -= waiting.mapped().bytes;
     }
-    // Frames that came before the pane existed wait in the stream's reader.
+    // Frames that came before the pane existed wait in the stream's reader,
+    // and the calls that waited go after the frames before them.
     handleFrames();
+    releaseHostCalls(id);
     // A pane that the session lost before it existed closes at once, unless
-    // half of its exit came: the rest closes it as a program's exit.
-    if (m_ended && pane && !m_exits.contains(id) && !m_closedChannels.contains(id)) pane->sessionLost(m_loss);
+    // half of its exit came: the rest closes it as a program's exit. Once
+    // the stream is gone, the rest that did not come by now never does.
+    const bool halfExit = m_exits.contains(id) || m_closedChannels.contains(id);
+    if (m_ended && pane && (!halfExit || m_streamGone)) {
+        if (halfExit) {
+            m_exits.erase(id);
+            m_closedChannels.erase(id);
+            if (auto waiting = m_waitingHostCalls.extract(id); !waiting.empty()) m_waitingHostBytes -= waiting.mapped().bytes;
+        }
+        pane->sessionLost(m_loss);
+    }
 }
 
 void MuxClient::release(std::uint32_t id, bool kill)
@@ -515,6 +550,9 @@ bool MuxClient::readState(std::uint32_t id)
                 lost();
                 return false;
             }
+            // The calls that the daemon sent after this frame.
+            ++m_framesRead[id];
+            releaseHostCalls(id);
             continue;
         }
         if (result == ReadResult::Closed) {
@@ -536,8 +574,11 @@ void MuxClient::paneExited(std::uint32_t id)
     m_exits.erase(exit);
     m_closedChannels.erase(id);
     m_channels.erase(id);
-    // No more of its calls come: the parts of one that did not end go.
+    // No more of its calls come: the parts of one that did not end go. Its
+    // last frame came, so no whole call waits.
     m_hostParts.erase(id);
+    if (auto waiting = m_waitingHostCalls.extract(id); !waiting.empty()) m_waitingHostBytes -= waiting.mapped().bytes;
+    m_framesRead.erase(id);
     if (const auto it = m_panes.find(id); it != m_panes.end() && it->second) it->second->sessionPaneExited(status);
 }
 
@@ -547,9 +588,20 @@ void MuxClient::end(Loss loss)
         m_ended = true;
         m_loss = loss;
     }
-    // No pane takes the calls that wait any more (bind()).
-    m_waitingHostCalls.clear();
-    m_waitingHostBytes = 0;
+    // The calls that wait go, but those of a pane whose exit is half known:
+    // its last frames still come, and a notification after the last output
+    // of a session shows with them. No other pane takes calls any more.
+    for (auto it = m_waitingHostCalls.begin(); it != m_waitingHostCalls.end();) {
+        // Also of a pane that the window binds later (bind()).
+        const auto pane = m_panes.find(it->first);
+        const bool exiting = (pane == m_panes.end() || pane->second) && (m_exits.contains(it->first) || m_closedChannels.contains(it->first));
+        if (exiting) {
+            ++it;
+            continue;
+        }
+        m_waitingHostBytes -= it->second.bytes;
+        it = m_waitingHostCalls.erase(it);
+    }
     m_hostParts.clear();
     // A pane whose exit is half known waits for the rest: its last frame or
     // its status still comes, and it closes as a pane whose program
@@ -574,8 +626,11 @@ void MuxClient::lost()
     // pass of the event loop until the last pane goes.
     if (m_readNotifier) m_readNotifier->setEnabled(false);
     if (m_writeNotifier) m_writeNotifier->setEnabled(false);
-    m_exits.clear();
-    m_closedChannels.clear();
+    // A pane that the window did not make yet keeps the half of its exit
+    // and its calls: the rest can wait in its reader, which bind() reads.
+    m_streamGone = true;
+    std::erase_if(m_exits, [this](const auto& exit) { return m_panes.contains(exit.first); });
+    std::erase_if(m_closedChannels, [this](std::uint32_t id) { return m_panes.contains(id); });
     end(Loss::Broken);
 }
 

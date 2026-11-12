@@ -803,7 +803,9 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("Duration of the visual bell fade in milliseconds for curves other than springs.")),
     };
     schema.groups[GraphicsGroup] = {
-        intKey(QStringLiteral("quota"), int(term.graphicsQuota >> 20), 16, 4096,
+        // At most what a store of a session's terminal holds, which a window
+        // must take from the daemon (StateReader).
+        intKey(QStringLiteral("quota"), int(term.graphicsQuota >> 20), 16, int(AfterglowVt::GraphicsStore::MaxQuota >> 20),
                QStringLiteral("Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 "
                               "bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images "
                               "without a placement go first: those sent with the transient hint (N=1), then the oldest.")),

@@ -138,6 +138,20 @@ struct QuietHost : AfterglowVt::ITerminalHost
     void writeToPty(std::string_view) override {}
 };
 
+/// As a window's session pane does after each frame: the replica animates
+/// its images on its own clock, and the renderer draws them.
+void showReplica(AfterglowVt::Terminal& replica)
+{
+    for (const std::uint64_t now : {std::uint64_t(1000), std::uint64_t(1100), std::uint64_t(5000)}) {
+        (void)replica.advanceAnimations(now);
+    }
+    const auto placements = replica.graphics().visible(replica.screen(), 8, 16, 1);
+    for (const auto& placement : replica.graphics().placements()) {
+        if (placement.isVirtual) (void)replica.graphics().placeholderSlice(placement.imageId, 0, 0, 0, 0, 0, 8, 16);
+    }
+    (void)placements;
+}
+
 /// @p frame to the StateReader of a fresh replica, as a window applies what a
 /// session sends. A refused frame must leave the reader able to take the first
 /// frame of a writer that starts over, since that is how a window recovers
@@ -151,6 +165,7 @@ void checkStateFrame(std::string_view frame, int cols, int rows, std::size_t scr
     AfterglowVt::StateReader reader;
     std::string error;
     if (reader.apply(replica, frame, &error)) {
+        showReplica(replica);
         return;
     }
     QuietHost sourceHost;
@@ -167,6 +182,75 @@ void checkStateFrame(std::string_view frame, int cols, int rows, std::size_t scr
         __builtin_trap();
     }
 }
+
+/// A replica of the fuzzed terminal, as a window of a session keeps one:
+/// a frame of the writer after each control record, so that images are
+/// replaced and dropped while their pixels go. Each frame that a writer makes
+/// must apply.
+struct Mirror
+{
+    QuietHost host;
+    AfterglowVt::Terminal replica;
+    AfterglowVt::StateWriter writer;
+    AfterglowVt::StateReader reader;
+
+    explicit Mirror(const AfterglowVt::TerminalOptions& options)
+        : replica(20, 8, host, options)
+    {
+    }
+
+    /// Small frames for a small screen, with config's scrollback bits, so
+    /// that rows, history and images wait. A screen of thousands of cells at
+    /// that budget takes thousands of frames, too slow an input to fuzz.
+    static std::size_t budget(const AfterglowVt::Terminal& source, bool small)
+    {
+        const bool smallScreen = std::size_t(source.cols()) * std::size_t(source.rows()) <= 4096;
+        return small && smallScreen ? 4096 : std::size_t(1) << 20;
+    }
+
+    void step(const AfterglowVt::Terminal& source, bool small)
+    {
+        std::string error;
+        if (!reader.apply(replica, writer.update(source, budget(source, small)), &error)) {
+            __builtin_trap();
+        }
+    }
+
+    /// The rest, then the replica shows what the source does.
+    void finish(const AfterglowVt::Terminal& source, bool small)
+    {
+        int guard = 0;
+        for (; guard < 4096; ++guard) {
+            const std::string frame = writer.update(source, budget(source, small));
+            if (frame.empty() && !writer.pending()) break;
+            std::string error;
+            if (!reader.apply(replica, frame, &error)) {
+                __builtin_trap();
+            }
+        }
+        // A writer that never catches up, at a budget that its content fits
+        // many times over, is stuck.
+        if (guard == 4096 && budget(source, small) > 4096) {
+            __builtin_trap();
+        }
+        using Scope = AfterglowVt::Terminal::TextScope;
+        if (guard < 4096 && replica.text(Scope::Screen) != source.text(Scope::Screen)) {
+            __builtin_trap();
+        }
+        if (guard < 4096) {
+            for (const bool alternate : {false, true}) {
+                const auto& a = source.graphics(alternate).images();
+                const auto& b = replica.graphics(alternate).images();
+                if (a.size() != b.size()) __builtin_trap();
+                for (const auto& [id, image] : a) {
+                    const auto it = b.find(id);
+                    if (it == b.end() || it->second.frames.size() != image.frames.size()) __builtin_trap();
+                }
+            }
+        }
+        showReplica(replica);
+    }
+};
 
 } // namespace
 
@@ -193,6 +277,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     AfterglowVt::Terminal t(20, 8, host, opts);
     t.resize(20, 8, 8, 16);
     std::uint64_t now = 0;
+    Mirror mirror(opts);
+    const bool smallFrames = (config & 0x18) != 0;
 
     // 0xFF introduces a control record: [0xFF, op, a, b]. Op 13 feeds a raw
     // 0xFF, which the record marker would otherwise keep out of the stream.
@@ -333,11 +419,15 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             t.setViewportOffset(std::size_t(a) * 4);
             break;
         }
+        mirror.step(t, smallFrames);
         start = i + 4;
         i += 3;
     }
     if (start < size) {
         t.feed(std::string_view(reinterpret_cast<const char*>(data + start), size - start));
     }
+    // The codec carries no viewport: the replica's shows the live rows.
+    t.resetViewport();
+    mirror.finish(t, smallFrames);
     return 0;
 }
