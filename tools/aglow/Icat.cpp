@@ -80,8 +80,8 @@ const Cli::Command command {
           "Without --place, how the image is scaled to the screen: to fit its width, its height, both, or not at "
           "all." },
         { "--background", Cli::Option::Kind::String, "none", {},
-          "A background colour, as #rgb, #rrggbb, rgb:rr/gg/bb or an X11 colour name. Transparent images are drawn "
-          "over it." },
+          "A background color, as #rgb, #rrggbb, rgb:rr/gg/bb, an X11 color name, oklch(L C H) or lab(L a b). "
+          "Transparent images are drawn over it." },
         { "--mirror", Cli::Option::Kind::Choice, "none", { "none", "horizontal", "vertical", "both" },
           "Mirror the image about a horizontal or vertical axis, or both." },
         { "--clear", Cli::Option::Kind::Flag, "", {}, "Remove every image that is on the screen." },

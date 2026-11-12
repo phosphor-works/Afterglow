@@ -130,8 +130,9 @@ target_compile_definitions(afterglow_config PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_INSTALLED_THEME_DIR="${CMAKE_INSTALL_FULL_DATADIR}/afterglow/themes")
 target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Render Afterglow::Vt
     PhosphorConfig::PhosphorConfig PhosphorFsLoader::PhosphorFsLoader Qt6::Core Qt6::Gui PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
-# The bounds of the Mux settings are the daemon's (MuxProtocol.h).
-target_link_libraries(afterglow_config PRIVATE afterglow_mux_protocol)
+# The bounds of the Mux settings are the daemon's (MuxProtocol.h). Colour
+# names are read as the escape codes read them (AfterglowProto/Color.h).
+target_link_libraries(afterglow_config PRIVATE afterglow_mux_protocol Afterglow::Proto)
 
 qt_add_library(afterglow_shell STATIC src/shell/ShellIntegration.cpp src/shell/ShellIntegration.h
     src/shell/Ssh.cpp src/shell/Ssh.h)

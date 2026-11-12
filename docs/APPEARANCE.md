@@ -181,22 +181,7 @@ The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeg
 `searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.
 A color key can have `-` or `_` between its words, in any mix of upper and lower case, such as `popup-border` in a Ghostty theme.
 Afterglow logs other keys in a JSON theme.
-A color in a theme or in `Colors` has one of these forms:
-
-| Form | Example | Values |
-| --- | --- | --- |
-| A Qt color name or hexadecimal color | `#1e1e2e`, `#fff`, `red` | The forms that Qt reads. |
-| `oklch(L C H)` | `oklch(0.7 0.1 200)` | L from 0 to 1, or 0% to 100%. C from 0 to about 0.4, or a percentage of 0.4. H in degrees, or with the unit `deg`, `rad`, `grad` or `turn`. |
-| `lab(L a b)` | `lab(50 60 40)` | CIE LAB with a D50 white point. L from 0 to 100. a and b from about -125 to 125, or a percentage of 125. |
-
-The three values of `oklch` and `lab` can have spaces or commas between them. The value `none` is 0, as in CSS Color 4.
-Afterglow changes an OKLCH or LAB color to sRGB with 8 bits for each channel.
-A color outside sRGB gets the gamut mapping of CSS Color 4: Afterglow keeps its lightness and hue and decreases its chroma.
-Kitty themes that use these forms work in Afterglow.
-Kitty clips a color outside sRGB, and it converts LAB in a different way, so some of these colors are not the same as in Kitty.
-
-These colors have no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`, or an alpha in an OKLCH or LAB color (`/ 0.5`).
-It also does not accept `transparent`, in any spelling.
+The colors in a theme have the forms of [color values](#color-values).
 
 Use this value to follow the desktop preference:
 
@@ -234,6 +219,40 @@ A theme value can also be a file path. Either half of a `light:` and `dark:` val
 A relative path starts at the directory of the configuration file.
 Afterglow monitors that path for changes, including deletion and replacement.
 A theme file that does not parse keeps its last colors until it parses again.
+
+## Color values
+
+A color in `Colors` or in a theme has one of these forms:
+
+| Form | Example | Values |
+| --- | --- | --- |
+| A hexadecimal color | `#1e1e2e`, `#fff` | `#rgb`, `#rrggbb`, `#rrrgggbbb` or `#rrrrggggbbbb`. `#fff` is white. A theme can leave out the `#` of six digits. |
+| An X11 color name | `red`, `dark slate gray` | A name from the X11 color list, in any mix of upper and lower case. |
+| `rgb:r/g/b` | `rgb:ff/80/00` | 1 to 4 hexadecimal digits for each channel. |
+| `rgbi:r/g/b` | `rgbi:1/0.5/0` | A number from 0 to 1 for each channel. |
+| `oklch(L C H)` | `oklch(0.7 0.1 200)` | L from 0 to 1, or 0% to 100%. C from 0 to about 0.4, or a percentage of 0.4. H in degrees, or with the unit `deg`, `rad`, `grad` or `turn`. |
+| `lab(L a b)` | `lab(50 60 40)` | CIE LAB with a D50 white point. L from 0 to 100, or 0% to 100%. a and b from about -125 to 125, or a percentage of 125. |
+
+A Konsole color scheme or `kdeglobals` can also write `R,G,B`, with each part from 0 to 255.
+Afterglow ignores spaces before and after a color.
+
+[OKLCH](https://www.w3.org/TR/css-color-4/#ok-lab) and [CIE LAB](https://www.w3.org/TR/css-color-4/#cie-lab) are color spaces from CSS Color 4.
+A step of the same size in their values looks like a change of about the same size.
+L is the lightness, C is the chroma (how much color there is) and H is the hue.
+The three values of `oklch` and `lab` can have spaces or commas between them. The value `none` is 0.
+A value of L outside its range becomes the nearest limit.
+A negative C becomes 0, and a C larger than 4 becomes 4. H counts modulo 360 degrees.
+If a or b is larger than 1000, Afterglow decreases both to 1000 or less, and keeps their ratio.
+
+Afterglow converts an OKLCH or LAB color to sRGB with 8 bits for each channel.
+A color outside sRGB gets the [gamut mapping of CSS Color 4](https://www.w3.org/TR/css-color-4/#css-gamut-mapping).
+This mapping decreases the chroma of the color, and it keeps almost the same lightness and hue.
+Kitty themes that use these forms work in Afterglow.
+Some of their colors are not the same as in Kitty: see [color escape codes](COMPATIBILITY.md#color-escape-codes-and-pointer-shapes).
+
+A color in `Colors` or in a theme has no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`.
+It also does not accept `transparent`, in any spelling.
+Afterglow ignores an alpha in an OKLCH or LAB color, such as `/ 0.5`, as Kitty does.
 
 ## Transparency
 

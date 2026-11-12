@@ -3,8 +3,8 @@
 
 // OKLCH and CIE LAB colours. The expected values come from the sample code
 // and the gamut mapping of CSS Color 4, which give the example colour of the
-// specification exactly. kitty 0.50 agrees inside sRGB, and differs where the
-// tests say so.
+// specification exactly. kitty 0.50 agrees on OKLCH inside sRGB. Its LAB
+// conversion differs, and the tests say where.
 
 #include <AfterglowProto/Color.h>
 
@@ -54,6 +54,8 @@ TEST(WideGamutColor, ColorsOutsideSrgbAreMappedAndNotClipped)
     EXPECT_EQ(parsed("oklch(0.7 0.4 25)"), Rgb({255, 86, 85}));
     // kitty: (239, 233, 0).
     EXPECT_EQ(parsed("oklch(0.9 0.3 110)"), Rgb({232, 232, 0}));
+    // kitty clips to the same colour here: the clipped colour is less than
+    // one just noticeable difference away, so CSS keeps it too.
     EXPECT_EQ(parsed("oklch(0.5 0.3 264)"), Rgb({0, 54, 255}));
     // kitty: pure red.
     EXPECT_EQ(parsed("lab(50 100 100)"), Rgb({245, 0, 13}));
@@ -87,12 +89,34 @@ TEST(WideGamutColor, ValuesOutsideTheirRangesAreBroughtIn)
     EXPECT_EQ(parsed("oklch(0.5 0.1 -260)"), Rgb({113, 100, 11}));
 }
 
+TEST(WideGamutColor, AHugeChromaIsBounded)
+{
+    // CSS gives (116, 99, 0) for C 1e100 too. Past 1e104 the cubes of the
+    // conversion overflow, and NaN must not count as inside sRGB (it gave
+    // black).
+    EXPECT_EQ(parsed("oklch(0.5 0.4 100)"), Rgb({116, 99, 0}));
+    EXPECT_EQ(parsed("oklch(0.5 1e200 100)"), Rgb({116, 99, 0}));
+    EXPECT_EQ(parsed("oklch(0.5 1.7e308 100)"), Rgb({116, 99, 0}));
+    // a and b of LAB keep their ratio. 1.5e308% is past the largest double,
+    // and gave a mid gray where 1.4e308% gave black.
+    const Rgb huge = parsed("lab(50 1e6 0)");
+    EXPECT_EQ(huge, Rgb({255, 255, 255}));
+    for (const char* spec : {"lab(50 1e308 0)", "lab(50 1.4e308% 0)", "lab(50 1.5e308% 0)"}) {
+        EXPECT_EQ(parsed(spec), huge) << spec;
+    }
+    // Inside the documented range nothing is bounded: this is C 1.93 in OKLCH.
+    EXPECT_EQ(parsed("lab(50 -125 -125)"), Rgb({0, 93, 90}));
+    EXPECT_EQ(parsed("lab(50 -100% -100%)"), Rgb({0, 93, 90}));
+}
+
 TEST(WideGamutColor, ReadsTheSpellingsOfKittyAndCss)
 {
     const Rgb want{113, 100, 11};
     for (const char* spec : {"OKLCH(0.5 0.1 100)", "Oklch(0.5,0.1,100)", "oklch( 0.5  0.1  100 )", "  oklch(0.5 0.1 100)\t",
                              "oklch(.5 .1 1e2)", "oklch(+0.5 0.1 100)", "oklch(50% 0.1 100)", "oklch(0.5, 0.1, 100)",
-                             "oklch(0.5 0.1 100deg)", "oklch(0.5 0.1 100DEG)"}) {
+                             "oklch(0.5 0.1 100deg)", "oklch(0.5 0.1 100DEG)",
+                             // Empty fields between commas, as kitty reads them.
+                             "oklch(,0.5,,0.1 100,)"}) {
         EXPECT_EQ(parsed(spec), want) << spec;
     }
     // The angle units of CSS.
@@ -105,20 +129,33 @@ TEST(WideGamutColor, ReadsTheSpellingsOfKittyAndCss)
     EXPECT_EQ(parsed("oklch(0.7 none 0)"), Rgb({158, 158, 158}));
     EXPECT_EQ(parsed("oklch(0.7 0 none)"), Rgb({158, 158, 158}));
     // Percentages as in CSS: C 100% is 0.4, and a and b 100% are 125. kitty
-    // drops the sign, so 40% of C is 40 there.
+    // reads a percentage of C as one of 1 (40% is 0.4), and a and b with the
+    // % ignored.
     EXPECT_EQ(parsed("oklch(0.7 40% 25)"), parsed("oklch(0.7 0.16 25)"));
     EXPECT_EQ(parsed("oklch(0.7 0.16 25)"), Rgb({242, 113, 106}));
     EXPECT_EQ(parsed("lab(50% 60% 32%)"), parsed("lab(50 75 40)"));
     EXPECT_EQ(parsed("lab(50 75 40)"), Rgb({232, 12, 58}));
 }
 
+TEST(WideGamutColor, AnAlphaIsReadAndIgnored)
+{
+    // As kitty 0.50 does: terminal colours have no alpha.
+    const Rgb want{113, 100, 11};
+    for (const char* spec : {"oklch(0.5 0.1 100 / 0.5)", "oklch(0.5 0.1 100/0.5)", "oklch(0.5 0.1 100 / 50%)",
+                             "oklch(0.5 0.1 100 / none)", "oklch(0.5 0.1 100 0.5)", "oklch(0.5,0.1,100,0.5)"}) {
+        EXPECT_EQ(parsed(spec), want) << spec;
+    }
+    EXPECT_EQ(parsed("lab(50 60 40 / 0)"), parsed("lab(50 60 40)"));
+}
+
 TEST(WideGamutColor, RefusesWhatIsNoColor)
 {
     for (const char* spec :
-         {"oklch(0.7 0.25)", "oklch(0.7 0.25 25 0)", "oklch(0.7 0.25 25 / 0.5)", "oklch(0.7 0.25 25 /0.5)",
-          "oklch(0.7 0.25 25)x", "oklch(0.7 0.25 25", "oklch()", "oklch", "oklch (0.7 0.25 25)", "oklab(0.5 0.1 0.1)",
+         {"oklch(0.7 0.25)", "oklch(0.7 0.25 25 /)", "oklch(0.7 0.25 / 25)", "oklch(0.7 0.25 25 / 0.5 / 1)",
+          "oklch(0.7 0.25 25 0.5 0.5)", "oklch(0.7 0.25 25 / 1deg)", "oklch(0.7 0.25 25 / x)", "oklch(/ 0.7 0.25 25)",
+          "oklch(0.7 0.25 +-25)", "oklch(0.7 0.25 25)x", "oklch(0.7 0.25 25", "oklch()", "oklch", "oklch (0.7 0.25 25)", "oklab(0.5 0.1 0.1)",
           "lch(50 30 20)", "oklch(0.7 0.25 25%)", "oklch(0.7deg 0.25 25)", "oklch(0.7 0.25deg 25)", "lab(50 60deg 40)",
-          "oklch(0.7 0.25 25px)", "oklch(nan 0 0)", "oklch(inf 0 0)", "oklch(1e999 0 0)", "oklch(0.7 0.25 2 5)",
+          "oklch(0.7 0.25 25px)", "oklch(nan 0 0)", "oklch(inf 0 0)", "oklch(1e999 0 0)",
           "oklch(0.7 0.25 --25)", "oklch(0.7 0.25 ++25)", "lab(a b c)", "(0.7 0.25 25)"}) {
         EXPECT_EQ(parsed(spec), Refused) << spec;
     }

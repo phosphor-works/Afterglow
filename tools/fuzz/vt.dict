@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # libFuzzer dictionary for afterglow_vtfuzz (-dict=tools/fuzz/vt.dict): the
-# introducers and protocol keywords that random mutation rarely reaches.
+# introducers and protocol keywords that random mutation rarely reaches. The
+# colour values also help afterglow_protofuzz reach the specs of its target 9.
 
 # Introducers and terminators
 "\x1b["
@@ -71,8 +72,6 @@
 "9;4;"
 "9;9;"
 "21;"
-"oklch(0.7 0.1 200)"
-"lab(50 60 40)"
 "22;"
 "52;c;"
 "66;s=2;"
@@ -103,3 +102,17 @@
 "q#0;2;100;0;0"
 "+q544E"
 "$qm"
+
+# Colour values (OSC 4, 10-12, 17, 19 and 21)
+"oklch(0.7 0.1 200)"
+"lab(50 60 40)"
+"oklch("
+"lab("
+"rgb:"
+"rgbi:"
+"none"
+"deg"
+"grad"
+"rad"
+"turn"
+" / "

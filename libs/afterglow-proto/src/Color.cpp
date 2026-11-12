@@ -10,9 +10,15 @@
 
 #include <AfterglowProto/Color.h>
 
+#include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <numbers>
+#include <string_view>
 
 namespace AfterglowProto {
 
@@ -97,7 +103,8 @@ bool inGamut(const Vec3& srgb)
     // Rounding in the matrices puts a colour on the edge a hair outside.
     constexpr double Tolerance = 1e-9;
     for (double v : srgb) {
-        if (v < -Tolerance || v > 1 + Tolerance) return false;
+        // Written so that NaN is outside.
+        if (!(v >= -Tolerance && v <= 1 + Tolerance)) return false;
     }
     return true;
 }
@@ -159,11 +166,6 @@ void store(const Vec3& srgb, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b)
     b = byte(srgb[2]);
 }
 
-double finite(double v)
-{
-    return std::isfinite(v) ? v : 0.0;
-}
-
 bool isSpace(char c)
 {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
@@ -193,7 +195,11 @@ bool parseValue(std::string_view token, double& value, Unit& unit)
         unit = Unit::Number;
         return true;
     }
-    if (token.starts_with('+')) token.remove_prefix(1);
+    if (token.starts_with('+')) {
+        token.remove_prefix(1);
+        // from_chars would take the '-' of "+-1".
+        if (token.starts_with('-')) return false;
+    }
     const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
     if (parsed.ec != std::errc{} || parsed.ptr == token.data() || !std::isfinite(value)) return false;
     const std::string_view suffix(parsed.ptr, std::size_t(token.data() + token.size() - parsed.ptr));
@@ -212,20 +218,36 @@ bool parseValue(std::string_view token, double& value, Unit& unit)
     return std::isfinite(value);
 }
 
-} // namespace
-
+/// An OKLCH colour (L 0-1, C, H in degrees) in 8-bit sRGB, with the gamut
+/// mapping. The values are finite.
 void oklchToSrgb(double l, double c, double h, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b)
 {
-    h = std::fmod(finite(h), 360.0);
+    // The gamut search takes a step for each halving of C, so a program could
+    // make each colour of an escape code cost hundreds of steps. A C past
+    // this is past every display, and no LAB colour with a and b inside
+    // +-125 comes near it.
+    constexpr double MaxChroma = 4;
+    h = std::fmod(h, 360.0);
     if (h < 0) h += 360.0;
-    store(gamutMap(std::clamp(finite(l), 0.0, 1.0), std::max(finite(c), 0.0), h), r, g, b);
+    store(gamutMap(std::clamp(l, 0.0, 1.0), std::clamp(c, 0.0, MaxChroma), h), r, g, b);
 }
 
+/// A CIE LAB colour (D50, L 0-100, as CSS has it) in 8-bit sRGB, with the
+/// same gamut mapping. The values are not NaN, but a and b can be infinite:
+/// a percentage of the largest double is.
 void labToSrgb(double l, double a, double bAxis, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b)
 {
-    l = std::clamp(finite(l), 0.0, 100.0);
-    a = finite(a);
-    bAxis = finite(bAxis);
+    l = std::clamp(l, 0.0, 100.0);
+    // The cubes below overflow for a or b past about 1e100. Scaling both
+    // keeps the hue, and the colour is far outside sRGB all the same.
+    constexpr double MaxAxis = 1000;
+    constexpr double Largest = std::numeric_limits<double>::max();
+    a = std::clamp(a, -Largest, Largest);
+    bAxis = std::clamp(bAxis, -Largest, Largest);
+    if (const double largest = std::max(std::abs(a), std::abs(bAxis)); largest > MaxAxis) {
+        a = a / largest * MaxAxis;
+        bAxis = bAxis / largest * MaxAxis;
+    }
     constexpr double Kappa = 24389.0 / 27;
     constexpr double Epsilon = 216.0 / 24389;
     const double f1 = (l + 16) / 116;
@@ -247,6 +269,8 @@ void labToSrgb(double l, double a, double bAxis, std::uint8_t& r, std::uint8_t& 
     oklchToSrgb(oklab[0], std::hypot(oklab[1], oklab[2]), hue, r, g, b);
 }
 
+} // namespace
+
 bool parseWideGamutColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b)
 {
     // Long enough for any spelling with spaces; a longer spec is no colour.
@@ -259,24 +283,32 @@ bool parseWideGamutColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g
     const bool oklch = equalsLower(name, "oklch");
     if (!oklch && !equalsLower(name, "lab")) return false;
     const std::string_view body = spec.substr(open + 1, spec.size() - open - 2);
-    // Three values apart by spaces or commas, as kitty reads them.
-    std::array<double, 3> values{};
-    std::array<Unit, 3> units{};
+    // Three values apart by spaces or commas, as kitty reads them, then an
+    // alpha as "/ 0.5" or a fourth value, which kitty ignores: terminal
+    // colours have none.
+    std::array<double, 4> values{};
+    std::array<Unit, 4> units{};
     std::size_t count = 0;
+    bool slash = false;
     std::size_t at = 0;
     while (at < body.size()) {
         if (isSpace(body[at]) || body[at] == ',') {
             ++at;
             continue;
         }
+        if (body[at] == '/') {
+            if (count != 3 || slash) return false;
+            slash = true;
+            ++at;
+            continue;
+        }
         std::size_t end = at;
-        while (end < body.size() && !isSpace(body[end]) && body[end] != ',') ++end;
-        // A fourth value, or the "/ alpha" of CSS, is no terminal colour.
-        if (count == 3 || !parseValue(body.substr(at, end - at), values[count], units[count])) return false;
+        while (end < body.size() && !isSpace(body[end]) && body[end] != ',' && body[end] != '/') ++end;
+        if (count == 4 || !parseValue(body.substr(at, end - at), values[count], units[count])) return false;
         ++count;
         at = end;
     }
-    if (count != 3) return false;
+    if (count == 4 ? units[3] == Unit::Angle : (count != 3 || slash)) return false;
     if (oklch) {
         // CSS: 100% of L is 1 and 100% of C is 0.4. A hue takes no percentage.
         if (units[0] == Unit::Angle || units[1] == Unit::Angle || units[2] == Unit::Percent) return false;

@@ -930,12 +930,12 @@ int run(QGuiApplication& app)
             popup.borderColor =
                 AfterglowRender::packRgba(Afterglow::Themes::derivedPopupBorder(options.defaultBackground, options.defaultForeground));
             if (parser.isSet(QStringLiteral("popup-border"))) {
-                const QColor border = QColor::fromString(parser.value(QStringLiteral("popup-border")));
-                if (!border.isValid()) {
+                const auto border = Afterglow::Themes::rgbFromName(parser.value(QStringLiteral("popup-border")));
+                if (!border) {
                     std::fprintf(stderr, "--popup-border must be a color\n");
                     return 1;
                 }
-                popup.borderColor = AfterglowRender::packRgba(std::uint8_t(border.red()), std::uint8_t(border.green()), std::uint8_t(border.blue()));
+                popup.borderColor = AfterglowRender::packRgba(*border);
             }
             popup.titleColor = AfterglowRender::packRgba(options.defaultForeground);
             popup.bidi = options.bidi;

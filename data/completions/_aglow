@@ -223,7 +223,7 @@ _aglow() {
                 '--place=[where to show the image]:WIDTHxHEIGHT@LEFTxTOP:' \
                 '--scale-up[scale small images up]' \
                 '--fit=[how to fit the screen]:fit:(width height both none)' \
-                '--background=[background colour]:colour:' \
+                '--background=[background color]:color:' \
                 '--mirror=[mirror the image]:mirror:(none horizontal vertical both)' \
                 '--clear[remove the images on the screen]' \
                 '--clear-all[remove every image]' \

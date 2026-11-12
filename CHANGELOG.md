@@ -60,8 +60,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - `light:NAME,dark:NAME` theme pairs that follow the desktop color scheme.
 - Search match and visual bell colors, set in `Colors` or by a theme.
 - A popup border color, set in `Colors` or by a theme. Without one, it is halfway from the background color to the text color. `Colors.popupDim` darkens the pane around a popup.
-- Colors as SVG names or in hex. A color in eight-digit hex is refused, because it does not say where the alpha is.
-- Colors in OKLCH and CIE LAB, such as `oklch(0.7 0.1 200)` and `lab(50 60 40)`, in `Colors`, in themes and in the color escape codes, as in Kitty. A color outside sRGB gets the gamut mapping of CSS Color 4.
+- Colors as X11 names, in hex, as `rgb:` and `rgbi:` values, and in OKLCH and CIE LAB, such as `oklch(0.7 0.1 200)` and `lab(50 60 40)`, which Kitty also reads. `Colors`, themes, OSC 4, 10 to 12, 17, 19 and 21 and `aglow icat --background` take them. A color outside sRGB gets the gamut mapping of CSS Color 4. A color in eight-digit hex is refused, because it does not say where the alpha is.
 
 ### Shell integration
 
