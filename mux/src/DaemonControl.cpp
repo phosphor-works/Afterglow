@@ -349,7 +349,7 @@ void Daemon::answerForwarded()
             const auto forward = id && *id > 0 ? m_forwards.find(std::uint64_t(*id)) : m_forwards.end();
             // Only the window that got the call answers it.
             if (forward == m_forwards.end() || forward->second.window != window->serial()) {
-                std::fprintf(stderr, "afterglow-mux: the window of session %s answered a call that it did not get\n",
+                std::fprintf(stderr, "aglow-mux: the window of session %s answered a call that it did not get\n",
                              window->session().c_str());
                 continue;
             }

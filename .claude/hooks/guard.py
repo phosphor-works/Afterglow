@@ -201,11 +201,13 @@ MSG_CTL = (
     'instance.'
 )
 MSG_MUX = (
-    "`afterglow mux`, `afterglow ctl --session`, `afterglow-mux` and `afterglow --mux-attach` reach the user's mux "
+    "`afterglow mux`, `afterglow ctl --session`, `aglow-mux` (`afterglow-mux` in an older build) and "
+    "`afterglow --mux-attach` reach the user's mux "
     "daemon, which holds the user's "
-    'terminal sessions. The daemon listens in $XDG_RUNTIME_DIR/afterglow-mux and in $XDG_STATE_HOME/afterglow-mux '
-    '(else ~/.local/state/afterglow-mux), and with the runtime directory /run/user/UID it starts in the systemd user '
-    'unit afterglow-mux.service. These sockets do not depend on the display, so WAYLAND_DISPLAY does not isolate them. '
+    'terminal sessions. The daemon listens in $XDG_RUNTIME_DIR/aglow-mux and in $XDG_STATE_HOME/aglow-mux '
+    '(else ~/.local/state/aglow-mux), and with the runtime directory /run/user/UID it starts in the systemd user '
+    'unit aglow-mux.service. A daemon of an older build, which the user may still run, uses afterglow-mux in each of '
+    'these names. These sockets do not depend on the display, so WAYLAND_DISPLAY does not isolate them. '
     'A window of a session ends the session when it closes. Name a '
     'private runtime directory and a private state directory under /tmp on the command '
     '(XDG_RUNTIME_DIR=/tmp/... XDG_STATE_HOME=/tmp/...), and kill the sessions that you made with the same '
@@ -217,7 +219,7 @@ MSG_MUX = (
     'directory above them (rm, unlink, rmdir, mv, shred, trash, gio, ln, find -delete or -exec, rsync --delete or '
     '--remove-source-files, and a removal under xargs or parallel on a line that names such a path): that ends or '
     'strands the sessions. `afterglow mux` alone, `afterglow mux --help` (-h, help), `afterglow mux server --help` '
-    '(-h) and `afterglow-mux --help` (-h, --version) connect to nothing.'
+    '(-h) and `aglow-mux --help` (-h, --version) connect to nothing.'
 )
 MSG_LAUNCH = (
     "This starts Afterglow on the user's own Wayland display: it opens a window on the user's desktop, or hands the "
@@ -944,7 +946,7 @@ def user_bases():
 
 
 def isolated_mux(wrappers):
-    """Whether an afterglow mux or afterglow-mux command reaches a daemon other than the user's. The daemon listens
+    """Whether an afterglow mux or aglow-mux command reaches a daemon other than the user's. The daemon listens
     on a socket in XDG_RUNTIME_DIR and on one in the state directory, and a client tries both, so neither may be one
     of user_bases(), the directories that mux_directories() protects. With the user's runtime directory the daemon
     also starts in the user's systemd unit. WAYLAND_DISPLAY plays no part. Only literal values count, as in
@@ -962,15 +964,18 @@ def isolated_mux(wrappers):
 
 # The words after afterglow mux that print the usage and connect to nothing (runMux in afterglow/src/control/Mux.cpp)
 MUX_HELP = {'-h', '--help', 'help'}
-# The one argument with which afterglow-mux prints and exits before it listens (main in mux/src/main.cpp).
+# The names of the daemon: aglow-mux, and afterglow-mux of an older build, which the user may still run with
+# its sessions. Both name its executable, its systemd unit and its socket directories.
+MUX_DAEMONS = ('aglow-mux', 'afterglow-mux')
+# The one argument with which aglow-mux prints and exits before it listens (main in mux/src/main.cpp).
 # --decode-images is left out on purpose: it is the daemon's own image decoder, which no session runs by hand.
 MUX_DAEMON_PRINTS = {'--version', '--help', '-h'}
 
 
 def reaches_mux(wrappers, word, args):
-    """Whether WORD ARGS runs afterglow mux or afterglow-mux against the user's mux daemon. afterglow mux alone
-    prints the usage, and so do afterglow mux server --help and afterglow-mux with one of MUX_DAEMON_PRINTS, unless
-    xargs or parallel adds the words of its input. Any other afterglow-mux counts, and so does afterglow
+    """Whether WORD ARGS runs afterglow mux or a daemon of MUX_DAEMONS against the user's mux daemon. afterglow mux
+    alone prints the usage, and so do afterglow mux server --help and the daemon with one of MUX_DAEMON_PRINTS,
+    unless xargs or parallel adds the words of its input. Any other run of the daemon counts, and so does afterglow
     --mux-attach, the hidden option of afterglow mux new and attach: its window attaches to the user's daemon
     whatever display it opens on, and afterglow ctl --session, which acts on a session through the daemon whatever
     AFTERGLOW_SOCKET names. afterglow mux --ssh reaches the daemon of another host, which nothing here isolates."""
@@ -991,7 +996,7 @@ def reaches_mux(wrappers, word, args):
         # directory does not isolate: the user's own, there.
         if any(a == '--ssh' or a.startswith('--ssh=') for a in args[1:]):
             return True
-    elif word != 'afterglow-mux':
+    elif word not in MUX_DAEMONS:
         return False
     elif len(args) == 1 and args[0] in MUX_DAEMON_PRINTS and not appended:
         return False
@@ -999,19 +1004,19 @@ def reaches_mux(wrappers, word, args):
 
 
 def mux_directories():
-    """The socket directories of the user's own mux daemon: afterglow-mux in each of user_bases()."""
-    return {os.path.join(base, 'afterglow-mux') for base in user_bases()}
+    """The socket directories of the user's own mux daemon: each name of MUX_DAEMONS in each of user_bases()."""
+    return {os.path.join(base, name) for base in user_bases() for name in MUX_DAEMONS}
 
 
 # Known limits of the mux rules. The guard reads one command line as text, so it cannot see:
 # - a path behind a shell variable that the same line sets (D=~/.local/state; rm -rf $D), or behind a command
-#   substitution (rm -rf "$(echo ~/.local/state)"): an expansion counts only when its text names afterglow-mux;
+#   substitution (rm -rf "$(echo ~/.local/state)"): an expansion counts only when its text names a daemon;
 # - a stop of the unit over D-Bus (busctl or dbus-send with StopUnit, KillUnit or the unit's own object);
 # - loginctl terminate-user or kill-user, which ends every process of the user, the Afterglow of this session too;
 # - a program that removes files itself (python3 -c "shutil.rmtree(...)");
-# - the program that find -exec {} runs, which is a file that find found (find build -name afterglow-mux -exec {} +);
+# - the program that find -exec {} runs, which is a file that find found (find build -name aglow-mux -exec {} +);
 # - a copy that replaces a socket or a lock file: cp -f, cp --remove-destination, install, tar or another archiver
-#   that extracts over the files (cp -f /tmp/x ~/.local/state/afterglow-mux/ID.sock);
+#   that extracts over the files (cp -f /tmp/x ~/.local/state/aglow-mux/ID.sock);
 # - the paths that xargs or parallel reads from a file or a pipe whose contents name them, when the line itself
 #   names no path there or above (cat list | xargs rm);
 # - the commands that parallel reads from its input (echo 'rm -rf ~/.local/state' | parallel).
@@ -1028,11 +1033,11 @@ RSYNC_DELETES = {'--del', '--delete', '--delete-before', '--delete-during', '--d
 def touches_mux(written, places, above=True):
     """Whether the path WRITTEN, read from any of PLACES, is in one of mux_directories(), is that directory, or, with
     ABOVE, is a directory above it (rm -r ~/.local/state). The shell expands $VAR and ~ from this environment and
-    globs from the file system. A path that still holds an expansion counts when it names afterglow-mux."""
+    globs from the file system. A path that still holds an expansion counts when it names a daemon of MUX_DAEMONS."""
     protected = mux_directories()
     path = os.path.expanduser(os.path.expandvars(written))
     if '$' in path or '`' in path:
-        return 'afterglow-mux' in path
+        return any(name in path for name in MUX_DAEMONS)
     bases = ['/'] if path.startswith('/') else [p for p in places if p is not UNKNOWN]
     for base in bases:
         joined = os.path.join(base, path)
@@ -1167,7 +1172,7 @@ SYSTEMCTL_ENDS = set('stop kill restart try-restart reload-or-restart try-reload
 # The units whose end ends the daemon: its own, the slice that systemd-run --user puts it in, and the root slice.
 # basic.target and default.target count too: the rule stays cautious for the targets that the units of the user
 # manager start after or for.
-MUX_UNITS = ('afterglow-mux.service', 'app.slice', '-.slice', 'basic.target', 'default.target')
+MUX_UNITS = ('aglow-mux.service', 'afterglow-mux.service', 'app.slice', '-.slice', 'basic.target', 'default.target')
 # The systemctl commands that end every unit of the manager
 SYSTEMCTL_ENDS_ALL = {'isolate', 'exit', 'halt', 'poweroff', 'reboot', 'kexec', 'soft-reboot', 'switch-root'}
 # The systemctl commands that start a unit, and the targets whose start ends the daemon: a service conflicts with
@@ -1290,8 +1295,8 @@ def argument_commands(wrappers, word, args):
     """(wrappers, command word, arguments) for each command that may run from the arguments of WORD: the command of
     each find -exec, -execdir, -ok and -okdir, the commands of parallel, then gdb --args, systemd-run, a debugger or
     a tracer the guard does not list. In those, only afterglow, aglow, a wrapper, a shell, eval, watch, gdb or
-    VAR=value starts one, so that an argument such as -name stays an argument, and cmake --target afterglow-mux
-    names a target. A command of TEXT_COMMANDS runs none: find -exec grep -l afterglow-mux {} + runs grep, and
+    VAR=value starts one, so that an argument such as -name stays an argument, and cmake --target aglow-mux
+    names a target. A command of TEXT_COMMANDS runs none: find -exec grep -l aglow-mux {} + runs grep, and
     parallel echo ::: systemctl runs echo. parallel adds the words of its input, or of its ::: lists, after its
     commands."""
     if word in TEXT_COMMANDS:
@@ -1440,10 +1445,10 @@ def gdb_launches(wrappers, args):
 
 
 def gdb_mux(wrappers, args):
-    """Whether gdb ARGS runs afterglow mux or afterglow-mux against the user's mux daemon. A command file can give
+    """Whether gdb ARGS runs afterglow mux or a daemon of MUX_DAEMONS against the user's mux daemon. A command file can give
     afterglow any arguments."""
     program, arguments, extra, runs, files = gdb_program(args)
-    if program not in ('afterglow', 'afterglow-mux') or not runs:
+    if program not in ('afterglow', *MUX_DAEMONS) or not runs:
         return False
     return reaches_mux(wrappers + extra, program, ['mux', ''] if files and program == 'afterglow' else arguments)
 

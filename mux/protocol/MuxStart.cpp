@@ -37,7 +37,7 @@ using AfterglowProto::printable;
 // The daemon of a client that just started it listens within this time.
 constexpr auto StartWait = std::chrono::seconds(5);
 // The unit of a daemon that the systemd user manager runs.
-constexpr const char* Unit = "afterglow-mux";
+constexpr const char* Unit = "aglow-mux";
 
 // Whether a daemon holds a socket: it takes the lock before it binds and
 // keeps it until it ends.
@@ -149,7 +149,7 @@ bool startDetached(const std::string& daemon, int reportFd, std::string* error)
     for (auto& entry : store) envp.push_back(entry.data());
     envp.push_back(nullptr);
     char* const args[] = {const_cast<char*>(daemon.c_str()), nullptr};
-    const std::string execFailed = "afterglow-mux: cannot run " + daemon + "\n";
+    const std::string execFailed = "aglow-mux: cannot run " + daemon + "\n";
 
     const pid_t child = ::fork();
     if (child < 0) {
@@ -183,15 +183,15 @@ bool startDetached(const std::string& daemon, int reportFd, std::string* error)
     pid_t reaped;
     while ((reaped = ::waitpid(child, &status, 0)) < 0 && errno == EINTR) { }
     if (reaped != child) {
-        *error = std::string("cannot start afterglow-mux: cannot wait for its starter: ") + std::strerror(errno);
+        *error = std::string("cannot start aglow-mux: cannot wait for its starter: ") + std::strerror(errno);
         return false;
     }
     if (WIFSIGNALED(status)) {
-        *error = "cannot start afterglow-mux: its starter was killed by signal " + std::to_string(WTERMSIG(status));
+        *error = "cannot start aglow-mux: its starter was killed by signal " + std::to_string(WTERMSIG(status));
         return false;
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        *error = "cannot start afterglow-mux: the second fork failed";
+        *error = "cannot start aglow-mux: the second fork failed";
         return false;
     }
     return true;
@@ -319,12 +319,12 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
             // The daemon of a unit that this command started and that still
             // runs holds its own locks: its error is in the journal.
             if (!(ours && unitLoaded()) && lockHeldElsewhere(sockets)) {
-                *error = "afterglow-mux did not start: another afterglow-mux holds a socket and does not answer";
+                *error = "aglow-mux did not start: another aglow-mux holds a socket and does not answer";
             } else if (unitProperty("ActiveState") == "deactivating") {
-                *error = std::string("afterglow-mux did not start: the daemon of ") + Unit
+                *error = std::string("aglow-mux did not start: the daemon of ") + Unit
                     + ".service is ending. Try again when it has ended";
             } else {
-                *error = std::string("afterglow-mux did not start: see journalctl --user -u ") + Unit;
+                *error = std::string("aglow-mux did not start: see journalctl --user -u ") + Unit;
             }
             return {};
         }
@@ -357,11 +357,11 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
             *error = printable(reason) + ", which does not answer";
             break;
         case Report::State::Ended:
-            *error = "afterglow-mux ended before it listened";
+            *error = "aglow-mux ended before it listened";
             break;
         case Report::State::Listening:
         case Report::State::TimedOut:
-            *error = "afterglow-mux did not start: no daemon answers on " + paths(sockets);
+            *error = "aglow-mux did not start: no daemon answers on " + paths(sockets);
             break;
         }
     }

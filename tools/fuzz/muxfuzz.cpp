@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// libFuzzer target for the readers of the attach stream of afterglow-mux
+// libFuzzer target for the readers of the attach stream of aglow-mux
 // (mux/protocol): what a window reads from the daemon and what the daemon
 // reads from a window. A file of its own: mux/ is GPL-3.0-or-later, and the
 // other targets are not. The first byte picks the reader. The rest is its

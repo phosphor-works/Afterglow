@@ -32,7 +32,7 @@ The build compiles zlib-ng, xxHash, libpng, libjpeg-turbo and libwebp from their
 These are C sources, so the build needs the C compiler.
 It does not use the copies that the system has.
 The libjpeg-turbo archive also holds libspng and zlib, for image files of its own API.
-`aglow` and `afterglow-mux` do not use them, but they are in the library that the build links.
+`aglow` and `aglow-mux` do not use them, but they are in the library that the build links.
 The notice of libjpeg-turbo covers them, and a fix of either comes with a release of libjpeg-turbo.
 
 | Optional software | Function | Result when it is missing |
@@ -43,7 +43,7 @@ The notice of libjpeg-turbo covers them, and a fix of either comes with a releas
 | KF6 GlobalAccel | Registers the quick terminal shortcut with KDE global shortcuts | The desktop portal registers the shortcut. |
 | `qqc2-desktop-style` | Draws tabs, menus and prompts in the Plasma style | The controls use the Fusion style. |
 | `bash-completion` | Loads the Bash completions of `afterglow` and `aglow` | Bash does not complete `afterglow` and `aglow` arguments. |
-| NASM | Builds the SIMD code of libjpeg-turbo on x86-64 computers | `aglow` and `afterglow-mux` decode JPEG images more slowly. The configuration says so. |
+| NASM | Builds the SIMD code of libjpeg-turbo on x86-64 computers | `aglow` and `aglow-mux` decode JPEG images more slowly. The configuration says so. |
 | Qt Image Formats | Decodes WebP images that a program shows in a pane outside a session | Such a pane does not show WebP images. A session pane shows them. |
 | Python 3 (3.9 or later for the tests of `aglow`) | Runs the Python tests in CTest | These tests are not added to CTest. The configuration names the tests of `aglow` that it leaves out. With `AFTERGLOW_NATIVE_TESTS=ON`, the configuration stops with an error. |
 
@@ -58,9 +58,9 @@ The first configuration downloads source archives. It needs network access one t
 | valijson | `../PlasmaZones/cmake/PhosphorDependencies.cmake` | Checks Phosphor JSON files against their schemas |
 | zlib-ng | `cmake/AfterglowDependencies.cmake` | Compresses and decompresses images and file transfers |
 | xxHash | `cmake/AfterglowDependencies.cmake` | Calculates the block hashes of delta file transfers |
-| libpng | `cmake/AfterglowDependencies.cmake` | Decodes PNG images in `aglow` and `afterglow-mux` |
-| libjpeg-turbo | `cmake/AfterglowDependencies.cmake` | Decodes JPEG images in `aglow` and `afterglow-mux` |
-| libwebp | `cmake/AfterglowDependencies.cmake` | Decodes WebP images and animations in `aglow` and `afterglow-mux` |
+| libpng | `cmake/AfterglowDependencies.cmake` | Decodes PNG images in `aglow` and `aglow-mux` |
+| libjpeg-turbo | `cmake/AfterglowDependencies.cmake` | Decodes JPEG images in `aglow` and `aglow-mux` |
+| libwebp | `cmake/AfterglowDependencies.cmake` | Decodes WebP images and animations in `aglow` and `aglow-mux` |
 
 CMake checks each archive against the SHA-256 hash in its pin file.
 The archives go into the CPM cache.
@@ -243,7 +243,7 @@ The installation includes the executable, desktop entry, AppStream metadata, ico
 It also includes the shell integration scripts, the API declarations, the examples and the license texts.
 It also includes the shell completions for Bash, Zsh and Fish.
 It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions.
-It installs the [mux daemon](MUX.md) `afterglow-mux` in the same directory as `afterglow`, because `afterglow mux` runs it from there.
+It installs the [mux daemon](MUX.md) `aglow-mux` in the same directory as `afterglow`, because `afterglow mux` runs it from there.
 The Fish completions need Fish 4 or later.
 The license notices of the third-party code in the binaries go in `share/licenses/afterglow`:
 
@@ -251,18 +251,18 @@ The license notices of the third-party code in the binaries go in `share/license
 | --- | --- | --- |
 | `LICENSE.zlib-ng` | The notice of zlib-ng, which `afterglow` also contains | Always |
 | `LICENSE.xxHash` | The notice of xxHash, which `afterglow` also contains | Always |
-| `LICENSE.libpng` | The notice of libpng, which `afterglow-mux` also contains | Always |
-| `LICENSE.libjpeg-turbo` | The notice of libjpeg-turbo, which `afterglow-mux` also contains | Always |
+| `LICENSE.libpng` | The notice of libpng, which `aglow-mux` also contains | Always |
+| `LICENSE.libjpeg-turbo` | The notice of libjpeg-turbo, which `aglow-mux` also contains | Always |
 | `README.ijg` | The license of the Independent JPEG Group, which the notice of libjpeg-turbo names | Always |
-| `LICENSE.libwebp` | The notice of libwebp, which `afterglow-mux` also contains | Always |
+| `LICENSE.libwebp` | The notice of libwebp, which `aglow-mux` also contains | Always |
 | `PATENTS.libwebp` | The patent grant of libwebp | Always |
-| `NOTICE.IJG` | The statement that `aglow` and `afterglow-mux` are based in part on the work of the Independent JPEG Group | Always |
+| `NOTICE.IJG` | The statement that `aglow` and `aglow-mux` are based in part on the work of the Independent JPEG Group | Always |
 | `LICENSE.Luau` and `LICENSE.Lua` | The notices of Luau and of Lua, which the scripts of `afterglow` run with | Unless the build uses the system's Luau (`PLASMAZONES_SYSTEM_LUAU`) |
 | `LICENSE.valijson` | The notice of valijson, which `afterglow` checks JSON files with | Unless the build uses the system's valijson (`PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON`) |
 | `LICENSE.glibc` | The notice of the GNU C Library, with the steps to link `aglow` again with another C library | When `aglow` is static |
 | `LICENSE.libstdc++` | The notice of libstdc++ and libgcc, with the GCC Runtime Library Exception | When `aglow` is static |
 
-`aglow` and `afterglow-mux` are based in part on the work of the Independent JPEG Group.
+`aglow` and `aglow-mux` are based in part on the work of the Independent JPEG Group.
 A static `aglow` contains parts of glibc, which is LGPL-2.1-or-later.
 The build installs `LICENSE.glibc` and `LICENSE.libstdc++` only when the C library is glibc and the C++ library is libstdc++. With another library, the configuration writes a warning, and its notice is the packager's to add.
 A static `aglow` loads at a random address when the C library supports it (`-static-pie`).

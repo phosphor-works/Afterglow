@@ -11,7 +11,7 @@
 
 namespace Afterglow {
 
-/// The way to the mux daemon of @p host: `afterglow-mux proxy` there, which
+/// The way to the mux daemon of @p host: `aglow-mux proxy` there, which
 /// ssh runs over the connection that `afterglow ssh` shares with the host.
 /// Nothing, with @p error, when ssh cannot read the destination.
 std::optional<AfterglowMux::Route> muxRoute(const QString& host, QString* error);

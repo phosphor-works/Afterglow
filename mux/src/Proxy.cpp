@@ -135,7 +135,7 @@ int runProxy(bool start)
     std::signal(SIGPIPE, SIG_IGN);
     const AfterglowProto::MuxSockets sockets = AfterglowProto::muxSockets();
     if (sockets.candidates.empty()) {
-        std::fprintf(stderr, "afterglow-mux proxy: %s\n", sockets.error.c_str());
+        std::fprintf(stderr, "aglow-mux proxy: %s\n", sockets.error.c_str());
         return 1;
     }
     std::string error;
@@ -143,7 +143,7 @@ int runProxy(bool start)
     if (start) {
         const std::string daemon = ownPath();
         if (daemon.empty()) {
-            std::fprintf(stderr, "afterglow-mux proxy: cannot find its own executable\n");
+            std::fprintf(stderr, "aglow-mux proxy: cannot find its own executable\n");
             return 1;
         }
         reached = connectOrStart(sockets, daemon, &error);
@@ -152,13 +152,13 @@ int runProxy(bool start)
     }
     if (!reached.connection) {
         if (error.empty()) return ProxyNoDaemon;
-        std::fprintf(stderr, "afterglow-mux proxy: %s\n", error.c_str());
+        std::fprintf(stderr, "aglow-mux proxy: %s\n", error.c_str());
         return 1;
     }
     AfterglowProto::IpcConnection::Error releaseError;
     const int socket = reached.connection->release(&releaseError);
     if (socket < 0) {
-        std::fprintf(stderr, "afterglow-mux proxy: %s\n", releaseError.message.c_str());
+        std::fprintf(stderr, "aglow-mux proxy: %s\n", releaseError.message.c_str());
         return 1;
     }
     const int status = bridge(socket);

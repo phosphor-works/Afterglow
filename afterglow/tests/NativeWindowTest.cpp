@@ -11206,7 +11206,7 @@ TEST_F(NativeWindow, ATabDraggedOutOfASessionsWindowBecomesANewSession) {
     EXPECT_TRUE(waitFor([&] { return MuxTest::names(daemon.sessions()) == std::vector<std::string>{"keep"}; }, 5000));
 }
 
-// A window shows a session of another host through `afterglow-mux proxy`,
+// A window shows a session of another host through `aglow-mux proxy`,
 // which a fake ssh runs here against the test's own daemon, and a new tab of
 // that window starts there.
 TEST_F(NativeWindow, AWindowShowsASessionOfAnotherHost) {

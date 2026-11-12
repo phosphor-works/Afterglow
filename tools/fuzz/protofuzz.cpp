@@ -21,7 +21,7 @@
 //     written again
 //  10 OSC 24569 strings (oscPayload, isQuery, parseReply), and the answer
 //     read written again as the pane's reply
-//  11 phosphor-ipc request lines of afterglow-mux: each message parsed as a
+//  11 phosphor-ipc request lines of aglow-mux: each message parsed as a
 //     request, and the whole input as the stream of one connection, read by
 //     the server side (IpcServerConnection) in parts
 

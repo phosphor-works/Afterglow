@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// libFuzzer target for the image decoders of aglow and afterglow-mux
+// libFuzzer target for the image decoders of aglow and aglow-mux
 // (libs/afterglow-image), called in this process as their decoder children
 // call them, so that the sanitizers see each read and write of the GIF and
 // BMP readers, of the code around libpng, libjpeg-turbo and libwebp, and of
 // the three codecs, which a fuzz build instruments too. It also checks what
-// Decode.h promises about the result. aglow and afterglow-mux decode in a
+// Decode.h promises about the result. aglow and aglow-mux decode in a
 // child process with limits on its memory and CPU time. This target bounds
 // the work by the size instead: a canvas of at most 2^20 pixels (4 MiB of
 // RGBA), and 64 frames. The work of a GIF frame is bounded by its canvas and

@@ -95,7 +95,7 @@ include(cmake/AfterglowDependencies.cmake)
 
 option(AFTERGLOW_BUILD_TOOLS "Build developer tools: benchmarks, afterglow_renderpng and the headless conformance host" OFF)
 option(AFTERGLOW_BUILD_AGLOW "Build aglow, the static client of the Kitty protocols and of script commands (no Qt). Without it, afterglow has no run, transfer, dnd, icat or clipboard command" ON)
-option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core, the protocol library, the image decoders and the attach stream of afterglow-mux (clang for C and C++)" OFF)
+option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core, the protocol library, the image decoders and the attach stream of aglow-mux (clang for C and C++)" OFF)
 option(AFTERGLOW_BUILD_VTDIFF "Build afterglow_vtdiff, which compares the terminal core with libghostty-vt (needs libghostty-vt in CMAKE_PREFIX_PATH)" OFF)
 if(AFTERGLOW_BUILD_FUZZERS)
     # The instrumentation of the fuzz targets and of the third-party code
@@ -116,9 +116,9 @@ endif()
 add_subdirectory(libs/afterglow-proto)  # protocol formats, terminal and client side: transfer, drag and drop, images, clipboard, the phosphor-ipc client and server (no Qt)
 add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, screen, Unicode, input encoding (no Qt)
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
-add_subdirectory(libs/afterglow-image)  # image decoders of aglow and afterglow-mux, with libpng, libjpeg-turbo and libwebp built in (no Qt)
+add_subdirectory(libs/afterglow-image)  # image decoders of aglow and aglow-mux, with libpng, libjpeg-turbo and libwebp built in (no Qt)
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas
-add_subdirectory(mux)                   # afterglow-mux, the session daemon, and the protocol that afterglow shares with it (no Qt)
+add_subdirectory(mux)                   # aglow-mux, the session daemon, and the protocol that afterglow shares with it (no Qt)
 add_subdirectory(afterglow)             # the application
 if(AFTERGLOW_BUILD_AGLOW)
     add_subdirectory(tools/aglow)       # after the application: it goes next to its executable

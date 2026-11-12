@@ -250,7 +250,7 @@ _afterglow_mux() {
             return
         fi
         commands=(
-            'server:run afterglow-mux in the foreground'
+            'server:run aglow-mux in the foreground'
             'new:create a session'
             'attach:show a session in a window'
             'detach:close the window of a session, and keep the session'

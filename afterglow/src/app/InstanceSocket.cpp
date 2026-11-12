@@ -32,7 +32,7 @@ std::string lockPath(const QString& socket)
     return QFile::encodeName(socket + QStringLiteral(".lock")).toStdString();
 }
 
-// The lock on @p socket's lock file, as afterglow-mux takes the lock of its
+// The lock on @p socket's lock file, as aglow-mux takes the lock of its
 // sockets: AfterglowProto::LockHeld while another holder has it,
 // AfterglowProto::LockFailed when the file cannot be opened or locked.
 int lockSocket(const QString& socket)

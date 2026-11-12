@@ -29,7 +29,7 @@ bool built();
 /// Whether @p command is the name of one of Commands.
 bool handles(const char* command);
 /// The program @p name in the directory of this executable: the aglow or
-/// afterglow-mux of the same build or package, never another program of
+/// aglow-mux of the same build or package, never another program of
 /// that name on PATH. Empty with @p error when this executable cannot be
 /// found.
 std::string siblingExecutable(const char* name, std::string* error);
