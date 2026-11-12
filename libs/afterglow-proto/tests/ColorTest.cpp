@@ -91,9 +91,9 @@ TEST(WideGamutColor, ValuesOutsideTheirRangesAreBroughtIn)
 
 TEST(WideGamutColor, AHugeChromaIsBounded)
 {
-    // CSS gives (116, 99, 0) for C 1e100 too. Past 1e104 the cubes of the
-    // conversion overflow, and NaN must not count as inside sRGB (it gave
-    // black).
+    // CSS gives (116, 99, 0) for C 1e100 too. Past about 1e103 the cubes of
+    // the conversion overflow, and NaN must not count as inside sRGB (it
+    // gave black).
     EXPECT_EQ(parsed("oklch(0.5 0.4 100)"), Rgb({116, 99, 0}));
     EXPECT_EQ(parsed("oklch(0.5 1e200 100)"), Rgb({116, 99, 0}));
     EXPECT_EQ(parsed("oklch(0.5 1.7e308 100)"), Rgb({116, 99, 0}));
@@ -139,7 +139,8 @@ TEST(WideGamutColor, ReadsTheSpellingsOfKittyAndCss)
 
 TEST(WideGamutColor, AnAlphaIsReadAndIgnored)
 {
-    // As kitty 0.50 does: terminal colours have no alpha.
+    // As kitty 0.50 does: terminal colours have no alpha. CSS also allows
+    // no space around the '/', which kitty refuses.
     const Rgb want{113, 100, 11};
     for (const char* spec : {"oklch(0.5 0.1 100 / 0.5)", "oklch(0.5 0.1 100/0.5)", "oklch(0.5 0.1 100 / 50%)",
                              "oklch(0.5 0.1 100 / none)", "oklch(0.5 0.1 100 0.5)", "oklch(0.5,0.1,100,0.5)"}) {

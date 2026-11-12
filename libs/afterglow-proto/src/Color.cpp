@@ -238,7 +238,7 @@ void oklchToSrgb(double l, double c, double h, std::uint8_t& r, std::uint8_t& g,
 void labToSrgb(double l, double a, double bAxis, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b)
 {
     l = std::clamp(l, 0.0, 100.0);
-    // The cubes below overflow for a or b past about 1e100. Scaling both
+    // The cubes below overflow for a or b past about 1e105. Scaling both
     // keeps the hue, and the colour is far outside sRGB all the same.
     constexpr double MaxAxis = 1000;
     constexpr double Largest = std::numeric_limits<double>::max();

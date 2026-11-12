@@ -409,24 +409,36 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
             count(*target ? Assigned::Set : Assigned::Invalid, section);
         }
     } else {
-        // Ghostty writes "key = value"; kitty "key value", where a value can
-        // be "oklch(0.7 0.1 200)" with spaces. A tail glued to its ')' makes
-        // the whole word the value, so that it is reported as no colour.
+        // Ghostty writes "key = value"; kitty "key value", where the value is
+        // the rest of the line ("dark slate gray", "oklch(0.7 0.1 200)").
         static const QRegularExpression Ghostty(QStringLiteral("^([\\w-]+)\\s*=\\s*(.*)$"));
-        static const QRegularExpression Kitty(QStringLiteral("^([\\w-]+)\\s+(\\w+\\([^)]*\\)(?=\\s|$)|\\S+)"));
+        static const QRegularExpression Kitty(QStringLiteral("^([\\w-]+)\\s+(.+)$"));
+        // A kitty value with text after it still counts by its first word,
+        // or by its "name(...)": a tail glued to the ')' leaves only the part
+        // before the first space, which is no colour.
+        static const QRegularExpression FirstWord(QStringLiteral("^(\\w+\\([^)]*\\)(?=\\s|$)|\\S+)"));
         for (const QByteArray& raw : text.split('\n')) {
             const QString line = QString::fromUtf8(raw).trimmed();
             if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
                 continue;
             }
             QRegularExpressionMatch m = Ghostty.match(line);
-            if (!m.hasMatch()) {
+            const bool kitty = !m.hasMatch();
+            if (kitty) {
                 m = Kitty.match(line);
             }
             if (!m.hasMatch()) {
                 continue;
             }
-            count(assign(theme, m.captured(1), m.captured(2).trimmed()), m.captured(1));
+            const QString key = m.captured(1);
+            const QString value = m.captured(2).trimmed();
+            Assigned assigned = assign(theme, key, value);
+            if (kitty && assigned == Assigned::Invalid) {
+                if (const auto word = FirstWord.match(value); word.hasMatch() && word.captured(1) != value) {
+                    assigned = assign(theme, key, word.captured(1));
+                }
+            }
+            count(assigned, key);
         }
     }
     if (found == 0) {

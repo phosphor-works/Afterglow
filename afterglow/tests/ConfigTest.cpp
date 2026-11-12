@@ -271,7 +271,8 @@ TEST(Themes, ReadsOklchAndLabInKittyAndJsonThemes)
                                      "color1     oklch(0.7, 0.25, 25)    \n"
                                      "color2 #00ff00\n"
                                      "color3 oklch(0.5 0.1 100) # a comment\n"
-                                     "color4 oklch(0.5 0.1 100)x\n",
+                                     "color4 oklch(0.5 0.1 100)x\n"
+                                     "color5 dark slate gray\n",
                                      nullptr, nullptr, &invalid);
     ASSERT_TRUE(kitty);
     EXPECT_TRUE(kitty->foreground == Rgb(205, 231, 199));
@@ -279,6 +280,8 @@ TEST(Themes, ReadsOklchAndLabInKittyAndJsonThemes)
     EXPECT_TRUE(kitty->palette[1] == Rgb(255, 86, 85));
     EXPECT_TRUE(kitty->palette[2] == Rgb(0, 255, 0));
     EXPECT_TRUE(kitty->palette[3] == Rgb(113, 100, 11));
+    // kitty reads the rest of the line, so a name can have spaces.
+    EXPECT_TRUE(kitty->palette[5] == Rgb(47, 79, 79));
     // A tail glued to the ')' is no colour, as "#ff0000x" is none.
     EXPECT_FALSE(kitty->palette[4]);
     EXPECT_EQ(invalid, QStringList{QStringLiteral("color4")});
@@ -342,6 +345,19 @@ TEST(Themes, EightDigitHexIsNotAColour)
 {
     // Qt reads eight digits as #AARRGGBB; these colours have no alpha.
     EXPECT_FALSE(Themes::isColorName(QStringLiteral("#1e1e2eff")));
+    EXPECT_TRUE(Themes::isColorName(QStringLiteral("#1e1e2e")));
+    QStringList ignored;
+    QStringList invalid;
+    const auto theme = Themes::parse(R"({"background": "#101010", "foreground": "#1e1e2eff"})", nullptr, &ignored, &invalid);
+    ASSERT_TRUE(theme);
+    EXPECT_FALSE(theme->foreground);
+    // A key Afterglow uses, with a value it cannot: not an unused key.
+    EXPECT_TRUE(ignored.isEmpty());
+    EXPECT_EQ(invalid, QStringList{QStringLiteral("foreground")});
+}
+
+TEST(Themes, ReadsColorForms)
+{
     EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#1e1e2e")) == Rgb(0x1e, 0x1e, 0x2e));
     // White, as in CSS and kitty, where the escape codes read f0f0f0.
     EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#fff")) == Rgb(255, 255, 255));
@@ -352,6 +368,7 @@ TEST(Themes, EightDigitHexIsNotAColour)
     EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("green")) == Rgb(0, 255, 0));
     EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("Gray")) == Rgb(190, 190, 190));
     EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("dark slate gray")) == Rgb(47, 79, 79));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("teal")));
     EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("rgb:ff/80/00")) == Rgb(255, 128, 0));
     EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("rgbi:1/0/0")) == Rgb(255, 0, 0));
     // White space around a colour does not count, in every form.
@@ -359,14 +376,6 @@ TEST(Themes, EightDigitHexIsNotAColour)
     EXPECT_TRUE(Themes::rgbFromName(QStringLiteral(" red ")) == Rgb(255, 0, 0));
     EXPECT_FALSE(Themes::isColorName(QString()));
     EXPECT_FALSE(Themes::isColorName(QStringLiteral("#12345")));
-    QStringList ignored;
-    QStringList invalid;
-    const auto theme = Themes::parse(R"({"background": "#101010", "foreground": "#1e1e2eff"})", nullptr, &ignored, &invalid);
-    ASSERT_TRUE(theme);
-    EXPECT_FALSE(theme->foreground);
-    // A key Afterglow uses, with a value it cannot: not an unused key.
-    EXPECT_TRUE(ignored.isEmpty());
-    EXPECT_EQ(invalid, QStringList{QStringLiteral("foreground")});
 }
 
 TEST(Themes, RejectsFilesWithoutColours)

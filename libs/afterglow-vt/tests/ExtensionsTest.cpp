@@ -754,7 +754,7 @@ TEST(Extensions, OklchAndLabColorsInTheColorEscapeCodes)
     EXPECT_EQ(*t.selectionBackground(), (Rgb{54, 122, 205}));
     ASSERT_NE(t.selectionForeground(), nullptr);
     EXPECT_EQ(*t.selectionForeground(), (Rgb{205, 231, 199}));
-    // OSC 21 reads a colour only for a key that sets one, and the opacity
+    // OSC 21 sets cursor_text, and a transparent colour with the opacity
     // after the ')'.
     t.feed("\x1b]21;cursor_text=lab(50 0 -50);transparent_background_color2=oklch(0.5 0.1 100)@0.25\x07");
     ASSERT_NE(t.cursorTextColor(), nullptr);

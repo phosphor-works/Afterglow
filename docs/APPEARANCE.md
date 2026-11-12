@@ -226,23 +226,31 @@ A color in `Colors` or in a theme has one of these forms:
 
 | Form | Example | Values |
 | --- | --- | --- |
-| A hexadecimal color | `#1e1e2e`, `#fff` | `#rgb`, `#rrggbb`, `#rrrgggbbb` or `#rrrrggggbbbb`. `#fff` is white. A theme can leave out the `#` of six digits. |
-| An X11 color name | `red`, `dark slate gray` | A name from the X11 color list, in any mix of upper and lower case. |
+| A hexadecimal color | `#1e1e2e`, `#fff` | `#rgb`, `#rrggbb`, `#rrrgggbbb` or `#rrrrggggbbbb`. `#fff` is white. A theme, but not `Colors`, can leave out the `#` of six digits. |
+| An X11 color name | `red`, `dark slate gray` | A name from the X11 color list that Kitty reads, in any mix of upper and lower case. Newer CSS names, such as `teal` and `lime`, are not in it. |
 | `rgb:r/g/b` | `rgb:ff/80/00` | 1 to 4 hexadecimal digits for each channel. |
 | `rgbi:r/g/b` | `rgbi:1/0.5/0` | A number from 0 to 1 for each channel. |
-| `oklch(L C H)` | `oklch(0.7 0.1 200)` | L from 0 to 1, or 0% to 100%. C from 0 to about 0.4, or a percentage of 0.4. H in degrees, or with the unit `deg`, `rad`, `grad` or `turn`. |
-| `lab(L a b)` | `lab(50 60 40)` | CIE LAB with a D50 white point. L from 0 to 100, or 0% to 100%. a and b from about -125 to 125, or a percentage of 125. |
+| `oklch(L C H)` | `oklch(0.7 0.1 200)` | L is the lightness, C is the chroma and H is the hue. |
+| `lab(L a b)` | `lab(50 60 40)` | CIE LAB with a D50 white point. L is the lightness. a goes from green to red, and b from blue to yellow. |
 
 A Konsole color scheme or `kdeglobals` can also write `R,G,B`, with each part from 0 to 255.
+A part outside this range makes the color invalid. Afterglow ignores a fourth part, which is an alpha.
 Afterglow ignores spaces before and after a color.
 
 [OKLCH](https://www.w3.org/TR/css-color-4/#ok-lab) and [CIE LAB](https://www.w3.org/TR/css-color-4/#cie-lab) are color spaces from CSS Color 4.
 A step of the same size in their values looks like a change of about the same size.
-L is the lightness, C is the chroma (how much color there is) and H is the hue.
+The chroma is how much color there is.
 The three values of `oklch` and `lab` can have spaces or commas between them. The value `none` is 0.
-A value of L outside its range becomes the nearest limit.
-A negative C becomes 0, and a C larger than 4 becomes 4. H counts modulo 360 degrees.
-If a or b is larger than 1000, Afterglow decreases both to 1000 or less, and keeps their ratio.
+These are the ranges of the values:
+
+| Value | Range | Outside the range |
+| --- | --- | --- |
+| `rgbi` channel | 0 to 1 | The nearest limit. |
+| `oklch` L | 0 to 1, or 0% to 100% | The nearest limit. |
+| `oklch` C | 0 to about 0.4, or a percentage of 0.4 | A negative C is 0. A C larger than 4 is 4. |
+| `oklch` H | Degrees, or a number with the unit `deg`, `rad`, `grad` or `turn` | H counts modulo 360 degrees. |
+| `lab` L | 0 to 100, or 0% to 100% | The nearest limit. |
+| `lab` a and b | About -125 to 125, or a percentage of 125 | If a or b is outside -1000 to 1000, Afterglow decreases both until the larger is 1000, and keeps their ratio. |
 
 Afterglow converts an OKLCH or LAB color to sRGB with 8 bits for each channel.
 A color outside sRGB gets the [gamut mapping of CSS Color 4](https://www.w3.org/TR/css-color-4/#css-gamut-mapping).
@@ -252,7 +260,7 @@ Some of their colors are not the same as in Kitty: see [color escape codes](COMP
 
 A color in `Colors` or in a theme has no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`.
 It also does not accept `transparent`, in any spelling.
-Afterglow ignores an alpha in an OKLCH or LAB color, such as `/ 0.5`, as Kitty does.
+Afterglow ignores an alpha in an OKLCH or LAB color, written as `/ 0.5` or as a fourth value, as Kitty does.
 
 ## Transparency
 

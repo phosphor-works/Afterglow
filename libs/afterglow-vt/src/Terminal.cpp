@@ -4761,8 +4761,9 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
         const auto value = reset ? std::string_view{} : field.substr(equal + 1);
         const bool query = value == "?";
         const auto at = value.find('@');
-        // Parsed only for a key that sets a colour: an OKLCH value costs a
-        // gamut search, and a sequence can hold millions of fields.
+        // Parsed only for a key that sets a colour: a query, a reset or an
+        // unknown key has no use for it, and an OKLCH value costs a gamut
+        // search.
         Rgb parsed;
         const auto valid = [&] { return parseColorSpec(value.substr(0, at), parsed); };
         int number = -1;

@@ -242,6 +242,7 @@ Each update is atomic and uses one effect. Results include `data.panes`.
 
 Numbers must be finite. Integer parameters require integers. Boolean parameters require booleans.
 Colors require valid Qt color strings, such as `#ff0077`.
+Their names are the SVG names of Qt, not the X11 names of [`Colors`](APPEARANCE.md#color-values): `green` is `#008000` here.
 An eight-digit color puts alpha first: `#AARRGGBB`, not `#RRGGBBAA`.
 Unknown names, unsupported types or slots, and values outside the range reject the complete update.
 Phosphor validates metadata and ranges. Script values are not clamped.

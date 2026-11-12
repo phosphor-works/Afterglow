@@ -353,6 +353,14 @@ def main():
         check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [clear, blue], err, sent and pixels(sent[0]))
         print("GIF canvas that starts transparent, in RGB order: passed", flush=True)
 
+        # --background fills what is transparent. "#fff" is white, as in kitten icat and CSS (the
+        # escape codes read it as f0f0f0), and OKLCH comes out in sRGB.
+        for spec, under in (("#fff", (255, 255, 255, 255)), ("oklch(0.5 0.1 100)", (113, 100, 11, 255))):
+            code, sent, err = show("background.gif", gif(2, 1, 2, [{"rect": (0, 0, 1, 1), "indices": [0]}]),
+                                   "--background=" + spec)
+            check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [red, under], spec, err, sent and pixels(sent[0]))
+        print("--background as kitten icat reads it: passed", flush=True)
+
         # Disposal 3 restores the canvas from before the frame, 2 clears the frame's rectangle, and
         # a graphic control extension applies to the next frame only: the third frame's makes index 3
         # transparent, and the last frame, with none, paints index 3 white over the red pixel.
