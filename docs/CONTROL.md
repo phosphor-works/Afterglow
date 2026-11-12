@@ -228,7 +228,7 @@ Start Afterglow with `-o`, `--config` or `--class` when a window needs the envir
 | `title` | string | The title of the window |
 | `hold` | boolean | Keep the pane open after its program exits |
 | `activationToken` | string | The launcher's `XDG_ACTIVATION_TOKEN`, which lets the window take the focus |
-| `session` | string | Show this [mux session](MUX.md#windows-of-a-session) in place of a program. When a window of this process shows it already, that window shows the session pane and comes to the front, and the call succeeds. |
+| `session` | string | Show this [mux session](MUX.md#windows-of-a-session) in place of a program. When a window of this process shows it already, that window comes to the front, and the call succeeds. |
 | `takeover` | boolean | With `session`: take the session from a window of another process that shows it. The default is true. With false, the call fails when such a window shows the session. |
 
 When `directoryGiven` is false or missing, the `Window.workingDirectory` setting can replace the working directory.

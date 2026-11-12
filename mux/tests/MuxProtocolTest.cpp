@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "MuxHost.h"
+#include "MuxLayout.h"
 #include "MuxProtocol.h"
 #include "MuxStream.h"
 
@@ -63,7 +64,33 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 8) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 9) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 9 added the tabs and splits of a session: the newPane, paneJob
+    // and breakOut calls, the Layout event and input (MuxLayoutTest), the
+    // ClosePane action, and the session's environment apart from the launch
+    // of each pane, with the variables that a launch unsets.
+    EXPECT_EQ(std::string(Fn::NewPane), "newPane");
+    EXPECT_EQ(std::string(Fn::PaneJob), "paneJob");
+    EXPECT_EQ(std::string(Fn::BreakOut), "breakOut");
+    Attach::Input closePane;
+    closePane.type = Attach::InputType::ClosePane;
+    closePane.pane = 5;
+    EXPECT_EQ(Attach::encode(closePane), std::string("\x08\x05", 2));
+    Attach::Input layoutInput;
+    layoutInput.type = Attach::InputType::Layout;
+    layoutInput.bytes = "{}";
+    EXPECT_EQ(Attach::encode(layoutInput), std::string("\x07\x00{}", 4));
+    Attach::Event layoutEvent;
+    layoutEvent.type = Attach::EventType::Layout;
+    layoutEvent.payload = "{}";
+    EXPECT_EQ(Attach::encode(layoutEvent), std::string("\x07\x00\x00\x00{}", 6));
+    Layout layout;
+    layout.addTab(4);
+    EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current"}));
+    EXPECT_EQ(keys(toJson(layout)["tabs"].toArray()[0]), (std::vector<std::string>{"tree", "focused", "zoomed", "title"}));
+    [[maybe_unused]] auto& [tabs, current] = layout;
+    [[maybe_unused]] auto& [tree, focused, zoomed, tabTitle] = layout.tabs[0];
+    [[maybe_unused]] auto& [nodePane, down, ratio] = layout.tabs[0].tree[0];
     // Version 8 added the frames of its pane before each Host event, which
     // the window reads before it makes the call (below).
     // Version 7 added the images and the cell size of the state codec
@@ -146,8 +173,8 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // bindings name every field, so a new field stops this test compiling
     // until it has its key, its place in the round trip and a new version.
     SessionOptions fields;
-    [[maybe_unused]] auto& [name, launch, size, terminal, notificationCapabilities] = fields;
-    [[maybe_unused]] auto& [argv, cwd, environment, launchedProgram, umask] = fields.launch;
+    [[maybe_unused]] auto& [name, sessionEnvironment, umask, launch, size, terminal, notificationCapabilities] = fields;
+    [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram] = fields.launch;
     [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
     [[maybe_unused]] auto& [scrollback, foreground, background, palette, cursorColor, cursorTextColor, selectionForeground,
                             selectionBackground, boldIsBright, minimumContrast, wordBoundaries, ambiguousWide, bidi, cursorShape,
@@ -156,8 +183,10 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     [[maybe_unused]] auto& [infoName, attached, panes, jobs] = info;
 
     const Json::Value options = toJson(SessionOptions{});
-    EXPECT_EQ(keys(options), (std::vector<std::string>{"name", "argv", "cwd", "environment", "launchedProgram", "umask", "cols", "rows",
-                                                       "cellWidth", "cellHeight", "terminal", "notificationCapabilities"}));
+    EXPECT_EQ(keys(options),
+              (std::vector<std::string>{"name", "environment", "umask", "launch", "size", "terminal", "notificationCapabilities"}));
+    EXPECT_EQ(keys(options["launch"]), (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram"}));
+    EXPECT_EQ(keys(options["size"]), (std::vector<std::string>{"cols", "rows", "cellWidth", "cellHeight"}));
     EXPECT_EQ(keys(options["terminal"]),
               (std::vector<std::string>{"scrollback", "foreground", "background", "palette", "cursorColor", "cursorTextColor",
                                         "selectionForeground", "selectionBackground", "boldIsBright", "minimumContrast", "wordBoundaries",
@@ -343,11 +372,13 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     // drops fails the comparison.
     SessionOptions o;
     o.name = "work";
+    o.environment = {{"HOME", "/home/u"}, {"TMUX", "x"}};
+    o.umask = 027;
     o.launch.argv = {"/bin/zsh", "-l"};
     o.launch.workingDirectory = "/tmp";
     o.launch.environment = {{"TERM", "afterglow"}, {"EMPTY", ""}};
+    o.launch.unset = {"TMUX"};
     o.launch.launchedProgram = "htop";
-    o.launch.umask = 027;
     o.size = {132, 43, 9, 18};
     o.notificationCapabilities = "a=focus:p=title";
     AfterglowVt::TerminalOptions& t = o.terminal;
@@ -378,11 +409,22 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     const auto back = sessionOptions(*parsed, &error);
     ASSERT_TRUE(back) << error;
     EXPECT_EQ(back->name, o.name);
+    EXPECT_EQ(back->environment, o.environment);
+    EXPECT_EQ(back->umask, 027);
     EXPECT_EQ(back->launch.argv, o.launch.argv);
     EXPECT_EQ(back->launch.workingDirectory, o.launch.workingDirectory);
     EXPECT_EQ(back->launch.environment, o.launch.environment);
+    EXPECT_EQ(back->launch.unset, o.launch.unset);
     EXPECT_EQ(back->launch.launchedProgram, o.launch.launchedProgram);
-    EXPECT_EQ(back->launch.umask, 027);
+    // A launch and a size alone, as newPane takes them.
+    const auto launch = launchFrom(Json::parse(Json::write(toJson(o.launch))).value(), &error);
+    ASSERT_TRUE(launch) << error;
+    EXPECT_EQ(launch->unset, o.launch.unset);
+    EXPECT_EQ(launch->argv, o.launch.argv);
+    const auto size = paneSizeFrom(toJson(o.size), &error);
+    ASSERT_TRUE(size) << error;
+    EXPECT_EQ(size->cols, 132);
+    EXPECT_EQ(size->cellHeight, 18);
     EXPECT_EQ(back->size.cols, 132);
     EXPECT_EQ(back->size.rows, 43);
     EXPECT_EQ(back->size.cellWidth, 9);
@@ -408,18 +450,53 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         {"name", "-a"},
         {"name", std::string(MaxSessionName + 1, 'a')},
         {"name", 1},
-        {"argv", Json::Array{1}},
-        {"argv", "sh"},
-        {"cwd", Json::Array{}},
         {"environment", Json::Array{Json::Array{"A=B", "c"}}},
         {"environment", Json::Array{Json::Array{"", "c"}}},
         {"environment", Json::Array{Json::Array{"A"}}},
         {"environment", Json::Array{Json::Array{std::string("A\0B", 3), "c"}}},
         {"environment", Json::Array{Json::Array{"A", 1}}},
         {"environment", Json::Array{"A=B"}},
-        {"launchedProgram", false},
         {"umask", -2},
         {"umask", 01000},
+        {"launch", "sh"},
+        {"size", Json::Array{}},
+        {"terminal", 3},
+        {"notificationCapabilities", nullptr},
+        // A key of another version.
+        {"argv", Json::Array{}},
+    };
+    for (const auto& [key, value] : bad) {
+        error.clear();
+        EXPECT_FALSE(sessionOptions(with(good, key, value), &error)) << key << " " << Json::write(value);
+        EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
+    }
+    for (const char* key : {"name", "environment", "umask", "launch", "size", "terminal", "notificationCapabilities"}) {
+        error.clear();
+        EXPECT_FALSE(sessionOptions(without(good, key), &error)) << key;
+        EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
+    }
+    // The keys of the launch and of the size, which newPane takes alone too.
+    const std::pair<const char*, Json::Value> badLaunch[] = {
+        {"argv", Json::Array{1}},
+        {"argv", "sh"},
+        {"cwd", Json::Array{}},
+        {"environment", Json::Array{Json::Array{"A=B", "c"}}},
+        {"environment", Json::Array{"A=B"}},
+        {"unset", Json::Array{"A=B"}},
+        {"unset", Json::Array{""}},
+        {"unset", Json::Array{1}},
+        {"launchedProgram", false},
+        {"umask", 0},
+    };
+    for (const auto& [key, value] : badLaunch) {
+        error.clear();
+        EXPECT_FALSE(sessionOptions(with(good, "launch", with(good["launch"], key, value)), &error)) << key << " " << Json::write(value);
+        EXPECT_NE(error.find(std::string("'launch.") + key + "'"), std::string::npos) << key << ": " << error;
+        error.clear();
+        EXPECT_FALSE(launchFrom(with(good["launch"], key, value), &error)) << key;
+        EXPECT_NE(error.find(std::string("'launch.") + key + "'"), std::string::npos) << key << ": " << error;
+    }
+    const std::pair<const char*, Json::Value> badSize[] = {
         {"cols", 1},
         {"cols", 4097},
         {"cols", 2.5},
@@ -429,20 +506,14 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         {"cellWidth", 65536},
         {"cellHeight", -1},
         {"cellHeight", 65536},
-        {"terminal", 3},
-        {"notificationCapabilities", nullptr},
-        // A key of another version.
-        {"unset", Json::Array{}},
     };
-    for (const auto& [key, value] : bad) {
+    for (const auto& [key, value] : badSize) {
         error.clear();
-        EXPECT_FALSE(sessionOptions(with(good, key, value), &error)) << key << " " << Json::write(value);
-        EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
-    }
-    for (const char* key : {"name", "cwd", "umask", "terminal", "notificationCapabilities"}) {
+        EXPECT_FALSE(sessionOptions(with(good, "size", with(good["size"], key, value)), &error)) << key << " " << Json::write(value);
+        EXPECT_NE(error.find(std::string("'size.") + key + "'"), std::string::npos) << key << ": " << error;
         error.clear();
-        EXPECT_FALSE(sessionOptions(without(good, key), &error)) << key;
-        EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
+        EXPECT_FALSE(paneSizeFrom(with(good["size"], key, value), &error)) << key;
+        EXPECT_NE(error.find(std::string("'size.") + key + "'"), std::string::npos) << key << ": " << error;
     }
 }
 
@@ -510,11 +581,11 @@ TEST(MuxProtocol, TerminalValuesOutsideTheirBoundsAreRefusedByName)
 TEST(MuxProtocol, TheFirstErrorIsTheOneReported)
 {
     const Json::Value good = toJson(SessionOptions{});
-    Json::Value bad = with(good, "cols", 1);
+    Json::Value bad = with(good, "size", with(good["size"], "cols", 1));
     bad = with(bad, "terminal", with(good["terminal"], "scrollback", -1));
     std::string error;
     EXPECT_FALSE(sessionOptions(bad, &error));
-    EXPECT_NE(error.find("'cols'"), std::string::npos) << error;
+    EXPECT_NE(error.find("'size.cols'"), std::string::npos) << error;
 }
 
 TEST(MuxProtocol, SessionInfoRoundTrip)
@@ -580,7 +651,7 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
 {
     const std::string_view bad[] = {
         {},                         // empty
-        std::string_view("\x09\x01\x00\x00", 4), // an unknown type
+        std::string_view("\x08\x01\x00\x00", 4), // the type after Layout
         std::string_view("\x00\x01\x00\x00", 4), // type 0
         std::string_view("\x02\x01\x00\x00\x00", 5), // a byte after the event
         std::string_view("\x02\x81", 2),         // a varint that does not end
@@ -646,8 +717,9 @@ TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
 {
     const std::string_view bad[] = {
         {},
-        std::string_view("\x09\x01", 2),         // an unknown type
-        std::string_view("\x07\x01", 2),         // the type after Visible
+        std::string_view("\x0a\x01", 2),         // an unknown type
+        std::string_view("\x09\x01", 2),         // the type after ClosePane
+        std::string_view("\x08\x01\x00", 3),     // a byte after a ClosePane
         std::string_view("\x01", 1),             // no pane
         std::string_view("\x02\x01\x50\x18\x08", 5), // a Resize that ends early
         std::string_view("\x02\x01\x50\x18\x08\x10\x00", 7), // a byte after the Resize

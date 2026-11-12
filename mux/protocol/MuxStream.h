@@ -14,10 +14,11 @@
 // The stream of an attached session: a phosphor-channel Stream over the
 // socket that the attach call names. The daemon writes the session's events
 // on channel 0 and the state of each pane on a channel of its own
-// (AfterglowVt::StateCodec), which PaneOpened names. The window writes its
-// input on channel 0, and its Kill on ActionChannel. The ids of each
-// direction are apart, so a pane's state channel and the action channel can
-// both be 1. Integers are LEB128 varints in their shortest form.
+// (AfterglowVt::StateCodec), which PaneOpened names. Its first event is the
+// session's Layout, before any PaneOpened. The window writes its input and
+// its layout on channel 0, and its Kill and ClosePane on ActionChannel. The
+// ids of each direction are apart, so a pane's state channel and the action
+// channel can both be 1. Integers are LEB128 varints in their shortest form.
 //
 // A pane's channel closes after its last frame, and then PaneClosed follows
 // on channel 0. The window learns that a pane's program exited once it has
@@ -28,8 +29,8 @@ namespace AfterglowMux::Attach {
 /// The channel of the events (from the daemon) and of the input (from the
 /// window). The state channels of panes start at 1.
 inline constexpr std::uint32_t ControlChannel = 0;
-/// The window's channel for Kill: the daemon reads it also while input waits
-/// for a full PTY and the control channel gets no credit.
+/// The window's channel for Kill and ClosePane: the daemon reads it also
+/// while input waits for a full PTY and the control channel gets no credit.
 inline constexpr std::uint32_t ActionChannel = 1;
 inline constexpr const char* ActionCodec = "afterglow.mux.actions.v1";
 /// The ids of the state channels, which the window reads, are below this, so
@@ -50,6 +51,7 @@ enum class EventType : std::uint8_t {
     TakenOver = 4, ///< another window attached: this one detaches
     Detached = 5, ///< `afterglow mux detach`: the window closes, the session runs on
     Host = 6, ///< a call of a pane's terminal to its host, or a part of one, in `payload` (MuxHost.h)
+    Layout = 7, ///< the session's tabs and splits, as JSON in `payload` (MuxLayout.h): the first event
 };
 
 /// The status of a Host event that holds a part of a call, not its end.
@@ -74,7 +76,7 @@ struct Event
     /// comes, and a bell goes after the text that rang it.
     std::uint64_t frames = 0;
     /// Host: the call, encoded, or its next part. A call larger than one
-    /// frame comes in parts of at most HostPartBytes.
+    /// frame comes in parts of at most HostPartBytes. Layout: its JSON.
     std::string payload;
 };
 
@@ -88,13 +90,15 @@ enum class InputType : std::uint8_t {
     Clear = 4, ///< the user cleared the pane's screen and history (Action::ClearScreen)
     Kill = 5, ///< the user closed the window, and Mux.onClose is kill: the session ends (ActionChannel only)
     Visible = 6, ///< whether the user can see the pane (mode 2033), in `visible`
+    Layout = 7, ///< the window's tabs and splits, as JSON in `bytes` (MuxLayout.h), after each change
+    ClosePane = 8, ///< the user closed the pane and the window stays: its program ends (ActionChannel only)
 };
 
 struct Input
 {
     InputType type = InputType::Bytes;
     std::uint32_t pane = 0;
-    std::string bytes;
+    std::string bytes; ///< Bytes: for the program. Layout: its JSON.
     PaneSize size;
     bool visible = false;
 };

@@ -136,9 +136,10 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
     if (client->m_input) client->m_actions = client->m_stream->openWriter(Attach::ActionChannel, Attach::ActionCodec, &streamError);
     if (!client->m_input || !client->m_actions) return fail(QString::fromStdString(streamError));
 
-    // The daemon names the panes first: the window shows them once it knows them.
+    // The daemon sends the layout first: the window lays out the session's
+    // tabs and splits, and makes their panes.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(Attach::ConnectWaitMs);
-    while (client->m_paneIds.empty() && !client->m_ended) {
+    while (!client->m_layoutCame && !client->m_ended) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
         if (left.count() <= 0) return fail(QStringLiteral("session '%1' did not answer").arg(name));
         // The event that ends the stream comes before its end: read it first.
@@ -256,14 +257,27 @@ void MuxClient::bind(std::uint32_t id, Pane* pane)
             m_closedChannels.erase(id);
             if (auto waiting = m_waitingHostCalls.extract(id); !waiting.empty()) m_waitingHostBytes -= waiting.mapped().bytes;
         }
-        pane->sessionLost(m_loss);
+        pane->sessionLost(m_loss, !std::exchange(m_lossShown, true));
     }
 }
 
-void MuxClient::release(std::uint32_t id, bool kill)
+void MuxClient::release(std::uint32_t id, MuxRelease release)
 {
     m_panes.erase(id);
+    // Its frames still come until the daemon closes its channel: after a
+    // ClosePane, or a break out of the session. Also for a pane whose
+    // PaneOpened did not come yet: a split that closes at once.
+    if (showing() && !m_exits.contains(id)) m_released.insert(id);
+    if (release == MuxRelease::Pane && showing()) {
+        Attach::Input input;
+        input.type = Attach::InputType::ClosePane;
+        input.pane = id;
+        m_waitingActions.push_back(Attach::encode(input));
+        sendWaitingInput();
+    }
+    m_killOnEnd = m_killOnEnd || release == MuxRelease::Session;
     if (!m_panes.empty() || !m_stream) return;
+    const bool kill = m_killOnEnd;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ReleaseWaitMs);
     const auto left = [&deadline] {
         return int(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
@@ -273,6 +287,7 @@ void MuxClient::release(std::uint32_t id, bool kill)
         // goes on a channel of its own, which the daemon reads also while
         // input waits for a full PTY there.
         m_waitingInput.clear();
+        m_waitingActions.clear();
         m_waitingBytes.store(0, std::memory_order_relaxed);
         Attach::Input input;
         input.type = Attach::InputType::Kill;
@@ -293,7 +308,7 @@ void MuxClient::release(std::uint32_t id, bool kill)
     // short time: the GUI thread waits here. What a slow program or daemon
     // has no room for by then is lost, as the input of a closed window is.
     if (showing()) sendWaitingInput();
-    while (showing() && !m_waitingInput.empty() && left() > 0 && m_stream->open()) {
+    while (showing() && (!m_waitingInput.empty() || !m_waitingActions.empty()) && left() > 0 && m_stream->open()) {
         if (!m_stream->pump(left())) break;
         sendWaitingInput();
     }
@@ -304,7 +319,50 @@ void MuxClient::release(std::uint32_t id, bool kill)
     m_stream.reset();
     m_input = m_actions = nullptr;
     m_waitingInput.clear();
+    m_waitingActions.clear();
     m_waitingBytes.store(0, std::memory_order_relaxed);
+}
+
+std::optional<std::uint32_t> MuxClient::newPane(const AfterglowMux::Launch& launch, const AfterglowMux::PaneSize& size, QString* error) const
+{
+    const auto result = callDaemon(AfterglowMux::Fn::NewPane,
+                                   Json::Array{AfterglowMux::ProtocolVersion, m_session.toStdString(), AfterglowMux::toJson(launch),
+                                               AfterglowMux::toJson(size)},
+                                   error);
+    const auto id = result ? (*result)["pane"].toInteger() : std::nullopt;
+    if (!id || *id <= 0 || *id > 0xffffffffLL) {
+        if (result && error) *error = QStringLiteral("the mux daemon gave no pane");
+        return std::nullopt;
+    }
+    return std::uint32_t(*id);
+}
+
+std::optional<QString> MuxClient::breakOut(const AfterglowMux::Layout& layout, QString* error) const
+{
+    const auto result = callDaemon(AfterglowMux::Fn::BreakOut,
+                                   Json::Array{AfterglowMux::ProtocolVersion, m_session.toStdString(), AfterglowMux::toJson(layout)}, error);
+    if (!result) return std::nullopt;
+    const std::string& name = (*result)["name"].toString();
+    if (!AfterglowMux::validSessionName(name)) {
+        if (error) *error = QStringLiteral("the mux daemon gave a session name that is not valid");
+        return std::nullopt;
+    }
+    return QString::fromStdString(name);
+}
+
+void MuxClient::sendLayout(const AfterglowMux::Layout& layout)
+{
+    if (!showing()) return;
+    std::string json = Json::write(AfterglowMux::toJson(layout));
+    if (json == m_sentLayout) return;
+    Attach::Input input;
+    input.type = Attach::InputType::Layout;
+    input.bytes = json;
+    m_sentLayout = std::move(json);
+    // In order with the input, and not part of it: the daemon reads it as
+    // it reads the input that came before it.
+    queueInput(Attach::encode(input), false);
+    sendWaitingInput();
 }
 
 bool MuxClient::sendInput(std::uint32_t id, std::string_view bytes)
@@ -390,6 +448,10 @@ void MuxClient::sendPaneInput(std::uint32_t id, Attach::Input& input)
 
 void MuxClient::sendWaitingInput()
 {
+    while (m_stream && m_actions && !m_waitingActions.empty()) {
+        if (m_actions->tryWrite(m_waitingActions.front()) != WriteResult::Written) break;
+        m_waitingActions.pop_front();
+    }
     while (m_stream && m_input && !m_waitingInput.empty()) {
         if (m_input->tryWrite(m_waitingInput.front()) != WriteResult::Written) break;
         m_waitingBytes.fetch_sub(m_waitingInput.front().size(), std::memory_order_relaxed);
@@ -399,14 +461,18 @@ void MuxClient::sendWaitingInput()
     updateNotifiers();
 }
 
-std::optional<Json::Value> MuxClient::callDaemon(const char* fn, Json::Array args) const
+std::optional<Json::Value> MuxClient::callDaemon(const char* fn, Json::Array args, QString* error) const
 {
     // A session that ended can have a new one of its name already.
-    if (!showing()) return std::nullopt;
+    if (!showing()) {
+        if (error) *error = QStringLiteral("session '%1' no longer shows in this window").arg(m_session);
+        return std::nullopt;
+    }
     std::string reason;
     AfterglowMux::Reached reached = AfterglowMux::connectAny(m_sockets, &reason);
     if (!reached.connection) {
         qCDebug(lcMux) << "no daemon of session" << m_session << "answers" << fn << ":" << QString::fromStdString(reason);
+        if (error) *error = QStringLiteral("the mux daemon does not answer: %1").arg(QString::fromStdString(AfterglowProto::printable(reason)));
         return std::nullopt;
     }
     AfterglowProto::IpcConnection::Error callError;
@@ -414,21 +480,17 @@ std::optional<Json::Value> MuxClient::callDaemon(const char* fn, Json::Array arg
     if (!result) {
         qCDebug(lcMux) << "the daemon of session" << m_session << "refused" << fn << ":"
                        << QString::fromStdString(callError.code) << QString::fromStdString(callError.message);
+        // The daemon's words, which the user reads in a notice.
+        if (error) *error = QString::fromStdString(AfterglowProto::printable(callError.message));
     }
     return result;
 }
 
-QString MuxClient::foregroundJob() const
+QString MuxClient::paneJob(std::uint32_t id) const
 {
-    const auto list = callDaemon(AfterglowMux::Fn::ListSessions, {});
-    if (!list) return {};
-    for (const Json::Value& item : list->toArray()) {
-        const auto info = AfterglowMux::sessionInfo(item);
-        if (info && QString::fromStdString(info->name) == m_session && !info->jobs.empty()) {
-            return QString::fromStdString(info->jobs.front());
-        }
-    }
-    return {};
+    const auto result = callDaemon(AfterglowMux::Fn::PaneJob, Json::Array{m_session.toStdString(), std::int64_t(id)});
+    if (!result || !result->isString()) return {};
+    return QString::fromStdString(result->toString());
 }
 
 QString MuxClient::directory(std::uint32_t id) const
@@ -490,7 +552,21 @@ void MuxClient::handleFrames()
         while (events->read(frame) == ReadResult::Frame) {
             auto event = Attach::decodeEvent(frame);
             bool bad = !event;
-            if (event && event->type == Attach::EventType::PaneOpened) {
+            if (event && event->type == Attach::EventType::Layout) {
+                // Once, before the panes: the window lays it out when it
+                // attaches.
+                std::string error;
+                const auto json = Json::parse(event->payload, &error);
+                auto layout = json && !m_layoutCame && m_paneIds.empty() ? AfterglowMux::layoutFrom(*json, &error) : std::nullopt;
+                bad = !layout;
+                if (layout) {
+                    m_layout = std::move(*layout);
+                    m_layoutCame = true;
+                } else {
+                    qCWarning(lcMux) << "session" << m_session << "sent a layout that the window cannot take:" << QString::fromStdString(error);
+                }
+            } else if (event && event->type == Attach::EventType::PaneOpened) {
+                bad = bad || !m_layoutCame;
                 for (const auto& [pane, channel] : m_channels) bad = bad || pane == event->pane || channel == event->channel;
                 if (!bad) {
                     m_channels[event->pane] = event->channel;
@@ -523,7 +599,7 @@ void MuxClient::handleFrames()
     // A copy: a pane whose program exited leaves the map.
     const std::map<std::uint32_t, std::uint32_t> channels = m_channels;
     for (const auto& [id, channel] : channels) {
-        if (m_panes.contains(id) && !readState(id)) return;
+        if ((m_panes.contains(id) || m_released.contains(id)) && !readState(id)) return;
     }
     if (ending) end(*ending);
     updateNotifiers();
@@ -539,7 +615,9 @@ bool MuxClient::readState(std::uint32_t id)
         lost();
         return false;
     }
-    const QPointer<Pane> pane = m_panes[id];
+    // A pane that the user closed: its frames go nowhere.
+    const auto bound = m_panes.find(id);
+    const QPointer<Pane> pane = bound == m_panes.end() ? QPointer<Pane>() : bound->second;
     std::string frame;
     while (true) {
         const ReadResult result = state->read(frame);
@@ -574,6 +652,7 @@ void MuxClient::paneExited(std::uint32_t id)
     m_exits.erase(exit);
     m_closedChannels.erase(id);
     m_channels.erase(id);
+    m_released.erase(id);
     // No more of its calls come: the parts of one that did not end go. Its
     // last frame came, so no whole call waits.
     m_hostParts.erase(id);
@@ -605,11 +684,12 @@ void MuxClient::end(Loss loss)
     m_hostParts.clear();
     // A pane whose exit is half known waits for the rest: its last frame or
     // its status still comes, and it closes as a pane whose program
-    // exited. A copy: a pane that goes releases itself from the map.
+    // exited. A copy: a pane that goes releases itself from the map. One
+    // notice says why, not one for each pane.
     const std::map<std::uint32_t, QPointer<Pane>> panes = m_panes;
     for (const auto& [id, pane] : panes) {
         if (!pane || m_exits.contains(id) || m_closedChannels.contains(id)) continue;
-        pane->sessionLost(m_loss);
+        pane->sessionLost(m_loss, !std::exchange(m_lossShown, true));
     }
 }
 

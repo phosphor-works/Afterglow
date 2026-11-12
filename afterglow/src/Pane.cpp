@@ -91,9 +91,10 @@ Pane::~Pane()
     m_dragDrop.reset();
     m_fileTransfers.reset();
     m_pty.reset();
-    // A session pane that the user closes ends its session, or leaves it
-    // running (Mux.onClose). One that the session left ends nothing.
-    if (m_session) m_session->release(m_sessionPane, m_killSessionOnClose && !m_sessionGone);
+    // A session pane that the user closes ends its program, or its session,
+    // or leaves it running (Mux.onClose): the window said which. One that
+    // the session left ends nothing.
+    if (m_session) m_session->release(m_sessionPane, m_sessionGone ? MuxRelease::Nothing : m_sessionRelease);
     for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
 }
 
@@ -880,8 +881,7 @@ void Pane::finishCommand(int exitCode, qint64 ms)
 
 QString Pane::foregroundJob() const
 {
-    // A session pane that closing leaves running ends nothing.
-    if (m_session) return m_sessionGone || m_held.load() || !closeEndsProgram() ? QString() : m_session->foregroundJob();
+    if (m_session) return m_sessionGone || m_held.load() ? QString() : m_session->paneJob(m_sessionPane);
     if (!m_pty || m_held.load()) {
         return {};
     }
@@ -1016,12 +1016,16 @@ bool Pane::showsSession(const QString& name) const
     return m_session && !m_sessionGone && m_session->showing() && m_session->session() == name;
 }
 
-void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, bool killOnClose)
+void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id)
 {
     m_session = std::move(session);
     m_sessionPane = id;
-    m_killSessionOnClose = killOnClose;
     m_session->bind(id, this);
+}
+
+bool Pane::closeEndsProgram() const
+{
+    return !m_session || m_sessionRelease != MuxRelease::Nothing;
 }
 
 void Pane::setSessionVisible(bool visible)
@@ -1113,15 +1117,16 @@ void Pane::sessionPaneExited(int status)
     ptyClosed(status);
 }
 
-void Pane::sessionLost(MuxLoss loss)
+void Pane::sessionLost(MuxLoss loss, bool notice)
 {
     if (m_sessionGone.exchange(true)) return;
     // A detach or a kill that the user asked for closes the pane as asked.
-    // The others close it without a word from the user: say why.
+    // The others close it without a word from the user: say why, once for
+    // the window.
     const QString name = m_session ? m_session->session() : QString();
-    if (loss == MuxLoss::TakenOver) {
+    if (notice && loss == MuxLoss::TakenOver) {
         NotificationCenter::instance().showNotice(this, tr("Session %1 moved").arg(name), tr("Another window shows session %1 now.").arg(name));
-    } else if (loss == MuxLoss::Broken) {
+    } else if (notice && loss == MuxLoss::Broken) {
         NotificationCenter::instance().showNotice(this, tr("Session %1 is gone from this window").arg(name),
                                                   tr("The connection to the mux daemon ended. Run afterglow mux ls to see whether the session still runs."));
     }

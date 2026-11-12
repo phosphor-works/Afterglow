@@ -150,7 +150,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `eventQueue` | `4` | 1–64 | Most mebibytes of requests, such as bells, notifications and clipboard requests, that wait while the window of a session is slow. The session keeps one queue of this size, and each pane keeps another. A request that does not fit gets the answer of a session that no window shows. A request that finds the queue of its pane empty always fits. A change applies when Afterglow next attaches to a session. |
-| `onClose` | `"kill"` | `"kill"`, `"detach"` | What closing the window, tab or pane that shows a mux session does. With kill, the session and its programs end, as in a window outside a session. With detach, the session keeps running, and afterglow mux attach shows it again. The session also keeps running after afterglow mux detach, a takeover by another window, a quit of Afterglow, a crash and a lost connection. |
+| `onClose` | `"kill"` | `"kill"`, `"detach"` | What closing the window of a mux session, or its last tab or pane, does. With kill, the session and its programs end, as in a window outside a session. With detach, the session keeps running with its tabs, and afterglow mux attach shows it again. Closing another tab or pane of the window ends its programs. The session also keeps running after afterglow mux detach, a takeover by another window, a quit of Afterglow, a crash and a lost connection. |
 
 ## Notifications
 

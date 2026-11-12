@@ -667,9 +667,10 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[MuxGroup] = {
         enumKey(QStringLiteral("onClose"), MuxCloseChoices, d.mux.onClose,
-                QStringLiteral("What closing the window, tab or pane that shows a mux session does. With kill, the session "
-                               "and its programs end, as in a window outside a session. With detach, the session keeps "
-                               "running, and afterglow mux attach shows it again. The session also keeps running after "
+                QStringLiteral("What closing the window of a mux session, or its last tab or pane, does. With kill, the "
+                               "session and its programs end, as in a window outside a session. With detach, the session "
+                               "keeps running with its tabs, and afterglow mux attach shows it again. Closing another tab "
+                               "or pane of the window ends its programs. The session also keeps running after "
                                "afterglow mux detach, a takeover by another window, a quit of Afterglow, a crash and a lost "
                                "connection.")),
         intKey(QStringLiteral("eventQueue"), int(d.mux.eventQueue >> 20), int(AfterglowMux::MinEventQueue >> 20),

@@ -28,8 +28,9 @@ class Session;
 
 /// The window that a session shows in. The attach call makes it with a
 /// socket of its own, where only the process that called may connect; then
-/// a phosphor-channel stream on that connection carries the session's state
-/// to the window and the window's input back (MuxStream.h).
+/// a phosphor-channel stream on that connection carries the session's layout
+/// and state to the window, and the window's input, its layout and the panes
+/// that it closes back (MuxStream.h).
 ///
 /// A pane's frame that the channel refuses waits, and no newer frame is made
 /// until it went: a frame covers every change since the one before, so the
@@ -88,6 +89,12 @@ public:
     /// Takes the pane whose program exited: its last frames go, then its
     /// channel closes and PaneClosed follows.
     void paneClosed(std::unique_ptr<MuxPane> pane);
+    /// Pane @p id left the session, at the window's ClosePane or for another
+    /// session (Fn::BreakOut): the window no longer shows it, so its channel
+    /// closes at once and PaneClosed follows, with no status. The host calls
+    /// of a pane that goes on in another session, @p moved, get the answers
+    /// of a pane that no window shows: this window does not get them.
+    void paneRemoved(std::uint32_t id, MuxPane* moved = nullptr);
     /// Ends the attachment: input is no longer read, and once the panes that
     /// closed sent their last frames, @p type is the last event. A window
     /// that did not connect yet gets it when it does. The host calls that
@@ -174,6 +181,7 @@ private:
     bool m_inputDue = false; ///< held input went in pump(): the next handle() reads what follows it
     std::optional<Attach::EventType> m_finish;
     bool m_finishSent = false;
+    bool m_layoutSent = false; ///< the first event, before any PaneOpened
     bool m_outputEnded = false; ///< all went, and the stream's output ended: the window closes
 
     bool m_kill = false;

@@ -48,6 +48,8 @@ namespace Afterglow {
 class MuxClient;
 /// Why a window no longer shows a mux session (MuxClient.h).
 enum class MuxLoss : std::uint8_t;
+/// What a session pane that closes ends (MuxClient.h).
+enum class MuxRelease : std::uint8_t;
 
 /// A program status record (OSC 7501) as the GUI uses it.
 struct PaneStatusRecord
@@ -92,17 +94,22 @@ public:
 
     /// Shows pane @p id of a mux session in place of a program of its own:
     /// the terminal becomes a replica of the session's, and input goes to the
-    /// daemon. With @p killOnClose, closing the pane ends the session.
-    void showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, bool killOnClose);
+    /// daemon. Closing the pane ends its program in the daemon, unless the
+    /// window says otherwise (setSessionRelease).
+    void showSession(std::shared_ptr<MuxClient> session, std::uint32_t id);
     bool isSessionPane() const { return m_session != nullptr; }
     /// The link to the session of a session pane, else null.
     const MuxClient* session() const { return m_session.get(); }
+    /// The pane's ID in the daemon, 0 for a pane that is no session pane.
+    std::uint32_t sessionPaneId() const { return m_sessionPane; }
     /// The pane shows mux session @p name, and has not lost it.
     bool showsSession(const QString& name) const;
-    void setKillSessionOnClose(bool kill) { m_killSessionOnClose = kill; }
+    /// What closing the session pane ends: the window sets it as it closes
+    /// the pane, by what the close is (the pane alone, or the window).
+    void setSessionRelease(MuxRelease release) { m_sessionRelease = release; }
     /// Closing the pane ends its program: always for a program of its own,
-    /// and for a session pane with Mux.onClose kill.
-    bool closeEndsProgram() const { return !m_session || m_killSessionOnClose; }
+    /// and for a session pane unless its release ends nothing.
+    bool closeEndsProgram() const;
     /// Clears the screen and the history: the action of Action::ClearScreen.
     /// At a shell prompt the shell redraws its prompt. A session pane's
     /// daemon does it, and the next frame shows it.
@@ -137,8 +144,9 @@ public:
     /// The program of the session pane exited, with @p status as waitpid gives it.
     void sessionPaneExited(int status);
     /// The window no longer shows the session (@p loss says why): the pane
-    /// closes. Once.
-    void sessionLost(MuxLoss loss);
+    /// closes. Once. With @p notice, it says why when the user did not ask
+    /// for it: one pane of the window does.
+    void sessionLost(MuxLoss loss, bool notice);
     int cols() const;
     int rows() const;
 
@@ -241,9 +249,8 @@ public:
     QString runningCommand() const;
     /// The program closing the pane would end: the shell's foreground job, or
     /// the program the pane was opened for. Empty while a shell sits idle.
-    /// For a session pane that closing ends (closeEndsProgram), the first job
-    /// of the session, which the daemon names: the GUI thread waits for its
-    /// answer. Empty for one that closing leaves running.
+    /// For a session pane, the job of its program in the daemon, which the
+    /// daemon names: the GUI thread waits for its answer.
     QString foregroundJob() const;
     /// The command that a project saves for the pane and runs again when it
     /// opens: the program the pane was opened for (afterglow -e, a script,
@@ -650,7 +657,7 @@ private:
     // A session pane (showSession): no PTY of its own.
     std::shared_ptr<MuxClient> m_session;
     std::uint32_t m_sessionPane = 0;
-    bool m_killSessionOnClose = false;
+    MuxRelease m_sessionRelease{}; ///< MuxRelease::Pane
     std::atomic<bool> m_sessionGone{false};
     bool lastOutputArrivingLocked() const; ///< m_mutex held
     int m_sessionVisible = -1; ///< the last state given to the daemon (setSessionVisible), -1 for none yet

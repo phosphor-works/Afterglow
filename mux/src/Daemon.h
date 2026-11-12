@@ -76,6 +76,12 @@ private:
     std::string attach(const AfterglowProto::IpcRequest& request, pid_t caller);
     std::string detach(const AfterglowProto::IpcRequest& request);
     std::string paneDirectory(const AfterglowProto::IpcRequest& request);
+    std::string newPane(const AfterglowProto::IpcRequest& request);
+    std::string paneJob(const AfterglowProto::IpcRequest& request, pid_t caller);
+    std::string breakOut(const AfterglowProto::IpcRequest& request);
+    /// What a pane runs when it has news for the daemon's thread: it wakes
+    /// the poll. Safe to call from any thread.
+    std::function<void()> waker() const;
     /// The error of a call whose first argument is not this daemon's
     /// protocol version.
     static std::optional<std::string> versionError(const AfterglowProto::IpcRequest& request);

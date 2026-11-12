@@ -277,9 +277,9 @@ public:
     {
         SessionOptions o;
         o.name = std::move(name);
+        o.environment = m_environment;
         o.launch.argv = std::move(argv);
         o.launch.workingDirectory = m_dir;
-        o.launch.environment = m_environment;
         return o;
     }
 

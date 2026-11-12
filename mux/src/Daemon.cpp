@@ -252,8 +252,9 @@ Daemon::Exit Daemon::run()
             if (!keep) over.push_back(attachment);
             // The window closed and Mux.onClose is kill. Its own window
             // sends it, so a window that another took the session from
-            // cannot end it.
-            if (attachment->takeKill() && shown) endSession(session);
+            // cannot end it. A window that closed the last pane of the
+            // session ends it too: as when its last program exits.
+            if ((attachment->takeKill() || (shown && shown->empty())) && shown) endSession(session);
         }
         for (Attachment* attachment : over) {
             // The calls that the window did not get get the answers of a
@@ -334,6 +335,9 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller)
     if (request.fn == Fn::Attach) return attach(request, caller);
     if (request.fn == Fn::Detach) return detach(request);
     if (request.fn == Fn::PaneDirectory) return paneDirectory(request);
+    if (request.fn == Fn::NewPane) return newPane(request);
+    if (request.fn == Fn::PaneJob) return paneJob(request, caller);
+    if (request.fn == Fn::BreakOut) return breakOut(request);
     return ipcError(request.id, IpcErrorCode::NoSuchFn, "no function '" + request.fn + "' on target '" + request.target + "'");
 }
 
@@ -356,16 +360,11 @@ std::string Daemon::newSession(const IpcRequest& request)
     std::string name = options->name.empty() ? freeName() : options->name;
     if (find(name) != m_sessions.end()) return ipcError(request.id, Error::SessionExists, "a session named '" + name + "' exists");
     auto session = std::make_unique<Session>(name, std::move(*options), m_fileLimit, m_images);
-    const int wake = m_wakeFd;
-    const auto wakeDaemon = [wake] {
-        const std::uint64_t one = 1;
-        (void)!::write(wake, &one, sizeof one);
-    };
     // The spawn waits for the exec of the program, up to the PTY's exec wait
     // (2 s), and the other connections wait with it. Only a program or a
     // directory on a mount that does not answer takes that long; past the
     // wait, the PTY reports a late failure as the exit of the pane.
-    if (!session->addPane(m_nextPane++, paneSocket(), wakeDaemon, &error)) {
+    if (!session->addPane(m_nextPane++, session->firstLaunch(), session->firstSize(), paneSocket(), waker(), &error)) {
         return ipcError(request.id, Error::SpawnFailed, "cannot start the program of session '" + name + "': " + error);
     }
     m_sessions.push_back(std::move(session));
@@ -505,6 +504,87 @@ std::string Daemon::paneDirectory(const IpcRequest& request)
     const MuxPane* pane = (*session)->pane(std::uint32_t(*id));
     if (!pane) return ipcError(request.id, Error::NoSuchPane, "session '" + name + "' has no pane " + std::to_string(*id));
     return ipcReply(request.id.value_or(0), pane->directory());
+}
+
+std::string Daemon::newPane(const IpcRequest& request)
+{
+    if (request.args.size() != 4 || !request.args[1].isString()) {
+        return ipcError(request.id, IpcErrorCode::InvalidArg, "newPane takes (protocol, name, launch, size)");
+    }
+    if (auto error = versionError(request)) return *error;
+    const std::string& name = request.args[1].toString();
+    const auto session = find(name);
+    if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    std::string error;
+    const auto launch = launchFrom(request.args[2], &error);
+    if (!launch) return ipcError(request.id, IpcErrorCode::InvalidArg, error);
+    const auto size = paneSizeFrom(request.args[3], &error);
+    if (!size) return ipcError(request.id, IpcErrorCode::InvalidArg, error);
+    // The window that asked binds the pane before its first frame, which
+    // the next pass sends: it knows the ID from this answer.
+    const std::uint32_t id = m_nextPane++;
+    if (!(*session)->addPane(id, *launch, *size, paneSocket(), waker(), &error)) {
+        return ipcError(request.id, Error::SpawnFailed, "cannot start the program of a pane of session '" + name + "': " + error);
+    }
+    return ipcReply(request.id.value_or(0), Json::Object{{"pane", std::int64_t(id)}});
+}
+
+std::string Daemon::paneJob(const IpcRequest& request, pid_t caller)
+{
+    const auto id = request.args.size() == 2 && request.args[0].isString() ? request.args[1].toInteger() : std::nullopt;
+    if (!id || *id < 0 || *id > 0xffffffffLL) return ipcError(request.id, IpcErrorCode::InvalidArg, "paneJob takes (name, pane)");
+    const std::string& name = request.args[0].toString();
+    const auto session = find(name);
+    if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    const MuxPane* pane = (*session)->pane(std::uint32_t(*id));
+    if (!pane) return ipcError(request.id, Error::NoSuchPane, "session '" + name + "' has no pane " + std::to_string(*id));
+    return ipcReply(request.id.value_or(0), pane->foregroundJob(caller));
+}
+
+std::string Daemon::breakOut(const IpcRequest& request)
+{
+    if (request.args.size() != 3 || !request.args[1].isString()) {
+        return ipcError(request.id, IpcErrorCode::InvalidArg, "breakOut takes (protocol, name, layout)");
+    }
+    if (auto error = versionError(request)) return *error;
+    const std::string& name = request.args[1].toString();
+    const auto from = find(name);
+    if (from == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    std::string error;
+    auto layout = layoutFrom(request.args[2], &error);
+    if (!layout) return ipcError(request.id, IpcErrorCode::InvalidArg, error);
+    const std::vector<std::uint32_t> ids = layout->panes();
+    for (const std::uint32_t id : ids) {
+        if (!(*from)->pane(id)) return ipcError(request.id, Error::NoSuchPane, "session '" + name + "' has no pane " + std::to_string(id));
+    }
+    if (ids.size() >= (*from)->panes().size()) {
+        return ipcError(request.id, IpcErrorCode::InvalidArg,
+                        "these are all the panes of session '" + name + "': a new session would only give them another name");
+    }
+    const std::string fresh = freeName();
+    auto session = std::make_unique<Session>(fresh, (*from)->options(), m_fileLimit, m_images);
+    Attachment* const attachment = shown(name);
+    for (const std::uint32_t id : ids) {
+        std::unique_ptr<MuxPane> pane = (*from)->take(id);
+        if (attachment) {
+            guarded(*attachment, [&] {
+                attachment->paneRemoved(id, pane.get());
+                return true;
+            });
+        }
+        session->adopt(std::move(pane));
+    }
+    session->setLayout(std::move(*layout));
+    m_sessions.push_back(std::move(session));
+    return ipcReply(request.id.value_or(0), Json::Object{{"name", fresh}});
+}
+
+std::function<void()> Daemon::waker() const
+{
+    return [wake = m_wakeFd] {
+        const std::uint64_t one = 1;
+        (void)!::write(wake, &one, sizeof one);
+    };
 }
 
 void Daemon::syncAttached()

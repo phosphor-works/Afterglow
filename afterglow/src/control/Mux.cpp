@@ -461,13 +461,13 @@ int currentUmask()
     return -1;
 }
 
-/// The whole environment that the session's programs get: this command's,
-/// with the values of the launch. The variables that name another terminal
-/// or the shell that ran this command are among the launch's unsets
-/// (offerTerminalEnvironment). JSON carries text: a byte of a name, a value,
-/// an argument or a directory that is not UTF-8 becomes U+FFFD on the way to
-/// the daemon.
-std::vector<std::pair<std::string, std::string>> sessionEnvironment(const AfterglowPty::SpawnOptions& opts)
+/// The environment of the session: this command's. Each pane changes it with
+/// its launch, the first one with the values of this command's, and the
+/// variables that name another terminal or the shell that ran this command
+/// are among a launch's unsets (offerTerminalEnvironment). JSON carries
+/// text: a byte of a name, a value, an argument or a directory that is not
+/// UTF-8 becomes U+FFFD on the way to the daemon.
+std::vector<std::pair<std::string, std::string>> sessionEnvironment()
 {
     std::vector<std::pair<std::string, std::string>> env;
     for (char** e = environ; *e; ++e) {
@@ -475,14 +475,6 @@ std::vector<std::pair<std::string, std::string>> sessionEnvironment(const Afterg
         const auto eq = entry.find('=');
         if (eq == std::string_view::npos || eq == 0) continue;
         env.emplace_back(std::string(entry.substr(0, eq)), std::string(entry.substr(eq + 1)));
-    }
-    const auto drop = [&env](const std::string& name) {
-        std::erase_if(env, [&](const auto& kv) { return kv.first == name; });
-    };
-    for (const auto& name : opts.unsetEnvironment) drop(name);
-    for (const auto& [name, value] : opts.environment) {
-        drop(name);
-        env.emplace_back(name, value);
     }
     return env;
 }
@@ -594,11 +586,13 @@ int newSession(int argc, char** argv, const std::string& command = "new")
     offerTerminalEnvironment(launch, settings.term);
     AfterglowMux::SessionOptions session;
     session.name = o.name;
+    session.environment = sessionEnvironment();
+    session.umask = currentUmask();
     session.launch.argv = launch.argv;
     session.launch.workingDirectory = launch.workingDirectory;
-    session.launch.environment = sessionEnvironment(launch);
+    session.launch.environment = launch.environment;
+    session.launch.unset = launch.unsetEnvironment;
     session.launch.launchedProgram = launchedProgramName(o.command).toStdString();
-    session.launch.umask = currentUmask();
     // No window measured the panes: the size of a new window, in cells,
     // which the schema keeps within what a terminal takes.
     session.size = {settings.window.initialColumns, settings.window.initialRows, 0, 0};

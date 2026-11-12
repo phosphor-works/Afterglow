@@ -265,7 +265,7 @@ TEST(MuxDaemon, ThePaneGetsTheUmaskOfTheClientAndTheOriginalFileLimit)
     const std::string out = daemon.dir() + "/limits";
     SessionOptions o =
         daemon.options({"/bin/sh", "-c", "{ umask; ulimit -n; } > '" + out + ".part' && mv '" + out + ".part' '" + out + "'; exec sleep 60"});
-    o.launch.umask = 027;
+    o.umask = 027;
     ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
     ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
     std::istringstream lines(readFile(out));

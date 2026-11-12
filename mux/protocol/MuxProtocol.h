@@ -27,7 +27,7 @@ namespace AfterglowMux {
 /// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
 /// MuxProtocolTest pins the keys of the options to this number, so that a new
 /// key changes it too.
-inline constexpr int ProtocolVersion = 8;
+inline constexpr int ProtocolVersion = 9;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -49,6 +49,20 @@ inline constexpr const char* Detach = "detach";
 /// shell reported no directory that exists on its machine (OSC 7, 9;9, 633,
 /// 1337).
 inline constexpr const char* PaneDirectory = "paneDirectory";
+/// (protocol, name, launch, size) -> {pane}: starts a pane in the session, for
+/// a new tab or split of the window that shows it. The pane is a tab of its
+/// own in the session's layout until the window sends its layout.
+inline constexpr const char* NewPane = "newPane";
+/// (name, pane) -> string: the program in the foreground of the pane, for
+/// the question before a close (MuxPane::foregroundJob). Empty when none runs.
+inline constexpr const char* PaneJob = "paneJob";
+/// (protocol, name, layout) -> {name}: the panes of the layout leave the
+/// session for a new one, with that layout, the session's environment and
+/// terminal values, and the daemon's next number as its name. Their programs
+/// run on. The window that showed them drags them out, and shows the new
+/// session in a new window. Not every pane of the session: that would only
+/// give it another name.
+inline constexpr const char* BreakOut = "breakOut";
 } // namespace Fn
 
 /// The keys of the options of Fn::Attach. The daemon refuses another key.
@@ -120,22 +134,27 @@ inline constexpr std::int64_t DefaultEventQueue = std::int64_t(4) << 20;
 inline constexpr std::int64_t MaxHistory = MaxScrollback;
 
 /// What runs in a new pane. The client prepares it from its configuration
-/// (the shell, shell integration, TERM and the environment of the launch).
-/// The daemon then sets AFTERGLOW_SOCKET, AFTERGLOW_PANE_ID and
-/// AFTERGLOW_SESSION, and removes AFTERGLOW_OVERLAY.
+/// (the shell, shell integration, TERM and the environment of the launch),
+/// as changes to the session's environment. The daemon then sets
+/// AFTERGLOW_SOCKET, AFTERGLOW_PANE_ID and AFTERGLOW_SESSION, and removes
+/// AFTERGLOW_OVERLAY.
 struct Launch
 {
     std::vector<std::string> argv; ///< empty: the user's login shell
     std::string workingDirectory;
-    /// The whole environment of the programs: the daemon's own is not used.
+    /// The variables that the pane sets over the session's environment.
     std::vector<std::pair<std::string, std::string>> environment;
+    /// The variables that the pane removes from the session's environment,
+    /// before it sets its own.
+    std::vector<std::string> unset;
     /// The program of a command launch, which counts as running while it is
     /// in the foreground. Empty for a shell.
     std::string launchedProgram;
-    /// The file mode creation mask of the client, which the programs get in
-    /// place of the daemon's. -1 keeps the daemon's.
-    int umask = -1;
 };
+
+AfterglowProto::Json::Value toJson(const Launch& launch);
+/// nullopt for a value that is not a valid launch: @p error says why.
+std::optional<Launch> launchFrom(const AfterglowProto::Json::Value& value, std::string* error);
 
 /// The size of a pane, as the client measures it with its font.
 struct PaneSize
@@ -146,9 +165,20 @@ struct PaneSize
     int cellHeight = 0;
 };
 
+AfterglowProto::Json::Value toJson(const PaneSize& size);
+/// nullopt for a value that is not a valid size: @p error says why.
+std::optional<PaneSize> paneSizeFrom(const AfterglowProto::Json::Value& value, std::string* error);
+
 struct SessionOptions
 {
     std::string name; ///< empty: the daemon's next number
+    /// The environment of the client, which each pane of the session changes
+    /// with its launch: the daemon's own is not used.
+    std::vector<std::pair<std::string, std::string>> environment;
+    /// The file mode creation mask of the client, which the programs get in
+    /// place of the daemon's. -1 keeps the daemon's.
+    int umask = -1;
+    /// The first pane.
     Launch launch;
     PaneSize size;
     /// The terminal values of the client: scrollback, theme colors and the

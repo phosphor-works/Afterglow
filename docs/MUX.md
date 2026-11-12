@@ -4,8 +4,8 @@
 # The mux daemon
 
 The mux daemon, `afterglow-mux`, keeps terminal sessions running while no window shows them.
-A session is a set of panes with running programs. A session that `afterglow mux new` creates has one pane.
-The `afterglow mux` commands create, list and end sessions. They also show a session in a window, and close its pane again.
+A session is a set of tabs and split panes with running programs. A session that `afterglow mux new` creates starts with one pane.
+The `afterglow mux` commands create, list and end sessions. They also show a session in a window, and close that window again.
 
 The mux is opt-in. A normal launch of Afterglow does not use it.
 A mux session and a normal `afterglow` launch can run at the same time.
@@ -88,7 +88,7 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 | --- | --- |
 | `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `-- COMMAND...`. |
 | `afterglow mux attach [NAME]` | Shows a session in a window. Option: `--no-takeover`. |
-| `afterglow mux detach [NAME]` | Closes the session pane in its window. The session keeps running. |
+| `afterglow mux detach [NAME]` | Closes the window of the session. The session keeps running. |
 | `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES` |
 | `afterglow mux kill NAME` | Ends a session and its programs. Option: `--force`. |
 | `afterglow mux server` | Runs `afterglow-mux` in the foreground |
@@ -114,10 +114,10 @@ The command itself is not a running program when it runs in the foreground of a 
 
 ### Windows of a session
 
-`afterglow mux attach NAME` opens a window that shows session `NAME`.
-The window has a pane for the session, the session pane.
+`afterglow mux attach NAME` opens a window that shows session `NAME`: its tabs and its split panes.
+Each pane of the window is a pane of the session, a session pane.
 The window opens in the Afterglow that runs on your display, as the window of any launch.
-When a window of that Afterglow shows the session already, that window shows the session pane and comes to the front.
+When a window of that Afterglow shows the session already, that window comes to the front.
 No new window opens then.
 Without `NAME`, the command shows the only session. When no session runs, it creates one, as `afterglow mux new` does.
 When more than one session runs, it stops and names them.
@@ -127,10 +127,9 @@ It then stays in the foreground of its terminal until you close its last window,
 Later launches on the display open their windows in it.
 
 One window at a time shows a session.
-When another window shows the session, its session pane closes, and the session moves to the new window.
-A window that has no other pane closes with it.
+When another window shows the session, the first window closes, and the session moves to the new window.
 With `--no-takeover`, the command refuses instead, with exit status 1.
-A window of the same Afterglow does not count: it shows the session pane and comes to the front, also with `--no-takeover`.
+A window of the same Afterglow does not count: it comes to the front, also with `--no-takeover`.
 
 `afterglow mux attach` and `afterglow mux new` without `--detach` need a Wayland display.
 The display is `WAYLAND_DISPLAY`, by default `wayland-0`, as a socket in `XDG_RUNTIME_DIR` unless it is a path.
@@ -138,30 +137,51 @@ When that socket does not exist, or `QT_QPA_PLATFORM` names a platform that is n
 When `afterglow mux new` cannot run `afterglow` for the window, it ends the session that it created.
 When the window fails after it started, the session keeps running. `afterglow mux attach` shows it, and `afterglow mux kill` ends it.
 
-The window shows the screen and the scrollback of the session, and sends what you type to its programs.
-The window measures the pane with its own font, and the daemon resizes the pane to that size.
-The Reset and Clear actions of the window reset or clear the terminal of the session.
+The window shows the screen and the scrollback of each pane, and sends what you type to its programs.
+The window measures each pane with its own font, and the daemon resizes the pane to that size.
+The Reset and Clear actions of the window reset or clear the terminal of the session pane.
 
 | Event | Result |
 | --- | --- |
-| You close the window, the tab or the session pane | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running. |
+| You close a pane or a tab, and the window has other panes | The programs of the pane or the tab end, as in a window outside a session. The session keeps running. |
+| You close the window, or its last pane or tab | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running, with its tabs and splits. |
 | You quit Afterglow | The session keeps running, whatever `Mux.onClose` says. At your last logout, the daemon can end too (see [start](#start)). |
-| `afterglow mux detach NAME` | The session pane closes. The session keeps running. In a session pane, `NAME` defaults to that session. |
-| Another window shows the session (`afterglow mux attach`) | The session pane closes, with a notice. The session keeps running. |
-| The window crashes, or its connection to the daemon breaks | The session keeps running. A window that still runs closes the pane, with a notice. |
-| The program of the pane exits | The pane shows the last output of the program, then closes as a pane does in a window outside a session. The session ends. |
-| `afterglow mux kill NAME` | The session ends, and its pane closes |
+| `afterglow mux detach NAME` | The window closes. The session keeps running. In a session pane, `NAME` defaults to that session. |
+| Another window shows the session (`afterglow mux attach`) | The window closes, with a notice. The session keeps running. |
+| The window crashes, or its connection to the daemon breaks | The session keeps running. A window that still runs closes, with a notice. |
+| The program of a pane exits | The pane shows the last output of the program, then closes as a pane does in a window outside a session. After the last program of the session, the session ends. |
+| `afterglow mux kill NAME` | The session ends, and its window closes |
 
-In each case, a window that has no other pane closes with the session pane.
+### Tabs and splits
 
-A new tab or a split in the window of a session runs a program of the window, not of the session.
-These programs end with the window.
-With `Window.workingDirectory` at `inherit`, the default, they start in the directory of the session pane.
-The shell of the session pane reports its directory with OSC 7, OSC 9;9, OSC 633 or iTerm2 `CurrentDir`.
+A new tab and a split in the window of a session are panes of the session.
+This is true for the keys, the menu, scripts and `afterglow ctl`.
+Their programs run under the daemon, with the environment of the session (see [environment](#environment)).
+The window prepares them with its own settings, such as `Terminal.shell` and `Terminal.env`.
+
+The daemon keeps the tabs and splits of the session: their order, the ratio of each split, the pane that has the focus in each tab, a zoomed pane, the titles that you gave the tabs, and the tab that shows.
+The window sends them after each change.
+The next window that shows the session shows them again.
+While no window shows the session, a pane whose program exits leaves its tab, as in a window.
+
+With `Window.workingDirectory` at `inherit`, the default, a new tab or split starts in the directory of the pane that it comes from.
+The shell of that pane reports its directory with OSC 7, OSC 9;9, OSC 633 or iTerm2 `CurrentDir`.
 When it reports no directory that exists on this computer, the window asks the daemon.
 The daemon gives the directory of the program in the foreground.
 When the daemon gives none, the new programs start in your home directory.
-A project saves the session pane as a shell in the directory of that pane. A project does not keep sessions.
+A project saves each session pane as a shell in the directory of that pane. A project does not keep sessions.
+
+A pane or a tab that you move to a new window leaves the session.
+This is true for a drag out of the window, `afterglow ctl move-pane --new-window` and `afterglow ctl detach-tab`.
+Its programs go on in a new session, which gets the next number as its name, and a new window shows that session.
+The new session has the environment and the terminal settings of the first session.
+The programs keep the `AFTERGLOW_SESSION` of the first session.
+You cannot move all the panes of a session out of its window: the session would only get another name.
+
+These moves are not possible. Each one fails with a notice, and `afterglow ctl` writes the reason:
+
+- A move of a session pane into another window that shows something
+- A move of a pane of another window into the window of a session
 The `cwd` that scripts and `afterglow ctl` read is the directory that the shell reported, when it exists on this computer.
 For it, the window does not ask the daemon, because scripts read every pane often.
 
@@ -179,6 +199,8 @@ A pane that another pane hides with its zoom cannot be seen.
 While the pane overview is open, you can see only the panes that it shows as cards.
 
 A session pane differs from a pane outside a session in these ways:
+
+- The window of a session shows only the panes of that session (see [tabs and splits](#tabs-and-splits)).
 
 - A Sixel or iTerm2 image does not show when the program prints it before any window shows the session. A Kitty image that the program places then does not move the cursor. The daemon places images in cells, and only a window measures a cell.
 - An image shows when all of its pixels came from the daemon. The pixels of a large image come in more than one frame, so the image can show a short time after the text around it.
@@ -262,6 +284,7 @@ Thus an attach socket that a killed daemon left there stays until you remove it.
 ## Environment
 
 The programs of a session run with the environment of `afterglow mux new`, not with the environment of the daemon.
+A new tab or split of the window starts from that environment too, not from the environment of the window's Afterglow.
 Thus a session does not get variables of the daemon's systemd unit, such as `INVOCATION_ID`.
 `afterglow mux new` prepares the program as a window prepares a new pane.
 It adds shell integration, `TERM`, `COLORTERM`, `TERM_PROGRAM` and the values of `Terminal.env`.
@@ -307,9 +330,9 @@ When `kdeglobals` sets no background, `plasma` alone takes `afterglow-dark`.
 
 ### Control in a session pane
 
-A window that shows a session has a pane for it. The control socket of that window lists this pane, and acts on it as on its other panes.
+The control socket of a window that shows a session lists the session panes, and acts on them as on the panes of other windows.
 Text that `afterglow ctl send-text` sends to it goes to the program of the session.
-A session that no window shows has no pane in a window, and no control socket of a window lists it.
+A session that no window shows has no pane in a window, and no control socket of a window lists its panes.
 A pane ID in the daemon and a pane ID in a window can have the same value.
 
 In a session pane, `afterglow ctl`, `aglow run` and `afterglow ssh` connect to the daemon through `AFTERGLOW_SOCKET`.
@@ -386,7 +409,7 @@ These requests do not take more room when more come:
 When the window goes, the requests that still wait get the answer of a session that no window shows.
 A request that the window got already gets no answer from the daemon.
 A clipboard read that waits for your answer gets the denial when its window closes and the session keeps running.
-When the session pane closes in the window, a file transfer that the window ran gets no more answers. The same is true when the pane of a program of the window closes.
+When a session pane closes in the window, a file transfer that the window ran gets no more answers. The same is true when the pane of a program of the window closes.
 
 ## Limits
 
@@ -408,6 +431,8 @@ When the session pane closes in the window, a file transfer that the window ran 
 | Time to decode an image | 30 seconds, and a CPU time of 5 seconds and 1 second more for each 16 MiB of pixels | The decoder process ends. The image does not show, as above. The daemon writes a line on its standard error, at most once a minute. |
 | Memory of a decoder process | Its memory at its start, and 8 times the decoded pixels and 64 MiB more | The decode fails. The image does not show, as above. |
 | Scans of a progressive JPEG | 1,000 | The image does not show, as above. |
+| Panes of a session that a window shows | 4,096 | The daemon refuses the layout of a window with more panes, and the window no longer shows the session. The session keeps running. |
+| Title of a tab that the daemon keeps | 4,096 bytes of UTF-8 | The window sends the start of a longer title. |
 | Region scrolls in one frame | 256 | Every row from the top of the highest region that scrolled to the bottom of the lowest leaves its region. A selection or a search match in those rows goes. |
 | Requests that wait for a window | `Mux.eventQueue` (1 to 64 MiB, 4 MiB by default) in the queue of the session, and as much in the queue of each pane. A request that finds the queue of its pane empty passes the limit. The queue of the session also takes one request of any size while it is below the limit. | The answer of a session that no window shows (see [requests that wait](#requests-that-wait)) |
 | One request to a window | 129 MiB: the largest clipboard write that a terminal takes, and its types | The answer of a session that no window shows |

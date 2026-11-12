@@ -58,6 +58,11 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     , m_services{m_device, m_settings, m_chromeComponent, m_shaders, m_scripts, m_audio}
     , m_launch(*this)
 {
+    // Panes that leave a session's window go to a new session, in a window of
+    // its own; the session is new, so no other window shows it.
+    m_control.setSessionWindowOpener([this](const QString& session) {
+        return openLaunch({}, {}, {{QStringLiteral("session"), session}, {QStringLiteral("takeover"), false}});
+    });
     // Some platform-theme versions leave Qt Quick at its default Fusion style.
     // Prefer the desktop bridge on Plasma, preserving explicit style choices
     // and falling back normally when the optional module is not installed.
@@ -146,9 +151,7 @@ Application::~Application()
     m_controlSocket.setRemoteSockets(nullptr);
     // A quit (logout, a signal) is not the user closing a session's window:
     // every session keeps running, whatever Mux.onClose says.
-    for (TerminalWindow* window : TerminalWindow::windows()) {
-        for (Pane* pane : window->findChildren<Pane*>()) pane->setKillSessionOnClose(false);
-    }
+    for (TerminalWindow* window : TerminalWindow::windows()) window->keepSessionOnClose();
     // Windows render on the device and the chrome uses the QML engine.
     qDeleteAll(TerminalWindow::windows());
     // The scripts go before Control: its callbacks into them must not outlive them.

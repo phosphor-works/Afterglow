@@ -34,6 +34,11 @@
 #include <unordered_map>
 #include <vector>
 
+namespace AfterglowMux {
+struct Layout;
+struct LayoutTab;
+}
+
 namespace AfterglowRender {
 class GpuDevice;
 }
@@ -60,8 +65,9 @@ struct WindowOptions
     bool hold = false;
     bool empty = false; ///< Internal: receive live panes or a restored project before showing.
     QVariantMap environment = {};
-    /// A mux session that the window shows in its first tab, in place of a
-    /// program of its own (afterglow mux attach).
+    /// A mux session that the window shows (afterglow mux attach): its tabs
+    /// and splits, in place of programs of its own. Each new tab and split of
+    /// the window is a pane of the session.
     std::shared_ptr<MuxClient> session = {};
 };
 
@@ -248,6 +254,16 @@ public:
     void setProjectName(const QString& name) { m_projectName = name; }
     QString movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction);
     QString detachTabTo(Pane* pane, TerminalWindow* destination);
+    /// The window shows a mux session: all of its panes are the session's.
+    bool showsSession() const { return m_session != nullptr; }
+    /// The session keeps running when the window closes, whatever Mux.onClose
+    /// says: Afterglow quits.
+    void keepSessionOnClose();
+    /// Moves @p pane, or its whole tab with @p wholeTab, out of the session
+    /// to a new session of the daemon, where its programs run on, and closes
+    /// it here: a drag out of the window. @p session gets the name of the
+    /// new session, which a new window then shows. Empty, else why not.
+    QString breakOutOfSession(Pane* pane, bool wholeTab, QString* session);
     bool swapPane(Pane* pane, SplitTree::Neighbour direction);
     bool rotatePanes(bool clockwise);
     /// The pane overview: every tab's panes as live cards, drawn by Shaders.overview.
@@ -313,6 +329,27 @@ private:
     Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
     /// A pane that shows pane @p id of @p session: no program of its own.
     Pane* createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id);
+    /// createPane in a window that shows a session: the daemon starts the
+    /// program, with the session's environment and what the launch changes
+    /// in it.
+    Pane* createSessionLaunchPane(const QString& workingDirectory, const QRect& area, const QStringList& command, QString* failure,
+                                  const QVariantMap& environment);
+    /// Why a pane or a tab of this window cannot move to @p destination, else
+    /// empty: a session's window keeps its panes, and takes no others.
+    QString sessionMoveError(const TerminalWindow* destination) const;
+    /// What closing session panes ends when the window closes with them:
+    /// the session with Mux.onClose kill, else nothing; nothing when
+    /// Afterglow quits (keepSessionOnClose).
+    MuxRelease windowCloseRelease() const;
+    /// The tabs and splits of the window, for the daemon of its session.
+    AfterglowMux::Layout sessionLayout() const;
+    /// The tree, focus, zoom and title of @p tab, whose focus is @p focused.
+    AfterglowMux::LayoutTab sessionTab(const Tab& tab, const Pane* focused) const;
+    /// Sends the layout soon: a drag of a divider sends its ratio once in a
+    /// while, not each frame.
+    void scheduleSessionLayout();
+    /// Sends the layout now, before a close takes its tabs.
+    void sendSessionLayout();
     /// Puts @p first in a new tab at @p at (-1: beside the current one).
     Pane* addTab(Pane* first, int at);
     void bindPane(Pane* pane);
@@ -393,9 +430,10 @@ private:
     Pane* splitFocused(SplitTree::Direction direction, const QStringList& command = {}, const PaneLaunchOptions& options = {}, QString* error = nullptr);
     /// Opens a tab at @p at (beside the current tab when negative).
     Pane* newTab(const QString& workingDirectory, const QStringList& command = {}, const QVariantMap& environment = {}, QString* error = nullptr, int at = -1);
-    /// A tab that shows the first pane of @p session. Null when the session
-    /// names no pane: the window then has no tab, and Application deletes it.
-    Pane* newSessionTab(const std::shared_ptr<MuxClient>& session);
+    /// The tabs and splits of the session that the window shows, as the
+    /// daemon sent them, each pane a session pane.
+    void restoreSession();
+
     /// Opens a shell tab beside @p from's tab, in its directory (beside the
     /// current tab with none), without showing @p from's tab first: one tab
     /// switch. A failure is a notice.
@@ -1312,6 +1350,14 @@ private:
     std::function<void()> m_pendingConfirm; ///< what a confirm prompt goes ahead with
     QList<QPointer<Pane>> m_pendingConfirmPanes; ///< the panes the confirm prompt is about
     bool m_closeConfirmed = false; ///< the window may close without asking
+    /// The mux session that the window shows, else null (WindowOptions::session).
+    std::shared_ptr<MuxClient> m_session;
+    QTimer m_sessionLayoutTimer;
+    /// Panes close because they went to another session: their programs
+    /// run on (breakOutOfSession).
+    bool m_breakingOut = false;
+    /// What the window's close ends of its session, when not Mux.onClose.
+    std::optional<MuxRelease> m_windowRelease;
     bool m_pointerHidden = false; ///< hidden while typing
     QElapsedTimer m_lastBellSound;
     std::optional<SplitTree::Divider> m_dividerDrag;

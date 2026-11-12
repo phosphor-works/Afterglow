@@ -62,7 +62,13 @@ public:
     /// no client, from @p source (ev.source). Returns an error, or empty.
     using ScriptCommandRunner = std::function<QString(const QString& command, quint32 pane, const QString& source)>;
 
+    /// Opens a window that shows mux session @p session: empty, else why not.
+    using SessionWindowOpener = std::function<QString(const QString& session)>;
+
     Control(SettingsStore& settings, WindowFactory newWindow, QObject* parent = nullptr);
+    /// For a drag of panes out of a session's window: they go to a new
+    /// session, which a new window shows.
+    void setSessionWindowOpener(SessionWindowOpener opener) { m_openSessionWindow = std::move(opener); }
 
     /// Follows a window's panes; every window registers on creation.
     void attachWindow(TerminalWindow* window);
@@ -239,6 +245,10 @@ private:
 
     SettingsStore& m_settings;
     WindowFactory m_newWindow;
+    SessionWindowOpener m_openSessionWindow;
+    /// Moves @p pane of @p source, or its tab with @p tab, out of the session
+    /// that @p source shows, to a new session in a new window.
+    QString breakOut(TerminalWindow* source, Pane* pane, bool tab, QVariantMap& result);
     ScriptCommandRunner m_scriptCommands;
     std::function<QVariantList()> m_scriptDiagnostics;
     bool m_noticesEnded = false;

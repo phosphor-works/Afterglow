@@ -884,6 +884,9 @@ QString Control::movePane(quint32 id, quint32 target, const QString& placement, 
     if (!newTab && !newWindow && !beside) return QStringLiteral("a target pane is required");
     if (pane == beside) return QStringLiteral("cannot move a pane beside itself");
     if (newTab) destination = source;
+    // A session's panes run under its daemon: they leave in a session of
+    // their own, which a window of its own shows.
+    if (newWindow && source->showsSession()) return breakOut(source, pane, false, result);
     if (newWindow) destination = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
     if (!destination) return QStringLiteral("cannot open a window");
     const auto error = source->movePaneTo(pane, destination, beside, direction);
@@ -898,12 +901,33 @@ QString Control::detachTab(quint32 id, QVariantMap& result)
     TerminalWindow* source = nullptr;
     auto* pane = find(id, &source);
     if (!pane) return noPane(id);
+    if (source->showsSession()) return breakOut(source, pane, true, result);
     auto* destination = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
     if (!destination) return QStringLiteral("cannot open a window");
     const auto error = source->detachTabTo(pane, destination);
     if (!error.isEmpty()) destination->deleteLater();
     if (error.isEmpty()) if (const auto info = paneInfo(id)) result = paneMap(*info);
     return error;
+}
+
+QString Control::breakOut(TerminalWindow* source, Pane* pane, bool tab, QVariantMap& result)
+{
+    if (!m_openSessionWindow) return QStringLiteral("cannot open a window");
+    const std::uint32_t daemonPane = pane->sessionPaneId();
+    QString session;
+    if (const QString error = source->breakOutOfSession(pane, tab, &session); !error.isEmpty()) return error;
+    if (const QString error = m_openSessionWindow(session); !error.isEmpty()) {
+        return QStringLiteral("the panes run on in session %1, which no window shows: %2").arg(session, error);
+    }
+    // The pane in the new window that shows the same program.
+    for (TerminalWindow* window : TerminalWindow::windows()) {
+        for (Pane* p : window->panes()) {
+            if (p->showsSession(session) && p->sessionPaneId() == daemonPane) {
+                if (const auto info = paneInfo(p->id())) result = paneMap(*info);
+            }
+        }
+    }
+    return {};
 }
 
 void Control::showNew(TerminalWindow* window) const

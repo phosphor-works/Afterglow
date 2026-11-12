@@ -4,6 +4,7 @@
 #include "app/WindowStart.h"
 #include "chrome/ChromeController.h"
 #include "desktop/Accessibility.h"
+#include "mux/MuxClient.h"
 #include "DockArea.h"
 #include <algorithm>
 #include <cmath>
@@ -139,11 +140,22 @@ void TerminalWindow::finishTransfer(quint32 previousTab, int previousIndex)
     if (!isVisible() && !m_quick) showForStartMode(*this, m_settings.settings().window);
 }
 
+QString TerminalWindow::sessionMoveError(const TerminalWindow* destination) const
+{
+    // A session's programs run under its daemon, and its window shows them
+    // all: a pane of the session cannot go to another window, and a program
+    // of a window cannot join the session.
+    if (destination == this || (!m_session && !destination->m_session)) return {};
+    return m_session ? QStringLiteral("A pane of session %1 cannot leave its window").arg(m_session->session())
+                     : QStringLiteral("A pane cannot move into the window of session %1").arg(destination->m_session->session());
+}
+
 QString TerminalWindow::movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction)
 {
     const int index = tabOf(pane);
     if (index < 0 || !destination || (beside && destination->tabOf(beside) < 0) || pane == beside)
         return QStringLiteral("Invalid pane destination");
+    if (const QString refused = sessionMoveError(destination); !refused.isEmpty()) return refused;
     // A new tab in its own window for a pane alone in its tab would only
     // replace the tab, with a new ID and without its title.
     if (destination == this && !beside && m_tabs[std::size_t(index)]->splits->paneCount() == 1)
@@ -201,6 +213,7 @@ QString TerminalWindow::detachTabTo(Pane* pane, TerminalWindow* destination)
 {
     const int index = tabOf(pane);
     if (index < 0 || !destination || destination == this) return QStringLiteral("Invalid tab destination");
+    if (const QString refused = sessionMoveError(destination); !refused.isEmpty()) return refused;
     // Both windows' current tabs keep their focus through the transfer: each
     // is shown again from its saved focus.
     if (m_focused && m_currentTab >= 0) m_tabs[std::size_t(m_currentTab)]->focused = m_focused;

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <csignal>
 #include <optional>
+#include <set>
 #include <vector>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -11021,7 +11022,6 @@ TEST_F(NativeWindow, AMuxSessionCanOutliveItsWindow) {
     ASSERT_NE(shown, nullptr) << error.toStdString();
     Pane* pane = shown->focusedPane();
     ASSERT_NE(pane, nullptr);
-    EXPECT_FALSE(pane->closeEndsProgram());
     ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
     delete shown;
     ASSERT_TRUE(waitFor([&] {
@@ -11030,7 +11030,7 @@ TEST_F(NativeWindow, AMuxSessionCanOutliveItsWindow) {
     }, 5000));
 }
 
-// Mux.onClose applies live: a pane that opened with kill detaches once the
+// Mux.onClose applies live: a window that opened with kill detaches once the
 // configuration says detach.
 TEST_F(NativeWindow, MuxOnCloseAppliesToAnOpenSessionPane) {
     MuxTest::TestDaemon daemon;
@@ -11041,19 +11041,164 @@ TEST_F(NativeWindow, MuxOnCloseAppliesToAnOpenSessionPane) {
     ASSERT_NE(shown, nullptr) << error.toStdString();
     Pane* pane = shown->focusedPane();
     ASSERT_NE(pane, nullptr);
-    ASSERT_TRUE(pane->closeEndsProgram());
     ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
     QFile config(directory.filePath(QStringLiteral("afterglow.conf")));
     ASSERT_TRUE(config.open(QIODevice::WriteOnly | QIODevice::Truncate));
     config.write(R"({"Mux": {"onClose": "detach"}})");
     config.close();
     ASSERT_TRUE(shown->runAction(pane, Action::ReloadConfig));
-    ASSERT_TRUE(waitFor([&] { return !pane->closeEndsProgram(); }, 5000));
+    ASSERT_TRUE(settleQueued());
     delete shown;
     ASSERT_TRUE(waitFor([&] {
         const auto info = sessionNamed(daemon, "live");
         return info && !info->attached;
     }, 5000));
+}
+
+namespace {
+
+/// The window of this process that shows session @p name, if one does.
+TerminalWindow* windowOfSession(const QString& name)
+{
+    for (TerminalWindow* window : TerminalWindow::windows()) {
+        for (Pane* pane : window->panes()) {
+            if (pane->showsSession(name)) return window;
+        }
+    }
+    return nullptr;
+}
+
+/// The daemon's IDs of the panes of @p window.
+std::set<std::uint32_t> sessionPaneIds(const TerminalWindow& window)
+{
+    std::set<std::uint32_t> ids;
+    for (Pane* pane : window.panes()) ids.insert(pane->sessionPaneId());
+    return ids;
+}
+
+} // namespace
+
+// A new tab and a split of a session's window are panes of the session: they
+// run under the daemon, and the next window shows the same tabs and splits.
+TEST_F(NativeWindow, ASessionsTabsAndSplitsComeBackWithTheNextWindow) {
+    restartApplication(QStringLiteral("mux.conf"),
+                       testSettings({{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("onClose"), QStringLiteral("detach")}}}}),
+                       {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "tabs")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("tabs"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    SettingsStore settings(directory.filePath(QStringLiteral("mux.conf")));
+    Control control(settings, {});
+    control.attachWindow(shown);
+    quint32 split = 0, tab = 0;
+    ASSERT_EQ(control.split(pane->id(), QStringLiteral("down"), {}, {}, split), QString());
+    ASSERT_EQ(control.newTab(pane->id(), {}, {}, tab), QString());
+    for (Pane* p : shown->panes()) EXPECT_TRUE(p->isSessionPane());
+    ASSERT_TRUE(waitFor([&] { return sessionNamed(daemon, "tabs")->panes == 3; }, 5000));
+    const std::set<std::uint32_t> ids = sessionPaneIds(*shown);
+    ASSERT_EQ(ids.size(), 3u);
+    const std::uint32_t focused = shown->focusedPane()->sessionPaneId();
+    // Mux.onClose detach: the session runs on, with its tabs.
+    delete shown;
+    ASSERT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "tabs");
+        return info && !info->attached && info->panes == 3;
+    }, 5000));
+    QPointer<TerminalWindow> again = showSession(*application, daemon, QStringLiteral("tabs"), &error);
+    ASSERT_NE(again, nullptr) << error.toStdString();
+    ASSERT_EQ(again->tabs().size(), 2);
+    EXPECT_EQ(sessionPaneIds(*again), ids);
+    // The new tab, which showed, shows again.
+    EXPECT_EQ(again->activeTabId(), again->tabs()[1].id);
+    EXPECT_EQ(again->focusedPane()->sessionPaneId(), focused);
+    EXPECT_EQ(again->tabs()[0].index, 0);
+    delete again;
+}
+
+// The user closes one pane of a session's window: its program ends, and the
+// window and the session go on.
+TEST_F(NativeWindow, ClosingAPaneOfASessionsWindowEndsOnlyItsProgram) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "close")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("close"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    SettingsStore settings(directory.filePath(QStringLiteral("afterglow.conf")));
+    Control control(settings, {});
+    control.attachWindow(shown);
+    quint32 split = 0;
+    ASSERT_EQ(control.split(pane->id(), QStringLiteral("right"), {}, {}, split), QString());
+    ASSERT_TRUE(waitFor([&] { return sessionNamed(daemon, "close")->panes == 2; }, 5000));
+    ASSERT_EQ(control.close(split), QString());
+    // The pane goes at its deferred delete, as the event loop runs it.
+    drainDeferredDeletes();
+    ASSERT_TRUE(waitFor([&] { return sessionNamed(daemon, "close")->panes == 1; }, 5000));
+    ASSERT_TRUE(settleQueued());
+    ASSERT_NE(shown, nullptr);
+    EXPECT_EQ(shown->panes().size(), 1);
+    EXPECT_TRUE(sessionNamed(daemon, "close")->attached);
+    // The window's own close ends the session (Mux.onClose kill).
+    delete shown;
+    EXPECT_TRUE(waitFor([&] { return !sessionNamed(daemon, "close"); }, 5000));
+}
+
+// A tab dragged out of a session's window goes to a new session, in a new
+// window: its programs run on. A pane of another window does not join a
+// session's window.
+TEST_F(NativeWindow, ATabDraggedOutOfASessionsWindowBecomesANewSession) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "drag")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("drag"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    SettingsStore settings(directory.filePath(QStringLiteral("afterglow.conf")));
+    Control control(settings, {});
+    control.attachWindow(shown);
+    control.setSessionWindowOpener([&](const QString& name) {
+        QString failure;
+        QPointer<TerminalWindow> opened = showSession(*application, daemon, name, &failure);
+        if (opened) control.attachWindow(opened);
+        return failure;
+    });
+    // Its only tab holds every pane of the session: it stays.
+    QVariantMap result;
+    EXPECT_NE(control.detachTab(pane->id(), result), QString());
+    quint32 tab = 0, split = 0;
+    ASSERT_EQ(control.newTab(pane->id(), {}, {}, tab), QString());
+    ASSERT_EQ(control.split(tab, QStringLiteral("right"), {}, {}, split), QString());
+    ASSERT_TRUE(waitFor([&] { return sessionNamed(daemon, "drag")->panes == 3; }, 5000));
+    ASSERT_EQ(control.detachTab(split, result), QString());
+    ASSERT_TRUE(settleQueued());
+    // The tab left the window, and a new session holds its two panes.
+    EXPECT_EQ(shown->panes().size(), 1);
+    EXPECT_EQ(sessionNamed(daemon, "drag")->panes, 1);
+    std::string fresh;
+    for (const auto& info : daemon.sessions()) {
+        if (info.name != "drag" && info.name != "keep") fresh = info.name;
+    }
+    ASSERT_FALSE(fresh.empty());
+    EXPECT_EQ(sessionNamed(daemon, fresh)->panes, 2);
+    QPointer<TerminalWindow> moved = windowOfSession(QString::fromStdString(fresh));
+    ASSERT_NE(moved, nullptr);
+    EXPECT_EQ(moved->panes().size(), 2);
+    EXPECT_EQ(result.value(QStringLiteral("window")).toUInt(), moved->id());
+    // A pane of a window of its own cannot join the session's window.
+    QPointer<TerminalWindow> plain = application->newWindow({});
+    ASSERT_NE(plain, nullptr);
+    control.attachWindow(plain);
+    ASSERT_NE(plain->focusedPane(), nullptr);
+    EXPECT_NE(control.movePane(plain->focusedPane()->id(), pane->id(), QStringLiteral("right"), result), QString());
+    EXPECT_EQ(shown->panes().size(), 1);
+    delete plain;
+    delete moved;
+    delete shown;
+    EXPECT_TRUE(waitFor([&] { return MuxTest::names(daemon.sessions()) == std::vector<std::string>{"keep"}; }, 5000));
 }
 
 int main(int argc, char** argv)

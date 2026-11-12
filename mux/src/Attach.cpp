@@ -8,6 +8,7 @@
 #include <AfterglowProto/Socket.h>
 
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 
 #include <sys/random.h>
@@ -235,6 +236,33 @@ void Attachment::paneClosed(std::unique_ptr<MuxPane> pane)
     if (PaneLink* l = link(*pane)) l->closed = std::move(pane);
 }
 
+void Attachment::paneRemoved(std::uint32_t id, MuxPane* moved)
+{
+    if (moved) {
+        // A call whose first parts went is answered too: the window drops
+        // its parts with the pane.
+        std::vector<std::shared_ptr<const std::string>> calls;
+        for (auto it = m_waitingEvents.begin(); it != m_waitingEvents.end();) {
+            if (it->pane != id || !it->call) {
+                ++it;
+                continue;
+            }
+            if (it->call != m_answeredPart && (calls.empty() || calls.back() != it->call)) calls.push_back(it->call);
+            m_waitingBytes -= it->encoded.size() + Host::CallCost;
+            it = m_waitingEvents.erase(it);
+        }
+        for (const auto& call : calls) moved->answerWithoutWindow(*call);
+    }
+    const auto it = m_panes.find(id);
+    if (it == m_panes.end()) return;
+    it->second.writer->close();
+    m_panes.erase(it);
+    Attach::Event closed;
+    closed.type = Attach::EventType::PaneClosed;
+    closed.pane = id;
+    sendEvent(closed);
+}
+
 void Attachment::finish(Attach::EventType type, Session* session)
 {
     if (m_finish) return;
@@ -274,11 +302,17 @@ void Attachment::readInput(Session& session)
         }
         while (actions->read(frame) == PhosphorChannel::ReadResult::Frame) {
             const auto action = Attach::decodeInput(frame);
-            if (!action || action->type != Attach::InputType::Kill) {
+            if (!action || (action->type != Attach::InputType::Kill && action->type != Attach::InputType::ClosePane)) {
                 m_failed = true;
                 return;
             }
-            m_kill = true;
+            if (action->type == Attach::InputType::Kill) {
+                m_kill = true;
+                continue;
+            }
+            // A pane whose program exited since the window closed it is gone
+            // already.
+            if (session.closePane(action->pane)) paneRemoved(action->pane);
         }
         if (m_kill) return;
     }
@@ -299,10 +333,23 @@ void Attachment::readInput(Session& session)
             m_failed = true;
             return;
         }
-        // A Kill comes on the action channel only.
-        if (message->type == Attach::InputType::Kill) {
+        // A Kill and a ClosePane come on the action channel only.
+        if (message->type == Attach::InputType::Kill || message->type == Attach::InputType::ClosePane) {
             m_failed = true;
             return;
+        }
+        if (message->type == Attach::InputType::Layout) {
+            std::string error;
+            const auto json = AfterglowProto::Json::parse(message->bytes, &error);
+            auto layout = json ? layoutFrom(*json, &error) : std::nullopt;
+            if (!layout) {
+                std::fprintf(stderr, "afterglow-mux: the window of session %s sent a layout that is not valid: %s\n", m_session.c_str(),
+                             error.c_str());
+                m_failed = true;
+                return;
+            }
+            session.setLayout(std::move(*layout));
+            continue;
         }
         MuxPane* pane = session.pane(message->pane);
         // A pane that exited since the window wrote: its input is lost, as
@@ -333,7 +380,9 @@ void Attachment::readInput(Session& session)
             pane->setVisible(message->visible, m_serial);
             break;
         case Attach::InputType::Kill:
-            break; // refused above: a Kill comes on the action channel only
+        case Attach::InputType::ClosePane:
+        case Attach::InputType::Layout:
+            break; // taken above
         }
     }
 }
@@ -445,6 +494,15 @@ void Attachment::pump(Session* session)
     if (!m_stream || m_failed || !m_stream->open()) return;
     // The events that waited for the window to grant the channel.
     flushEvents();
+    if (session && !m_finish && !m_layoutSent) {
+        // The window lays out the session's tabs and splits before it makes
+        // the panes that PaneOpened names.
+        Attach::Event layout;
+        layout.type = Attach::EventType::Layout;
+        layout.payload = AfterglowProto::Json::write(toJson(session->layout()));
+        sendEvent(layout);
+        m_layoutSent = true;
+    }
     if (session && !m_finish) {
         // Input that went now leaves the frames behind it in the channel's
         // reader, which only readInput() reads: the next pass does, at once.
