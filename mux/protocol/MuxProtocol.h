@@ -14,7 +14,7 @@
 #include <vector>
 
 // The calls of the mux daemon's control target, and the values that they
-// carry. The client (afterglow mux) and the daemon (afterglow-mux) share this
+// carry. The client (afterglow mux) and the daemon (aglow-mux) share this
 // code. They can still come from two builds: a daemon keeps running while
 // the user installs a new afterglow. ProtocolVersion tells them apart.
 
@@ -42,7 +42,7 @@ inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
 /// (MuxStream.h). The client sends nothing after the call until the answer
 /// came, and then starts the stream, which writes first: the daemon sends
 /// nothing after the answer until then. So neither side's line reader takes
-/// a byte of the stream, also through a proxy (`afterglow-mux proxy`).
+/// a byte of the stream, also through a proxy (`aglow-mux proxy`).
 inline constexpr const char* Attach = "attach";
 /// (name) -> null: the window of the session closes, and the session keeps running.
 inline constexpr const char* Detach = "detach";
@@ -113,7 +113,7 @@ inline constexpr const char* NotAttached = "NOT_ATTACHED";
 /// else ReportHeld and why, or only why it cannot start, and closes it. An
 /// end of the pipe with none of them is a daemon that ended before it
 /// listened.
-inline constexpr const char* ReportFdVariable = "AFTERGLOW_MUX_REPORT_FD";
+inline constexpr const char* ReportFdVariable = "AGLOW_MUX_REPORT_FD";
 /// A byte that no message has: the daemon listens.
 inline constexpr char ReportListening = '\0';
 /// A byte that no message has, before the message: another daemon holds
@@ -204,7 +204,7 @@ struct SessionOptions
     std::vector<std::pair<std::string, std::string>> environment;
     /// The session's environment is that of the process that calls
     /// newSession, with `environment` over it: for a session on another host,
-    /// `afterglow-mux proxy` there, which runs in the user's ssh login. Its
+    /// `aglow-mux proxy` there, which runs in the user's ssh login. Its
     /// panes without a command run the user's shell as a login shell, in
     /// HOME without a directory.
     bool callerEnvironment = false;

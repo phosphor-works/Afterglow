@@ -293,7 +293,7 @@ void Attachment::readInput(Session& session)
             const auto json = AfterglowProto::Json::parse(message->bytes, &error);
             auto layout = json ? layoutFrom(*json, &error) : std::nullopt;
             if (!layout) {
-                std::fprintf(stderr, "afterglow-mux: the window of session %s sent a layout that is not valid: %s\n", m_session.c_str(),
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent a layout that is not valid: %s\n", m_session.c_str(),
                              error.c_str());
                 m_failed = true;
                 return;

@@ -31,7 +31,7 @@ class Session;
 /// stream with the session's layout and state to the window, and the
 /// window's input, its layout and the panes that it closes back
 /// (MuxStream.h). So the window reaches it as it reached the daemon, also
-/// through a proxy on another host (`afterglow-mux proxy`).
+/// through a proxy on another host (`aglow-mux proxy`).
 ///
 /// A pane's frame that the channel refuses waits, and no newer frame is made
 /// until it went: a frame covers every change since the one before, so the

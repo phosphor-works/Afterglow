@@ -44,7 +44,7 @@ Most bundled shader packs use LGPL-2.1-or-later. Third-party themes use MIT.
 The icon uses CC-BY-SA-4.0.
 The binaries include zlib-ng (Zlib license), xxHash (BSD-2-Clause), valijson (BSD-2-Clause), Luau (MIT) and Lua (MIT).
 `aglow` includes zlib-ng and xxHash.
-`aglow` and `afterglow-mux` also include libpng (libpng-2.0 license), libjpeg-turbo (IJG and BSD-3-Clause licenses) and libwebp (BSD-3-Clause).
+`aglow` and `aglow-mux` also include libpng (libpng-2.0 license), libjpeg-turbo (IJG and BSD-3-Clause licenses) and libwebp (BSD-3-Clause).
 This software is based in part on the work of the Independent JPEG Group.
 A static `aglow` also includes parts of glibc and of the GCC runtime libraries.
 Each file, or `REUSE.toml` for a file without a header, identifies its license.

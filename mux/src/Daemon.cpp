@@ -132,7 +132,7 @@ Daemon::Listen Daemon::listen(const std::vector<AfterglowProto::MuxSocket>& sock
     // is left, for a client that sees no stderr of the daemon.
     std::string reasons;
     const auto skip = [&reasons](const std::string& reason) {
-        std::fprintf(stderr, "afterglow-mux: %s\n", reason.c_str());
+        std::fprintf(stderr, "aglow-mux: %s\n", reason.c_str());
         reasons += (reasons.empty() ? "" : " and ") + reason;
     };
     for (const AfterglowProto::MuxSocket& socket : sockets) {
@@ -149,7 +149,7 @@ Daemon::Listen Daemon::listen(const std::vector<AfterglowProto::MuxSocket>& sock
         case AfterglowProto::IpcListener::Listen::Held:
             // Its sessions are there: a client that reached this daemon on
             // another socket would not see them.
-            if (error) *error = "another afterglow-mux listens on " + socket.path;
+            if (error) *error = "another aglow-mux listens on " + socket.path;
             m_listeners.clear();
             return Listen::Held;
         case AfterglowProto::IpcListener::Listen::Failed:
@@ -212,7 +212,7 @@ Daemon::Exit Daemon::run()
         const int ready = ::poll(fds.data(), fds.size(), timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
-            std::fprintf(stderr, "afterglow-mux: poll failed: %s\n", std::strerror(errno));
+            std::fprintf(stderr, "aglow-mux: poll failed: %s\n", std::strerror(errno));
             return {1, 0};
         }
         // Paired with what the poll saw before anything below adds, finishes
@@ -320,7 +320,7 @@ void Daemon::read(IpcServerConnection& connection)
             const int fd = connection.release(&unsent);
             if (fd < 0) {
                 // It sent more after its call, which the stream would lose.
-                std::fprintf(stderr, "afterglow-mux: the window of session %s sent its stream before the answer to its attach\n",
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent its stream before the answer to its attach\n",
                              attachment->session().c_str());
                 connection.close();
                 return;
@@ -649,7 +649,7 @@ void Daemon::syncAttached()
                 // As for a window (guarded): the answers to the calls of a
                 // window that went, out of memory, must not end the sessions
                 // of all the others. The next pass tries again.
-                std::fprintf(stderr, "afterglow-mux: a pane of session %s failed: %s\n", session->name().c_str(), e.what());
+                std::fprintf(stderr, "aglow-mux: a pane of session %s failed: %s\n", session->name().c_str(), e.what());
             }
         }
     }
@@ -685,7 +685,7 @@ bool Daemon::guarded(Attachment& attachment, const std::function<bool()>& work)
         // As for a call: one window that fails (out of memory for a frame)
         // must not end the sessions of all the others. That window loses
         // its session, which keeps running.
-        std::fprintf(stderr, "afterglow-mux: the window of session %s failed: %s\n", attachment.session().c_str(), e.what());
+        std::fprintf(stderr, "aglow-mux: the window of session %s failed: %s\n", attachment.session().c_str(), e.what());
         // The calls that waited for it get the answers of a session that no
         // window shows. Out of memory again, they get none.
         const auto session = find(attachment.session());

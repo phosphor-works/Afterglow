@@ -3,7 +3,7 @@
 
 // The decoders in this process: the formats, their sizes from the header,
 // and the files that they refuse. aglow's icat_decode.py and the tests of
-// afterglow-mux run them in their child processes.
+// aglow-mux run them in their child processes.
 
 #include "../src/Formats.h"
 #include "ImageFiles.h"

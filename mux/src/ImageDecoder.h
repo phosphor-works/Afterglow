@@ -18,7 +18,7 @@
 
 namespace AfterglowMux {
 
-/// The argument that makes afterglow-mux the server of ImageDecoder, with
+/// The argument that makes aglow-mux the server of ImageDecoder, with
 /// the daemon's process id after it.
 inline constexpr std::string_view DecodeServerArgument = "--decode-images";
 

@@ -1,6 +1,6 @@
-aglow, afterglow-mux and the Independent JPEG Group
+aglow, aglow-mux and the Independent JPEG Group
 
-The aglow and afterglow-mux programs of Afterglow decode JPEG images with
+The aglow and aglow-mux programs of Afterglow decode JPEG images with
 libjpeg-turbo, which is linked into them. LICENSE.libjpeg-turbo and
 README.ijg in this directory hold its licenses.
 

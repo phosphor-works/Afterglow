@@ -14,7 +14,7 @@
 #include <sys/types.h>
 
 // The server side of the phosphor-ipc wire format, without Qt: one JSON
-// object on each line. afterglow-mux has no Qt, and answers the clients that
+// object on each line. aglow-mux has no Qt, and answers the clients that
 // the Qt server of PhosphorIpc::IpcRouter answers too: `afterglow mux`, and
 // in a session pane, whose AFTERGLOW_SOCKET names the daemon, `afterglow
 // ctl`, `aglow run` and `afterglow ssh`.

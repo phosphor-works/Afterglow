@@ -3,7 +3,7 @@
 
 # The mux daemon
 
-The mux daemon, `afterglow-mux`, keeps terminal sessions running while no window shows them.
+The mux daemon, `aglow-mux`, keeps terminal sessions running while no window shows them.
 A session is a set of tabs and split panes with running programs. A session that `afterglow mux new` creates starts with one pane.
 The `afterglow mux` commands create, list and end sessions. They also show a session in a window, and close that window again.
 
@@ -12,12 +12,12 @@ A mux session and a normal `afterglow` launch can run at the same time.
 
 ## The daemon
 
-`afterglow-mux` is a daemon with no Qt. It needs no display and no GPU.
+`aglow-mux` is a daemon with no Qt. It needs no display and no GPU.
 A second process of it starts a process for each image that a session decodes (see [what the daemon answers](#what-the-daemon-answers)).
 It owns the sessions, the PTYs of their panes and the terminal state of each pane.
 It reads no configuration file. `afterglow mux new` sends the values that a session needs (see [environment](#environment)).
 
-`afterglow mux` runs the `afterglow-mux` in the directory of the `afterglow` executable. It does not search `PATH`.
+`afterglow mux` runs the `aglow-mux` in the directory of the `afterglow` executable. It does not search `PATH`.
 
 ### Start
 
@@ -33,10 +33,10 @@ The command uses the systemd user manager when all of these conditions are true:
 
 | Condition | How the daemon starts |
 | --- | --- |
-| All of the conditions are true | In its own systemd user unit, `afterglow-mux.service`, with `systemd-run --user` |
+| All of the conditions are true | In its own systemd user unit, `aglow-mux.service`, with `systemd-run --user` |
 | One of the conditions is false | In a new session with `setsid`, outside the process group and the terminal of the command |
-| `systemd-run` fails, and `afterglow-mux.service` does not exist | In a new session with `setsid` |
-| `systemd-run` fails, and `afterglow-mux.service` exists | No second daemon starts. The command waits for the daemon of that unit, which starts or ends. |
+| `systemd-run` fails, and `aglow-mux.service` does not exist | In a new session with `setsid` |
+| `systemd-run` fails, and `aglow-mux.service` exists | No second daemon starts. The command waits for the daemon of that unit, which starts or ends. |
 
 `UID` is your user ID. Lingering is on when `/var/lib/systemd/linger/USER` exists (`loginctl enable-linger`).
 The command finds the user manager through its socket, `$XDG_RUNTIME_DIR/systemd/private`.
@@ -57,21 +57,21 @@ When `afterglow mux attach` creates the session, the message starts with `afterg
 | Start | Result | Message |
 | --- | --- | --- |
 | `setsid` | The daemon reports an error before it exits, for example when it can use none of its sockets (see [sockets](#sockets)) | The error of the daemon, such as `no socket to listen on: ` and the reason for each socket. The command stops at once. |
-| `setsid` | The daemon finds a socket that another daemon holds, and that daemon does not answer in 5 seconds | `afterglow-mux: another afterglow-mux listens on PATH, which does not answer` |
-| `setsid` | The daemon exits before it listens and reports no error | `afterglow-mux ended before it listened`. The command stops at once, without the wait of 5 seconds. |
-| `setsid` | No socket of the daemon answers in 5 seconds | `afterglow-mux did not start: no daemon answers on PATH`, with the path of each socket |
-| systemd user unit | The unit is in the state `deactivating`, and no socket answers in 5 seconds | `afterglow-mux did not start: the daemon of afterglow-mux.service is ending. Try again when it has ended` |
-| systemd user unit | No socket of the daemon answers in 5 seconds. Or the unit that the command started ends before its daemon answers, and no other daemon holds the lock of a socket. | `afterglow-mux did not start: see journalctl --user -u afterglow-mux`. The journal shows the error of the daemon. |
-| systemd user unit | Another daemon holds the lock of a socket and does not answer in 5 seconds. A lock file that a killed daemon left holds no lock. | `afterglow-mux did not start: another afterglow-mux holds a socket and does not answer` |
+| `setsid` | The daemon finds a socket that another daemon holds, and that daemon does not answer in 5 seconds | `aglow-mux: another aglow-mux listens on PATH, which does not answer` |
+| `setsid` | The daemon exits before it listens and reports no error | `aglow-mux ended before it listened`. The command stops at once, without the wait of 5 seconds. |
+| `setsid` | No socket of the daemon answers in 5 seconds | `aglow-mux did not start: no daemon answers on PATH`, with the path of each socket |
+| systemd user unit | The unit is in the state `deactivating`, and no socket answers in 5 seconds | `aglow-mux did not start: the daemon of aglow-mux.service is ending. Try again when it has ended` |
+| systemd user unit | No socket of the daemon answers in 5 seconds. Or the unit that the command started ends before its daemon answers, and no other daemon holds the lock of a socket. | `aglow-mux did not start: see journalctl --user -u aglow-mux`. The journal shows the error of the daemon. |
+| systemd user unit | Another daemon holds the lock of a socket and does not answer in 5 seconds. A lock file that a killed daemon left holds no lock. | `aglow-mux did not start: another aglow-mux holds a socket and does not answer` |
 
 Two commands can start a daemon at the same time. Then the second daemon finds the socket of the first daemon and exits.
 Its command waits for the first daemon, because the first daemon can take some time before it answers.
-When the unit `afterglow-mux.service` is still loaded because its daemon ends, `afterglow mux new` waits for the end of that unit.
+When the unit `aglow-mux.service` is still loaded because its daemon ends, `afterglow mux new` waits for the end of that unit.
 When the unit is gone, the command starts the unit again one time, in the same 5 seconds.
 
 A daemon of another build of Afterglow can speak another protocol.
 Then `afterglow mux new`, `attach`, `detach`, `ls` and `kill` stop with exit status 1, and no window opens.
-The message is `afterglow-mux speaks protocol N and this afterglow speaks M: end its sessions with the afterglow that started it, or wait until they end`.
+The message is `aglow-mux speaks protocol N and this afterglow speaks M: end its sessions with the afterglow that started it, or wait until they end`.
 `afterglow mux attach NAME` writes it after `afterglow: `, and the other commands after `afterglow mux COMMAND: `.
 
 ### End
@@ -91,7 +91,7 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 | `afterglow mux detach [NAME]` | Closes the window of the session. The session keeps running. Option: `--ssh DESTINATION`. |
 | `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES`. Option: `--ssh DESTINATION`. |
 | `afterglow mux kill NAME` | Ends a session and its programs. Options: `--force`, `--ssh DESTINATION`. |
-| `afterglow mux server` | Runs `afterglow-mux` in the foreground |
+| `afterglow mux server` | Runs `aglow-mux` in the foreground |
 | `afterglow mux --help` | Prints the usage |
 
 `afterglow mux new` shows the new session in a window. With `--detach`, it creates the session without a window and prints its name.
@@ -222,8 +222,8 @@ A session pane differs from a pane outside a session in these ways:
 | 1 | The command failed and wrote why on standard error. Examples: no session has the name, the daemon did not start. `afterglow mux kill` also exits with 1 when you do not answer `y`, `Y` or `yes` to its question. |
 | 2 | A usage error, for example an unknown command, option or argument, or an option without its value. The command also writes the usage on standard error. |
 | 2 | A session name that is not valid, for `afterglow mux new --name`, `attach` or `detach`. The command writes only the rule for names. |
-| 126 | `afterglow mux server` found `afterglow-mux` but cannot run it. `afterglow mux new` or `attach` found `afterglow` but cannot run it. |
-| 127 | `afterglow mux server` cannot find `afterglow-mux` next to `afterglow`. `afterglow mux new` or `attach` cannot find `afterglow`. |
+| 126 | `afterglow mux server` found `aglow-mux` but cannot run it. `afterglow mux new` or `attach` found `afterglow` but cannot run it. |
+| 127 | `afterglow mux server` cannot find `aglow-mux` next to `afterglow`. `afterglow mux new` or `attach` cannot find `afterglow`. |
 
 The usage errors include these:
 
@@ -241,8 +241,8 @@ A client tries the sockets in the order of the table and uses the first one that
 
 | Order | Directory | Socket in the directory |
 | --- | --- | --- |
-| 1 | `$XDG_RUNTIME_DIR/afterglow-mux` | `socket` |
-| 2 | `$XDG_STATE_HOME/afterglow-mux`, by default `~/.local/state/afterglow-mux` | `ID.sock` |
+| 1 | `$XDG_RUNTIME_DIR/aglow-mux` | `socket` |
+| 2 | `$XDG_STATE_HOME/aglow-mux`, by default `~/.local/state/aglow-mux` | `ID.sock` |
 
 `ID` comes from the machine ID of the computer, in `/etc/machine-id`.
 It is 32 hexadecimal digits of a keyed hash of the machine ID, so the file name does not show the machine ID.
@@ -261,7 +261,7 @@ The daemon refuses a connection from a process of another user (`SO_PEERCRED`).
 
 Next to each socket, the daemon holds a lock on the file `SOCKET.lock`.
 Another daemon can hold the lock of one of the sockets.
-Then the new daemon exits with status 1 and the message `another afterglow-mux listens on PATH`.
+Then the new daemon exits with status 1 and the message `another aglow-mux listens on PATH`.
 Your sessions stay in the daemon that holds the lock.
 `afterglow mux new` then waits for the daemon that holds the lock (see [start](#start)).
 A socket can fail for another reason, such as a directory with the wrong mode.
@@ -279,22 +279,22 @@ Each `afterglow mux` command but `server` takes it. `NAME` is the name of a sess
 `afterglow mux new --ssh` starts the daemon of the host when none runs there, and `attach --ssh` starts it when it creates a session.
 The window of the session opens on this computer, as for a session of this computer.
 
-The command runs `afterglow-mux proxy` on the host, over the connection that `afterglow ssh` shares with it (see [SSH](INPUT.md#ssh)).
+The command runs `aglow-mux proxy` on the host, over the connection that `afterglow ssh` shares with it (see [SSH](INPUT.md#ssh)).
 The proxy connects to the daemon there, and carries that connection on its standard input and output.
 You authenticate once for the shared connection. ssh needs no port forward.
 
-The host needs `afterglow-mux` on the `PATH` of your login there, for example from a package of Afterglow.
+The host needs `aglow-mux` on the `PATH` of your login there, for example from a package of Afterglow.
 The daemon of the host must speak the protocol of this Afterglow.
 
 | Result | Message |
 | --- | --- |
 | No daemon runs on the host | `afterglow mux ls` reports no sessions. `detach` and `kill` report `no sessions`. No daemon starts. |
-| The host has no `afterglow-mux` | `DESTINATION has no afterglow-mux (afterglow-mux): install it there` |
-| The daemon speaks another protocol | `afterglow-mux speaks protocol N and this afterglow speaks M: ...` |
+| The host has no `aglow-mux` | `DESTINATION has no aglow-mux (aglow-mux): install it there` |
+| The daemon speaks another protocol | `aglow-mux speaks protocol N and this afterglow speaks M: ...` |
 | ssh fails | What ssh wrote on its standard error |
 | ssh cannot read the destination | `ssh cannot read the destination 'DESTINATION' (ssh -G)` |
 
-`afterglow-mux proxy --start` starts the daemon of the host when none runs, as `afterglow mux new` does on this computer.
+`aglow-mux proxy --start` starts the daemon of the host when none runs, as `afterglow mux new` does on this computer.
 
 A session of another host runs with the environment of your ssh login there, which the proxy has, not with the environment of this computer.
 `afterglow mux new --ssh` sets these variables over it:
@@ -407,7 +407,7 @@ While a window shows the session, these answers go through the window, as the an
 | Notification query (OSC 99 `p=?`) | The daemon gives the answer of a window |
 | Query of the socket of an ssh session (OSC 24569) | The daemon answers that there is none (`error=off`) |
 | Visibility report (mode 2033) | The window says whether you can see the pane. Until a window says it, the program hears that you cannot see the pane. This is also true after a takeover, and while no window shows the session. |
-| Images | The daemon keeps the images, also while no window shows the session. It decodes PNG (Kitty graphics `f=100`) and iTerm2 images (PNG, JPEG, GIF, WebP and BMP). Each image decodes in a process of its own, which the decoder of the daemon (`afterglow-mux --decode-images`) starts. It decodes with libpng, libjpeg-turbo and libwebp, which the build includes. Each process has limits on its memory, its CPU time and the system calls that it can make. A decoder process that crashes or takes too long ends, and the daemon and the other sessions go on. The images do not decode on a kernel without seccomp filters, or on a kernel older than Linux 5.3 (`pidfd_open`). They also do not decode on a processor other than x86-64, little-endian AArch64, RISC-V 64 and little-endian POWER. The daemon then writes why on its standard error, which is the journal when it runs in `afterglow-mux.service`. When the decoder cannot start, images do not decode for a minute, and the daemon writes why. The window shows the images that the daemon keeps. |
+| Images | The daemon keeps the images, also while no window shows the session. It decodes PNG (Kitty graphics `f=100`) and iTerm2 images (PNG, JPEG, GIF, WebP and BMP). Each image decodes in a process of its own, which the decoder of the daemon (`aglow-mux --decode-images`) starts. It decodes with libpng, libjpeg-turbo and libwebp, which the build includes. Each process has limits on its memory, its CPU time and the system calls that it can make. A decoder process that crashes or takes too long ends, and the daemon and the other sessions go on. The images do not decode on a kernel without seccomp filters, or on a kernel older than Linux 5.3 (`pidfd_open`). They also do not decode on a processor other than x86-64, little-endian AArch64, RISC-V 64 and little-endian POWER. The daemon then writes why on its standard error, which is the journal when it runs in `aglow-mux.service`. When the decoder cannot start, images do not decode for a minute, and the daemon writes why. The window shows the images that the daemon keeps. |
 
 While no window shows the session, the daemon also answers these requests.
 

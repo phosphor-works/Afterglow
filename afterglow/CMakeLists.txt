@@ -88,8 +88,8 @@ qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h s
     src/shell/Aglow.cpp src/shell/Aglow.h)
 # afterglow_app brings afterglow_mux_protocol, which Mux.cpp uses too.
 target_link_libraries(afterglow PRIVATE afterglow_app)
-# afterglow mux runs the afterglow-mux of its own directory.
-add_dependencies(afterglow afterglow-mux)
+# afterglow mux runs the aglow-mux of its own directory.
+add_dependencies(afterglow aglow-mux)
 # Without aglow, afterglow run, transfer, dnd, icat and clipboard say that it is not built.
 if(AFTERGLOW_BUILD_AGLOW)
     target_compile_definitions(afterglow PRIVATE AFTERGLOW_HAS_AGLOW)
@@ -218,8 +218,8 @@ if(BUILD_TESTING)
     target_link_libraries(afterglow_native_tests PRIVATE afterglow_app GTest::gtest)
     # The mux tests run a daemon of their own (mux/tests/TestDaemon.h).
     target_include_directories(afterglow_native_tests PRIVATE ${PROJECT_SOURCE_DIR}/mux/tests)
-    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:afterglow-mux>")
-    add_dependencies(afterglow_native_tests afterglow-mux)
+    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:aglow-mux>")
+    add_dependencies(afterglow_native_tests aglow-mux)
     # The aglow dnd twins of the kitten dnd tests run the aglow of this build.
     if(AFTERGLOW_BUILD_AGLOW)
         target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
@@ -287,7 +287,7 @@ install(FILES ${AFTERGLOW_LICENSE_TEXTS} DESTINATION ${CMAKE_INSTALL_DATADIR}/li
 install(FILES "${AFTERGLOW_ZLIB_LICENSE}" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow RENAME LICENSE.zlib-ng)
 install(FILES "${AFTERGLOW_XXHASH_LICENSE}" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
         RENAME LICENSE.xxHash)
-# libpng, libjpeg-turbo and libwebp are linked into afterglow-mux, and into
+# libpng, libjpeg-turbo and libwebp are linked into aglow-mux, and into
 # aglow when it is built (libs/afterglow-image).
 afterglow_install_image_notices(${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
 # A system Luau (PLASMAZONES_SYSTEM_LUAU) is a separate package with its own

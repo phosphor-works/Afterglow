@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// afterglow-mux: the daemon that keeps terminal sessions running while no
+// aglow-mux: the daemon that keeps terminal sessions running while no
 // window shows them. It has no Qt, no display and no GPU. `afterglow mux`
 // starts it, in a systemd user unit or in a session of its own.
 
@@ -29,12 +29,12 @@
 
 namespace {
 
-const char* const Usage = R"(Usage: afterglow-mux [--version | --help]
-       afterglow-mux proxy [--start]
+const char* const Usage = R"(Usage: aglow-mux [--version | --help]
+       aglow-mux proxy [--start]
 
 Serves the terminal sessions of `afterglow mux`, in the foreground, on
-$XDG_RUNTIME_DIR/afterglow-mux/socket and on
-$XDG_STATE_HOME/afterglow-mux/ID.sock (by default under ~/.local/state).
+$XDG_RUNTIME_DIR/aglow-mux/socket and on
+$XDG_STATE_HOME/aglow-mux/ID.sock (by default under ~/.local/state).
 ID is a hash of /etc/machine-id, or else the host name.
 It ends when no session is left, and after %d seconds when no session
 starts. SIGTERM, SIGINT and SIGHUP end it and its sessions.
@@ -74,7 +74,7 @@ long raiseFileLimit()
     const rlim_t soft = limit.rlim_cur;
     limit.rlim_cur = limit.rlim_max;
     if (::setrlimit(RLIMIT_NOFILE, &limit) != 0) {
-        std::perror("afterglow-mux: cannot raise the descriptor limit");
+        std::perror("aglow-mux: cannot raise the descriptor limit");
         return -1;
     }
     return long(soft);
@@ -102,7 +102,7 @@ int takeReportFd()
 /// holds a socket (@p held).
 int startFailed(int reportFd, const std::string& message, bool held = false)
 {
-    const std::string line = "afterglow-mux: " + message + "\n";
+    const std::string line = "aglow-mux: " + message + "\n";
     std::fputs(line.c_str(), stderr);
     if (reportFd >= 0) {
         const std::string report = held ? AfterglowMux::ReportHeld + line : line;
@@ -125,12 +125,12 @@ int main(int argc, char** argv)
     if (argc >= 2 && std::strcmp(argv[1], AfterglowMux::ProxyArgument) == 0) {
         if (argc == 2) return AfterglowMux::runProxy(false);
         if (argc == 3 && std::strcmp(argv[2], "--start") == 0) return AfterglowMux::runProxy(true);
-        std::fprintf(stderr, "afterglow-mux proxy: the only option is --start\n");
+        std::fprintf(stderr, "aglow-mux proxy: the only option is --start\n");
         return 2;
     }
     std::atexit(endWithSignal);
     if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-        std::printf("afterglow-mux %s (protocol %d)\n", AFTERGLOW_VERSION, AfterglowMux::ProtocolVersion);
+        std::printf("aglow-mux %s (protocol %d)\n", AFTERGLOW_VERSION, AfterglowMux::ProtocolVersion);
         return 0;
     }
     const int startWait = AfterglowMux::Daemon::StartWaitMs / 1000;
@@ -165,7 +165,7 @@ int main(int argc, char** argv)
     } catch (const std::exception& e) {
         // The daemon's destructor ran: its programs got their hangup.
         if (reportFd >= 0) return startFailed(reportFd, e.what());
-        std::fprintf(stderr, "afterglow-mux: %s\n", e.what());
+        std::fprintf(stderr, "aglow-mux: %s\n", e.what());
         return 1;
     }
 }

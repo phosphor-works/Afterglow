@@ -134,7 +134,7 @@ void report(std::chrono::steady_clock::time_point& last, const std::string& text
     const auto now = std::chrono::steady_clock::now();
     if (last != std::chrono::steady_clock::time_point{} && now - last < std::chrono::minutes(1)) return;
     last = now;
-    std::fprintf(stderr, "afterglow-mux: %s\n", text.c_str());
+    std::fprintf(stderr, "aglow-mux: %s\n", text.c_str());
 }
 
 // ---------------------------------------------------------- the process ---
@@ -491,7 +491,7 @@ bool ImageDecoder::startLocked()
         && ::posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0) == 0
         && ::posix_spawnattr_setsigmask(&attributes, &none) == 0 && ::posix_spawnattr_setsigdefault(&attributes, &pipe) == 0
         && ::posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF) == 0;
-    std::string name = "afterglow-mux";
+    std::string name = "aglow-mux";
     std::string argument(DecodeServerArgument);
     std::string parent = std::to_string(::getpid());
     char* argv[] = {name.data(), argument.data(), parent.data(), nullptr};

@@ -63,10 +63,10 @@ using AfterglowProto::IpcConnection;
 const char* const Usage = R"(Usage: afterglow mux <command> [options]
 
 Keeps terminal sessions running while no window shows them. The daemon
-(afterglow-mux) starts with the first session and ends with the last.
+(aglow-mux) starts with the first session and ends with the last.
 
 Commands:
-  server                      Run afterglow-mux in the foreground.
+  server                      Run aglow-mux in the foreground.
   new [options] [-- COMMAND]  Create a session and show it in a window. Options:
         --name NAME           The session name: 1 to 64 ASCII letters,
                               digits, '_' or '-', with a letter, a digit or
@@ -89,7 +89,7 @@ Commands:
                               program runs. --force does not ask.
 
 Each command but server takes --ssh DESTINATION: the daemon of that host,
-through afterglow-mux proxy, which ssh runs there over the connection that
+through aglow-mux proxy, which ssh runs there over the connection that
 afterglow ssh shares with the host. A session there runs your login shell
 with the environment of your ssh login there; --cwd is a directory there.
 )";
@@ -111,18 +111,18 @@ using AfterglowProto::printable;
 
 std::string daemonPath(std::string* error)
 {
-    return Aglow::siblingExecutable("afterglow-mux", error);
+    return Aglow::siblingExecutable("aglow-mux", error);
 }
 
 /// A connection to the daemon, which this starts when none answers: the
-/// afterglow-mux next to afterglow.
+/// aglow-mux next to afterglow.
 Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, std::string* error)
 {
     if (Reached reached = connectAny(sockets, error); reached.connection || !error->empty()) return reached;
     const std::string daemon = daemonPath(error);
     if (daemon.empty()) return {};
     if (::access(daemon.c_str(), X_OK) != 0) {
-        *error = "cannot find afterglow-mux next to afterglow: " + daemon;
+        *error = "cannot find aglow-mux next to afterglow: " + daemon;
         return {};
     }
     return AfterglowMux::connectOrStart(sockets, daemon, error);
@@ -352,7 +352,7 @@ int newSession(int argc, char** argv, const std::string& command = "new")
     session.control = {settings.control.enabled, settings.control.allowReadText};
 
     Reached reached = o.host ? AfterglowMux::reach(*route, true, &error) : connectOrStart(route->sockets, &error);
-    if (!reached.connection) return fail(command, error.empty() ? std::string("afterglow-mux did not start") : error);
+    if (!reached.connection) return fail(command, error.empty() ? std::string("aglow-mux did not start") : error);
     IpcConnection::Error callError;
     const auto result = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::NewSession,
                                                  Json::Array{AfterglowMux::ProtocolVersion, AfterglowMux::toJson(session)},

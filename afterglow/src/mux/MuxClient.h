@@ -79,7 +79,7 @@ public:
     /// shows it, which then detaches. Waits until the daemon names the
     /// session's layout. Nullptr with @p error on a failure. @p route leads
     /// to the daemon: the user's on this computer or on another host
-    /// (`afterglow-mux proxy` over ssh), or a test's. @p eventQueue is
+    /// (`aglow-mux proxy` over ssh), or a test's. @p eventQueue is
     /// Mux.eventQueue in bytes, and @p history Terminal.scrollback, the
     /// history rows that the window keeps of each pane.
     static std::shared_ptr<MuxClient> attach(const QString& name, bool takeover, QString* error, const AfterglowMux::Route& route,

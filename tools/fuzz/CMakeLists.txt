@@ -4,10 +4,10 @@
 # libFuzzer targets (clang only, for C and C++): afterglow_vtfuzz for the
 # terminal core and the reader of its state frames, afterglow_protofuzz for
 # the protocol readers that take what a remote program sends,
-# afterglow_imagefuzz for the image decoders of aglow and afterglow-mux
+# afterglow_imagefuzz for the image decoders of aglow and aglow-mux
 # (libs/afterglow-image: its GIF and BMP readers, and libpng, libjpeg-turbo
 # and libwebp behind it), and
-# afterglow_muxfuzz for the readers of the attach stream of afterglow-mux.
+# afterglow_muxfuzz for the readers of the attach stream of aglow-mux.
 # afterglow_muxfuzz compiles code of mux/, which is GPL-3.0-or-later, so its
 # source is too, and no other target links it. The
 # sources of the libraries, xxHash and the decoders are compiled into them

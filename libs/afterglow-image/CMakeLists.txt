@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-# The image decoders of aglow and afterglow-mux (no Qt): libpng, libjpeg-turbo
+# The image decoders of aglow and aglow-mux (no Qt): libpng, libjpeg-turbo
 # (the TurboJPEG 3 API) and libwebp, and GIF and BMP readers of its own. The
 # three libraries are built from the archives that
 # cmake/AfterglowDependencies.cmake pins, as static libraries, and not taken
@@ -124,7 +124,7 @@ function(afterglow_add_libjpeg_turbo)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "${AFTERGLOW_X86_64}")
         find_program(AFTERGLOW_NASM NAMES nasm yasm DOC "The assembler of the SIMD code of libjpeg-turbo")
         if(NOT AFTERGLOW_NASM)
-            message(STATUS "libjpeg-turbo: NASM was not found, so it builds without its SIMD code, and aglow and afterglow-mux decode JPEG more slowly")
+            message(STATUS "libjpeg-turbo: NASM was not found, so it builds without its SIMD code, and aglow and aglow-mux decode JPEG more slowly")
         endif()
     endif()
 
@@ -200,7 +200,7 @@ afterglow_add_libwebp()
 afterglow_add_libjpeg_turbo()
 afterglow_third_party_target(afterglow_png afterglow_webp)
 
-# The codecs are linked into aglow and afterglow-mux, so their notices go
+# The codecs are linked into aglow and aglow-mux, so their notices go
 # with the binaries: each entry is a file and the name that it installs
 # under. LICENSE.md of libjpeg-turbo names README.ijg, which holds the
 # license of the Independent JPEG Group, so that file keeps its name. That
@@ -245,10 +245,10 @@ add_library(AfterglowImage STATIC
 add_library(Afterglow::Image ALIAS AfterglowImage)
 target_include_directories(AfterglowImage PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(AfterglowImage PRIVATE afterglow_png afterglow_turbojpeg afterglow_webp)
-# PIC: aglow and afterglow-mux are position-independent executables.
+# PIC: aglow and aglow-mux are position-independent executables.
 set_target_properties(AfterglowImage PROPERTIES POSITION_INDEPENDENT_CODE ON AUTOMOC OFF AUTOUIC OFF)
 
-# The image files of the tests, which the tests of afterglow-mux and the
+# The image files of the tests, which the tests of aglow-mux and the
 # seeds of the image fuzz target use too.
 add_library(afterglow_image_test_files INTERFACE)
 target_include_directories(afterglow_image_test_files INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
