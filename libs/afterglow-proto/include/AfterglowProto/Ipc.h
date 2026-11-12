@@ -69,6 +69,16 @@ public:
     /// of new connections is full ends after @p timeoutMs. A socket of
     /// another user is refused: it could read the calls and answer anything.
     bool connect(const std::string& path, Error* error, int timeoutMs = -1);
+    /// Takes @p fd, a connected stream socket, as the connection: one end of
+    /// a socket pair whose other end a command carries to the server (ssh
+    /// that runs a proxy on another host). No peer check: the command's own
+    /// connection is the user's.
+    void adopt(int fd);
+    /// Gives the descriptor up, for another protocol on the same connection
+    /// (the stream of a mux attach). -1, and the connection closes, when the
+    /// server sent more than the frames that the caller took: the next
+    /// protocol would lose those bytes.
+    int release(Error* error);
     bool connected() const { return m_fd >= 0; }
     /// The socket, for a poll of the caller's own: readable when a frame
     /// comes or the server closes the connection. -1 when not connected.

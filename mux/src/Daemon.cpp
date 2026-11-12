@@ -16,7 +16,6 @@
 #include <exception>
 #include <functional>
 
-#include <dirent.h>
 #include <poll.h>
 #include <sys/eventfd.h>
 #include <sys/signalfd.h>
@@ -64,21 +63,6 @@ bool privateDirectory(const std::string& directory, std::string* error)
         return false;
     }
     return true;
-}
-
-/// Removes the files named as Attachment::listen() names its sockets in
-/// @p directory.
-void removeAttachSockets(const std::string& directory)
-{
-    DIR* dir = ::opendir(directory.c_str());
-    if (!dir) return;
-    while (const dirent* entry = ::readdir(dir)) {
-        const std::string_view name = entry->d_name;
-        if (name.size() == 28 && name.starts_with("attach-") && name.ends_with(".sock")) {
-            ::unlinkat(::dirfd(dir), entry->d_name, 0);
-        }
-    }
-    ::closedir(dir);
 }
 
 } // namespace
@@ -160,15 +144,6 @@ Daemon::Listen Daemon::listen(const std::vector<AfterglowProto::MuxSocket>& sock
     if (m_listeners.empty()) {
         if (error) *error = "no socket to listen on: " + reasons;
         return Listen::Failed;
-    }
-    // The attach sockets that a daemon before this one left when it was
-    // killed, in the runtime directory (its socket is "socket"): that
-    // directory is of this computer, and this daemon holds its lock. The
-    // state directory can be shared with other computers (NFS), whose
-    // daemons wait for windows there.
-    for (const auto& listener : m_listeners) {
-        const std::string& path = listener->path();
-        if (path.ends_with("/socket")) removeAttachSockets(path.substr(0, path.rfind('/')));
     }
     return Listen::Listening;
 }
@@ -321,6 +296,23 @@ void Daemon::read(IpcServerConnection& connection)
         }
         // A window answers it later.
         if (!reply.empty()) connection.send(std::move(reply));
+        if (m_attaching) {
+            // The attach call made this connection the window's stream: it
+            // is the attachment's now, and reads no more lines here.
+            std::unique_ptr<Attachment> attachment = std::move(m_attaching);
+            std::string unsent;
+            const int fd = connection.release(&unsent);
+            if (fd < 0) {
+                // It sent more after its call, which the stream would lose.
+                std::fprintf(stderr, "afterglow-mux: the window of session %s sent its stream before the answer to its attach\n",
+                             attachment->session().c_str());
+                connection.close();
+                return;
+            }
+            attachment->adopt(fd, std::move(unsent));
+            m_attachments.push_back(std::move(attachment));
+            return;
+        }
     }
 }
 
@@ -344,7 +336,7 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller, IpcServerCon
     if (request.fn == Fn::NewSession) return newSession(request);
     if (request.fn == Fn::ListSessions) return listSessions(request, caller);
     if (request.fn == Fn::KillSession) return killSession(request);
-    if (request.fn == Fn::Attach) return attach(request, caller);
+    if (request.fn == Fn::Attach) return attach(request);
     if (request.fn == Fn::Detach) return detach(request);
     if (request.fn == Fn::PaneDirectory) return paneDirectory(request);
     if (request.fn == Fn::NewPane) return newPane(request);
@@ -424,7 +416,7 @@ void Daemon::endSession(std::vector<std::unique_ptr<Session>>::iterator session)
     m_sessions.erase(session);
 }
 
-std::string Daemon::attach(const IpcRequest& request, pid_t caller)
+std::string Daemon::attach(const IpcRequest& request)
 {
     if (request.args.size() != 3 || !request.args[1].isString() || !request.args[2].isObject()) {
         return ipcError(request.id, IpcErrorCode::InvalidArg, "attach takes (protocol, name, options)");
@@ -433,9 +425,6 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     const std::string& name = request.args[1].toString();
     const auto session = find(name);
     if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
-    // Only the process that calls may connect to the socket: a caller that
-    // the kernel did not name could be anyone of the user.
-    if (caller <= 0) return ipcError(request.id, IpcErrorCode::CallFailed, "the daemon cannot tell which process called");
     // A key that this daemon does not know is one that the window counts on.
     for (const auto& [key, value] : request.args[2].toObject()) {
         if (key != AttachOption::Takeover && key != AttachOption::EventQueue && key != AttachOption::History) {
@@ -468,13 +457,7 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     if (previous && (!takeover || !takeover->toBool())) {
         return ipcError(request.id, Error::Attached, "another window shows session '" + name + "'");
     }
-    // Next to the daemon's socket, in the directory that only the user
-    // opens. Made before the takeover: a socket that cannot be made leaves
-    // the session in the window that shows it.
-    const std::string& socket = paneSocket();
-    std::string error;
-    auto attachment = Attachment::listen(socket.substr(0, socket.rfind('/')), name, caller, &error);
-    if (!attachment) return ipcError(request.id, IpcErrorCode::CallFailed, error);
+    auto attachment = std::make_unique<Attachment>(name);
     if (previous) {
         guarded(*previous, [&] {
             previous->pump(session->get());
@@ -484,9 +467,9 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     }
     attachment->setEventQueue(eventQueue);
     attachment->setReplicaHistory(history);
-    const std::string path = attachment->path();
-    m_attachments.push_back(std::move(attachment));
-    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}, {"socket", path}});
+    // read() gives it this connection once the answer went.
+    m_attaching = std::move(attachment);
+    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}});
 }
 
 std::string Daemon::detach(const IpcRequest& request)

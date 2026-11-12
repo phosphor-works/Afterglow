@@ -12,7 +12,7 @@
 #include <string_view>
 
 // The stream of an attached session: a phosphor-channel Stream over the
-// socket that the attach call names. The daemon writes the session's events
+// connection of the attach call, after its answer (Fn::Attach). The daemon writes the session's events
 // on channel 0 and the state of each pane on a channel of its own
 // (AfterglowVt::StateCodec), which PaneOpened names. Its first event is the
 // session's Layout, before any PaneOpened. The window writes its input and
@@ -40,8 +40,8 @@ inline constexpr std::uint32_t MaxChannelId = 4096;
 inline constexpr const char* EventCodec = "afterglow.mux.events.v1";
 inline constexpr const char* InputCodec = "afterglow.mux.input.v1";
 
-/// How long the daemon waits for the window to connect to the socket of an
-/// attach, in milliseconds. The window connects right after the call.
+/// How long the daemon waits for the window to start its stream after the
+/// answer to its attach call, in milliseconds. It starts right after it.
 inline constexpr int ConnectWaitMs = 5000;
 
 enum class EventType : std::uint8_t {

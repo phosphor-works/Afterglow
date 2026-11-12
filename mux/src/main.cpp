@@ -8,6 +8,7 @@
 #include "Daemon.h"
 #include "ImageDecoder.h"
 #include "MuxProtocol.h"
+#include "Proxy.h"
 
 #include <AfterglowProto/Socket.h>
 
@@ -29,6 +30,7 @@
 namespace {
 
 const char* const Usage = R"(Usage: afterglow-mux [--version | --help]
+       afterglow-mux proxy [--start]
 
 Serves the terminal sessions of `afterglow mux`, in the foreground, on
 $XDG_RUNTIME_DIR/afterglow-mux/socket and on
@@ -36,6 +38,10 @@ $XDG_STATE_HOME/afterglow-mux/ID.sock (by default under ~/.local/state).
 ID is a hash of /etc/machine-id, or else the host name.
 It ends when no session is left, and after %d seconds when no session
 starts. SIGTERM, SIGINT and SIGHUP end it and its sessions.
+
+proxy carries one connection to the daemon of this host on standard input
+and output, for afterglow mux --ssh on another host. With --start, it starts
+the daemon when none runs. Without it, it exits with status 3 when none runs.
 )";
 
 int g_endSignal = 0;
@@ -116,6 +122,12 @@ int main(int argc, char** argv)
     // A daemon that a parent started with SIGCHLD ignored would lose the
     // status of its children: the kernel reaps them.
     std::signal(SIGCHLD, SIG_DFL);
+    if (argc >= 2 && std::strcmp(argv[1], AfterglowMux::ProxyArgument) == 0) {
+        if (argc == 2) return AfterglowMux::runProxy(false);
+        if (argc == 3 && std::strcmp(argv[2], "--start") == 0) return AfterglowMux::runProxy(true);
+        std::fprintf(stderr, "afterglow-mux proxy: the only option is --start\n");
+        return 2;
+    }
     std::atexit(endWithSignal);
     if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
         std::printf("afterglow-mux %s (protocol %d)\n", AFTERGLOW_VERSION, AfterglowMux::ProtocolVersion);

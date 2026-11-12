@@ -973,7 +973,7 @@ def reaches_mux(wrappers, word, args):
     xargs or parallel adds the words of its input. Any other afterglow-mux counts, and so does afterglow
     --mux-attach, the hidden option of afterglow mux new and attach: its window attaches to the user's daemon
     whatever display it opens on, and afterglow ctl --session, which acts on a session through the daemon whatever
-    AFTERGLOW_SOCKET names."""
+    AFTERGLOW_SOCKET names. afterglow mux --ssh reaches the daemon of another host, which nothing here isolates."""
     appended = appends(wrappers)
     if (word == 'afterglow' or '$' in word or '`' in word) and args[:1] == ['ctl'] and args[1:2] == ['--session']:
         return not isolated_mux(wrappers)
@@ -987,6 +987,10 @@ def reaches_mux(wrappers, word, args):
             return False
         if args[1:] in (['server', '--help'], ['server', '-h']) and not appended:
             return False
+        # --ssh reaches the daemon of another host, which a local runtime
+        # directory does not isolate: the user's own, there.
+        if any(a == '--ssh' or a.startswith('--ssh=') for a in args[1:]):
+            return True
     elif word != 'afterglow-mux':
         return False
     elif len(args) == 1 and args[0] in MUX_DAEMON_PRINTS and not appended:

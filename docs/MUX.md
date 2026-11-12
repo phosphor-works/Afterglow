@@ -88,9 +88,9 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 | --- | --- |
 | `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `-- COMMAND...`. |
 | `afterglow mux attach [NAME]` | Shows a session in a window. Option: `--no-takeover`. |
-| `afterglow mux detach [NAME]` | Closes the window of the session. The session keeps running. |
-| `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES` |
-| `afterglow mux kill NAME` | Ends a session and its programs. Option: `--force`. |
+| `afterglow mux detach [NAME]` | Closes the window of the session. The session keeps running. Option: `--ssh DESTINATION`. |
+| `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES`. Option: `--ssh DESTINATION`. |
+| `afterglow mux kill NAME` | Ends a session and its programs. Options: `--force`, `--ssh DESTINATION`. |
 | `afterglow mux server` | Runs `afterglow-mux` in the foreground |
 | `afterglow mux --help` | Prints the usage |
 
@@ -218,7 +218,7 @@ These commands and options are not available. Each stops with exit status 1 and 
 
 | Command | Message |
 | --- | --- |
-| `--ssh` of `afterglow mux new`, `attach`, `detach`, `ls` and `kill` | `afterglow mux COMMAND: sessions on other hosts are not available yet` |
+| `--ssh` of `afterglow mux new` and `attach` | `afterglow mux COMMAND: sessions on other hosts are not available yet` |
 
 ### Exit status
 
@@ -275,12 +275,30 @@ Then the daemon writes the reason on standard error and uses the other socket.
 When the daemon has no socket, it exits with status 1.
 When the daemon exits, it removes its sockets and its lock files.
 
-For each window that shows a session, the daemon makes one more socket, `attach-` and 16 hexadecimal digits, then `.sock`.
-It is in the directory of the first socket that the daemon still listens on.
-Only the process that asked for it can connect, and the daemon removes it when that process connects, or after 5 seconds.
-A daemon that starts removes the attach sockets that a daemon before it left in `$XDG_RUNTIME_DIR/afterglow-mux`.
-It leaves the state directory as it is, because other computers can share it.
-Thus an attach socket that a killed daemon left there stays until you remove it.
+A window that shows a session gets the state of the session on the connection of its attach call.
+The daemon uses no other socket for it.
+
+## Sessions on another host
+
+`--ssh DESTINATION` acts on the daemon of another host, through ssh.
+`afterglow mux ls`, `detach` and `kill` take it. `NAME` is the name of a session on that host.
+
+The command runs `afterglow-mux proxy` on the host, over the connection that `afterglow ssh` shares with it (see [SSH](INPUT.md#ssh)).
+The proxy connects to the daemon there, and carries that connection on its standard input and output.
+You authenticate once for the shared connection. ssh needs no port forward.
+
+The host needs `afterglow-mux` on the `PATH` of your login there, for example from a package of Afterglow.
+The daemon of the host must speak the protocol of this Afterglow.
+
+| Result | Message |
+| --- | --- |
+| No daemon runs on the host | `afterglow mux ls` reports no sessions. `detach` and `kill` report `no sessions`. No daemon starts. |
+| The host has no `afterglow-mux` | `DESTINATION has no afterglow-mux (afterglow-mux): install it there` |
+| The daemon speaks another protocol | `afterglow-mux speaks protocol N and this afterglow speaks M: ...` |
+| ssh fails | What ssh wrote on its standard error |
+| ssh cannot read the destination | `ssh cannot read the destination 'DESTINATION' (ssh -G)` |
+
+`afterglow-mux proxy --start` starts the daemon of the host when none runs, as `afterglow mux new` does on this computer.
 
 ## Environment
 
@@ -441,7 +459,7 @@ When a session pane closes in the window, a file transfer that the window ran ge
 | Lines that do not parse, one after the other | 16 | Each line gets `MALFORMED_REQUEST`. The daemon closes the connection after its answer to the 17th line. |
 | Waiting output to one client | 32 MiB | The daemon closes the connection to a client that does not read its answers |
 | Environment, arguments and directory of a session | UTF-8 text | `afterglow mux new` changes each byte that is not UTF-8 to U+FFFD |
-| Wait for a window to connect to its attach socket | 5 seconds | The daemon removes the socket, and `afterglow mux attach` stops with exit status 1 |
+| Wait for a window to start its stream after the answer to its attach call | 5 seconds | The session is free for another window, and the window does not show it |
 | Input of a window that the program does not read | 32 MiB in the queue of the PTY, 4 MiB in the daemon, then 32 MiB in the window | The window refuses more input and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
 | Frames to a window | About 2 MiB of state in each frame, and at most 4 MiB, the largest frame of the stream | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
 | History rows to a window | `Terminal.scrollback` of the window, in rows | The daemon sends no older rows |

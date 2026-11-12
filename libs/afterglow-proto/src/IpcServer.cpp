@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -273,6 +274,17 @@ void IpcServerConnection::close()
 {
     if (m_fd >= 0) ::close(m_fd);
     m_fd = -1;
+}
+
+int IpcServerConnection::release(std::string* unsent)
+{
+    if (m_fd < 0 || m_in.size() > m_inHead) return -1;
+    *unsent = m_out.substr(m_outOffset);
+    m_out.clear();
+    m_outOffset = 0;
+    m_in.clear();
+    m_inHead = m_scanned = 0;
+    return std::exchange(m_fd, -1);
 }
 
 bool IpcServerConnection::fill()
