@@ -26,6 +26,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <fstream>
@@ -728,18 +729,32 @@ int detachSession(int argc, char** argv)
         if (name.empty() && !arg.starts_with('-')) name = arg;
         else return usage("unknown argument of detach: " + printable(arg));
     }
-    // In a session pane: that session.
-    if (name.empty()) {
-        if (const char* own = std::getenv("AFTERGLOW_SESSION"); own && *own) name = own;
+    // In a session pane, the session that holds the pane now: one that
+    // broke out of its window keeps the AFTERGLOW_SESSION of its first
+    // session. Its AFTERGLOW_PANE_ID is the daemon's.
+    const char* own = std::getenv("AFTERGLOW_SESSION");
+    const bool inSessionPane = own && *own;
+    if (name.empty() && !inSessionPane) return usage("detach takes the name of a session, outside a session pane");
+    if (!name.empty() && !AfterglowMux::validSessionName(name)) {
+        return fail("detach", std::string("the name must be ") + AfterglowMux::SessionNameRule, 2);
     }
-    if (name.empty()) return usage("detach takes the name of a session, outside a session pane");
-    if (!AfterglowMux::validSessionName(name)) return fail("detach", std::string("the name must be ") + AfterglowMux::SessionNameRule, 2);
     const auto sockets = AfterglowProto::muxSockets();
     if (sockets.candidates.empty()) return fail("detach", sockets.error);
     std::string error;
     Reached reached = connectAny(sockets, &error);
     if (!reached.connection) return fail("detach", error.empty() ? std::string("no sessions") : error);
     IpcConnection::Error callError;
+    if (name.empty()) {
+        const char* paneId = std::getenv("AFTERGLOW_PANE_ID");
+        char* end = nullptr;
+        const long long pane = paneId && *paneId ? std::strtoll(paneId, &end, 10) : -1;
+        if (pane <= 0 || pane > 0xffffffffLL || *end != '\0') return fail("detach", "AFTERGLOW_PANE_ID names no pane of the mux daemon");
+        const auto session = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::PaneSession, Json::Array{std::int64_t(pane)},
+                                                      CallTimeoutMs, &callError);
+        if (!session) return fail("detach", printable(callError.message));
+        name = session->toString();
+        if (!AfterglowMux::validSessionName(name)) return fail("detach", "the daemon sent a session name that is not valid");
+    }
     if (!reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::Detach, Json::Array{name}, CallTimeoutMs, &callError)) {
         return fail("detach", printable(callError.message));
     }

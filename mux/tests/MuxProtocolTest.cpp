@@ -65,13 +65,14 @@ TEST(MuxProtocol, SessionNames)
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
     ASSERT_EQ(ProtocolVersion, 9) << "a new protocol version: update the key lists and the calls of this test";
-    // Version 9 added the tabs and splits of a session: the newPane, paneJob
-    // and breakOut calls, the Layout event and input (MuxLayoutTest), the
+    // Version 9 added the tabs and splits of a session: the newPane, paneJob,
+    // breakOut and paneSession calls, the Layout event and input (MuxLayoutTest), the
     // ClosePane action, and the session's environment apart from the launch
     // of each pane, with the variables that a launch unsets.
     EXPECT_EQ(std::string(Fn::NewPane), "newPane");
     EXPECT_EQ(std::string(Fn::PaneJob), "paneJob");
     EXPECT_EQ(std::string(Fn::BreakOut), "breakOut");
+    EXPECT_EQ(std::string(Fn::PaneSession), "paneSession");
     Attach::Input closePane;
     closePane.type = Attach::InputType::ClosePane;
     closePane.pane = 5;

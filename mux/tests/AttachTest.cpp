@@ -1762,6 +1762,15 @@ TEST(MuxAttach, PanesThatBreakOutRunOnInANewSession)
     ASSERT_TRUE(other.until([&] { return other.opened.size() == 2; }));
     ASSERT_EQ(other.layouts.size(), 1u);
     EXPECT_TRUE(other.layouts[0] == moved) << Json::write(toJson(other.layouts[0]));
+    // Each pane names the session that holds it now: its AFTERGLOW_SESSION
+    // still names the first one.
+    const auto holder = daemon.call(Fn::PaneSession, Json::Array{std::int64_t(*second)});
+    ASSERT_TRUE(holder) << daemon.lastError();
+    EXPECT_EQ(holder->toString(), fresh);
+    EXPECT_EQ(daemon.call(Fn::PaneSession, Json::Array{std::int64_t(w.pane)})->toString(), "s");
+    IpcConnection::Error noPane;
+    EXPECT_FALSE(daemon.call(Fn::PaneSession, Json::Array{9999}, &noPane));
+    EXPECT_EQ(noPane.code, Error::NoSuchPane);
     // A new pane of the new session has the environment of the first one.
     const std::string out = daemon.dir() + "/env";
     ASSERT_TRUE(newPane(daemon, fresh, launchOf(writesEnvironment(out), daemon))) << daemon.lastError();

@@ -338,6 +338,7 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller)
     if (request.fn == Fn::NewPane) return newPane(request);
     if (request.fn == Fn::PaneJob) return paneJob(request, caller);
     if (request.fn == Fn::BreakOut) return breakOut(request);
+    if (request.fn == Fn::PaneSession) return paneSession(request);
     return ipcError(request.id, IpcErrorCode::NoSuchFn, "no function '" + request.fn + "' on target '" + request.target + "'");
 }
 
@@ -577,6 +578,16 @@ std::string Daemon::breakOut(const IpcRequest& request)
     session->setLayout(std::move(*layout));
     m_sessions.push_back(std::move(session));
     return ipcReply(request.id.value_or(0), Json::Object{{"name", fresh}});
+}
+
+std::string Daemon::paneSession(const IpcRequest& request)
+{
+    const auto id = request.args.size() == 1 ? request.args[0].toInteger() : std::nullopt;
+    if (!id || *id < 0 || *id > 0xffffffffLL) return ipcError(request.id, IpcErrorCode::InvalidArg, "paneSession takes (pane)");
+    for (const auto& session : m_sessions) {
+        if (session->pane(std::uint32_t(*id))) return ipcReply(request.id.value_or(0), session->name());
+    }
+    return ipcError(request.id, Error::NoSuchPane, "no session has pane " + std::to_string(*id));
 }
 
 std::function<void()> Daemon::waker() const

@@ -79,6 +79,7 @@ private:
     std::string newPane(const AfterglowProto::IpcRequest& request);
     std::string paneJob(const AfterglowProto::IpcRequest& request, pid_t caller);
     std::string breakOut(const AfterglowProto::IpcRequest& request);
+    std::string paneSession(const AfterglowProto::IpcRequest& request);
     /// What a pane runs when it has news for the daemon's thread: it wakes
     /// the poll. Safe to call from any thread.
     std::function<void()> waker() const;

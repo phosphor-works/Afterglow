@@ -63,6 +63,11 @@ inline constexpr const char* PaneJob = "paneJob";
 /// session in a new window. Not every pane of the session: that would only
 /// give it another name.
 inline constexpr const char* BreakOut = "breakOut";
+/// (pane) -> string: the name of the session that holds the pane now. A
+/// pane that broke out keeps the AFTERGLOW_SESSION of its first session, as
+/// no process changes the environment of another: a client in a session
+/// pane asks by its AFTERGLOW_PANE_ID.
+inline constexpr const char* PaneSession = "paneSession";
 } // namespace Fn
 
 /// The keys of the options of Fn::Attach. The daemon refuses another key.

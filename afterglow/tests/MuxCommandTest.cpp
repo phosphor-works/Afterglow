@@ -395,6 +395,32 @@ TEST_F(MuxCommandTest, UsageErrorsAndCommandsThatAreNotAvailable)
     EXPECT_TRUE(daemons().empty());
 }
 
+// In a session pane, detach without a name finds the session of the pane by
+// its ID: a pane that broke out of its window keeps the AFTERGLOW_SESSION of
+// its first session.
+TEST_F(MuxCommandTest, DetachInASessionPaneFindsTheSessionOfThePane)
+{
+    std::vector<std::string> args{"new", "--detach", "--name", "now"};
+    for (const std::string& arg : waitsForTheTest()) args.push_back(arg);
+    const Result created = mux(args);
+    ASSERT_EQ(created.status, 0) << created.err;
+    // The first pane of the daemon: ID 1.
+    m_environment.push_back("AFTERGLOW_SESSION=before");
+    m_environment.push_back("AFTERGLOW_PANE_ID=1");
+    const Result detached = mux({"detach"});
+    EXPECT_EQ(detached.status, 1);
+    // The session of the pane, which no window shows.
+    EXPECT_EQ(detached.err, "afterglow mux detach: no window shows session 'now'\n");
+    m_environment.back() = "AFTERGLOW_PANE_ID=99";
+    const Result none = mux({"detach"});
+    EXPECT_EQ(none.status, 1);
+    EXPECT_EQ(none.err, "afterglow mux detach: no session has pane 99\n");
+    m_environment.back() = "AFTERGLOW_PANE_ID=x";
+    const Result bad = mux({"detach"});
+    EXPECT_EQ(bad.status, 1);
+    EXPECT_EQ(bad.err, "afterglow mux detach: AFTERGLOW_PANE_ID names no pane of the mux daemon\n");
+}
+
 // A platform other than Wayland, which afterglow would refuse after the
 // session was made: refused first, with no session.
 TEST_F(MuxCommandTest, AWindowNeedsTheWaylandPlatform)

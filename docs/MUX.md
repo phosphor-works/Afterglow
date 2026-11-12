@@ -146,7 +146,7 @@ The Reset and Clear actions of the window reset or clear the terminal of the ses
 | You close a pane or a tab, and the window has other panes | The programs of the pane or the tab end, as in a window outside a session. The session keeps running. |
 | You close the window, or its last pane or tab | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running, with its tabs and splits. |
 | You quit Afterglow | The session keeps running, whatever `Mux.onClose` says. At your last logout, the daemon can end too (see [start](#start)). |
-| `afterglow mux detach NAME` | The window closes. The session keeps running. In a session pane, `NAME` defaults to that session. |
+| `afterglow mux detach NAME` | The window closes. The session keeps running. In a session pane, `NAME` defaults to the session that holds that pane. |
 | Another window shows the session (`afterglow mux attach`) | The window closes, with a notice. The session keeps running. |
 | The window crashes, or its connection to the daemon breaks | The session keeps running. A window that still runs closes, with a notice. |
 | The program of a pane exits | The pane shows the last output of the program, then closes as a pane does in a window outside a session. After the last program of the session, the session ends. |
@@ -175,7 +175,8 @@ A pane or a tab that you move to a new window leaves the session.
 This is true for a drag out of the window, `afterglow ctl move-pane --new-window` and `afterglow ctl detach-tab`.
 Its programs go on in a new session, which gets the next number as its name, and a new window shows that session.
 The new session has the environment and the terminal settings of the first session.
-The programs keep the `AFTERGLOW_SESSION` of the first session.
+The `AFTERGLOW_SESSION` of the programs still names the first session, because a process cannot change the environment of another.
+In such a pane, `afterglow mux detach` without a name finds the session of the pane by `AFTERGLOW_PANE_ID`.
 You cannot move all the panes of a session out of its window: the session would only get another name.
 
 These moves are not possible. Each one fails with a notice, and `afterglow ctl` writes the reason:
@@ -313,7 +314,7 @@ The daemon sets these variables in each session pane:
 | --- | --- |
 | `AFTERGLOW_SOCKET` | The first socket on which the daemon listens and that still exists when the session starts (see [sockets](#sockets)) |
 | `AFTERGLOW_PANE_ID` | The pane ID in the daemon |
-| `AFTERGLOW_SESSION` | The session name |
+| `AFTERGLOW_SESSION` | The name of the session where the pane started (see [tabs and splits](#tabs-and-splits)) |
 
 The daemon removes `AFTERGLOW_OVERLAY`.
 `Terminal.env` cannot set `AFTERGLOW_SESSION` or `AFTERGLOW_OVERLAY`.
