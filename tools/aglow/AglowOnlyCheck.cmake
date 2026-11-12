@@ -6,7 +6,7 @@
 #       [-DC_FLAGS=<flags>] [-DCXX_FLAGS=<flags>] [-DLINKER_FLAGS=<flags>]
 #       [-DCONFIGS=<TYPE>,...] [-DC_FLAGS_<TYPE>=<flags>] [-DCXX_FLAGS_<TYPE>=<flags>]
 #       [-DLINKER_FLAGS_<TYPE>=<flags>]
-#       [-DCPM_CACHE=<dir>] [-DDEPS_ARCHIVES=<dir>] [-DJOBS=<n>] -P AglowOnlyCheck.cmake
+#       [-DCPM_CACHE=<dir>] [-DDEPS_ARCHIVES=<dir>] [-DCONFIG=<type>] [-DJOBS=<n>] -P AglowOnlyCheck.cmake
 #
 # Builds aglow alone (AFTERGLOW_AGLOW_ONLY) from SOURCE in BINARY, as a remote
 # host or a distribution package does, and installs it into BINARY/prefix.
@@ -17,14 +17,16 @@
 #     CMake reports both variables as unused: nothing looked for Qt or read
 #     the Phosphor checkout;
 #   - the build succeeds;
-#   - the prefix holds bin/aglow, its completions and its licence notices,
+#   - the prefix holds bin/aglow, its completions and its license notices,
 #     and nothing else;
 #   - the installed aglow runs.
 #
 # The tools, the build type and the flags are those of the build that runs the
 # test, so that aglow alone links as its aglow does: dynamically when the flags
-# hold -fsanitize. CONFIGS names the build types in upper case, and the flags
-# of each type come as they are, also empty, as that build has them.
+# hold -fsanitize. CONFIG is the build type that a generator with many
+# configurations builds and installs. CONFIGS names the build types in upper
+# case, and the flags of each type come as they are, also empty, as that
+# build has them.
 # CPM_CACHE and DEPS_ARCHIVES are those of that build too, so that the pinned
 # archives come from where that build took them.
 
@@ -53,6 +55,7 @@ file(REMOVE_RECURSE "${BINARY}")
 
 set(args -S "${SOURCE}" -B "${build}" -G "${GENERATOR}"
     -DAFTERGLOW_AGLOW_ONLY=ON
+    "-DAFTERGLOW_CODEC_BUILD_JOBS=${JOBS}"
     -DCMAKE_DISABLE_FIND_PACKAGE_Qt6=ON
     "-DAFTERGLOW_PHOSPHOR_LIBS_DIR=${BINARY}/no-phosphor-libs"
     -DBUILD_TESTING=OFF)
@@ -91,20 +94,28 @@ foreach(name CMAKE_DISABLE_FIND_PACKAGE_Qt6 AFTERGLOW_PHOSPHOR_LIBS_DIR)
     endif()
 endforeach()
 
-aglow_only_run(build ${CMAKE_COMMAND} --build "${build}" --parallel ${JOBS})
-aglow_only_run(installation ${CMAKE_COMMAND} --install "${build}" --prefix "${prefix}")
+set(config)
+if(CONFIG)
+    set(config --config "${CONFIG}")
+endif()
+aglow_only_run(build ${CMAKE_COMMAND} --build "${build}" --parallel ${JOBS} ${config})
+aglow_only_run(installation ${CMAKE_COMMAND} --install "${build}" --prefix "${prefix}" ${config})
 
 # A static aglow also carries the notices of glibc and libstdc++, and the
-# texts of the licences that they name.
+# texts of the licenses that they name, when it holds those libraries.
 file(STRINGS "${build}/CMakeCache.txt" static REGEX "^AGLOW_STATIC_LINK_WORKS:INTERNAL=1$")
+file(STRINGS "${build}/CMakeCache.txt" glibc REGEX "^AGLOW_GLIBC:INTERNAL=1$")
+file(STRINGS "${build}/CMakeCache.txt" libstdcxx REGEX "^AGLOW_LIBSTDCXX:INTERNAL=1$")
 set(expected bin/aglow share/bash-completion/completions/aglow share/fish/vendor_completions.d/aglow.fish
     share/zsh/site-functions/_aglow share/licenses/aglow/LGPL-2.1-or-later.txt
     share/licenses/aglow/LICENSE.xxHash share/licenses/aglow/LICENSE.zlib-ng
     share/licenses/aglow/LICENSE.libpng share/licenses/aglow/LICENSE.libjpeg-turbo share/licenses/aglow/README.ijg
-    share/licenses/aglow/LICENSE.libwebp share/licenses/aglow/PATENTS.libwebp)
-if(static)
-    list(APPEND expected share/licenses/aglow/GPL-3.0-or-later.txt share/licenses/aglow/LICENSE.glibc
-         share/licenses/aglow/LICENSE.libstdc++)
+    share/licenses/aglow/NOTICE.IJG share/licenses/aglow/LICENSE.libwebp share/licenses/aglow/PATENTS.libwebp)
+if(static AND glibc)
+    list(APPEND expected share/licenses/aglow/LICENSE.glibc)
+endif()
+if(static AND libstdcxx)
+    list(APPEND expected share/licenses/aglow/GPL-3.0-or-later.txt share/licenses/aglow/LICENSE.libstdc++)
 endif()
 file(GLOB_RECURSE installed LIST_DIRECTORIES false RELATIVE "${prefix}" "${prefix}/*")
 list(SORT expected)

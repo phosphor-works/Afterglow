@@ -1757,3 +1757,45 @@ TEST(StateSync, TheReaderTellsWhichRowsCame)
     EXPECT_EQ(small.primaryScreen().historySize(), 50u);
     EXPECT_TRUE(smallReader.received(small.primaryScreen().rowsDropped(), visible));
 }
+
+// rowsPending() counts the rows of the screen alone: history and the pixels
+// of images that wait for later frames do not count.
+TEST(StateSync, RowsPendingLeavesOutHistoryAndImages)
+{
+    std::string error;
+    {
+        // A screen that does not fit a frame: its rows wait.
+        Pair p(400, 50, 0, 4096);
+        std::string text;
+        for (int row = 0; row < 50; ++row) text += std::string(400, char('a' + row % 26));
+        p.source.feed(text);
+        ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+        EXPECT_TRUE(p.writer.rowsPending());
+        ASSERT_TRUE(p.sync(&error)) << error;
+        EXPECT_FALSE(p.writer.rowsPending());
+        // The same on the alternate screen.
+        std::string other = "\x1b[?1049h";
+        for (int row = 0; row < 50; ++row) other += std::string(400, char('z' - row % 26));
+        p.source.feed(other);
+        ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+        EXPECT_TRUE(p.writer.rowsPending());
+    }
+    {
+        // History that waits for later frames.
+        Pair p(30, 8, 1000, 4096);
+        for (int i = 0; i < 600; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
+        ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+        EXPECT_TRUE(p.writer.pending());
+        EXPECT_FALSE(p.writer.rowsPending());
+    }
+    {
+        // An image larger than a frame.
+        Pair p(30, 8, 100, 8192);
+        p.source.resize(30, 8, 10, 20);
+        ASSERT_TRUE(p.sync(&error)) << error;
+        p.source.feed(apc("a=T,f=32,s=100,v=100,i=50,C=1,q=2", rgba(100, 100, 1, 2, 3)));
+        ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+        EXPECT_TRUE(p.writer.pending());
+        EXPECT_FALSE(p.writer.rowsPending());
+    }
+}

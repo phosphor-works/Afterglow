@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <AfterglowPty/CloseFrom.h>
 #include <AfterglowPty/Pty.h>
 
 #include <algorithm>
@@ -446,8 +447,8 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
         // terminal (/dev/tty) and standard error.
         if (inputPipe[0] >= 0) dup2(inputPipe[0], STDIN_FILENO);
         if (outputPipe[1] >= 0) dup2(outputPipe[1], STDOUT_FILENO);
-        if (execPipe[1] > 3) close_range(3, unsigned(execPipe[1] - 1), 0);
-        close_range(unsigned(execPipe[1] + 1), ~0U, 0);
+        closeRange(3, execPipe[1] - 1);
+        closeFrom(execPipe[1] + 1);
         if (childUmask >= 0) ::umask(mode_t(childUmask));
         if (childFileLimit) setrlimit(RLIMIT_NOFILE, &*childFileLimit);
         if (!cwd.empty() && chdir(cwd.c_str()) != 0) failed(EnterDirectory);

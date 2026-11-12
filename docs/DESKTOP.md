@@ -181,7 +181,7 @@ Invalid base64 and declared size mismatches reject the request.
 The suggested name uses only the basename, without control or format characters.
 Writes use `QSaveFile`. The native dialog controls overwrite confirmation.
 Closing the source pane cancels its dialog.
-The protocol has no success acknowledgement.
+The protocol has no success acknowledgment.
 Afterglow does not open or execute received files automatically.
 
 ## The aglow client
@@ -242,33 +242,67 @@ See [remote commands](CONTROL.md#remote-commands).
 
 `aglow icat` shows PNG, JPEG, GIF, WebP and BMP images.
 It decodes PNG, JPEG and WebP with libpng, libjpeg-turbo and libwebp, which the build includes, and GIF and BMP with readers of its own.
-It does not show a BMP that is compressed with run-length encoding, or Apple's CgBI PNG.
+It does not show these images:
+
+- a BMP that is compressed (run-length encoding, or JPEG or PNG data in the BMP)
+- a BMP with a depth other than 1, 4, 8, 16, 24 or 32 bits
+- a JPEG with a sample size other than 8 bits, or a progressive JPEG with more than 1,000 scans
+- Apple's CgBI PNG
+
 It sends a PNG image that needs no change as it is.
-It decodes the other images to pixels. It also decodes a PNG image that it must scale or mirror, or draw on a color (`--background`).
-It turns a JPEG image as its EXIF orientation tells.
+It decodes the other images to pixels.
+It also decodes a PNG image that it must scale, mirror, turn or draw on a color (`--background`).
+It also decodes a PNG image that is damaged, so that it can report the error.
+It turns a JPEG, PNG or WebP image as its EXIF orientation tells.
+It applies the gamma of a PNG (the gAMA chunk), as Kitty does.
+It does not apply an embedded color profile (ICC).
 A child process decodes each image, with limits on its memory and CPU time.
 A corrupt image stops only that process, and `aglow icat` reports an error.
-A GIF or WebP that is damaged after its first frame plays the frames before the damage, and `aglow icat` shows a warning.
+
+An animation plays with the times of its frames, as Kitty plays it.
+A GIF whose frames all have no time plays at 100 ms a frame.
+A frame that has no time shows together with the next frame.
+A GIF that is damaged after its first frame plays the frames before the damage, and `aglow icat` shows a warning.
+A WebP keeps the frames before the damage only when the damage is in the image data of a later frame.
+A WebP file that is cut short shows nothing.
+With `--loop 0`, `aglow icat` decodes the first frame only.
 
 For a directory, `aglow icat` shows the image files in it and in its subdirectories, in name order.
 It finds them by the file name extension.
+It shows only regular files: a named pipe or a device file is not an image file.
 A subdirectory that it cannot read is left out with a message.
 `aglow icat` then shows the other images, and exits with status 1.
 
-When the terminal can read local files, `aglow icat` sends an image through shared memory or a temporary file.
+When the terminal can read local files and standard output is the terminal, `aglow icat` sends an image through shared memory or a temporary file.
 Otherwise, it sends the image through the terminal connection, and it compresses pixels with zlib.
 Before it exits, `aglow icat` removes the temporary files and shared memory objects that the terminal did not read.
+When standard output closes, `aglow icat` stops and shows no more images.
+
+Inside tmux, `aglow icat` works in a different way:
+
+- It sends images through the terminal connection, and it uses Unicode placeholders.
+- It runs `tmux set -p allow-passthrough on` on its tmux pane, so that its escape codes pass through tmux.
+- `--detect-support` exits with status 1, because tmux answers in place of the terminal.
+
+`--passthrough=tmux` does the same when `TMUX` is not set, and `--passthrough=none` turns it off.
 
 | Item | Limit | At the limit |
 | --- | --- | --- |
+| Size of an image file | 640 MiB | `aglow icat` does not read the file, and reports that it is too large. |
 | Side of an image | 10,000 pixels | `aglow icat` refuses the image before it decodes it. `--scale-up` never makes a larger side. |
 | Decoded pixels of one frame (width × height × 4 bytes) | 320 MiB | `aglow icat` refuses the image before it decodes it. |
 | Decoded pixels of all frames of an animation | 320 MiB | `aglow icat` shows the first frame only, with a warning. |
 | Pixels of all frames at the size that they show (width × height × 4 bytes) | 320 MiB | `aglow icat` shows the first frame only, with a warning. |
 | Frames of an animation | 1,024 | `aglow icat` shows the first frame only, with a warning. |
+| Memory of the child process that decodes | The memory of `aglow`, and 8 times the decoded frame and 64 MiB more | The decode fails, and `aglow icat` reports that the image needs more memory. |
+| CPU time of the child process that decodes | 5 seconds, plus 1 second for each 16 MiB of the frames that it can decode | The decode stops, and `aglow icat` reports that it takes too long. |
+| Scans of a progressive JPEG | 1,000 | `aglow icat` refuses the image. |
+| Side in cells with Unicode placeholders (`--unicode-placeholder`, and always inside tmux) | 297 cells | `aglow icat` refuses the image and exits with status 1. |
+| Wait for the terminal's answer (`--detection-timeout`) | 10 seconds, from 0 to 3,600 | `aglow icat` reports that the terminal did not answer, and exits with status 1. |
 
 Ctrl+C stops `aglow icat` between two parts of the output, and while a child process decodes an image.
 SIGTERM and SIGHUP also stop it at these points.
+For each of these, `aglow icat` exits with status 130.
 
 ### aglow clipboard
 

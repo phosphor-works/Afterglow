@@ -13,14 +13,15 @@
 
 # zlib-ng with its own build, in its zlib-compatible API. Its public symbols
 # get the prefix afterglow_ (zlib.h renames the calls), so they can never
-# take the place of the zlib that other libraries in the process load (Qt,
-# libpng), or the reverse. Only the static library is built: no tests, no
+# take the place of the zlib that other libraries in the process load (Qt
+# and the system's libpng), or the reverse. The bundled libpng of
+# libs/afterglow-image inflates with it. Only the static library is built: no tests, no
 # gz* file API, no install rules. zlib-ng includes CPack, which would write
 # its own package configuration as the top-level CPackConfig.cmake: it is
 # written into zlib-ng's build directory instead.
 function(afterglow_add_zlib_ng)
     afterglow_fetch_dependency(zlib-ng)
-    set(build "${CMAKE_BINARY_DIR}/_afterglow_deps/zlib-ng-build")
+    set(build "${AFTERGLOW_DEPS_BUILD_DIR}/zlib-ng-build")
     set(BUILD_TESTING OFF)
     set(BUILD_SHARED_LIBS OFF)
     set(ZLIB_COMPAT ON)
@@ -49,7 +50,7 @@ target_include_directories(afterglow_zlib SYSTEM INTERFACE ${AFTERGLOW_ZLIB_NG_B
 
 afterglow_third_party_target(zlib-ng afterglow_xxhash)
 # Both are linked into the binaries, so their notices go with them. They
-# install with the other licence texts (afterglow/CMakeLists.txt).
+# install with the other license texts (afterglow/CMakeLists.txt).
 set(AFTERGLOW_ZLIB_LICENSE "${AFTERGLOW_ZLIB_NG_SOURCE_DIR}/LICENSE.md" PARENT_SCOPE)
 set(AFTERGLOW_XXHASH_LICENSE "${xxhash_SOURCE_DIR}/LICENSE" PARENT_SCOPE)
 

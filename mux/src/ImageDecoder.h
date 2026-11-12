@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -91,15 +92,30 @@ private:
     /// The server's answer to a request: the pidfd of its process, or none.
     /// m_socket closes when the server ended. m_mutex held.
     AfterglowProto::UniqueFd answerLocked();
+    /// Closes the socket of a server that ended. m_mutex held.
+    void serverEndedLocked();
 
     const std::string m_executable;
     const int m_waitMs;
-    std::mutex m_mutex; ///< guards the server: its socket takes one request, then its answer
+    std::timed_mutex m_mutex; ///< guards the server: its socket takes one request, then its answer
     AfterglowProto::UniqueFd m_socket;
     pid_t m_server = -1;
+    /// The servers that started in a row and ended before they answered a
+    /// request: 0 once the server answers.
+    int m_unanswered = 0;
+    /// When a server last failed to start, or when two in a row ended before
+    /// they answered: none starts for a minute.
+    std::optional<std::chrono::steady_clock::time_point> m_failedStart;
     /// Answers that the requests of panes that closed left on the socket.
     int m_owedAnswers = 0;
-    std::chrono::steady_clock::time_point m_lastReport; ///< m_mutex
+    /// A line on standard error, at most once a minute for each @p last. Its
+    /// own lock: a pane whose decode is late does not wait for another
+    /// pane's.
+    void reportOnce(std::chrono::steady_clock::time_point& last, const std::string& text);
+    std::mutex m_reportMutex;
+    /// Of reports of failed starts, and of the others; m_reportMutex.
+    std::chrono::steady_clock::time_point m_lastStartReport;
+    std::chrono::steady_clock::time_point m_lastReport;
 };
 
 /// The server of ImageDecoder: forks a decoding process for each request on

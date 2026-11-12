@@ -12,10 +12,11 @@
 # source is too, and no other target links it. The
 # sources of the libraries, xxHash and the decoders are compiled into them
 # again, so that the sanitizers and the coverage instrument them. zlib-ng and
-# the image codecs are instrumented in place: their builds set CPU flags for
-# single files, so their source lists cannot be compiled again here.
-# libjpeg-turbo builds apart, and gets the flags when libs/afterglow-image
-# sets that build up: CMakeLists.txt holds AFTERGLOW_FUZZ_FLAGS for both.
+# the image codecs are instrumented in place, as the targets that their
+# builds define: zlib-ng and libwebp set CPU flags for single files, and each
+# codec is one target that the program links. libjpeg-turbo builds apart, and
+# gets the flags when libs/afterglow-image sets that build up: CMakeLists.txt
+# holds AFTERGLOW_FUZZ_FLAGS for both.
 # Every binary in a fuzz build directory that links one of them then needs
 # the sanitizer runtimes. Only the fuzz targets are built and supported
 # there, so the configure turns the tests off, CMakeLists.txt turns aglow off
@@ -24,7 +25,8 @@
 #
 #   cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DAFTERGLOW_BUILD_FUZZERS=ON \
 #       -DBUILD_TESTING=OFF
-#   cmake --build build-fuzz --target afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz
+#   cmake --build build-fuzz --target afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz \
+#       afterglow_imagefuzz_seeds
 #   mkdir -p build-fuzz/corpus
 #   ./build-fuzz/tools/fuzz/afterglow_vtfuzz -max_total_time=300 -max_len=65536 \
 #       -dict=tools/fuzz/vt.dict build-fuzz/corpus/
@@ -52,8 +54,8 @@ endforeach()
 # An imported target: its code has the flags already (libs/afterglow-image).
 set_property(TARGET afterglow_turbojpeg APPEND PROPERTY INTERFACE_LINK_OPTIONS -fsanitize=address,undefined)
 
-# The protocol library with xxHash, for both targets: the terminal core calls
-# it too.
+# The protocol library with xxHash, for the three targets that read protocol
+# data: the terminal core calls it too.
 afterglow_fuzz_sources(AfterglowProto PROTO_SOURCES)
 afterglow_fuzz_sources(afterglow_xxhash XXHASH_SOURCES)
 add_library(afterglow_fuzz_proto STATIC ${PROTO_SOURCES} ${XXHASH_SOURCES})
@@ -62,7 +64,7 @@ target_include_directories(afterglow_fuzz_proto SYSTEM PRIVATE
     $<TARGET_PROPERTY:afterglow_xxhash,INTERFACE_INCLUDE_DIRECTORIES>)
 target_link_libraries(afterglow_fuzz_proto PUBLIC afterglow_zlib)
 target_compile_options(afterglow_fuzz_proto PRIVATE ${AFTERGLOW_FUZZ_FLAGS})
-# Upstream code is not ours to fix (as in libs/afterglow-proto).
+# Upstream code is not ours to fix (as afterglow_third_party_target says).
 set_source_files_properties(${XXHASH_SOURCES} PROPERTIES COMPILE_OPTIONS -w)
 
 afterglow_fuzz_sources(AfterglowVt VT_SOURCES)
@@ -85,6 +87,11 @@ afterglow_fuzz_sources(AfterglowImage IMAGE_SOURCES)
 add_executable(afterglow_imagefuzz imagefuzz.cpp ${IMAGE_SOURCES})
 target_include_directories(afterglow_imagefuzz PRIVATE $<TARGET_PROPERTY:AfterglowImage,INTERFACE_INCLUDE_DIRECTORIES>)
 target_link_libraries(afterglow_imagefuzz PRIVATE afterglow_png afterglow_turbojpeg afterglow_webp)
+# The files of the tests of the decoders, as a first corpus of
+# afterglow_imagefuzz. It reads no input, so it is not instrumented.
+add_executable(afterglow_imagefuzz_seeds imagefuzz_seeds.cpp)
+target_link_libraries(afterglow_imagefuzz_seeds PRIVATE afterglow_image_test_files)
+set_target_properties(afterglow_imagefuzz_seeds PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 foreach(target afterglow_fuzz_proto afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz)
     set_target_properties(${target} PROPERTIES AUTOMOC OFF AUTOUIC OFF)

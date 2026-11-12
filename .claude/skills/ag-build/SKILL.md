@@ -26,7 +26,7 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 | `build` | RelWithDebInfo (`dev` preset) | ON | Day-to-day work. All the commands below use it. |
 | `build-release` | Release | ON | Performance numbers and release checks |
 | `build-prof` | RelWithDebInfo | ON | Profiling with `perf` |
-| `build-fuzz` | RelWithDebInfo, clang for C and C++, `AFTERGLOW_BUILD_FUZZERS=ON`, `BUILD_TESTING=OFF` | OFF | The libFuzzer targets `afterglow_vtfuzz`, `afterglow_protofuzz`, `afterglow_imagefuzz` and `afterglow_muxfuzz` only. Build them by name: the other binaries are not supported there (zlib-ng is instrumented in place). The fuzz option turns `aglow` off. Make it when you fuzz, with the commands in `docs/TESTING.md`. |
+| `build-fuzz` | RelWithDebInfo, clang for C and C++, `AFTERGLOW_BUILD_FUZZERS=ON`, `BUILD_TESTING=OFF` | OFF | The libFuzzer targets `afterglow_vtfuzz`, `afterglow_protofuzz`, `afterglow_imagefuzz` and `afterglow_muxfuzz`, and the seed writer `afterglow_imagefuzz_seeds`, only. Build them by name: the other binaries are not supported there (zlib-ng and the image codecs are instrumented in place). The fuzz option turns `aglow` off. Make it when you fuzz, with the commands in `docs/TESTING.md`. |
 | `build-debug` | Debug with ASan and UBSan at `-O1` (`debug` preset) | — | Make it when you look for memory errors, and before a PR that changes a parser, a protocol or a pane's memory. Build it with `-j2`: at `-j4` the compiles hit the 6 GB cap. `docs/TESTING.md` "Sanitizer build" has the three runs (errors, leaks without `-L gpu`, native). `aglow` links dynamically there, and `aglow_static` is left out. |
 
 ## aglow
@@ -47,6 +47,7 @@ do the `RunBinaryTest.*` tests of `afterglow_command_tests` and the `sshd` test 
 `afterglow-mux`, also with `-DAFTERGLOW_BUILD_AGLOW=OFF`. No image library of the system is used. libjpeg-turbo
 builds with its own CMake during the build, in `build/_afterglow_deps/libjpeg-turbo-build`. When that step fails,
 its output is in the logs under `build/_afterglow_deps/libjpeg-turbo-steps`. It uses NASM when NASM is installed.
+It runs `AFTERGLOW_CODEC_BUILD_JOBS` jobs (2 by default) beside the main build: count them in the memory cap.
 
 `AFTERGLOW_BUILD_TOOLS=ON` builds `afterglow_renderpng`, `afterglow_headless`, `afterglow_vtbench` and
 `afterglow_native_bench`. Shader previews, `aglow_icat_render` and `afterglow_headless_runner` need it. The renderer
@@ -55,7 +56,8 @@ tests (`Render.*`) do not: `BUILD_TESTING` builds them.
 ## afterglow-mux
 
 `afterglow-mux` (`mux/`) is the session daemon of `afterglow mux`. It has no Qt and links `afterglow-vt`,
-`afterglow-pty`, `afterglow-proto`, phosphor-channel and `afterglow-image`, which its image decoder uses. It builds next to `afterglow` (`build/afterglow/afterglow-mux`), because
+`afterglow-pty`, `afterglow-proto`, phosphor-channel and `afterglow-image`, which its image decoder uses. It builds
+next to `afterglow` (`build/afterglow/afterglow-mux`), because
 `afterglow mux` runs the daemon from its own directory, and building `afterglow` builds it too. A build of `aglow`
 alone (`AFTERGLOW_AGLOW_ONLY`) does not build it. Its tests are `afterglow_mux_tests` (`Mux.*`) and the client
 tests of `afterglow mux` in `afterglow_mux_command_tests` (`MuxCommandTest.*`), with the server and socket tests of
@@ -90,10 +92,11 @@ checkout first:
 - The renderer uses Qt private APIs. After a Qt update, rebuild everything in the capped scope:
   `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build --clean-first -j6`.
 - The pinned archives (Luau and valijson from `PhosphorDependencies.cmake` in PlasmaZones, zlib-ng, xxHash, libpng,
-  libjpeg-turbo and libwebp from `cmake/AfterglowDependencies.cmake`) download into the CPM cache. By default that is `.cache/cpm` in the
-  PlasmaZones checkout that the build uses, and Afterglow's own `.cache/cpm` when only `PHOSPHOR_DEPS_ARCHIVES` is
-  set (`docs/BUILD.md` has the order). A configure without network works once that cache holds them. A build of
-  `aglow` alone loads no PlasmaZones module, so its default cache is Afterglow's own `.cache/cpm`.
+  libjpeg-turbo and libwebp from `cmake/AfterglowDependencies.cmake`) download into the CPM cache. By default that is
+  `.cache/cpm` in the PlasmaZones checkout that the build uses, and Afterglow's own `.cache/cpm` when only
+  `PHOSPHOR_DEPS_ARCHIVES` is set (`docs/BUILD.md` has the order). A configure without network works once that cache
+  holds them. A build of `aglow` alone loads no PlasmaZones module, so its default cache is Afterglow's own
+  `.cache/cpm`.
 
 ## Build
 
@@ -125,12 +128,12 @@ systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
     ctest --test-dir build --output-on-failure -j6 2>&1 | tail -15
 ```
 
-The suite has about 1,800 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
+The suite has about 2,000 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
 before a commit.
 
 - `aglow_only_build` (label `slow`) configures, builds and installs `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) in
-  `build/tools/aglow/aglow-only`, with Qt hidden and no Phosphor directory. It compiles zlib-ng and the image codecs again and
-  takes some minutes. `-LE slow` leaves it out while you work. The whole suite before a commit includes it.
+  `build/tools/aglow/aglow-only`, with Qt hidden and no Phosphor directory. It compiles zlib-ng and the image codecs
+  again and takes some minutes. `-LE slow` leaves it out while you work. The whole suite before a commit includes it.
 - The renderer tests (`libs/afterglow-render/tests`), `afterglow/tests/PopupLookTest.cpp` and
   `afterglow/tests/PointerMapTest.cpp` (`afterglow_pointer_map_tests`) need a Wayland display and a working Vulkan
   driver. They skip only on a machine with no Wayland display or no Vulkan. A device that cannot be made fails them.
@@ -141,12 +144,12 @@ before a commit.
   (`AFTERGLOW_NATIVE_TESTS=OFF`).
   They need a nested KWin. Use the `ag-verify-live` skill to run them.
 - CTest runs some Python tests: `completion_test.py` (`afterglow_shell_completion`), the relays of
-  `kitty_transfer_interop.py`, `tools/generate-reference.py --check`, the scripts in `tools/aglow/tests` and
-  `tools/conformance/test_headless.py` (`afterglow_headless_runner`). With `AFTERGLOW_NATIVE_TESTS=ON` it also runs
-  `native_window_acceptance.py` and `kitty_transfer_interop.py --kitty`. The other Python suites in
-  `afterglow/tests/*.py` are separate: `desktop_acceptance.py`, `scene_acceptance.py`, `shader_parameters_smoke.py`,
-  `project_smoke.py` and the two navigator tests. Run the ones that cover the area that you changed
-  (`docs/TESTING.md` lists them).
+  `kitty_transfer_interop.py`, `tools/generate-reference.py --check`, the scripts in `tools/aglow/tests`, and
+  `test_headless.py` (`afterglow_headless_runner`), `test_tuifuzz.py` and `kitten_icat.py` in `tools/conformance`. With
+  `AFTERGLOW_NATIVE_TESTS=ON` it also runs `native_window_acceptance.py` and `kitty_transfer_interop.py --kitty`. The
+  other Python suites in `afterglow/tests/*.py` are separate: `desktop_acceptance.py`, `scene_acceptance.py`,
+  `shader_parameters_smoke.py`, `project_smoke.py` and the two navigator tests. Run the ones that cover the area that
+  you changed (`docs/TESTING.md` lists them).
 
 ## Generated files
 

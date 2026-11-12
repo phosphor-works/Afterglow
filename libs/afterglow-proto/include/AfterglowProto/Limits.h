@@ -29,6 +29,24 @@ inline std::uint64_t addressSpace()
     return std::strtoull(text, nullptr, 10) * std::uint64_t(page > 0 ? page : 4096);
 }
 
+/// The address space of this process, or, without /proc, a base that is far
+/// more than a decoding process needs, with the @p fileBytes that it maps.
+inline std::uint64_t addressSpaceOr(std::uint64_t fileBytes)
+{
+    const std::uint64_t space = addressSpace();
+    return space != 0 ? space : (std::uint64_t(256) << 20) + fileBytes;
+}
+
+/// The memory that a decoder may take above its address space: a few times
+/// the decoded image while it works (16-bit PNG, the canvas of an
+/// animation). Past this, its allocations fail, whatever a corrupt file asks
+/// for.
+inline std::uint64_t decodeMemory(std::uint64_t frameBytes) { return 8 * frameBytes + (std::uint64_t(64) << 20); }
+
+/// Seconds of CPU time to decode @p pixelBytes: decoding runs at well over
+/// 16 MiB a second.
+inline rlim_t decodeSeconds(std::uint64_t pixelBytes) { return rlim_t(5 + (pixelBytes >> 24)); }
+
 /// Lowers the limit of @p resource to @p soft and @p hard, within the hard
 /// limit that the process has: an unprivileged process cannot raise it. Set
 /// a limit once, with both values, as a later call cannot go past the hard

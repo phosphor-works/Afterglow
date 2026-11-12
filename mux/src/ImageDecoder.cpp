@@ -5,7 +5,9 @@
 
 #include <AfterglowImage/Decode.h>
 #include <AfterglowProto/Limits.h>
+#include <AfterglowPty/CloseFrom.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -154,10 +156,19 @@ void report(std::chrono::steady_clock::time_point& last, const std::string& text
 /// (a kernel without seccomp filters, or a processor whose system calls the
 /// filter does not know): it decodes nothing, and the server says so.
 constexpr int NoFilterStatus = 3;
+/// The exit status of a decoding process that did not decode its image: a
+/// file that is no image of its formats, too large, corrupt, or that needs
+/// more memory than its limit. The daemon shows no image, and that is all.
+/// Any other status but 0 is a failure that the server reports: also the 1
+/// with which a sanitizer ends a process.
+constexpr int RefusedStatus = 4;
 
 /// Past this, the decoding process makes only the system calls that
 /// decoding needs: memory, a read of its file, a write of its pixels or of
-/// a sanitizer's report, the lowering of its own limits, its end. Any other
+/// a sanitizer's report, the lowering of its own limits, its end, and
+/// sigaltstack(), which AddressSanitizer calls before each noreturn call
+/// (_exit, longjmp, throw) and which changes only the caller's own signal
+/// stack. Any other
 /// fails with ENOSYS, so that code that a corrupt file took over can open,
 /// run or connect to nothing, and read no terminal that standard error may
 /// be. A system call of another architecture kills it. False when the
@@ -206,7 +217,7 @@ bool allowOnlyDecoding()
     }
 #endif
     for (const long call : {SYS_close, SYS_mmap, SYS_munmap, SYS_mremap, SYS_mprotect, SYS_madvise, SYS_brk, SYS_futex,
-                            SYS_getrandom, SYS_clock_gettime, SYS_rt_sigreturn, SYS_exit, SYS_exit_group}) {
+                            SYS_getrandom, SYS_clock_gettime, SYS_rt_sigreturn, SYS_sigaltstack, SYS_exit, SYS_exit_group}) {
         filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
         filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
     }
@@ -223,15 +234,15 @@ bool allowOnlyDecoding()
 [[noreturn]] void decodeProcess(int input, int output, ImageFormats formats, pid_t server)
 {
     ::prctl(PR_SET_PDEATHSIG, SIGKILL);
-    if (::getppid() != server) ::_exit(1);
+    if (::getppid() != server) ::_exit(RefusedStatus);
     // The server blocks SIGCHLD for its signalfd: the limits' signals must
     // arrive here.
     sigset_t none;
     ::sigemptyset(&none);
     ::sigprocmask(SIG_SETMASK, &none, nullptr);
-    if (::dup2(input, STDIN_FILENO) < 0 || ::dup2(output, STDOUT_FILENO) < 0) ::_exit(1);
+    if (::dup2(input, STDIN_FILENO) < 0 || ::dup2(output, STDOUT_FILENO) < 0) ::_exit(RefusedStatus);
     // Standard error stays the daemon's: what a sanitizer reports goes there.
-    ::close_range(STDERR_FILENO + 1, ~0U, 0);
+    AfterglowPty::closeFrom(STDERR_FILENO + 1);
     // The kernel's OOM killer takes this process before the daemon. Before
     // PR_SET_DUMPABLE, which gives /proc/self to root.
     if (const int adjust = ::open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC); adjust >= 0) {
@@ -244,22 +255,17 @@ bool allowOnlyDecoding()
     ::prctl(PR_SET_DUMPABLE, 0);
 
     struct stat file{};
-    if (::fstat(STDIN_FILENO, &file) != 0 || file.st_size <= 0 || std::uint64_t(file.st_size) > MaxBytes) ::_exit(1);
+    if (::fstat(STDIN_FILENO, &file) != 0 || file.st_size <= 0 || std::uint64_t(file.st_size) > MaxBytes) ::_exit(RefusedStatus);
     void* mapped = ::mmap(nullptr, std::size_t(file.st_size), PROT_READ, MAP_PRIVATE, STDIN_FILENO, 0);
-    if (mapped == MAP_FAILED) ::_exit(1);
+    if (mapped == MAP_FAILED) ::_exit(RefusedStatus);
     const std::string_view data(static_cast<const char*>(mapped), std::size_t(file.st_size));
     // The daemon checked the signature: a decoding process checks again what
     // it reads.
-    if (!allowed(data, formats)) ::_exit(1);
-    // As aglow: a decoder needs a few times the decoded image while it works
-    // (16-bit PNG, the canvas of an animation). Past this, its
-    // allocations fail, whatever a corrupt file asks for. The mapped file is
-    // in the address space already. Without /proc, the server's start, which
-    // is far less, stands for it. It decodes at well over 16 MiB a second.
-    std::uint64_t base = AfterglowProto::addressSpace();
-    if (base == 0) base = (std::uint64_t(256) << 20) + std::uint64_t(file.st_size);
-    const auto memoryFor = [base](std::uint64_t frameBytes) { return rlim_t(base + 8 * frameBytes + (std::uint64_t(64) << 20)); };
-    const auto secondsFor = [](std::uint64_t frameBytes) { return rlim_t(5 + (frameBytes >> 24)); };
+    if (!allowed(data, formats)) ::_exit(RefusedStatus);
+    // As aglow. The mapped file is in the address space already.
+    const std::uint64_t base = AfterglowProto::addressSpaceOr(std::uint64_t(file.st_size));
+    const auto memoryFor = [base](std::uint64_t frameBytes) { return rlim_t(base + AfterglowProto::decodeMemory(frameBytes)); };
+    const auto secondsFor = [](std::uint64_t frameBytes) { return AfterglowProto::decodeSeconds(frameBytes); };
     // The limits of the largest image, and the filter, before anything of
     // the file is parsed: the header too comes from the program.
     AfterglowProto::limit(RLIMIT_AS, memoryFor(MaxBytes), memoryFor(MaxBytes));
@@ -268,7 +274,7 @@ bool allowOnlyDecoding()
     int width = 0;
     int height = 0;
     if (AfterglowImage::probe(data, width, height) != AfterglowImage::Probe::Image || !fits(std::uint64_t(width), std::uint64_t(height)))
-        ::_exit(1);
+        ::_exit(RefusedStatus);
     // Then those of this image.
     const std::uint64_t frameBytes = std::uint64_t(width) * std::uint64_t(height) * 4;
     AfterglowProto::limit(RLIMIT_AS, memoryFor(frameBytes), memoryFor(frameBytes));
@@ -289,7 +295,7 @@ bool allowOnlyDecoding()
     } catch (const std::bad_alloc&) {
         written = false;
     }
-    ::_exit(written ? 0 : 1);
+    ::_exit(written ? 0 : RefusedStatus);
 }
 
 /// Receives a request: the formats, and the input and the output of a
@@ -344,7 +350,9 @@ void answer(int socket, int pidfd)
 }
 
 /// The decoding processes that ended. One that a signal other than the
-/// daemon's SIGKILL ended (a crash, the CPU limit) goes to the journal.
+/// daemon's SIGKILL ended (a crash, the CPU limit), and one that exited with
+/// a status that it does not give itself (a sanitizer's report), go to the
+/// journal.
 void reap(std::chrono::steady_clock::time_point& lastReport)
 {
     int status = 0;
@@ -353,8 +361,12 @@ void reap(std::chrono::steady_clock::time_point& lastReport)
         // one whose pane closed before it wrote.
         if (WIFSIGNALED(status) && WTERMSIG(status) != SIGKILL && WTERMSIG(status) != SIGPIPE)
             report(lastReport, "an image decoder ended with signal " + std::to_string(WTERMSIG(status)) + ": the image does not show");
-        if (WIFEXITED(status) && WEXITSTATUS(status) == NoFilterStatus)
+        if (!WIFEXITED(status)) continue;
+        const int code = WEXITSTATUS(status);
+        if (code == NoFilterStatus)
             report(lastReport, "the image decoder cannot limit its system calls (no seccomp, or a processor that it does not know): images of sessions do not show");
+        else if (code != 0 && code != RefusedStatus)
+            report(lastReport, "an image decoder failed with status " + std::to_string(code) + ": the image does not show");
     }
 }
 
@@ -375,7 +387,7 @@ int runImageServer(std::string_view parent)
     if (::fcntl(STDERR_FILENO, F_GETFD) < 0 && ::open("/dev/null", O_WRONLY | O_CLOEXEC) != STDERR_FILENO) return 1;
     // Standard input is the socket of the daemon, standard error the
     // daemon's. Nothing else of the daemon reaches the server.
-    ::close_range(STDERR_FILENO + 1, ~0U, 0);
+    AfterglowPty::closeFrom(STDERR_FILENO + 1);
     sigset_t children;
     ::sigemptyset(&children);
     ::sigaddset(&children, SIGCHLD);
@@ -409,7 +421,14 @@ int runImageServer(std::string_view parent)
         if (pid == 0) decodeProcess(input.get(), output.get(), formats, self);
         // The process is not reaped before reap() runs: its pidfd names it.
         AfterglowProto::UniqueFd process(pid > 0 ? pidfdOpen(pid) : -1);
-        if (pid > 0 && !process.valid()) ::kill(pid, SIGKILL);
+        if (pid < 0) {
+            report(lastReport, std::string("the image decoder cannot start a process: ") + std::strerror(errno) + ": the image does not show");
+        } else if (!process.valid()) {
+            // A kernel older than Linux 5.3 has no pidfd_open().
+            report(lastReport, std::string("the image decoder cannot watch its process (pidfd_open: ") + std::strerror(errno)
+                                   + "): images of sessions do not show");
+            ::kill(pid, SIGKILL);
+        }
         answer(STDIN_FILENO, process.get());
     }
 }
@@ -430,20 +449,33 @@ ImageDecoder::~ImageDecoder()
     stopLocked();
 }
 
+void ImageDecoder::reportOnce(std::chrono::steady_clock::time_point& last, const std::string& text)
+{
+    std::lock_guard lock(m_reportMutex);
+    report(last, text);
+}
+
 bool ImageDecoder::startLocked()
 {
+    // A start that fails fails again at once: none for a minute, as for
+    // servers that end before they answer.
+    const auto failed = [this](const char* what, int code) {
+        m_failedStart = std::chrono::steady_clock::now();
+        reportOnce(m_lastStartReport, std::string("the image decoder does not start (") + what + "): " + std::strerror(code));
+        return false;
+    };
     int pair[2] = {-1, -1};
-    if (::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair) != 0) return false;
+    if (::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair) != 0) return failed("socketpair", errno);
     AfterglowProto::UniqueFd daemon = aboveStandard(pair[0]);
     AfterglowProto::UniqueFd server = aboveStandard(pair[1]);
-    if (!daemon.valid() || !server.valid()) return false;
+    if (!daemon.valid() || !server.valid()) return failed("fcntl", errno);
 
     posix_spawn_file_actions_t actions;
     posix_spawnattr_t attributes;
-    if (::posix_spawn_file_actions_init(&actions) != 0) return false;
-    if (::posix_spawnattr_init(&attributes) != 0) {
+    if (const int code = ::posix_spawn_file_actions_init(&actions); code != 0) return failed("posix_spawn", code);
+    if (const int code = ::posix_spawnattr_init(&attributes); code != 0) {
         ::posix_spawn_file_actions_destroy(&actions);
-        return false;
+        return failed("posix_spawn", code);
     }
     // The daemon blocks the signals of its signalfd and ignores SIGPIPE.
     // Both would reach the server through the exec, as would a SIGCHLD that
@@ -472,12 +504,13 @@ bool ImageDecoder::startLocked()
     for (std::string& variable : variables) envp.push_back(variable.data());
     envp.push_back(nullptr);
     pid_t pid = -1;
-    const bool spawned = prepared && ::posix_spawn(&pid, m_executable.c_str(), &actions, &attributes, argv, envp.data()) == 0;
+    const int code = prepared ? ::posix_spawn(&pid, m_executable.c_str(), &actions, &attributes, argv, envp.data()) : EINVAL;
     ::posix_spawnattr_destroy(&attributes);
     ::posix_spawn_file_actions_destroy(&actions);
-    if (!spawned) return false;
+    if (code != 0) return failed("posix_spawn", code);
     m_server = pid;
     m_socket = std::move(daemon);
+    ++m_unanswered;
     return true;
 }
 
@@ -519,6 +552,20 @@ bool readable(int fd)
 
 } // namespace
 
+void ImageDecoder::serverEndedLocked()
+{
+    m_socket.reset();
+    // A server that ended before it answered once can have been killed (the
+    // OOM killer, a user) after it ran for hours: the next one starts. When
+    // that one ends before it answers too, no server starts: a library of
+    // the daemon is gone or changed, or it cannot run. Another start would
+    // end the same way, at each decode: none for a minute.
+    if (m_unanswered >= 2) {
+        m_failedStart = std::chrono::steady_clock::now();
+        reportOnce(m_lastStartReport, "the image decoder ends before it answers: images of sessions do not show for a minute");
+    }
+}
+
 AfterglowProto::UniqueFd ImageDecoder::answerLocked()
 {
     std::uint8_t ok = 0;
@@ -534,9 +581,10 @@ AfterglowProto::UniqueFd ImageDecoder::answerLocked()
         n = ::recvmsg(m_socket.get(), &reply, MSG_CMSG_CLOEXEC);
     } while (n < 0 && errno == EINTR);
     if (n != 1) {
-        m_socket.reset();
+        serverEndedLocked();
         return {};
     }
+    m_unanswered = 0;
     AfterglowProto::UniqueFd process;
     for (cmsghdr* r = CMSG_FIRSTHDR(&reply); r; r = CMSG_NXTHDR(&reply, r)) {
         if (r->cmsg_level != SOL_SOCKET || r->cmsg_type != SCM_RIGHTS || r->cmsg_len < CMSG_LEN(sizeof(int))) continue;
@@ -599,7 +647,7 @@ AfterglowProto::UniqueFd ImageDecoder::requestLocked(ImageFormats formats, int i
         n = ::sendmsg(m_socket.get(), &message, MSG_NOSIGNAL);
     } while (n < 0 && errno == EINTR);
     if (n != 1) {
-        m_socket.reset();
+        serverEndedLocked();
         return {};
     }
     switch (waitForAnswer(m_socket.get(), deadline, cancel)) {
@@ -634,16 +682,28 @@ bool ImageDecoder::decode(std::string_view data, ImageFormats formats, std::uint
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(waitMs);
     AfterglowProto::UniqueFd process;
     {
-        std::lock_guard lock(m_mutex);
+        // The server takes one request at a time: a decode waits for the
+        // others, and still ends at its deadline and when its pane closes.
+        std::unique_lock lock(m_mutex, std::defer_lock);
+        while (!lock.try_lock_for(std::chrono::milliseconds(20))) {
+            if (std::chrono::steady_clock::now() >= deadline || readable(cancel)) return false;
+        }
         bool cancelled = false;
         for (int attempt = 0; attempt < 2 && !process.valid() && !cancelled; ++attempt) {
             if (!m_socket.valid()) {
                 // The server ended: a crash, the OOM killer, or one that got
-                // stuck. The new one has the libraries of now.
-                if (std::chrono::steady_clock::now() >= deadline) return false;
-                report(m_lastReport, "the image decoder is not running: it starts again");
+                // stuck. The new one runs the daemon's own executable
+                // (/proc/self/exe), with the libraries of now. One that did
+                // not start waits a minute before it is tried again.
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= deadline || (m_failedStart && now - *m_failedStart < std::chrono::minutes(1))) return false;
                 stopLocked();
+                // A start that fails reports why itself: the line of a
+                // restart would hold that back for a minute.
                 if (!startLocked()) return false;
+                // Not with the reports of failed starts, which this line
+                // would hold back when the new server fails too.
+                reportOnce(m_lastReport, "the image decoder ended: it started again");
             }
             process = requestLocked(formats, input.get(), writer.get(), deadline, cancel, cancelled);
             // A server that answers with no process could not fork: no
@@ -665,9 +725,7 @@ bool ImageDecoder::decode(std::string_view data, ImageFormats formats, std::uint
     } kill{process.get()};
 
     const auto late = [this, waitMs](Read read) {
-        if (read != Read::Late) return;
-        std::lock_guard lock(m_mutex);
-        report(m_lastReport, "an image decoder took more than " + std::to_string(waitMs) + " ms: the image does not show");
+        if (read == Read::Late) reportOnce(m_lastReport, "an image decoder took more than " + std::to_string(waitMs) + " ms: the image does not show");
     };
     Header header;
     Read read = readUntil(reader.get(), &header, sizeof header, deadline, cancel);

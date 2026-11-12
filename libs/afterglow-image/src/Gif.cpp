@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-// aglow's own GIF decoder: no system library composes the frames of an
-// animation, and the LZW reader here bounds its work by the canvas and the
-// data, whatever size a frame claims. tools/fuzz/imagefuzz.cpp fuzzes it.
+// The library's own GIF decoder: it composes the frames of an animation, and
+// its LZW reader bounds its work by the canvas and the data, whatever size a
+// frame claims. tools/fuzz/imagefuzz.cpp fuzzes it.
 
 #include "Formats.h"
 
@@ -68,13 +68,12 @@ private:
     bool m_truncated = false;
 };
 
-// GIF as browsers show it: each frame drawn over the canvas that the one
-// before left, a graphic control extension that applies to the next frame
-// only, frames clipped to the logical screen, and LZW streams with no
-// leading clear code or with a clear deferred past a full table. One rule is
-// not the browsers' (stb_image had it, and aglow kept it): the pixels that
-// the first frame does not cover show the background colour of the global
-// table, where a browser leaves them transparent.
+// GIF as browsers and kitty show it: each frame drawn over the canvas that
+// the one before left, a graphic control extension that applies to the next
+// frame only, LZW streams with no leading clear code or with a clear deferred
+// past a full table, and a canvas that starts transparent: the background
+// colour of the global table is not used. Frames are clipped to the logical
+// screen, and a logical screen with an empty side is refused.
 class GifDecoder
 {
 public:
@@ -100,9 +99,11 @@ private:
     void readTable(Palette& table, std::size_t count);
     // Fills the part of the frame rectangle that is on the canvas.
     void fillRect(const Rect& rect, const std::array<std::uint8_t, 4>& colour);
-    // Draws the image data of one frame. False when it is corrupt; data that
-    // ends early leaves the rest of the frame as it was, as in browsers.
-    bool raster(const Palette& palette, const Rect& rect, bool interlaced);
+    // Draws the image data of one frame. Data that ends early leaves the
+    // rest of the frame as it was, as in browsers. Data that ends before its
+    // first pixel draws no frame: Cut.
+    enum class Raster : std::uint8_t { Drawn, Corrupt, Cut };
+    Raster raster(const Palette& palette, const Rect& rect, bool interlaced);
 
     Reader m_in;
     std::size_t m_width = 0;
@@ -136,15 +137,15 @@ void GifDecoder::fillRect(const Rect& rect, const std::array<std::uint8_t, 4>& c
     }
 }
 
-bool GifDecoder::raster(const Palette& palette, const Rect& rect, bool interlaced)
+GifDecoder::Raster GifDecoder::raster(const Palette& palette, const Rect& rect, bool interlaced)
 {
     const int minCode = m_in.byte();
     if (m_in.truncated()) {
-        return true;
+        return Raster::Cut;
     }
     // GIF89a takes 2 as the least code size, also for an image of two colours.
     if (minCode < 2 || minCode > 8) {
-        return false;
+        return Raster::Corrupt;
     }
     // The sub-blocks, as one stream of bytes.
     std::size_t blockLeft = 0;
@@ -313,7 +314,8 @@ bool GifDecoder::raster(const Palette& palette, const Rect& rect, bool interlace
         m_in.skip(blockLeft);
         m_in.skipBlocks();
     }
-    return !corrupt;
+    if (corrupt) return Raster::Corrupt;
+    return done == 0 && m_in.truncated() ? Raster::Cut : Raster::Drawn;
 }
 
 bool GifDecoder::run(const FrameSink& sink, std::string& error, std::string& warning)
@@ -322,20 +324,15 @@ bool GifDecoder::run(const FrameSink& sink, std::string& error, std::string& war
     m_width = m_in.u16();
     m_height = m_in.u16();
     const auto flags = m_in.byte();
-    const std::size_t background = m_in.byte();
+    m_in.byte(); // the index of the background colour
     m_in.byte(); // the pixel aspect ratio
     if (m_in.truncated()) {
         error = "the GIF is truncated";
         return false;
     }
-    if (m_width == 0 || m_height == 0) {
-        error = "the GIF has no pixels";
-        return false;
-    }
-    if (m_width > std::size_t(MaxSide) || m_height > std::size_t(MaxSide)) {
-        error = "the GIF has a side longer than " + std::to_string(MaxSide) + " pixels";
-        return false;
-    }
+    int width = 0;
+    int height = 0;
+    if (refused(sized(m_width, m_height, width, height), "GIF", error)) return false;
     Palette global {};
     std::size_t globalCount = 0;
     if (flags & 0x80) {
@@ -357,23 +354,28 @@ bool GifDecoder::run(const FrameSink& sink, std::string& error, std::string& war
         warning = what + ", so the animation stops after frame " + std::to_string(frames);
         return true;
     };
+    // The end of the blocks: the frames so far, and no image is an error.
+    // A file that ends inside a block keeps its frames, the last of which
+    // can lack rows, and the warning says so.
+    auto ended = [&] {
+        if (frames == 0) {
+            error = m_in.truncated() ? "the GIF is truncated" : "the GIF has no image";
+            return false;
+        }
+        if (m_in.truncated()) warning = "the GIF is cut short, so it ends in frame " + std::to_string(frames);
+        return true;
+    };
     for (;;) {
-        if (m_in.atEnd()) {
-            // A GIF without its trailer: the frames so far.
-            if (frames == 0) {
-                error = "the GIF has no image";
-                return false;
-            }
-            return true;
-        }
+        // A GIF without its trailer ends like one with it.
+        if (m_in.atEnd()) return ended();
         const auto kind = m_in.byte();
-        if (kind == 0x3B) {
-            return true;
-        }
+        if (kind == 0x3B) return ended();
         if (kind == 0x21) {
             const auto label = m_in.byte();
             if (label == 0xF9) {
                 const std::size_t length = m_in.byte();
+                // An empty first block is the terminator of the extension.
+                if (length == 0) continue;
                 if (length >= 4) {
                     const auto packed = m_in.byte();
                     delay = int(m_in.u16()) * 10;
@@ -397,39 +399,29 @@ bool GifDecoder::run(const FrameSink& sink, std::string& error, std::string& war
         rect.width = m_in.u16();
         rect.height = m_in.u16();
         const auto local = m_in.byte();
+        // Cut off in its descriptor: no frame from it.
+        if (m_in.truncated()) return ended();
         Palette palette {};
         if (local & 0x80) {
             readTable(palette, std::size_t(2) << (local & 7));
+            if (m_in.truncated()) return ended();
         } else if (globalCount > 0) {
             palette = global;
         } else {
-            return damaged("a frame of the GIF has no colour table");
-        }
-        if (m_in.truncated()) {
-            // Cut off in its descriptor: no frame at all.
-            if (frames == 0) {
-                error = "the GIF is truncated";
-                return false;
-            }
-            return true;
+            return damaged("a frame of the GIF has no color table");
         }
         if (transparent >= 0) {
             palette[std::size_t(transparent)][3] = 0;
         }
-        if (frames == 0 && background > 0 && background < globalCount && int(background) != transparent) {
-            // The pixels that the first frame does not cover show the
-            // background colour of the global table.
-            std::array<std::uint8_t, 4> colour = global[background];
-            colour[3] = 255;
-            fillRect({ 0, 0, m_width, m_height }, colour);
-            fillRect(rect, { 0, 0, 0, 0 });
-        }
         if (disposal == 3) {
             saved = m_canvas;
         }
-        if (!raster(palette, rect, (local & 0x40) != 0)) {
+        const Raster drawn = raster(palette, rect, (local & 0x40) != 0);
+        if (drawn == Raster::Corrupt) {
             return damaged("the image data of the GIF is corrupt");
         }
+        // Cut off before its first pixel: no frame from it either.
+        if (drawn == Raster::Cut) return ended();
         ++frames;
         if (!sink(m_canvas.data(), int(m_width), int(m_height), delay)) {
             return true;

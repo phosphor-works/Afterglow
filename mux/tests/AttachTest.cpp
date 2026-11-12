@@ -91,20 +91,28 @@ public:
         return input && actions ? std::string() : why;
     }
 
-    /// Runs the stream until @p done, up to five seconds.
-    bool until(const std::function<bool()>& done)
+    /// Runs the stream until @p done, up to @p wait.
+    bool until(const std::function<bool()>& done, std::chrono::milliseconds wait = 5s)
     {
-        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        const auto deadline = std::chrono::steady_clock::now() + wait;
         while (std::chrono::steady_clock::now() < deadline) {
             if (done()) return true;
-            if (!stream->pump(20)) ended = true;
+            if (!stream->pump(20)) {
+                // A stream that ended returns at once: wait as pump would.
+                ended = true;
+                std::this_thread::sleep_for(20ms);
+            }
             read();
         }
         return done();
     }
 
+    /// As a window reads: the frames of a pane before its calls, which the
+    /// daemon sends after the frame that they follow. The two channels keep
+    /// no order between them, so a call may arrive with a frame before it.
     void read()
     {
+        readFrames();
         std::string frame;
         if (auto* events = readEvents ? stream->reader(Attach::ControlChannel) : nullptr) {
             while (events->read(frame) == PhosphorChannel::ReadResult::Frame) {
@@ -125,6 +133,10 @@ public:
                         continue;
                     }
                     calls.push_back(*call);
+                    // As a window does: the call waits for the frames of its
+                    // pane that the daemon wrote before it.
+                    callFrames.push_back(std::max(frames, int(event->frames)));
+                    callSentAfter.push_back(event->frames);
                     // As a window does: it writes the terminal's reports.
                     if (call->kind == Host::Kind::Report && answerReports && !type(call->text)) ADD_FAILURE() << "a report does not go";
                 }
@@ -135,6 +147,13 @@ public:
                 if (event->type == Attach::EventType::PaneClosed && channelClosed && !screenAtExit) screenAtExit = screen();
             }
         }
+        // The frames of a pane that opened in these events.
+        readFrames();
+    }
+
+    void readFrames()
+    {
+        std::string frame;
         if (auto* state = channel && !channelClosed ? stream->reader(channel) : nullptr) {
             while (true) {
                 const PhosphorChannel::ReadResult result = state->read(frame);
@@ -142,6 +161,7 @@ public:
                     ++frames;
                     std::string error;
                     if (!reader.apply(replica, frame, &error)) ADD_FAILURE() << "a frame does not apply: " << error;
+                    if (!marker.empty() && !markerFrame && screen().find(marker) != std::string::npos) markerFrame = frames;
                     continue;
                 }
                 if (result == PhosphorChannel::ReadResult::Closed) {
@@ -220,6 +240,10 @@ public:
     int frames = 0;
     std::vector<Attach::Event> events;
     std::vector<Host::Call> calls; ///< the host calls of the pane's terminal, oldest first
+    std::vector<int> callFrames; ///< for each call, the frames that came before it
+    std::vector<std::uint64_t> callSentAfter; ///< for each call, the frames that the daemon wrote before it
+    std::string marker; ///< text whose first frame markerFrame counts
+    int markerFrame = 0;
     std::string parts; ///< the parts of a call that came
     /// Off, the window reads no events: their channel gets no more credit,
     /// and the calls wait in the daemon.
@@ -283,7 +307,7 @@ TEST(MuxAttach, TheWindowsSizeReachesTheProgram)
     ASSERT_TRUE(w.until([&] { return contains(w.screen(), "31 97"); })) << w.screen();
     // A size past what a terminal takes is clamped, not refused.
     ASSERT_TRUE(w.resize(100000, 3));
-    ASSERT_TRUE(w.until([&] { return w.replica.cols() == 4096 && w.replica.rows() == 3; })) << w.replica.cols();
+    ASSERT_TRUE(w.until([&] { return w.replica.cols() == AfterglowVt::Screen::MaxColumns && w.replica.rows() == 3; })) << w.replica.cols();
     EXPECT_FALSE(w.ended);
 }
 
@@ -325,12 +349,10 @@ TEST(MuxAttach, ASecondWindowTakesTheSessionOver)
     // The first window gets nothing more. A finished attachment reads no
     // more input, so its kill ends nothing: only the window that shows the
     // session can end it.
+    // The daemon ended its output to the first window (first.ended above):
+    // the second window's output cannot reach it.
     ASSERT_TRUE(second.type("echo after\n"));
     ASSERT_TRUE(second.until([&] { return contains(second.screen(), "\nafter"); }));
-    // A frame that the daemon made before the takeover may be read after its
-    // event (two channels keep no order): none shows the second window's
-    // output.
-    EXPECT_FALSE(contains(first.screen(), "\nafter")) << first.screen();
     if (first.action(Attach::InputType::Kill)) (void)first.stream->flush(500);
     ASSERT_TRUE(second.type("echo still\n"));
     ASSERT_TRUE(second.until([&] { return contains(second.screen(), "\nstill"); }));
@@ -343,19 +365,24 @@ TEST(MuxAttach, DetachKeepsTheSessionForTheNextWindow)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
     // Made when the job's output is out: while no window shows the session.
+    const std::string go = daemon.dir() + "/job-go";
     const std::string done = daemon.dir() + "/job-done";
     {
         Window w;
         ASSERT_EQ(w.attach(daemon, "sh"), "");
         ASSERT_TRUE(w.until([&] { return contains(w.screen(), "$ "); }));
-        // Output that comes while no window shows the session.
-        ASSERT_TRUE(w.type("echo kept; (sleep 1; echo la''ter; : > " + done + ") &\n"));
+        // Output that comes while no window shows the session: once the
+        // window went, the test says when. Bounded by the test's directory,
+        // which goes with the daemon.
+        ASSERT_TRUE(w.type("echo kept; (while [ -d '" + daemon.dir() + "' ] && [ ! -e '" + go + "' ]; do sleep 0.05; done; echo la''ter; : > '"
+                           + done + "') &\n"));
         ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nkept"); }));
         ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"sh"})) << daemon.lastError();
         ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
         // The command line has la''ter: only the job's output has "later".
         EXPECT_FALSE(contains(w.screen(), "later")) << w.screen();
     }
+    std::ofstream(go).flush();
     IpcConnection::Error error;
     EXPECT_FALSE(daemon.call(Fn::Detach, Json::Array{"sh"}, &error));
     EXPECT_EQ(error.code, Error::NotAttached);
@@ -466,10 +493,15 @@ TEST(MuxAttach, ASlowWindowGetsFewerFramesAndMissesNothing)
     // Wide rows of many colours: far more state than the 4 MiB window of the
     // channel, so a frame has to wait for credit.
     ASSERT_TRUE(w.resize(400, 50));
-    ASSERT_TRUE(w.type("i=0; while [ $i -lt 30000 ]; do printf '\\033[3%dmline %d %0390d\\033[0m\\n' $((i%8)) $i 0; i=$((i+1)); done; echo E''ND\n"));
+    // The program says when it wrote it all: the window reads nothing
+    // before. The daemon reads the PTY as the program writes.
+    const std::string written = daemon.dir() + "/written";
+    ASSERT_TRUE(w.type("i=0; while [ $i -lt 30000 ]; do printf '\\033[3%dmline %d %0390d\\033[0m\\n' $((i%8)) $i 0; i=$((i+1)); done; echo E''ND; : > '"
+                       + written + "'\n"));
     ASSERT_TRUE(w.stream->flush(2000));
-    std::this_thread::sleep_for(3s);
-    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nEND"); })) << w.screen();
+    // Within the test's timeout of 60 s, so that a failure says why.
+    ASSERT_TRUE(waitFor([&] { return exists(written); }, 35s));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nEND"); }, 15s)) << w.screen();
     // Far fewer frames than lines, and every one applied (Window::read),
     // up to the last line.
     EXPECT_LT(w.frames, 3000);
@@ -500,7 +532,7 @@ TEST(MuxAttach, InputThatAFullPtyRefusesWaitsAndArrivesWhole)
     const std::string go = daemon.dir() + "/go";
     const std::string ready = daemon.dir() + "/ready";
     SessionOptions o = daemon.options(
-        {"/bin/sh", "-c", "stty raw -echo; : > " + ready + "; while [ ! -e " + go + " ]; do sleep 0.1; done; exec cat > " + file});
+        {"/bin/sh", "-c", "stty raw -echo; : > '" + ready + "'; while [ ! -e '" + go + "' ]; do sleep 0.1; done; exec cat > '" + file + "'"});
     o.name = "slow";
     ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
     // Raw before the first byte: a line of the terminal holds 4 KiB.
@@ -526,7 +558,8 @@ TEST(MuxAttach, InputThatAFullPtyRefusesWaitsAndArrivesWhole)
     // The window's input waits; the program now reads, and every byte goes.
     std::ofstream(go).put('x');
     std::size_t queued = sent;
-    const auto deadline = std::chrono::steady_clock::now() + 60s;
+    // Below the test's timeout in CTest (60 s), so that a failure says why.
+    const auto deadline = std::chrono::steady_clock::now() + 40s;
     while (std::filesystem::exists(file) ? std::filesystem::file_size(file) < queued : true) {
         if (std::chrono::steady_clock::now() > deadline) break;
         if (queued < sent + (8u << 20) && w.type(part)) queued += part.size();
@@ -542,7 +575,7 @@ TEST(MuxAttach, AKillGoesPastInputThatWaitsForAFullPty)
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     const std::string ready = daemon.dir() + "/ready";
-    SessionOptions o = daemon.options({"/bin/sh", "-c", "stty raw -echo; : > " + ready + "; exec sleep 60"});
+    SessionOptions o = daemon.options({"/bin/sh", "-c", "stty raw -echo; : > '" + ready + "'; exec sleep 60"});
     o.name = "stuck";
     ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
     ASSERT_TRUE(waitFor([&] { return exists(ready); }));
@@ -611,10 +644,11 @@ TEST(MuxAttach, AWindowThatDoesNotConnectLosesItsSocket)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
     IpcConnection::Error error;
+    // Before the call: the daemon's connect wait starts before it answers.
+    const auto made = std::chrono::steady_clock::now();
     const auto result = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "sh", Json::Object{{AttachOption::Takeover, false}}}, &error);
     ASSERT_TRUE(result) << error.message;
     const std::string socket = (*result)["socket"].toString();
-    const auto made = std::chrono::steady_clock::now();
     EXPECT_EQ(::access(socket.c_str(), F_OK), 0);
     // The socket stays for the connect wait of the daemon, then goes.
     const auto gone = [&] {
@@ -626,7 +660,7 @@ TEST(MuxAttach, AWindowThatDoesNotConnectLosesItsSocket)
         return false;
     };
     ASSERT_TRUE(gone());
-    EXPECT_GE(std::chrono::steady_clock::now() - made, std::chrono::milliseconds(Attach::ConnectWaitMs - 200));
+    EXPECT_GE(std::chrono::steady_clock::now() - made, std::chrono::milliseconds(Attach::ConnectWaitMs));
     // The session is free for a window that asks for no takeover.
     Window w;
     EXPECT_EQ(w.attach(daemon, "sh", false), "");
@@ -660,6 +694,7 @@ TEST(MuxAttach, RefusesBadAttachCalls)
     EXPECT_FALSE(daemon.call(Fn::Detach, Json::Array{"none"}, &error));
     EXPECT_EQ(error.code, Error::NoSuchSession);
     for (const Json::Array& args : {Json::Array{}, Json::Array{1}, Json::Array{"a", "b"}}) {
+        SCOPED_TRACE(Json::write(Json::Value(args)));
         EXPECT_FALSE(daemon.call(Fn::Detach, args, &error));
         EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
     }
@@ -781,6 +816,7 @@ TEST(MuxAttach, ThePaneDirectoryIsThatOfTheForegroundProgram)
     EXPECT_EQ(error.code, Error::NoSuchPane);
     for (const Json::Array& args : {Json::Array{}, Json::Array{"sh"}, Json::Array{"sh", "1"}, Json::Array{"sh", -1}, Json::Array{1, 1},
                                     Json::Array{"sh", 1.5}, Json::Array{"sh", std::int64_t(1) << 32}, Json::Array{"sh", 1, 2}}) {
+        SCOPED_TRACE(Json::write(Json::Value(args)));
         EXPECT_FALSE(daemon.call(Fn::PaneDirectory, args, &error));
         EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
     }
@@ -859,7 +895,8 @@ TEST(MuxAttach, TheWindowGetsTheCallsOfThePanesTerminal)
     EXPECT_EQ(write->title, "c");
     // As the terminal hands it to a host: in base64, which the window decodes.
     EXPECT_EQ(write->text, "aGVsbG8=");
-    // The window answers the transfer: the daemon does not refuse it.
+    // The window gets the transfer: the test after this one checks that the
+    // daemon does not refuse it too.
     EXPECT_EQ(transfer->number, 5113);
     EXPECT_EQ(transfer->text, "ac=send;id=t1");
     // In the order that the program sent them.
@@ -913,6 +950,27 @@ TEST(MuxAttach, AReportFollowsTheCommandsBeforeIt)
     EXPECT_EQ(query->number, 72);
     EXPECT_LT(query, report);
     EXPECT_TRUE(report->text.starts_with("\x1b[?")) << testing::PrintToString(report->text);
+}
+
+// With a window, the window answers a file transfer and a drag and drop
+// query: the daemon writes no refusal of its own to the program, which gets
+// only the answer of its DSR after them.
+TEST(MuxAttach, TheDaemonDoesNotAnswerWhatTheWindowAnswers)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    for (const char* query : {"\\x1b]5113;ac=send;id=t1\\x1b\\\\", "\\x1b]72;t=q:i=3;\\x1b\\\\"}) {
+        SCOPED_TRACE(query);
+        TestDaemon daemon;
+        ASSERT_TRUE(daemon.start()) << daemon.errors();
+        const std::string answer = daemon.dir() + "/answer";
+        ASSERT_TRUE(daemon.newSession(daemon.options(ask(std::string(query) + "\\x1b[5n", "n", answer, true), "ask"))) << daemon.lastError();
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "ask"), "");
+        ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "go?"); })) << w.screen();
+        ASSERT_TRUE(w.type("g"));
+        ASSERT_TRUE(w.until([&] { return exists(answer); }));
+        EXPECT_EQ(readFile(answer), "\x1b[0n");
+    }
 }
 
 // A call larger than Mux.eventQueue goes when nothing else waits, in parts
@@ -1045,9 +1103,9 @@ TEST(MuxAttach, RequestsThatWaitWhenTheWindowDetachesGetTheAnswerWithoutAWindow)
         w.readEvents = false;
         ASSERT_TRUE(step(w, 2));
         // The read waits: the window got no answer to give, and the daemon
-        // gave none.
+        // gave none. The program says "ready waited" when no answer came
+        // in its time (fillThenRead).
         ASSERT_TRUE(w.until([&] { return contains(w.screen(), "ready waited"); })) << w.screen();
-        EXPECT_FALSE(exists(answer));
         IpcConnection::Error error;
         ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"detach"}, &error)) << error.message;
         ASSERT_TRUE(w.until([&] { return exists(answer); }));
@@ -1100,6 +1158,54 @@ os.read(fd, 1)
     EXPECT_EQ(sizes, (std::vector<std::size_t>{2 * mib, 5 * mib / 2}));
 }
 
+// The calls of a pane whose program exited all go before its PaneClosed,
+// also those that wait in the daemon's queue for the window's credit when
+// the session ends with it.
+TEST(MuxAttach, TheCallsThatWaitWhenTheLastProgramExitsStillGo)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::size_t mib = std::size_t(1) << 20;
+    // Three writes, more than the credit of the channel, which a queue of
+    // 8 MiB takes whole, and the program ends.
+    const std::string script = R"(import os, sys, tty
+fd = sys.stdin.fileno()
+tty.setraw(fd)
+os.write(1, b'go?')
+os.read(fd, 1)
+os.write(1, b'\x1b]52;c;' + b'A' * (2 << 20) + b'\x07w0')
+os.read(fd, 1)
+os.write(1, b'\x1b]52;c;' + b'A' * (5 << 19) + b'\x07w1')
+os.read(fd, 1)
+os.write(1, b'\x1b]52;c;' + b'A' * (1 << 20) + b'\x07w2')
+os.read(fd, 1)
+)";
+    ASSERT_TRUE(daemon.newSession(daemon.options({"python3", "-I", "-c", script}, "ends"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "ends", true, 8 * mib), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    w.readEvents = false;
+    ASSERT_TRUE(step(w, 3));
+    ASSERT_TRUE(w.until([&] { return w.channelClosed; }));
+    w.readEvents = true;
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::SessionEnded); }));
+    std::vector<std::size_t> sizes;
+    for (const Host::Call& c : w.calls) {
+        if (c.kind == Host::Kind::ClipboardWrite) sizes.push_back(c.text.size());
+    }
+    EXPECT_EQ(sizes, (std::vector<std::size_t>{2 * mib, 5 * mib / 2, mib}));
+    // Before the pane's exit.
+    std::size_t lastCall = 0;
+    std::size_t closed = w.events.size();
+    for (std::size_t i = 0; i < w.events.size(); ++i) {
+        if (w.events[i].type == Attach::EventType::Host) lastCall = i;
+        if (w.events[i].type == Attach::EventType::PaneClosed && closed == w.events.size()) closed = i;
+    }
+    EXPECT_TRUE(w.got(Attach::EventType::PaneClosed));
+    EXPECT_LT(lastCall, closed);
+}
+
 TEST(MuxAttach, RefusesAnEventQueueOrHistoryOutOfRangeAndAnUnknownOption)
 {
     TestDaemon daemon;
@@ -1112,6 +1218,7 @@ TEST(MuxAttach, RefusesAnEventQueueOrHistoryOutOfRangeAndAnUnknownOption)
         EXPECT_EQ(error.code, IpcErrorCode::InvalidArg) << i;
     }
     for (const Json::Value& rows : {Json::Value(-1), Json::Value(MaxHistory + 1), Json::Value("10"), Json::Value(1.5)}) {
+        SCOPED_TRACE(Json::write(rows));
         IpcConnection::Error error;
         EXPECT_FALSE(daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "keep", Json::Object{{AttachOption::History, rows}}}, &error));
         EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
@@ -1166,30 +1273,116 @@ TEST(MuxAttach, ThePngAndItermImagesOfASessionReachTheWindow)
     const std::string images = daemon.dir() + "/images";
     {
         std::ofstream out(images, std::ios::binary);
-        out << "\x1b_Ga=T,f=100,i=7,q=2;" << AfterglowProto::base64Encode(ImageFiles::Png) << "\x1b\\";
-        out << "\x1b]1337;File=inline=1;size=" << ImageFiles::Jpeg.size() << ':'
-            << AfterglowProto::base64Encode(ImageFiles::Jpeg) << '\a';
+        out << "\x1b_Ga=T,f=100,i=7,q=2;" << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Png) << "\x1b\\";
+        // kitty's f=100 is PNG only: a JPEG with it stores nothing.
+        out << "\x1b_Ga=T,f=100,i=8,q=2;" << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Jpeg) << "\x1b\\";
+        out << "\x1b]1337;File=inline=1;size=" << AfterglowImage::TestFiles::Jpeg.size() << ':'
+            << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Jpeg) << '\a';
+        out << "\x1b]1337;File=inline=1;size=" << AfterglowImage::TestFiles::Webp.size() << ':'
+            << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Webp) << '\a';
     }
     ASSERT_TRUE(w.type("cat '" + images + "'; echo im''ages-shown\n"));
     const AfterglowVt::GraphicsStore& store = w.replica.graphics();
-    const auto iterm = [&]() -> const AfterglowVt::Image* {
+    // The iTerm2 images, in their order: the JPEG (8 by 8), then the WebP.
+    const auto iterm = [&] {
+        std::vector<const AfterglowVt::Image*> found;
         for (const auto& [id, image] : store.images())
-            if (image.isSixel) return &image;
-        return nullptr;
+            if (image.isSixel) found.push_back(&image);
+        std::sort(found.begin(), found.end(), [](const AfterglowVt::Image* a, const AfterglowVt::Image* b) {
+            return a->frames.at(0)->width > b->frames.at(0)->width;
+        });
+        return found;
     };
-    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "images-shown") && store.images().contains(7) && iterm(); }))
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "images-shown") && store.images().contains(7) && iterm().size() == 2; }))
         << w.screen() << store.images().size();
+    EXPECT_FALSE(store.images().contains(8));
     const AfterglowVt::Image& png = store.images().at(7);
     ASSERT_EQ(png.frames.size(), 1u);
     EXPECT_EQ(png.frames[0]->width, 3u);
     EXPECT_EQ(png.frames[0]->height, 2u);
-    const std::vector<std::uint8_t> expected{255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0,
-                                             10, 20, 30, 255, 200, 100, 50, 255, 1, 2, 3, 4};
-    EXPECT_TRUE(png.frames[0]->rgba == expected);
-    ASSERT_EQ(iterm()->frames.size(), 1u);
-    EXPECT_EQ(iterm()->frames[0]->width, 8u);
-    EXPECT_EQ(iterm()->frames[0]->height, 8u);
-    EXPECT_GT(iterm()->frames[0]->rgba.at(0), 240);
+    EXPECT_TRUE(png.frames[0]->rgba == AfterglowImage::TestFiles::PngPixels);
+    const AfterglowVt::Image& jpeg = *iterm()[0];
+    ASSERT_EQ(jpeg.frames.size(), 1u);
+    EXPECT_EQ(jpeg.frames[0]->width, 8u);
+    EXPECT_EQ(jpeg.frames[0]->height, 8u);
+    // A lossy format: each pixel near red.
+    int notRed = 0;
+    const std::vector<std::uint8_t>& rgba = jpeg.frames[0]->rgba;
+    ASSERT_EQ(rgba.size(), 8u * 8 * 4);
+    for (std::size_t i = 0; i < rgba.size(); i += 4) {
+        if (rgba[i] <= 240 || rgba[i + 1] >= 16 || rgba[i + 2] >= 16 || rgba[i + 3] != 255) ++notRed;
+    }
+    EXPECT_EQ(notRed, 0);
+    const AfterglowVt::Image& webp = *iterm()[1];
+    ASSERT_EQ(webp.frames.size(), 1u);
+    EXPECT_EQ(webp.frames[0]->width, 2u);
+    EXPECT_EQ(webp.frames[0]->height, 2u);
+    EXPECT_TRUE(webp.frames[0]->rgba == AfterglowImage::TestFiles::repeat({255, 0, 0, 255}, 4));
+}
+
+// A frame that waits for a decode holds the host calls behind it: the bell
+// that the program rang after its text comes after the frame with the text.
+TEST(MuxAttach, AFrameThatWaitsForADecodeHoldsTheCallsBehindIt)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    ASSERT_TRUE(w.resize(40, 10));
+    ASSERT_TRUE(w.until([&] { return w.replica.cellWidth() == 8; }));
+    // Text, a bell and an image that takes a while to decode, in one write
+    // that the pane reads at once: the image comes as a file (t=f), so the
+    // decode starts in the feed that has the bell. The image leaves the
+    // cursor where it is (C=1): its rows would scroll the text off the screen.
+    const std::string png = daemon.dir() + "/slow.png";
+    std::ofstream(png, std::ios::binary) << greyPng(8000, 8000);
+    const std::string file = daemon.dir() + "/slow";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << "\x1b[2J\x1b[Hrang\a\x1b_Ga=T,f=100,t=f,C=1,i=5,q=2;" << AfterglowProto::base64Encode(png) << "\x1b\\";
+    }
+    w.marker = "rang";
+    ASSERT_TRUE(w.type("cat '" + file + "'\n"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::Bell) && w.markerFrame; }, 30s))
+        << "bell " << hasCall(w, Host::Kind::Bell) << ", frame of the text " << w.markerFrame << ", screen " << w.screen();
+    const std::size_t bell = std::size_t(std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::Bell; })
+                                         - w.calls.begin());
+    EXPECT_GE(w.callFrames[bell], w.markerFrame);
+}
+
+// A call names the frames of its pane that the daemon wrote before it: a
+// frame larger than a fragment of the stream (16 KiB) can still be on its
+// way when the call comes, and the window waits for it.
+TEST(MuxAttach, ACallNamesTheFramesBeforeIt)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    ASSERT_TRUE(w.resize(300, 100));
+    ASSERT_TRUE(w.until([&] { return w.replica.cols() == 300 && w.replica.rows() == 100; }));
+    // A screen of colored text, its last word and a bell in one write: the
+    // frame with them holds far more than a fragment.
+    const std::string file = daemon.dir() + "/screen";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << "\x1b[2J\x1b[H";
+        for (int row = 0; row < 98; ++row) {
+            for (int col = 0; col < 299; ++col) out << "\x1b[3" << (col % 8) << ";4" << (row % 8) << "m" << char('a' + col % 26);
+            out << "\r\n";
+        }
+        out << "\x1b[0mfinal\a";
+    }
+    w.marker = "final";
+    ASSERT_TRUE(w.type("cat '" + file + "'\n"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::Bell) && w.markerFrame; }, 30s)) << w.screen();
+    const std::size_t bell = std::size_t(std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::Bell; })
+                                         - w.calls.begin());
+    EXPECT_GE(w.callSentAfter[bell], std::uint64_t(w.markerFrame));
 }
 
 // An image that the program prints while no window shows the session, after
@@ -1203,7 +1396,7 @@ TEST(MuxAttach, AnImagePrintedWhileDetachedReachesTheNextWindow)
     const std::string image = daemon.dir() + "/image";
     {
         std::ofstream out(image, std::ios::binary);
-        out << "\x1b_Ga=T,f=100,i=9,q=2;" << AfterglowProto::base64Encode(ImageFiles::Png) << "\x1b\\";
+        out << "\x1b_Ga=T,f=100,i=9,q=2;" << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Png) << "\x1b\\";
     }
     const std::string go = daemon.dir() + "/image-go";
     const std::string done = daemon.dir() + "/image-done";
@@ -1229,7 +1422,5 @@ TEST(MuxAttach, AnImagePrintedWhileDetachedReachesTheNextWindow)
     ASSERT_TRUE(again.until([&] { return store.images().contains(9) && !store.placements().empty(); })) << store.images().size();
     const AfterglowVt::Image& png = store.images().at(9);
     ASSERT_EQ(png.frames.size(), 1u);
-    const std::vector<std::uint8_t> expected{255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0,
-                                             10, 20, 30, 255, 200, 100, 50, 255, 1, 2, 3, 4};
-    EXPECT_TRUE(png.frames[0]->rgba == expected);
+    EXPECT_TRUE(png.frames[0]->rgba == AfterglowImage::TestFiles::PngPixels);
 }

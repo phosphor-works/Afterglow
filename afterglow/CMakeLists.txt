@@ -163,7 +163,7 @@ qt_add_library(afterglow_imagedecode STATIC src/ImageDecode.cpp src/ImageDecode.
 target_include_directories(afterglow_imagedecode PUBLIC src)
 target_compile_definitions(afterglow_imagedecode PRIVATE QT_NO_CAST_FROM_ASCII)
 # Its header holds only standard types: the libraries it decodes with stay inside.
-target_link_libraries(afterglow_imagedecode PUBLIC Qt6::Gui PRIVATE Afterglow::Vt Afterglow::Proto)
+target_link_libraries(afterglow_imagedecode PRIVATE Qt6::Gui Afterglow::Vt Afterglow::Proto)
 
 # The script host, shared with its tests. The Control binding lives in the app.
 qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h
@@ -233,8 +233,16 @@ target_compile_definitions(afterglow_app PUBLIC QT_NO_CAST_FROM_ASCII AFTERGLOW_
     AFTERGLOW_INSTALLED_PLUGIN_DIR="${CMAKE_INSTALL_FULL_LIBDIR}/afterglow/plugins"
     AFTERGLOW_BUILD_TERMINFO_DIR="${CMAKE_BINARY_DIR}/share/terminfo"
     AFTERGLOW_INSTALLED_TERMINFO_DIR="${CMAKE_INSTALL_FULL_DATADIR}/terminfo")
-# The layer-shell QPA plugin is part of the phosphor build; make sure it exists.
+# The layer-shell QPA plugin is part of the phosphor build; make sure it
+# exists. The native tests and the native benchmark start windows as
+# afterglow does (app/Startup.h), and a build of one of them alone needs it
+# too.
 add_dependencies(afterglow phosphorwayland-qpa)
+foreach(windows afterglow_native_tests afterglow_native_bench)
+    if(TARGET ${windows})
+        add_dependencies(${windows} phosphorwayland-qpa)
+    endif()
+endforeach()
 target_include_directories(afterglow_app PUBLIC src)
 target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio afterglow_imagedecode Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::CorePrivate Qt6::GuiPrivate Qt6::QuickPrivate
@@ -261,7 +269,7 @@ set_target_properties(phosphorwayland-qpa PROPERTIES INSTALL_RPATH "$ORIGIN/../.
 install(TARGETS ${AFTERGLOW_PRIVATE_LIBS} LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)
 install(TARGETS phosphorwayland-qpa
         LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR}/plugins/wayland-shell-integration)
-# Licence texts of what is installed: the code (GPL and LGPL), the themes
+# License texts of what is installed: the code (GPL and LGPL), the themes
 # (MIT), the icon (CC-BY-SA-4.0) and the desktop files (CC0-1.0).
 set(AFTERGLOW_LICENSE_TEXTS GPL-3.0-or-later LGPL-2.1-or-later MIT CC-BY-SA-4.0 CC0-1.0)
 list(TRANSFORM AFTERGLOW_LICENSE_TEXTS PREPEND "${PROJECT_SOURCE_DIR}/LICENSES/")
@@ -323,6 +331,9 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/glasshouse/ DESTINATION ${
         USE_SOURCE_PERMISSIONS)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/phosphor/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/phosphor
         USE_SOURCE_PERMISSIONS)
+# The demo clients of the protocols that docs/COMPATIBILITY.md and
+# docs/DESKTOP.md name: python3 runs them.
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/compatibility/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/compatibility)
 
 # Desktop integration.
 install(FILES ${PROJECT_SOURCE_DIR}/data/${AFTERGLOW_APP_ID}.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
@@ -359,6 +370,11 @@ if(TIC_EXECUTABLE)
         COMMENT "Compiling the afterglow terminfo entry")
     add_custom_target(afterglow_terminfo ALL DEPENDS ${AFTERGLOW_TERMINFO_BUILD_DIR}/a/afterglow)
     add_dependencies(afterglow afterglow_terminfo)
+    foreach(windows afterglow_native_tests afterglow_native_bench)
+        if(TARGET ${windows})
+            add_dependencies(${windows} afterglow_terminfo)
+        endif()
+    endforeach()
     install(DIRECTORY ${AFTERGLOW_TERMINFO_BUILD_DIR}/ DESTINATION ${CMAKE_INSTALL_DATADIR}/terminfo)
 endif()
 

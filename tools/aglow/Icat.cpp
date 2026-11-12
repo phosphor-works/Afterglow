@@ -55,7 +55,7 @@ constexpr long long Unlimited = LLONG_MAX;
 // kitten's z-index origin for "--1": below the cell backgrounds.
 constexpr std::int64_t BelowBackground = -1073741824;
 // The largest file that aglow reads as an image: twice the image memory of
-// the terminal, which an uncompressed BMP or a lossless PNG reaches.
+// the terminal, which a 16-bit RGBA PNG without compression reaches.
 constexpr std::uint64_t MaxInput = 2 * std::uint64_t(AfterglowProto::GraphicsDefaultQuota);
 // The bytes of graphics commands that go out between two checks for a signal.
 constexpr std::size_t WriteSlice = 64 * 1024;
@@ -174,8 +174,11 @@ bool parseInt(std::string_view text, int& value)
     return !text.empty() && ec == std::errc() && end == text.data() + text.size();
 }
 
+// The largest number in a size or a place: what a winsize holds.
+constexpr int MaxField = 65535;
+
 // Numbers in decimal digits only, split at @p separators in their order: no
-// sign, no spaces.
+// sign, no spaces, and none past MaxField, so that sums of them stay in int.
 bool parseFields(std::string_view text, std::string_view separators, int* fields)
 {
     for (std::size_t i = 0; i <= separators.size(); ++i) {
@@ -185,7 +188,7 @@ bool parseFields(std::string_view text, std::string_view separators, int* fields
         }
         const auto field = text.substr(0, end);
         if (field.empty() || !std::all_of(field.begin(), field.end(), [](char c) { return c >= '0' && c <= '9'; })
-            || !parseInt(field, fields[i])) {
+            || !parseInt(field, fields[i]) || fields[i] > MaxField) {
             return false;
         }
         text.remove_prefix(std::min(text.size(), end + 1));
@@ -266,7 +269,9 @@ bool walk(const std::string& path, std::vector<std::string>& out, std::set<std::
         }
         if (S_ISDIR(st.st_mode)) {
             walk(child, out, seen, skipped, error, false);
-        } else if (hasImageExtension(name)) {
+        } else if (S_ISREG(st.st_mode) && hasImageExtension(name)) {
+            // A pipe or a device in the tree is no image file: opening a
+            // pipe with no writer would wait for one.
             out.push_back(child);
         }
     }
@@ -275,6 +280,8 @@ bool walk(const std::string& path, std::vector<std::string>& out, std::set<std::
 
 // Reads a whole image, up to MaxInput bytes. A pipe or a device is read
 // after poll says it has data, so that @p stop can end a read that waits.
+// One that was opened with O_NONBLOCK waits the same way: a named pipe with
+// no writer yet has no data and no end.
 bool readSource(int fd, std::string& out, const std::function<bool()>& stop, std::string& error)
 {
     struct stat st { };
@@ -312,7 +319,7 @@ bool readSource(int fd, std::string& out, const std::function<bool()>& stop, std
             }
         }
         const ssize_t n = ::read(fd, buffer, sizeof buffer);
-        if (n < 0 && errno == EINTR) {
+        if (n < 0 && (errno == EINTR || errno == EAGAIN)) {
             continue;
         }
         if (n < 0) {
@@ -461,6 +468,8 @@ public:
     // did not show, for an image that did.
     std::string show(std::string_view bytes, std::uint32_t id, std::string& warning);
     bool interrupted() const { return m_interrupted; }
+    /// Whether a write to the terminal failed: no later image can reach it.
+    bool cutOff() const { return m_cutOff; }
     // The temporary files or shared memory objects sent so far.
     const std::vector<std::string>& temporaries() const { return m_temporaries; }
 
@@ -478,6 +487,7 @@ private:
     int m_out;
     std::function<bool()> m_stop;
     bool m_interrupted = false;
+    bool m_cutOff = false;
     std::vector<std::string> m_temporaries;
 };
 
@@ -485,6 +495,7 @@ bool Icat::emit(std::string_view bytes, std::string& error)
 {
     if (!AfterglowProto::writeAll(m_out, bytes)) {
         error = std::string("cannot write to the terminal: ") + std::strerror(errno);
+        m_cutOff = true;
         return false;
     }
     return true;
@@ -522,7 +533,7 @@ bool Icat::emitGraphics(const std::string& commands, std::string& error)
 
 bool Icat::transmit(GraphicsCommand command, std::string_view data, std::string& error)
 {
-    std::string payload(data);
+    std::string_view payload = data;
     std::string name;
     if (m_s.medium != Medium::Stream) {
         std::string reason;
@@ -615,7 +626,8 @@ std::string Icat::show(std::string_view bytes, std::uint32_t id, std::string& wa
     // A PNG that needs no change goes as it is: the terminal decodes it.
     if (!isPng(bytes) || scaled || m_s.mirrorH || m_s.mirrorV || m_s.background) {
         // Within the image memory of the terminal, checked before decoding.
-        image = decodeImage(bytes, AfterglowProto::GraphicsDefaultQuota, error);
+        // An animation that does not play needs its first frame only.
+        image = decodeImage(bytes, AfterglowProto::GraphicsDefaultQuota, error, m_s.loops == 0 ? 1 : SIZE_MAX);
         if (!image) {
             if (m_stop()) {
                 m_interrupted = true;
@@ -743,7 +755,10 @@ std::string Icat::show(std::string_view bytes, std::uint32_t id, std::string& wa
                 failure = "interrupted";
                 break;
             }
-            const int delay = image->delay(n);
+            // A frame with no time of its own shows with the next: in the
+            // protocol that is a gap below 0, as kitten icat sends it. A gap
+            // of 0 would take the terminal's default.
+            const int delay = image->delay(n) > 0 ? image->delay(n) : -1;
             std::string data = prepare(n);
             // An opaque frame goes as RGB: a quarter fewer bytes.
             const bool opaque = frameOpaque(data);
@@ -1107,10 +1122,6 @@ int runIcat(int argc, char** argv)
         std::printf("%dx%d", screen.width, screen.height);
         return 0;
     }
-    if (!detecting && (screen.width == 0 || screen.height == 0)) {
-        report("icat", "The terminal does not report its size in pixels. Use a terminal that does, or --use-window-size.");
-        return 1;
-    }
     // The images, in order: standard input first, as kitten takes them. It
     // is read before the terminal is touched: a command piped into aglow can
     // itself write to the terminal.
@@ -1183,6 +1194,11 @@ int runIcat(int argc, char** argv)
         }
         return 0;
     }
+    // Only an image needs the size in pixels: a clear without one is done.
+    if (!detecting && (screen.width == 0 || screen.height == 0)) {
+        report("icat", "The terminal does not report its size in pixels. Use a terminal that does, or --use-window-size.");
+        return 1;
+    }
     if (settings.place && sources.size() > 1) {
         report("icat", "The --place option can only be used with a single image, not " + std::to_string(sources.size()));
         return 1;
@@ -1244,6 +1260,33 @@ int runIcat(int argc, char** argv)
     bool interrupted = false;
     auto stop = [&] { return interrupted = interrupted || tty.takeSignal() != 0; };
     Icat icat(settings, screen, out, stop);
+    // The files and shared memory objects that the terminal did not read go
+    // however this function ends, also by an exception (no memory for an
+    // image). On the way out they go at once, before --hold.
+    class LeftOver
+    {
+    public:
+        explicit LeftOver(std::function<void()> remove)
+            : m_remove(std::move(remove))
+        {
+        }
+        ~LeftOver() { run(); }
+        LeftOver(const LeftOver&) = delete;
+        LeftOver& operator=(const LeftOver&) = delete;
+        void run()
+        {
+            if (m_remove) {
+                std::exchange(m_remove, nullptr)();
+            }
+        }
+
+    private:
+        std::function<void()> m_remove;
+    } leftOver([&] {
+        if (settings.medium != Medium::Stream) {
+            removeUnread(tty, timeoutMs, settings.medium, icat.temporaries());
+        }
+    });
     auto id = std::uint32_t(parsed->integer("image-id"));
     int code = unread ? 1 : 0;
     for (auto& source : sources) {
@@ -1252,7 +1295,9 @@ int runIcat(int argc, char** argv)
         }
         const std::string name = source.path.empty() ? std::string("<stdin>") : printable(source.path);
         if (!source.path.empty()) {
-            const int fd = ::open(source.path.c_str(), O_RDONLY | O_CLOEXEC);
+            // O_NONBLOCK: a named pipe opens at once, and readSource() waits
+            // for its data where Ctrl+C can stop it.
+            const int fd = ::open(source.path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
             if (fd < 0) {
                 report("icat", "Could not open " + name + ": " + std::strerror(errno));
                 code = 1;
@@ -1284,14 +1329,16 @@ int runIcat(int argc, char** argv)
             report("icat", name + ": " + failure);
             code = 1;
         }
+        if (icat.cutOff()) {
+            // Standard output is closed: the other images cannot be shown.
+            break;
+        }
         if (id) {
             // The ids that follow, past UINT32_MAX back to 1: 0 is not an id.
             id = id == UINT32_MAX ? 1 : id + 1;
         }
     }
-    if (settings.medium != Medium::Stream) {
-        removeUnread(tty, timeoutMs, settings.medium, icat.temporaries());
-    }
+    leftOver.run();
     if (interrupted) {
         report("icat", "interrupted");
         return 130;

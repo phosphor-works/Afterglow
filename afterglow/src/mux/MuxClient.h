@@ -136,10 +136,14 @@ private:
     /// cannot take. @p lostLink is set when a frame of the pane, which goes
     /// first, did not apply: the link is lost.
     bool hostEvent(AfterglowMux::Attach::Event& event, bool* lostLink);
-    /// A call for pane @p id, @p bytes encoded: its pane answers it, or it
-    /// waits for the pane. False when the calls that wait would pass
-    /// MaxWaitingHostCalls.
-    bool hostCall(std::uint32_t id, AfterglowMux::Host::Call call, std::size_t bytes);
+    /// A call for pane @p id, @p bytes encoded, that the daemon sent after
+    /// @p frames frames of the pane: its pane answers it once the window
+    /// made the pane and read as many, and it waits until then. False when
+    /// the calls that wait would pass MaxWaitingHostCalls.
+    bool hostCall(std::uint32_t id, AfterglowMux::Host::Call call, std::size_t bytes, std::uint64_t frames);
+    /// Makes the calls of pane @p id whose frames the window read, in their
+    /// order.
+    void releaseHostCalls(std::uint32_t id);
     void queueInput(std::string frame, bool resize);
     /// Queues @p input for pane @p id after the input that waits, while the
     /// session shows.
@@ -165,16 +169,25 @@ private:
     std::map<std::uint32_t, std::uint32_t> m_channels; ///< the state channel of each pane
     std::map<std::uint32_t, QPointer<Pane>> m_panes;
     std::map<std::uint32_t, int> m_exits; ///< PaneClosed came: the wait status
-    /// The calls for panes that the window has not made yet, and their bytes.
-    struct WaitingHostCalls
+    /// The calls for panes that the window has not made yet, or whose frames
+    /// before them did not all come, and their bytes.
+    struct WaitingHostCall
     {
-        std::vector<AfterglowMux::Host::Call> calls;
+        AfterglowMux::Host::Call call;
+        std::uint64_t frames = 0; ///< of the pane, before the call
         std::size_t bytes = 0;
     };
+    struct WaitingHostCalls
+    {
+        std::deque<WaitingHostCall> calls;
+        std::size_t bytes = 0;
+    };
+    std::map<std::uint32_t, std::uint64_t> m_framesRead; ///< the frames of each pane that the window read
     std::map<std::uint32_t, WaitingHostCalls> m_waitingHostCalls;
     std::size_t m_waitingHostBytes = 0;
     /// The most bytes of calls that wait for panes: what the daemon holds
-    /// for the window at most.
+    /// for the window at most, and those that left it and wait for frames on
+    /// their way, which the windows of the channels bound.
     static constexpr std::size_t MaxWaitingHostCalls = std::size_t(AfterglowMux::MaxEventQueue) * 2 + AfterglowMux::Host::MaxCall;
     std::map<std::uint32_t, std::string> m_hostParts; ///< the parts of a call that came, by pane
     std::set<std::uint32_t> m_closedChannels; ///< the pane's last frame was read
@@ -186,6 +199,7 @@ private:
     /// The session ended, another window took it, the window detached, or the
     /// link broke.
     bool m_ended = false;
+    bool m_streamGone = false; ///< lost(): nothing more comes, also not the rest of an exit
     Loss m_loss = Loss::Broken; ///< why, once m_ended
 };
 

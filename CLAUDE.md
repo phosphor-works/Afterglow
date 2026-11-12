@@ -41,8 +41,11 @@ wrong, and points to the skills that hold the procedures.
   files in the user's two `afterglow-mux` directories: that ends the user's sessions, or leaves them without a socket.
   `aglow transfer`, `dnd`, `icat`, `clipboard` and `run`, and the `afterglow` commands of the same names, open
   `/dev/tty`, which is the user's pane. `aglow run` asks it for the socket of an ssh session (OSC 24569), and inside
-  tmux it runs `tmux display-message` on the user's tmux. Run them only in a pseudo-terminal that a test makes
-  (`clipboard_pty.py`, `run_pty.py`, `tmux_pty.py`, `DragDropTest.cpp`).
+  tmux it runs `tmux display-message` on the user's tmux. Inside tmux, `aglow icat` sets `allow-passthrough` on the
+  user's tmux pane, and `--passthrough=tmux` does that also with `TMUX` unset. Run them only in a pseudo-terminal
+  that a test makes (`clipboard_pty.py`, `run_pty.py`, `DragDropTest.cpp`). Only for `aglow icat`, a pipe as its
+  output with the options of `icat_decode.py` also works. Unset `TMUX` and never give `--passthrough=tmux`, unless
+  the test runs in the private tmux server of `tmux_pty.py`.
 - **A build is not a test.** Check a visible change with `afterglow_renderpng` or the native window tests, at the
   edge cases (one pane, two panes, progress 0 and 1, the wrap point of a loop). The commit message says what you ran.
   A green suite has missed a transparent shader, a flicker at a wrap seam and an animation that never stopped.
@@ -56,19 +59,24 @@ wrong, and points to the skills that hold the procedures.
 - **Licenses.** Every file that can hold a comment starts with `SPDX-FileCopyrightText: 2026 fuddlesworth` and an
   `SPDX-License-Identifier`. The application, its tests and tools are `GPL-3.0-or-later`, and so is `mux/` (the
   daemon, its protocol and its tests), and `tools/fuzz/muxfuzz.cpp`, which compiles `mux/`. Tools that use only
-  `libs/afterglow-vt`, `libs/afterglow-proto` and `libs/afterglow-image` (the VT benchmark, `tools/conformance`, the rest of `tools/fuzz`,
-  `tools/aglow` with its tests, the `aglow` completions in `data/completions`, `tools/gen_unicode_tables.py`) are
-  `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New shader packs are `LGPL-2.1-or-later`.
-  Feedback Glow, Depth Trails and Mesh Reactor are `GPL-3.0-or-later`: keep the header that a file has, and do not
-  relicense it. `REUSE.toml` licenses files that cannot hold a header (JSON, images).
+  `libs/afterglow-vt`, `libs/afterglow-proto` and `libs/afterglow-image` (the VT benchmark, `tools/conformance`, the
+  rest of `tools/fuzz`, `tools/aglow` with its tests, the `aglow` completions in `data/completions`,
+  `tools/gen_unicode_tables.py`) are `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New
+  shader packs are `LGPL-2.1-or-later`. Feedback Glow, Depth Trails and Mesh Reactor are `GPL-3.0-or-later`: keep
+  the header that a file has, and do not relicense it. `REUSE.toml` licenses files that cannot hold a header (JSON,
+  images).
 - **Ask only about real decisions.** When the next step is clear, do it.
 
 ## Code
 
-- Namespaces: `Afterglow` (the application), `AfterglowVt`, `AfterglowProto`, `AfterglowRender`, `AfterglowPty`, `AfterglowImage`,
-  `AfterglowMux` (`mux/`: the daemon and the protocol that the application shares with it), and `Aglow`
-  (`tools/aglow`, with `Aglow::Cli` and `Aglow::Mime`).
-- `libs/afterglow-vt`, `libs/afterglow-proto`, `libs/afterglow-pty`, `libs/afterglow-image` and `mux/` use no Qt. Keep them plain C++20.
+- Namespaces: `Afterglow` (the application), `AfterglowVt`, `AfterglowProto`, `AfterglowRender`, `AfterglowPty`,
+  `AfterglowImage`, `AfterglowMux` (`mux/`: the daemon and the protocol that the application shares with it), and
+  `Aglow` (`tools/aglow`, with `Aglow::Cli` and `Aglow::Mime`).
+- `libs/afterglow-vt`, `libs/afterglow-proto`, `libs/afterglow-pty`, `libs/afterglow-image` and `mux/` use no Qt.
+  Keep them plain C++20.
+- Libraries that the build compiles in (zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp) come from archives that
+  `cmake/AfterglowDependencies.cmake` pins by URL and SHA-256, and link statically. `aglow` is one static program.
+  Do not link a system copy instead.
 - `QT_NO_KEYWORDS` is on everywhere: `Q_EMIT`, `Q_SIGNALS`, `Q_SLOTS`. `QT_NO_CAST_FROM_ASCII` is on for the
   application and the renderer: `QStringLiteral` for constants, `QLatin1String` for comparisons and JSON keys.
 - Members are `m_camelCase`. Emit a signal only when the value changed.
@@ -104,7 +112,7 @@ wrong, and points to the skills that hold the procedures.
 | Task | Command |
 | --- | --- |
 | Build | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build -j6` (zero warnings is the bar) |
-| Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j6` (about 1,800, all pass) |
+| Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j6` (about 2,000, all pass) |
 | Native window tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 .claude/skills/ag-verify-live/headless_native.py` (about 15 minutes: run it in the background) |
 | Shader preview | `build/tools/render/afterglow_renderpng --shader PACK - out.png` |
 | Configuration reference | `python3 tools/generate-reference.py build/afterglow/afterglow` |
@@ -118,7 +126,7 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 | --- | --- |
 | Terminal core | `libs/afterglow-vt/`: `Terminal.cpp` (parser and dispatch), `Screen.cpp` (grid, scrollback, reflow), `Input.cpp` (key and mouse encoding), `Graphics.cpp`, `Sixel.cpp`, `ITerm2.cpp` (images), `Notifications.cpp`, `ShellContext.cpp` (OSC 133 and host context), `Unicode.cpp` with the generated `UnicodeTables.inc` |
 | Protocol formats | `libs/afterglow-proto/` (no Qt; the terminal side of each format, and the client side that tests and clients of the library use): `Transfer.cpp` and `Delta.cpp` (OSC 5113 file transfer), `DragDrop.cpp` (OSC 72), `Graphics.cpp` (APC G keys and replies), `Clipboard.cpp` (OSC 5522 and OSC 52), `Color.h` (X11 color names and color specs), `Placeholder.h` (Unicode placeholders), `TransferClient.cpp`, `TransferPath.cpp`, `FdDelta.cpp` and `Fd.h` (the transfer client of `aglow transfer`), `DndTree.cpp` and `DndUri.cpp` (the drag-and-drop trees and URI lists of `aglow dnd`), `Version.h`, `Json.cpp` (JSON for the phosphor-ipc client and server), `Ipc.cpp` (the wire client), `IpcServer.cpp` (the wire server of `afterglow-mux`), `Lock.cpp` (the lock file that decides who owns a socket path, for `afterglow-mux` and the Afterglow socket), `Run.cpp` (`aglow run`), `Socket.cpp` (the socket lookup of clients, and the sockets of the mux daemon), `Remote.cpp` (`aglow remote-prune` and the query of `aglow run`) and `RemoteOsc.h` (the OSC 24569 answer that the parser needs), for remote commands, `Base64.h`, `Hex.h`, `Text.h`, `Sha256.cpp`, `Random.cpp`, `Zlib.cpp`; zlib-ng and xxHash from the archives that `cmake/AfterglowDependencies.cmake` pins |
-| Image decoders | `libs/afterglow-image/` (no Qt; for `aglow` and `afterglow-mux`, which call it only in a child process with limits): PNG, JPEG and WebP through libpng, libjpeg-turbo and libwebp, which it builds in from the archives that `cmake/AfterglowDependencies.cmake` pins, and its own GIF (`Gif.cpp`, animations) and BMP (`Bmp.cpp`) readers; tests in `libs/afterglow-image/tests/` (`Image.*`) |
+| Image decoders | `libs/afterglow-image/` (no Qt; for `aglow` and `afterglow-mux`, which call it only in a child process with limits): `Decode.cpp` (the format from the signature, the size from the header, the contract in `Decode.h`), `Png.cpp`, `Jpeg.cpp` and `WebP.cpp` (with animations) through libpng, libjpeg-turbo and libwebp, which it builds in, and its own `Gif.cpp` (animations) and `Bmp.cpp` readers; `notices/IJG.txt` (the IJG acknowledgment, installed as `NOTICE.IJG`); tests in `libs/afterglow-image/tests/` (`Image.*`); the decoder of local panes is `afterglow/src/ImageDecode.cpp` (Qt, `WindowImageDecode.*`) |
 | PTY | `libs/afterglow-pty/src/Pty.cpp`: spawn, the reader thread, bounded input queue, the pipes of overlays; tests in `libs/afterglow-pty/tests/` (`PtyLib.*`) |
 | Renderer | `libs/afterglow-render/`: `GridRenderer.cpp` (panes, window composition, the overview and other tabs), `PostChain.cpp` (shader chains, buffers, budgets, the pane and tab images), `ShaderProgram.*` (the uniform mirrors of the GLSL contract), `GlyphCache.cpp`, `FontSet.cpp`, `Bidi.cpp`, `GpuDevice.cpp` |
 | Window | `afterglow/src/TerminalWindow.cpp` (input routing, render loop, panes and tabs), `TerminalWindowLayout.cpp`, `TerminalWindowOverview.cpp` (overview, tab transitions, pane effects), `TerminalWindowProject.cpp`, `TerminalWindowScript.cpp`, `TerminalWindowDock.cpp` (script docks: layout and hits), `DockArea.cpp` (one dock's text and snapshot), `TerminalWindowOverlay.cpp` (overlays over panes: open, fade, end), `PaneOverlay.*` (an overlay's program and terminal), `Pane.cpp`, `SplitTree.cpp`, `KeyMapping.cpp`, `XkbKeyboard.cpp`, `animation/` |
@@ -130,7 +138,7 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 | Mux | `mux/`: `afterglow-mux` (no Qt) with `Daemon.cpp` (the daemon socket and the lifetimes), `Session.cpp`, `MuxPane.cpp` (a PTY and its terminal, the host calls that wait for the window, and the answers while no window shows the session), `ImageDecoder.cpp` (PNG and iTerm2 images, with `libs/afterglow-image`: the server `afterglow-mux --decode-images`, which the daemon starts once and which forks a process with limits for each image); `Attach.cpp` (the daemon's side of a window that shows a session: its socket, its stream, the frames of its panes and its input); `mux/protocol/MuxStream.*` (the events and the input on that stream), `MuxHost.*` (the calls of a pane's terminal to its host that the window answers: bells, notifications, the clipboard, transfers, drag and drop, downloads, pointer shapes, user variables, shell integration commands and reports), `MuxCodec.h` (the varints of both codecs), `MuxConnect.*` (how a client finds the daemon); `afterglow/src/mux/MuxClient.cpp` (a window's link to a session, for its session panes in `Pane`); `libs/afterglow-vt/src/StateSync.cpp` (the codec `afterglow.state.v1`: a writer that sends what changed in a terminal, and a reader that applies it to a replica terminal in a window); `mux/protocol/MuxProtocol.*` (the calls and their values, linked by the application too); `IpcServer.cpp` in `libs/afterglow-proto` (the server side of the phosphor-ipc wire format); `afterglow/src/control/Mux.cpp` (`afterglow mux`); `afterglow/src/PaneLaunch.cpp` (the program and environment of a new pane, for windows and sessions); tests in `mux/tests/` (`Mux.*`, with `TestDaemon.h`, which the native tests use too); the user document `docs/MUX.md` |
 | Shell and desktop | `afterglow/src/shell/` (shell integration, `afterglow ssh`, and `Aglow.cpp`, which runs `aglow` for `afterglow run`, `transfer`, `dnd`, `icat` and `clipboard`), `data/shell-integration/`, `data/completions/` (the Bash, Zsh and Fish completions of `afterglow` and `aglow`), `afterglow/src/desktop/` (accessibility, drag and drop, file transfer), `afterglow/src/audio/` |
 | Tests | `libs/*/tests/`, `afterglow/tests/` (GTest, and the Python acceptance runners), `mux/tests/` (`afterglow_mux_tests`), `tools/aglow/tests/` (`aglow_tests` and the Python tests of `aglow`), `tools/conformance/`, `tools/fuzz/` |
-| Tools | `tools/render/` (`afterglow_renderpng`), `tools/bench/`, `tools/generate-reference.py`, `tools/gen_unicode_tables.py`; `tools/aglow/` (`aglow`, the static client of the Kitty protocols and of script commands: no Qt, no Phosphor, only `libs/afterglow-proto` and `libs/afterglow-image`) |
+| Tools | `tools/render/` (`afterglow_renderpng`), `tools/bench/`, `tools/generate-reference.py`, `tools/gen_unicode_tables.py`, `tools/vtdiff/`, `tools/sanitizers/`; `tools/aglow/` (`aglow`, the static client of the Kitty protocols and of script commands: no Qt, no Phosphor, only `libs/afterglow-proto` and `libs/afterglow-image`) |
 
 ## Skills and agents
 

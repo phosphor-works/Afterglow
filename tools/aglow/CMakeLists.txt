@@ -39,6 +39,18 @@ if(AGLOW_SANITIZED EQUAL -1)
     set(CMAKE_REQUIRED_LINK_OPTIONS -static)
     check_cxx_source_compiles("#include <string>\nint main(int argc, char**) { return int(std::string(std::size_t(argc), 'x').size()); }"
                               AGLOW_STATIC_LINK_WORKS)
+    # A static program that loads at a random address, as a dynamic one does,
+    # where the C library has its start file for that (rcrt1.o): aglow reads
+    # untrusted images. Else a static program at a fixed address.
+    set(CMAKE_REQUIRED_LINK_OPTIONS -static-pie)
+    set(CMAKE_REQUIRED_FLAGS -fPIE)
+    check_cxx_source_compiles("#include <string>\nint main(int argc, char**) { return int(std::string(std::size_t(argc), 'x').size()); }"
+                              AGLOW_STATIC_PIE_WORKS)
+    unset(CMAKE_REQUIRED_FLAGS)
+    # The notices of the runtime that a static aglow holds: glibc and
+    # libstdc++ here, another C library or libc++ elsewhere.
+    check_cxx_source_compiles("#include <string>\n#ifndef __GLIBC__\n#error\n#endif\nint main() { return 0; }" AGLOW_GLIBC)
+    check_cxx_source_compiles("#include <string>\n#ifndef __GLIBCXX__\n#error\n#endif\nint main() { return 0; }" AGLOW_LIBSTDCXX)
     unset(CMAKE_REQUIRED_LINK_OPTIONS)
     if(NOT AGLOW_STATIC_LINK_WORKS)
         # The cached result would fail the next configure too, after the
@@ -58,9 +70,16 @@ endif()
 # and libgcc (GPL-3.0-or-later with the GCC Runtime Library Exception). Their
 # notices go with it. The glibc one says how to link aglow again with another
 # C library, as section 6 of the LGPL asks. A dynamic aglow uses the system's
-# runtime libraries, which come with their own notices.
+# runtime libraries, which come with their own notices. With another C
+# library or C++ library, its notice is the packager's to add.
 set(AGLOW_NOTICES)
-if(AGLOW_STATIC)
+if(AGLOW_STATIC AND NOT AGLOW_GLIBC)
+    message(WARNING "aglow: the static C library is not glibc: install its notice with aglow, as LICENSE.glibc is for glibc")
+endif()
+if(AGLOW_STATIC AND NOT AGLOW_LIBSTDCXX)
+    message(WARNING "aglow: the static C++ library is not libstdc++: install its notice with aglow, as LICENSE.libstdc++ is for libstdc++")
+endif()
+if(AGLOW_STATIC AND AGLOW_LIBSTDCXX)
     set(AGLOW_GCC_EXCEPTION "${CMAKE_CURRENT_SOURCE_DIR}/notices/COPYING.RUNTIME")
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/notices/libstdc++.txt" AGLOW_LIBSTDCXX_TEXT)
     file(READ "${AGLOW_GCC_EXCEPTION}" AGLOW_GCC_EXCEPTION_TEXT)
@@ -71,13 +90,13 @@ if(AGLOW_STATIC)
 endif()
 if(AFTERGLOW_AGLOW_ONLY)
     # Alone, aglow installs the notices that the application installs in a
-    # whole build: its own licence, those of zlib-ng and xxHash
+    # whole build: its own license, those of zlib-ng and xxHash
     # (libs/afterglow-proto) and of the image codecs (libs/afterglow-image),
     # which it links, and the GPL text that the libstdc++ notice names. They
     # go in a directory named for aglow, as a package of its own has.
     set(AGLOW_LICENSE_DIR "${CMAKE_INSTALL_DATADIR}/licenses/aglow")
     install(FILES "${PROJECT_SOURCE_DIR}/LICENSES/LGPL-2.1-or-later.txt" DESTINATION ${AGLOW_LICENSE_DIR})
-    if(AGLOW_STATIC)
+    if(AGLOW_STATIC AND AGLOW_LIBSTDCXX)
         install(FILES "${PROJECT_SOURCE_DIR}/LICENSES/GPL-3.0-or-later.txt" DESTINATION ${AGLOW_LICENSE_DIR})
     endif()
     install(FILES "${AFTERGLOW_ZLIB_LICENSE}" DESTINATION ${AGLOW_LICENSE_DIR} RENAME LICENSE.zlib-ng)
@@ -86,8 +105,10 @@ if(AFTERGLOW_AGLOW_ONLY)
 else()
     set(AGLOW_LICENSE_DIR "${CMAKE_INSTALL_DATADIR}/licenses/afterglow")
 endif()
-if(AGLOW_STATIC)
+if(AGLOW_STATIC AND AGLOW_GLIBC)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/notices/glibc.txt" DESTINATION ${AGLOW_LICENSE_DIR} RENAME LICENSE.glibc)
+endif()
+if(AGLOW_NOTICES)
     install(FILES ${AGLOW_NOTICES} DESTINATION ${AGLOW_LICENSE_DIR})
 endif()
 
@@ -119,8 +140,14 @@ endif()
 # it. It still needs the kernel and the processor level that the static C
 # library of the build host asks for: the build prints both. It makes no NSS
 # call (getpwnam, getaddrinfo), which glibc cannot link statically.
-if(AGLOW_STATIC)
+if(AGLOW_STATIC AND AGLOW_STATIC_PIE_WORKS)
+    # Every library that it links is position-independent too.
+    set_target_properties(aglow PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_link_options(aglow PRIVATE -static-pie)
+elseif(AGLOW_STATIC)
     target_link_options(aglow PRIVATE -static)
+endif()
+if(AGLOW_STATIC)
     if(CMAKE_READELF)
         add_custom_command(TARGET aglow POST_BUILD
                            COMMAND ${CMAKE_COMMAND} -DREADELF=${CMAKE_READELF} -DBINARY=$<TARGET_FILE:aglow> -DNOTES_ONLY=ON
@@ -175,6 +202,7 @@ if(BUILD_TESTING)
         add_test(NAME aglow_static
                  COMMAND ${CMAKE_COMMAND} -DREADELF=${CMAKE_READELF} -DBINARY=$<TARGET_FILE:aglow>
                          -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckStatic.cmake")
+        set_tests_properties(aglow_static PROPERTIES TIMEOUT 60)
     elseif(AGLOW_STATIC)
         message(STATUS "aglow: readelf was not found, so the aglow_static test is left out (install binutils to add it)")
     endif()
@@ -206,10 +234,13 @@ if(BUILD_TESTING AND TARGET afterglow)
     # again, so it has the label slow, and ctest -LE slow leaves it out. It
     # takes the tools and the flags of this build: with the sanitizers of the
     # debug preset, aglow alone links dynamically too, and needs no static
-    # runtime libraries. PROCESSORS tells ctest -j the jobs of its build.
+    # runtime libraries. PROCESSORS tells ctest -j the jobs of its build,
+    # which its build of libjpeg-turbo takes too (AFTERGLOW_CODEC_BUILD_JOBS).
     set(AGLOW_ONLY_JOBS 2)
-    # The flags of each build type too, as the static check above reads
-    # them: CONFIGS names the types, and each has its three flags.
+    # The flags of each build type too, as the check of a static link at the
+    # top of this file reads them: CONFIGS names the types, and each has its
+    # three flags. CONFIG is the type that ctest runs, for a generator with
+    # many configurations.
     set(AGLOW_ONLY_CONFIGS)
     set(AGLOW_ONLY_CONFIG_FLAGS)
     foreach(config IN LISTS CMAKE_BUILD_TYPE CMAKE_CONFIGURATION_TYPES)
@@ -232,12 +263,15 @@ if(BUILD_TESTING AND TARGET afterglow)
                      "-DLINKER_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
                      "-DCONFIGS=${AGLOW_ONLY_CONFIGS}" ${AGLOW_ONLY_CONFIG_FLAGS}
                      "-DCPM_CACHE=${CPM_SOURCE_CACHE}" "-DDEPS_ARCHIVES=${AFTERGLOW_DEPS_ARCHIVES}"
-                     "-DJOBS=${AGLOW_ONLY_JOBS}" -P "${CMAKE_CURRENT_SOURCE_DIR}/AglowOnlyCheck.cmake")
+                     "-DCONFIG=$<CONFIG>" "-DJOBS=${AGLOW_ONLY_JOBS}" -P "${CMAKE_CURRENT_SOURCE_DIR}/AglowOnlyCheck.cmake")
     set_tests_properties(aglow_only_build PROPERTIES LABELS slow TIMEOUT 1800 PROCESSORS ${AGLOW_ONLY_JOBS})
 endif()
 if(BUILD_TESTING)
-    find_package(Python3 COMPONENTS Interpreter)
-    if(Python3_Interpreter_FOUND)
+    find_package(Python3 3.9 COMPONENTS Interpreter)
+    if(NOT Python3_Interpreter_FOUND)
+        message(STATUS "aglow: Python 3.9 or later was not found, so the tests aglow_clipboard_pty, aglow_run_pty, aglow_tmux_pty, "
+                       "aglow_icat_decode, aglow_clipboard_cases and aglow_icat_render are left out")
+    else()
         # aglow clipboard against a terminal that the test plays in a pseudo-terminal.
         add_test(NAME aglow_clipboard_pty
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/clipboard_pty.py $<TARGET_FILE:aglow>)
@@ -249,11 +283,12 @@ if(BUILD_TESTING)
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_pty.py $<TARGET_FILE:aglow>)
         set_tests_properties(aglow_run_pty PROPERTIES TIMEOUT 120)
         # aglow icat and aglow run inside a private tmux server, with
-        # allow-passthrough on and off. It skips (77) without tmux.
+        # allow-passthrough on and off. It skips (77) without tmux 3.3 or later.
         add_test(NAME aglow_tmux_pty
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/tmux_pty.py $<TARGET_FILE:aglow>)
         set_tests_properties(aglow_tmux_pty PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
-        # Crafted images (GIF disposal and frame caps, BMP, TGA, PSD, HDR, PNM, PNG, JPEG).
+        # Crafted images (GIF, WebP, BMP, PNG, JPEG), and how aglow icat
+        # handles them: icat_decode.py lists the cases.
         add_test(NAME aglow_icat_decode
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/icat_decode.py $<TARGET_FILE:aglow>)
         # A TMUX that names no server: the test must keep it from aglow, or aglow

@@ -14,7 +14,7 @@ set_target_properties(afterglow_mux_protocol PROPERTIES POSITION_INDEPENDENT_COD
 # tests link too.
 add_library(afterglow_mux_image STATIC src/ImageDecoder.cpp)
 target_include_directories(afterglow_mux_image PRIVATE src)
-target_link_libraries(afterglow_mux_image PUBLIC Afterglow::Proto PRIVATE Afterglow::Image)
+target_link_libraries(afterglow_mux_image PUBLIC Afterglow::Proto PRIVATE Afterglow::Image Afterglow::Pty)
 set_target_properties(afterglow_mux_image PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 # afterglow-mux: the daemon that keeps sessions running while no window shows

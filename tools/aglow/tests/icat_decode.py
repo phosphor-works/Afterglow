@@ -6,18 +6,22 @@
 Usage: icat_decode.py AGLOW
 
 Each image is built here, byte by byte, to hit one case of the decoders
-(libs/afterglow-image): GIF disposal, background and graphic control
-extension semantics, the two_back read of GHSL-2023-145, the frame limit and
-its warning, frames that do not all fit in the 320 MiB budget of an image and
-its warning (and frames that fit exactly), a frame far larger than its canvas,
-a frame partly off the canvas, interlaced frames, the least code size, LZW
-without a leading clear code, a GIF damaged after its frames, BMP gaps and
-top-down rows, invalid PNG depths and a valid PNG sent as it is, the size of
-a PNG past the limit, the EXIF orientation of a JPEG, a JPEG without Huffman
-tables (as Motion JPEG), and a corrupt file, which the decoder child must
-turn into an error and not a crash of aglow. It also checks that a
-subdirectory that cannot be read leaves out only itself, and that a signal to
-aglow ends a decode that does not end, and the decoder child with it.
+(libs/afterglow-image) and of aglow around them: a GIF canvas that starts
+transparent, GIF disposal and graphic control extension semantics, the
+two_back read of GHSL-2023-145, the frame limit and its warning, frames that
+do not all fit in the 320 MiB budget of an image and its warning (and frames
+that fit exactly), --loop 0, which decodes one frame, the delays of frames as
+kitty takes them, a frame far larger than its canvas, a frame partly off the
+canvas, interlaced frames, the least code size, LZW without a leading clear
+code, a GIF damaged after its frames, a WebP and its animation, BMP gaps and
+top-down rows, invalid PNG depths, a valid PNG sent as it is and a damaged one
+that is not, the longest side, the EXIF orientation of a JPEG, a PNG and a
+WebP, a JPEG without Huffman tables (as Motion JPEG), and a corrupt file,
+which the decoder child must turn into an error and not a crash of aglow. It
+also checks that a subdirectory that cannot be read leaves out only itself,
+that a named pipe in a directory is no image, that aglow stops when its
+output closes, and that a signal to aglow ends a decode that does not end,
+and the decoder child with it.
 
 It exits with 77 (skipped) after the other cases when it runs as a user that
 reads a directory of mode 0, such as root: the subdirectory case cannot run.
@@ -148,9 +152,39 @@ def png_chunk(kind, data):
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
 
-def png(width, height, depth, colour, raw):
+def png(width, height, depth, colour, raw, extra=b""):
+    """A PNG with EXTRA chunks before its image data."""
     return (b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, colour, 0, 0, 0))
-            + png_chunk(b"IDAT", zlib.compress(raw)) + png_chunk(b"IEND", b""))
+            + extra + png_chunk(b"IDAT", zlib.compress(raw)) + png_chunk(b"IEND", b""))
+
+
+def tiff_orientation(value):
+    """A TIFF block of one IFD with the EXIF orientation VALUE."""
+    return b"MM\x00\x2a" + struct.pack(">I", 8) + struct.pack(">H", 1) + struct.pack(">HHIHH", 0x0112, 3, 1, value, 0) + b"\0\0\0\0"
+
+
+# 2 by 2 lossless WebP, red (Pillow): AfterglowImage::TestFiles::Webp of libs/afterglow-image/tests.
+WEBP = bytes.fromhex(
+    "524946461c000000574542505650384c0f0000002f014000000710fd8ffe0722a2ff0100")
+# 4 by 4 lossless WebP animation, two frames of 100 ms: red, then blue (Pillow): TestFiles::WebpAnimated.
+WEBP_ANIMATED = bytes.fromhex(
+    "524946468400000057454250565038580a00000002000000030000030000414e494d06000000000000000000414e4d462800"
+    "0000000000000000030000030000640000025650384c0f0000002f03c000000710fd8ffe0722a2ff0100414e4d4628000000"
+    "000000000000030000030000640000005650384c0f0000002f03c000000710d1fffe0722a2ff0100")
+# 2 by 1 lossless WebP, red then blue, with an EXIF chunk of orientation 6 (Pillow).
+WEBP_TURNED = bytes.fromhex(
+    "524946465200000057454250565038580a000000080000000100000000005650384c110000002f010000000f10f3bffff31f0e"
+    "32a2ff0100455849461a0000004d4d002a00000008000101120003000000010006000000000000")
+
+
+def webp_frame_times(data, *milliseconds):
+    """DATA, a WebP animation, with the times of its frames in turn."""
+    out = bytearray(data)
+    at = 0
+    for time_ms in milliseconds:
+        at = out.index(b"ANMF", at) + 8
+        out[at + 12:at + 15] = time_ms.to_bytes(3, "little")
+    return bytes(out)
 
 
 def png_of_rows(width, height, row):
@@ -162,13 +196,12 @@ def png_of_rows(width, height, row):
             + png_chunk(b"IDAT", data) + png_chunk(b"IEND", b""))
 
 
-def jpeg_rotated():
-    """A grey baseline JPEG, 8 pixels wide and 16 high, with EXIF orientation 6 (turn it a quarter clockwise).
-    Its top block is 128 grey, its bottom block lighter (about 159)."""
+def jpeg_rotated(tiff=None):
+    """A grey baseline JPEG, 8 pixels wide and 16 high, with EXIF orientation 6 (turn it a quarter clockwise),
+    or with the TIFF block TIFF. Its top block is 128 grey, its bottom block lighter (about 159)."""
     def segment(marker, body):
         return b"\xff" + bytes([marker]) + struct.pack(">H", len(body) + 2) + body
-    tiff = b"MM\x00\x2a" + struct.pack(">I", 8) + struct.pack(">H", 1) + struct.pack(">HHIHH", 0x0112, 3, 1, 6, 0) + b"\0\0\0\0"
-    exif = segment(0xE1, b"Exif\0\0" + tiff)
+    exif = segment(0xE1, b"Exif\0\0" + (tiff_orientation(6) if tiff is None else tiff))
     quant = segment(0xDB, b"\x00" + bytes([8] * 64))
     frame = segment(0xC0, struct.pack(">BHHB", 8, 16, 8, 1) + b"\x01\x11\x00")
     # DC: symbol 0 (no change) is "0", symbol 5 (a 5-bit difference) is "10". AC: end of block is "0".
@@ -237,6 +270,16 @@ def run(aglow, path, *options):
     return result.returncode, result.stdout, result.stderr.decode(errors="replace")
 
 
+def gaps(output):
+    """The gap keys of the a=a commands in OUTPUT, which set the time of the first frame."""
+    found = []
+    for keys in re.findall(rb"\x1b_G([^;\x1b]*);?[^\x1b]*\x1b\\", output):
+        fields = dict(field.split("=", 1) for field in keys.decode().split(",") if "=" in field)
+        if fields.get("a") == "a" and "z" in fields:
+            found.append(int(fields["z"]))
+    return found
+
+
 def transmissions(output, decode=True):
     """The images and frames in the graphics commands of OUTPUT: their keys and, with DECODE, their pixels."""
     images = []
@@ -290,16 +333,25 @@ def main():
             code, out, err = run(aglow, path, *options)
             return code, transmissions(out), err
 
+        def show_raw(name, data, *options):
+            path = root / name
+            path.write_bytes(data)
+            return run(aglow, path, *options)
+
+        def not_crashed(err):
+            """A refusal by the decoder, not a crash or a limit of its child."""
+            return "crashed" not in err and "more memory" not in err and "longer than aglow allows" not in err
+
         red, green, blue, white, clear = (255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255), (255, 255, 255, 255), (0, 0, 0, 0)
 
-        # The background colour of the global table fills what the first frame does not cover, in RGB order.
-        # Index 0 fills nothing: the canvas stays transparent there.
+        # The canvas of a GIF starts transparent, as in kitty and browsers: the background colour of the
+        # global table does not fill what the first frame does not cover. The pixels are in RGB order.
         code, sent, err = show("background.gif", gif(2, 1, 2, [{"rect": (0, 0, 1, 1), "indices": [0]}]))
         check(code == 0 and len(sent) == 1, err, len(sent))
-        check(pixels(sent[0]) == [red, blue], pixels(sent[0]))
-        code, sent, err = show("background-0.gif", gif(2, 1, 0, [{"rect": (0, 0, 1, 1), "indices": [1]}]))
-        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [green, clear], err, sent and pixels(sent[0]))
-        print("GIF background in RGB order: passed", flush=True)
+        check(pixels(sent[0]) == [red, clear], pixels(sent[0]))
+        code, sent, err = show("background-0.gif", gif(2, 1, 0, [{"rect": (1, 0, 1, 1), "indices": [2]}]))
+        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [clear, blue], err, sent and pixels(sent[0]))
+        print("GIF canvas that starts transparent, in RGB order: passed", flush=True)
 
         # Disposal 3 restores the canvas from before the frame, 2 clears the frame's rectangle, and
         # a graphic control extension applies to the next frame only: the third frame's makes index 3
@@ -357,6 +409,41 @@ def main():
         out = None
         print("GIF over the image budget: passed", flush=True)
 
+        # --loop 0 shows the first frame: the others are not decoded, and that is no loss to warn about.
+        code, sent, err = show("many-once.gif", gif(1, 1, 0, first_red(1100)), "--loop=0")
+        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [red] and not err, code, len(sent), err)
+        print("--loop 0 decodes one frame: passed", flush=True)
+
+        # Delays as kitty takes them. A GIF whose frames all have no delay plays at 100 ms a frame. Else
+        # each frame keeps its own delay, and one without a delay is gapless: z=-1. The first frame gets
+        # its time from a=a, the others from a=f.
+        def two_frames(first, second):
+            return gif(1, 1, 0, [{"rect": (0, 0, 1, 1), "indices": [0], "gce": (1, first, None)},
+                                 {"rect": (0, 0, 1, 1), "indices": [1], "gce": (1, second, None)}])
+        for name, delays, expected in (("zero", (0, 0), (100, 100)), ("mixed", (0, 5), (-1, 50)), ("short", (1, 2), (10, 20))):
+            path = root / f"delays-{name}.gif"
+            path.write_bytes(two_frames(*delays))
+            code, out, err = run(aglow, path)
+            frames = transmissions(out, decode=False)
+            check(code == 0 and len(frames) == 2, name, err)
+            check(gaps(out) == [expected[0]] and frames[1]["keys"].get("z") == str(expected[1]), name, gaps(out), frames[1]["keys"])
+        # A WebP keeps the times of its frames, short ones too: 16 ms is 60 frames a second.
+        path = root / "fast.webp"
+        path.write_bytes(webp_frame_times(WEBP_ANIMATED, 16, 17))
+        code, out, err = run(aglow, path)
+        frames = transmissions(out, decode=False)
+        check(code == 0 and len(frames) == 2 and gaps(out) == [16] and frames[1]["keys"].get("z") == "17", err, gaps(out),
+              frames and frames[-1]["keys"])
+        print("frame delays as kitty takes them: passed", flush=True)
+
+        # A WebP, and a WebP animation, whose frames go as a=f.
+        code, sent, err = show("still.webp", WEBP)
+        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [red] * 4, err, sent and pixels(sent[0]))
+        code, sent, err = show("animated.webp", WEBP_ANIMATED)
+        check(code == 0 and len(sent) == 2 and sent[0]["keys"]["a"] == "T" and sent[1]["keys"]["a"] == "f", err, len(sent))
+        check(pixels(sent[0]) == [red] * 16 and pixels(sent[1]) == [blue] * 16, pixels(sent[0])[:1], pixels(sent[1])[:1])
+        print("WebP and its animation: passed", flush=True)
+
         # A frame of 65535 pixels a side on a canvas of one, with data that spells strings of 4090
         # pixels: decoding stops once no pixel can land, in far less than the CPU limit of the child.
         # The stream is built before the clock starts: only aglow's decode is timed.
@@ -380,7 +467,7 @@ def main():
 
         # GIF89a takes 2 as the least code size: 1 is corrupt.
         code, sent, err = show("code-size-1.gif", gif(1, 1, 0, [{"rect": (0, 0, 1, 1)}], raster=lzw([1], min_code=1)))
-        check(code == 1 and not sent and "corrupt" in err, code, err)
+        check(code == 1 and not sent and "the image data of the GIF is corrupt" in err and not_crashed(err), code, err)
         print("GIF least code size: passed", flush=True)
 
         # LZW data that starts without a clear code, and a frame larger than the screen, clipped.
@@ -405,16 +492,32 @@ def main():
 
         # A PNG with a depth that its colour type does not take is refused; a valid one goes as it is.
         code, sent, err = show("bad.png", png(1, 1, 4, 2, b"\0\0\0"))
-        check(code == 1 and not sent, code, err)
+        check(code == 1 and not sent and "cannot decode the image" in err and not_crashed(err), code, err)
         valid = png(1, 1, 8, 2, b"\0\x01\x02\x03")
         code, sent, err = show("good.png", valid)
         check(code == 0 and len(sent) == 1 and sent[0]["keys"].get("f") == "100" and sent[0]["pixels"] == valid, err)
         print("PNG depths: passed", flush=True)
 
-        # A PNG past the longest side is too large, with its size, from its header.
-        code, sent, err = show("huge.png", png(20000, 20000, 8, 2, b""))
-        check(code == 1 and not sent and "20000x20000" in err, code, err)
-        print("PNG past the size limit: passed", flush=True)
+        # A PNG that the terminal could not decode does not go as it is: a wrong checksum and a cut file go to
+        # the decoder, which says what is wrong. The terminal would say nothing. A file without its IEND
+        # goes to the decoder too, which shows it, as browsers do.
+        broken = bytearray(valid)
+        broken[-20] ^= 0x55
+        for name, data in (("checksum.png", bytes(broken)), ("cut.png", valid[:-20])):
+            code, sent, err = show(name, data)
+            check(code == 1 and not sent and "cannot decode the image" in err and not_crashed(err), name, code, err)
+        code, sent, err = show("no-end.png", valid[:-12])
+        check(code == 0 and len(sent) == 1 and sent[0]["keys"].get("f") != "100" and pixels(sent[0]) == [(1, 2, 3, 255)],
+              code, err, sent and sent[0]["keys"])
+        print("a damaged PNG is not sent as it is: passed", flush=True)
+
+        # The longest side, from the header: 10,001 pixels is too long, also with all its pixels well
+        # within the budget, and 10,000 decodes.
+        code, sent, err = show("wide.png", png(10001, 1, 8, 2, b""))
+        check(code == 1 and not sent and "10001x1" in err and "no side longer than 10000" in err, code, err)
+        code, sent, err = show("widest.png", png_of_rows(10000, 1, b"\0" + b"\xff\0\0" * 10000), "--mirror=horizontal")
+        check(code == 0 and len(sent) == 1, code, err)
+        print("PNG past the longest side: passed", flush=True)
 
         # EXIF orientation 6: an image 8 wide and 16 high shows 16 wide and 8 high, its top on the right.
         code, sent, err = show("rotated.jpg", jpeg_rotated())
@@ -423,9 +526,26 @@ def main():
         check(keys.get("s") == "16" and keys.get("v") == "8", keys)
         row = pixels(sent[0])[:16]
         check(all(abs(px[0] - 159) <= 2 for px in row[:8]) and all(abs(px[0] - 128) <= 2 for px in row[8:]), row)
+        # A TIFF block of 10 bytes whose IFD claims 65,535 entries: aglow reads none past the block, and the
+        # image shows upright.
+        code, sent, err = show("short-exif.jpg", jpeg_rotated(b"MM\x00\x2a" + struct.pack(">I", 8) + b"\xff\xff"))
+        check(code == 0 and len(sent) == 1 and sent[0]["keys"].get("s") == "8" and sent[0]["keys"].get("v") == "16", code, err,
+              sent and sent[0]["keys"])
         print("JPEG EXIF orientation: passed", flush=True)
 
-        # A JPEG without DHT takes the Huffman tables of Annex K, as libjpeg-turbo does.
+        # The EXIF orientation of a PNG (an eXIf chunk) and of a WebP (an EXIF chunk), as kitten icat reads
+        # them: an image 2 wide and 1 high, red then blue, turned a quarter clockwise, is 1 wide and 2 high
+        # with red at the top. A PNG with an orientation is decoded and turned, not sent as it is.
+        turned_png = png(2, 1, 8, 2, b"\0\xff\0\0\0\0\xff", png_chunk(b"eXIf", tiff_orientation(6)))
+        for name, data in (("turned.png", turned_png), ("turned.webp", WEBP_TURNED)):
+            code, sent, err = show(name, data)
+            check(code == 0 and len(sent) == 1, name, err)
+            keys = sent[0]["keys"]
+            check(keys.get("f") != "100" and keys.get("s") == "1" and keys.get("v") == "2", name, keys)
+            check(pixels(sent[0]) == [red, blue], name, pixels(sent[0]))
+        print("PNG and WebP EXIF orientation: passed", flush=True)
+
+        # A JPEG without DHT: libjpeg-turbo takes the Huffman tables of Annex K for it.
         code, sent, err = show("motion.jpg", jpeg_without_tables())
         check(code == 0 and len(sent) == 1 and all(abs(px[0] - 159) <= 2 for px in pixels(sent[0])), err,
               sent and pixels(sent[0]))
@@ -438,7 +558,34 @@ def main():
                                  "--use-window-size=80,24,800,480", "--mirror=horizontal", str(corrupt),
                                  str(root / "good.png")], capture_output=True, env=ENVIRONMENT, timeout=60)
         check(result.returncode == 1 and len(transmissions(result.stdout)) == 1, result.returncode, result.stderr)
+        check(not_crashed(result.stderr.decode(errors="replace")), result.stderr)
         print("corrupt data: passed", flush=True)
+
+        # A named pipe with an image name in a directory is no image file: aglow does not wait for a writer.
+        pipes = root / "pipes"
+        pipes.mkdir()
+        (pipes / "a.png").write_bytes(valid)
+        os.mkfifo(pipes / "b.png")
+        code, out, err = run(aglow, pipes)
+        check(code == 0 and len(transmissions(out)) == 1, code, err)
+        print("a named pipe in a directory: passed", flush=True)
+
+        # When its output closes, aglow stops: it does not decode the other images to fail on each.
+        closed = root / "closed-output"
+        closed.mkdir()
+        for index in range(5):
+            (closed / f"{index}.png").write_bytes(valid)
+        reader, writer = os.pipe()
+        os.close(reader)
+        try:
+            result = subprocess.run([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none", "--passthrough=none",
+                                     "--use-window-size=80,24,800,480", str(closed)], stdout=writer, stderr=subprocess.PIPE,
+                                    env=ENVIRONMENT, timeout=60)
+        finally:
+            os.close(writer)
+        failures = result.stderr.decode(errors="replace").count("cannot write to the terminal")
+        check(result.returncode == 1 and failures == 1, result.returncode, result.stderr)
+        print("a closed output ends the images: passed", flush=True)
 
         # A subdirectory that cannot be read is left out with a message, and the images beside it show.
         tree = root / "tree"

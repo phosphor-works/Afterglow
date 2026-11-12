@@ -41,7 +41,8 @@ include_guard(GLOBAL)
 set(AFTERGLOW_DEPS zlib-ng xxhash libpng libjpeg-turbo libwebp)
 
 # zlib-ng (Zlib license), in its zlib-compatible build: o=z images, file
-# transfer compression. The hash matches Homebrew's zlib-ng formula.
+# transfer compression, and the inflate of the bundled libpng. The hash
+# matches Homebrew's zlib-ng formula.
 set(AFTERGLOW_DEP_zlib-ng_VERSION "2.3.3")
 set(AFTERGLOW_DEP_zlib-ng_URL "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.3.3.tar.gz")
 set(AFTERGLOW_DEP_zlib-ng_FILE "zlib-ng-2.3.3.tar.gz")
@@ -86,6 +87,10 @@ set(AFTERGLOW_CPM_SHA256 "49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c5
 # CMAKE_CURRENT_LIST_DIR names the caller.
 get_filename_component(_AFTERGLOW_DEPS_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
+# Where the archives unpack without CPM, and where the libraries built from
+# them keep their builds and generated headers.
+set(AFTERGLOW_DEPS_BUILD_DIR "${CMAKE_BINARY_DIR}/_afterglow_deps")
+
 # Downloads URL to FILE through a .part file, renamed only once its hash
 # checks, so a broken download never sits under the real name. FILE can be in
 # a cache that other build directories share: a lock keeps two configures from
@@ -93,6 +98,12 @@ get_filename_component(_AFTERGLOW_DEPS_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOL
 # The empty FILE.lock stays after the download. Removing it would break the
 # lock: a configure that waits holds the removed file, and the next one would
 # lock a new file of the same name at the same time.
+#
+# The hash is checked here, not by file(DOWNLOAD): with EXPECTED_HASH a failed
+# transfer or a wrong hash stops the configure inside file(DOWNLOAD), before
+# the .part file can be removed. A server that sends nothing for a minute
+# ends the download, so that a configure does not wait without end while it
+# holds the lock.
 function(_afterglow_download url file sha256)
     file(LOCK "${file}.lock" GUARD FUNCTION TIMEOUT 600)
     if(EXISTS "${file}")
@@ -101,12 +112,17 @@ function(_afterglow_download url file sha256)
             return()
         endif()
     endif()
-    file(DOWNLOAD "${url}" "${file}.part" EXPECTED_HASH SHA256=${sha256} STATUS status)
+    file(DOWNLOAD "${url}" "${file}.part" INACTIVITY_TIMEOUT 60 STATUS status)
     list(GET status 0 code)
     if(NOT code EQUAL 0)
         file(REMOVE "${file}.part")
         list(GET status 1 why)
         message(FATAL_ERROR "Could not download ${url}: ${why}")
+    endif()
+    file(SHA256 "${file}.part" have)
+    if(NOT have STREQUAL sha256)
+        file(REMOVE "${file}.part")
+        message(FATAL_ERROR "${url} does not match its pin:\n  expected ${sha256}\n  got      ${have}")
     endif()
     file(RENAME "${file}.part" "${file}")
 endfunction()
@@ -194,9 +210,8 @@ function(afterglow_fetch_dependency name)
         # version extracts again. The stamp is written after a whole
         # extraction, so one cut short is redone on the next configure, and so
         # is a tree that was removed after it.
-        set(root "${CMAKE_BINARY_DIR}/_afterglow_deps")
-        set(dest "${root}/${name}-${version}")
-        set(stamp "${root}/.${name}-${version}-${sha}")
+        set(dest "${AFTERGLOW_DEPS_BUILD_DIR}/${name}-${version}")
+        set(stamp "${AFTERGLOW_DEPS_BUILD_DIR}/.${name}-${version}-${sha}")
         if(NOT EXISTS "${stamp}" OR NOT IS_DIRECTORY "${dest}")
             file(REMOVE_RECURSE "${dest}" "${dest}.tmp")
             file(ARCHIVE_EXTRACT INPUT "${archive}" DESTINATION "${dest}.tmp")

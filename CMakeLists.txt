@@ -38,7 +38,7 @@ endif()
 # package of its own. It needs CMake, the C and C++20 compilers and the static
 # C and C++ runtime libraries, but no Qt and no Phosphor checkout. zlib-ng,
 # xxHash and the image codecs come from their pinned archives, as in the whole
-# build. It installs aglow, its completions and its licence notices, nothing
+# build. It installs aglow, its completions and its license notices, nothing
 # of the application.
 option(AFTERGLOW_AGLOW_ONLY "Build only aglow and the two libraries that it uses (protocol and image): no Qt and no Phosphor libraries" OFF)
 if(AFTERGLOW_AGLOW_ONLY)
@@ -47,7 +47,7 @@ if(AFTERGLOW_AGLOW_ONLY)
     endif()
     # The tools and the fuzz targets need the application's libraries, which
     # this build leaves out. Asked for, they would be missing without a word.
-    foreach(option AFTERGLOW_BUILD_TOOLS AFTERGLOW_BUILD_FUZZERS)
+    foreach(option AFTERGLOW_BUILD_TOOLS AFTERGLOW_BUILD_FUZZERS AFTERGLOW_BUILD_VTDIFF)
         if(${option})
             message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds only aglow, not ${option}. Turn one of them off.")
         endif()
@@ -80,7 +80,10 @@ add_compile_definitions(QT_NO_KEYWORDS)
 # executable finds that directory; the libraries in it and the plugin set their
 # own run paths where they are installed (afterglow/CMakeLists.txt).
 set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
-set(CMAKE_INSTALL_RPATH "$ORIGIN/../${AFTERGLOW_PRIVATE_LIBDIR}")
+# The path from the executables to it, also for an absolute LIBDIR or a
+# BINDIR deeper than bin/.
+file(RELATIVE_PATH AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}/afterglow")
+set(CMAKE_INSTALL_RPATH "$ORIGIN/${AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN}")
 
 include(cmake/AfterglowPhosphor.cmake)
 # The pins of zlib-ng and xxHash (libs/afterglow-proto) and of the image

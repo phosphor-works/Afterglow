@@ -146,10 +146,19 @@ bool MuxPane::pushLocked(WaitingCall call)
     const bool first = m_hostCalls.empty();
     if (call.cost == 0) call.cost = call.encoded.size() + Host::CallCost;
     const std::size_t cost = call.cost;
+    call.number = m_pushed + 1;
     // Counted once it waits: a push that runs out of memory counts nothing.
     m_hostCalls.push_back(std::move(call));
     m_hostBytes += cost;
-    return first;
+    ++m_pushed;
+    // What the terminal parsed before the call is not in a frame yet: the
+    // call goes only after a frame that frame() took after it (a bell after
+    // the text that rang it). The change makes the daemon take that frame.
+    // Its wake is the one at the end of the feed, unless the change was
+    // there already: then a pass that took it can be past its frame, and
+    // only a wake of its own makes the next pass.
+    const bool changed = m_changed.exchange(true);
+    return first || !changed;
 }
 
 std::string MuxPane::encodeLocked(const WaitingCall& waiting) const
@@ -263,6 +272,17 @@ std::optional<std::string> MuxPane::frame(AfterglowVt::StateWriter& writer, std:
     std::string frame = writer.update(m_terminal, maxBytes, &m_scrolls);
     // The frame carries them, also one that waits for room in the channel.
     m_scrolls.clear();
+    if (!writer.rowsPending()) {
+        // The reader thread pushes the calls of the terminal with m_mutex
+        // held, so the calls up to here follow text that this frame holds,
+        // once the rows of its screen went: a large frame (an image) leaves
+        // rows for the frames after it, and the calls wait for those too.
+        // Not for history or the pixels of images, which a program that
+        // floods its pane keeps waiting: the answer to another program's
+        // query would wait as long.
+        std::lock_guard host(m_hostMutex);
+        m_framed = m_pushed;
+    }
     return frame;
 }
 
@@ -299,7 +319,7 @@ std::vector<std::string> MuxPane::takeHostCalls(std::uint64_t window, std::size_
     // the pane does not have yet.
     if (m_window != window) return calls;
     std::size_t taken = 0;
-    while (!m_hostCalls.empty()) {
+    while (!m_hostCalls.empty() && m_hostCalls.front().number <= m_framed) {
         WaitingCall& front = m_hostCalls.front();
         // Moved, not copied: a call can be many megabytes. Only the kinds that
         // take their newest value encode now.
@@ -331,7 +351,7 @@ std::vector<std::string> MuxPane::takeHostCalls(std::uint64_t window, std::size_
 bool MuxPane::hasHostCalls(std::uint64_t window) const
 {
     std::lock_guard lock(m_hostMutex);
-    return m_window == window && !m_hostCalls.empty();
+    return m_window == window && !m_hostCalls.empty() && m_hostCalls.front().number <= m_framed;
 }
 
 

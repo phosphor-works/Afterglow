@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-// BMP, which no common system library reads and Qt reads itself: the
+// BMP, which none of the three codecs reads and Qt reads itself: the
 // uncompressed kinds (1, 4 and 8 bits with a palette, 16 and 32 bits with
 // masks, 24 bits) with the OS/2 1.x header and the Windows headers of 40 to
 // 124 bytes. Run-length encoded and embedded JPEG or PNG data are refused.
@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <climits>
 #include <cstring>
 #include <vector>
 
@@ -24,13 +23,6 @@ enum Compression : std::uint32_t {
     Bitfields = 3,
     AlphaBitfields = 6,
 };
-
-std::uint32_t le(std::string_view bytes, std::size_t index, int count)
-{
-    std::uint32_t value = 0;
-    for (int i = count; i-- > 0;) value = value << 8 | at(bytes, index + std::size_t(i));
-    return value;
-}
 
 // One channel of a pixel by its mask, scaled to 8 bits. An empty mask gives
 // @p none.
@@ -46,13 +38,16 @@ public:
         m_bits = std::popcount(mask);
         return (std::uint64_t(mask) >> m_shift) == (std::uint64_t(1) << m_bits) - 1;
     }
-    bool empty() const { return m_mask == 0; }
     std::uint8_t operator()(std::uint32_t pixel, std::uint8_t none) const
     {
         if (m_mask == 0) return none;
         const std::uint32_t value = (pixel & m_mask) >> m_shift;
         if (m_bits >= 8) return std::uint8_t(value >> (m_bits - 8));
-        return std::uint8_t(value * 255 / ((1u << m_bits) - 1));
+        // The bits again below themselves until 8 are full, as Qt widens a
+        // channel: 5 bits of 16 give 132.
+        std::uint32_t wide = value << (8 - m_bits);
+        for (int filled = m_bits; filled < 8; filled += m_bits) wide |= wide >> filled;
+        return std::uint8_t(wide);
     }
 
 private:
@@ -75,23 +70,23 @@ struct Header
 bool readHeader(std::string_view bytes, Header& header)
 {
     if (bytes.size() < 26) return false;
-    header.size = le(bytes, 14, 4);
+    header.size = little(bytes, 14, 4);
     if (header.size == 12) {
-        header.width = le(bytes, 18, 2);
-        header.height = le(bytes, 20, 2);
-        header.bits = le(bytes, 24, 2);
+        header.width = little(bytes, 18, 2);
+        header.height = little(bytes, 20, 2);
+        header.bits = little(bytes, 24, 2);
         return true;
     }
     if (header.size < 40 || header.size > 124 || bytes.size() < 14 + std::size_t(header.size)) return false;
-    const auto width = std::int32_t(le(bytes, 18, 4));
-    const auto height = std::int32_t(le(bytes, 22, 4));
+    const auto width = std::int32_t(little(bytes, 18, 4));
+    const auto height = std::int32_t(little(bytes, 22, 4));
     if (width <= 0 || height == 0 || height == INT32_MIN) return false;
     header.width = std::uint64_t(width);
     header.topDown = height < 0;
     header.height = std::uint64_t(height < 0 ? -std::int64_t(height) : height);
-    header.bits = le(bytes, 28, 2);
-    header.compression = le(bytes, 30, 4);
-    header.colours = le(bytes, 46, 4);
+    header.bits = little(bytes, 28, 2);
+    header.compression = little(bytes, 30, 4);
+    header.colours = little(bytes, 46, 4);
     return true;
 }
 
@@ -110,8 +105,7 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, std::string& error
     Header header;
     int width = 0;
     int height = 0;
-    if (!readHeader(bytes, header) || sized(header.width, header.height, width, height) != Probe::Image) {
-        error = "the BMP has no valid header";
+    if (refused(readHeader(bytes, header) ? sized(header.width, header.height, width, height) : Probe::Unknown, "BMP", error)) {
         return false;
     }
     const std::size_t headerEnd = 14 + std::size_t(header.size);
@@ -144,11 +138,14 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, std::string& error
         green.set(0xFF00);
         blue.set(0xFF);
     } else if ((bits == 16 || bits == 32) && header.compression == Rgb) {
-        // No alpha, also with a header that has an alpha mask, as Qt reads it.
+        // No alpha, but for 32 bits with a V4 or V5 header whose alpha mask
+        // is the top byte, as Qt reads it. readHeader() checked that the
+        // file holds the header, and the mask is 52 bytes into it.
         const bool wide = bits == 32;
         red.set(wide ? 0xFF0000 : 0x7C00);
         green.set(wide ? 0xFF00 : 0x3E0);
         blue.set(wide ? 0xFF : 0x1F);
+        if (wide && header.size >= 108 && little(bytes, 14 + 52, 4) == 0xFF000000) alpha.set(0xFF000000);
     } else if ((bits == 16 || bits == 32) && (header.compression == Bitfields || header.compression == AlphaBitfields)) {
         // The masks are in a header of 52 bytes and more, and after the
         // 40-byte header otherwise. A header of 56 bytes and more, or
@@ -159,9 +156,9 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, std::string& error
             error = "the BMP is truncated";
             return false;
         }
-        if (!red.set(le(bytes, masks, 4)) || !green.set(le(bytes, masks + 4, 4)) || !blue.set(le(bytes, masks + 8, 4))
-            || !alpha.set(withAlpha ? le(bytes, masks + 12, 4) : 0)) {
-            error = "the BMP has a colour mask that is not valid";
+        if (!red.set(little(bytes, masks, 4)) || !green.set(little(bytes, masks + 4, 4)) || !blue.set(little(bytes, masks + 8, 4))
+            || !alpha.set(withAlpha ? little(bytes, masks + 12, 4) : 0)) {
+            error = "the BMP has a color mask that is not valid";
             return false;
         }
     } else {
@@ -170,7 +167,7 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, std::string& error
         return false;
     }
 
-    const std::size_t offset = le(bytes, 10, 4);
+    const std::size_t offset = little(bytes, 10, 4);
     const std::uint64_t stride = (header.width * bits + 31) / 32 * 4;
     if (offset < headerEnd || offset > bytes.size() || stride * header.height > bytes.size() - offset) {
         error = "the BMP is truncated";
@@ -191,7 +188,7 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, std::string& error
                 std::memcpy(out, palette[index].data(), 4);
                 continue;
             }
-            const std::uint32_t pixel = le(bytes, source + x * (bits / 8), int(bits / 8));
+            const std::uint32_t pixel = little(bytes, source + x * (bits / 8), int(bits / 8));
             out[0] = red(pixel, 0);
             out[1] = green(pixel, 0);
             out[2] = blue(pixel, 0);

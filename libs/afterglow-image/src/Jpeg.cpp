@@ -48,13 +48,11 @@ Probe probeJpeg(std::string_view bytes, int& width, int& height)
             i += 2;
             continue;
         }
-        const std::size_t length = std::size_t(at(bytes, i + 2)) << 8 | at(bytes, i + 3);
+        const std::size_t length = big(bytes, i + 2, 2);
         if (length < 2 || length > bytes.size() - i - 2) return Probe::Unknown;
         if (isFrameMarker(marker)) {
             if (length < 7) return Probe::Unknown;
-            const std::uint64_t h = std::uint64_t(at(bytes, i + 5)) << 8 | at(bytes, i + 6);
-            const std::uint64_t w = std::uint64_t(at(bytes, i + 7)) << 8 | at(bytes, i + 8);
-            return sized(w, h, width, height);
+            return sized(big(bytes, i + 7, 2), big(bytes, i + 5, 2), width, height);
         }
         i += 2 + length;
     }
@@ -63,6 +61,9 @@ Probe probeJpeg(std::string_view bytes, int& width, int& height)
 
 bool decodeJpeg(std::string_view bytes, const FrameSink& sink, std::string& error)
 {
+    int width = 0;
+    int height = 0;
+    if (refused(probeJpeg(bytes, width, height), "JPEG", error)) return false;
     const std::unique_ptr<void, Handle> handle(tj3Init(TJINIT_DECOMPRESS));
     if (!handle) {
         error = "the JPEG decoder does not start";
@@ -70,20 +71,25 @@ bool decodeJpeg(std::string_view bytes, const FrameSink& sink, std::string& erro
     }
     void* const h = handle.get();
     const auto* data = reinterpret_cast<const unsigned char*>(bytes.data());
-    tj3Set(h, TJPARAM_SCANLIMIT, MaxScans);
-    tj3Set(h, TJPARAM_MAXPIXELS, MaxSide * MaxSide);
-    if (tj3DecompressHeader(h, data, bytes.size()) != 0) {
-        error = tj3GetErrorStr(h);
+    // Without its limits the decoder must not run.
+    if (tj3Set(h, TJPARAM_SCANLIMIT, MaxScans) != 0 || tj3Set(h, TJPARAM_MAXPIXELS, MaxSide * MaxSide) != 0) {
+        error = libraryMessage(tj3GetErrorStr(h));
         return false;
     }
-    const int width = tj3Get(h, TJPARAM_JPEGWIDTH);
-    const int height = tj3Get(h, TJPARAM_JPEGHEIGHT);
-    if (width <= 0 || height <= 0 || width > MaxSide || height > MaxSide) {
-        error = "the JPEG has a side longer than " + std::to_string(MaxSide) + " pixels";
+    // A warning in the header (a JFIF version that is not 1) is no error:
+    // the decoding below reads the header again and judges the whole file.
+    // The error code is read before any other call, which clears it.
+    if (tj3DecompressHeader(h, data, bytes.size()) != 0 && tj3GetErrorCode(h) != TJERR_WARNING) {
+        error = libraryMessage(tj3GetErrorStr(h));
+        return false;
+    }
+    // The header that libjpeg-turbo read is the one that probeJpeg() checked.
+    if (tj3Get(h, TJPARAM_JPEGWIDTH) != width || tj3Get(h, TJPARAM_JPEGHEIGHT) != height) {
+        error = "the JPEG has no valid header";
         return false;
     }
     if (tj3Get(h, TJPARAM_PRECISION) != 8) {
-        error = "the JPEG has more than 8 bits for each sample";
+        error = "the JPEG does not have 8 bits for each sample";
         return false;
     }
     const int colourspace = tj3Get(h, TJPARAM_COLORSPACE);
@@ -92,9 +98,13 @@ bool decodeJpeg(std::string_view bytes, const FrameSink& sink, std::string& erro
     std::vector<unsigned char> rgba(pixels * 4);
     // A warning (data that ends early, a bad marker) still gives the
     // picture, with grey where the data is missing, as browsers show it.
+    // TurboJPEG also calls it a warning when a fatal error came after one,
+    // and then rows are missing. In RGBA each decoded pixel has alpha 255,
+    // and the buffer starts as zeros, so the last pixel tells whether the
+    // last row came. CMYK has no such channel: there a warning is an error.
     if (tj3Decompress8(h, data, bytes.size(), rgba.data(), 0, cmyk ? TJPF_CMYK : TJPF_RGBA) != 0
-        && tj3GetErrorCode(h) != TJERR_WARNING) {
-        error = tj3GetErrorStr(h);
+        && (tj3GetErrorCode(h) != TJERR_WARNING || cmyk || rgba.back() != 255)) {
+        error = libraryMessage(tj3GetErrorStr(h));
         return false;
     }
     if (cmyk) {
