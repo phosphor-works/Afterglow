@@ -904,7 +904,7 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service, also with `--confirm-paths` answered with y and n | Python 3 |
 | `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |
 | `aglow_static` | Checks that `readelf -d` lists no shared library for `aglow` | `readelf`, and a static `aglow` |
-| `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY`), with `find_package(Qt6)` disabled and no Phosphor directory. Builds it and installs it into the build directory. Checks that the installation holds only `bin/aglow`, its license notices and its completions. Uses the compilers, the build type and the flags of the build, also the flags of each build type. Has the label `slow` | A full build, and the source archives of `cmake/AfterglowDependencies.cmake` or a network connection |
+| `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY` without `AFTERGLOW_BUILD_MUX`), with `find_package(Qt6)` disabled and no Phosphor directory, and checks that the configuration reads neither. Then configures `aglow` and `aglow-mux` alone with `find_package(Qt6)` disabled and the PlasmaZones checkout of the build. Builds them and installs them into the build directory. Checks that the installation holds only the two programs, the private libraries of `aglow-mux`, the completions of `aglow` and the license notices, and that the installed programs run. Uses the compilers, the build type and the flags of the build, also the flags of each build type. Has the label `slow` | A full build, and the source archives of `cmake/AfterglowDependencies.cmake` or a network connection |
 | `aglow_clipboard_pty` | Plays a terminal for `aglow clipboard` in a pseudo-terminal | Python 3.9 or later |
 | `aglow_run_pty` | Plays a terminal and a terminal socket for the OSC 24569 query of `aglow run`. Checks when `aglow run` does not ask, the modes of the terminal after signals and `Ctrl+C`, and what `aglow remote-prune` removes | Python 3.9 or later |
 | `aglow_tmux_pty` | Runs `aglow icat` and `aglow run` in a private tmux server (`tmux -L`, its own configuration and socket directory) in a pseudo-terminal, with `allow-passthrough` on and off | Python 3.9 or later and tmux 3.3 or later. With no tmux, or a tmux older than 3.3, it reports Skipped |
@@ -920,13 +920,14 @@ Run the suite without it:
 ctest --test-dir build --output-on-failure -LE slow
 ```
 
-A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` and `Image.*` tests and these tests of the table:
+A [build of aglow and aglow-mux alone](BUILD.md#build-aglow-and-aglow-mux-alone) has the `Proto.*` and `Image.*` tests, the terminal core tests of `afterglow_vt_tests`, the `PtyLib.*` and `Mux.*` tests, and these tests of the table:
 
 - `aglow_version`, `aglow_run_usage`, `aglow_no_command`, `aglow_unknown_command` and `aglow_help_unknown_command`
 - The three `aglow_remote_prune_*` tests, and `Aglow.*`
 - `aglow_static`, `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_tmux_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`
 
 It has no test that runs `afterglow`.
+With `AFTERGLOW_BUILD_MUX` off, it has no test of the terminal core, `PtyLib.*` or `Mux.*`.
 
 The Python test scripts need Python 3.9 or later.
 Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skipped.

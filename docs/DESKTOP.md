@@ -231,7 +231,7 @@ Run `aglow COMMAND --help` for the options of a command.
 
 Afterglow does not copy `aglow` to a remote host.
 Copy the static `aglow` of your build to a remote host whose kernel and processor it supports.
-You can also install `aglow` on the remote host from a package, or build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow alone](BUILD.md#build-aglow-alone)).
+You can also install `aglow` on the remote host from a package, or build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow and aglow-mux alone](BUILD.md#build-aglow-and-aglow-mux-alone)).
 That build does not need Qt or the Phosphor libraries.
 For file transfer, drag and drop, images and the clipboard, the remote host needs `aglow` or `kitten`, because these are Kitty protocols.
 For script commands, the remote host needs `aglow`, because `kitten` has no counterpart of `aglow run`.
