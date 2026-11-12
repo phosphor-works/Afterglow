@@ -236,6 +236,14 @@ void Attachment::paneClosed(std::unique_ptr<MuxPane> pane)
     if (PaneLink* l = link(*pane)) l->closed = std::move(pane);
 }
 
+void Attachment::sendControl(std::string json)
+{
+    Attach::Event control;
+    control.type = Attach::EventType::Control;
+    control.payload = std::move(json);
+    sendEvent(control);
+}
+
 void Attachment::paneRemoved(std::uint32_t id, MuxPane* moved)
 {
     if (moved) {
@@ -338,6 +346,10 @@ void Attachment::readInput(Session& session)
             m_failed = true;
             return;
         }
+        if (message->type == Attach::InputType::ControlReply) {
+            m_controlReplies.push_back(std::move(message->bytes));
+            continue;
+        }
         if (message->type == Attach::InputType::Layout) {
             std::string error;
             const auto json = AfterglowProto::Json::parse(message->bytes, &error);
@@ -382,6 +394,7 @@ void Attachment::readInput(Session& session)
         case Attach::InputType::Kill:
         case Attach::InputType::ClosePane:
         case Attach::InputType::Layout:
+        case Attach::InputType::ControlReply:
             break; // taken above
         }
     }

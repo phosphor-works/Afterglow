@@ -215,3 +215,49 @@ TEST(MuxLayout, RefusesMorePanesThanAWindowReads)
     tabs.pop_back();
     EXPECT_TRUE(layoutFrom(Json::Object{{"tabs", std::move(tabs)}, {"current", 0}}, &error)) << error;
 }
+
+TEST(MuxLayout, ASplitPutsTheNewPaneOnItsSideWithTheFocus)
+{
+    // Right and down: the new pane second, below or right of the pane.
+    Layout layout = twoTabs();
+    layout.tabs[0].zoomed = 3;
+    ASSERT_TRUE(layout.split(3, 7, Side::Right));
+    EXPECT_EQ(layout.tabs[0].tree,
+              (std::vector<LayoutNode>{split(false, 0.3), pane(1), split(true, 0.6), pane(2), split(false), pane(3), pane(7)}));
+    EXPECT_EQ(layout.tabs[0].focused, 7u);
+    // A zoom would hide the new pane.
+    EXPECT_EQ(layout.tabs[0].zoomed, 0u);
+    // Left and up: the new pane first.
+    ASSERT_TRUE(layout.split(4, 8, Side::Up));
+    EXPECT_EQ(layout.tabs[1].tree, (std::vector<LayoutNode>{split(true), pane(8), pane(4)}));
+    EXPECT_FALSE(layout.split(99, 9, Side::Left));
+    std::string error;
+    EXPECT_TRUE(throughText(layout, &error)) << error;
+}
+
+TEST(MuxLayout, ANewTabGoesAfterTheTabOfItsPaneAndShows)
+{
+    Layout layout = twoTabs();
+    layout.insertTab(7, 2);
+    ASSERT_EQ(layout.tabs.size(), 3u);
+    EXPECT_EQ(layout.tabs[1].tree, std::vector<LayoutNode>{pane(7)});
+    EXPECT_EQ(layout.current, 1u);
+    // Without the pane: after the last tab.
+    layout.insertTab(8, 99);
+    EXPECT_EQ(layout.tabs.back().tree, std::vector<LayoutNode>{pane(8)});
+    EXPECT_EQ(layout.current, 3u);
+}
+
+TEST(MuxLayout, AFocusShowsTheTabOfThePane)
+{
+    Layout layout = twoTabs();
+    layout.tabs[0].zoomed = 1;
+    ASSERT_TRUE(layout.focus(3));
+    EXPECT_EQ(layout.current, 0u);
+    EXPECT_EQ(layout.tabs[0].focused, 3u);
+    // The zoom of another pane would hide it.
+    EXPECT_EQ(layout.tabs[0].zoomed, 0u);
+    EXPECT_FALSE(layout.focus(99));
+    EXPECT_EQ(layout.tabOf(4), 1u);
+    EXPECT_FALSE(layout.tabOf(99));
+}

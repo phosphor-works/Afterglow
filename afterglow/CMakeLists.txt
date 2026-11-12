@@ -70,6 +70,8 @@ qt_add_library(afterglow_app STATIC
     src/control/ControlSocket.h
     src/control/RemoteSockets.cpp
     src/control/RemoteSockets.h
+    src/control/SessionControl.cpp
+    src/control/SessionControl.h
     # Here, not with Ctl: the socket tests drive it too.
     src/control/IpcClient.cpp
     src/control/IpcClient.h

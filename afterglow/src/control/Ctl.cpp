@@ -6,7 +6,10 @@
 #include "ControlSocket.h"
 #include "IpcClient.h"
 #include "../Pane.h"
+#include "../PaneLaunch.h"
 #include "../config/Keybinds.h"
+#include "../config/Settings.h"
+#include "MuxProtocol.h"
 #include "../scripting/OverlaySpec.h"
 
 #include <AfterglowProto/Random.h>
@@ -44,11 +47,15 @@ namespace Afterglow {
 
 namespace {
 
-const char* const Usage = R"(Usage: afterglow ctl <command> [options]
+const char* const Usage = R"(Usage: afterglow ctl [--session NAME] <command> [options]
 
 Drives a running Afterglow (Control.enabled in the config). Commands act on
 --pane N, else $AFTERGLOW_PANE_ID (set in every pane), else the focused pane
 of the active window or of the window that was active last.
+
+With --session NAME, the commands act on mux session NAME (afterglow mux),
+also while no window shows it, and pane IDs are those of the mux daemon. In
+a pane of a session, they act on that session.
 
   ls [--json]                           list panes
   send-text [--raw] TEXT...             type TEXT (\n, \r, \t, \e, \\ and \xHH for U+00HH unless --raw)
@@ -118,10 +125,16 @@ int fail(const QString& message, int status = 1)
 }
 
 /// The control target of the afterglow that runs this pane, else of the main
-/// one on this display. Connects on the first use and reports its own errors.
+/// one on this display, or of the mux daemon for a session (--session, or a
+/// session pane). Connects on the first use and reports its own errors.
 class Client
 {
 public:
+    /// The calls act on mux session @p name (--session).
+    void useSession(QString name) { m_sessionName = std::move(name); }
+    /// The calls go to the mux daemon, for a session. Connects first.
+    bool toDaemon() { return connected() && m_daemon; }
+
     /// @p timeoutMs: -1 waits as long as the call takes (an overlay waits for the user).
     std::optional<QJsonValue> call(const QString& fn, const QJsonArray& args, int timeoutMs = ReplyTimeoutMs)
     {
@@ -174,7 +187,9 @@ public:
 private:
     bool connected()
     {
+        if (m_selectFailed) return false;
         if (m_client.connected()) return true;
+        if (!m_sessionName.isEmpty()) return connectToDaemon();
         // The afterglow that runs this pane, else the main one on the display.
         const AfterglowProto::SocketLookup socket = AfterglowProto::findSocket();
         if (socket.path.empty()) {
@@ -185,7 +200,15 @@ private:
         m_own = socket.own;
         m_pane = socket.pane;
         IpcClient::Error error;
-        if (m_client.connectTo(path, ReplyTimeoutMs, &error)) return true;
+        if (m_client.connectTo(path, ReplyTimeoutMs, &error)) {
+            // A session pane: $AFTERGLOW_SOCKET is the mux daemon's, which
+            // acts on the session that holds the pane now. A pane that left
+            // its first session keeps $AFTERGLOW_SESSION, but not its pane ID.
+            if (!m_own || qEnvironmentVariableIsEmpty("AFTERGLOW_SESSION")) return true;
+            m_daemon = true;
+            if (m_pane <= 0) return selectFailed(QStringLiteral("$AFTERGLOW_PANE_ID names no pane of the mux daemon"));
+            return select(AfterglowMux::Fn::SelectPane, m_pane);
+        }
         // In the words of aglow run. A queue of new connections that stays
         // full: there is an Afterglow, and it does not take the connection.
         if (error.timedOut) {
@@ -202,10 +225,44 @@ private:
         return false;
     }
 
+    bool connectToDaemon()
+    {
+        const AfterglowProto::MuxSockets sockets = AfterglowProto::muxSockets();
+        if (sockets.candidates.empty()) return selectFailed(QString::fromStdString(sockets.error));
+        // The sockets in their order: the first that answers is the daemon's.
+        IpcClient::Error error;
+        for (const AfterglowProto::MuxSocket& socket : sockets.candidates) {
+            if (!m_client.connectTo(QFile::decodeName(QByteArray::fromStdString(socket.path)), ReplyTimeoutMs, &error)) continue;
+            m_daemon = true;
+            return select(AfterglowMux::Fn::SelectSession, m_sessionName);
+        }
+        return selectFailed(QStringLiteral("no mux daemon runs, so there is no session '%1'").arg(m_sessionName));
+    }
+
+    /// Selects the session that the calls act on, with @p fn and @p what.
+    bool select(const char* fn, const QJsonValue& what)
+    {
+        IpcClient::Error error;
+        if (m_client.call(QLatin1String(AfterglowMux::Target), QLatin1String(fn), {AfterglowMux::ProtocolVersion, what}, ReplyTimeoutMs, &error)) {
+            return true;
+        }
+        report(error);
+        m_selectFailed = true;
+        return false;
+    }
+
+    bool selectFailed(const QString& message)
+    {
+        fail(message);
+        m_selectFailed = true;
+        return false;
+    }
+
     /// The afterglow at $AFTERGLOW_SOCKET, for messages: it runs this pane
     /// only when $AFTERGLOW_PANE_ID names one.
     QString owner() const
     {
+        if (m_daemon) return QStringLiteral("the session");
         return m_pane ? QStringLiteral("the Afterglow that runs this pane") : QStringLiteral("the Afterglow at $AFTERGLOW_SOCKET");
     }
 
@@ -230,7 +287,38 @@ private:
     IpcClient m_client;
     bool m_own = false; ///< the socket of $AFTERGLOW_SOCKET
     qint64 m_pane = 0;
+    QString m_sessionName; ///< --session
+    bool m_daemon = false; ///< the calls go to the mux daemon
+    bool m_selectFailed = false; ///< no session to act on: reported
 };
+
+/// The program of a new tab or split of a session, prepared as a window
+/// prepares it, with this command's settings: the daemon runs it in the
+/// session's environment. Without @p directory, it starts where the pane is
+/// (Window.workingDirectory inherit), which the daemon knows.
+QJsonValue sessionLaunch(QString directory, const QStringList& command)
+{
+    SettingsStore store;
+    const Settings& settings = store.settings();
+    const auto home = [](const QString& path) {
+        return path == QLatin1String("~") || path.startsWith(QLatin1String("~/")) ? QDir::homePath() + path.mid(1) : path;
+    };
+    directory = home(directory);
+    if (directory.isEmpty()) {
+        const QString setting = settings.window.workingDirectory;
+        if (setting == QLatin1String("home")) directory = QDir::homePath();
+        else if (!setting.isEmpty() && setting != QLatin1String("inherit") && QFileInfo(home(setting)).isDir()) directory = home(setting);
+    }
+    AfterglowPty::SpawnOptions opts = prepareLaunch(settings, directory.isEmpty() ? QDir::homePath() : directory, command, {});
+    offerTerminalEnvironment(opts, settings.term);
+    AfterglowMux::Launch launch;
+    launch.argv = std::move(opts.argv);
+    if (!directory.isEmpty()) launch.workingDirectory = std::move(opts.workingDirectory);
+    launch.environment = std::move(opts.environment);
+    launch.unset = std::move(opts.unsetEnvironment);
+    launch.launchedProgram = launchedProgramName(command).toStdString();
+    return QJsonDocument::fromJson(QByteArray::fromStdString(AfterglowProto::Json::write(AfterglowMux::toJson(launch)))).object();
+}
 
 QString unescape(const QString& s)
 {
@@ -453,6 +541,14 @@ int runCtl(int argc, char** argv)
         std::fputs(Usage, args.isEmpty() ? stderr : stdout);
         return args.isEmpty() ? 2 : 0;
     }
+    // The session comes before the command: it says where the command goes.
+    std::optional<QString> sessionName;
+    if (args[0] == QLatin1String("--session")) {
+        if (args.size() < 2) return usage(QStringLiteral("--session needs the name of a session"));
+        sessionName = args[1];
+        args.remove(0, 2);
+        if (args.isEmpty()) return usage(QStringLiteral("no command after --session %1").arg(*sessionName));
+    }
     const QString command = args.takeFirst();
     if (!Commands.contains(command)) return usage(QStringLiteral("unknown command %1").arg(command));
 
@@ -542,6 +638,12 @@ int runCtl(int argc, char** argv)
 
     const std::optional<QString> paneArg = takeValue(QStringLiteral("--pane"));
     if (missingValue) return usage(QStringLiteral("--pane needs a pane ID"));
+    if (sessionName) {
+        if (!AfterglowMux::validSessionName(sessionName->toStdString())) {
+            return usage(QStringLiteral("--session takes the name of a session: %1").arg(QLatin1String(AfterglowMux::SessionNameRule)));
+        }
+        client.useSession(*sessionName);
+    }
     // These act on no pane: a --pane given to them is a mistake.
     static const QStringList Paneless = {QStringLiteral("ls"), QStringLiteral("watch"), QStringLiteral("scripts"),
                                          QStringLiteral("open-directory"), QStringLiteral("projects"),
@@ -799,14 +901,21 @@ int runCtl(int argc, char** argv)
         }
         if (directions > 1) return usage(QStringLiteral("split takes one direction"));
         if (const auto error = extra(0)) return usage(*error);
-        act = [&, dir](qint64 pane) { return printPane(QStringLiteral("split"), {pane, dir, QJsonArray::fromStringList(trailing)}); };
+        act = [&, dir](qint64 pane) {
+            QJsonArray callArgs{pane, dir, QJsonArray::fromStringList(trailing)};
+            // The daemon starts the program that this command prepares.
+            if (client.toDaemon()) callArgs.append(sessionLaunch({}, trailing));
+            return printPane(QStringLiteral("split"), callArgs);
+        };
     } else if (command == QLatin1String("new-tab")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());
         if (const auto error = extra(0)) return usage(*error);
         const auto dir = absolute(cwd);
         if (!dir) return fail(NoCurrentDirectory);
         act = [&, dir = *dir](qint64 pane) {
-            return printPane(QStringLiteral("newTab"), {pane, dir, QJsonArray::fromStringList(trailing)});
+            QJsonArray callArgs{pane, dir, QJsonArray::fromStringList(trailing)};
+            if (client.toDaemon()) callArgs.append(sessionLaunch(dir, trailing));
+            return printPane(QStringLiteral("newTab"), callArgs);
         };
     } else if (command == QLatin1String("move-pane")) {
         const std::optional<quint32> target = decimal(args.value(0));

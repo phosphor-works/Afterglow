@@ -176,6 +176,57 @@ void Layout::reconcile(const std::vector<std::uint32_t>& live)
     if (current >= tabs.size()) current = tabs.empty() ? 0 : tabs.size() - 1;
 }
 
+std::optional<std::size_t> Layout::tabOf(std::uint32_t pane) const
+{
+    for (std::size_t t = 0; t < tabs.size(); ++t) {
+        for (const LayoutNode& node : tabs[t].tree) {
+            if (node.pane == pane) return t;
+        }
+    }
+    return std::nullopt;
+}
+
+bool Layout::split(std::uint32_t target, std::uint32_t added, Side side)
+{
+    const auto t = tabOf(target);
+    if (!t) return false;
+    std::vector<LayoutNode>& tree = tabs[*t].tree;
+    const auto leaf = std::find_if(tree.begin(), tree.end(), [target](const LayoutNode& node) { return node.pane == target; });
+    // The leaf becomes a split of the two: the added pane first on its left
+    // or above it.
+    const bool addedFirst = side == Side::Left || side == Side::Up;
+    const LayoutNode splitNode{0, side == Side::Down || side == Side::Up, 0.5};
+    const LayoutNode first{addedFirst ? added : target, false, 0.5};
+    const LayoutNode second{addedFirst ? target : added, false, 0.5};
+    const auto at = tree.erase(leaf);
+    tree.insert(at, {splitNode, first, second});
+    tabs[*t].focused = added;
+    tabs[*t].zoomed = 0;
+    return true;
+}
+
+void Layout::insertTab(std::uint32_t added, std::uint32_t beside)
+{
+    const auto t = tabOf(beside);
+    LayoutTab tab;
+    tab.tree.push_back(LayoutNode{added, false, 0.5});
+    tab.focused = added;
+    const std::size_t at = t ? *t + 1 : tabs.size();
+    tabs.insert(tabs.begin() + std::ptrdiff_t(at), std::move(tab));
+    current = at;
+}
+
+bool Layout::focus(std::uint32_t pane)
+{
+    const auto t = tabOf(pane);
+    if (!t) return false;
+    current = *t;
+    tabs[*t].focused = pane;
+    // A pane that another one hides with its zoom shows, as in a window.
+    if (tabs[*t].zoomed != 0 && tabs[*t].zoomed != pane) tabs[*t].zoomed = 0;
+    return true;
+}
+
 Json::Value toJson(const Layout& layout)
 {
     Json::Array tabs;

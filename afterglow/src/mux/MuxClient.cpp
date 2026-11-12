@@ -13,6 +13,8 @@
 #include <PhosphorChannel/Stream.h>
 
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLoggingCategory>
 #include <QSocketNotifier>
 
@@ -446,6 +448,29 @@ void MuxClient::sendPaneInput(std::uint32_t id, Attach::Input& input)
     sendWaitingInput();
 }
 
+void MuxClient::answerControlCalls()
+{
+    m_controlCallsQueued = false;
+    while (!m_controlCalls.empty()) {
+        const ControlCall call = std::move(m_controlCalls.front());
+        m_controlCalls.pop_front();
+        ControlAnswer answer;
+        if (m_controlHandler) answer = m_controlHandler(call.fn, call.args);
+        else answer.error = QStringLiteral("this window answers no control calls");
+        // The answer goes after the layout that the call changed: the daemon
+        // reads the input in its order.
+        if (call.id == 0 || !showing()) continue;
+        QJsonObject reply{{QStringLiteral("id"), call.id}};
+        if (answer.error.isEmpty()) reply.insert(QStringLiteral("result"), answer.result);
+        else reply.insert(QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), QStringLiteral("CALL_FAILED")}, {QStringLiteral("message"), answer.error}});
+        Attach::Input input;
+        input.type = Attach::InputType::ControlReply;
+        input.bytes = QJsonDocument(reply).toJson(QJsonDocument::Compact).toStdString();
+        queueInput(Attach::encode(input), false);
+        sendWaitingInput();
+    }
+}
+
 void MuxClient::sendWaitingInput()
 {
     while (m_stream && m_actions && !m_waitingActions.empty()) {
@@ -564,6 +589,16 @@ void MuxClient::handleFrames()
                     m_layoutCame = true;
                 } else {
                     qCWarning(lcMux) << "session" << m_session << "sent a layout that the window cannot take:" << QString::fromStdString(error);
+                }
+            } else if (event && event->type == Attach::EventType::Control) {
+                QJsonParseError error{};
+                const QJsonObject call = QJsonDocument::fromJson(QByteArray::fromStdString(event->payload), &error).object();
+                const QJsonValue id = call.value(QLatin1String("id"));
+                bad = error.error != QJsonParseError::NoError || !id.isDouble() || id.toInteger(-1) < 0 || !call.value(QLatin1String("fn")).isString()
+                    || !call.value(QLatin1String("args")).isArray();
+                if (!bad) {
+                    m_controlCalls.push_back({id.toInteger(), call.value(QLatin1String("fn")).toString(), call.value(QLatin1String("args")).toArray()});
+                    if (!std::exchange(m_controlCallsQueued, true)) QMetaObject::invokeMethod(this, &MuxClient::answerControlCalls, Qt::QueuedConnection);
                 }
             } else if (event && event->type == Attach::EventType::PaneOpened) {
                 bad = bad || !m_layoutCame;

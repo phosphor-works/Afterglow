@@ -64,7 +64,20 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 9) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 10) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 10 added the control target of a session (`afterglow ctl
+    // --session`): the selectSession and selectPane calls, the Control event
+    // and its ControlReply, and the Control settings of a session.
+    EXPECT_EQ(std::string(Fn::SelectSession), "selectSession");
+    EXPECT_EQ(std::string(Fn::SelectPane), "selectPane");
+    Attach::Event control;
+    control.type = Attach::EventType::Control;
+    control.payload = "{}";
+    EXPECT_EQ(Attach::encode(control), std::string("\x08\x00\x00\x00{}", 6));
+    Attach::Input controlReply;
+    controlReply.type = Attach::InputType::ControlReply;
+    controlReply.bytes = "{}";
+    EXPECT_EQ(Attach::encode(controlReply), std::string("\x09\x00{}", 4));
     // Version 9 added the tabs and splits of a session: the newPane, paneJob,
     // breakOut and paneSession calls, the Layout event and input (MuxLayoutTest), the
     // ClosePane action, and the session's environment apart from the launch
@@ -174,7 +187,8 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // bindings name every field, so a new field stops this test compiling
     // until it has its key, its place in the round trip and a new version.
     SessionOptions fields;
-    [[maybe_unused]] auto& [name, sessionEnvironment, umask, launch, size, terminal, notificationCapabilities] = fields;
+    [[maybe_unused]] auto& [name, sessionEnvironment, umask, launch, size, terminal, notificationCapabilities, controlOptions] = fields;
+    [[maybe_unused]] auto& [controlEnabled, allowReadText] = fields.control;
     [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram] = fields.launch;
     [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
     [[maybe_unused]] auto& [scrollback, foreground, background, palette, cursorColor, cursorTextColor, selectionForeground,
@@ -185,7 +199,8 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 
     const Json::Value options = toJson(SessionOptions{});
     EXPECT_EQ(keys(options),
-              (std::vector<std::string>{"name", "environment", "umask", "launch", "size", "terminal", "notificationCapabilities"}));
+              (std::vector<std::string>{"name", "environment", "umask", "launch", "size", "terminal", "notificationCapabilities", "control"}));
+    EXPECT_EQ(keys(options["control"]), (std::vector<std::string>{"enabled", "allowReadText"}));
     EXPECT_EQ(keys(options["launch"]), (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram"}));
     EXPECT_EQ(keys(options["size"]), (std::vector<std::string>{"cols", "rows", "cellWidth", "cellHeight"}));
     EXPECT_EQ(keys(options["terminal"]),
@@ -382,6 +397,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     o.launch.launchedProgram = "htop";
     o.size = {132, 43, 9, 18};
     o.notificationCapabilities = "a=focus:p=title";
+    o.control = {false, true};
     AfterglowVt::TerminalOptions& t = o.terminal;
     t.maxScrollback = 1234;
     t.defaultForeground = {4, 5, 6};
@@ -431,6 +447,8 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     EXPECT_EQ(back->size.cellWidth, 9);
     EXPECT_EQ(back->size.cellHeight, 18);
     EXPECT_EQ(back->notificationCapabilities, o.notificationCapabilities);
+    EXPECT_FALSE(back->control.enabled);
+    EXPECT_TRUE(back->control.allowReadText);
     EXPECT_TRUE(back->terminal == o.terminal);
     // Unset colors go as null and come back unset.
     SessionOptions unset;
@@ -471,10 +489,19 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         EXPECT_FALSE(sessionOptions(with(good, key, value), &error)) << key << " " << Json::write(value);
         EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
     }
-    for (const char* key : {"name", "environment", "umask", "launch", "size", "terminal", "notificationCapabilities"}) {
+    for (const char* key : {"name", "environment", "umask", "launch", "size", "terminal", "notificationCapabilities", "control"}) {
         error.clear();
         EXPECT_FALSE(sessionOptions(without(good, key), &error)) << key;
         EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
+    }
+    // The Control settings: both, and booleans.
+    for (const auto& [value, key] : std::vector<std::pair<Json::Value, std::string>>{
+             {Json::Object{{"enabled", true}}, "'control.allowReadText'"},
+             {Json::Object{{"enabled", 1}, {"allowReadText", false}}, "'control.enabled'"},
+             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"other", 1}}, "'control.other'"}}) {
+        error.clear();
+        EXPECT_FALSE(sessionOptions(with(good, "control", value), &error)) << Json::write(value);
+        EXPECT_NE(error.find(key), std::string::npos) << key << ": " << error;
     }
     // The keys of the launch and of the size, which newPane takes alone too.
     const std::pair<const char*, Json::Value> badLaunch[] = {
@@ -652,7 +679,7 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
 {
     const std::string_view bad[] = {
         {},                         // empty
-        std::string_view("\x08\x01\x00\x00", 4), // the type after Layout
+        std::string_view("\x09\x01\x00\x00", 4), // the type after Control
         std::string_view("\x00\x01\x00\x00", 4), // type 0
         std::string_view("\x02\x01\x00\x00\x00", 5), // a byte after the event
         std::string_view("\x02\x81", 2),         // a varint that does not end
@@ -718,8 +745,8 @@ TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
 {
     const std::string_view bad[] = {
         {},
-        std::string_view("\x0a\x01", 2),         // an unknown type
-        std::string_view("\x09\x01", 2),         // the type after ClosePane
+        std::string_view("\x0b\x01", 2),         // an unknown type
+        std::string_view("\x0a\x01", 2),         // the type after ControlReply
         std::string_view("\x08\x01\x00", 3),     // a byte after a ClosePane
         std::string_view("\x01", 1),             // no pane
         std::string_view("\x02\x01\x50\x18\x08", 5), // a Resize that ends early

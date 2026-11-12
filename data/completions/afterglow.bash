@@ -94,10 +94,20 @@ _afterglow_unused()
 
 _afterglow_ctl()
 {
-    local command=${words[2]} start=3 i j positional=0 text=""
-    if ((cword == 2)); then
+    # --session NAME comes before the command: its name, which nothing lists.
+    local first=2
+    if [[ ${words[2]} == --session ]]; then
+        ((cword == 3)) && return
+        first=4
+    fi
+    local command=${words[first]} start=$((first + 1)) i j positional=0 text=""
+    if ((cword == first)); then
         if [[ $cur == -* ]]; then
-            _afterglow_matching -h --help
+            if ((first == 2)); then
+                _afterglow_matching -h --help --session
+            else
+                _afterglow_matching -h --help
+            fi
         else
             # shellcheck disable=SC2086 # the list splits into its words
             _afterglow_matching $_afterglow_ctl_commands

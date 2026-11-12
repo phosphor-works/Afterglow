@@ -52,6 +52,10 @@ enum class EventType : std::uint8_t {
     Detached = 5, ///< `afterglow mux detach`: the window closes, the session runs on
     Host = 6, ///< a call of a pane's terminal to its host, or a part of one, in `payload` (MuxHost.h)
     Layout = 7, ///< the session's tabs and splits, as JSON in `payload` (MuxLayout.h): the first event
+    /// A call of the control target that the window answers (`afterglow ctl`
+    /// for the session): {"id", "fn", "args"} as JSON in `payload`, with the
+    /// daemon's pane IDs. The window answers with ControlReply.
+    Control = 8,
 };
 
 /// The status of a Host event that holds a part of a call, not its end.
@@ -76,7 +80,8 @@ struct Event
     /// comes, and a bell goes after the text that rang it.
     std::uint64_t frames = 0;
     /// Host: the call, encoded, or its next part. A call larger than one
-    /// frame comes in parts of at most HostPartBytes. Layout: its JSON.
+    /// frame comes in parts of at most HostPartBytes. Layout and Control:
+    /// their JSON.
     std::string payload;
 };
 
@@ -92,13 +97,16 @@ enum class InputType : std::uint8_t {
     Visible = 6, ///< whether the user can see the pane (mode 2033), in `visible`
     Layout = 7, ///< the window's tabs and splits, as JSON in `bytes` (MuxLayout.h), after each change
     ClosePane = 8, ///< the user closed the pane and the window stays: its program ends (ActionChannel only)
+    /// The answer to a Control event: {"id", "result"} or {"id", "error"} as
+    /// JSON in `bytes`, with the daemon's pane IDs.
+    ControlReply = 9,
 };
 
 struct Input
 {
     InputType type = InputType::Bytes;
     std::uint32_t pane = 0;
-    std::string bytes; ///< Bytes: for the program. Layout: its JSON.
+    std::string bytes; ///< Bytes: for the program. Layout and ControlReply: their JSON.
     PaneSize size;
     bool visible = false;
 };

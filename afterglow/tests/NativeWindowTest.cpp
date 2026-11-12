@@ -12,6 +12,7 @@
 #include <QMessageBox>
 #include <chrono>
 #include <csignal>
+#include <atomic>
 #include <optional>
 #include <set>
 #include <vector>
@@ -11199,6 +11200,50 @@ TEST_F(NativeWindow, ATabDraggedOutOfASessionsWindowBecomesANewSession) {
     delete moved;
     delete shown;
     EXPECT_TRUE(waitFor([&] { return MuxTest::names(daemon.sessions()) == std::vector<std::string>{"keep"}; }, 5000));
+}
+
+// `afterglow ctl --session` while a window shows the session: the window
+// places the pane that the daemon starts, and answers what only it can do.
+TEST_F(NativeWindow, CtlForASessionReachesItsWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "ctl")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("ctl"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    AfterglowProto::IpcConnection ctl;
+    AfterglowProto::IpcConnection::Error failure;
+    ASSERT_TRUE(ctl.connect(daemon.socket(), &failure, 2000)) << failure.message;
+    ASSERT_TRUE(ctl.call(AfterglowMux::Target, AfterglowMux::Fn::SelectSession, MuxTest::Json::Array{AfterglowMux::ProtocolVersion, "ctl"}, 5000,
+                         &failure))
+        << failure.message;
+    // The daemon starts the pane, and the window places it beside the first.
+    const auto split = ctl.call("control", "split", MuxTest::Json::Array{std::int64_t(pane->sessionPaneId()), "right", MuxTest::Json::Array{}},
+                                5000, &failure);
+    ASSERT_TRUE(split) << failure.message;
+    const auto added = std::uint32_t(split->toInteger().value_or(0));
+    ASSERT_TRUE(waitFor([&] { return shown->sessionPane(added) != nullptr; }, 5000));
+    EXPECT_EQ(shown->tabs().size(), 1);
+    EXPECT_EQ(shown->panes().size(), 2);
+    // The window answers the title, while this test's own event loop runs:
+    // the call waits on a thread of its own.
+    std::atomic<bool> answered{false};
+    std::optional<MuxTest::Json::Value> titled;
+    std::thread caller([&] {
+        titled = ctl.call("control", "setTitle", MuxTest::Json::Array{std::int64_t(added), "from ctl"}, 5000, &failure);
+        answered = true;
+    });
+    const bool came = waitFor([&] { return answered.load(); }, 5000);
+    caller.join();
+    ASSERT_TRUE(came);
+    ASSERT_TRUE(titled) << failure.message;
+    EXPECT_EQ(shown->sessionPane(added)->userTitle(), QStringLiteral("from ctl"));
+    // A tab that the daemon starts shows in the window too.
+    const auto tab = ctl.call("control", "newTab", MuxTest::Json::Array{std::int64_t(added), "", MuxTest::Json::Array{}}, 5000, &failure);
+    ASSERT_TRUE(tab) << failure.message;
+    ASSERT_TRUE(waitFor([&] { return shown->tabs().size() == 2; }, 5000));
+    EXPECT_EQ(shown->focusedPane()->sessionPaneId(), tab->toInteger());
+    delete shown;
 }
 
 int main(int argc, char** argv)

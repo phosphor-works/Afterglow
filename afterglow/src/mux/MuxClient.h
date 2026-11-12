@@ -12,6 +12,8 @@
 #include <AfterglowProto/Socket.h>
 #include <AfterglowPty/Pty.h>
 
+#include <QJsonArray>
+#include <QJsonValue>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -144,6 +146,19 @@ public:
     /// exists on this machine. Empty when the session ended, or when the
     /// daemon does not answer. It calls the daemon and waits for the answer.
     QString directory(std::uint32_t id) const;
+    /// What the window answers to a call of the control target that the
+    /// daemon passes it: a result, or an error.
+    struct ControlAnswer
+    {
+        QJsonValue result;
+        QString error;
+    };
+    /// Answers the calls of `afterglow ctl` for the session that only a
+    /// window can answer (Attach::EventType::Control), with the daemon's pane
+    /// IDs. On the GUI thread, after the frames and events that came first.
+    using ControlHandler = std::function<ControlAnswer(const QString& fn, const QJsonArray& args)>;
+    void setControlHandler(ControlHandler handler) { m_controlHandler = std::move(handler); }
+
     /// Reads the stream for up to @p waitMs, and handles what comes, until
     /// @p done: a pane that waits for the answer of a host call on the GUI
     /// thread, which alone reads the stream (a drag's answer wait). True
@@ -183,6 +198,9 @@ private:
     std::optional<AfterglowProto::Json::Value> callDaemon(const char* fn, AfterglowProto::Json::Array args,
                                                           QString* error = nullptr) const;
     void sendWaitingInput();
+    /// Answers the calls of the control target that came (m_controlCalls).
+    /// Out of handleFrames(): an answer makes panes, which read the stream.
+    void answerControlCalls();
     void updateNotifiers();
     void end(Loss loss);
     void lost();
@@ -229,6 +247,15 @@ private:
     std::set<std::uint32_t> m_closedChannels; ///< the pane's last frame was read
     std::deque<std::string> m_waitingInput;
     std::deque<std::string> m_waitingActions; ///< ClosePane frames that wait for the action channel
+    struct ControlCall
+    {
+        qint64 id = 0; ///< 0: the daemon wants no answer
+        QString fn;
+        QJsonArray args;
+    };
+    std::deque<ControlCall> m_controlCalls;
+    bool m_controlCallsQueued = false;
+    ControlHandler m_controlHandler;
     /// Where m_waitingInput holds the newest size of a pane, while nothing
     /// follows it: a later size takes its place.
     std::optional<std::uint32_t> m_waitingResizeOf;

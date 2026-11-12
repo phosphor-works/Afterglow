@@ -112,6 +112,31 @@ std::string MuxPane::foregroundJob(pid_t caller) const
     return m_launchedProgram;
 }
 
+std::optional<MuxPane::Facts> MuxPane::facts() const
+{
+    Facts facts;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_decoding) return std::nullopt;
+        facts.title = m_terminal.title();
+        facts.directory = m_terminal.workingDirectory();
+        facts.size = {m_terminal.cols(), m_terminal.rows(), m_terminal.cellWidth(), m_terminal.cellHeight()};
+    }
+    {
+        std::lock_guard host(m_hostMutex);
+        if (m_commandRunning) facts.command = m_command;
+    }
+    if (facts.directory.empty()) facts.directory = directory();
+    return facts;
+}
+
+std::optional<std::string> MuxPane::text(AfterglowVt::Terminal::TextScope scope) const
+{
+    std::lock_guard lock(m_mutex);
+    if (m_decoding) return std::nullopt;
+    return m_terminal.text(scope);
+}
+
 std::string MuxPane::directory() const
 {
     if (!m_pty || m_exited) return {};

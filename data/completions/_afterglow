@@ -168,6 +168,19 @@ _afterglow_ctl() {
         'overlay:run a command over the pane and print its result'
         'screenshot:save the pane, its tab or its window as PNG'
     )
+    # --session NAME comes before the command.
+    if [[ $words[2] == --session ]]; then
+        if (( CURRENT == 3 )); then
+            _message 'session name'
+            return
+        fi
+        words[2,3]=()
+        (( CURRENT -= 2 ))
+    elif (( CURRENT == 2 )) && [[ $PREFIX == -* ]]; then
+        help=('-h:show the usage' '--help:show the usage' '--session:act on a mux session')
+        _describe -t options 'option' help
+        return
+    fi
     if (( CURRENT == 2 )); then
         if [[ $PREFIX == -* ]]; then
             help=('-h:show the usage' '--help:show the usage')

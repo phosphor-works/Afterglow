@@ -109,9 +109,16 @@ end
 
 function __afterglow_ctl
     set -l cur (commandline -ct)
+    set -l options -h\t'Show the usage' --help\t'Show the usage' --session\t'Act on a mux session'
+    # --session NAME comes before the command: its name, which nothing lists.
+    if test "$argv[1]" = --session
+        set -q argv[2]; or return
+        set -e argv[1..2]
+        set options -h\t'Show the usage' --help\t'Show the usage'
+    end
     if not set -q argv[1]
         if string match -q -- '-*' "$cur"
-            __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
+            __afterglow_print $options
         else
             __afterglow_print ls\t'List panes' send-text\t'Type text into the pane' get-text\t'Print pane text' \
                 split\t'Split the pane' move-pane\t'Move the pane beside another' \

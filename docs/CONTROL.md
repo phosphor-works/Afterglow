@@ -32,7 +32,8 @@ In a pane, `afterglow ctl` and `aglow run` send their requests to that process.
 Outside Afterglow, `afterglow ctl` and `aglow run` use the socket of the main process on the current Wayland display.
 
 A pane of a [mux session](MUX.md) sets `AFTERGLOW_SOCKET` to the socket of the mux daemon and `AFTERGLOW_SESSION` to the session name.
-The daemon answers each request to the `control` and `commands` targets with `CALL_FAILED` (see [control in a session pane](MUX.md#control-in-a-session-pane)).
+There, `afterglow ctl` acts on the session through the daemon, and `afterglow ctl --session NAME` does so from anywhere (see [control of a session](MUX.md#control-of-a-session)).
+The daemon answers each request to the `commands` target with `CALL_FAILED`.
 
 | Process | Socket |
 | --- | --- |

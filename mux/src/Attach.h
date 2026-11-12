@@ -119,6 +119,11 @@ public:
     /// A number that no other attachment of the daemon has: which window a
     /// pane's host calls wait for (MuxPane::setWindow).
     std::uint64_t serial() const { return m_serial; }
+    /// A call of the control target for the window to answer (an
+    /// Attach::EventType::Control event): @p json is its {"id", "fn", "args"}.
+    void sendControl(std::string json);
+    /// The answers of the window to those calls, as their JSON, oldest first.
+    std::vector<std::string> takeControlReplies() { return std::exchange(m_controlReplies, {}); }
 
 private:
     struct PaneLink
@@ -182,6 +187,7 @@ private:
     std::optional<Attach::EventType> m_finish;
     bool m_finishSent = false;
     bool m_layoutSent = false; ///< the first event, before any PaneOpened
+    std::vector<std::string> m_controlReplies; ///< Attach::InputType::ControlReply, for the daemon
     bool m_outputEnded = false; ///< all went, and the stream's output ended: the window closes
 
     bool m_kill = false;

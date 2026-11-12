@@ -27,7 +27,7 @@ namespace AfterglowMux {
 /// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
 /// MuxProtocolTest pins the keys of the options to this number, so that a new
 /// key changes it too.
-inline constexpr int ProtocolVersion = 9;
+inline constexpr int ProtocolVersion = 10;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -68,6 +68,13 @@ inline constexpr const char* BreakOut = "breakOut";
 /// no process changes the environment of another: a client in a session
 /// pane asks by its AFTERGLOW_PANE_ID.
 inline constexpr const char* PaneSession = "paneSession";
+/// (protocol, name) -> {name}: the calls of the control target on this
+/// connection act on session @p name (`afterglow ctl --session NAME`).
+inline constexpr const char* SelectSession = "selectSession";
+/// (protocol, pane) -> {name}: the calls of the control target on this
+/// connection act on the session that holds the pane now (`afterglow ctl`
+/// in a session pane, by its AFTERGLOW_PANE_ID).
+inline constexpr const char* SelectPane = "selectPane";
 } // namespace Fn
 
 /// The keys of the options of Fn::Attach. The daemon refuses another key.
@@ -170,6 +177,15 @@ struct PaneSize
     int cellHeight = 0;
 };
 
+/// The Control settings that the daemon follows for `afterglow ctl` calls to
+/// a session (the calls that it answers itself; a window that shows the
+/// session follows its own for the calls that it answers).
+struct ControlOptions
+{
+    bool enabled = true; ///< Control.enabled: off, the session takes no control calls
+    bool allowReadText = false; ///< Control.allowReadText: get-text, and the commands in ls
+};
+
 AfterglowProto::Json::Value toJson(const PaneSize& size);
 /// nullopt for a value that is not a valid size: @p error says why.
 std::optional<PaneSize> paneSizeFrom(const AfterglowProto::Json::Value& value, std::string* error);
@@ -192,6 +208,9 @@ struct SessionOptions
     /// The answer of a window to an OSC 99 query: what a program may ask of
     /// the desktop notifications of a window that later shows the session.
     std::string notificationCapabilities;
+    /// Control.enabled and Control.allowReadText of the client: what
+    /// `afterglow ctl` may do with the session in the daemon.
+    ControlOptions control;
 };
 
 AfterglowProto::Json::Value toJson(const SessionOptions& options);

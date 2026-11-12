@@ -804,6 +804,8 @@ Pane* TerminalWindow::createSessionPane(const std::shared_ptr<MuxClient>& sessio
 Pane* TerminalWindow::createSessionLaunchPane(const QString& workingDirectory, const QRect& area, const QStringList& command,
                                               QString* failure, const QVariantMap& environment)
 {
+    // Its program started already, in the daemon.
+    if (const auto placing = std::exchange(m_placingPane, std::nullopt)) return createSessionPane(m_session, *placing);
     // The program starts as a pane of the window would, with this window's
     // settings, but in the session's environment: the daemon applies what
     // the launch sets and unsets to it.
@@ -913,6 +915,29 @@ AfterglowMux::LayoutTab TerminalWindow::sessionTab(const Tab& tab, const Pane* f
     while (std::size_t(title.toUtf8().size()) > AfterglowMux::MaxTabTitle) title.chop(1);
     out.title = title.toStdString();
     return out;
+}
+
+Pane* TerminalWindow::sessionPane(std::uint32_t id) const
+{
+    for (Pane* pane : panes()) {
+        if (pane->sessionPaneId() == id) return pane;
+    }
+    return nullptr;
+}
+
+Pane* TerminalWindow::placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side)
+{
+    if (!m_session || sessionPane(id)) return nullptr;
+    // Through the paths of a split and a tab, with their room and their
+    // effects: createPane takes the pane that the daemon started.
+    m_placingPane = id;
+    QString error;
+    Pane* placed = side && beside ? splitPane(beside, *side, {}, &error) : nullptr;
+    if (!placed && m_placingPane) placed = openTab({}, &error, beside && tabOf(beside) >= 0 ? beside : nullptr);
+    if (!placed && m_placingPane) placed = addTab(createSessionPane(m_session, id), -1);
+    m_placingPane.reset();
+    sendSessionLayout();
+    return placed;
 }
 
 QString TerminalWindow::breakOutOfSession(Pane* pane, bool wholeTab, QString* session)

@@ -183,8 +183,23 @@ protected:
     /// @p binary is the afterglow to run, by default the one of the build.
     Result mux(const std::vector<std::string>& args, const std::string& binary = AFTERGLOW_BINARY) const
     {
-        std::vector<std::string> argv{binary, "mux"};
-        argv.insert(argv.end(), args.begin(), args.end());
+        std::vector<std::string> words{"mux"};
+        words.insert(words.end(), args.begin(), args.end());
+        return run(words, binary);
+    }
+
+    /// `afterglow ctl ARGS` in the test's environment.
+    Result ctl(const std::vector<std::string>& args) const
+    {
+        std::vector<std::string> words{"ctl"};
+        words.insert(words.end(), args.begin(), args.end());
+        return run(words, AFTERGLOW_BINARY);
+    }
+
+    Result run(const std::vector<std::string>& words, const std::string& binary) const
+    {
+        std::vector<std::string> argv{binary};
+        argv.insert(argv.end(), words.begin(), words.end());
         std::vector<char*> argp;
         for (const auto& a : argv) argp.push_back(const_cast<char*>(a.c_str()));
         argp.push_back(nullptr);
@@ -419,6 +434,55 @@ TEST_F(MuxCommandTest, DetachInASessionPaneFindsTheSessionOfThePane)
     const Result bad = mux({"detach"});
     EXPECT_EQ(bad.status, 1);
     EXPECT_EQ(bad.err, "afterglow mux detach: AFTERGLOW_PANE_ID names no pane of the mux daemon\n");
+}
+
+// `afterglow ctl --session` acts on a session that no window shows, with the
+// daemon's pane IDs; so does `afterglow ctl` in a pane of the session.
+TEST_F(MuxCommandTest, CtlActsOnASessionWithoutAWindow)
+{
+    ASSERT_EQ(::mkdir((m_dir + "/config/afterglow").c_str(), 0700), 0);
+    {
+        std::ofstream config(m_dir + "/config/afterglow/config.json");
+        config << R"({"Control": {"allowReadText": true}, "Terminal": {"shell": "/bin/sh"}})";
+    }
+    std::vector<std::string> args{"new", "--detach", "--name", "work", "--", "sh", "-c",
+                                  "echo hel''lo; while kill -0 " + std::to_string(::getpid()) + " 2>/dev/null; do sleep 0.2; done"};
+    ASSERT_EQ(mux(args).status, 0);
+
+    const Result listed = ctl({"--session", "work", "ls"});
+    EXPECT_EQ(listed.status, 0) << listed.err;
+    // The first pane of the daemon, focused.
+    EXPECT_NE(listed.out.find("\n1*"), std::string::npos) << listed.out;
+    EXPECT_TRUE(waitFor([&] { return ctl({"--session", "work", "get-text"}).out.find("hello") != std::string::npos; }));
+    const Result split = ctl({"--session", "work", "split", "--down"});
+    EXPECT_EQ(split.status, 0) << split.err;
+    EXPECT_EQ(split.out, "2\n");
+    const Result json = ctl({"--session", "work", "ls", "--json"});
+    EXPECT_NE(json.out.find("\"id\": 2"), std::string::npos) << json.out;
+    EXPECT_NE(json.out.find("\"focused\": true"), std::string::npos) << json.out;
+
+    // What only a window does, a session without one refuses.
+    const Result titled = ctl({"--session", "work", "set-title", "t"});
+    EXPECT_EQ(titled.status, 1);
+    EXPECT_EQ(titled.err, "afterglow ctl: no window shows session 'work', and only a window can do setTitle\n");
+    const Result none = ctl({"--session", "nope", "ls"});
+    EXPECT_EQ(none.status, 1);
+    EXPECT_EQ(none.err, "afterglow ctl: no session named 'nope'\n");
+    EXPECT_EQ(ctl({"--session", "bad name", "ls"}).status, 2);
+
+    // In a pane of the session: its AFTERGLOW_SOCKET names the daemon, and a
+    // stale AFTERGLOW_SESSION changes nothing.
+    m_environment.push_back("AFTERGLOW_SOCKET=" + runtime() + "/afterglow-mux/socket");
+    m_environment.push_back("AFTERGLOW_SESSION=before");
+    m_environment.push_back("AFTERGLOW_PANE_ID=2");
+    const Result inPane = ctl({"ls", "--json"});
+    EXPECT_EQ(inPane.status, 0) << inPane.err;
+    EXPECT_NE(inPane.out.find("\"id\": 1"), std::string::npos) << inPane.out;
+    EXPECT_NE(inPane.out.find("\"id\": 2"), std::string::npos) << inPane.out;
+    const Result closed = ctl({"close"});
+    EXPECT_EQ(closed.status, 0) << closed.err;
+    const Result one = ctl({"--session", "work", "ls", "--json"});
+    EXPECT_EQ(one.out.find("\"id\": 2"), std::string::npos) << one.out;
 }
 
 // A platform other than Wayland, which afterglow would refuse after the

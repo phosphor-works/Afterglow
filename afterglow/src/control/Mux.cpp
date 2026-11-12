@@ -598,6 +598,7 @@ int newSession(int argc, char** argv, const std::string& command = "new")
     session.size = {settings.window.initialColumns, settings.window.initialRows, 0, 0};
     session.terminal = settings.terminal;
     session.notificationCapabilities = NotificationCenter::capabilities();
+    session.control = {settings.control.enabled, settings.control.allowReadText};
 
     std::string error;
     Reached reached = connectOrStart(sockets, &error);

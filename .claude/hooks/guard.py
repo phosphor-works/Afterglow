@@ -201,7 +201,8 @@ MSG_CTL = (
     'instance.'
 )
 MSG_MUX = (
-    "`afterglow mux`, `afterglow-mux` and `afterglow --mux-attach` reach the user's mux daemon, which holds the user's "
+    "`afterglow mux`, `afterglow ctl --session`, `afterglow-mux` and `afterglow --mux-attach` reach the user's mux "
+    "daemon, which holds the user's "
     'terminal sessions. The daemon listens in $XDG_RUNTIME_DIR/afterglow-mux and in $XDG_STATE_HOME/afterglow-mux '
     '(else ~/.local/state/afterglow-mux), and with the runtime directory /run/user/UID it starts in the systemd user '
     'unit afterglow-mux.service. These sockets do not depend on the display, so WAYLAND_DISPLAY does not isolate them. '
@@ -971,8 +972,11 @@ def reaches_mux(wrappers, word, args):
     prints the usage, and so do afterglow mux server --help and afterglow-mux with one of MUX_DAEMON_PRINTS, unless
     xargs or parallel adds the words of its input. Any other afterglow-mux counts, and so does afterglow
     --mux-attach, the hidden option of afterglow mux new and attach: its window attaches to the user's daemon
-    whatever display it opens on."""
+    whatever display it opens on, and afterglow ctl --session, which acts on a session through the daemon whatever
+    AFTERGLOW_SOCKET names."""
     appended = appends(wrappers)
+    if (word == 'afterglow' or '$' in word or '`' in word) and args[:1] == ['ctl'] and args[1:2] == ['--session']:
+        return not isolated_mux(wrappers)
     if (word == 'afterglow' or '$' in word or '`' in word) and any(
             a == '--mux-attach' or a.startswith('--mux-attach=') for a in args):
         return not isolated_mux(wrappers)
@@ -1210,6 +1214,9 @@ def drives_instance(args, program='afterglow', appended=False):
     if args[:1] not in ((['ctl'], ['run']) if program == 'afterglow' else (['run'],)):
         return False
     if args[:1] == ['ctl']:
+        # --session goes to the mux daemon, whatever AFTERGLOW_SOCKET names: reaches_mux decides.
+        if args[1:2] == ['--session']:
+            return False
         return args[1:2] not in (['-h'], ['--help']) and (len(args) > 1 or appended)
     k = 1
     while k < len(args) and args[k].startswith('-') and args[k] != '--':

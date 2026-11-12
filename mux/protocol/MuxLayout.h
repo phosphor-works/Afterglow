@@ -57,6 +57,10 @@ struct LayoutTab
     bool operator==(const LayoutTab&) const = default;
 };
 
+/// Where a pane goes beside another one (`afterglow ctl split` and
+/// `move-pane`).
+enum class Side : std::uint8_t { Right, Down, Left, Up };
+
 struct Layout
 {
     std::vector<LayoutTab> tabs;
@@ -78,6 +82,19 @@ struct Layout
     /// lacks as a tab of its own: a window's layout that a pane's exit
     /// passed, or that came before a new pane.
     void reconcile(const std::vector<std::uint32_t>& live);
+
+    /// The tab that holds @p pane.
+    std::optional<std::size_t> tabOf(std::uint32_t pane) const;
+    /// Puts @p added on @p side of @p target, in half of its room, with the
+    /// focus, as a window splits a pane. @p added is in no tab. False when
+    /// no tab holds @p target.
+    bool split(std::uint32_t target, std::uint32_t added, Side side);
+    /// A tab with @p added alone, after the tab of @p beside (after the last
+    /// when no tab holds it), which shows, as a window opens a tab.
+    void insertTab(std::uint32_t added, std::uint32_t beside);
+    /// The tab of @p pane shows, with @p pane focused. False when no tab
+    /// holds it.
+    bool focus(std::uint32_t pane);
 };
 
 AfterglowProto::Json::Value toJson(const Layout& layout);

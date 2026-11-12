@@ -89,14 +89,16 @@ TEST(MuxDaemon, RefusesBadCalls)
     EXPECT_EQ(names(daemon.sessions()), std::vector<std::string>{"keep"});
 }
 
-// A session pane's AFTERGLOW_SOCKET names the daemon: `afterglow ctl` and
-// `aglow run` there get an answer that says why they cannot act.
+// A session pane's AFTERGLOW_SOCKET names the daemon: `aglow run` there, and
+// a control client that selected no session, get an answer that says why
+// they cannot act (MuxControl.* for one that selected a session).
 TEST(MuxDaemon, ControlAndCommandCallsFailWithAReason)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    const std::string message = "a session pane takes no control calls: the mux daemon answers only mux calls";
-    for (const std::string target : {"control", AfterglowProto::Run::Target}) {
+    for (const auto& [target, message] : std::vector<std::pair<std::string, std::string>>{
+             {"control", "no session is selected: afterglow ctl --session NAME, or afterglow ctl in a session pane, selects one"},
+             {AfterglowProto::Run::Target, "a session pane takes no script commands: the mux daemon runs no scripts"}}) {
         SCOPED_TRACE(target);
         IpcConnection::Error error;
         EXPECT_FALSE(daemon.call("listPanes", {}, &error, target));

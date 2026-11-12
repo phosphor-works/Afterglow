@@ -131,6 +131,21 @@ public:
     /// for a path that is not UTF-8.
     std::string directory() const;
 
+    /// What `afterglow ctl ls` says of the pane.
+    struct Facts
+    {
+        std::string title;
+        /// The directory that the shell reported, else directory().
+        std::string directory;
+        std::string command; ///< the running command (OSC 133), empty at the prompt
+        PaneSize size;
+    };
+    /// Nothing while an image decodes: the reader thread has the terminal.
+    std::optional<Facts> facts() const;
+    /// The text of @p scope, for `afterglow ctl get-text`. Nothing while an
+    /// image decodes.
+    std::optional<std::string> text(AfterglowVt::Terminal::TextScope scope) const;
+
     /// The window that shows the pane, by Attachment::serial(), or 0 for
     /// none. The calls of its terminal to its host (MuxHost.h) wait for that
     /// window, up to @p queueBytes with their Host::CallCost: Mux.eventQueue.

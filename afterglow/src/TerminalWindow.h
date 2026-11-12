@@ -264,6 +264,13 @@ public:
     /// it here: a drag out of the window. @p session gets the name of the
     /// new session, which a new window then shows. Empty, else why not.
     QString breakOutOfSession(Pane* pane, bool wholeTab, QString* session);
+    /// Shows pane @p id of the session, which the daemon started for
+    /// `afterglow ctl split` or `new-tab`: on @p side of @p beside, else in a
+    /// tab after its tab. A split without room becomes a tab. Then the window
+    /// sends its layout.
+    Pane* placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side);
+    /// The session pane of this window that shows pane @p id of the daemon.
+    Pane* sessionPane(std::uint32_t id) const;
     bool swapPane(Pane* pane, SplitTree::Neighbour direction);
     bool rotatePanes(bool clockwise);
     /// The pane overview: every tab's panes as live cards, drawn by Shaders.overview.
@@ -1356,6 +1363,9 @@ private:
     /// Panes close because they went to another session: their programs
     /// run on (breakOutOfSession).
     bool m_breakingOut = false;
+    /// The pane that the daemon started, which the next createPane shows
+    /// (placeSessionPane).
+    std::optional<std::uint32_t> m_placingPane;
     /// What the window's close ends of its session, when not Mux.onClose.
     std::optional<MuxRelease> m_windowRelease;
     bool m_pointerHidden = false; ///< hidden while typing
