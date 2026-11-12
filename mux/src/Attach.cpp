@@ -169,7 +169,7 @@ void Attachment::flushEvents()
     }
 }
 
-void Attachment::sendHostCalls(MuxPane& pane)
+void Attachment::sendHostCalls(const PaneLink& link, MuxPane& pane)
 {
     if (m_waitingBytes >= m_eventQueue) return;
     for (std::string& encoded : pane.takeHostCalls(m_serial, m_eventQueue - m_waitingBytes)) {
@@ -177,6 +177,7 @@ void Attachment::sendHostCalls(MuxPane& pane)
         Attach::Event host;
         host.type = Attach::EventType::Host;
         host.pane = pane.id();
+        host.frames = link.frames;
         for (std::size_t at = 0; at < call->size() || at == 0; at += Attach::HostPartBytes) {
             const bool last = call->size() - at <= Attach::HostPartBytes;
             host.payload.assign(*call, at, Attach::HostPartBytes);
@@ -194,6 +195,18 @@ void Attachment::returnHostCalls(Session* session, bool windowGone)
         if (!it->call) {
             ++it;
             continue;
+        }
+        // The calls of a pane whose program exited still go to a window that
+        // stays: they go before its last frames and its PaneClosed, which
+        // the finish waits for, and no pane of the session answers them. A
+        // pane without a link is one of those: only a linked pane sends
+        // calls, and its link goes once its PaneClosed waits behind them.
+        if (!windowGone) {
+            const auto link = m_panes.find(it->pane);
+            if (link == m_panes.end() || link->second.closed) {
+                ++it;
+                continue;
+            }
         }
         // The parts of one call wait in a row. One that got its answer here
         // already gets no second.
@@ -395,6 +408,7 @@ bool Attachment::sendFrame(PaneLink& l, MuxPane& pane)
             m_failed = true;
             return false;
         }
+        ++l.frames;
     }
     // The first frame of a pane carries everything; later ones what
     // changed, and the history that waits.
@@ -421,6 +435,7 @@ bool Attachment::sendFrame(PaneLink& l, MuxPane& pane)
             m_failed = true;
             return false;
         }
+        ++l.frames;
     }
     return !l.state.pending();
 }
@@ -444,7 +459,7 @@ void Attachment::pump(Session* session)
             // bell after the text that rang it. The window reads the frames of
             // a pane before it makes a call of it. What does not fit the queue
             // waits in the pane.
-            if (l->started && l->waiting.empty() && !l->deferred) sendHostCalls(*pane);
+            if (l->started && l->waiting.empty() && !l->deferred) sendHostCalls(*l, *pane);
             if (m_failed) return;
         }
     }
@@ -464,7 +479,7 @@ void Attachment::pump(Session* session)
         }
         // The calls that the program made before it exited, after its last
         // frame and before PaneClosed.
-        sendHostCalls(*l.closed);
+        sendHostCalls(l, *l.closed);
         if (m_failed) return;
         if (l.closed->hasHostCalls(m_serial)) {
             ++it;

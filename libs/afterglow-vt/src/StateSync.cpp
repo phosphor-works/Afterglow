@@ -582,6 +582,11 @@ bool StateWriter::pending() const
         || m_imagesPending;
 }
 
+bool StateWriter::rowsPending() const
+{
+    return m_screens[0].rowsPending || m_screens[1].rowsPending;
+}
+
 namespace {
 bool sendable(const Image& image);
 } // namespace

@@ -1000,7 +1000,9 @@ bool Pane::sendReply(std::string_view bytes)
 
 bool Pane::hasProgram() const
 {
-    return m_session ? !m_sessionGone : m_pty != nullptr;
+    // A session that no longer shows takes no input, also while the rest of
+    // the pane's exit is on its way: a reply then reports no failure.
+    return m_session ? !m_sessionGone && m_session->showing() : m_pty != nullptr;
 }
 
 bool Pane::writeProgram(std::string_view bytes)

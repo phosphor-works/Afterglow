@@ -55,9 +55,9 @@ namespace AfterglowMux {
 class MuxPane final : public AfterglowVt::ITerminalHost, public AfterglowPty::IPtyListener
 {
 public:
-    /// @p wake runs when the program exits, after output, a resize, a reset
-    /// or a clear once takeChanged() took the change before it, when
-    /// a host call waits for the window and none waited before, when the
+    /// @p wake runs when the program exits, after output, a resize, a reset,
+    /// a clear or a host call once takeChanged() took the change before it,
+    /// when a host call waits for the window and none waited before, when the
     /// PTY's input queue has room again after it refused input, or takes no
     /// more input, and at the end of a feed that made the changes and wrote
     /// the input that waited for its decode. The reader thread runs it for
@@ -77,7 +77,7 @@ public:
     bool start(AfterglowPty::SpawnOptions options, std::string launchedProgram, std::string* error);
     /// The wait status of the program, once exited().
     int exitStatus() const { return m_exitStatus.load(); }
-    /// Whether output came since the last call. No call, as while no window
+    /// Whether output or a host call came since the last call. No call, as while no window
     /// is attached, wakes the daemon no more: the next window's first frame
     /// carries everything.
     bool takeChanged() { return m_changed.exchange(false); }
@@ -139,12 +139,14 @@ public:
     /// command again. The calls that wait for a window that goes get
     /// answerWithoutWindow().
     void setWindow(std::uint64_t window, std::size_t queueBytes);
-    /// The calls that wait for @p window, encoded, oldest first: as many as
-    /// fit @p budget bytes with their Host::CallCost, and at least one. None
-    /// while the pane waits for another window.
+    /// The calls that wait for @p window, encoded, oldest first: those pushed
+    /// before the last frame() that left no rows of the screen pending, as
+    /// many as fit @p budget bytes with their Host::CallCost, and at least
+    /// one of them. None while the pane waits for another window.
     std::vector<std::string> takeHostCalls(std::uint64_t window, std::size_t budget);
-    /// Calls wait for @p window. Those of another window, which the pane's
-    /// program left as it exited, never go: they do not count.
+    /// Calls that takeHostCalls() takes wait for @p window. Those of another
+    /// window, which the pane's program left as it exited, never go: they do
+    /// not count.
     bool hasHostCalls(std::uint64_t window) const;
     /// Answers @p encoded, a call that its window did not get, as a pane that
     /// no window shows: a request gets its denial, a report goes to the
@@ -230,6 +232,7 @@ private:
         std::string encoded;
         std::string name; ///< UserVar
         std::size_t cost = 0; ///< what it counts in m_hostBytes
+        std::uint64_t number = 0; ///< its place among the pushes, from 1
     };
     /// Whether a call that does not fit Mux.eventQueue waits all the same:
     /// the end of a start that went, as the terminal of a window never drops
@@ -265,6 +268,10 @@ private:
     std::size_t m_hostLimit = 0;
     std::deque<WaitingCall> m_hostCalls;
     std::size_t m_hostBytes = 0;
+    /// The calls pushed so far, and those pushed before the last frame whose
+    /// screen was whole: takeHostCalls() takes only these.
+    std::uint64_t m_pushed = 0;
+    std::uint64_t m_framed = 0;
     bool m_bellWaiting = false;
     bool m_flashWaiting = false;
     bool m_pointerWaiting = false;

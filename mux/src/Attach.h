@@ -122,6 +122,7 @@ private:
         std::string waiting; ///< a frame that the channel refused
         bool started = false; ///< the first frame went
         bool deferred = false; ///< the last frame waits for a decode: the host calls after it wait too
+        std::uint64_t frames = 0; ///< the frames written on the channel, which each host call names
         std::unique_ptr<MuxPane> closed; ///< the pane once its program exited
     };
 
@@ -135,8 +136,9 @@ private:
     /// refused frame, no change and no history.
     bool sendFrame(PaneLink& link, MuxPane& pane);
     /// Sends the host calls of @p pane that fit the queue, in parts when a
-    /// call is larger than one frame (Attach::HostPartBytes).
-    void sendHostCalls(MuxPane& pane);
+    /// call is larger than one frame (Attach::HostPartBytes), each with the
+    /// frames that @p link wrote before it.
+    void sendHostCalls(const PaneLink& link, MuxPane& pane);
     /// @p call: the host call that the event holds or holds a part of.
     void sendEvent(const Attach::Event& event, std::shared_ptr<const std::string> call = {});
     void flushEvents();

@@ -116,6 +116,10 @@ public:
     /// Visible or history rows, or the pixels, records, placements or
     /// dropped frames of images, that wait for a later frame.
     bool pending() const;
+    /// The rows of the screens that wait for a later frame: pending()
+    /// without history and images, which a program that floods its pane
+    /// keeps waiting while it writes.
+    bool rowsPending() const;
 
 private:
     struct ScreenState
