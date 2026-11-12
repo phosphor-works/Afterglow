@@ -369,6 +369,7 @@ Json::Value toJson(const SessionOptions& o)
         {"size", toJson(o.size)},
         {"terminal", toJson(o.terminal)},
         {"notificationCapabilities", o.notificationCapabilities},
+        {"control", Json::Object{{"enabled", o.control.enabled}, {"allowReadText", o.control.allowReadText}}},
     };
 }
 
@@ -392,6 +393,13 @@ std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::stri
     if (const Json::Value* terminal = r.lookup("terminal")) readTerminal(r, *terminal, o.terminal);
     else r.fail("terminal", "is missing");
     r.string("notificationCapabilities", o.notificationCapabilities);
+    if (const Json::Value* control = r.get("control", Json::Value::Type::Object)) {
+        Reader c = r.nested(*control, "control");
+        c.boolean("enabled", o.control.enabled);
+        c.boolean("allowReadText", o.control.allowReadText);
+        c.noOtherKeys();
+        r.absorb(c);
+    }
     r.noOtherKeys();
     if (r.failed()) return std::nullopt;
     return o;

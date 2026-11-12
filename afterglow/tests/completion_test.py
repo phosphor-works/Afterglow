@@ -528,7 +528,13 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     yield from run_cases('afterglow', run)
     yield from mux_cases(*mux)
     yield 'afterglow ctl ', set(ctl_commands)
-    yield 'afterglow ctl -', {'-h', '--help'}
+    yield 'afterglow ctl -', {'-h', '--help', '--session'}
+    # The name of a session, which nothing lists, then the command.
+    yield 'afterglow ctl --session ', set()
+    yield 'afterglow ctl --session work ', set(ctl_commands)
+    yield 'afterglow ctl --session work -', {'-h', '--help'}
+    yield 'afterglow ctl --session work ls ', {'--json'}
+    yield 'afterglow ctl --session work focus ', {'--pane'}
     yield 'afterglow ctl ls ', {'--json'}
     yield 'afterglow ctl ls --json ', set()
     for command in ctl_commands:

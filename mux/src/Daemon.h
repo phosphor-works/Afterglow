@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <memory>
 #include <string>
@@ -69,8 +70,9 @@ public:
 private:
     void accept();
     void read(AfterglowProto::IpcServerConnection& connection);
-    /// @p caller is the process of the client, 0 when unknown.
-    std::string answer(const AfterglowProto::IpcRequest& request, pid_t caller);
+    /// @p caller is the process of the client, 0 when unknown. Empty when
+    /// the answer comes later: a window gives it (answerForwarded()).
+    std::string answer(const AfterglowProto::IpcRequest& request, pid_t caller, AfterglowProto::IpcServerConnection& connection);
     std::string newSession(const AfterglowProto::IpcRequest& request);
     std::string killSession(const AfterglowProto::IpcRequest& request);
     std::string attach(const AfterglowProto::IpcRequest& request, pid_t caller);
@@ -80,6 +82,31 @@ private:
     std::string paneJob(const AfterglowProto::IpcRequest& request, pid_t caller);
     std::string breakOut(const AfterglowProto::IpcRequest& request);
     std::string paneSession(const AfterglowProto::IpcRequest& request);
+    /// Moves the panes of @p layout out of @p from to a new session that
+    /// keeps that layout: its name, or nothing with @p error.
+    std::optional<std::string> breakOutPanes(Session& from, Layout layout, std::string* error);
+
+    // The control target (`afterglow ctl` for a session), in DaemonControl.cpp.
+    /// selectSession and selectPane: the session that the control calls of
+    /// @p connection act on.
+    std::string select(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection);
+    /// A call of the control target, for the session that @p connection
+    /// selected. Empty when a window answers it later.
+    std::string control(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection, pid_t caller);
+    /// Passes @p request to the window that shows @p session, with @p args in
+    /// place of its own. Empty: its answer comes later. Without a window, the
+    /// error that says so.
+    std::string forward(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection, Session& session,
+                        const AfterglowProto::Json::Array& args);
+    /// Tells the window that shows @p session of a change that the daemon
+    /// made (a pane to place, a focus): no answer comes.
+    void tellWindow(const Session& session, const std::string& fn, AfterglowProto::Json::Array args);
+    /// Sends the answers that windows gave to the calls passed to them, and
+    /// fails those whose window went.
+    void answerForwarded();
+    /// The connection closed: its selection and the calls that wait for a
+    /// window go.
+    void forget(const AfterglowProto::IpcServerConnection* connection);
     /// What a pane runs when it has news for the daemon's thread: it wakes
     /// the poll. Safe to call from any thread.
     std::function<void()> waker() const;
@@ -123,6 +150,19 @@ private:
     /// attachment holds no session: it may outlive its session.
     std::vector<std::unique_ptr<Attachment>> m_attachments;
     std::uint32_t m_nextPane = 1;
+    /// The session that the control calls of each connection act on.
+    std::map<const AfterglowProto::IpcServerConnection*, std::string> m_selected;
+    /// The control calls that wait for the answer of a window, by the ID of
+    /// their Control event.
+    struct Forward
+    {
+        AfterglowProto::IpcServerConnection* connection = nullptr;
+        std::optional<std::int64_t> request;
+        std::uint64_t window = 0; ///< Attachment::serial()
+        std::string session;
+    };
+    std::map<std::uint64_t, Forward> m_forwards;
+    std::uint64_t m_nextForward = 1;
     /// The number of the next session without a name of its client.
     std::uint64_t m_nextName = 1;
     /// A session was created. Before that, the daemon waits for one for

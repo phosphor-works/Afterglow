@@ -23,7 +23,7 @@ std::string encode(const Event& event)
     if (event.type == EventType::Host) {
         varint(out, event.frames);
         out += event.payload;
-    } else if (event.type == EventType::Layout) {
+    } else if (event.type == EventType::Layout || event.type == EventType::Control) {
         out += event.payload;
     }
     return out;
@@ -41,10 +41,10 @@ std::optional<Event> decodeEvent(std::string_view frame)
     if (type == std::uint8_t(EventType::Host) && r.ok()) {
         event.frames = r.varint(~std::uint64_t(0));
         if (r.ok()) event.payload = std::string(r.rest());
-    } else if (type == std::uint8_t(EventType::Layout) && r.ok()) {
+    } else if ((type == std::uint8_t(EventType::Layout) || type == std::uint8_t(EventType::Control)) && r.ok()) {
         event.payload = std::string(r.rest());
     }
-    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Layout)) {
+    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Control)) {
         return std::nullopt;
     }
     event.type = EventType(type);
@@ -63,7 +63,7 @@ std::string encode(const Input& input)
 {
     std::string out(1, char(input.type));
     varint(out, input.pane);
-    if (input.type == InputType::Bytes || input.type == InputType::Layout) {
+    if (input.type == InputType::Bytes || input.type == InputType::Layout || input.type == InputType::ControlReply) {
         out += input.bytes;
     } else if (input.type == InputType::Resize) {
         for (const int v : {input.size.cols, input.size.rows, input.size.cellWidth, input.size.cellHeight}) {
@@ -82,7 +82,7 @@ std::optional<Input> decodeInput(std::string_view frame)
     const std::uint8_t type = r.byte();
     input.pane = std::uint32_t(r.varint(0xffffffffu));
     if (!r.ok()) return std::nullopt;
-    if (type == std::uint8_t(InputType::Bytes) || type == std::uint8_t(InputType::Layout)) {
+    if (type == std::uint8_t(InputType::Bytes) || type == std::uint8_t(InputType::Layout) || type == std::uint8_t(InputType::ControlReply)) {
         input.type = InputType(type);
         input.bytes = std::string(r.rest());
         return input;

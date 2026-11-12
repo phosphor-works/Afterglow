@@ -329,18 +329,36 @@ When `Colors.theme` names a dark and a light theme, the session gets the dark th
 With a `plasma` theme, the session gets only the colors that `kdeglobals` sets, over the theme.
 When `kdeglobals` sets no background, `plasma` alone takes `afterglow-dark`.
 
-### Control in a session pane
+### Control of a session
 
-The control socket of a window that shows a session lists the session panes, and acts on them as on the panes of other windows.
-Text that `afterglow ctl send-text` sends to it goes to the program of the session.
-A session that no window shows has no pane in a window, and no control socket of a window lists its panes.
+`afterglow ctl --session NAME COMMAND` acts on session `NAME` through the daemon, also while no window shows the session.
+In a session pane, `afterglow ctl COMMAND` acts on the session that holds that pane, through `AFTERGLOW_SOCKET` and `AFTERGLOW_PANE_ID`.
+The pane IDs are those of the daemon, in `AFTERGLOW_PANE_ID` of each session pane. They stay the same when another window shows the session.
+Without `--pane`, a command acts on the pane that has the focus in the tab that shows.
+
+The control socket of a window that shows a session also lists the session panes, with the pane IDs of that window, and acts on them as on the panes of other windows.
 A pane ID in the daemon and a pane ID in a window can have the same value.
 
-In a session pane, `afterglow ctl`, `aglow run` and `afterglow ssh` connect to the daemon through `AFTERGLOW_SOCKET`.
-The daemon answers each call and each subscription to the `control` and `commands` targets with the error `CALL_FAILED`, also while a window shows the session.
-The message is `a session pane takes no control calls: the mux daemon answers only mux calls`.
-Thus `afterglow ctl`, `afterglow ctl watch` and `aglow run` fail with that message.
-`afterglow ssh` connects without [remote commands](CONTROL.md#remote-commands). With `-v`, it writes that message as the reason.
+The daemon follows `Control.enabled` and `Control.allowReadText` as `afterglow mux new` found them.
+A later change of them does not change a running session.
+A window that answers a command follows its own settings too.
+
+| Command | No window shows the session | A window shows the session |
+| --- | --- | --- |
+| `ls`, `send-text`, `get-text` (screen, scrollback and last output), `close` | The daemon acts | The daemon acts |
+| `split`, `new-tab` | The daemon starts the program and keeps the pane in its layout | The daemon starts the program, and the window shows the pane beside the first one |
+| `focus` | The daemon keeps the focus for the next window | The window focuses the pane |
+| `move-pane`, `detach-tab` | The daemon moves the pane in its layout. A move to a new window makes a new session, as a [drag out](#tabs-and-splits) does, which no window shows. | The window moves the pane, as a drag in the window does |
+| `get-text --selection` | Empty: only a window has a selection | The window answers |
+| `set-title`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
+| `overlay`, `screenshot`, `watch` | Refused with `CALL is not available for a session yet` | Refused the same way |
+
+For `split` and `new-tab`, `afterglow ctl` prepares the program with your settings, as `afterglow mux new` does: `Terminal.shell`, shell integration and `Terminal.env`, over the environment of the session.
+Without `--cwd`, a new tab or split starts in the directory of its pane, or where `Window.workingDirectory` says.
+`new-window` opens a window outside the session in the Afterglow of the window, and prints the ID of its pane there.
+
+In a session pane, `aglow run` gets the error `CALL_FAILED` with the message `a session pane takes no script commands: the mux daemon runs no scripts`.
+`afterglow ssh` connects without [remote commands](CONTROL.md#remote-commands). With `-v`, it writes `a session pane takes no remote commands: the mux daemon runs no scripts` as the reason.
 
 ## What the daemon answers
 

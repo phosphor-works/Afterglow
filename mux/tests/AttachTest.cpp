@@ -19,6 +19,7 @@
 #include <PhosphorChannel/Stream.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -1809,4 +1810,210 @@ TEST(MuxAttach, BreakOutRefusesBadCalls)
     }
     EXPECT_EQ(sessionNamed(daemon, "s")->panes, 2);
     EXPECT_EQ(names(daemon.sessions()), before);
+}
+
+namespace {
+
+/// A client of the daemon's control target, as `afterglow ctl --session`
+/// speaks it: one connection, which selects its session first.
+struct ControlClient
+{
+    explicit ControlClient(TestDaemon& daemon)
+    {
+        IpcConnection::Error error;
+        if (!connection.connect(daemon.socket(), &error, 2000)) ADD_FAILURE() << "no connection: " << error.message;
+    }
+    /// Empty on success, else the error code.
+    std::string select(const std::string& name)
+    {
+        return call(Fn::SelectSession, Json::Array{ProtocolVersion, name}, Target).has_value() ? std::string() : error.code;
+    }
+    std::optional<Json::Value> call(const std::string& fn, Json::Array args, const std::string& target = "control")
+    {
+        error = {};
+        return connection.call(target, fn, std::move(args), 5000, &error);
+    }
+    IpcConnection connection;
+    IpcConnection::Error error;
+};
+
+/// A session with a plain sh whose text `afterglow ctl get-text` may read.
+bool readableShell(TestDaemon& daemon, const std::string& name, bool readText = true)
+{
+    SessionOptions o = daemon.options({"/bin/sh"}, name);
+    o.launch.environment.emplace_back("PS1", "$ ");
+    o.launch.environment.emplace_back("ENV", "/dev/null");
+    o.control.allowReadText = readText;
+    return bool(daemon.newSession(o));
+}
+
+std::vector<std::uint32_t> paneIds(const Json::Value& panes)
+{
+    std::vector<std::uint32_t> ids;
+    for (const Json::Value& pane : panes.toArray()) ids.push_back(std::uint32_t(pane["id"].toInteger().value_or(0)));
+    return ids;
+}
+
+} // namespace
+
+TEST(MuxControl, ACallNeedsASelectedSession)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    EXPECT_FALSE(ctl.call("listPanes", {}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::CallFailed);
+    EXPECT_NE(ctl.error.message.find("no session is selected"), std::string::npos) << ctl.error.message;
+    EXPECT_EQ(ctl.select("none"), Error::NoSuchSession);
+    EXPECT_FALSE(ctl.call(Fn::SelectSession, Json::Array{ProtocolVersion - 1, "s"}, Target));
+    EXPECT_EQ(ctl.error.code, Error::VersionMismatch);
+    EXPECT_FALSE(ctl.call(Fn::SelectPane, Json::Array{ProtocolVersion, 9999}, Target));
+    EXPECT_EQ(ctl.error.code, Error::NoSuchPane);
+    // By a pane: the session that holds it.
+    const auto selected = ctl.call(Fn::SelectPane, Json::Array{ProtocolVersion, 2}, Target);
+    ASSERT_TRUE(selected) << ctl.error.message;
+    EXPECT_EQ((*selected)["name"].toString(), "s");
+    // `afterglow ssh` asks for remote commands: none in a session.
+    EXPECT_FALSE(ctl.call("remoteCommandsEnabled", {}));
+    EXPECT_NE(ctl.error.message.find("no remote commands"), std::string::npos) << ctl.error.message;
+}
+
+// While no window shows the session, the daemon answers the calls on its
+// panes, their text and their layout, with its own pane IDs.
+TEST(MuxControl, TheDaemonAnswersWithoutAWindow)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    const auto listed = ctl.call("listPanes", {});
+    ASSERT_TRUE(listed) << ctl.error.message;
+    ASSERT_EQ(listed->toArray().size(), 1u);
+    const std::uint32_t first = paneIds(*listed).front();
+    EXPECT_TRUE(listed->toArray()[0]["focused"].toBool());
+    EXPECT_EQ(listed->toArray()[0]["tab"].toInteger(), 0);
+    EXPECT_EQ(ctl.call("focusedPane", {})->toInteger(), first);
+    // Text in, text out. Pane 0 is the focused pane.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{0, "echo hel''lo\n"})) << ctl.error.message;
+    EXPECT_TRUE(waitFor([&] {
+        const auto text = ctl.call("getText", Json::Array{std::int64_t(first), "screen"});
+        return text && text->toString().find("\nhello") != std::string::npos;
+    }));
+    // A split takes the focus, and a tab shows.
+    const auto split = ctl.call("split", Json::Array{std::int64_t(first), "down", Json::Array{}});
+    ASSERT_TRUE(split) << ctl.error.message;
+    const auto tab = ctl.call("newTab", Json::Array{std::int64_t(first), "", Json::Array{}});
+    ASSERT_TRUE(tab) << ctl.error.message;
+    const auto three = ctl.call("listPanes", {});
+    EXPECT_EQ(paneIds(*three), (std::vector<std::uint32_t>{first, std::uint32_t(*split->toInteger()), std::uint32_t(*tab->toInteger())}));
+    EXPECT_EQ(three->toArray()[2]["tab"].toInteger(), 1);
+    EXPECT_EQ(ctl.call("focusedPane", {})->toInteger(), tab->toInteger());
+    ASSERT_TRUE(ctl.call("focus", Json::Array{std::int64_t(first)}));
+    EXPECT_EQ(ctl.call("focusedPane", {})->toInteger(), first);
+    // The split moves to a tab of its own, beside its tab.
+    const auto moved = ctl.call("movePane", Json::Array{*split, 0, "new-tab"});
+    ASSERT_TRUE(moved) << ctl.error.message;
+    EXPECT_EQ((*moved)["tab"].toInteger(), 1);
+    ASSERT_TRUE(ctl.call("close", Json::Array{*tab})) << ctl.error.message;
+    EXPECT_EQ(paneIds(*ctl.call("listPanes", {})), (std::vector<std::uint32_t>{first, std::uint32_t(*split->toInteger())}));
+    // The next window gets that layout.
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.opened.size() == 2; }));
+    ASSERT_EQ(w.layouts.size(), 1u);
+    EXPECT_EQ(w.layouts[0].tabs.size(), 2u);
+    // The tab that the move made shows, as in a window.
+    EXPECT_EQ(w.layouts[0].current, 1u);
+}
+
+TEST(MuxControl, TheSessionsControlSettingsApply)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "closed", false)) << daemon.lastError();
+    SessionOptions off = daemon.options(Waiting, "off");
+    off.control.enabled = false;
+    ASSERT_TRUE(daemon.newSession(off)) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("closed"), "");
+    EXPECT_FALSE(ctl.call("getText", Json::Array{0, "screen"}));
+    EXPECT_NE(ctl.error.message.find("Control.allowReadText"), std::string::npos) << ctl.error.message;
+    ASSERT_EQ(ctl.select("off"), "");
+    EXPECT_FALSE(ctl.call("listPanes", {}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::NoSuchTarget);
+}
+
+TEST(MuxControl, WhatOnlyAWindowDoesNeedsOne)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    EXPECT_FALSE(ctl.call("setTitle", Json::Array{0, "t"}));
+    EXPECT_NE(ctl.error.message.find("no window shows session 's'"), std::string::npos) << ctl.error.message;
+    EXPECT_FALSE(ctl.call("screenshot", Json::Array{0, "pane"}));
+    EXPECT_NE(ctl.error.message.find("not available for a session yet"), std::string::npos) << ctl.error.message;
+    EXPECT_FALSE(ctl.call("split", Json::Array{0, "right", Json::Array{"htop"}}));
+    EXPECT_NE(ctl.error.message.find("launch"), std::string::npos) << ctl.error.message;
+    EXPECT_FALSE(ctl.call("noSuchCall", {}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::NoSuchFn);
+}
+
+// While a window shows the session, the daemon places the panes that it
+// starts in that window, and passes it what only a window can answer.
+TEST(MuxControl, AWindowPlacesNewPanesAndAnswersWindowCalls)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    const auto split = ctl.call("split", Json::Array{std::int64_t(w.pane), "left", Json::Array{}});
+    ASSERT_TRUE(split) << ctl.error.message;
+    const auto controls = [&w] {
+        std::vector<Json::Value> calls;
+        for (const Attach::Event& e : w.events) {
+            if (e.type == Attach::EventType::Control) calls.push_back(*Json::parse(e.payload));
+        }
+        return calls;
+    };
+    ASSERT_TRUE(w.until([&] { return !controls().empty() && w.opened.size() == 2; }));
+    const Json::Value place = controls().front();
+    EXPECT_EQ(place["id"].toInteger(), 0);
+    EXPECT_EQ(place["fn"].toString(), "placePane");
+    EXPECT_EQ(Json::write(place["args"]), "[" + std::to_string(*split->toInteger()) + "," + std::to_string(w.pane) + ",\"left\"]");
+
+    // The window answers a title; the client waits for that answer.
+    std::optional<Json::Value> titled;
+    std::atomic<bool> answered{false};
+    std::thread caller([&] {
+        titled = ctl.call("setTitle", Json::Array{std::int64_t(w.pane), "work"});
+        answered = true;
+    });
+    ASSERT_TRUE(w.until([&] { return controls().size() == 2; }));
+    const Json::Value call = controls().back();
+    EXPECT_EQ(call["fn"].toString(), "setTitle");
+    EXPECT_EQ(Json::write(call["args"]), "[" + std::to_string(w.pane) + ",\"work\"]");
+    Attach::Input reply;
+    reply.type = Attach::InputType::ControlReply;
+    reply.bytes = Json::write(Json::Object{{"id", call["id"]}, {"result", "done"}});
+    EXPECT_TRUE(w.send(reply));
+    EXPECT_TRUE(w.until([&] { return answered.load(); }));
+    caller.join();
+    ASSERT_TRUE(titled) << ctl.error.message;
+    EXPECT_EQ(titled->toString(), "done");
+
+    // A window that goes before it answers: the client hears why.
+    std::thread waiting([&] { titled = ctl.call("notify", Json::Array{std::int64_t(w.pane), "t", "b"}); });
+    ASSERT_TRUE(w.until([&] { return controls().size() == 3; }));
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"s"})) << daemon.lastError();
+    waiting.join();
+    EXPECT_FALSE(titled);
+    EXPECT_NE(ctl.error.message.find("closed before it answered"), std::string::npos) << ctl.error.message;
 }

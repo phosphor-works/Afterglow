@@ -10,6 +10,7 @@
 #include "../chrome/ChromeLayer.h"
 #include "../desktop/DragDrop.h"
 #include "../mux/MuxClient.h"
+#include "../control/SessionControl.h"
 
 #include <QIcon>
 #include <QStandardPaths>
@@ -190,6 +191,14 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     auto* window = new TerminalWindow(m_services, options);
     if (!options.empty && !window->focusedPane()) { delete window; return nullptr; }
     m_control.attachWindow(window);
+    // `afterglow ctl` for the session: the calls that only this window can
+    // answer, which the daemon passes it.
+    if (options.session) {
+        options.session->setControlHandler([this, shown = QPointer<TerminalWindow>(window)](const QString& fn, const QJsonArray& args) {
+            if (!shown) return MuxClient::ControlAnswer{{}, QStringLiteral("the window of the session closed")};
+            return answerSessionCall(m_control, m_settings.settings(), *shown, fn, args);
+        });
+    }
     connect(window, &TerminalWindow::newWindowRequested, this,
             [this](const QString& cwd) { newWindow({cwd, {}, false, false, {}, false}); });
     connect(window, &QObject::destroyed, this, &Application::quitWhenNoWindowsRemain, Qt::QueuedConnection);

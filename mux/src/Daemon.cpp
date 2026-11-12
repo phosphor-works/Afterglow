@@ -266,12 +266,17 @@ Daemon::Exit Daemon::run()
             });
         }
         std::erase_if(m_attachments, [&over](const auto& a) { return std::find(over.begin(), over.end(), a.get()) != over.end(); });
+        // Before the reads below, whose calls may wait for these windows.
+        answerForwarded();
         pumpAttachments();
         syncAttached();
         for (std::size_t i = firstConnection; i < firstAttachment; ++i) {
             auto& connection = *m_connections[i - firstConnection];
             if (fds[i].revents & POLLOUT) connection.flush();
             if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) || connection.pending()) read(connection);
+        }
+        for (const auto& connection : m_connections) {
+            if (!connection->open()) forget(connection.get());
         }
         std::erase_if(m_connections, [](const auto& c) { return !c->open(); });
         // A call can start a pane, end one or move panes: the window that
@@ -308,23 +313,25 @@ void Daemon::read(IpcServerConnection& connection)
         if (next == IpcServerConnection::Read::Skipped) continue;
         std::string reply;
         try {
-            reply = answer(request, caller);
+            reply = answer(request, caller, connection);
         } catch (const std::exception& e) {
             // One call that fails (out of memory, no thread for a PTY) must
             // not end the sessions of all the others.
             reply = ipcError(request.id, IpcErrorCode::CallFailed, std::string("the call failed: ") + e.what());
         }
-        connection.send(std::move(reply));
+        // A window answers it later.
+        if (!reply.empty()) connection.send(std::move(reply));
     }
 }
 
-std::string Daemon::answer(const IpcRequest& request, pid_t caller)
+std::string Daemon::answer(const IpcRequest& request, pid_t caller, IpcServerConnection& connection)
 {
     // Before the type: a client of a session pane hears why, whatever it
-    // sends (`afterglow ctl` subscribes to events, for one).
-    if (request.target == ControlTarget || request.target == AfterglowProto::Run::Target) {
-        return ipcError(request.id, IpcErrorCode::CallFailed, "a session pane takes no control calls: the mux daemon answers only mux calls");
+    // sends (`aglow run` subscribes to its output, for one).
+    if (request.target == AfterglowProto::Run::Target) {
+        return ipcError(request.id, IpcErrorCode::CallFailed, "a session pane takes no script commands: the mux daemon runs no scripts");
     }
+    if (request.target == ControlTarget) return control(request, connection, caller);
     if (request.type != "call") {
         return ipcError(request.id, IpcErrorCode::MalformedRequest, "the mux daemon answers only calls, not '" + request.type + "'");
     }
@@ -344,6 +351,7 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller)
     if (request.fn == Fn::PaneJob) return paneJob(request, caller);
     if (request.fn == Fn::BreakOut) return breakOut(request);
     if (request.fn == Fn::PaneSession) return paneSession(request);
+    if (request.fn == Fn::SelectSession || request.fn == Fn::SelectPane) return select(request, connection);
     return ipcError(request.id, IpcErrorCode::NoSuchFn, "no function '" + request.fn + "' on target '" + request.target + "'");
 }
 
@@ -563,15 +571,23 @@ std::string Daemon::breakOut(const IpcRequest& request)
     for (const std::uint32_t id : ids) {
         if (!(*from)->pane(id)) return ipcError(request.id, Error::NoSuchPane, "session '" + name + "' has no pane " + std::to_string(id));
     }
-    if (ids.size() >= (*from)->panes().size()) {
-        return ipcError(request.id, IpcErrorCode::InvalidArg,
-                        "these are all the panes of session '" + name + "': a new session would only give them another name");
+    const auto fresh = breakOutPanes(**from, std::move(*layout), &error);
+    if (!fresh) return ipcError(request.id, IpcErrorCode::InvalidArg, error);
+    return ipcReply(request.id.value_or(0), Json::Object{{"name", *fresh}});
+}
+
+std::optional<std::string> Daemon::breakOutPanes(Session& from, Layout layout, std::string* error)
+{
+    const std::vector<std::uint32_t> ids = layout.panes();
+    if (ids.size() >= from.panes().size()) {
+        if (error) *error = "these are all the panes of session '" + from.name() + "': a new session would only give them another name";
+        return std::nullopt;
     }
     const std::string fresh = freeName();
-    auto session = std::make_unique<Session>(fresh, (*from)->options(), m_fileLimit, m_images);
-    Attachment* const attachment = shown(name);
+    auto session = std::make_unique<Session>(fresh, from.options(), m_fileLimit, m_images);
+    Attachment* const attachment = shown(from.name());
     for (const std::uint32_t id : ids) {
-        std::unique_ptr<MuxPane> pane = (*from)->take(id);
+        std::unique_ptr<MuxPane> pane = from.take(id);
         if (attachment) {
             guarded(*attachment, [&] {
                 attachment->paneRemoved(id, pane.get());
@@ -580,9 +596,9 @@ std::string Daemon::breakOut(const IpcRequest& request)
         }
         session->adopt(std::move(pane));
     }
-    session->setLayout(std::move(*layout));
+    session->setLayout(std::move(layout));
     m_sessions.push_back(std::move(session));
-    return ipcReply(request.id.value_or(0), Json::Object{{"name", fresh}});
+    return fresh;
 }
 
 std::string Daemon::paneSession(const IpcRequest& request)

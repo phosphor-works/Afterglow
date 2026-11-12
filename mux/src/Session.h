@@ -67,6 +67,9 @@ public:
     void adopt(std::unique_ptr<MuxPane> pane);
 
     const Layout& layout() const { return m_layout; }
+    /// For the calls of `afterglow ctl` that change the layout while no
+    /// window shows the session, or before the window sends its own.
+    Layout& layout() { return m_layout; }
     /// The layout that the window sent, with the panes of the session only:
     /// a pane that exited since the window sent it goes, and a pane that it
     /// does not name yet is a tab of its own (Layout::reconcile).
