@@ -17,6 +17,7 @@
 #include "shaders/ShaderControls.h"
 
 #include <AfterglowRender/GridRenderer.h>
+#include <AfterglowVt/Input.h>
 
 #include <QClipboard>
 #include <QDeadlineTimer>
@@ -214,6 +215,9 @@ public:
     /// How far the overlay of @p pane has faded in, 0 to 1, and whether the
     /// fade still runs. For the tests.
     std::pair<qreal, bool> overlayFade(const Pane* pane) const;
+    /// The pane whose link is under the pointer and underlined, or null. For
+    /// the tests.
+    const Pane* linkHoverPane() const { return m_hover.pane; }
     /// Draws a frame and reads it back as the window shows it, cut to
     /// @p scope around @p pane: shader packs, an overlay over the pane and
     /// the chrome over it are in the image. A translucent background stays
@@ -634,6 +638,9 @@ private:
         int key = 0;
         QString text;
         quint32 nativeScanCode = 0;
+        /// The terminal's name of the key at its press, which its release
+        /// keeps when Keybinds.remapModifiers changes in between.
+        AfterglowVt::Key terminalKey = AfterglowVt::Key::Text;
         std::uint64_t order = 0; ///< later presses have higher numbers
     };
     /// Presses that reached a pane's program, by physical key: the release
@@ -688,8 +695,9 @@ private:
     bool routePointerToChrome(QEvent* e, const QPointF& pos, bool press, bool release);
     void runSearch(const QString& query, int direction);
     /// Finds the link under the pointer while the link modifier is held and
-    /// underlines it. True when the link changed, which sets the pointer's shape.
-    bool updateLinkHover();
+    /// underlines it. True when the link changed, which sets the pointer's
+    /// shape. @p modifiers are an input event's, without one the keyboard's.
+    bool updateLinkHover(std::optional<Qt::KeyboardModifiers> modifiers = std::nullopt);
     /// The pointer for where it is: a link hand, the program's shape, or the default.
     void applyPointerShape();
     /// Shows @p pane for an assistive technology's action and lays its tab
@@ -765,8 +773,10 @@ private:
     /// The offset of the slide's frame now, with one pixel row on screen at least.
     int slideOffset() const;
     QMetaObject::Connection m_quickScreenWatch; ///< the quick terminal's screen changing size
-    /// Encodes @p e for @p pane (the focused pane's input pane when null) and sends it.
-    void sendKey(QKeyEvent* e, Pane* pane = nullptr);
+    /// Encodes @p e for @p pane (the focused pane's input pane when null) and
+    /// sends it. A release takes @p pressedAs, the terminal's name of the key
+    /// at its press.
+    void sendKey(QKeyEvent* e, Pane* pane = nullptr, std::optional<AfterglowVt::Key> pressedAs = std::nullopt);
     void paste(QClipboard::Mode mode);
     /// Pastes @p text into @p target, with the size limit and the question
     /// before an unsafe paste (Terminal.confirmUnsafePaste).
@@ -1186,6 +1196,9 @@ private:
         bool withOverview = false;
     };
     std::optional<ScriptKeyMode> m_scriptKeyMode;
+    /// While event() hands on a key event that Keybinds.remapModifiers made
+    /// again: the event as it came, for the ways out of a script key mode.
+    const QKeyEvent* m_physicalKeyEvent = nullptr;
     bool m_anyPaneAway = false; ///< this frame: some visible pane is not here
     bool m_paneEffectsAvailable = false; ///< Shaders.paneEffects compiled
     bool paneEffectsAllowed() const;
@@ -1287,8 +1300,13 @@ private:
     void openContextMenu(const QPointF& pos, const QString& link);
     /// Opens @p url with Links.openWith, or the desktop's handler.
     void openLink(const QString& url);
-    /// The link modifier (Links.modifier) is held, or none is needed.
-    bool linkModifierHeld() const;
+    /// The link modifier (Links.modifier) is in @p modifiers, or none is
+    /// needed. Without @p modifiers, the keyboard's as Keybinds.remapModifiers
+    /// makes them.
+    bool linkModifierHeld(std::optional<Qt::KeyboardModifiers> modifiers = std::nullopt) const;
+    /// The modifiers after the key of @p e, a key event that this window
+    /// handles now, remapped or as it came (modifiersAfter()).
+    Qt::KeyboardModifiers modifiersAfterKey(const QKeyEvent* e) const;
     QString m_menuLink; ///< the link the menu was opened on
     QStringList m_menuCommands; ///< the token of the command that menu id MenuScriptBase + i runs
     /// The pane the context menu was opened on: its items act on it, even

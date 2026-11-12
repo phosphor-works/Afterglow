@@ -1059,11 +1059,14 @@ In a script's own key mode, the `cancel_overlay` key still cancels the overlay o
 | Other keys | The lowercase Qt key name, such as `menu` |
 
 A modifier key alone does not reach `on_key`. It comes with the key that it changes, in `ctrl`, `shift`, `alt` and `meta`.
+`meta` is the Super key.
+With [`Keybinds.remapModifiers`](INPUT.md#remap-modifiers), these fields are the modifiers that the keys become.
 With Ctrl, `key` is the letter, and `text` is empty.
 Ignore the keys that the script does not use.
 `end_key_mode()` gives the keyboard back. It works also when the effect budget is spent.
 A handler error, disable, replacement or removal of the script also ends its key mode.
 The `end_script_key_mode` keybinding always ends a key mode. The default is Ctrl+Shift+Escape.
+With `Keybinds.remapModifiers`, it and `cancel_overlay` also match the modifiers on the keys.
 The script does not receive that key.
 Key releases are not reported.
 

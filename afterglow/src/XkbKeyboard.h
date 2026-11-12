@@ -35,6 +35,20 @@ public:
     /// The unshifted keysym in the active layout group, or 0 (XKB_KEY_NoSymbol)
     /// without a keymap. Remapped keys (caps:escape) report what they became.
     std::uint32_t keysym(std::uint32_t keycode) const;
+    /// The modifiers that stateWith() puts down.
+    struct HeldModifiers
+    {
+        bool shift = false;
+        bool control = false;
+        bool alt = false;
+        bool super = false;
+    };
+    /// The keyboard as it is now, with @p held in place of the Shift, Control,
+    /// Alt (Mod1) and Super (Mod4) that are down, latched or locked. The
+    /// layout, Caps Lock, Num Lock and the level keys (AltGr) stay. Null
+    /// without a keymap. The state is valid until the next call or the next
+    /// keymap.
+    xkb_state* stateWith(HeldModifiers held) const;
     bool capsLock() const;
     bool numLock() const;
 
@@ -54,6 +68,8 @@ private:
     xkb_context* m_context = nullptr;
     xkb_keymap* m_keymap = nullptr;
     xkb_state* m_state = nullptr;
+    /// stateWith()'s answer, kept from one call to the next.
+    mutable xkb_state* m_scratch = nullptr;
 };
 
 } // namespace Afterglow

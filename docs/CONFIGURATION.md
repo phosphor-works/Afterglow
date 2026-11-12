@@ -120,7 +120,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | --- | --- | --- | --- |
 | `bindings` | [default bindings](#default-bindings) |  | Map each action to a key combination or a list of them. An empty string removes the binding. Besides actions, the map can bind script:ID.COMMAND to run a script command, text:BYTES to send text and table:NAME to open a key table. |
 | `leader` | `""` |  | Key that Leader stands for in sequences. With an empty value, a binding that uses Leader is an error. |
-| `remapModifiers` | `""` |  | Modifiers that act as other modifiers, as in kitty, for example "ctrl:super super:ctrl" to swap Ctrl and Super. Each rule is a modifier, a colon and one or more modifiers joined by +, from shift, ctrl, alt and super. Key bindings, mouse actions and programs see the modifier that a key becomes. A value with an error remaps nothing. |
+| `remapModifiers` | `""` |  | Modifiers that act as other modifiers, as in Kitty. Each rule is a modifier, a colon and one or more modifiers joined by +, from shift, ctrl, alt and super. Spaces separate the rules. For example, ctrl:super super:ctrl swaps Ctrl and Super. Key bindings, the link modifier, mouse selection and programs see the modifier that a key becomes. Key bindings write super as Meta. QuickTerminal.shortcut and the desktop keep the modifiers of the keys. An empty value remaps nothing, and so does a value with an error. |
 | `sequenceTimeout` | `1000` | 100–10000 | Milliseconds before Afterglow cancels an incomplete sequence. |
 | `tableTimeout` | `5000` | 100–60000 | Idle milliseconds before leaving a key table. |
 | `tables` | `{}` |  | Named key tables, each a map of actions to keys as in bindings. A binding to table:NAME opens one. Its actions keep it open. The pop_key_table action leaves every open table, and so does Keybinds.tableTimeout. |
@@ -130,7 +130,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `detectUrls` | `true` |  | Detect plain-text URLs in addition to application-provided OSC 8 links. |
-| `modifier` | `"ctrl"` | `"ctrl"`, `"shift"`, `"alt"`, `"none"` | Modifier for link highlighting and activation. With none, a plain click opens the link. |
+| `modifier` | `"ctrl"` | `"ctrl"`, `"shift"`, `"alt"`, `"super"`, `"none"` | Modifier for link highlighting and activation. With none, a plain click opens the link. super is the key that key bindings call Meta. |
 | `openWith` | `""` |  | Command for opening links. Afterglow splits it into words, adds the URL as the last argument and runs it without a shell. Quotes keep spaces in one word. An empty value uses the desktop browser. |
 | `schemes` | `["http", "https", "mailto", "ftp", "file"]` |  | URL schemes that open without a prompt. Links with other schemes ask first. |
 

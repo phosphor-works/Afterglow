@@ -392,7 +392,8 @@ TEST(Themes, RejectsFilesWithoutColours)
 TEST(Themes, BundledThemesLoad)
 {
     const QStringList names = QDir(QStringLiteral(AFTERGLOW_THEME_DIR)).entryList({QStringLiteral("*.json")}, QDir::Files);
-    ASSERT_GE(names.size(), 33);
+    // CHANGELOG.md counts them.
+    ASSERT_EQ(names.size(), 33);
     for (const QString& file : names) {
         const QString name = QFileInfo(file).completeBaseName();
         const QString path = Themes::locate(name, {QStringLiteral(AFTERGLOW_THEME_DIR)});
@@ -422,65 +423,6 @@ TEST(Themes, BundledThemesLoad)
             EXPECT_TRUE(c.has_value()) << name.toStdString();
         }
     }
-}
-
-TEST(ModifierRemap, ReadsKittysRules)
-{
-    using M = Qt::KeyboardModifiers;
-    // A swap is two rules.
-    auto remap = ModifierRemap::parse(QStringLiteral("ctrl:super super:ctrl"));
-    ASSERT_TRUE(remap);
-    EXPECT_EQ(remap->apply(Qt::ControlModifier), M(Qt::MetaModifier));
-    EXPECT_EQ(remap->apply(Qt::MetaModifier), M(Qt::ControlModifier));
-    EXPECT_EQ(remap->apply(Qt::ControlModifier | Qt::MetaModifier | Qt::ShiftModifier),
-              M(Qt::ControlModifier | Qt::MetaModifier | Qt::ShiftModifier));
-    // Other flags stay.
-    EXPECT_EQ(remap->apply(Qt::ControlModifier | Qt::KeypadModifier), M(Qt::MetaModifier | Qt::KeypadModifier));
-    EXPECT_EQ(remap->singleTarget(Qt::ControlModifier), Qt::MetaModifier);
-    EXPECT_EQ(remap->singleTarget(Qt::AltModifier), Qt::AltModifier);
-    // A destination of several modifiers, kitty's aliases, any case, and the
-    // last rule for a source wins.
-    remap = ModifierRemap::parse(QStringLiteral("  OPT:ctrl+shift\tcmd:alt cmd:Control  "));
-    ASSERT_TRUE(remap);
-    EXPECT_EQ(remap->apply(Qt::AltModifier), M(Qt::ControlModifier | Qt::ShiftModifier));
-    EXPECT_EQ(remap->singleTarget(Qt::AltModifier), Qt::NoModifier);
-    EXPECT_EQ(remap->apply(Qt::MetaModifier), M(Qt::ControlModifier));
-    EXPECT_EQ(remap->apply(Qt::ShiftModifier), M(Qt::ShiftModifier));
-    // An empty value remaps nothing.
-    remap = ModifierRemap::parse(QStringLiteral(" "));
-    ASSERT_TRUE(remap);
-    EXPECT_TRUE(remap->isEmpty());
-    EXPECT_EQ(remap->apply(Qt::ControlModifier), M(Qt::ControlModifier));
-}
-
-TEST(ModifierRemap, RefusesWhatKittyRefusesAndHyperAndMeta)
-{
-    for (const char* text : {"ctrl", "ctrl:", ":super", "ctrl+alt:super", "ctrl:ctrl", "none:ctrl", "ctrl:none",
-                             "ctrl:capslock", "kitty_mod:ctrl", "ctrl:super ctrl", "ctrl:super+", "hyper:ctrl", "ctrl:meta"}) {
-        QString error;
-        EXPECT_FALSE(ModifierRemap::parse(QString::fromUtf8(text), &error)) << text;
-        EXPECT_FALSE(error.isEmpty()) << text;
-    }
-    QString error;
-    ModifierRemap::parse(QStringLiteral("hyper:ctrl"), &error);
-    EXPECT_TRUE(error.contains(QLatin1String("super and alt"))) << error.toStdString();
-}
-
-TEST_F(ConfigTest, RemapModifiersIsReadAndAnErrorRemapsNothing)
-{
-    {
-        SettingsStore store(write(QStringLiteral("default.json"), "{}"));
-        EXPECT_TRUE(store.settings().modifierRemap.isEmpty());
-    }
-    {
-        SettingsStore store(write(QStringLiteral("swap.json"), R"({"Keybinds": {"remapModifiers": "ctrl:super super:ctrl"}})"));
-        EXPECT_EQ(store.settings().modifierRemap.apply(Qt::ControlModifier), Qt::KeyboardModifiers(Qt::MetaModifier));
-        EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
-    }
-    SettingsStore store(write(QStringLiteral("bad.json"), R"({"Keybinds": {"remapModifiers": "ctrl:super hyper:alt"}})"));
-    EXPECT_TRUE(store.settings().modifierRemap.isEmpty());
-    EXPECT_TRUE(store.problems().join(QLatin1Char('\n')).contains(QLatin1String("Keybinds.remapModifiers")))
-        << store.problems().join(QLatin1Char('\n')).toStdString();
 }
 
 TEST_F(ConfigTest, ThemeColoursReplaceTheConfigs)
@@ -751,11 +693,7 @@ TEST_F(ConfigTest, PlasmaThemeAloneTakesTheColorsOfTheSchemesBrightness)
 
 TEST_F(ConfigTest, PlasmaThemeFollowsAChangedColorScheme)
 {
-    int argc = 1;
-    char name[] = "config-test";
-    char* argv[] = {name, nullptr};
-    std::unique_ptr<QCoreApplication> app;
-    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    const auto app = watchApplication();
     write(QStringLiteral("kdeglobals"), DarkPlasma);
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-dark"}})");
     SettingsStore store(config);
@@ -776,11 +714,7 @@ TEST_F(ConfigTest, PlasmaThemeFollowsAChangedColorScheme)
 
 TEST_F(ConfigTest, PlasmaThemeRereadsTheColorsOnANewApplicationPalette)
 {
-    int argc = 1;
-    char name[] = "config-test";
-    char* argv[] = {name, nullptr};
-    std::unique_ptr<QCoreApplication> app;
-    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    const auto app = watchApplication();
     write(QStringLiteral("kdeglobals"), DarkPlasma);
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-dark"}})");
     SettingsStore store(config);
@@ -795,11 +729,7 @@ TEST_F(ConfigTest, PlasmaThemeRereadsTheColorsOnANewApplicationPalette)
 
 TEST_F(ConfigTest, TheDesktopEventsOfOneChangeReadOnce)
 {
-    int argc = 1;
-    char name[] = "config-test";
-    char* argv[] = {name, nullptr};
-    std::unique_ptr<QCoreApplication> app;
-    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    const auto app = watchApplication();
     write(QStringLiteral("kdeglobals"), DarkPlasma);
     // A plasma theme and the desktop font: both kinds of event pass the filter.
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-dark"}})");
@@ -1008,6 +938,13 @@ TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
     EXPECT_FALSE(s.links.detectUrls);
     EXPECT_EQ(s.links.openWith, QStringLiteral("firefox --new-tab"));
     EXPECT_EQ(s.links.modifier, Qt::KeyboardModifiers(Qt::NoModifier));
+}
+
+TEST_F(ConfigTest, TheLinkModifierCanBeSuper)
+{
+    SettingsStore store(write(QStringLiteral("links.json"), R"({"Links": {"modifier": "super"}})"));
+    EXPECT_EQ(store.settings().links.modifier, Qt::KeyboardModifiers(Qt::MetaModifier));
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
 }
 
 TEST(Overrides, ParseAssignments)
@@ -1325,11 +1262,7 @@ TEST(Config, ScriptCommandLimitsOfTheHostMatchTheSettingDefaults)
 
 TEST_F(ConfigTest, ExternalThemeWatchRecoversCreationReplacementAndDeletion)
 {
-    int argc = 1;
-    char name[] = "config-test";
-    char* argv[] = {name, nullptr};
-    std::unique_ptr<QCoreApplication> app;
-    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    const auto app = watchApplication();
     const auto theme = m_home.filePath(QStringLiteral("new/sub/theme.json"));
     const auto config = write(QStringLiteral("watch.json"), QJsonDocument(QJsonObject{
         {QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}, {QStringLiteral("foreground"), QStringLiteral("#112233")}}}
@@ -1875,6 +1808,7 @@ TEST_F(ConfigTest, StructDefaultsAgreeWithTheSchema)
     EXPECT_EQ(read.shaders, expected.shaders);
     EXPECT_EQ(read.hintPatterns, expected.hintPatterns);
     EXPECT_EQ(read.keybinds, expected.keybinds);
+    EXPECT_TRUE(read.modifierRemap == expected.modifierRemap);
     EXPECT_TRUE(read == expected);
     EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
 }
@@ -2345,6 +2279,102 @@ TEST(Themes, ReadsByteOrderMarksAnyCasePaletteAndReportsIgnoredKeys)
     EXPECT_EQ(ignored, QStringList{QStringLiteral("selectionBackgroud")});
 }
 
+TEST(ModifierRemap, ReadsKittysRules)
+{
+    using M = Qt::KeyboardModifiers;
+    // A swap is two rules, which act at once: they do not chain.
+    auto remap = ModifierRemap::parse(QStringLiteral("ctrl:super super:ctrl"));
+    ASSERT_TRUE(remap);
+    EXPECT_EQ(remap->apply(Qt::ControlModifier), M(Qt::MetaModifier));
+    EXPECT_EQ(remap->apply(Qt::MetaModifier), M(Qt::ControlModifier));
+    EXPECT_EQ(remap->apply(Qt::ControlModifier | Qt::MetaModifier | Qt::ShiftModifier),
+              M(Qt::ControlModifier | Qt::MetaModifier | Qt::ShiftModifier));
+    // Other flags stay.
+    EXPECT_EQ(remap->apply(Qt::ControlModifier | Qt::KeypadModifier), M(Qt::MetaModifier | Qt::KeypadModifier));
+    EXPECT_EQ(remap->apply(Qt::ControlModifier | Qt::GroupSwitchModifier), M(Qt::MetaModifier | Qt::GroupSwitchModifier));
+    // A modifier key reports the one modifier that a rule makes of it, and
+    // a modifier that no rule names keeps its key.
+    EXPECT_EQ(remap->singleTarget(Qt::ControlModifier), Qt::MetaModifier);
+    EXPECT_EQ(remap->singleTarget(Qt::AltModifier), Qt::NoModifier);
+    EXPECT_EQ(remap->singleTarget(Qt::KeypadModifier), Qt::NoModifier);
+    // A destination of several modifiers, kitty's aliases, any case and any
+    // white space, and the last rule for a source wins.
+    remap = ModifierRemap::parse(QStringLiteral("  OPT:ctrl+shift\tcmd:alt\u00A0cmd:Control  "));
+    ASSERT_TRUE(remap);
+    EXPECT_EQ(remap->apply(Qt::AltModifier), M(Qt::ControlModifier | Qt::ShiftModifier));
+    EXPECT_EQ(remap->singleTarget(Qt::AltModifier), Qt::NoModifier);
+    EXPECT_EQ(remap->apply(Qt::MetaModifier), M(Qt::ControlModifier));
+    EXPECT_EQ(remap->apply(Qt::ShiftModifier), M(Qt::ShiftModifier));
+    // Kitty's symbols, and a source named twice, which is one modifier.
+    remap = ModifierRemap::parse(QStringLiteral("⌘:⌃ ⇧+shift:⌥"));
+    ASSERT_TRUE(remap);
+    EXPECT_EQ(remap->apply(Qt::MetaModifier), M(Qt::ControlModifier));
+    EXPECT_EQ(remap->apply(Qt::ShiftModifier), M(Qt::AltModifier));
+    // A destination may keep its source: the key adds a modifier.
+    remap = ModifierRemap::parse(QStringLiteral("shift:shift+ctrl"));
+    ASSERT_TRUE(remap);
+    EXPECT_EQ(remap->apply(Qt::ShiftModifier), M(Qt::ShiftModifier | Qt::ControlModifier));
+    EXPECT_EQ(remap->singleTarget(Qt::ShiftModifier), Qt::NoModifier);
+    // An empty value remaps nothing.
+    remap = ModifierRemap::parse(QStringLiteral(" "));
+    ASSERT_TRUE(remap);
+    EXPECT_TRUE(remap->isEmpty());
+    EXPECT_EQ(remap->apply(Qt::ControlModifier), M(Qt::ControlModifier));
+}
+
+TEST(ModifierRemap, RefusesWhatKittyRefusesAndHyperAndMeta)
+{
+    // Each error names its rule or its name.
+    const std::pair<const char*, const char*> refused[] = {
+        {"ctrl", "\"ctrl\" has no colon"},
+        {"ctrl:", "\"ctrl:\" has a modifier with no name"},
+        {":super", "\":super\" has a modifier with no name"},
+        {"ctrl:super+", "\"ctrl:super+\" has a modifier with no name"},
+        {"ctrl+alt:super", "\"ctrl+alt:super\" has more than one modifier before the colon"},
+        {"ctrl:ctrl", "\"ctrl:ctrl\" makes a modifier into itself"},
+        {"none:ctrl", "\"none\" is not shift, ctrl, alt or super"},
+        {"ctrl:none", "\"none\" is not shift, ctrl, alt or super"},
+        {"ctrl:capslock", "\"capslock\" is not shift, ctrl, alt or super"},
+        {"kitty_mod:ctrl", "\"kitty_mod\" is not shift, ctrl, alt or super"},
+        {"ctrl:super ctrl", "\"ctrl\" has no colon"},
+        {"ctrl:alt:shift", "\"alt:shift\" is not shift, ctrl, alt or super"},
+        {"hyper:ctrl", "Kitty's hyper is not a modifier of Afterglow"},
+        {"ctrl:meta", "Write super for the key that key bindings call Meta"},
+    };
+    for (const auto& [text, reason] : refused) {
+        QString error;
+        EXPECT_FALSE(ModifierRemap::parse(QString::fromUtf8(text), &error)) << text;
+        EXPECT_TRUE(error.contains(QString::fromUtf8(reason))) << text << ": " << error.toStdString();
+    }
+}
+
+TEST_F(ConfigTest, RemapModifiersIsReadReloadedAndAnErrorRemapsNothing)
+{
+    {
+        SettingsStore store(write(QStringLiteral("default.json"), "{}"));
+        EXPECT_TRUE(store.settings().modifierRemap.isEmpty());
+    }
+    const QString config = write(QStringLiteral("swap.json"), R"({"Keybinds": {"remapModifiers": "ctrl:super super:ctrl"}})");
+    SettingsStore store(config);
+    EXPECT_EQ(store.settings().modifierRemap.apply(Qt::ControlModifier), Qt::KeyboardModifiers(Qt::MetaModifier));
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    int changes = 0;
+    QObject::connect(&store, &SettingsStore::changed, [&](const Settings&) { ++changes; });
+    // A reload applies a new remap, and one with an error remaps nothing and says why.
+    write(QStringLiteral("swap.json"), R"({"Keybinds": {"remapModifiers": "alt:ctrl"}})");
+    store.reload();
+    EXPECT_EQ(changes, 1);
+    EXPECT_EQ(store.settings().modifierRemap.apply(Qt::AltModifier), Qt::KeyboardModifiers(Qt::ControlModifier));
+    EXPECT_EQ(store.settings().modifierRemap.apply(Qt::MetaModifier), Qt::KeyboardModifiers(Qt::MetaModifier));
+    write(QStringLiteral("swap.json"), R"({"Keybinds": {"remapModifiers": "ctrl:super hyper:alt"}})");
+    store.reload();
+    EXPECT_EQ(changes, 2);
+    EXPECT_TRUE(store.settings().modifierRemap.isEmpty());
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Keybinds.remapModifiers: Kitty's hyper is not a modifier of "
+                                                          "Afterglow. Remapping no modifier")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
 TEST(Keybinds, ExplicitBindingsTakeKeysFromDefaults)
 {
     QStringList errors;
@@ -2805,7 +2835,7 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
             } else if (name == QLatin1String("Keybinds.bindings")) {
                 value = QJsonObject{{QStringLiteral("new_tab"), QStringLiteral("Ctrl+Alt+F12")}};
             } else if (name == QLatin1String("Keybinds.remapModifiers")) {
-                value = QStringLiteral("ctrl:super");
+                value = QStringLiteral("ctrl:super super:ctrl");
             } else if (name == QLatin1String("Shaders.params")) {
                 value = QJsonObject{{QStringLiteral("bloom"), QJsonObject{{QStringLiteral("strength"), 0.5}}}};
             } else if (name == QLatin1String("Window.workingDirectory")) {
