@@ -60,6 +60,7 @@ set(AFTERGLOW_XXHASH_LICENSE "${xxhash_SOURCE_DIR}/LICENSE" PARENT_SCOPE)
 # of the code, with hidden symbols.
 add_library(AfterglowProto STATIC
     src/Clipboard.cpp
+    src/Color.cpp
     src/Delta.cpp
     src/DndTree.cpp
     src/DndUri.cpp

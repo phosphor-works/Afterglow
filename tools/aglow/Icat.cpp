@@ -80,8 +80,8 @@ const Cli::Command command {
           "Without --place, how the image is scaled to the screen: to fit its width, its height, both, or not at "
           "all." },
         { "--background", Cli::Option::Kind::String, "none", {},
-          "A background colour, as #rgb, #rrggbb, rgb:rr/gg/bb or an X11 colour name. Transparent images are drawn "
-          "over it." },
+          "A background color: an X11 color name, #rgb to #rrrrggggbbbb, rgb:r/g/b, rgbi:r/g/b, oklch(L C H) or "
+          "lab(L a b). #fff is white. none draws no background. Transparent images are drawn over it." },
         { "--mirror", Cli::Option::Kind::Choice, "none", { "none", "horizontal", "vertical", "both" },
           "Mirror the image about a horizontal or vertical axis, or both." },
         { "--clear", Cli::Option::Kind::Flag, "", {}, "Remove every image that is on the screen." },
@@ -211,8 +211,13 @@ std::optional<std::array<std::uint8_t, 3>> parseColour(const std::string& text, 
     if (text.empty() || text == "none") {
         return std::nullopt;
     }
+    // kitten icat reads "#fff" as white, as CSS does. XParseColor, which
+    // parseColorSpec follows for the escape codes, reads it as f0f0f0.
+    const std::string spec = text.size() == 4 && text[0] == '#'
+        ? std::string { '#', text[1], text[1], text[2], text[2], text[3], text[3] }
+        : text;
     std::array<std::uint8_t, 3> rgb {};
-    if (AfterglowProto::parseColorSpec(text, rgb[0], rgb[1], rgb[2])) {
+    if (AfterglowProto::parseColorSpec(spec, rgb[0], rgb[1], rgb[2])) {
         return rgb;
     }
     valid = false;

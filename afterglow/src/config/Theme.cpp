@@ -5,6 +5,8 @@
 
 #include "app/BuildTree.h"
 
+#include <AfterglowProto/Color.h>
+
 #include <QColor>
 #include <QDir>
 #include <QFile>
@@ -40,11 +42,7 @@ std::optional<AfterglowVt::Rgb> color(QString value)
     if (BareHex.match(value).hasMatch()) {
         value.prepend(QLatin1Char('#'));
     }
-    if (!isColorName(value)) {
-        return std::nullopt;
-    }
-    const QColor c = QColor::fromString(value);
-    return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
+    return rgbFromName(value);
 }
 
 enum class Assigned { Unused, Invalid, Set };
@@ -126,7 +124,8 @@ QByteArray withoutByteOrderMark(const QByteArray& data)
 std::optional<AfterglowVt::Rgb> kdeColor(const QString& value)
 {
     const QStringList parts = value.split(QLatin1Char(','));
-    if (parts.size() != 3 && parts.size() != 4) { // kdeglobals may add an alpha
+    // kdeglobals may add an alpha. "oklch(0.7, 0.1, 200)" has commas too.
+    if ((parts.size() != 3 && parts.size() != 4) || value.contains(QLatin1Char('('))) {
         return color(value);
     }
     std::array<int, 3> rgb{};
@@ -168,13 +167,37 @@ std::optional<AfterglowVt::Rgb>* konsoleTarget(Theme& theme, const QString& sect
 
 } // namespace
 
+std::optional<AfterglowVt::Rgb> rgbFromName(const QString& name)
+{
+    const QString value = name.trimmed();
+    if (value.startsWith(QLatin1Char('#'))) {
+        // Qt reads "#fff" as white, as CSS and kitty do. XParseColor, which
+        // the escape codes follow, reads it as f0f0f0. Qt reads eight digits
+        // as #AARRGGBB, and these colours have no alpha, so "#1e1e2eff"
+        // would come out a different colour with no warning.
+        if (value.size() == 9) {
+            return std::nullopt;
+        }
+        const QColor c = QColor::fromString(value);
+        if (!c.isValid()) {
+            return std::nullopt;
+        }
+        return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
+    }
+    // The X11 names (with no "transparent"), rgb:, rgbi:, OKLCH and LAB, as
+    // the escape codes and kitty read them.
+    const QByteArray utf8 = value.toUtf8();
+    AfterglowVt::Rgb rgb;
+    if (!AfterglowProto::parseColorSpec(std::string_view(utf8.constData(), std::size_t(utf8.size())), rgb.r, rgb.g,
+                                        rgb.b)) {
+        return std::nullopt;
+    }
+    return rgb;
+}
+
 bool isColorName(const QString& name)
 {
-    static const QRegularExpression EightDigits(QStringLiteral("^#[0-9a-fA-F]{8}$"));
-    // Transparent by its alpha, not by its spelling: Qt drops the spaces and
-    // tabs of a name, so "trans parent" is transparent too.
-    return QColor::isValidColorName(name) && !EightDigits.match(name).hasMatch()
-        && QColor::fromString(name).alpha() == 255;
+    return rgbFromName(name).has_value();
 }
 
 QString pick(const QString& spec, bool dark)
@@ -386,22 +409,36 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
             count(*target ? Assigned::Set : Assigned::Invalid, section);
         }
     } else {
-        // Ghostty writes "key = value"; kitty "key value".
+        // Ghostty writes "key = value"; kitty "key value", where the value is
+        // the rest of the line ("dark slate gray", "oklch(0.7 0.1 200)").
         static const QRegularExpression Ghostty(QStringLiteral("^([\\w-]+)\\s*=\\s*(.*)$"));
-        static const QRegularExpression Kitty(QStringLiteral("^([\\w-]+)\\s+(\\S+)"));
+        static const QRegularExpression Kitty(QStringLiteral("^([\\w-]+)\\s+(.+)$"));
+        // A kitty value with text after it still counts by its first word,
+        // or by its "name(...)": a tail glued to the ')' leaves only the part
+        // before the first space, which is no colour.
+        static const QRegularExpression FirstWord(QStringLiteral("^(\\w+\\([^)]*\\)(?=\\s|$)|\\S+)"));
         for (const QByteArray& raw : text.split('\n')) {
             const QString line = QString::fromUtf8(raw).trimmed();
             if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
                 continue;
             }
             QRegularExpressionMatch m = Ghostty.match(line);
-            if (!m.hasMatch()) {
+            const bool kitty = !m.hasMatch();
+            if (kitty) {
                 m = Kitty.match(line);
             }
             if (!m.hasMatch()) {
                 continue;
             }
-            count(assign(theme, m.captured(1), m.captured(2).trimmed()), m.captured(1));
+            const QString key = m.captured(1);
+            const QString value = m.captured(2).trimmed();
+            Assigned assigned = assign(theme, key, value);
+            if (kitty && assigned == Assigned::Invalid) {
+                if (const auto word = FirstWord.match(value); word.hasMatch() && word.captured(1) != value) {
+                    assigned = assign(theme, key, word.captured(1));
+                }
+            }
+            count(assigned, key);
         }
     }
     if (found == 0) {

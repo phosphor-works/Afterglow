@@ -205,7 +205,7 @@ complete -c aglow -n $i -l align -x -a 'center left right' -d 'Horizontal alignm
 complete -c aglow -n $i -l place -x -d 'Where to show the image (WIDTHxHEIGHT@LEFTxTOP)'
 complete -c aglow -n $i -l scale-up -d 'Scale small images up'
 complete -c aglow -n $i -l fit -x -a 'width height both none' -d 'How to fit the screen'
-complete -c aglow -n $i -l background -x -d 'Background colour'
+complete -c aglow -n $i -l background -x -d 'Background color'
 complete -c aglow -n $i -l mirror -x -a 'none horizontal vertical both' -d 'Mirror the image'
 complete -c aglow -n $i -l clear -d 'Remove the images on the screen'
 complete -c aglow -n $i -l clear-all -d 'Remove every image'

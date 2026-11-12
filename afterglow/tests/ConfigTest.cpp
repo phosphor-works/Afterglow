@@ -261,6 +261,54 @@ TEST(Themes, ReadsKittyThemes)
     EXPECT_TRUE(theme->palette[15] == Rgb(0xc0, 0xca, 0xf5));
 }
 
+TEST(Themes, ReadsOklchAndLabInKittyAndJsonThemes)
+{
+    // As kitty 0.50 reads them, with spaces inside the value. The values
+    // follow CSS Color 4: kitty itself gives lab(10 0 0) as a middle gray.
+    QStringList invalid;
+    const auto kitty = Themes::parse("foreground   oklch(0.9 0.05 140)\n"
+                                     "background lab(10 0 0)\n"
+                                     "color1     oklch(0.7, 0.25, 25)    \n"
+                                     "color2 #00ff00\n"
+                                     "color3 oklch(0.5 0.1 100) # a comment\n"
+                                     "color4 oklch(0.5 0.1 100)x\n"
+                                     "color5 dark slate gray\n",
+                                     nullptr, nullptr, &invalid);
+    ASSERT_TRUE(kitty);
+    EXPECT_TRUE(kitty->foreground == Rgb(205, 231, 199));
+    EXPECT_TRUE(kitty->background == Rgb(27, 27, 27));
+    EXPECT_TRUE(kitty->palette[1] == Rgb(255, 86, 85));
+    EXPECT_TRUE(kitty->palette[2] == Rgb(0, 255, 0));
+    EXPECT_TRUE(kitty->palette[3] == Rgb(113, 100, 11));
+    // kitty reads the rest of the line, so a name can have spaces.
+    EXPECT_TRUE(kitty->palette[5] == Rgb(47, 79, 79));
+    // A tail glued to the ')' is no colour, as "#ff0000x" is none.
+    EXPECT_FALSE(kitty->palette[4]);
+    EXPECT_EQ(invalid, QStringList{QStringLiteral("color4")});
+    const auto ghostty = Themes::parse("foreground = oklch(0.9 0.05 140)\npalette = 4=lab(50 0 -50)\n");
+    ASSERT_TRUE(ghostty);
+    EXPECT_TRUE(ghostty->foreground == Rgb(205, 231, 199));
+    EXPECT_TRUE(ghostty->palette[4] == Rgb(54, 122, 205));
+    // Konsole writes "r,g,b": the commas of an OKLCH value are not that.
+    const auto konsole = Themes::parse("[Background]\nColor=oklch(0.5, 0.1, 100)\n\n"
+                                       "[Foreground]\nColor=lab(50 0 -50)\n\n[Color0]\nColor=1,2,3\n");
+    ASSERT_TRUE(konsole);
+    EXPECT_TRUE(konsole->background == Rgb(113, 100, 11));
+    EXPECT_TRUE(konsole->foreground == Rgb(54, 122, 205));
+    EXPECT_TRUE(konsole->palette[0] == Rgb(1, 2, 3));
+    const auto json = Themes::parse(R"json({"background": "LAB(50 0 -50)", "palette": ["oklch(70% 0.1 200)"]})json");
+    ASSERT_TRUE(json);
+    EXPECT_TRUE(json->background == Rgb(54, 122, 205));
+    EXPECT_TRUE(json->palette[0] == Rgb(64, 177, 183));
+    EXPECT_TRUE(Themes::isColorName(QStringLiteral("oklch(0.5 0.1 100)")));
+    EXPECT_TRUE(Themes::isColorName(QStringLiteral("lab(50 60 40)")));
+    // Terminal colours have no alpha: kitty reads one in these forms, and
+    // ignores it.
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("oklch(0.5 0.1 100 / 0.5)")) == Rgb(113, 100, 11));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("oklch(0.5 0.1)")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("rgb(1, 2, 3)")));
+}
+
 TEST(Themes, ReadsJsonThemes)
 {
     const auto theme = Themes::parse(R"({"background": "#101010", "selectionBackground": "#334455",
@@ -298,8 +346,6 @@ TEST(Themes, EightDigitHexIsNotAColour)
     // Qt reads eight digits as #AARRGGBB; these colours have no alpha.
     EXPECT_FALSE(Themes::isColorName(QStringLiteral("#1e1e2eff")));
     EXPECT_TRUE(Themes::isColorName(QStringLiteral("#1e1e2e")));
-    EXPECT_TRUE(Themes::isColorName(QStringLiteral("#fff")));
-    EXPECT_TRUE(Themes::isColorName(QStringLiteral("red")));
     QStringList ignored;
     QStringList invalid;
     const auto theme = Themes::parse(R"({"background": "#101010", "foreground": "#1e1e2eff"})", nullptr, &ignored, &invalid);
@@ -308,6 +354,28 @@ TEST(Themes, EightDigitHexIsNotAColour)
     // A key Afterglow uses, with a value it cannot: not an unused key.
     EXPECT_TRUE(ignored.isEmpty());
     EXPECT_EQ(invalid, QStringList{QStringLiteral("foreground")});
+}
+
+TEST(Themes, ReadsColorForms)
+{
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#1e1e2e")) == Rgb(0x1e, 0x1e, 0x2e));
+    // White, as in CSS and kitty, where the escape codes read f0f0f0.
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#fff")) == Rgb(255, 255, 255));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#fffeeeddd")) == Rgb(255, 238, 221));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("red")) == Rgb(255, 0, 0));
+    // The X11 names, as the escape codes and kitty read them, not the SVG
+    // names of Qt, where green is #008000 and gray #808080.
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("green")) == Rgb(0, 255, 0));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("Gray")) == Rgb(190, 190, 190));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("dark slate gray")) == Rgb(47, 79, 79));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("teal")));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("rgb:ff/80/00")) == Rgb(255, 128, 0));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("rgbi:1/0/0")) == Rgb(255, 0, 0));
+    // White space around a colour does not count, in every form.
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral(" #1e1e2e\t")) == Rgb(0x1e, 0x1e, 0x2e));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral(" red ")) == Rgb(255, 0, 0));
+    EXPECT_FALSE(Themes::isColorName(QString()));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("#12345")));
 }
 
 TEST(Themes, RejectsFilesWithoutColours)
@@ -364,6 +432,24 @@ TEST_F(ConfigTest, ThemeColoursReplaceTheConfigs)
     EXPECT_TRUE(same(s.terminal.defaultBackground, {0xf6, 0xf5, 0xf2}));
     EXPECT_TRUE(s.terminal.selectionBackground == Rgb(0xc9, 0xd6, 0xee));
     EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, ColorSettingsTakeOklchAndLab)
+{
+    const QString config = write(QStringLiteral("config.json"),
+                                 R"json({"Colors": {"background": "lab(10 0 0)", "foreground": "oklch(0.9 0.05 140)",
+                                     "palette": ["oklch(0.5 0.1 100)", "lab(50 60 40)"], "visualBell": "oklch(0.5)"}})json");
+    SettingsStore store(config);
+    const Settings& s = store.settings();
+    EXPECT_TRUE(same(s.terminal.defaultBackground, {27, 27, 27}));
+    EXPECT_TRUE(same(s.terminal.defaultForeground, {205, 231, 199}));
+    EXPECT_TRUE(same(s.terminal.basePalette[0], {113, 100, 11}));
+    EXPECT_TRUE(same(s.terminal.basePalette[1], {214, 60, 55}));
+    // A form that is no colour is reported, as a hex value with a typo is,
+    // and the default stays.
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Colors.visualBell is not a color")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(same(s.colors.visualBell, Settings{}.colors.visualBell));
 }
 
 TEST_F(ConfigTest, UserThemesComeFirstAndDeriveADivider)
@@ -2752,10 +2838,10 @@ TEST_F(ConfigTest, TransparentIsNotAColor)
 {
     EXPECT_FALSE(Themes::isColorName(QStringLiteral("transparent")));
     EXPECT_FALSE(Themes::isColorName(QStringLiteral("Transparent")));
-    // Qt drops the spaces and tabs of a colour name.
+    // No X11 name is transparent, in any spelling.
     EXPECT_FALSE(Themes::isColorName(QStringLiteral("trans parent")));
     EXPECT_FALSE(Themes::isColorName(QStringLiteral(" Transparent\t")));
-    EXPECT_TRUE(Themes::isColorName(QStringLiteral("r e d")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("none")));
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"background": "transparent"}})"));
     EXPECT_TRUE(same(store.settings().terminal.defaultBackground, Settings{}.terminal.defaultBackground));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Colors.background is not a color")));

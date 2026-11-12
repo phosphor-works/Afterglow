@@ -248,11 +248,35 @@ Shells and editors measure text with `wcwidth`, so the cursor stays where they e
 
 `tools/conformance/ucs-detect.sh` measures the widths with ucs-detect. See [TESTING.md](TESTING.md#character-widths-with-ucs-detect).
 
-## Kitty color control and pointer shapes
+## Color escape codes and pointer shapes
 
 OSC 21 supports the [Kitty color-control protocol](https://sw.kovidgoyal.net/kitty/color-stack/).
 Programs can set, query and reset palette colors and dynamic colors.
-Supported values include named X11 colors, hexadecimal colors, `rgb:` values and `rgbi:` values.
+OSC 4, OSC 10 to 12, OSC 17, OSC 19 and OSC 21 take the same color values:
+
+| Value | Example |
+| --- | --- |
+| An X11 color name, in any case | `red`, `dark slate gray` |
+| A hexadecimal color, as xterm reads it | `#rgb`, `#rrggbb`, `#rrrgggbbb`, `#rrrrggggbbbb` |
+| An `rgb:` or `rgbi:` value | `rgb:ff/80/00`, `rgbi:1/0.5/0` |
+| An OKLCH or CIE LAB color, as CSS Color 4 writes it | `oklch(0.7 0.1 200)`, `lab(50 60 40)` |
+
+In the escape codes, each digit of `#rgb` gives the high bits of its channel, as in xterm, so `#fff` is `#f0f0f0`.
+In `Colors` and in themes, `#fff` is white.
+[Color values](APPEARANCE.md#color-values) gives the values of `oklch` and `lab`.
+A query reports such a color as the sRGB color that Afterglow set.
+Afterglow converts these colors with the sample code and the gamut mapping of CSS Color 4.
+Kitty reads some colors in a different way:
+
+| Color | Kitty | Afterglow |
+| --- | --- | --- |
+| `#rgb` in an escape code | `#fff` is white. | `#fff` is `#f0f0f0`, as in xterm. |
+| OKLCH or LAB outside sRGB | Clips each channel. | Decreases the chroma until the clipped color is less than one just noticeable difference (deltaE OK 0.02) away. |
+| LAB | Other values, for example a middle gray for `lab(10 0 0)`. | The values of CSS Color 4. |
+| A percentage of C | A percentage of 1. | A percentage of 0.4, as in CSS Color 4. |
+| A percentage of a or b | Ignores the `%`. | A percentage of 125, as in CSS Color 4. |
+
+Kitty and Afterglow both ignore an alpha, such as `oklch(0.7 0.1 200 / 0.5)`.
 Cursor text, visual-bell color and eight transparent-background slots affect rendering.
 Transparent slots support an explicit opacity or the configured window opacity.
 The color stack saves and restores these settings.
