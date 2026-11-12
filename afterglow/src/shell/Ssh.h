@@ -70,6 +70,12 @@ QByteArray probeScript();
 /// destination. The command's words follow. Empty, with @p error, when ssh
 /// cannot read the destination (ssh -G).
 QByteArrayList sharedCommand(const QString& destination, QString* error);
+
+/// Puts afterglow's terminfo entry on @p destination, as `afterglow ssh`
+/// does, once per entry version: over the shared connection. False when the
+/// host cannot take it (no tic) or ssh fails: then TERM is xterm-256color
+/// there.
+bool installTerminfo(const QString& destination);
 Probe parseProbe(const QByteArray& output);
 
 /// Runs ssh with ARGS, byte for byte, and returns its exit status. When ssh

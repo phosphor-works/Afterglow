@@ -17,6 +17,8 @@ qt_add_library(afterglow_app STATIC
     src/Pane.cpp
     src/mux/MuxClient.cpp
     src/mux/MuxClient.h
+    src/mux/MuxRoute.cpp
+    src/mux/MuxRoute.h
     src/PaneDialog.cpp
     src/PaneDialog.h
     src/PaneLaunch.cpp

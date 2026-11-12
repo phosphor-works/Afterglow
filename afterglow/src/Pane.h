@@ -102,8 +102,9 @@ public:
     const MuxClient* session() const { return m_session.get(); }
     /// The pane's ID in the daemon, 0 for a pane that is no session pane.
     std::uint32_t sessionPaneId() const { return m_sessionPane; }
-    /// The pane shows mux session @p name, and has not lost it.
-    bool showsSession(const QString& name) const;
+    /// The pane shows mux session @p name of @p host (empty: this computer),
+    /// and has not lost it.
+    bool showsSession(const QString& name, const QString& host = {}) const;
     /// What closing the session pane ends: the window sets it as it closes
     /// the pane, by what the close is (the pane alone, or the window).
     void setSessionRelease(MuxRelease release) { m_sessionRelease = release; }

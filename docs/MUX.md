@@ -86,8 +86,8 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 
 | Command | Function |
 | --- | --- |
-| `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `-- COMMAND...`. |
-| `afterglow mux attach [NAME]` | Shows a session in a window. Option: `--no-takeover`. |
+| `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `--ssh DESTINATION`, `-- COMMAND...`. |
+| `afterglow mux attach [NAME]` | Shows a session in a window. Options: `--no-takeover`, `--ssh DESTINATION`. |
 | `afterglow mux detach [NAME]` | Closes the window of the session. The session keeps running. Option: `--ssh DESTINATION`. |
 | `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES`. Option: `--ssh DESTINATION`. |
 | `afterglow mux kill NAME` | Ends a session and its programs. Options: `--force`, `--ssh DESTINATION`. |
@@ -214,18 +214,12 @@ A session pane differs from a pane outside a session in these ways:
   - Where the first frame of a GIF does not draw, a session pane shows nothing, as Kitty and browsers do. A pane outside a session can show the background color of the GIF there.
 - The session keeps the terminal settings and the colors of the `afterglow mux new` that started it (see [environment](#environment)).
 
-These commands and options are not available. Each stops with exit status 1 and writes this message on standard error:
-
-| Command | Message |
-| --- | --- |
-| `--ssh` of `afterglow mux new` and `attach` | `afterglow mux COMMAND: sessions on other hosts are not available yet` |
-
 ### Exit status
 
 | Status | Meaning |
 | --- | --- |
 | 0 | The command did its work. `afterglow mux ls` without sessions also exits with 0. |
-| 1 | The command failed and wrote why on standard error. Examples: no session has the name, the daemon did not start, a command is not available. `afterglow mux kill` also exits with 1 when you do not answer `y`, `Y` or `yes` to its question. |
+| 1 | The command failed and wrote why on standard error. Examples: no session has the name, the daemon did not start. `afterglow mux kill` also exits with 1 when you do not answer `y`, `Y` or `yes` to its question. |
 | 2 | A usage error, for example an unknown command, option or argument, or an option without its value. The command also writes the usage on standard error. |
 | 2 | A session name that is not valid, for `afterglow mux new --name`, `attach` or `detach`. The command writes only the rule for names. |
 | 126 | `afterglow mux server` found `afterglow-mux` but cannot run it. `afterglow mux new` or `attach` found `afterglow` but cannot run it. |
@@ -281,7 +275,9 @@ The daemon uses no other socket for it.
 ## Sessions on another host
 
 `--ssh DESTINATION` acts on the daemon of another host, through ssh.
-`afterglow mux ls`, `detach` and `kill` take it. `NAME` is the name of a session on that host.
+Each `afterglow mux` command but `server` takes it. `NAME` is the name of a session on that host.
+`afterglow mux new --ssh` starts the daemon of the host when none runs there, and `attach --ssh` starts it when it creates a session.
+The window of the session opens on this computer, as for a session of this computer.
 
 The command runs `afterglow-mux proxy` on the host, over the connection that `afterglow ssh` shares with it (see [SSH](INPUT.md#ssh)).
 The proxy connects to the daemon there, and carries that connection on its standard input and output.
@@ -299,6 +295,25 @@ The daemon of the host must speak the protocol of this Afterglow.
 | ssh cannot read the destination | `ssh cannot read the destination 'DESTINATION' (ssh -G)` |
 
 `afterglow-mux proxy --start` starts the daemon of the host when none runs, as `afterglow mux new` does on this computer.
+
+A session of another host runs with the environment of your ssh login there, which the proxy has, not with the environment of this computer.
+`afterglow mux new --ssh` sets these variables over it:
+
+| Variable | Value |
+| --- | --- |
+| `TERM` | `Terminal.term`. With `afterglow`, the command first installs the terminfo entry on the host, as `afterglow ssh` does. When the host has no `tic`, `TERM` is `xterm-256color`. |
+| `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION` | As in a pane of this computer |
+
+A pane of the session without a command runs your shell there as a login shell (`-l`), because the environment of an ssh command did not read your login files.
+It starts in your home directory there, or in `--cwd DIR`, which must be an absolute path on the host.
+`Terminal.shell`, `Terminal.env` and shell integration of this computer do not apply: they name paths of this computer.
+A shell integration that you install on the host works there.
+
+A new tab or split of the window of the session runs your shell there too, in the directory of the program in the foreground of the focused pane.
+`afterglow ctl` and scripts read the directory of a pane of the session only when it also exists on this computer.
+
+When the ssh connection breaks, the window closes with a notice, and the session keeps running on the host.
+`afterglow mux attach --ssh` shows it again.
 
 ## Environment
 

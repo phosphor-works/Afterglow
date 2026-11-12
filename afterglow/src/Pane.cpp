@@ -1011,9 +1011,9 @@ bool Pane::writeProgram(std::string_view bytes)
     return m_pty && m_pty->write(bytes);
 }
 
-bool Pane::showsSession(const QString& name) const
+bool Pane::showsSession(const QString& name, const QString& host) const
 {
-    return m_session && !m_sessionGone && m_session->showing() && m_session->session() == name;
+    return m_session && !m_sessionGone && m_session->showing() && m_session->session() == name && m_session->host() == host;
 }
 
 void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id)

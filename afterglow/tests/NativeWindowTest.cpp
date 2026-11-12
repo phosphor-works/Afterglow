@@ -12,6 +12,7 @@
 #include <QMessageBox>
 #include <chrono>
 #include <csignal>
+#include <QScopeGuard>
 #include <atomic>
 #include <optional>
 #include <set>
@@ -88,6 +89,7 @@
 #include "SavedEnvironment.h"
 #include "TestDaemon.h"
 #include "mux/MuxClient.h"
+#include "mux/MuxRoute.h"
 #include <gtest/gtest.h>
 using namespace Afterglow;
 using Afterglow::Test::Saved;
@@ -10314,7 +10316,9 @@ namespace {
 /// Shows session @p name of @p daemon in a new window of @p application.
 QPointer<TerminalWindow> showSession(Application& application, MuxTest::TestDaemon& daemon, const QString& name, QString* error) {
     WindowOptions options;
-    options.session = MuxClient::attach(name, true, error, daemon.sockets(), MuxSettings{}.eventQueue,
+    AfterglowMux::Route route;
+    route.sockets = daemon.sockets();
+    options.session = MuxClient::attach(name, true, error, route, MuxSettings{}.eventQueue,
                                         AfterglowVt::TerminalOptions{}.maxScrollback);
     if (!options.session) return nullptr;
     QPointer<TerminalWindow> shown = application.newWindow(options);
@@ -11161,7 +11165,7 @@ TEST_F(NativeWindow, ATabDraggedOutOfASessionsWindowBecomesANewSession) {
     SettingsStore settings(directory.filePath(QStringLiteral("afterglow.conf")));
     Control control(settings, {});
     control.attachWindow(shown);
-    control.setSessionWindowOpener([&](const QString& name) {
+    control.setSessionWindowOpener([&](const QString& name, const QString&) {
         QString failure;
         QPointer<TerminalWindow> opened = showSession(*application, daemon, name, &failure);
         if (opened) control.attachWindow(opened);
@@ -11200,6 +11204,59 @@ TEST_F(NativeWindow, ATabDraggedOutOfASessionsWindowBecomesANewSession) {
     delete moved;
     delete shown;
     EXPECT_TRUE(waitFor([&] { return MuxTest::names(daemon.sessions()) == std::vector<std::string>{"keep"}; }, 5000));
+}
+
+// A window shows a session of another host through `afterglow-mux proxy`,
+// which a fake ssh runs here against the test's own daemon, and a new tab of
+// that window starts there.
+TEST_F(NativeWindow, AWindowShowsASessionOfAnotherHost) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "far")) << daemon.lastError();
+    const QString bin = directory.filePath(QStringLiteral("ssh-bin"));
+    ASSERT_TRUE(QDir().mkpath(bin));
+    {
+        QFile ssh(bin + QStringLiteral("/ssh"));
+        ASSERT_TRUE(ssh.open(QIODevice::WriteOnly));
+        const QString script = QStringLiteral(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = -G ]; then printf 'host %s\\nhostname %s\\nuser me\\nport 22\\n' \"$3\" \"$3\"; exit 0; fi\n"
+            "while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
+            "shift 2\n"
+            "XDG_RUNTIME_DIR='%1' XDG_STATE_HOME='%2' PATH='%3:/usr/bin:/bin' exec /bin/sh -c \"$*\"\n")
+            .arg(QString::fromStdString(daemon.runtime()), QString::fromStdString(daemon.stateHome()), QCoreApplication::applicationDirPath());
+        ssh.write(script.toUtf8());
+    }
+    ASSERT_TRUE(QFile::setPermissions(bin + QStringLiteral("/ssh"), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    const QByteArray path = qgetenv("PATH");
+    qputenv("PATH", bin.toUtf8() + ':' + path);
+    const auto restorePath = qScopeGuard([&path] { qputenv("PATH", path); });
+    QString error;
+    const auto route = muxRoute(QStringLiteral("far"), &error);
+    ASSERT_TRUE(route) << error.toStdString();
+    WindowOptions options;
+    options.session = MuxClient::attach(QStringLiteral("far"), true, &error, *route, MuxSettings{}.eventQueue,
+                                        AfterglowVt::TerminalOptions{}.maxScrollback);
+    ASSERT_NE(options.session, nullptr) << error.toStdString();
+    EXPECT_TRUE(options.session->remote());
+    QPointer<TerminalWindow> shown = application->newWindow(options);
+    ASSERT_NE(shown, nullptr);
+    shown->show();
+    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
+    Pane* pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    EXPECT_TRUE(pane->showsSession(QStringLiteral("far"), QStringLiteral("far")));
+    EXPECT_FALSE(pane->showsSession(QStringLiteral("far")));
+    // A new tab starts there, through another proxy call.
+    SettingsStore settings(directory.filePath(QStringLiteral("afterglow.conf")));
+    Control control(settings, {});
+    control.attachWindow(shown);
+    quint32 tab = 0;
+    ASSERT_EQ(control.newTab(pane->id(), {}, {}, tab), QString());
+    EXPECT_TRUE(waitFor([&] { return sessionNamed(daemon, "far")->panes == 2; }, 5000));
+    EXPECT_EQ(shown->tabs().size(), 2);
+    delete shown;
 }
 
 // `afterglow ctl --session` while a window shows the session: the window

@@ -145,7 +145,7 @@ Reached reach(const Route& route, bool start, std::string* error)
     connection->adopt(pair[0]);
     bool ended = false;
     const std::string mismatch = checkVersion(*connection, ProxyCallTimeoutMs, &ended);
-    if (mismatch.empty()) return {std::move(connection), {}, std::move(proxy)};
+    if (mismatch.empty()) return {std::move(proxy), std::move(connection), {}};
     connection->close();
     const int status = proxy->wait(ended ? 5000 : 0);
     if (status == ProxyNoDaemon) return {};
@@ -179,7 +179,7 @@ Reached connectAny(const AfterglowProto::MuxSockets& sockets, std::string* error
         }
         // A first socket that failed does not matter once one answers.
         error->clear();
-        return {std::move(connection), socket.path, nullptr};
+        return {nullptr, std::move(connection), socket.path};
     }
     return {};
 }

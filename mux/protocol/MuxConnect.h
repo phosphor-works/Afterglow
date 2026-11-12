@@ -63,11 +63,11 @@ private:
 
 struct Reached
 {
+    /// The proxy command that carries the connection, for a daemon on
+    /// another host. First: it goes after the connection, which ends it.
+    std::shared_ptr<ProxyProcess> proxy;
     std::unique_ptr<AfterglowProto::IpcConnection> connection;
     std::string socket;
-    /// The proxy command that carries the connection, for a daemon on
-    /// another host. It goes after the connection.
-    std::shared_ptr<ProxyProcess> proxy;
 };
 
 /// How a client reaches a daemon: its sockets on this computer, or a command

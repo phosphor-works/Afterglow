@@ -196,8 +196,11 @@ int main(int argc, char** argv)
     QCommandLineOption muxNoTakeoverOption(QStringLiteral("mux-no-takeover"),
                                            QStringLiteral("Refuse when another window shows the session."));
     muxNoTakeoverOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    QCommandLineOption muxHostOption(QStringLiteral("mux-host"), QStringLiteral("The session runs on this ssh destination."),
+                                     QStringLiteral("destination"));
+    muxHostOption.setFlags(QCommandLineOption::HiddenFromHelp);
     parser.addOptions({cwdOption, quickOption, execOption, titleOption, holdOption, configOption, overrideOption, classOption,
-                       muxAttachOption, muxNoTakeoverOption});
+                       muxAttachOption, muxNoTakeoverOption, muxHostOption});
     // Everything after the program -e runs is its own, options included.
     parser.setOptionsAfterPositionalArgumentsMode(QCommandLineParser::ParseAsPositionalArguments);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("With -e: the program and its arguments."),
@@ -246,6 +249,9 @@ int main(int argc, char** argv)
     if (parser.isSet(muxNoTakeoverOption) && !parser.isSet(muxAttachOption)) {
         return fail(QStringLiteral("--mux-no-takeover needs --mux-attach"));
     }
+    if (parser.isSet(muxHostOption) && (!parser.isSet(muxAttachOption) || parser.value(muxHostOption).isEmpty())) {
+        return fail(QStringLiteral("--mux-host needs --mux-attach and a destination"));
+    }
     if (parser.isSet(muxAttachOption) && parser.value(muxAttachOption).isEmpty()) {
         return fail(QStringLiteral("--mux-attach needs the name of a session"));
     }
@@ -267,6 +273,7 @@ int main(int argc, char** argv)
                                     {QStringLiteral("hold"), parser.isSet(holdOption)},
                                     {QStringLiteral("activationToken"), qEnvironmentVariable("XDG_ACTIVATION_TOKEN")},
                                     {QStringLiteral("session"), parser.value(muxAttachOption)},
+                                    {QStringLiteral("sessionHost"), parser.value(muxHostOption)},
                                     {QStringLiteral("takeover"), !parser.isSet(muxNoTakeoverOption)}};
     qunsetenv("XDG_ACTIVATION_TOKEN");
     // An Afterglow started from a pane of another one, or of a mux session,

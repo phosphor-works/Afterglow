@@ -16,6 +16,7 @@
 #include <exception>
 #include <functional>
 
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/eventfd.h>
 #include <sys/signalfd.h>
@@ -33,6 +34,21 @@ using AfterglowProto::IpcServerConnection;
 namespace IpcErrorCode = AfterglowProto::IpcErrorCode;
 
 namespace {
+
+/// The bytes of @p path, empty when it cannot be read.
+std::string readAll(const std::string& path)
+{
+    std::string bytes;
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return bytes;
+    char buffer[65536];
+    for (ssize_t n; (n = ::read(fd, buffer, sizeof buffer)) != 0;) {
+        if (n > 0) bytes.append(buffer, std::size_t(n));
+        else if (errno != EINTR) break;
+    }
+    ::close(fd);
+    return bytes;
+}
 
 // The lines of one connection that one pass of the loop answers, empty ones
 // included: a client that pipelines calls cannot keep the others, the
@@ -333,7 +349,7 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller, IpcServerCon
     if (request.fn == Fn::Version) {
         return ipcReply(request.id.value_or(0), Json::Object{{"version", AFTERGLOW_VERSION}, {"protocol", ProtocolVersion}});
     }
-    if (request.fn == Fn::NewSession) return newSession(request);
+    if (request.fn == Fn::NewSession) return newSession(request, caller);
     if (request.fn == Fn::ListSessions) return listSessions(request, caller);
     if (request.fn == Fn::KillSession) return killSession(request);
     if (request.fn == Fn::Attach) return attach(request);
@@ -356,13 +372,32 @@ std::optional<std::string> Daemon::versionError(const IpcRequest& request)
                         + ", and the daemon speaks " + std::to_string(ProtocolVersion));
 }
 
-std::string Daemon::newSession(const IpcRequest& request)
+std::string Daemon::newSession(const IpcRequest& request, pid_t caller)
 {
     if (request.args.size() != 2) return ipcError(request.id, IpcErrorCode::InvalidArg, "newSession takes (protocol, options)");
     if (auto error = versionError(request)) return *error;
     std::string error;
     auto options = sessionOptions(request.args[1], &error);
     if (!options) return ipcError(request.id, IpcErrorCode::InvalidArg, error);
+    if (options->callerEnvironment) {
+        // The caller's own (the proxy in the user's ssh login), with the
+        // client's variables over it.
+        std::string callerEnviron = caller > 0 ? readAll("/proc/" + std::to_string(caller) + "/environ") : std::string();
+        if (callerEnviron.empty()) return ipcError(request.id, IpcErrorCode::CallFailed, "the daemon cannot read the environment of the caller");
+        std::vector<std::pair<std::string, std::string>> merged;
+        for (std::size_t at = 0; at < callerEnviron.size();) {
+            const std::size_t end = std::min(callerEnviron.find('\0', at), callerEnviron.size());
+            const std::string_view entry(callerEnviron.data() + at, end - at);
+            const std::size_t eq = entry.find('=');
+            if (eq != std::string_view::npos && eq > 0) merged.emplace_back(std::string(entry.substr(0, eq)), std::string(entry.substr(eq + 1)));
+            at = end + 1;
+        }
+        for (auto& [name, value] : options->environment) {
+            std::erase_if(merged, [&name](const auto& variable) { return variable.first == name; });
+            merged.emplace_back(std::move(name), std::move(value));
+        }
+        options->environment = std::move(merged);
+    }
     std::string name = options->name.empty() ? freeName() : options->name;
     if (find(name) != m_sessions.end()) return ipcError(request.id, Error::SessionExists, "a session named '" + name + "' exists");
     auto session = std::make_unique<Session>(name, std::move(*options), m_fileLimit, m_images);

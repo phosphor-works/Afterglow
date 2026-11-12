@@ -260,6 +260,7 @@ _afterglow_mux() {
         _describe -t commands 'mux command' commands
         return
     fi
+    local ssh='--ssh[a session of another host]:destination:_hosts'
     case $words[2] in
     new)
         shift words; (( CURRENT-- ))
@@ -273,19 +274,24 @@ _afterglow_mux() {
         _arguments \
             '--name[the session name]:name:' \
             '--cwd[start in the directory]:directory:_directories' \
-            '--detach[create the session without a window]'
+            '--detach[create the session without a window]' \
+            "$ssh"
         ;;
     kill)
         shift words; (( CURRENT-- ))
-        _arguments '--force[end it without a question]' ':session:'
+        _arguments '--force[end it without a question]' "$ssh" ':session:'
         ;;
     attach)
         shift words; (( CURRENT-- ))
-        _arguments '--no-takeover[refuse when another window shows the session]' ':session:'
+        _arguments '--no-takeover[refuse when another window shows the session]' "$ssh" ':session:'
         ;;
     detach)
         shift words; (( CURRENT-- ))
-        _arguments ':session:'
+        _arguments "$ssh" ':session:'
+        ;;
+    ls)
+        shift words; (( CURRENT-- ))
+        _arguments "$ssh"
         ;;
     esac
 }
