@@ -61,6 +61,9 @@ XkbKeyboard::~XkbKeyboard()
 {
     // The Wayland connection is torn down with QGuiApplication, after which
     // releasing the proxy would touch freed memory; only the xkb side is ours.
+    if (m_scratch) {
+        xkb_state_unref(m_scratch);
+    }
     if (m_state) {
         xkb_state_unref(m_state);
     }
@@ -90,6 +93,10 @@ void XkbKeyboard::onKeymap(void* data, wl_keyboard*, std::uint32_t format, int f
     if (!keymap) {
         qCWarning(lcXkb) << "failed to compile the compositor's keymap";
         return;
+    }
+    if (self->m_scratch) {
+        xkb_state_unref(self->m_scratch);
+        self->m_scratch = nullptr;
     }
     if (self->m_state) {
         xkb_state_unref(self->m_state);
@@ -162,6 +169,33 @@ std::uint32_t XkbKeyboard::keysym(std::uint32_t keycode) const
         return XKB_KEY_NoSymbol;
     }
     return syms[0];
+}
+
+xkb_state* XkbKeyboard::stateWith(HeldModifiers held) const
+{
+    if (!m_state) {
+        return nullptr;
+    }
+    if (!m_scratch && !(m_scratch = xkb_state_new(m_keymap))) {
+        return nullptr;
+    }
+    xkb_mod_mask_t four = 0;
+    xkb_mod_mask_t down = 0;
+    const std::pair<const char*, bool> mods[] = {{XKB_MOD_NAME_SHIFT, held.shift},
+                                                 {XKB_MOD_NAME_CTRL, held.control},
+                                                 {XKB_MOD_NAME_ALT, held.alt},
+                                                 {XKB_MOD_NAME_LOGO, held.super}};
+    for (const auto& [name, on] : mods) {
+        const xkb_mod_index_t index = xkb_keymap_mod_get_index(m_keymap, name);
+        if (index == XKB_MOD_INVALID) continue;
+        four |= xkb_mod_mask_t(1) << index;
+        if (on) down |= xkb_mod_mask_t(1) << index;
+    }
+    xkb_state_update_mask(m_scratch, (xkb_state_serialize_mods(m_state, XKB_STATE_MODS_DEPRESSED) & ~four) | down,
+                          xkb_state_serialize_mods(m_state, XKB_STATE_MODS_LATCHED) & ~four,
+                          xkb_state_serialize_mods(m_state, XKB_STATE_MODS_LOCKED) & ~four, 0, 0,
+                          xkb_state_serialize_layout(m_state, XKB_STATE_LAYOUT_EFFECTIVE));
+    return m_scratch;
 }
 
 bool XkbKeyboard::capsLock() const

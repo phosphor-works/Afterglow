@@ -30,6 +30,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - The Kitty keyboard protocol, with a flag stack for each screen, and xterm `modifyOtherKeys`.
 - Mouse reporting in X10, normal, button-event and any-event modes, with UTF-8, SGR, urxvt and SGR-pixel encodings.
 - Focus reports, bracketed paste and alternate-scroll mode.
+- `Keybinds.remapModifiers`, which makes one modifier act as another in Afterglow, as `remap_modifiers` does in Kitty. Bindings, the link modifier, mouse selection and programs get the modifier that a key becomes.
 - Keypad keys with Num Lock off, which the Kitty protocol reports as keypad keys, and the function keys F13 to F35.
 - The Kitty mouse-pointer protocol (OSC 22), with separate shape stacks for the main and alternate screens.
 - Pastes keep tab, carriage return and line feed, and drop all other control characters.
@@ -151,7 +152,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Docked areas: a script puts lines of styled text at an edge of a window, and the panes shrink to fit. An area can take the place of the tab bar. An area can also go at an edge of one pane. It then moves with the pane, also to another tab or window, shows on its overview card and closes with it. Its script gets clicks, drags, the item under the pointer, the mouse wheel and the cells that the area has.
 - Scripts can open the menu of a tab and move a tab to a position in its window. A pane's actions that close, rename, move or detach its tab do not show that tab first.
 - The tab line example package draws the tab bar in the terminal font. Its tabs show a hover state, close on a middle click and open their menu on a right click. A `+` button opens a new tab, the wheel moves through the tabs, and a drag moves a tab.
-- Script key modes that take the window's keys. Ctrl+Shift+Escape (`end_script_key_mode`) always ends one.
+- Script key modes that take the window's keys. The `end_script_key_mode` binding, Ctrl+Shift+Escape by default, always ends one.
 - A script key mode that starts while the pane overview is open ends when the overview closes.
 - `new_tab(pane)` starts in the directory of that pane and opens its tab after the tab of that pane.
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.

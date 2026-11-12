@@ -102,6 +102,58 @@ A binding can name a symbol that needs Shift, such as `%` or `+`.
 Shift+Tab matches bindings that name `Shift+Tab`.
 On a non-Latin layout, a key without Ctrl matches the key that the first Latin layout puts there.
 
+### Remap modifiers
+
+`Keybinds.remapModifiers` makes one modifier act as another in Afterglow, as `remap_modifiers` does in Kitty.
+This example swaps Ctrl and Super:
+
+```json
+{"Keybinds": {"remapModifiers": "ctrl:super super:ctrl"}}
+```
+
+| Item | Description |
+| --- | --- |
+| Rule | A source modifier, a colon and the destination, such as `ctrl:super`. Spaces separate the rules. |
+| Source | One modifier: `shift`, `ctrl`, `alt` or `super`. |
+| Destination | One or more of the same modifiers, joined by `+`, such as `ctrl+shift` in `alt:ctrl+shift`. |
+| Names | Kitty's other names also work: `control`, `opt`, `option`, `cmd`, `command`, `⇧`, `⌃`, `⌥` and `⌘`. Letter case has no effect. |
+| Two rules for one source | The last rule applies. The rules apply together, so a swap does not chain. |
+| Error | A rule without a colon, a missing name such as `ctrl:`, an unknown name, two modifiers before the colon, or a rule that makes a modifier into itself. Afterglow shows the problem and remaps no modifier. |
+
+Afterglow remaps the modifiers of each key, mouse and wheel event before anything reads the event.
+A modifier that is latched or locked, for example with sticky keys, is remapped too.
+These use the modifier that a key becomes:
+
+- Key bindings, key tables and leader sequences.
+- `Links.modifier`, and the Shift and Alt of [mouse selection](#mouse).
+- The keys and mouse reports that programs get, and the keys that scripts get in `on_key`.
+- The tab bar, the command palette and the prompts.
+
+Write the bindings for the modifier that a key becomes, not the modifier on the key.
+In a binding, the Super key is `Meta`, as in `Meta+Shift+T`.
+With `ctrl:super super:ctrl`, the default `Ctrl+Shift` bindings move to the Super key.
+With only `super:ctrl`, they work from the Ctrl key and from the Super key.
+A rule without its opposite, such as `ctrl:super` alone, leaves no key for its source modifier.
+The bindings on that modifier then do nothing, and so does a `Links.modifier` of that modifier.
+In a script's key mode, `end_script_key_mode` and `cancel_overlay` also match the modifiers on the keys, so the mode always has a way out.
+The command palette and the context menu show the bindings as you write them.
+
+In the [Kitty keyboard protocol](#keyboard-protocols), a program that asks for all keys gets the press and release of each modifier key.
+When the destination is one modifier, a Shift, Ctrl, Alt or Super key reports that modifier on the same side.
+The key that types a character and the character itself come from the keyboard layout with the new modifiers.
+Caps Lock and AltGr work as they do without a remap.
+
+These keep the modifiers on the keys:
+
+- The desktop and other applications. A desktop shortcut takes its key before Afterglow gets it.
+- `QuickTerminal.shortcut`, which is a desktop shortcut.
+- The question before a file transfer, and the save dialog of a download.
+- A drag and drop between applications.
+
+A rule that names Kitty's `hyper` or `meta` is an error.
+A Hyper or Meta key gives the modifier that the keyboard layout gives it, if any.
+The remap applies to that modifier, and the key keeps its name.
+
 ## Pane controls
 
 | Action | Default shortcut | Function |
@@ -232,7 +284,7 @@ Afterglow opens OSC 8 links and plain-text URLs with a click while you hold the 
 
 | Setting or action | Default | Function |
 | --- | --- | --- |
-| `Links.modifier` | `ctrl` | Key to hold for link highlighting and clicks. `none` opens links with a plain click. |
+| `Links.modifier` | `ctrl` | Key to hold for link highlighting and clicks: `ctrl`, `shift`, `alt` or `super`. `none` opens links with a plain click. |
 | `Links.detectUrls` | `true` | Finds plain-text URLs in addition to OSC 8 links |
 | `Links.openWith` | empty | Command that receives the URL as its last argument. Afterglow splits it into words and runs it without a shell. Empty uses the desktop browser. |
 | `Links.schemes` | `http`, `https`, `mailto`, `ftp`, `file` | Schemes that open without a prompt. Other schemes ask first. |
@@ -327,7 +379,8 @@ A touchscreen works with one finger, as in Kitty.
 
 The pointer does not show when a finger touches. Shader packs that read the pointer follow the finger.
 
-In a program that reads the mouse, a tap is a click for the program, and a hold then a move is a drag for the program.
+In a program that reads the mouse, a tap is a click for the program.
+A hold then a move is a drag for the program.
 Hold Shift to select instead.
 
 A finger scroll gives a program that reads the mouse one wheel report for each row of distance.
@@ -421,7 +474,8 @@ A `SetEnv` setting in your SSH configuration replaces this offer.
 The default `TERM` is `xterm-256color`, and every host knows that entry.
 If `Terminal.term` is `afterglow`, the first session to a host installs the `afterglow` terminfo entry in `~/.terminfo` on that host.
 The install and the session share one connection.
-You authenticate once when your SSH configuration sets `ControlMaster auto`, or else when `XDG_RUNTIME_DIR` is an absolute path of letters, digits, `/`, `.`, `_` and `-`.
+You authenticate once when your SSH configuration sets `ControlMaster auto`.
+Without it, you authenticate once when `XDG_RUNTIME_DIR` is an absolute path of letters, digits, `/`, `.`, `_` and `-`.
 Afterglow puts its own control socket there, so keep that directory private to you, as systemd makes it.
 For this first connection, Afterglow's shared connection replaces a `ControlPath none` setting for that host.
 The reason is that `ssh -G` shows `none` and the default value in the same way.

@@ -63,6 +63,7 @@
 #include <qpa/qwindowsysteminterface.h>
 #include <QRegularExpression>
 #include <QScopeGuard>
+#include <QScopedValueRollback>
 #include <QScreen>
 #include <QSurfaceFormat>
 #include <QVariantMap>
@@ -2383,6 +2384,41 @@ bool TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)
 
 bool TerminalWindow::event(QEvent* e)
 {
+    // Keybinds.remapModifiers, before anything reads the event, as in kitty:
+    // bindings, the link modifier, mouse selection, the chrome and programs
+    // see the modifiers that the keys become. A key event is made again with
+    // the new key and text, and goes on without this function, which would
+    // remap it a second time. A touch event is not remapped: its modifiers
+    // reach the handlers only in the wheel and mouse events that touchScroll()
+    // and touchMouse() make of it, which come through here.
+    if (const ModifierRemap& remap = m_settings.settings().modifierRemap; !remap.isEmpty() && e->isInputEvent()) {
+        switch (e->type()) {
+        case QEvent::KeyPress:
+        case QEvent::KeyRelease:
+        case QEvent::ShortcutOverride: {
+            auto* key = static_cast<QKeyEvent*>(e);
+            if (const std::unique_ptr<QKeyEvent> remapped = remappedKeyEvent(*key, remap)) {
+                const QScopedValueRollback<const QKeyEvent*> physical(m_physicalKeyEvent, key);
+                const bool handled = QWindow::event(remapped.get());
+                e->setAccepted(remapped->isAccepted());
+                return handled;
+            }
+            // As it came: an outer remapped event's keys are not this one's.
+            const QScopedValueRollback<const QKeyEvent*> physical(m_physicalKeyEvent, nullptr);
+            return QWindow::event(e);
+        }
+        case QEvent::TouchBegin:
+        case QEvent::TouchUpdate:
+        case QEvent::TouchEnd:
+        case QEvent::TouchCancel:
+            break;
+        default: {
+            auto* input = static_cast<QInputEvent*>(e);
+            input->setModifiers(remap.apply(input->modifiers()));
+            break;
+        }
+        }
+    }
     switch (e->type()) {
     case QEvent::UpdateRequest:
         renderNow();
@@ -3460,10 +3496,19 @@ void TerminalWindow::openLink(const QString& url)
                              QStringLiteral("Open"));
 }
 
-bool TerminalWindow::linkModifierHeld() const
+Qt::KeyboardModifiers TerminalWindow::modifiersAfterKey(const QKeyEvent* e) const
 {
-    const Qt::KeyboardModifiers modifier = m_settings.settings().links.modifier;
-    return modifier == Qt::NoModifier || (QGuiApplication::queryKeyboardModifiers() & modifier);
+    // A remapped event has them already, and its key is not the layout's.
+    return m_physicalKeyEvent ? e->modifiers() : modifiersAfter(*e);
+}
+
+bool TerminalWindow::linkModifierHeld(std::optional<Qt::KeyboardModifiers> modifiers) const
+{
+    const Settings& settings = m_settings.settings();
+    if (settings.links.modifier == Qt::NoModifier) return true;
+    // The keyboard's state comes as the keys are: the remap is the window's.
+    if (!modifiers) modifiers = settings.modifierRemap.apply(QGuiApplication::queryKeyboardModifiers());
+    return bool(*modifiers & settings.links.modifier);
 }
 
 void TerminalWindow::revealPane(Pane* pane)
@@ -3887,10 +3932,11 @@ void TerminalWindow::openPaneMenu(Pane* pane)
     openContextMenu(cursor, linkAtCell(shown, cellOf(shown, gridPixelAt(shown, cursor * devicePixelRatio()))).url);
 }
 
-bool TerminalWindow::updateLinkHover()
+bool TerminalWindow::updateLinkHover(std::optional<Qt::KeyboardModifiers> modifiers)
 {
-    // Not over a pane's dock, where the cell would clamp to the grid's edge.
-    Pane* pane = linkModifierHeld() ? pointerTarget(paneUnder(m_pointer), m_pointer) : nullptr;
+    // Not over a pane's dock, where the cell would clamp to the grid's edge,
+    // and not over the overview's cards.
+    Pane* pane = !m_overview.open && linkModifierHeld(modifiers) ? pointerTarget(paneUnder(m_pointer), m_pointer) : nullptr;
     const LinkHover found = linkAt(pane, m_pointer);
     const bool changed = found.pane != m_hover.pane || found.link != m_hover.link || found.row != m_hover.row
         || found.colStart != m_hover.colStart || found.colEnd != m_hover.colEnd;
@@ -4335,6 +4381,8 @@ void TerminalWindow::applySettings(const Settings& previous)
     if (now.shaders != previous.shaders || now.shaderParams != previous.shaderParams) {
         applyShaders();
     }
+    // A held key or the pointer over a link: the hover follows the new rules.
+    if (now.modifierRemap != previous.modifierRemap || now.links.modifier != previous.links.modifier) updateLinkHover();
     if (now.mux.onClose != previous.mux.onClose) {
         for (Pane* p : findChildren<Pane*>()) p->setKillSessionOnClose(now.mux.onClose == MuxSettings::Close::Kill);
     }
@@ -4620,8 +4668,8 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
         unicodeInputKey(e);
         return;
     }
-    if (e->key() == Qt::Key_Control || e->key() == Qt::Key_Shift || e->key() == Qt::Key_Alt) {
-        updateLinkHover();
+    if (isModifierKey(e->key())) {
+        updateLinkHover(modifiersAfterKey(e));
     }
     if (chrome) {
         m_consumedKeys.insert(physicalKey, false);
@@ -4656,25 +4704,18 @@ void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
     // As in kitty: a key, pressed or let go, ends a coast.
     stopMomentum();
     const quint32 physicalKey = physicalKeyOf(e);
-    const Qt::KeyboardModifiers linkModifier = m_settings.settings().links.modifier;
-    if ((e->key() == Qt::Key_Control && linkModifier == Qt::ControlModifier)
-        || (e->key() == Qt::Key_Shift && linkModifier == Qt::ShiftModifier)
-        || (e->key() == Qt::Key_Alt && linkModifier == Qt::AltModifier)) {
-        // queryKeyboardModifiers() still reports the key during its own release.
-        if (!m_hover.url.isEmpty() || m_hover.pane) {
-            m_hover = {};
-            applyPointerShape();
-            scheduleRender();
-        }
-    }
+    // A modifier key's release reports the modifiers after it, which the
+    // keyboard's state does not yet.
+    if (isModifierKey(e->key())) updateLinkHover(modifiersAfterKey(e));
     // The press reached a program: so does its release, whatever has the
     // keyboard now and whichever pane has the focus. Auto-repeat comes as
     // release/press pairs; only the real release counts.
     if (const auto sent = m_sentKeys.constFind(physicalKey); sent != m_sentKeys.constEnd()) {
         if (!e->isAutoRepeat()) {
             const QPointer<Pane> pane = sent->pane;
+            const AfterglowVt::Key pressedAs = sent->terminalKey;
             m_sentKeys.erase(sent);
-            if (takesInput(pane)) sendKey(e, pane);
+            if (takesInput(pane)) sendKey(e, pane, pressedAs);
         }
         return;
     }
@@ -4699,15 +4740,17 @@ void TerminalWindow::releaseSentKeys()
     auto sent = std::exchange(m_sentKeys, {}).asKeyValueRange();
     std::vector<std::pair<quint32, SentKey>> keys(sent.begin(), sent.end());
     std::sort(keys.begin(), keys.end(), [](const auto& a, const auto& b) { return a.second.order > b.second.order; });
-    const Qt::KeyboardModifiers modifiers = QGuiApplication::queryKeyboardModifiers();
+    // The keyboard's state comes as the keys are: the remap is the window's.
+    const Qt::KeyboardModifiers modifiers =
+        m_settings.settings().modifierRemap.apply(QGuiApplication::queryKeyboardModifiers());
     for (const auto& [physicalKey, key] : keys) {
         m_consumedKeys.insert(physicalKey, false);
         QKeyEvent release(QEvent::KeyRelease, key.key, modifiers, key.nativeScanCode, 0, 0, key.text);
-        if (takesInput(key.pane)) sendKey(&release, key.pane);
+        if (takesInput(key.pane)) sendKey(&release, key.pane, key.terminalKey);
     }
 }
 
-void TerminalWindow::sendKey(QKeyEvent* e, Pane* pane)
+void TerminalWindow::sendKey(QKeyEvent* e, Pane* pane, std::optional<AfterglowVt::Key> pressedAs)
 {
     Pane* target = pane ? pane : inputPane(m_focused);
     if (!target) {
@@ -4720,7 +4763,11 @@ void TerminalWindow::sendKey(QKeyEvent* e, Pane* pane)
         if (sent != m_sentKeys.constEnd() && sent->pane.data() != target) return;
     }
     QByteArray storage;
-    const AfterglowVt::KeyEvent ev = mapKeyEvent(e, storage);
+    AfterglowVt::KeyEvent ev = mapKeyEvent(e, storage);
+    // The key event is remapped already (event()); the terminal's name of a
+    // modifier key comes from the layout, so it is remapped here. A release
+    // names the key as its press did, also across a change of the remap.
+    ev.key = pressedAs ? *pressedAs : remappedModifierKey(*e, ev.key, m_settings.settings().modifierRemap);
     const std::string bytes = target->withTerminal([&ev](Terminal& t) { return AfterglowVt::encodeKey(ev, t.modes()); });
     if (bytes.empty()) {
         return;
@@ -4736,7 +4783,7 @@ void TerminalWindow::sendKey(QKeyEvent* e, Pane* pane)
     if (ev.action != AfterglowVt::KeyAction::Release) {
         target->clearSelection();
         noteTyping();
-        m_sentKeys.insert(physicalKeyOf(e), {target, e->key(), e->text(), e->nativeScanCode(), ++m_sentKeyOrder});
+        m_sentKeys.insert(physicalKeyOf(e), {target, e->key(), e->text(), e->nativeScanCode(), ev.key, ++m_sentKeyOrder});
     }
     target->sendInput(bytes);
 }
@@ -5258,7 +5305,7 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
         return;
     }
     m_pointer = e->position();
-    updateLinkHover();
+    updateLinkHover(e->modifiers());
     if (e->button() == Qt::LeftButton && !(e->modifiers() & Qt::ControlModifier)) {
         if (auto divider = m_splits->dividerAt(dividerPixel(e->position()), dividerTolerance())) {
             m_dividerDrag = divider;
@@ -5668,7 +5715,7 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         // meanwhile): the press selects, as any press does.
         beginSelection(pane, m_textDragFrom, AfterglowVt::SelectionMode::Normal);
     }
-    updateLinkHover();
+    updateLinkHover(e->modifiers());
     if (!m_selectionPane && routePointerToChrome(e, e->position(), false, false)) {
         updateDockHover();
         setCursor(m_chrome->cursorAt(m_pointer));
@@ -6013,7 +6060,7 @@ void TerminalWindow::leaveChrome()
     // chrome took: its drag goes on.
     if (!chromeVisible() || m_chromeGrab) return;
     QMouseEvent outside(QEvent::MouseMove, QPointF(-1, -1), QPointF(-1, -1), Qt::NoButton, Qt::NoButton,
-                        QGuiApplication::keyboardModifiers());
+                        m_settings.settings().modifierRemap.apply(QGuiApplication::keyboardModifiers()));
     m_chrome->deliver(&outside);
 }
 

@@ -22,11 +22,14 @@
 #include "chrome/ChromeLayer.h"
 #include "config/Keybinds.h"
 #include "KeyMapping.h"
+#include "XkbKeyboard.h"
+#include <xkbcommon/xkbcommon-keysyms.h>
 #include "DockArea.h"
 #include "control/Control.h"
 #include "control/ControlSocket.h"
 #include "scripting/ScriptControl.h"
 #include "TerminalWindow.h"
+#include "config/ModifierRemap.h"
 #include "config/Settings.h"
 #include <AfterglowRender/FontSet.h>
 #include <AfterglowRender/Snapshot.h>
@@ -307,6 +310,14 @@ const DockArea* shownDock(const TerminalWindow* window, const char* id, quint32 
         if (dock->id() == QLatin1String(id) && dock->pane() == pane) return dock;
     return nullptr;
 }
+// The accessible area of a script dock whose name contains @p text: a
+// child of the window's root with no object of its own.
+QAccessibleInterface* dockAreaNamed(TerminalWindow* window, const char* text) {
+    QAccessibleInterface* root = window->accessibleRoot();
+    for (int i = 0; root && i < root->childCount(); ++i)
+        if (auto* c = root->child(i); c && c->object() == nullptr && c->text(QAccessible::Name).contains(QLatin1String(text))) return c;
+    return nullptr;
+}
 const DockArea* paneDock(const Pane* pane, const char* id) {
     for (const auto& dock : pane->docks())
         if (dock->id() == QLatin1String(id)) return dock.get();
@@ -317,6 +328,22 @@ void sendKey(TerminalWindow* window, int key, Qt::KeyboardModifiers modifiers = 
     QKeyEvent down(QEvent::KeyPress, key, modifiers, text, autoRepeat);
     QCoreApplication::sendEvent(window, &down);
     QKeyEvent up(QEvent::KeyRelease, key, modifiers, text, autoRepeat);
+    QCoreApplication::sendEvent(window, &up);
+}
+// A key with its xkb keycode (evdev code + 8), as the compositor's keyboard
+// sends one: the layout gives a remapped key its new key and text.
+void sendKeyCode(TerminalWindow* window, int key, quint32 keycode, Qt::KeyboardModifiers modifiers, const QString& text = {}) {
+    QKeyEvent down(QEvent::KeyPress, key, modifiers, keycode, 0, 0, text);
+    QCoreApplication::sendEvent(window, &down);
+    QKeyEvent up(QEvent::KeyRelease, key, modifiers, keycode, 0, 0, text);
+    QCoreApplication::sendEvent(window, &up);
+}
+// The press and release of a modifier key with the state that Qt stores for
+// each, the one before the key: QKeyEvent::modifiers() reports the one after.
+void sendModifierKey(TerminalWindow* window, int key, Qt::KeyboardModifier modifier, quint32 keycode = 0) {
+    QKeyEvent down(QEvent::KeyPress, key, Qt::NoModifier, keycode, 0, 0, {});
+    QCoreApplication::sendEvent(window, &down);
+    QKeyEvent up(QEvent::KeyRelease, key, modifier, keycode, 0, 0, {});
     QCoreApplication::sendEvent(window, &up);
 }
 // As sendKey, then runs the calls that the key queued. False when they did
@@ -417,8 +444,13 @@ private:
 // tests: a test that needs scripts turns them on. A pane with no command
 // runs /bin/sh, not the developer's login shell with its startup files.
 QJsonObject testSettings(const QJsonObject& overrides = {}) {
+    // The rows of a wheel notch and the hold that starts a touch selection
+    // are values that tests count on: a new default does not change them.
+    // These are overrides, which a test's edit of the file does not change.
     QJsonObject settings{{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("cursorBlink"), false},
-                                                                  {QStringLiteral("shell"), QStringLiteral("/bin/sh")}}},
+                                                                  {QStringLiteral("shell"), QStringLiteral("/bin/sh")},
+                                                                  {QStringLiteral("scrollLines"), 3}}},
+                         {QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("touchSelectHold"), 400}}},
                          {QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), false}}}};
     for (auto group = overrides.begin(); group != overrides.end(); ++group) {
         QJsonObject merged = settings.value(group.key()).toObject();
@@ -473,6 +505,14 @@ protected:
         drainDeferredDeletes();
         application = std::make_unique<Application>(testSocket(), directory.filePath(config), settings);
         openWindow(command);
+    }
+    // The fixture's window again, with the coast of kitty's 0.96 each 8 ms
+    // (Mouse.momentumScroll), for the tests that count its rows.
+    void restartWithKittysCoast() {
+        restartApplication(QStringLiteral("coast.conf"),
+            testSettings({{QStringLiteral("Window"), QJsonObject{{QStringLiteral("paneTitles"), true}}},
+                          {QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("momentumScroll"), 0.96}}}}),
+            {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
     }
     // The fixture's settings with Mouse.dragSelection on, and @p overrides
     // over them by group, in a new application whose window runs @p command.
@@ -1687,12 +1727,7 @@ TEST_F(NativeWindow, AWindowWhoseOnlyPaneClosesGoesAfterThePaneAndItsDock) {
         {dockRun(QStringLiteral("OnlyTitle"), QStringLiteral("t"))}, QStringLiteral("pane")), pane).isEmpty());
     QAccessible::Id area = 0;
     ASSERT_TRUE(waitFor([&] {
-        QAccessibleInterface* root = window->accessibleRoot();
-        for (int i = 0; root && i < root->childCount(); ++i) {
-            QAccessibleInterface* child = root->child(i);
-            if (child && child->object() == nullptr && child->text(QAccessible::Name).contains(QLatin1String("OnlyTitle")))
-                area = QAccessible::uniqueId(child);
-        }
+        if (QAccessibleInterface* child = dockAreaNamed(window, "OnlyTitle")) area = QAccessible::uniqueId(child);
         return area != 0;
     }));
     QPointer<TerminalWindow> closing = window;
@@ -1884,11 +1919,7 @@ TEST_F(NativeWindow, AccessibleDockItemsAreButtonsThatSendTheirClick) {
                       dockRun(QStringLiteral(" | ")), dockRun(QStringLiteral("Deploy"), QStringLiteral("deploy"))}).isEmpty());
     auto* root = window->accessibleRoot();
     ASSERT_NE(root, nullptr);
-    auto findDock = [&]() -> QAccessibleInterface* {
-        for (int i = 0; i < root->childCount(); ++i)
-            if (auto* c = root->child(i); c && c->object() == nullptr && c->text(QAccessible::Name).contains(QLatin1String("Deploy"))) return c;
-        return nullptr;
-    };
+    auto findDock = [&] { return dockAreaNamed(window, "Deploy"); };
     // The dock shows from the next frame's layout.
     ASSERT_TRUE(waitFor([&] { return findDock() != nullptr; }));
     QAccessibleInterface* area = findDock();
@@ -2820,8 +2851,14 @@ void pressLeftWith(QWindow* window, const QPointF& at, Qt::KeyboardModifiers mod
     QMouseEvent event(QEvent::MouseButtonPress, at, at, window->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, modifiers, source);
     QCoreApplication::sendEvent(window, &event);
 }
+// A left release with @p modifiers.
+void releaseLeftWith(QWindow* window, const QPointF& at, Qt::KeyboardModifiers modifiers) {
+    QMouseEvent event(QEvent::MouseButtonRelease, at, at, window->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, modifiers);
+    QCoreApplication::sendEvent(window, &event);
+}
 // A distance that starts a drag, in logical pixels.
 qreal dragDistance() { return 4 * QGuiApplication::styleHints()->startDragDistance(); }
+
 // Fails the test when @p window starts a drag, which it cancels so that the
 // test goes on. A drag that ended leaves its QDrag: its deleteLater came from
 // no event loop, so only an explicit send of the deferred deletes takes it.
@@ -2929,7 +2966,177 @@ QStringList alternateScreenReader(const QString& file) {
 // Up keys in @p bytes, in either cursor key mode.
 qsizetype upKeys(const QByteArray& bytes) { return bytes.count("\x1b[A") + bytes.count("\x1bOA"); }
 
+// Keybinds.remapModifiers in a window, as kitty's remap_modifiers: the keys,
+// the mouse, the wheel and a tap reach the program with the modifiers that
+// the keys become, and bindings fire from the keys that give their modifiers.
+// The keys carry their keycodes, so the layout gives their text.
+TEST_F(NativeWindow, RemappedModifiersReachProgramsTheMouseAndBindings) {
+    const QString received = directory.filePath(QStringLiteral("received"));
+    const QString config = directory.filePath(QStringLiteral("remap.conf"));
+    // In the file, not in the overrides, so that an edit of the file changes it.
+    QFile file(config);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write(R"({"Keybinds": {"remapModifiers": "ctrl:super super:ctrl"}})");
+    file.close();
+    restartApplication(QStringLiteral("remap.conf"),
+        testSettings({{QStringLiteral("Keybinds"),
+                       QJsonObject{{QStringLiteral("bindings"), QJsonObject{{QStringLiteral("new_tab"), QStringLiteral("Ctrl+Shift+T")}}}}}}),
+        mouseReporter(received));
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received) && reportsMouse(pane); }));
+    QByteArray expected;
+    const auto gets = [&](const QByteArray& bytes) {
+        expected += bytes;
+        return waitFor([&] { return fileContent(received) == expected; });
+    };
+    // Super+C is Ctrl+C: ^C. Ctrl+C is Super+C, which types c. Super+1 is
+    // Ctrl+1, which types 1 as a Ctrl+1 does.
+    sendKeyCode(window, Qt::Key_C, 54, Qt::MetaModifier, QStringLiteral("c"));
+    sendKeyCode(window, Qt::Key_C, 54, Qt::ControlModifier, QStringLiteral("\x03"));
+    sendKeyCode(window, Qt::Key_1, 10, Qt::MetaModifier, QStringLiteral("1"));
+    ASSERT_TRUE(gets("\x03" "c1")) << fileContent(received).toStdString();
+    // A press and release with Super are reported with the Ctrl bit (16), and with Ctrl without it.
+    const QPointF at = cellCentre(window, pane, 2, 1);
+    pressLeftWith(window, at, Qt::MetaModifier);
+    releaseLeftWith(window, at, Qt::MetaModifier);
+    ASSERT_TRUE(gets("\x1b[<16;3;2M\x1b[<16;3;2m")) << fileContent(received).toStdString();
+    pressLeftWith(window, at, Qt::ControlModifier);
+    releaseLeftWith(window, at, Qt::ControlModifier);
+    ASSERT_TRUE(gets("\x1b[<0;3;2M\x1b[<0;3;2m")) << fileContent(received).toStdString();
+    // The wheel too (64 is a notch up).
+    QWheelEvent wheel(at, window->mapToGlobal(at), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::MetaModifier, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(window, &wheel);
+    ASSERT_TRUE(gets("\x1b[<80;3;2M")) << fileContent(received).toStdString();
+    // A tap with Super is a click with Ctrl: the remap acts once on the
+    // mouse events that the window makes of a touch.
+    for (const auto& [type, state] : {std::pair{QEvent::TouchBegin, QEventPoint::Pressed}, std::pair{QEvent::TouchEnd, QEventPoint::Released}}) {
+        QTouchEvent touch(type, touchscreen(), Qt::MetaModifier, {QEventPoint(1, state, at, window->mapToGlobal(at))});
+        QCoreApplication::sendEvent(window, &touch);
+    }
+    ASSERT_TRUE(gets("\x1b[<16;3;2M\x1b[<16;3;2m")) << fileContent(received).toStdString();
+    // New Tab is on Ctrl+Shift+T: the Ctrl key gives Super now, and Super+Shift+T types T.
+    const auto tabs = window->tabs().size();
+    sendKeyCode(window, Qt::Key_T, 28, Qt::ControlModifier | Qt::ShiftModifier, QStringLiteral("\x14"));
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(window->tabs().size(), tabs);
+    ASSERT_TRUE(gets("T")) << fileContent(received).toStdString();
+    sendKeyCode(window, Qt::Key_T, 28, Qt::MetaModifier | Qt::ShiftModifier, QStringLiteral("T"));
+    ASSERT_TRUE(waitFor([&] { return window->tabs().size() == tabs + 1; }));
+    ASSERT_TRUE(window->runAction(window->focusedPane(), Action::PreviousTab));
+    ASSERT_TRUE(settleQueued());
+    ASSERT_EQ(window->focusedPane(), pane);
+    // Kitty's report of all keys names the Ctrl keys as the Super keys, on
+    // their sides (57444 left, 57450 right; 9 is Super, 1:3 a release).
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[>11u"); });
+    sendModifierKey(window, Qt::Key_Control, Qt::ControlModifier, 37);
+    sendModifierKey(window, Qt::Key_Control, Qt::ControlModifier, 105);
+    ASSERT_TRUE(gets("\x1b[57444;9u\x1b[57444;1:3u\x1b[57450;9u\x1b[57450;1:3u")) << fileContent(received).toStdString();
+    // A Ctrl key held while the remap goes keeps its name for its release.
+    QKeyEvent held(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier, 37, 0, 0, {});
+    QCoreApplication::sendEvent(window, &held);
+    ASSERT_TRUE(gets("\x1b[57444;9u")) << fileContent(received).toStdString();
+    setLive(window, config, QStringLiteral("Keybinds"), QStringLiteral("remapModifiers"), QString());
+    if (HasFatalFailure()) return;
+    QKeyEvent let(QEvent::KeyRelease, Qt::Key_Control, Qt::ControlModifier, 37, 0, 0, {});
+    QCoreApplication::sendEvent(window, &let);
+    ASSERT_TRUE(gets("\x1b[57444;1:3u")) << fileContent(received).toStdString();
+    // Without the remap the Ctrl key is Ctrl again.
+    sendModifierKey(window, Qt::Key_Control, Qt::ControlModifier, 37);
+    ASSERT_TRUE(gets("\x1b[57442;5u\x1b[57442;1:3u")) << fileContent(received).toStdString();
+}
+
+// Links.modifier is the modifier that a key becomes: a Super key that gives
+// Ctrl, alone or with Shift, shows the link under a still pointer, and its
+// release hides it again.
+TEST_F(NativeWindow, ARemappedKeyHoldsTheLinkModifier) {
+    for (const char* rule : {"super:ctrl", "super:ctrl+shift"}) {
+        SCOPED_TRACE(rule);
+        restartApplication(QStringLiteral("links.conf"),
+            testSettings({{QStringLiteral("Keybinds"), QJsonObject{{QStringLiteral("remapModifiers"), QString::fromLatin1(rule)}}},
+                          {QStringLiteral("Links"), QJsonObject{{QStringLiteral("modifier"), QStringLiteral("ctrl")}}}}),
+            {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+        if (HasFatalFailure()) return;
+        Pane* pane = window->focusedPane();
+        pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b]8;;https://example.com/x\x1b\\link\x1b]8;;\x1b\\"); });
+        EXPECT_TRUE(nextFrame(window));
+        hoverAt(window, cellCentre(window, pane, 1, 0));
+        EXPECT_NE(window->cursor().shape(), Qt::PointingHandCursor);
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Meta, Qt::NoModifier, 133, 0, 0, {});
+        QCoreApplication::sendEvent(window, &down);
+        EXPECT_EQ(window->cursor().shape(), Qt::PointingHandCursor);
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Meta, Qt::MetaModifier, 133, 0, 0, {});
+        QCoreApplication::sendEvent(window, &up);
+        EXPECT_NE(window->cursor().shape(), Qt::PointingHandCursor);
+    }
+}
+
+// Without a remap: the link stays while one Ctrl key of two is pressed, and
+// a modifier key let go over the overview shows no link.
+TEST_F(NativeWindow, TheLinkHoverFollowsBothCtrlKeysAndStaysOutOfTheOverview) {
+    Pane* pane = window->focusedPane();
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b]8;;https://example.com/x\x1b\\link\x1b]8;;\x1b\\"); });
+    ASSERT_TRUE(nextFrame(window));
+    const QPointF at = cellCentre(window, pane, 1, 0);
+    hoverAt(window, at);
+    QKeyEvent left(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier, 37, 0, 0, {});
+    QCoreApplication::sendEvent(window, &left);
+    EXPECT_EQ(window->linkHoverPane(), pane);
+    // Qt reports the right Ctrl key's press without Ctrl: Ctrl was down.
+    QKeyEvent right(QEvent::KeyPress, Qt::Key_Control, Qt::ControlModifier, 105, 0, 0, {});
+    QCoreApplication::sendEvent(window, &right);
+    EXPECT_EQ(window->linkHoverPane(), pane);
+    for (const quint32 keycode : {105u, 37u}) {
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Control, Qt::ControlModifier, keycode, 0, 0, {});
+        QCoreApplication::sendEvent(window, &up);
+    }
+    EXPECT_EQ(window->linkHoverPane(), nullptr);
+    // Over the overview's cards: Ctrl held, and Shift let go.
+    ASSERT_TRUE(window->runAction(pane, Action::PaneOverview));
+    hoverAt(window, at);
+    QKeyEvent ctrl(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier, 37, 0, 0, {});
+    QCoreApplication::sendEvent(window, &ctrl);
+    QKeyEvent shift(QEvent::KeyPress, Qt::Key_Shift, Qt::ControlModifier, 50, 0, 0, {});
+    QCoreApplication::sendEvent(window, &shift);
+    QKeyEvent shiftUp(QEvent::KeyRelease, Qt::Key_Shift, Qt::ControlModifier | Qt::ShiftModifier, 50, 0, 0, {});
+    QCoreApplication::sendEvent(window, &shiftUp);
+    EXPECT_EQ(window->linkHoverPane(), nullptr);
+    QKeyEvent ctrlUp(QEvent::KeyRelease, Qt::Key_Control, Qt::ControlModifier, 37, 0, 0, {});
+    QCoreApplication::sendEvent(window, &ctrlUp);
+}
+
+// A script's key mode ends with end_script_key_mode on the keys as they are
+// too: a remap that leaves no key for Ctrl does not take the way out.
+TEST_F(NativeWindow, ARemapLeavesTheWayOutOfAScriptKeyMode) {
+    restartApplication(QStringLiteral("remap.conf"),
+        testSettings({{QStringLiteral("Keybinds"),
+                       QJsonObject{{QStringLiteral("remapModifiers"), QStringLiteral("ctrl:super")},
+                                   {QStringLiteral("bindings"),
+                                    QJsonObject{{QStringLiteral("end_script_key_mode"), QStringLiteral("Ctrl+Shift+Escape")}}}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    QList<QVariantMap> keys;
+    QObject listener;
+    QObject::connect(window, &TerminalWindow::scriptKey, &listener,
+                     [&](const QString&, quint32, const QVariantMap& key) { keys.append(key); });
+    ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), window->focusedPane(), QStringLiteral("Script keys")).isEmpty());
+    // The script gets the Ctrl key's chords as Super's.
+    sendKeyCode(window, Qt::Key_A, 38, Qt::ControlModifier, QStringLiteral("\x01"));
+    ASSERT_EQ(keys.size(), 1);
+    EXPECT_TRUE(keys[0].value(QStringLiteral("meta")).toBool());
+    EXPECT_FALSE(keys[0].value(QStringLiteral("ctrl")).toBool());
+    EXPECT_FALSE(chrome->keyMode().isEmpty());
+    // Ctrl+Shift+Escape on the keys still ends the mode.
+    sendKeyCode(window, Qt::Key_Escape, 9, Qt::ControlModifier | Qt::ShiftModifier, QStringLiteral("\x1b"));
+    EXPECT_EQ(keys.size(), 1);
+    EXPECT_TRUE(chrome->keyMode().isEmpty());
+}
+
 TEST_F(NativeWindow, AFingerScrollCoastsAfterTheFingersLiftUntilAPressStopsIt) {
+    restartWithKittysCoast();
+    if (HasFatalFailure()) return;
     Pane* pane = window->focusedPane();
     fillHistory(pane, 400);
     waitIdle(window);
@@ -2978,10 +3185,7 @@ TEST_F(NativeWindow, ACoastEndsWithTheHistoryAKeyTheFocusATouchOrAnActionAndAWhe
         EXPECT_LE(std::abs(double(settledOffset(window, pane)) - double(stopped)), 1.0) << stopped;
     };
     stops("a key", [&] {
-        QKeyEvent shift(QEvent::KeyPress, Qt::Key_Shift, Qt::ShiftModifier);
-        QCoreApplication::sendEvent(window, &shift);
-        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Shift, Qt::NoModifier);
-        QCoreApplication::sendEvent(window, &up);
+        sendModifierKey(window, Qt::Key_Shift, Qt::ShiftModifier);
     });
     stops("the focus", [&] {
         QFocusEvent out(QEvent::FocusOut, Qt::ActiveWindowFocusReason);
@@ -3109,6 +3313,8 @@ TEST_F(NativeWindow, ASelectionBeingDraggedTakesInTheRowsThatTheWheelScrolls) {
 }
 
 TEST_F(NativeWindow, AFingerOnATouchscreenTapsScrollsAndSelects) {
+    restartWithKittysCoast();
+    if (HasFatalFailure()) return;
     Pane* pane = window->focusedPane();
     fillHistory(pane, 400);
     waitIdle(window);
@@ -3167,6 +3373,8 @@ TEST_F(NativeWindow, AFingerOnATouchscreenTapsScrollsAndSelects) {
 }
 
 TEST_F(NativeWindow, ACancelledTouchNeitherCoastsNorHoldsItsButton) {
+    restartWithKittysCoast();
+    if (HasFatalFailure()) return;
     Pane* pane = window->focusedPane();
     fillHistory(pane, 400);
     waitIdle(window);
@@ -3193,6 +3401,8 @@ TEST_F(NativeWindow, ACancelledTouchNeitherCoastsNorHoldsItsButton) {
 }
 
 TEST_F(NativeWindow, AFlickThatEndsOverAnotherPaneCoastsInItsOwn) {
+    restartWithKittysCoast();
+    if (HasFatalFailure()) return;
     Pane* top = window->focusedPane();
     PaneLaunchOptions launch;
     launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
@@ -3353,7 +3563,10 @@ TEST_F(NativeWindow, ClicksInsideTheSelectionSelectAWordALineOrABlock) {
     const QPointF block = cellCentre(window, pane, 2, 3);
     pressLeftWith(window, block, Qt::AltModifier);
     EXPECT_FALSE(pane->hasSelection());
-    releaseLeft(window, block);
+    // A block: the same columns on each row.
+    dragLeft(window, cellCentre(window, pane, 4, 4));
+    releaseLeft(window, cellCentre(window, pane, 4, 4));
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("lec\nlec"));
     selectWholeScreen(pane);
     const QPointF touch = cellCentre(window, pane, 5, 4);
     pressLeftWith(window, touch, Qt::NoModifier, Qt::MouseEventSynthesizedByQt);
@@ -4432,8 +4645,135 @@ TEST_F(NativeWindow, PaneCoalescesBellsAndRepeatedTitlesAndUserVars) {
     EXPECT_EQ(titles, QStringList{QStringLiteral("t999")});
 }
 
+// Keybinds.remapModifiers, as kitty's remap_modifiers: the event that the
+// window reads, and the terminal's name of a modifier key. The keycodes are
+// xkb's (evdev + 8) on the compositor's US layout, which gives the new key
+// and text.
+TEST(KeyMapping, RemapsTheModifiersKeyAndTextOfKeyEvents) {
+    const auto remap = ModifierRemap::parse(QStringLiteral("ctrl:super super:ctrl alt:ctrl+shift"));
+    ASSERT_TRUE(remap);
+    // Super+C becomes Ctrl+C, with the control character that Ctrl+C has.
+    const QKeyEvent superC(QEvent::KeyPress, Qt::Key_C, Qt::MetaModifier, 54, 0, 0, QStringLiteral("c"));
+    auto event = remappedKeyEvent(superC, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::ControlModifier));
+    EXPECT_EQ(event->key(), int(Qt::Key_C));
+    EXPECT_EQ(event->text(), QStringLiteral("\x03"));
+    // Ctrl+C becomes Super+C, which types c.
+    const QKeyEvent ctrlC(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier, 54, 0, 0, QStringLiteral("\x03"));
+    event = remappedKeyEvent(ctrlC, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::MetaModifier));
+    EXPECT_EQ(event->text(), QStringLiteral("c"));
+    // Super+1 becomes Ctrl+1, which types 1: Ctrl has no control character for it.
+    const QKeyEvent superOne(QEvent::KeyPress, Qt::Key_1, Qt::MetaModifier, 10, 0, 0, QStringLiteral("1"));
+    event = remappedKeyEvent(superOne, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::ControlModifier));
+    EXPECT_EQ(event->text(), QStringLiteral("1"));
+    // Alt+5 becomes Ctrl+Shift+5: the key and the text of Shift's level.
+    const QKeyEvent altFive(QEvent::KeyPress, Qt::Key_5, Qt::AltModifier, 14, 0, 0, QStringLiteral("5"));
+    event = remappedKeyEvent(altFive, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->modifiers(), Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(event->key(), int(Qt::Key_Percent));
+    EXPECT_EQ(event->text(), QStringLiteral("%"));
+    // The Ctrl key is the Super key now, as in kitty, which Qt calls Meta.
+    // Qt stores the state before a modifier key and reports the one after it.
+    const QKeyEvent ctrlDown(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier, 37, 0, 0, {});
+    event = remappedKeyEvent(ctrlDown, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Meta));
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::MetaModifier));
+    const QKeyEvent ctrlUp(QEvent::KeyRelease, Qt::Key_Control, Qt::ControlModifier, 37, 0, 0, {});
+    event = remappedKeyEvent(ctrlUp, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Meta));
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::NoModifier));
+    // The Super key, by Qt's Wayland name and by its X11 one, which Qt does
+    // not flip: its press reports Ctrl, and its release none.
+    for (const int name : {int(Qt::Key_Meta), int(Qt::Key_Super_L)}) {
+        const QKeyEvent down(QEvent::KeyPress, name, Qt::NoModifier, 133, 0, 0, {});
+        const QKeyEvent up(QEvent::KeyRelease, name, Qt::MetaModifier, 133, 0, 0, {});
+        const auto pressed = remappedKeyEvent(down, *remap);
+        const auto released = remappedKeyEvent(up, *remap);
+        if (!pressed || !released) {
+            ADD_FAILURE() << "not remapped: " << name;
+            continue;
+        }
+        EXPECT_EQ(pressed->key(), int(Qt::Key_Control)) << name;
+        EXPECT_EQ(pressed->modifiers(), Qt::KeyboardModifiers(Qt::ControlModifier)) << name;
+        EXPECT_EQ(released->key(), int(Qt::Key_Control)) << name;
+        EXPECT_EQ(released->modifiers(), Qt::KeyboardModifiers(Qt::NoModifier)) << name;
+    }
+    // Alt becomes two modifiers: its key stays Alt.
+    const QKeyEvent alt(QEvent::KeyPress, Qt::Key_Alt, Qt::NoModifier, 64, 0, 0, {});
+    event = remappedKeyEvent(alt, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Alt));
+    EXPECT_EQ(event->modifiers(), Qt::ControlModifier | Qt::ShiftModifier);
+    // A key with no remapped modifier is not made again, and with an empty remap no key is.
+    const QKeyEvent shiftA(QEvent::KeyPress, Qt::Key_A, Qt::ShiftModifier, 38, 0, 0, QStringLiteral("A"));
+    EXPECT_FALSE(remappedKeyEvent(shiftA, *remap));
+    EXPECT_FALSE(remappedKeyEvent(superC, ModifierRemap{}));
+    // The terminal's modifier keys keep their side. A key that becomes
+    // several modifiers, or none, keeps its name.
+    using AfterglowVt::Key;
+    EXPECT_EQ(remappedModifierKey(ctrlDown, Key::LeftControl, *remap), Key::LeftSuper);
+    const QKeyEvent rightCtrl(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier, 105, 0, 0, {});
+    EXPECT_EQ(remappedModifierKey(rightCtrl, Key::RightControl, *remap), Key::RightSuper);
+    const QKeyEvent rightSuper(QEvent::KeyPress, Qt::Key_Meta, Qt::NoModifier, 134, 0, 0, {});
+    EXPECT_EQ(remappedModifierKey(rightSuper, Key::RightSuper, *remap), Key::RightControl);
+    EXPECT_EQ(remappedModifierKey(alt, Key::LeftAlt, *remap), Key::LeftAlt);
+    const QKeyEvent shift(QEvent::KeyPress, Qt::Key_Shift, Qt::NoModifier, 50, 0, 0, {});
+    EXPECT_EQ(remappedModifierKey(shift, Key::LeftShift, *remap), Key::LeftShift);
+    EXPECT_EQ(remappedModifierKey(superC, Key::Text, *remap), Key::Text);
+}
+
+// A remap that takes Shift away or adds it gives the key of the new level.
+TEST(KeyMapping, ARemapOfShiftGivesTheKeyOfTheNewLevel) {
+    const auto remap = ModifierRemap::parse(QStringLiteral("shift:alt alt:shift"));
+    ASSERT_TRUE(remap);
+    // Shift+Tab is Backtab: as Alt+Tab it is Tab.
+    const QKeyEvent backtab(QEvent::KeyPress, Qt::Key_Backtab, Qt::ShiftModifier, 23, 0, 0, QStringLiteral("\t"));
+    auto event = remappedKeyEvent(backtab, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Tab));
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::AltModifier));
+    // Shift+5 types %: as Alt+5 it is 5, and Alt+5 is Shift+5.
+    const QKeyEvent percent(QEvent::KeyPress, Qt::Key_Percent, Qt::ShiftModifier, 14, 0, 0, QStringLiteral("%"));
+    event = remappedKeyEvent(percent, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_5));
+    EXPECT_EQ(event->text(), QStringLiteral("5"));
+    const QKeyEvent five(QEvent::KeyPress, Qt::Key_5, Qt::AltModifier, 14, 0, 0, QStringLiteral("5"));
+    event = remappedKeyEvent(five, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Percent));
+    EXPECT_EQ(event->text(), QStringLiteral("%"));
+}
+
+// A key without a keycode gives the layout no keysym: the remap changes only
+// its modifiers, and a modifier key keeps its name.
+TEST(KeyMapping, WithoutAKeycodeARemapChangesOnlyTheModifiers) {
+    const auto remap = ModifierRemap::parse(QStringLiteral("ctrl:super super:ctrl"));
+    ASSERT_TRUE(remap);
+    const QKeyEvent superC(QEvent::KeyPress, Qt::Key_C, Qt::MetaModifier, QStringLiteral("c"));
+    auto event = remappedKeyEvent(superC, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::ControlModifier));
+    EXPECT_EQ(event->key(), int(Qt::Key_C));
+    EXPECT_EQ(event->text(), QStringLiteral("c"));
+    const QKeyEvent ctrl(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier);
+    event = remappedKeyEvent(ctrl, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Control));
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::MetaModifier));
+    EXPECT_EQ(remappedModifierKey(ctrl, AfterglowVt::Key::LeftControl, *remap), AfterglowVt::Key::LeftControl);
+}
+
 // In this suite, not an offscreen one: the keys map through the keymap of the
-// compositor's seat. Without a seat, mapKeyEvent takes its keycode table.
+// compositor's seat, which main() waits for.
 TEST(KeyMapping, KeepsKeypadAndShiftedKeysUnderCtrl) {
     QByteArray storage;
     // Ctrl turns keypad 2 into NUL: it is still keypad 2 (xkb keycode 88).
@@ -4728,7 +5068,7 @@ TEST_F(NativeWindow, ScriptKeyModeEndsWithItsReservedChord) {
     QObject::connect(window, &TerminalWindow::scriptKey, &listener, [&](const QString&, quint32, const QVariantMap&) { ++keys; });
     ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), window->focusedPane(), QStringLiteral("Script keys")).isEmpty());
     // A modifier on its own is not a key for the script.
-    sendKey(window, Qt::Key_Shift, Qt::ShiftModifier);
+    sendModifierKey(window, Qt::Key_Shift, Qt::ShiftModifier);
     EXPECT_EQ(keys, 0);
     sendKey(window, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier);
     EXPECT_EQ(keys, 0);
@@ -5987,12 +6327,7 @@ TEST_F(NativeWindow, AccessiblePaneDocksAreKeptApartByPaneAndGoWithIt) {
     auto dock = [&](Pane* pane, const QString& text) {
         return window->setScriptDock(QStringLiteral("a@1"), dockEffect(QStringLiteral("title"), QStringLiteral("top"), 1, {dockRun(text, QStringLiteral("t"))}, QStringLiteral("pane")), pane);
     };
-    auto areaOf = [](TerminalWindow* in, const char* text) -> QAccessibleInterface* {
-        QAccessibleInterface* root = in->accessibleRoot();
-        for (int i = 0; root && i < root->childCount(); ++i)
-            if (auto* c = root->child(i); c && c->object() == nullptr && c->text(QAccessible::Name).contains(QLatin1String(text))) return c;
-        return nullptr;
-    };
+    const auto areaOf = dockAreaNamed;
     // The same id at two panes is two areas.
     ASSERT_TRUE(dock(first, QStringLiteral("FirstTitle")).isEmpty());
     ASSERT_TRUE(dock(second, QStringLiteral("SecondTitle")).isEmpty());
@@ -8838,8 +9173,7 @@ TEST_F(NativeWindow, HintsThatOpenWhileTheViewEasesSitOnTheRowsWhereItStops) {
     ASSERT_TRUE(nextFrame(window));
     EXPECT_EQ(viewportOffset(pane), page);
     // The label of the top row copies that row's URL.
-    for (const QChar letter : highest.value(QStringLiteral("label")).toString())
-        sendKey(window, Qt::Key_A + (letter.toLower().unicode() - u'a'), Qt::NoModifier, QString(letter));
+    typeText(window, highest.value(QStringLiteral("label")).toString());
     EXPECT_TRUE(waitFor([&] { return QGuiApplication::clipboard()->text() == url; }))
         << QGuiApplication::clipboard()->text().toStdString() << " " << url.toStdString();
 }
@@ -8862,8 +9196,7 @@ TEST_F(NativeWindow, LinkLabelsOnAHeldFrameStayUntilTheHoldEnds) {
     // The labels sit on the text drawn: a letter takes its link, and does
     // not close the labels because the terminal went on behind the frame.
     const QString label = chrome->urlHints().front().toMap().value(QStringLiteral("label")).toString();
-    for (const QChar letter : label)
-        sendKey(window, Qt::Key_A + (letter.toLower().unicode() - u'a'), Qt::NoModifier, QString(letter));
+    typeText(window, label);
     EXPECT_TRUE(waitFor([&] { return QGuiApplication::clipboard()->text() == QLatin1String("https://example.com/drawn"); }))
         << QGuiApplication::clipboard()->text().toStdString();
     EXPECT_TRUE(chrome->urlHints().isEmpty());
@@ -11077,6 +11410,19 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
     if (argc > 1 && QByteArray(argv[1]) == "--drop-target") return runDropTarget(QCoreApplication::arguments());
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+    // As afterglow does at start: follow the compositor's keymap, here before
+    // the first test, so that every key maps through it.
+    XkbKeyboard::instance();
+    if (!waitFor([] { return XkbKeyboard::instance().keysym(37) != 0; }, 5000)) {
+        std::fprintf(stderr, "The compositor sent no keymap in 5 seconds. The key tests map keys through it.\n");
+        return 1;
+    }
+    // The key tests name keys by their keycodes on a US layout.
+    const XkbKeyboard& keyboard = XkbKeyboard::instance();
+    if (keyboard.keysym(38) != XKB_KEY_a || keyboard.keysym(10) != XKB_KEY_1 || keyboard.keysym(54) != XKB_KEY_c) {
+        std::fprintf(stderr, "The compositor's keymap is not a US layout, which the key tests expect.\n");
+        return 1;
+    }
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }

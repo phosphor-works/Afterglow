@@ -125,6 +125,7 @@ const Choice<MouseSettings::MiddleClick> MiddleClickChoices[] = {{"primary", Mou
 const Choice<Qt::KeyboardModifiers> ModifierChoices[] = {{"ctrl", Qt::ControlModifier},
                                                          {"shift", Qt::ShiftModifier},
                                                          {"alt", Qt::AltModifier},
+                                                         {"super", Qt::MetaModifier},
                                                          {"none", Qt::NoModifier}};
 const Choice<QuickTerminalSettings::Position> QuickPositionChoices[] = {{"top", QuickTerminalSettings::Position::Top},
                                                                         {"bottom", QuickTerminalSettings::Position::Bottom}};
@@ -644,7 +645,8 @@ PhosphorConfig::Schema buildSchema()
                                  "argument and runs it without a shell. Quotes keep spaces in one word. An empty value uses the "
                                  "desktop browser.")),
         enumKey(QStringLiteral("modifier"), ModifierChoices, d.links.modifier,
-                QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link.")),
+                QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link. "
+                               "super is the key that key bindings call Meta.")),
         {QStringLiteral("schemes"), stringList(d.links.schemes), QMetaType::QVariantList,
          QStringLiteral("URL schemes that open without a prompt. Links with other schemes ask first.")},
     };
@@ -881,6 +883,13 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Named key tables, each a map of actions to keys as in bindings. A binding to table:NAME opens one. "
                         "Its actions keep it open. The pop_key_table action leaves every open table, and so does "
                         "Keybinds.tableTimeout.")},
+        stringKey(QStringLiteral("remapModifiers"), {},
+                  QStringLiteral("Modifiers that act as other modifiers, as in Kitty. Each rule is a modifier, a colon and "
+                                 "one or more modifiers joined by +, from shift, ctrl, alt and super. Spaces separate the "
+                                 "rules. For example, ctrl:super super:ctrl swaps Ctrl and Super. Key bindings, the link "
+                                 "modifier, mouse selection and programs see the modifier that a key becomes. Key bindings "
+                                 "write super as Meta. QuickTerminal.shortcut and the desktop keep the modifiers of the "
+                                 "keys. An empty value remaps nothing, and so does a value with an error.")),
         {QStringLiteral("bindings"), Keybinds::defaultMap(), QMetaType::QVariantMap,
          QStringLiteral("Map each action to a key combination or a list of them. An empty string removes the binding. "
                         "Besides actions, the map can bind script:ID.COMMAND to run a script command, text:BYTES to send "
@@ -1992,6 +2001,12 @@ Settings SettingsStore::read()
         st.read<int>(Keys, QStringLiteral("tableTimeout")), s.keybinds, &errors);
     for (const QString& e : std::as_const(errors)) {
         problem(QStringLiteral("Keybinds: ") + e);
+    }
+    QString remapError;
+    if (const auto remap = ModifierRemap::parse(st.read<QString>(Keys, QStringLiteral("remapModifiers")), &remapError)) {
+        s.modifierRemap = *remap;
+    } else {
+        problem(QStringLiteral("Keybinds.remapModifiers: %1. Remapping no modifier").arg(remapError));
     }
 
     // Logged when it starts: a reload or a theme change that keeps a problem
