@@ -274,6 +274,11 @@ Daemon::Exit Daemon::run()
             if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) || connection.pending()) read(connection);
         }
         std::erase_if(m_connections, [](const auto& c) { return !c->open(); });
+        // A call can start a pane, end one or move panes: the window that
+        // shows the session hears of it now, not at the next wake, which a
+        // program that prints nothing never gives.
+        pumpAttachments();
+        syncAttached();
         // Whether the poll saw it or not: a client that connected since the
         // poll waits in a backlog, and an idle daemon would close its
         // connection with the listener.

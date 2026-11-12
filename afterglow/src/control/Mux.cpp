@@ -75,12 +75,11 @@ Commands:
   attach [NAME] [--no-takeover]
                               Show a session in a window. Without NAME, the
                               only session, or a new one when none runs.
-                              The pane of the session in another window
-                              closes, unless --no-takeover refuses the
-                              attach.
-  detach [NAME]               Close the pane of a session in its window, and
-                              keep the session. In a session pane, NAME
-                              defaults to that session.
+                              The window of the session elsewhere closes,
+                              unless --no-takeover refuses the attach.
+  detach [NAME]               Close the window of a session, and keep the
+                              session. In a session pane, NAME defaults to
+                              the session of that pane.
   ls                          List the sessions.
   kill NAME [--force]         End a session and its programs. With
                               Terminal.confirmClose on, it asks first when a
