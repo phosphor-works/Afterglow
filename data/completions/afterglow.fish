@@ -292,6 +292,12 @@ function __afterglow_mux
                     end
                     set i (math $i + 1)
                 end
+            case --ssh
+                if test $i -eq $n
+                    __fish_print_hostnames
+                    return
+                end
+                set i (math $i + 1)
         end
         set i (math $i + 1)
     end
@@ -310,6 +316,13 @@ function __afterglow_mux
             string match -q -- '-*' "$cur"
             and not contains -- --force $argv
             and set -a offer --force\t'End it without a question'
+    end
+    # A session of another host. An empty word is the name of the session,
+    # or nothing for ls.
+    if contains -- $command new attach detach ls kill; and not contains -- --ssh $argv
+        if test $command = new; or string match -q -- '-*' "$cur"
+            set -a offer --ssh\t'A session of another host'
+        end
     end
     __afterglow_print $offer
 end

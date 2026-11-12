@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "MuxConnect.h"
 #include "MuxHost.h"
 #include "MuxLayout.h"
 #include "MuxProtocol.h"
@@ -76,16 +77,20 @@ public:
 
     /// Attaches to session @p name: when @p takeover, also when another window
     /// shows it, which then detaches. Waits until the daemon names the
-    /// session's layout. Nullptr with @p error on a failure. @p sockets are
-    /// the daemon's: the user's, or a test's. @p eventQueue is Mux.eventQueue
-    /// in bytes, and @p history Terminal.scrollback, the history rows that
-    /// the window keeps of each pane.
-    static std::shared_ptr<MuxClient> attach(const QString& name, bool takeover, QString* error,
-                                             const AfterglowProto::MuxSockets& sockets, std::size_t eventQueue,
-                                             std::size_t history);
+    /// session's layout. Nullptr with @p error on a failure. @p route leads
+    /// to the daemon: the user's on this computer or on another host
+    /// (`afterglow-mux proxy` over ssh), or a test's. @p eventQueue is
+    /// Mux.eventQueue in bytes, and @p history Terminal.scrollback, the
+    /// history rows that the window keeps of each pane.
+    static std::shared_ptr<MuxClient> attach(const QString& name, bool takeover, QString* error, const AfterglowMux::Route& route,
+                                             std::size_t eventQueue, std::size_t history);
     ~MuxClient() override;
 
     const QString& session() const { return m_session; }
+    /// The ssh destination of the session's daemon, empty for this computer.
+    QString host() const { return QString::fromStdString(m_route.host); }
+    /// The session runs on another host: its paths are not this computer's.
+    bool remote() const { return !m_route.proxy.empty(); }
     /// The Mux.eventQueue that the attach passed, in bytes.
     std::size_t eventQueue() const { return m_eventQueue; }
     /// The panes of the session, as the daemon named them.
@@ -207,7 +212,10 @@ private:
 
     QString m_session;
     std::size_t m_eventQueue = 0;
-    AfterglowProto::MuxSockets m_sockets; ///< the daemon's, for callDaemon
+    AfterglowMux::Route m_route; ///< to the daemon, for callDaemon
+    /// The proxy command that carries the stream from another host: it ends
+    /// after the stream.
+    std::shared_ptr<AfterglowMux::ProxyProcess> m_proxy;
     std::unique_ptr<PhosphorChannel::Stream> m_stream;
     PhosphorChannel::StreamWriter* m_input = nullptr;
     PhosphorChannel::StreamWriter* m_actions = nullptr; ///< Attach::ActionChannel: the kill

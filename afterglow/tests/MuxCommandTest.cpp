@@ -280,9 +280,9 @@ protected:
     /// A directory with an ssh for `afterglow mux --ssh`, first on PATH from
     /// now on: `ssh -G -- HOST` prints a configuration, and any other run
     /// runs its command here, after "--" and the destination. So the proxy
-    /// runs on this computer, in the test's environment, and reaches its
-    /// daemon. With @p mux, the build's afterglow-mux is on its PATH; without,
-    /// no afterglow-mux is.
+    /// runs on this computer, in the test's environment and REMOTE_MARK, and
+    /// reaches its daemon. With @p mux, the build's afterglow-mux is on its
+    /// PATH; without, no afterglow-mux is.
     void fakeSsh(bool mux)
     {
         const std::string directory = m_dir + "/ssh-bin";
@@ -293,7 +293,7 @@ protected:
                                              "if [ \"$1\" = -G ]; then printf 'host %s\\nhostname %s\\nuser me\\nport 22\\n' \"$3\" \"$3\"; exit 0; fi\n"
                                              "while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
                                              "shift 2\n"
-                                             "PATH='" + path + "' exec /bin/sh -c \"$*\"\n";
+                                             "REMOTE_MARK=from-host PATH='" + path + "' exec /bin/sh -c \"$*\"\n";
         ASSERT_EQ(::chmod((directory + "/ssh").c_str(), 0700), 0);
         for (std::string& entry : m_environment) {
             if (entry.starts_with("PATH=")) entry = "PATH=" + directory + ":" + entry.substr(5);
@@ -423,7 +423,8 @@ TEST_F(MuxCommandTest, UsageErrorsAndCommandsThatAreNotAvailable)
              {{"attach"}, 1, "afterglow mux attach: no Wayland display shows a window here: "},
              {{"attach", "bad name"}, 2, "afterglow mux attach: the name must be "},
              {{"attach", "a", "b"}, 2, "afterglow mux: unknown argument of attach: b\n"},
-             {{"attach", "--ssh", "host"}, 1, "afterglow mux attach: sessions on other hosts are not available yet\n"},
+             // No display: refused before ssh runs.
+             {{"attach", "--ssh", "host"}, 1, "afterglow mux attach: no Wayland display shows a window here: "},
              {{"detach"}, 2, "afterglow mux: detach takes the name of a session, outside a session pane\n"},
              {{"detach", "a", "b"}, 2, "afterglow mux: unknown argument of detach: b\n"},
              {{"detach", "bad name"}, 2, "afterglow mux detach: the name must be "},
@@ -431,7 +432,7 @@ TEST_F(MuxCommandTest, UsageErrorsAndCommandsThatAreNotAvailable)
              {{"detach", "--ssh", "host"}, 2, "afterglow mux: detach --ssh takes the name of a session\n"},
              // No daemon: no session to detach, and none starts.
              {{"detach", "work"}, 1, "afterglow mux detach: no sessions\n"},
-             {{"new", "--ssh", "host"}, 1, "afterglow mux new: sessions on other hosts are not available yet\n"},
+             {{"new", "--ssh", "host"}, 1, "afterglow mux new: no Wayland display shows a window here: "},
              {{"kill", "--ssh", "host"}, 2, "afterglow mux: kill takes the name of a session\n"},
              {{"ls", "x"}, 2, "afterglow mux: ls takes no arguments but --ssh DESTINATION\n"},
              // Bytes that are not UTF-8 come back as '?', at once.
@@ -500,6 +501,32 @@ TEST_F(MuxCommandTest, ListsDetachesAndKillsTheSessionsOfAnotherHost)
     const Result notHost = mux({"ls", "--ssh", "-oProxyCommand=x"});
     EXPECT_EQ(notHost.status, 1);
     EXPECT_NE(notHost.err.find("is no ssh destination"), std::string::npos) << notHost.err;
+}
+
+// A session of another host runs with that host's environment, which the
+// proxy there has, and the terminal's variables over it: not with this
+// computer's.
+TEST_F(MuxCommandTest, ANewSessionOfAnotherHostHasThatHostsEnvironment)
+{
+    fakeSsh(true);
+    const std::string out = m_dir + "/env";
+    const Result made = mux({"new", "--detach", "--ssh", "far", "--name", "far1", "--", "sh", "-c",
+                             "env > '" + out + ".part' && mv '" + out + ".part' '" + out + "'; while kill -0 " + std::to_string(::getpid())
+                                 + " 2>/dev/null; do sleep 0.2; done"});
+    ASSERT_EQ(made.status, 0) << made.err;
+    EXPECT_EQ(made.out, "far1\n");
+    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+    const std::string env = "\n" + readFile(out);
+    EXPECT_NE(env.find("\nREMOTE_MARK=from-host\n"), std::string::npos) << env;
+    EXPECT_NE(env.find("\nCOLORTERM=truecolor\n"), std::string::npos) << env;
+    EXPECT_NE(env.find("\nAFTERGLOW_SESSION=far1\n"), std::string::npos) << env;
+    // afterglow's own entry where the host takes it, else one that it has.
+    EXPECT_TRUE(env.find("\nTERM=afterglow\n") != std::string::npos || env.find("\nTERM=xterm-256color\n") != std::string::npos) << env;
+    EXPECT_EQ(env.find("\nTERMINFO_DIRS="), std::string::npos) << env;
+    // The directory is the host's: this computer does not check it.
+    const Result relative = mux({"new", "--detach", "--ssh", "far", "--cwd", "here"});
+    EXPECT_EQ(relative.status, 1);
+    EXPECT_EQ(relative.err, "afterglow mux new: give an absolute directory of far with --cwd\n");
 }
 
 TEST_F(MuxCommandTest, AHostWithoutAfterglowMuxSaysSo)

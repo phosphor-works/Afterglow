@@ -42,6 +42,17 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     spawn.argv = launch.argv;
     spawn.workingDirectory = launch.workingDirectory;
     spawn.environment = paneEnvironment(m_options.environment, launch);
+    if (m_options.callerEnvironment) {
+        // The environment of a command over ssh, which no login read: the
+        // shell reads the login's files, as an interactive ssh login does.
+        if (spawn.argv.empty()) spawn.argv = {AfterglowPty::Pty::defaultShell(spawn), "-l"};
+        if (spawn.workingDirectory.empty()) {
+            spawn.workingDirectory = "/";
+            for (const auto& [name, value] : spawn.environment) {
+                if (name == "HOME" && !value.empty()) spawn.workingDirectory = value;
+            }
+        }
+    }
     // The session's environment is the client's, which it sent whole: the
     // daemon's own (a systemd unit's INVOCATION_ID, for one) stays out. So
     // do the daemon's umask and its raised descriptor limit.

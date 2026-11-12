@@ -27,7 +27,7 @@ namespace AfterglowMux {
 /// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
 /// MuxProtocolTest pins the keys of the options to this number, so that a new
 /// key changes it too.
-inline constexpr int ProtocolVersion = 11;
+inline constexpr int ProtocolVersion = 12;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -198,8 +198,16 @@ struct SessionOptions
 {
     std::string name; ///< empty: the daemon's next number
     /// The environment of the client, which each pane of the session changes
-    /// with its launch: the daemon's own is not used.
+    /// with its launch: the daemon's own is not used. With
+    /// callerEnvironment, the variables that it sets over the environment of
+    /// the caller.
     std::vector<std::pair<std::string, std::string>> environment;
+    /// The session's environment is that of the process that calls
+    /// newSession, with `environment` over it: for a session on another host,
+    /// `afterglow-mux proxy` there, which runs in the user's ssh login. Its
+    /// panes without a command run the user's shell as a login shell, in
+    /// HOME without a directory.
+    bool callerEnvironment = false;
     /// The file mode creation mask of the client, which the programs get in
     /// place of the daemon's. -1 keeps the daemon's.
     int umask = -1;

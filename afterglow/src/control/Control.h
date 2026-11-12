@@ -62,8 +62,9 @@ public:
     /// no client, from @p source (ev.source). Returns an error, or empty.
     using ScriptCommandRunner = std::function<QString(const QString& command, quint32 pane, const QString& source)>;
 
-    /// Opens a window that shows mux session @p session: empty, else why not.
-    using SessionWindowOpener = std::function<QString(const QString& session)>;
+    /// Opens a window that shows mux session @p session of @p host (empty:
+    /// this computer): empty, else why not.
+    using SessionWindowOpener = std::function<QString(const QString& session, const QString& host)>;
 
     Control(SettingsStore& settings, WindowFactory newWindow, QObject* parent = nullptr);
     /// For a drag of panes out of a session's window: they go to a new

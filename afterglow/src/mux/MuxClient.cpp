@@ -54,17 +54,16 @@ QString lossText(MuxClient::Loss loss, const QString& name)
 
 } // namespace
 
-std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover, QString* error,
-                                              const AfterglowProto::MuxSockets& sockets, std::size_t eventQueue,
-                                              std::size_t history)
+std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover, QString* error, const AfterglowMux::Route& route,
+                                              std::size_t eventQueue, std::size_t history)
 {
     const auto fail = [error](const QString& text) -> std::shared_ptr<MuxClient> {
         if (error) *error = text;
         return nullptr;
     };
-    if (sockets.candidates.empty()) return fail(QString::fromStdString(sockets.error));
+    if (route.proxy.empty() && route.sockets.candidates.empty()) return fail(QString::fromStdString(route.sockets.error));
     std::string reason;
-    AfterglowMux::Reached reached = AfterglowMux::connectAny(sockets, &reason);
+    AfterglowMux::Reached reached = AfterglowMux::reach(route, false, &reason);
     if (!reached.connection) {
         return fail(reason.empty() ? QStringLiteral("no mux daemon runs, so there is no session '%1'").arg(name)
                                    : QString::fromStdString(AfterglowProto::printable(reason)));
@@ -87,7 +86,8 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
     std::shared_ptr<MuxClient> client(new MuxClient);
     client->m_session = name;
     client->m_eventQueue = eventQueue;
-    client->m_sockets = sockets;
+    client->m_route = route;
+    client->m_proxy = reached.proxy;
     PhosphorChannel::Stream::Options options;
     options.maxChannelId = Attach::MaxChannelId;
     client->m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
@@ -277,6 +277,8 @@ void MuxClient::release(std::uint32_t id, MuxRelease release)
     delete m_writeNotifier;
     m_readNotifier = m_writeNotifier = nullptr;
     m_stream.reset();
+    // Its stream's connection closed: the proxy ends by itself.
+    m_proxy.reset();
     m_input = m_actions = nullptr;
     m_waitingInput.clear();
     m_waitingActions.clear();
@@ -452,7 +454,7 @@ std::optional<Json::Value> MuxClient::callDaemon(const char* fn, Json::Array arg
         return std::nullopt;
     }
     std::string reason;
-    AfterglowMux::Reached reached = AfterglowMux::connectAny(m_sockets, &reason);
+    AfterglowMux::Reached reached = AfterglowMux::reach(m_route, false, &reason);
     if (!reached.connection) {
         qCDebug(lcMux) << "no daemon of session" << m_session << "answers" << fn << ":" << QString::fromStdString(reason);
         if (error) *error = QStringLiteral("the mux daemon does not answer: %1").arg(QString::fromStdString(AfterglowProto::printable(reason)));

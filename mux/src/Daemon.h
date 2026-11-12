@@ -73,7 +73,8 @@ private:
     /// @p caller is the process of the client, 0 when unknown. Empty when
     /// the answer comes later: a window gives it (answerForwarded()).
     std::string answer(const AfterglowProto::IpcRequest& request, pid_t caller, AfterglowProto::IpcServerConnection& connection);
-    std::string newSession(const AfterglowProto::IpcRequest& request);
+    /// @p caller gives the environment of a session with callerEnvironment.
+    std::string newSession(const AfterglowProto::IpcRequest& request, pid_t caller);
     std::string killSession(const AfterglowProto::IpcRequest& request);
     /// The connection of the call becomes the window's stream once the
     /// answer went (m_attaching).

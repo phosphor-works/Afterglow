@@ -364,6 +364,7 @@ Json::Value toJson(const SessionOptions& o)
     return Json::Object{
         {"name", o.name},
         {"environment", environmentJson(o.environment)},
+        {"callerEnvironment", o.callerEnvironment},
         {"umask", o.umask},
         {"launch", toJson(o.launch)},
         {"size", toJson(o.size)},
@@ -385,6 +386,7 @@ std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::stri
         r.fail("name", std::string("is not ") + SessionNameRule);
     }
     readEnvironment(r, "environment", o.environment);
+    r.boolean("callerEnvironment", o.callerEnvironment);
     if (const auto n = r.integer("umask", -1, 0777)) o.umask = int(*n);
     if (const Json::Value* launch = r.lookup("launch")) readLaunch(r, *launch, o.launch);
     else r.fail("launch", "is missing");

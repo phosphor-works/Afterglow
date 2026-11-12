@@ -64,7 +64,9 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 11) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 12) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 12 added callerEnvironment to the options of a session: the
+    // environment of the caller (the proxy on another host).
     // Version 11 carries the stream of an attach on the connection of its
     // call, whose answer names no socket (Mux.MuxAttach.TheAttachCallAnswersWithItsKeys).
     // Version 10 added the control target of a session (`afterglow ctl
@@ -189,7 +191,8 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // bindings name every field, so a new field stops this test compiling
     // until it has its key, its place in the round trip and a new version.
     SessionOptions fields;
-    [[maybe_unused]] auto& [name, sessionEnvironment, umask, launch, size, terminal, notificationCapabilities, controlOptions] = fields;
+    [[maybe_unused]] auto& [name, sessionEnvironment, callerEnvironment, umask, launch, size, terminal, notificationCapabilities,
+                            controlOptions] = fields;
     [[maybe_unused]] auto& [controlEnabled, allowReadText] = fields.control;
     [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram] = fields.launch;
     [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
@@ -201,7 +204,8 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 
     const Json::Value options = toJson(SessionOptions{});
     EXPECT_EQ(keys(options),
-              (std::vector<std::string>{"name", "environment", "umask", "launch", "size", "terminal", "notificationCapabilities", "control"}));
+              (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
+                                        "notificationCapabilities", "control"}));
     EXPECT_EQ(keys(options["control"]), (std::vector<std::string>{"enabled", "allowReadText"}));
     EXPECT_EQ(keys(options["launch"]), (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram"}));
     EXPECT_EQ(keys(options["size"]), (std::vector<std::string>{"cols", "rows", "cellWidth", "cellHeight"}));
@@ -391,6 +395,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     SessionOptions o;
     o.name = "work";
     o.environment = {{"HOME", "/home/u"}, {"TMUX", "x"}};
+    o.callerEnvironment = true;
     o.umask = 027;
     o.launch.argv = {"/bin/zsh", "-l"};
     o.launch.workingDirectory = "/tmp";
@@ -429,6 +434,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     ASSERT_TRUE(back) << error;
     EXPECT_EQ(back->name, o.name);
     EXPECT_EQ(back->environment, o.environment);
+    EXPECT_TRUE(back->callerEnvironment);
     EXPECT_EQ(back->umask, 027);
     EXPECT_EQ(back->launch.argv, o.launch.argv);
     EXPECT_EQ(back->launch.workingDirectory, o.launch.workingDirectory);
@@ -491,7 +497,7 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         EXPECT_FALSE(sessionOptions(with(good, key, value), &error)) << key << " " << Json::write(value);
         EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
     }
-    for (const char* key : {"name", "environment", "umask", "launch", "size", "terminal", "notificationCapabilities", "control"}) {
+    for (const char* key : {"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal", "notificationCapabilities", "control"}) {
         error.clear();
         EXPECT_FALSE(sessionOptions(without(good, key), &error)) << key;
         EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;

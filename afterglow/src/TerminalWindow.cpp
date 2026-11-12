@@ -806,6 +806,27 @@ Pane* TerminalWindow::createSessionLaunchPane(const QString& workingDirectory, c
 {
     // Its program started already, in the daemon.
     if (const auto placing = std::exchange(m_placingPane, std::nullopt)) return createSessionPane(m_session, *placing);
+    if (m_session->remote()) {
+        // The host's login shell, or the command, in the session's
+        // environment there: this computer's settings name its own paths.
+        // It starts where the focused pane's program is, there.
+        AfterglowMux::Launch launch;
+        for (const QString& word : command) launch.argv.push_back(word.toStdString());
+        if (m_focused && m_focused->isSessionPane()) launch.workingDirectory = m_session->directory(m_focused->sessionPaneId()).toStdString();
+        launch.launchedProgram = launchedProgramName(command).toStdString();
+        const auto& m = m_renderer->fonts().fonts->metrics();
+        const QRect content = contentRect(area);
+        QString error;
+        const auto id = m_session->newPane(launch,
+                                           {std::max(2, content.width() / m.cellWidth), std::max(1, content.height() / m.cellHeight),
+                                            m.cellWidth, m.cellHeight},
+                                           &error);
+        if (!id) {
+            if (failure) *failure = error;
+            return nullptr;
+        }
+        return createSessionPane(m_session, *id);
+    }
     // The program starts as a pane of the window would, with this window's
     // settings, but in the session's environment: the daemon applies what
     // the launch sets and unsets to it.

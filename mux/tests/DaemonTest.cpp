@@ -238,6 +238,35 @@ TEST(MuxDaemon, ThePaneGetsTheSessionEnvironmentOnly)
     EXPECT_EQ(env.find("\nAFTERGLOW_OVERLAY="), std::string::npos);
 }
 
+// A session of another host takes the environment of the process that made
+// it (the proxy, in the user's ssh login there), with the client's variables
+// over it, and runs the user's shell as a login shell in HOME.
+TEST(MuxDaemon, ASessionCanTakeTheEnvironmentOfItsCaller)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // A shell that says how it ran: its arguments and its directory.
+    const std::string home = daemon.dir() + "/home";
+    const std::string shell = daemon.dir() + "/shell";
+    const std::string out = daemon.dir() + "/ran";
+    {
+        std::ofstream script(shell);
+        script << "#!/bin/sh\nprintf '%s\\n' \"$*\" \"$PWD\" \"$PATH\" \"$FROM_CLIENT\" > '" << out
+               << ".part' && mv '" << out << ".part' '" << out << "'\nexec sleep 60\n";
+    }
+    ASSERT_EQ(::chmod(shell.c_str(), 0700), 0);
+    // The caller is this process: its environment from its start, which
+    // /proc shows, PATH among it.
+    SessionOptions o = daemon.options({}, "far");
+    o.environment = {{"FROM_CLIENT", "yes"}, {"SHELL", shell}, {"HOME", home}};
+    o.launch.workingDirectory.clear();
+    o.callerEnvironment = true;
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+    const char* path = std::getenv("PATH");
+    EXPECT_EQ(readFile(out), "-l\n" + home + "\n" + (path ? path : "") + "\nyes\n");
+}
+
 TEST(MuxDaemon, ThePaneEnvironmentLeavesOutTheDaemonsOwn)
 {
     // As a daemon in a systemd unit has INVOCATION_ID, which the session has

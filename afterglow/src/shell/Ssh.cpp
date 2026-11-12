@@ -773,6 +773,19 @@ QByteArrayList sharedCommand(const QString& destination, QString* error)
     return QByteArrayList{"ssh", "-T"} + sharing(parseConfig(resolved->output)) + QByteArrayList{"--", host};
 }
 
+bool installTerminfo(const QString& destination)
+{
+    const QByteArray host = destination.toLocal8Bit();
+    if (host.isEmpty() || host.startsWith('-')) return false;
+    const IgnoredSignals signals;
+    const auto resolved = capture(QByteArrayList{"ssh", "-G", "--", host}, signals, {}, true);
+    if (!resolved || resolved->status != 0) return false;
+    const QByteArrayList args{host};
+    QByteArrayList options;
+    return installTerminfo(args, parseArguments({destination}), parseConfig(resolved->output), signals, options).result
+        == Install::Installed;
+}
+
 Config parseConfig(const QByteArray& resolved)
 {
     Config config;

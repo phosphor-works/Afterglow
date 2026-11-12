@@ -245,6 +245,12 @@ _afterglow_ctl()
 
 # afterglow mux COMMAND ...: the commands, their options, the directory of
 # new --cwd, and after new -- the program and its arguments.
+# The ssh destinations that bash-completion knows, when it is loaded.
+_afterglow_hosts()
+{
+    declare -F _known_hosts_real >/dev/null && _known_hosts_real -- "$cur"
+}
+
 _afterglow_mux()
 {
     if ((cword == 2)); then
@@ -253,6 +259,10 @@ _afterglow_mux()
         else
             _afterglow_matching server new attach detach ls kill
         fi
+        return
+    fi
+    if [[ $prev == --ssh ]]; then
+        _afterglow_hosts
         return
     fi
     local i start=3
@@ -264,7 +274,7 @@ _afterglow_mux()
                 _afterglow_offset $((i + 1))
                 return
                 ;;
-            --name | --cwd) ((i++)) ;;
+            --name | --cwd | --ssh) ((i++)) ;;
             esac
         done
         case $prev in
@@ -274,13 +284,16 @@ _afterglow_mux()
             ;;
         --name) return ;;
         esac
-        _afterglow_unused --name --cwd --detach
+        _afterglow_unused --name --cwd --detach --ssh
         ;;
     kill)
-        [[ $cur == -* ]] && _afterglow_unused --force
+        [[ $cur == -* ]] && _afterglow_unused --force --ssh
         ;;
     attach)
-        [[ $cur == -* ]] && _afterglow_unused --no-takeover
+        [[ $cur == -* ]] && _afterglow_unused --no-takeover --ssh
+        ;;
+    detach | ls)
+        [[ $cur == -* ]] && _afterglow_unused --ssh
         ;;
     esac
 }

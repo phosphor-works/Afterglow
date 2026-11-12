@@ -10,6 +10,7 @@
 #include "../chrome/ChromeLayer.h"
 #include "../desktop/DragDrop.h"
 #include "../mux/MuxClient.h"
+#include "../mux/MuxRoute.h"
 #include "../control/SessionControl.h"
 
 #include <QIcon>
@@ -61,8 +62,9 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
 {
     // Panes that leave a session's window go to a new session, in a window of
     // its own; the session is new, so no other window shows it.
-    m_control.setSessionWindowOpener([this](const QString& session) {
-        return openLaunch({}, {}, {{QStringLiteral("session"), session}, {QStringLiteral("takeover"), false}});
+    m_control.setSessionWindowOpener([this](const QString& session, const QString& host) {
+        return openLaunch({}, {},
+                          {{QStringLiteral("session"), session}, {QStringLiteral("sessionHost"), host}, {QStringLiteral("takeover"), false}});
     });
     // Some platform-theme versions leave Qt Quick at its default Fusion style.
     // Prefer the desktop bridge on Plasma, preserving explicit style choices
@@ -233,6 +235,7 @@ QString Application::openLaunch(const QString& workingDirectory, const QStringLi
                          options.value(QStringLiteral("title")).toString(), options.value(QStringLiteral("hold")).toBool()};
     // afterglow mux attach: the window shows a session of the mux daemon.
     const QString session = options.value(QStringLiteral("session")).toString();
+    const QString host = options.value(QStringLiteral("sessionHost")).toString();
     if (!session.isEmpty()) {
         // A window of this process shows it already: the attach would take
         // the session from it, while this thread, the only reader of its
@@ -241,16 +244,24 @@ QString Application::openLaunch(const QString& workingDirectory, const QStringLi
         // only: a closed pane waits for its delete as a child too.
         for (TerminalWindow* shown : TerminalWindow::windows()) {
             for (Pane* pane : shown->panes()) {
-                if (pane->showsSession(session)) {
+                if (pane->showsSession(session, host)) {
                     withActivationToken(options, [&] { shown->revealPane(pane); });
                     return {};
                 }
             }
         }
         QString error;
-        window.session = MuxClient::attach(session, options.value(QStringLiteral("takeover"), true).toBool(), &error,
-                                           AfterglowProto::muxSockets(), m_settings.settings().mux.eventQueue,
-                                           m_settings.settings().terminal.maxScrollback);
+        // The daemon of this computer, or of the ssh destination.
+        AfterglowMux::Route route;
+        if (host.isEmpty()) {
+            route.sockets = AfterglowProto::muxSockets();
+        } else if (auto remote = muxRoute(host, &error)) {
+            route = std::move(*remote);
+        } else {
+            return error;
+        }
+        window.session = MuxClient::attach(session, options.value(QStringLiteral("takeover"), true).toBool(), &error, route,
+                                           m_settings.settings().mux.eventQueue, m_settings.settings().terminal.maxScrollback);
         if (!window.session) return error;
     }
     TerminalWindow* w = newWindow(window);
