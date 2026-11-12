@@ -961,7 +961,8 @@ def isolated_mux(wrappers):
 
 # The words after afterglow mux that print the usage and connect to nothing (runMux in afterglow/src/control/Mux.cpp)
 MUX_HELP = {'-h', '--help', 'help'}
-# The one argument with which afterglow-mux prints and exits before it listens (main in mux/src/main.cpp)
+# The one argument with which afterglow-mux prints and exits before it listens (main in mux/src/main.cpp).
+# --decode-images is left out on purpose: it is the daemon's own image decoder, which no session runs by hand.
 MUX_DAEMON_PRINTS = {'--version', '--help', '-h'}
 
 

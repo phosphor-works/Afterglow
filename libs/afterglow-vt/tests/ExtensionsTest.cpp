@@ -724,6 +724,46 @@ TEST(Extensions, KittyColorControlNamesDynamicValuesAndStack)
     EXPECT_EQ(*t.cursorTextColor(), (Rgb{10, 20, 30}));
 }
 
+TEST(Extensions, OklchAndLabColorsInTheColorEscapeCodes)
+{
+    // kitty takes them wherever it takes a colour, the escape codes too, and
+    // reports what was set as sRGB.
+    RecordingHost host;
+    Terminal t(20, 10, host);
+    t.feed("\x1b]4;1;oklch(0.9 0.05 140);2;LAB(10 0 0)\x1b\\");
+    EXPECT_EQ(t.paletteColor(1), (Rgb{205, 231, 199}));
+    EXPECT_EQ(t.paletteColor(2), (Rgb{27, 27, 27}));
+    t.feed("\x1b]10;oklch(70% 0.1 200);lab(50 0 -50)\x07");
+    EXPECT_EQ(t.defaultForeground(), (Rgb{64, 177, 183}));
+    EXPECT_EQ(t.defaultBackground(), (Rgb{54, 122, 205}));
+    t.feed("\x1b]21;selection_background=oklch(0.7, 0.25, 25);3=oklch(0.5 0.1 100)\x07");
+    ASSERT_NE(t.selectionBackground(), nullptr);
+    EXPECT_EQ(*t.selectionBackground(), (Rgb{255, 86, 85}));
+    EXPECT_EQ(t.paletteColor(3), (Rgb{113, 100, 11}));
+    host.written.clear();
+    t.feed("\x1b]4;1;?\x1b\\\x1b]21;3=?\x07");
+    EXPECT_EQ(host.written, "\x1b]4;1;rgb:cdcd/e7e7/c7c7\x1b\\\x1b]21;3=rgb:71/64/0b\x07");
+    // A colour that is not one leaves the old one.
+    t.feed("\x1b]4;1;oklch(0.9 0.05)\x1b\\");
+    EXPECT_EQ(t.paletteColor(1), (Rgb{205, 231, 199}));
+    // OSC 12, 17 and 19, which parse on their own paths, and an alpha,
+    // which kitty ignores.
+    t.feed("\x1b]12;oklch(0.5 0.1 100 / 0.5)\x07\x1b]17;lab(50 0 -50)\x07\x1b]19;oklch(0.9 0.05 140)\x07");
+    ASSERT_NE(t.cursorColor(), nullptr);
+    EXPECT_EQ(*t.cursorColor(), (Rgb{113, 100, 11}));
+    EXPECT_EQ(*t.selectionBackground(), (Rgb{54, 122, 205}));
+    ASSERT_NE(t.selectionForeground(), nullptr);
+    EXPECT_EQ(*t.selectionForeground(), (Rgb{205, 231, 199}));
+    // OSC 21 sets cursor_text, and a transparent colour with the opacity
+    // after the ')'.
+    t.feed("\x1b]21;cursor_text=lab(50 0 -50);transparent_background_color2=oklch(0.5 0.1 100)@0.25\x07");
+    ASSERT_NE(t.cursorTextColor(), nullptr);
+    EXPECT_EQ(*t.cursorTextColor(), (Rgb{54, 122, 205}));
+    host.written.clear();
+    t.feed("\x1b]21;transparent_background_color2=?\x07");
+    EXPECT_EQ(host.written, "\x1b]21;transparent_background_color2=rgb:71/64/0b@0.25\x07");
+}
+
 TEST(Extensions, SixelThroughTheTerminal)
 {
     RecordingHost host;

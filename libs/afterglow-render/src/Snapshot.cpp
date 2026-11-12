@@ -343,7 +343,7 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     // Placeholder slices join the placements in z order, as the renderer
     // draws them in array order.
     std::stable_sort(images.begin(), images.end(), [](const auto& a, const auto& b) { return a.z < b.z; });
-    generation = t.generation();
+    generation = t.textGeneration();
     ++version;
     for (int i = 0; i < 256; ++i) {
         palette[std::size_t(i)] = packRgba(t.paletteColor(i));

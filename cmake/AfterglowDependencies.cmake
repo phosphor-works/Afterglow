@@ -2,14 +2,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # The third-party sources that Afterglow builds into its own binaries. Each
-# archive is pinned by version, URL and SHA-256. Each vendored file (a
-# single-file library kept in the repository) is pinned by its upstream commit
-# and the SHA-256 of the file. This file is the only place a pin lives. It
-# works as cmake/PhosphorDependencies.cmake in PlasmaZones does, which pins the
-# archives of the Phosphor libraries.
+# archive is pinned by version, URL and SHA-256. This file is the only place
+# a pin lives. It works as cmake/PhosphorDependencies.cmake in PlasmaZones
+# does, which pins the archives of the Phosphor libraries.
 #
 # The archives are built into the tree, not taken from the system, so that the
-# terminal and a static client of libs/afterglow-proto use the same code.
+# terminal and the static aglow use the same code, and so that aglow needs no
+# library of the host that runs it.
 #
 # How an archive is obtained, in order:
 #
@@ -39,10 +38,11 @@
 include_guard(GLOBAL)
 
 # ─── Pins ────────────────────────────────────────────────────────────────────
-set(AFTERGLOW_DEPS zlib-ng xxhash)
+set(AFTERGLOW_DEPS zlib-ng xxhash libpng libjpeg-turbo libwebp)
 
 # zlib-ng (Zlib license), in its zlib-compatible build: o=z images, file
-# transfer compression. The hash matches Homebrew's zlib-ng formula.
+# transfer compression, and the inflate of the bundled libpng. The hash
+# matches Homebrew's zlib-ng formula.
 set(AFTERGLOW_DEP_zlib-ng_VERSION "2.3.3")
 set(AFTERGLOW_DEP_zlib-ng_URL "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.3.3.tar.gz")
 set(AFTERGLOW_DEP_zlib-ng_FILE "zlib-ng-2.3.3.tar.gz")
@@ -55,21 +55,29 @@ set(AFTERGLOW_DEP_xxhash_URL "https://github.com/Cyan4973/xxHash/archive/refs/ta
 set(AFTERGLOW_DEP_xxhash_FILE "xxHash-0.8.4.tar.gz")
 set(AFTERGLOW_DEP_xxhash_SHA256 "5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32")
 
-# ─── Vendored files ──────────────────────────────────────────────────────────
-# A single-file library is kept in the repository, so that it needs no archive
-# of its own. Its pin is the upstream commit and the SHA-256 of the file,
-# checked at configure time by afterglow_vendored_file(). Bumping it: copy
-# the file from the new commit and change COMMIT and SHA256 together.
+# The image codecs of libs/afterglow-image, which aglow and afterglow-mux link
+# statically. Each is the release archive of its project, and each hash
+# matches the Homebrew formula of the same version.
+#
+# libpng (libpng-2.0 license): PNG, through its simplified API.
+set(AFTERGLOW_DEP_libpng_VERSION "1.6.59")
+set(AFTERGLOW_DEP_libpng_URL "https://downloads.sourceforge.net/project/libpng/libpng16/1.6.59/libpng-1.6.59.tar.xz")
+set(AFTERGLOW_DEP_libpng_FILE "libpng-1.6.59.tar.xz")
+set(AFTERGLOW_DEP_libpng_SHA256 "d80dd2a38a37f803cb9b6ac7b14bd6e74ddc3b654780a8380bdf93523fdb4389")
 
-# stb_image (MIT, Sean Barrett), v2.30: aglow icat decodes JPEG, BMP and the
-# other formats with it. The file carries aglow's patches, which the top of
-# tools/aglow/StbImage.cpp lists, so SHA256 is that of the patched file and
-# COMMIT names the upstream base. REUSE.toml licenses the file.
-set(AFTERGLOW_VENDORED_stb_image_COMMIT "d14d46f6b44456eb88beac58cba833a4135d4c89")
-set(AFTERGLOW_VENDORED_stb_image_URL
-    "https://raw.githubusercontent.com/nothings/stb/${AFTERGLOW_VENDORED_stb_image_COMMIT}/stb_image.h")
-set(AFTERGLOW_VENDORED_stb_image_FILE "tools/aglow/stb/stb_image.h")
-set(AFTERGLOW_VENDORED_stb_image_SHA256 "9ffe0bebf6a68d3fe05ba9a803d611f83c67a4c76acca0a8cf7d73e29d61248b")
+# libjpeg-turbo (IJG and BSD-3-Clause licenses): JPEG, through the TurboJPEG 3
+# API. The decoder needs 3.0.2 or later, for TJPARAM_MAXPIXELS.
+set(AFTERGLOW_DEP_libjpeg-turbo_VERSION "3.2.1")
+set(AFTERGLOW_DEP_libjpeg-turbo_URL "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.1/libjpeg-turbo-3.2.1.tar.gz")
+set(AFTERGLOW_DEP_libjpeg-turbo_FILE "libjpeg-turbo-3.2.1.tar.gz")
+set(AFTERGLOW_DEP_libjpeg-turbo_SHA256 "c27ad72a68da151177929aa969ae773a2da5ac2af9ce946079314fdac8cece7f")
+
+# libwebp (BSD-3-Clause, with a patent grant): WebP, and its animations
+# through the demux library.
+set(AFTERGLOW_DEP_libwebp_VERSION "1.6.0")
+set(AFTERGLOW_DEP_libwebp_URL "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz")
+set(AFTERGLOW_DEP_libwebp_FILE "libwebp-1.6.0.tar.gz")
+set(AFTERGLOW_DEP_libwebp_SHA256 "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564")
 
 # CPM.cmake itself, the same release that PlasmaZones pins.
 set(AFTERGLOW_CPM_VERSION "0.43.2")
@@ -79,6 +87,10 @@ set(AFTERGLOW_CPM_SHA256 "49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c5
 # CMAKE_CURRENT_LIST_DIR names the caller.
 get_filename_component(_AFTERGLOW_DEPS_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
+# Where the archives unpack without CPM, and where the libraries built from
+# them keep their builds and generated headers.
+set(AFTERGLOW_DEPS_BUILD_DIR "${CMAKE_BINARY_DIR}/_afterglow_deps")
+
 # Downloads URL to FILE through a .part file, renamed only once its hash
 # checks, so a broken download never sits under the real name. FILE can be in
 # a cache that other build directories share: a lock keeps two configures from
@@ -86,6 +98,12 @@ get_filename_component(_AFTERGLOW_DEPS_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOL
 # The empty FILE.lock stays after the download. Removing it would break the
 # lock: a configure that waits holds the removed file, and the next one would
 # lock a new file of the same name at the same time.
+#
+# The hash is checked here, not by file(DOWNLOAD): with EXPECTED_HASH a failed
+# transfer or a wrong hash stops the configure inside file(DOWNLOAD), before
+# the .part file can be removed. A server that sends nothing for a minute
+# ends the download, so that a configure does not wait without end while it
+# holds the lock.
 function(_afterglow_download url file sha256)
     file(LOCK "${file}.lock" GUARD FUNCTION TIMEOUT 600)
     if(EXISTS "${file}")
@@ -94,12 +112,17 @@ function(_afterglow_download url file sha256)
             return()
         endif()
     endif()
-    file(DOWNLOAD "${url}" "${file}.part" EXPECTED_HASH SHA256=${sha256} STATUS status)
+    file(DOWNLOAD "${url}" "${file}.part" INACTIVITY_TIMEOUT 60 STATUS status)
     list(GET status 0 code)
     if(NOT code EQUAL 0)
         file(REMOVE "${file}.part")
         list(GET status 1 why)
         message(FATAL_ERROR "Could not download ${url}: ${why}")
+    endif()
+    file(SHA256 "${file}.part" have)
+    if(NOT have STREQUAL sha256)
+        file(REMOVE "${file}.part")
+        message(FATAL_ERROR "${url} does not match its pin:\n  expected ${sha256}\n  got      ${have}")
     endif()
     file(RENAME "${file}.part" "${file}")
 endfunction()
@@ -159,28 +182,6 @@ if(NOT AFTERGLOW_DEPS_ARCHIVES AND NOT COMMAND CPMAddPackage)
     include("${_afterglow_cpm_file}")
 endif()
 
-# afterglow_vendored_file(<name> <variable>)
-#
-# Sets <variable> to the path of the vendored file <name>, after checking it
-# against its pin. A change to the file runs the configure again, so that the
-# check sees it. Works in configure mode only.
-function(afterglow_vendored_file name variable)
-    if(NOT AFTERGLOW_VENDORED_${name}_FILE)
-        message(FATAL_ERROR "afterglow_vendored_file: '${name}' is not pinned in ${CMAKE_CURRENT_FUNCTION_LIST_FILE}")
-    endif()
-    set(path "${_AFTERGLOW_DEPS_ROOT}/${AFTERGLOW_VENDORED_${name}_FILE}")
-    if(NOT EXISTS "${path}")
-        message(FATAL_ERROR "afterglow_vendored_file: ${path}, the vendored file of '${name}', does not exist")
-    endif()
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${path}")
-    file(SHA256 "${path}" have)
-    if(NOT have STREQUAL AFTERGLOW_VENDORED_${name}_SHA256)
-        message(FATAL_ERROR "${path} does not match its pin (commit ${AFTERGLOW_VENDORED_${name}_COMMIT}):\n"
-                            "  expected ${AFTERGLOW_VENDORED_${name}_SHA256}\n  got      ${have}")
-    endif()
-    set(${variable} "${path}" PARENT_SCOPE)
-endfunction()
-
 # afterglow_fetch_dependency(<name>)
 #
 # Makes the pinned archive <name> (one of AFTERGLOW_DEPS) available and sets
@@ -209,9 +210,8 @@ function(afterglow_fetch_dependency name)
         # version extracts again. The stamp is written after a whole
         # extraction, so one cut short is redone on the next configure, and so
         # is a tree that was removed after it.
-        set(root "${CMAKE_BINARY_DIR}/_afterglow_deps")
-        set(dest "${root}/${name}-${version}")
-        set(stamp "${root}/.${name}-${version}-${sha}")
+        set(dest "${AFTERGLOW_DEPS_BUILD_DIR}/${name}-${version}")
+        set(stamp "${AFTERGLOW_DEPS_BUILD_DIR}/.${name}-${version}-${sha}")
         if(NOT EXISTS "${stamp}" OR NOT IS_DIRECTORY "${dest}")
             file(REMOVE_RECURSE "${dest}" "${dest}.tmp")
             file(ARCHIVE_EXTRACT INPUT "${archive}" DESTINATION "${dest}.tmp")
@@ -243,4 +243,27 @@ function(afterglow_fetch_dependency name)
                             "'${${name}_SOURCE_DIR}'). Check CPM_${name}_SOURCE and CPM_SOURCE_CACHE.")
     endif()
     set(${name}_SOURCE_DIR "${${name}_SOURCE_DIR}" PARENT_SCOPE)
+endfunction()
+
+# afterglow_third_party_target(<target>...)
+#
+# The properties of a library that is built from a pinned archive. PIC: it can
+# link into the shared afterglow-vt. Hidden: an executable or a shared library
+# that holds it must not export inflate(), XXH3_*() or png_*(), which the
+# system's copy of the library in the same process (Qt loads zlib, libpng and
+# libjpeg) could then take, or the reverse. -w: upstream code is not ours to
+# fix. No LTO, even with CMAKE_INTERPROCEDURAL_OPTIMIZATION: the optimizer
+# would work on upstream code again at each link, and warnings found then do
+# not come under -w. qt_standard_project_setup() turns AUTOMOC and AUTOUIC on
+# for every target, and these have no Qt.
+function(afterglow_third_party_target)
+    foreach(target IN LISTS ARGN)
+        set_target_properties(${target} PROPERTIES
+            POSITION_INDEPENDENT_CODE ON
+            C_VISIBILITY_PRESET hidden
+            INTERPROCEDURAL_OPTIMIZATION OFF
+            AUTOMOC OFF
+            AUTOUIC OFF)
+        target_compile_options(${target} PRIVATE -w)
+    endforeach()
 endfunction()

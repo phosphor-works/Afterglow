@@ -34,6 +34,7 @@ Each store has these limits:
 | Images | 4,096 | Afterglow deletes an image without a placement: first an image with the transient hint (`N=1`), then the oldest. When every image has a placement, a Kitty command gets an `ENOSPC` error. |
 | Placements | 4,096 | A Kitty command gets an `ENOSPC` error. A new Sixel or iTerm2 image removes the oldest Sixel or iTerm2 placement. When there is none, Afterglow does not keep the new image. |
 | Frames per image | 1,024 | A Kitty command gets an `ENOSPC` error. |
+| Frames of all images | 16,384 | Afterglow deletes images as for image data. A frame of one pixel costs far more to keep than its 4 bytes. |
 | Image data | `Graphics.quota`, 320 MiB by default, at 4 bytes for each pixel | Afterglow deletes images without a placement: first those with the transient hint (`N=1`), then the oldest. When none is left, it deletes the oldest image with a placement. |
 | Pending transmissions | 320 MiB | The transmission fails with an `EFBIG` error. |
 
@@ -247,11 +248,35 @@ Shells and editors measure text with `wcwidth`, so the cursor stays where they e
 
 `tools/conformance/ucs-detect.sh` measures the widths with ucs-detect. See [TESTING.md](TESTING.md#character-widths-with-ucs-detect).
 
-## Kitty color control and pointer shapes
+## Color escape codes and pointer shapes
 
 OSC 21 supports the [Kitty color-control protocol](https://sw.kovidgoyal.net/kitty/color-stack/).
 Programs can set, query and reset palette colors and dynamic colors.
-Supported values include named X11 colors, hexadecimal colors, `rgb:` values and `rgbi:` values.
+OSC 4, OSC 10 to 12, OSC 17, OSC 19 and OSC 21 take the same color values:
+
+| Value | Example |
+| --- | --- |
+| An X11 color name, in any case | `red`, `dark slate gray` |
+| A hexadecimal color, as xterm reads it | `#rgb`, `#rrggbb`, `#rrrgggbbb`, `#rrrrggggbbbb` |
+| An `rgb:` or `rgbi:` value | `rgb:ff/80/00`, `rgbi:1/0.5/0` |
+| An OKLCH or CIE LAB color, as CSS Color 4 writes it | `oklch(0.7 0.1 200)`, `lab(50 60 40)` |
+
+In the escape codes, each digit of `#rgb` gives the high bits of its channel, as in xterm, so `#fff` is `#f0f0f0`.
+In `Colors` and in themes, `#fff` is white.
+[Color values](APPEARANCE.md#color-values) gives the values of `oklch` and `lab`.
+A query reports such a color as the sRGB color that Afterglow set.
+Afterglow converts these colors with the sample code and the gamut mapping of CSS Color 4.
+Kitty reads some colors in a different way:
+
+| Color | Kitty | Afterglow |
+| --- | --- | --- |
+| `#rgb` in an escape code | `#fff` is white. | `#fff` is `#f0f0f0`, as in xterm. |
+| OKLCH or LAB outside sRGB | Clips each channel. | Decreases the chroma until the clipped color is less than one just noticeable difference (deltaE OK 0.02) away. |
+| LAB | Other values, for example a middle gray for `lab(10 0 0)`. | The values of CSS Color 4. |
+| A percentage of C | A percentage of 1. | A percentage of 0.4, as in CSS Color 4. |
+| A percentage of a or b | Ignores the `%`. | A percentage of 125, as in CSS Color 4. |
+
+Kitty and Afterglow both ignore an alpha, such as `oklch(0.7 0.1 200 / 0.5)`.
 Cursor text, visual-bell color and eight transparent-background slots affect rendering.
 Transparent slots support an explicit opacity or the configured window opacity.
 The color stack saves and restores these settings.
@@ -277,19 +302,23 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 | --- | --- | --- |
 | `aglow transfer` | File transfer (OSC 5113): directories, links, permissions, times, zlib, deltas and the SHA-256 password form | Against the Afterglow service in process (`Client.*`). Through a pseudo-terminal, also with `--confirm-paths`. Against Kitty 0.49.2 (`kitty_transfer_interop.py`). Against a hostile terminal (`Proto.Hostile.*`) |
 | `aglow dnd` | Drag and drop (OSC 72): MIME data, copy and move, remote directory trees in both directions | Against Afterglow in a nested KWin (`NativeWindow.Aglow*`). As the target or source of a remote drag (`AglowDrop.*`, `AglowDrag.*`). With the question that lists the files before a drop replaces them (`AglowOverwrite.*`) |
-| `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels, GIF animation frames, Unicode placeholders, tmux passthrough | `aglow_icat_render` draws its output with the Afterglow renderer. `aglow_icat_decode` checks the pixels of crafted images, and the first frame of a GIF over the 320 MiB budget. `aglow_tmux_pty` runs it in a private tmux server, with `allow-passthrough` on and off. |
+| `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels, GIF and WebP animation frames, Unicode placeholders, tmux passthrough | `aglow_icat_render` draws its output with the Afterglow renderer. `aglow_icat_decode` checks the pixels of crafted images, and the first frame of a GIF over the 320 MiB budget. `aglow_tmux_pty` runs it in a private tmux server, with `allow-passthrough` on and off. |
 | `aglow run` | The socket query of a remote host (OSC 24569), with the DA1 guard and tmux passthrough | Against a terminal and a socket that a test plays (`aglow_run_pty`). Also in a private tmux server (`aglow_tmux_pty`). Through sshd run as the user (`RemoteCommandsTest.*`) |
 | `aglow clipboard` | Clipboard (OSC 5522), and OSC 52 for plain text in a terminal without OSC 5522 | Against a terminal that a test plays (`aglow_clipboard_pty`, `aglow_clipboard_cases`), and the message formats in `libs/afterglow-proto/tests` |
 
 `aglow transfer`, `aglow dnd`, `aglow icat` and `aglow clipboard` take the options of the `kitten` command of the same name, with the differences below.
 
 - `aglow transfer` sends the permission password only in the SHA-256 form, which Afterglow and Kitty accept. It does not use Kitty's own form, which encrypts the password with `KITTY_PUBLIC_KEY`.
-- `aglow icat` decodes images with stb_image. It does not use ImageMagick or download images from URLs.
+- `aglow icat` decodes PNG, JPEG, GIF, WebP and BMP images with libpng, libjpeg-turbo, libwebp and readers of its own. It does not use ImageMagick or download images from URLs.
+- `aglow icat` shows the first frame of an animated PNG, and does not show netPBM images. The builtin engine of `kitten icat` plays the one and shows the other.
+- `aglow icat` does not apply an embedded color profile (ICC) or the cICP color space of an image. The builtin engine of `kitten icat` converts such an image to sRGB. Afterglow does not apply them in a pane either, where Kitty applies the profile of a PNG.
 - The `--engine` option of `aglow icat` takes `auto` and `builtin`, which mean the same. It refuses `magick`.
 - `aglow icat` accepts `--silent` and ignores it, as `kitten icat` does.
 - `aglow icat` compresses pixels with zlib only when it sends them through the terminal connection. A file or shared memory holds raw pixels.
 - `aglow clipboard` does not convert between image formats when it reads the clipboard.
 - `aglow dnd` has the option `--confirm-drop-timeout`, which `kitten dnd` does not have.
+- `aglow clipboard` has the option `--detection-timeout`, which `kitten clipboard` does not have.
+- `aglow icat --image-id` refuses a number outside 0 to 4294967295. `kitten icat` wraps it.
 
 Afterglow adds the `o` key to the end message of a drag (`t=e:x=4`). It names the action that the drop took.
 Kitty does not send it.
@@ -298,7 +327,7 @@ A move to another application is reported as a copy, so that the source keeps it
 Run the tests of `aglow`:
 
 ```sh
-ctest --test-dir build --output-on-failure -R 'aglow|Aglow|^(Client|RunBinaryTest|RemoteCommandsTest)\.|^Proto\.(Client|Hostile|RunClient|RunInput|RunRemote|Remote)\.'
+ctest --test-dir build --output-on-failure -R 'aglow|Aglow|^Image\.|^(Client|RunBinaryTest|RemoteCommandsTest)\.|^Proto\.(Client|Hostile|RunClient|RunInput|RunRemote|Remote)\.'
 ```
 
 ## kitten interoperability

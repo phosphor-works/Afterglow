@@ -20,8 +20,9 @@ class Session
 {
 public:
     /// @p fileLimit is the soft RLIMIT_NOFILE that the programs get: the
-    /// daemon's own before it raised it, or -1 for the daemon's.
-    Session(std::string name, SessionOptions options, long fileLimit);
+    /// daemon's own before it raised it, or -1 for the daemon's. @p images
+    /// decodes the images of the panes, and outlives the session.
+    Session(std::string name, SessionOptions options, long fileLimit, ImageDecoder& images);
 
     const std::string& name() const { return m_name; }
 
@@ -55,6 +56,8 @@ private:
     std::string m_name;
     SessionOptions m_options;
     long m_fileLimit;
+    ImageDecoder& m_images;
+    std::string m_temporaryDirectory; ///< the programs' TMPDIR (Terminal::setTemporaryDirectory)
     std::vector<std::unique_ptr<MuxPane>> m_panes;
 };
 

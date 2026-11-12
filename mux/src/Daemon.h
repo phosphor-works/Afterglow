@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Attach.h"
+#include "ImageDecoder.h"
 #include "Session.h"
 
 #include <AfterglowProto/IpcServer.h>
@@ -102,6 +103,8 @@ private:
     bool idle() const;
 
     const long m_fileLimit;
+    /// Before the sessions: their panes decode with it until they end.
+    ImageDecoder m_images{"/proc/self/exe"};
     std::vector<std::unique_ptr<AfterglowProto::IpcListener>> m_listeners;
     int m_wakeFd = -1;
     int m_signalFd = -1;

@@ -34,8 +34,9 @@ class Session;
 /// A pane's frame that the channel refuses waits, and no newer frame is made
 /// until it went: a frame covers every change since the one before, so the
 /// output that comes meanwhile is in the next one. A slow window sees fewer
-/// frames, never a growing queue. Input that the program's PTY has no room
-/// for waits too, and the window's input waits behind it.
+/// frames, never a growing queue. Input waits too when the program's PTY has
+/// no room for it, or when a pane that waits for a decode already holds its
+/// bound of input. The window's input waits behind it.
 ///
 /// The daemon never blocks on a window. A pane whose program exited keeps
 /// its terminal here until its last frames and calls went; a takeover, a
@@ -120,6 +121,8 @@ private:
         AfterglowVt::StateWriter state;
         std::string waiting; ///< a frame that the channel refused
         bool started = false; ///< the first frame went
+        bool deferred = false; ///< the last frame waits for a decode: the host calls after it wait too
+        std::uint64_t frames = 0; ///< the frames written on the channel, which each host call names
         std::unique_ptr<MuxPane> closed; ///< the pane once its program exited
     };
 
@@ -133,8 +136,9 @@ private:
     /// refused frame, no change and no history.
     bool sendFrame(PaneLink& link, MuxPane& pane);
     /// Sends the host calls of @p pane that fit the queue, in parts when a
-    /// call is larger than one frame (Attach::HostPartBytes).
-    void sendHostCalls(MuxPane& pane);
+    /// call is larger than one frame (Attach::HostPartBytes), each with the
+    /// frames that @p link wrote before it.
+    void sendHostCalls(const PaneLink& link, MuxPane& pane);
     /// @p call: the host call that the event holds or holds a part of.
     void sendEvent(const Attach::Event& event, std::shared_ptr<const std::string> call = {});
     void flushEvents();
@@ -166,7 +170,7 @@ private:
     std::size_t m_replicaHistory = ~std::size_t(0);
     std::uint64_t m_serial = 0;
     std::map<std::uint32_t, PaneLink> m_panes; ///< by pane id
-    std::optional<Attach::Input> m_heldInput; ///< input that a full PTY refused
+    std::optional<Attach::Input> m_heldInput; ///< input that a pane refused (MuxPane::Input::Full)
     bool m_inputDue = false; ///< held input went in pump(): the next handle() reads what follows it
     std::optional<Attach::EventType> m_finish;
     bool m_finishSent = false;

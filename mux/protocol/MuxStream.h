@@ -68,6 +68,11 @@ struct Event
     /// Host: HostPart when the call goes on in the next Host event of the
     /// pane, else -1.
     int status = -1;
+    /// Host: the frames of the pane's state that the daemon wrote before the
+    /// call. The window makes the call once it read as many: a frame larger
+    /// than a fragment of the stream can still be on its way when the call
+    /// comes, and a bell goes after the text that rang it.
+    std::uint64_t frames = 0;
     /// Host: the call, encoded, or its next part. A call larger than one
     /// frame comes in parts of at most HostPartBytes.
     std::string payload;

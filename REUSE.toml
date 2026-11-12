@@ -1,10 +1,9 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: CC0-1.0
 #
-# Licences for files that cannot carry an SPDX header, and for third-party
-# files that keep the notices of their upstream instead of one. The
-# application is GPL-3.0-or-later, the libraries (libs/) LGPL-2.1-or-later;
-# see each file.
+# Licenses for files that cannot carry an SPDX header: data, and the notices
+# that install as they are. The application is GPL-3.0-or-later, the
+# libraries (libs/) LGPL-2.1-or-later; see each file.
 
 version = 1
 
@@ -92,21 +91,14 @@ SPDX-License-Identifier = "MIT"
 # Converted from mbadolato/iTerm2-Color-Schemes (ghostty/), which collects
 # each scheme from its upstream project.
 
-[[annotations]]
-path = ["tools/aglow/stb/stb_image.h"]
-SPDX-FileCopyrightText = ["2017 Sean Barrett", "2026 fuddlesworth"]
-SPDX-License-Identifier = "MIT"
-# stb_image from nothings/stb, at the upstream commit that
-# cmake/AfterglowDependencies.cmake pins, with aglow's patches. The top of
-# tools/aglow/StbImage.cpp lists the patches, which are MIT like the file.
-# Upstream offers MIT or the Unlicense: Afterglow takes it under MIT.
-
-# The notices that install with a static aglow (tools/aglow/CMakeLists.txt).
-# The text of the GCC Runtime Library Exception goes with them as
+# The notices that install with a static aglow (tools/aglow/CMakeLists.txt),
+# and the acknowledgment of the Independent JPEG Group that installs with
+# the image codecs (libs/afterglow-image/CMakeLists.txt). The text of the
+# GCC Runtime Library Exception goes with the first as
 # notices/COPYING.RUNTIME, its name in the GCC sources. It is not in LICENSES/:
-# no file of Afterglow is under the exception, and REUSE allows no licence
+# no file of Afterglow is under the exception, and REUSE allows no license
 # file there that no file uses. REUSE covers no COPYING.* file.
 [[annotations]]
-path = ["tools/aglow/notices/*.txt"]
+path = ["tools/aglow/notices/*.txt", "libs/afterglow-image/notices/*.txt"]
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "CC0-1.0"

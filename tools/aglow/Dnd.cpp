@@ -68,8 +68,9 @@ constexpr std::size_t MaxRemoteEntries = 1 << 20;
 constexpr std::size_t ThumbnailBudget = 64 * 1024 * 1024;
 constexpr std::size_t ThumbnailFileLimit = 64 * 1024 * 1024;
 // A drag image comes from one of the first dragged files: each is probed
-// with one read of its first bytes, which hold the image size in every format
-// that aglow decodes.
+// with one read of its first bytes, which hold the image size of nearly
+// every file. A JPEG whose metadata comes first and passes them gets no drag
+// image.
 constexpr std::size_t ThumbnailProbes = 8;
 constexpr std::size_t ThumbnailHeader = 64 * 1024;
 // The prefix of the staging directory of a drop, in the drop directory.
@@ -1174,7 +1175,7 @@ std::optional<Picture> Dnd::makePicture()
         ::close(fd);
         std::string error;
         if (read) {
-            image = decodeImage(bytes, ThumbnailBudget, error);
+            image = decodeImage(bytes, ThumbnailBudget, error, 1);
         }
         // One image file is read whole at most, decoded or not.
         probes = ThumbnailProbes;
@@ -2526,7 +2527,7 @@ int runDnd(int argc, char** argv)
                        + (readError == EINVAL ? std::string("it is not a regular file") : errorText(readError)));
             return 1;
         }
-        dnd.thumbnail = decodeImage(bytes, ThumbnailBudget, error);
+        dnd.thumbnail = decodeImage(bytes, ThumbnailBudget, error, 1);
         if (!dnd.thumbnail) {
             report("dnd", "Cannot decode " + thumbnail + ": " + error);
             return 1;

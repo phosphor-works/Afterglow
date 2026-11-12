@@ -4,23 +4,29 @@
 # libFuzzer targets (clang only, for C and C++): afterglow_vtfuzz for the
 # terminal core and the reader of its state frames, afterglow_protofuzz for
 # the protocol readers that take what a remote program sends,
-# afterglow_imagefuzz for the image decoders of aglow
-# (the patched stb_image and aglow's GIF reader in tools/aglow), and
+# afterglow_imagefuzz for the image decoders of aglow and afterglow-mux
+# (libs/afterglow-image: its GIF and BMP readers, and libpng, libjpeg-turbo
+# and libwebp behind it), and
 # afterglow_muxfuzz for the readers of the attach stream of afterglow-mux.
 # afterglow_muxfuzz compiles code of mux/, which is GPL-3.0-or-later, so its
 # source is too, and no other target links it. The
 # sources of the libraries, xxHash and the decoders are compiled into them
-# again, so that the sanitizers and the coverage instrument them. zlib-ng is
-# instrumented in place: its own build sets CPU flags for each of its files,
-# so its source list cannot be compiled again here. Every binary in a fuzz
-# build directory that links zlib-ng then needs the sanitizer runtimes. Only
-# the fuzz targets are built and supported there, so the configure turns the
-# tests off, CMakeLists.txt turns aglow off (a static aglow cannot link the
-# runtimes), and the build names its targets.
+# again, so that the sanitizers and the coverage instrument them. zlib-ng and
+# the image codecs are instrumented in place, as the targets that their
+# builds define: zlib-ng and libwebp set CPU flags for single files, and each
+# codec is one target that the program links. libjpeg-turbo builds apart, and
+# gets the flags when libs/afterglow-image sets that build up: CMakeLists.txt
+# holds AFTERGLOW_FUZZ_FLAGS for both.
+# Every binary in a fuzz build directory that links one of them then needs
+# the sanitizer runtimes. Only the fuzz targets are built and supported
+# there, so the configure turns the tests off, CMakeLists.txt turns aglow off
+# (a static program cannot link the runtimes), and the build names its
+# targets.
 #
 #   cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DAFTERGLOW_BUILD_FUZZERS=ON \
 #       -DBUILD_TESTING=OFF
-#   cmake --build build-fuzz --target afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz
+#   cmake --build build-fuzz --target afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz \
+#       afterglow_imagefuzz_seeds
 #   mkdir -p build-fuzz/corpus
 #   ./build-fuzz/tools/fuzz/afterglow_vtfuzz -max_total_time=300 -max_len=65536 \
 #       -dict=tools/fuzz/vt.dict build-fuzz/corpus/
@@ -32,8 +38,6 @@ endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-32)
 
-set(AFTERGLOW_FUZZ_FLAGS -g -O1 -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined)
-
 # Sets OUT to the sources of TARGET with absolute paths, so the fuzz targets
 # compile what the library compiles.
 function(afterglow_fuzz_sources target out)
@@ -43,11 +47,15 @@ function(afterglow_fuzz_sources target out)
     set(${out} ${sources} PARENT_SCOPE)
 endfunction()
 
-target_compile_options(zlib-ng PRIVATE ${AFTERGLOW_FUZZ_FLAGS})
-target_link_options(zlib-ng INTERFACE -fsanitize=address,undefined)
+foreach(target zlib-ng afterglow_png afterglow_webp)
+    target_compile_options(${target} PRIVATE ${AFTERGLOW_FUZZ_FLAGS})
+    target_link_options(${target} INTERFACE -fsanitize=address,undefined)
+endforeach()
+# An imported target: its code has the flags already (libs/afterglow-image).
+set_property(TARGET afterglow_turbojpeg APPEND PROPERTY INTERFACE_LINK_OPTIONS -fsanitize=address,undefined)
 
-# The protocol library with xxHash, for both targets: the terminal core calls
-# it too.
+# The protocol library with xxHash, for the three targets that read protocol
+# data: the terminal core calls it too.
 afterglow_fuzz_sources(AfterglowProto PROTO_SOURCES)
 afterglow_fuzz_sources(afterglow_xxhash XXHASH_SOURCES)
 add_library(afterglow_fuzz_proto STATIC ${PROTO_SOURCES} ${XXHASH_SOURCES})
@@ -56,7 +64,7 @@ target_include_directories(afterglow_fuzz_proto SYSTEM PRIVATE
     $<TARGET_PROPERTY:afterglow_xxhash,INTERFACE_INCLUDE_DIRECTORIES>)
 target_link_libraries(afterglow_fuzz_proto PUBLIC afterglow_zlib)
 target_compile_options(afterglow_fuzz_proto PRIVATE ${AFTERGLOW_FUZZ_FLAGS})
-# Upstream code is not ours to fix (as in libs/afterglow-proto).
+# Upstream code is not ours to fix (as afterglow_third_party_target says).
 set_source_files_properties(${XXHASH_SOURCES} PROPERTIES COMPILE_OPTIONS -w)
 
 afterglow_fuzz_sources(AfterglowVt VT_SOURCES)
@@ -74,15 +82,16 @@ target_include_directories(afterglow_muxfuzz PRIVATE "${PROJECT_SOURCE_DIR}/mux/
     $<TARGET_PROPERTY:AfterglowVt,INTERFACE_INCLUDE_DIRECTORIES>)
 target_link_libraries(afterglow_muxfuzz PRIVATE afterglow_fuzz_proto)
 
-# The decoders as aglow builds them (tools/aglow/CMakeLists.txt): stb's code
-# without Afterglow's warnings, and with -fwrapv.
-afterglow_vendored_file(stb_image AFTERGLOW_FUZZ_STB_IMAGE)
-get_filename_component(AFTERGLOW_FUZZ_STB_DIR "${AFTERGLOW_FUZZ_STB_IMAGE}" DIRECTORY)
-set(AFTERGLOW_FUZZ_STB_SOURCE "${PROJECT_SOURCE_DIR}/tools/aglow/StbImage.cpp")
-add_executable(afterglow_imagefuzz imagefuzz.cpp "${AFTERGLOW_FUZZ_STB_SOURCE}")
-target_include_directories(afterglow_imagefuzz PRIVATE "${PROJECT_SOURCE_DIR}/tools/aglow")
-target_include_directories(afterglow_imagefuzz SYSTEM PRIVATE "${AFTERGLOW_FUZZ_STB_DIR}")
-set_source_files_properties("${AFTERGLOW_FUZZ_STB_SOURCE}" PROPERTIES COMPILE_OPTIONS "-w;-fwrapv")
+# The decoders, compiled again from the sources of libs/afterglow-image.
+afterglow_fuzz_sources(AfterglowImage IMAGE_SOURCES)
+add_executable(afterglow_imagefuzz imagefuzz.cpp ${IMAGE_SOURCES})
+target_include_directories(afterglow_imagefuzz PRIVATE $<TARGET_PROPERTY:AfterglowImage,INTERFACE_INCLUDE_DIRECTORIES>)
+target_link_libraries(afterglow_imagefuzz PRIVATE afterglow_png afterglow_turbojpeg afterglow_webp)
+# The files of the tests of the decoders, as a first corpus of
+# afterglow_imagefuzz. It reads no input, so it is not instrumented.
+add_executable(afterglow_imagefuzz_seeds imagefuzz_seeds.cpp)
+target_link_libraries(afterglow_imagefuzz_seeds PRIVATE afterglow_image_test_files)
+set_target_properties(afterglow_imagefuzz_seeds PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 foreach(target afterglow_fuzz_proto afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz afterglow_muxfuzz)
     set_target_properties(${target} PROPERTIES AUTOMOC OFF AUTOUIC OFF)

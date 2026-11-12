@@ -164,7 +164,7 @@ bool parseNumber(std::string_view s, double& out)
     return !s.empty() && parsed.ec == std::errc{} && parsed.ptr == s.data() + s.size() && std::isfinite(out);
 }
 
-/// X11 colour spec, as the protocol library reads it.
+/// A colour spec (X11, OKLCH or LAB), as the protocol library reads it.
 bool parseColorSpec(std::string_view spec, Rgb& out)
 {
     return AfterglowProto::parseColorSpec(spec, out.r, out.g, out.b);
@@ -779,6 +779,13 @@ void Terminal::print(char32_t cp)
         }
         const MulticellParams* p = scr.multicellParams(*line, cur.x);
         const int next = cur.x - c.multicellDx() + (p ? p->columns() : 1);
+        if (next <= cur.x) {
+            // A block whose cells do not lead past it, as one whose
+            // parameters went would: the text would never move on. It goes,
+            // as a block that does not fit does.
+            scr.eraseMulticell(cur.y, cur.x);
+            break;
+        }
         if (next <= right) {
             cur.x = next;
         } else if (m_modes.autowrap && !wrapped) {
@@ -4754,9 +4761,11 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
         const auto value = reset ? std::string_view{} : field.substr(equal + 1);
         const bool query = value == "?";
         const auto at = value.find('@');
-        const auto colorValue = value.substr(0, at);
+        // Parsed only for a key that sets a colour: a query, a reset or an
+        // unknown key has no use for it, and an OKLCH value costs a gamut
+        // search.
         Rgb parsed;
-        const bool valid = parseColorSpec(colorValue, parsed);
+        const auto valid = [&] { return parseColorSpec(value.substr(0, at), parsed); };
         int number = -1;
         const auto numeric = std::from_chars(key.data(), key.data() + key.size(), number);
         if (numeric.ec == std::errc{} && numeric.ptr == key.data() + key.size() && number >= 0 && number < 256) {
@@ -4764,7 +4773,7 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
                 append(key, &m_palette[std::size_t(number)]);
             } else if (reset) {
                 m_palette[std::size_t(number)] = defaults[std::size_t(number)];
-            } else if (valid) {
+            } else if (valid()) {
                 m_palette[std::size_t(number)] = parsed;
             }
             continue;
@@ -4775,7 +4784,7 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
                 append(key, &target);
             } else if (reset || value.empty()) {
                 target = key == "foreground" ? m_options.defaultForeground : m_options.defaultBackground;
-            } else if (valid) {
+            } else if (valid()) {
                 target = parsed;
             }
             continue;
@@ -4792,7 +4801,7 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
             } else if (reset || value.empty()) {
                 has = false;
                 dynamic = !reset;
-            } else if (valid) {
+            } else if (valid()) {
                 target = parsed;
                 has = true;
                 dynamic = false;
@@ -4803,11 +4812,11 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
             auto& target = key == "cursor_text" ? m_protocolColors.cursorText : m_protocolColors.bell;
             if (query) {
                 append(key, key == "cursor_text" ? cursorTextColor() : visualBellColor());
-            } else if (reset || value.empty() || valid) {
+            } else if (const bool set = !reset && !value.empty() && valid(); reset || value.empty() || set) {
                 if (key == "cursor_text") {
                     m_protocolColors.cursorTextSet = !reset;
                 }
-                target = valid && !reset ? std::optional<Rgb>(parsed) : std::nullopt;
+                target = set ? std::optional<Rgb>(parsed) : std::nullopt;
             }
             continue;
         }
@@ -4818,7 +4827,7 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
                 append(key, target ? &target->color : nullptr, target ? std::optional<double>(target->opacity) : std::nullopt);
             } else if (reset || value.empty()) {
                 target.reset();
-            } else if (valid) {
+            } else if (valid()) {
                 double opacity = 1.0;
                 if (at != std::string_view::npos) {
                     if (!parseNumber(value.substr(at + 1), opacity)) {
@@ -5121,7 +5130,7 @@ std::uint64_t Terminal::advanceAnimations(std::uint64_t nowMs)
 {
     std::uint64_t next = 0;
     if (m_graphics[m_modes.altScreen ? 1 : 0].advanceAnimations(*m_active, m_cellWidth, m_cellHeight, nowMs, next)) {
-        touch();
+        touchImages();
     }
     return next;
 }

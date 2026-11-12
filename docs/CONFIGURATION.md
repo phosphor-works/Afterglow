@@ -7,6 +7,8 @@
 
 Afterglow clamps a number to the listed range. The description of Font.size gives 0 or less a meaning of its own. An integer key drops the fraction of a number, so 6.7 is 6. It uses its default for a value outside the 32-bit range and for text that is not a whole number. Invalid enum choices use the default. Where an empty string has a special meaning, the description says so. Omitted values use defaults.
 
+A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-values), such as `#1e1e2e`, `red` or `oklch(0.7 0.1 200)`.
+
 ## Animation
 
 | Key | Default | Range or choices | Meaning |

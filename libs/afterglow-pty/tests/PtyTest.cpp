@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <AfterglowPty/CloseFrom.h>
 #include <AfterglowPty/Pty.h>
 
 #include <gtest/gtest.h>
@@ -676,4 +677,49 @@ TEST(Pty, TheProcessStatusOfThisProcessIsReadWithANameThatHoldsANewLine)
     EXPECT_EQ(stat->parent, ::getppid());
     EXPECT_EQ(stat->group, ::getpgrp());
     EXPECT_EQ(stat->session, ::getsid(0));
+}
+
+// closeListed(), the fallback of closeFrom() for a kernel without
+// close_range(), in a child of its own: more descriptors than one read of
+// /proc/self/fd lists. And closeRange(), which takes the system call here.
+TEST(Pty, TheDescriptorsThatProcListsCloseFromTheFirst)
+{
+    rlimit files{};
+    ASSERT_EQ(::getrlimit(RLIMIT_NOFILE, &files), 0);
+    if (files.rlim_max != RLIM_INFINITY && files.rlim_max < 512) GTEST_SKIP() << "the hard limit of open files is below 512";
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+        // Room for the descriptors below.
+        if (files.rlim_cur != RLIM_INFINITY && files.rlim_cur < 512) {
+            files.rlim_cur = files.rlim_max;
+            ::setrlimit(RLIMIT_NOFILE, &files);
+        }
+        const int kept = ::open("/dev/null", O_RDONLY);
+        if (kept < 0) ::_exit(10);
+        int first = -1;
+        int last = -1;
+        for (int i = 0; i < 400; ++i) {
+            const int fd = ::dup(kept);
+            if (fd < 0) ::_exit(11);
+            if (first < 0) first = fd;
+            last = fd;
+        }
+        if (!closeListed(first)) ::_exit(12);
+        if (::fcntl(kept, F_GETFD) < 0) ::_exit(13);
+        for (int fd = first; fd <= last; ++fd) {
+            if (::fcntl(fd, F_GETFD) >= 0) ::_exit(14);
+        }
+        // A range closes and leaves what is around it.
+        const int a = ::dup(kept);
+        const int b = ::dup(kept);
+        const int c = ::dup(kept);
+        closeRange(b, b);
+        if (::fcntl(a, F_GETFD) < 0 || ::fcntl(b, F_GETFD) >= 0 || ::fcntl(c, F_GETFD) < 0) ::_exit(15);
+        ::_exit(0);
+    }
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0);
 }

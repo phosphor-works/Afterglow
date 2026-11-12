@@ -27,7 +27,7 @@ namespace AfterglowMux {
 /// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
 /// MuxProtocolTest pins the keys of the options to this number, so that a new
 /// key changes it too.
-inline constexpr int ProtocolVersion = 6;
+inline constexpr int ProtocolVersion = 8;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -109,7 +109,7 @@ bool validSessionName(std::string_view name);
 inline constexpr std::int64_t MaxScrollback = 1000000;
 inline constexpr double MinContrast = 1;
 inline constexpr double MaxContrast = 21;
-inline constexpr std::int64_t MaxGraphicsQuota = std::int64_t(4096) << 20;
+inline constexpr std::int64_t MaxGraphicsQuota = std::int64_t(AfterglowVt::GraphicsStore::MaxQuota);
 /// The bounds of Mux.eventQueue, in bytes, which an attach passes, and its
 /// default, which an attach without it gets.
 inline constexpr std::int64_t MinEventQueue = std::int64_t(1) << 20;

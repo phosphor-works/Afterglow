@@ -25,6 +25,13 @@ set_target_properties(afterglow_app_tests PROPERTIES AUTOMOC OFF)
 include(GoogleTest)
 gtest_discover_tests(afterglow_app_tests)
 
+# The window's decoder of the images that programs send, against the files
+# of the tests of libs/afterglow-image.
+qt_add_executable(afterglow_imagedecode_tests ImageDecodeTest.cpp)
+target_link_libraries(afterglow_imagedecode_tests PRIVATE afterglow_imagedecode afterglow_image_test_files Afterglow::Proto GTest::gtest_main)
+set_target_properties(afterglow_imagedecode_tests PROPERTIES AUTOMOC OFF)
+gtest_discover_tests(afterglow_imagedecode_tests PROPERTIES TIMEOUT 60)
+
 qt_add_executable(afterglow_scripting_tests ScriptHostTest.cpp ScriptPackageTest.cpp)
 target_link_libraries(afterglow_scripting_tests PRIVATE afterglow_scripting GTest::gtest)
 target_compile_definitions(afterglow_scripting_tests PRIVATE

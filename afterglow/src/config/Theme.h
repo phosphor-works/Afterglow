@@ -86,11 +86,15 @@ QStringList candidates(const QString& name, const QStringList& dirs, const QStri
 /// The first of candidates() that is a file. Empty if none is.
 QString locate(const QString& name, const QStringList& dirs, const QString& base = {});
 
-/// Whether @p name is a colour that a setting or theme can hold: a Qt colour
-/// name or hex form, but not eight hex digits and not "transparent" in any
-/// spelling that Qt reads ("Trans Parent"). Qt reads eight digits as
-/// #AARRGGBB, and these colours have no alpha, so "#1e1e2eff" would come out
-/// a different colour with no warning, and "transparent" opaque black.
+/// A colour as a setting or a theme writes it, with white space around it
+/// or not: "#rgb", "#rrggbb", "#rrrgggbbb" or "#rrrrggggbbbb" as Qt reads
+/// them ("#fff" is white), and otherwise what AfterglowProto::parseColorSpec
+/// reads for the escape codes: an X11 colour name in any case, "rgb:r/g/b",
+/// "rgbi:r/g/b", "oklch(L C H)" or "lab(L a b)". Empty for anything else,
+/// and for eight hex digits and "transparent": these colours have no alpha.
+std::optional<AfterglowVt::Rgb> rgbFromName(const QString& name);
+
+/// Whether rgbFromName() reads @p name.
 bool isColorName(const QString& name);
 
 /// Whether @p data is an Afterglow JSON theme rather than a Ghostty, kitty or

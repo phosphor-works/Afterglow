@@ -101,3 +101,17 @@
 "q#0;2;100;0;0"
 "+q544E"
 "$qm"
+
+# Colour values (OSC 4, 10-12, 17, 19 and 21)
+"oklch(0.7 0.1 200)"
+"lab(50 60 40)"
+"oklch("
+"lab("
+"rgb:"
+"rgbi:"
+"none"
+"deg"
+"grad"
+"rad"
+"turn"
+" / "

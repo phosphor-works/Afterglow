@@ -105,6 +105,14 @@ TEST(Random, FillsTheBufferWithDifferentBytes)
     EXPECT_EQ(token->find_first_not_of("0123456789abcdef"), std::string::npos);
 }
 
+TEST(Zlib, Crc32IsThatOfPngChunks)
+{
+    // The check value of CRC-32 and the checksum of an IEND chunk.
+    EXPECT_EQ(crc32Of("123456789"), 0xCBF43926u);
+    EXPECT_EQ(crc32Of("IEND"), 0xAE426082u);
+    EXPECT_EQ(crc32Of(""), 0u);
+}
+
 TEST(Zlib, StreamsInSmallSteps)
 {
     std::string text;

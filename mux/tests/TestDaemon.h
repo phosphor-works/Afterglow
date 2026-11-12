@@ -13,6 +13,8 @@
 #include <AfterglowProto/IpcServer.h>
 #include <AfterglowProto/Run.h>
 #include <AfterglowProto/Socket.h>
+#include <AfterglowProto/Zlib.h>
+#include <AfterglowPty/CloseFrom.h>
 
 #include <gtest/gtest.h>
 
@@ -60,10 +62,10 @@ inline std::string readFile(const std::string& path)
     return text.str();
 }
 
-/// Waits up to five seconds for @p done.
-inline bool waitFor(const std::function<bool()>& done)
+/// Waits up to @p wait (five seconds by default) for @p done.
+inline bool waitFor(const std::function<bool()>& done, std::chrono::milliseconds wait = 5s)
 {
-    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    const auto deadline = std::chrono::steady_clock::now() + wait;
     while (std::chrono::steady_clock::now() < deadline) {
         if (done()) return true;
         std::this_thread::sleep_for(20ms);
@@ -217,7 +219,7 @@ public:
             ::dup2(in, 0);
             ::dup2(out, 1);
             ::dup2(out, 2);
-            ::close_range(report >= 0 ? 4 : 3, ~0U, 0);
+            AfterglowPty::closeFrom(report >= 0 ? 4 : 3);
             ::execve(argv[0], argv.data(), envp.data());
             ::_exit(127);
         }
@@ -429,6 +431,61 @@ with open(sys.argv[3] + '.part', 'wb') as f:
 os.rename(sys.argv[3] + '.part', sys.argv[3])
 )";
     return {"python3", "-I", "-c", script, query, end, file, afterByte ? "1" : "0"};
+}
+
+/// A directory of its own under the temporary directory, removed however
+/// the test ends. Empty when it cannot be made.
+struct TempDir
+{
+    std::filesystem::path path;
+    TempDir()
+    {
+        std::string pattern = (std::filesystem::temp_directory_path() / "afterglow-mux-test-XXXXXX").string();
+        if (::mkdtemp(pattern.data())) path = pattern;
+    }
+    ~TempDir()
+    {
+        std::error_code ignored;
+        if (!path.empty()) std::filesystem::remove_all(path, ignored);
+    }
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+    /// An executable script named @p name that runs @p body. Empty where
+    /// the directory runs no program (a file system mounted noexec).
+    std::string script(const std::string& name, const std::string& body) const
+    {
+        const std::string file = (path / name).string();
+        std::ofstream(file) << "#!/bin/sh\n" << body << "\n";
+        return ::chmod(file.c_str(), 0700) == 0 && ::access(file.c_str(), X_OK) == 0 ? file : std::string();
+    }
+};
+
+/// Whether the kernel lists the children of a thread, which the tests of
+/// the image decoder's processes read (CONFIG_PROC_CHILDREN).
+inline bool childrenListed()
+{
+    return std::filesystem::exists("/proc/self/task/" + std::to_string(::gettid()) + "/children");
+}
+
+/// A grey PNG of @p width by @p height, with the CRCs that libpng checks.
+inline std::string greyPng(std::uint32_t width, std::uint32_t height)
+{
+    const auto be = [](std::uint32_t v) {
+        return std::string{char(v >> 24), char(v >> 16), char(v >> 8), char(v)};
+    };
+    const auto chunk = [&be](std::string_view type, const std::string& data) {
+        const std::string body = std::string(type) + data;
+        return be(std::uint32_t(data.size())) + body + be(AfterglowProto::crc32Of(body));
+    };
+    std::string rows;
+    rows.reserve(std::size_t(height) * (width + 1));
+    for (std::uint32_t y = 0; y < height; ++y) {
+        rows += '\0';
+        rows.append(width, char(y));
+    }
+    const std::string header = be(width) + be(height) + std::string{8, 0, 0, 0, 0};
+    return std::string("\x89PNG\r\n\x1a\n", 8) + chunk("IHDR", header) + chunk("IDAT", AfterglowProto::zlibCompress(rows))
+        + chunk("IEND", {});
 }
 
 } // namespace MuxTest
