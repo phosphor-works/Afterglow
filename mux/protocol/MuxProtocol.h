@@ -27,7 +27,7 @@ namespace AfterglowMux {
 /// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
 /// MuxProtocolTest pins the keys of the options to this number, so that a new
 /// key changes it too.
-inline constexpr int ProtocolVersion = 18;
+inline constexpr int ProtocolVersion = 19;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -245,8 +245,14 @@ struct SessionSettings
 {
     AfterglowVt::TerminalOptions terminal;
     ControlOptions control;
+    /// The variables of Mux.updateEnvironment as the window's process has
+    /// them: a value replaces the session's, and none removes it. The
+    /// panes that start later get them.
+    std::vector<std::pair<std::string, std::optional<std::string>>> environment{};
     bool operator==(const SessionSettings&) const = default;
 };
+/// The most variables that the settings of a window name.
+inline constexpr std::size_t MaxUpdatedVariables = 256;
 
 AfterglowProto::Json::Value toJson(const SessionSettings& settings);
 /// nullopt for a value that is not a valid settings object, by the rules of

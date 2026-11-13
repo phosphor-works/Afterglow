@@ -872,6 +872,24 @@ TEST_F(ConfigTest, ReadsTheEventQueueOfASessionWithinTheDaemonsBounds)
     }
 }
 
+// The variables that a session takes from Afterglow: tmux's, with the
+// Wayland display, or the user's names, without the ones that are not
+// variable names or that Afterglow sets itself.
+TEST_F(ConfigTest, ReadsTheVariablesThatASessionUpdates)
+{
+    EXPECT_TRUE(MuxSettings{}.updateEnvironment.contains(QStringLiteral("SSH_AUTH_SOCK")));
+    EXPECT_TRUE(MuxSettings{}.updateEnvironment.contains(QStringLiteral("WAYLAND_DISPLAY")));
+    SettingsStore store(write(QStringLiteral("environment.json"),
+                              R"({"Mux": {"updateEnvironment": ["GPG_AGENT_INFO", "BAD NAME", "AFTERGLOW_SOCKET", "GPG_AGENT_INFO", "_X1"]}})"));
+    EXPECT_EQ(store.settings().mux.updateEnvironment, (QStringList{QStringLiteral("GPG_AGENT_INFO"), QStringLiteral("_X1")}));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("BAD NAME, which is not a variable name")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("AFTERGLOW_SOCKET, which Afterglow sets itself")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    SettingsStore none(write(QStringLiteral("none.json"), R"({"Mux": {"updateEnvironment": []}})"));
+    EXPECT_TRUE(none.settings().mux.updateEnvironment.isEmpty());
+}
+
 // A file that means to turn scripts or the control socket off, and says it
 // wrongly, turns them off: they fail closed.
 TEST_F(ConfigTest, ScriptsAndControlStayOffForAValueThatIsNotABoolean)
@@ -2749,6 +2767,8 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
                 value = QJsonObject{{QStringLiteral("bloom"), QJsonObject{{QStringLiteral("strength"), 0.5}}}};
             } else if (name == QLatin1String("Window.workingDirectory")) {
                 value = QStringLiteral("~/afterglow-test");
+            } else if (name == QLatin1String("Mux.updateEnvironment")) {
+                value = QJsonArray{QStringLiteral("TEST_VARIABLE")};
             } else if (def.expectedType == QMetaType::QVariantMap) {
                 value = QJsonObject{{QStringLiteral("AFTERGLOW_TEST"), QStringLiteral("1")}};
             } else if (def.expectedType == QMetaType::QVariantList) {

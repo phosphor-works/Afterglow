@@ -680,6 +680,12 @@ PhosphorConfig::Schema buildSchema()
                               "pane keeps another. A request that does not fit gets the answer of a session that no window "
                               "shows. A request that finds the queue of its pane empty always fits. A change applies when "
                               "Afterglow next attaches to a session.")),
+        {QStringLiteral("updateEnvironment"), stringList(d.mux.updateEnvironment), QMetaType::QVariantList,
+         QStringLiteral("Environment variables that a session of this computer takes from Afterglow each time a window "
+                        "shows it, such as a new SSH_AUTH_SOCK after you log in again. Afterglow's value replaces the "
+                        "session's, and a variable that Afterglow does not have leaves the session. Only the panes that "
+                        "start after that get the new values. A session of another host keeps its own. Names that start "
+                        "with AFTERGLOW_ are ignored.")},
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
@@ -1865,6 +1871,20 @@ Settings SettingsStore::read()
     // Mux
     s.mux.onClose = readEnum(st, MuxGroup, QStringLiteral("onClose"), MuxCloseChoices, s.mux.onClose);
     s.mux.eventQueue = std::size_t(st.read<int>(MuxGroup, QStringLiteral("eventQueue"))) << 20;
+    s.mux.updateEnvironment.clear();
+    for (const QString& name : strings(MuxGroup, QStringLiteral("updateEnvironment"))) {
+        static const QRegularExpression VariableName(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+        if (!VariableName.match(name).hasMatch()) {
+            problem(QStringLiteral("Mux.updateEnvironment has %1, which is not a variable name. Ignoring it").arg(name));
+            continue;
+        }
+        // The daemon sets them for each pane.
+        if (name.startsWith(QLatin1String("AFTERGLOW_"))) {
+            problem(QStringLiteral("Mux.updateEnvironment has %1, which Afterglow sets itself. Ignoring it").arg(name));
+            continue;
+        }
+        if (!s.mux.updateEnvironment.contains(name)) s.mux.updateEnvironment.append(name);
+    }
 
     // Control
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));

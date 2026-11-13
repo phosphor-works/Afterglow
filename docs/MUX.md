@@ -329,6 +329,18 @@ It adds shell integration, `TERM`, `COLORTERM`, `TERM_PROGRAM` and the values of
 The programs of the session get the umask of `afterglow mux new`.
 They get the soft limit of open files that the daemon had before it raised its own (see [limits](#limits)).
 
+Each time a window shows a session of this computer, the session takes the variables of `Mux.updateEnvironment` from that Afterglow, as tmux does with `update-environment`.
+By default these are `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `SSH_AUTH_SOCK`, `SSH_AGENT_PID`, `SSH_CONNECTION`, `SSH_ASKPASS` and `KRB5CCNAME`.
+Thus a session that you show again after you log in again gets the new `SSH_AUTH_SOCK`.
+
+| Afterglow has the variable | The session |
+| --- | --- |
+| Yes | Takes Afterglow's value |
+| No | Removes it |
+
+Only the panes that start after that get the new values: a program that runs keeps its environment.
+A session of another host keeps its own values, because the values of this computer do not apply there.
+
 A new pane leaves out the variables that name another terminal or the shell instance that started the command.
 A window, an overlay and a session do this the same way.
 A variable that `Terminal.env` sets stays.

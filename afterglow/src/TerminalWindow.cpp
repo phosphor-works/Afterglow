@@ -425,8 +425,9 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         // Tabs that open, close, move or take a title, and the focus.
         connect(this, &TerminalWindow::tabsChanged, this, &TerminalWindow::scheduleSessionLayout);
         connect(this, &TerminalWindow::focusedPaneChanged, this, &TerminalWindow::scheduleSessionLayout);
-        // The session follows the settings of the window that shows it.
-        m_session->sendSettings(sessionSettings(m_settings.settings()));
+        // The session follows the settings of the window that shows it, and
+        // one of this computer takes its variables.
+        m_session->sendSettings(sessionSettings(m_settings.settings(), !m_session->remote()));
         restoreSession();
     } else if (!options.empty) newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command, options.environment);
     updateTitle();
@@ -4651,7 +4652,7 @@ void TerminalWindow::applySettings(const Settings& previous)
         for (Pane* p : findChildren<Pane*>()) p->setOptions(now.terminal);
         setDockOptions(now.terminal);
     }
-    if (m_session) m_session->sendSettings(sessionSettings(now));
+    if (m_session) m_session->sendSettings(sessionSettings(now, !m_session->remote()));
     if (now.colors != previous.colors) {
         for (Pane* p : findChildren<Pane*>()) {
             applySearchColors(p);
