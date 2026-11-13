@@ -201,12 +201,16 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
             return answerSessionCall(m_control, m_settings.settings(), *shown, fn, args);
         });
         // `aglow run` in a session pane: the commands target of this
-        // process serves it, as it serves a pane outside a session.
+        // process serves it, as it serves a pane outside a session. A
+        // client of another host gets a socket of a remote session.
         MuxCommands::Host commands;
         commands.socket = [](QString* error) {
             const QString path = InstanceSocket::processPath();
             if (path.isEmpty()) *error = QStringLiteral("this afterglow listens on no socket, so it runs no commands for session panes");
             return path;
+        };
+        commands.remote = [this](quint32 pane, const QString& host, bool commandsTarget, QString* error) {
+            return m_remoteSockets.endpoint(pane, host, commandsTarget, error);
         };
         commands.pane = [shown = QPointer<TerminalWindow>(window)](std::uint32_t id) -> std::optional<quint32> {
             const Pane* pane = shown ? shown->sessionPane(id) : nullptr;

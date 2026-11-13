@@ -11306,43 +11306,65 @@ TEST_F(NativeWindow, ATabDraggedOutOfASessionsWindowBecomesANewSession) {
 // A window shows a session of another host through `aglow-mux proxy`,
 // which a fake ssh runs here against the test's own daemon, and a new tab of
 // that window starts there.
+namespace {
+
+/// An ssh in @p bin, first on PATH until the guard that it returns goes,
+/// which runs the command of `ssh ... -- HOST COMMAND` on this computer with
+/// the directories of @p daemon: the daemon of the host is the test's own.
+/// `ssh -G HOST` names HOST.
+[[nodiscard]] std::optional<QScopeGuard<std::function<void()>>> fakeSshTo(MuxTest::TestDaemon& daemon, const QString& bin)
+{
+    if (!QDir().mkpath(bin)) return std::nullopt;
+    QFile ssh(bin + QStringLiteral("/ssh"));
+    if (!ssh.open(QIODevice::WriteOnly)) return std::nullopt;
+    const QString script = QStringLiteral(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = -G ]; then printf 'host %s\\nhostname %s\\nuser me\\nport 22\\n' \"$3\" \"$3\"; exit 0; fi\n"
+        "while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
+        "shift 2\n"
+        "XDG_RUNTIME_DIR='%1' XDG_STATE_HOME='%2' PATH='%3:/usr/bin:/bin' exec /bin/sh -c \"$*\"\n")
+        .arg(QString::fromStdString(daemon.runtime()), QString::fromStdString(daemon.stateHome()), QCoreApplication::applicationDirPath());
+    ssh.write(script.toUtf8());
+    ssh.close();
+    if (!QFile::setPermissions(bin + QStringLiteral("/ssh"), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner))
+        return std::nullopt;
+    const QByteArray path = qgetenv("PATH");
+    qputenv("PATH", bin.toUtf8() + ':' + path);
+    return QScopeGuard<std::function<void()>>([path] { qputenv("PATH", path); });
+}
+
+/// Session @p name of host @p host, through fakeSshTo(), in a new window of
+/// @p application, and its pane once the shell showed its prompt.
+ShownSession showSessionOfHost(Application& application, const QString& name, const QString& host, QString* error) {
+    const auto route = muxRoute(host, error);
+    if (!route) return {};
+    WindowOptions options;
+    options.session = MuxClient::attach(name, true, error, *route, MuxSettings{}.eventQueue, AfterglowVt::TerminalOptions{}.maxScrollback);
+    if (!options.session) return {};
+    ShownSession shown{application.newWindow(options), nullptr};
+    if (!shown.window) return shown;
+    shown.window->show();
+    if (waitFor([&] { return shown.window && shown.window->isExposed() && shown.window->submittedFrames() > 0; }))
+        shown.pane = shown.window->focusedPane();
+    if (!shown.pane || !waitFor([&] { return shown.pane && screenOf(shown.pane).startsWith(QLatin1Char('$')); }, 5000)) {
+        *error = shown.pane ? QStringLiteral("no prompt: ") + screenOf(shown.pane) : QStringLiteral("the window shows no pane");
+        delete shown.window;
+        return {};
+    }
+    return shown;
+}
+
+} // namespace
+
 TEST_F(NativeWindow, AWindowShowsASessionOfAnotherHost) {
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "far")) << daemon.lastError();
-    const QString bin = directory.filePath(QStringLiteral("ssh-bin"));
-    ASSERT_TRUE(QDir().mkpath(bin));
-    {
-        QFile ssh(bin + QStringLiteral("/ssh"));
-        ASSERT_TRUE(ssh.open(QIODevice::WriteOnly));
-        const QString script = QStringLiteral(
-            "#!/bin/sh\n"
-            "if [ \"$1\" = -G ]; then printf 'host %s\\nhostname %s\\nuser me\\nport 22\\n' \"$3\" \"$3\"; exit 0; fi\n"
-            "while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
-            "shift 2\n"
-            "XDG_RUNTIME_DIR='%1' XDG_STATE_HOME='%2' PATH='%3:/usr/bin:/bin' exec /bin/sh -c \"$*\"\n")
-            .arg(QString::fromStdString(daemon.runtime()), QString::fromStdString(daemon.stateHome()), QCoreApplication::applicationDirPath());
-        ssh.write(script.toUtf8());
-    }
-    ASSERT_TRUE(QFile::setPermissions(bin + QStringLiteral("/ssh"), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
-    const QByteArray path = qgetenv("PATH");
-    qputenv("PATH", bin.toUtf8() + ':' + path);
-    const auto restorePath = qScopeGuard([&path] { qputenv("PATH", path); });
+    const auto ssh = fakeSshTo(daemon, directory.filePath(QStringLiteral("ssh-bin")));
+    ASSERT_TRUE(ssh);
     QString error;
-    const auto route = muxRoute(QStringLiteral("far"), &error);
-    ASSERT_TRUE(route) << error.toStdString();
-    WindowOptions options;
-    options.session = MuxClient::attach(QStringLiteral("far"), true, &error, *route, MuxSettings{}.eventQueue,
-                                        AfterglowVt::TerminalOptions{}.maxScrollback);
-    ASSERT_NE(options.session, nullptr) << error.toStdString();
-    EXPECT_TRUE(options.session->remote());
-    QPointer<TerminalWindow> shown = application->newWindow(options);
-    ASSERT_NE(shown, nullptr);
-    shown->show();
-    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
-    Pane* pane = shown->focusedPane();
-    ASSERT_NE(pane, nullptr);
-    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("far"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
     EXPECT_TRUE(pane->showsSession(QStringLiteral("far"), QStringLiteral("far")));
     EXPECT_FALSE(pane->showsSession(QStringLiteral("far")));
     // A new tab starts there, through another proxy call.
@@ -11353,6 +11375,51 @@ TEST_F(NativeWindow, AWindowShowsASessionOfAnotherHost) {
     ASSERT_EQ(control.newTab(pane->id(), {}, {}, tab), QString());
     EXPECT_TRUE(waitFor([&] { return sessionNamed(daemon, "far")->panes == 2; }, 5000));
     EXPECT_EQ(shown->tabs().size(), 2);
+    delete shown;
+}
+
+// `aglow run` in a pane of a session of another host gets what an ssh
+// session of that host gets: the commands that a script marks remote, on
+// its own pane, with the host as ev.remote.host.
+TEST_F(NativeWindow, AglowRunInASessionOfAnotherHostGetsOnlyRemoteCommands) {
+    REQUIRE_AGLOW(aglow);
+    ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("scripts"))));
+    QFile script(directory.filePath(QStringLiteral("scripts/far.luau")));
+    ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+    script.write(R"(
+return {
+    metadata = { commands = {
+        there = { summary = "Say where", remote = true },
+        here = { summary = "Only for this computer" },
+    } },
+    run_command = function(command, ev)
+        return afterglow.output(ev, command .. " " .. ev.source .. " " .. ev.remote.host .. " " .. ev.pane.id .. "\n")
+    end,
+}
+)");
+    script.close();
+    restartApplication(QStringLiteral("remote-run.conf"),
+        testSettings({{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("sshRemoteCommands"), true}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "far")) << daemon.lastError();
+    const auto ssh = fakeSshTo(daemon, directory.filePath(QStringLiteral("ssh-bin")));
+    ASSERT_TRUE(ssh);
+    QString error;
+    auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("far"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    const QString run = aglow + QStringLiteral(" run far ");
+    ASSERT_TRUE(pane->sendInput((run + QStringLiteral("there; echo status=$?\n")).toStdString()));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("there remote far %1\nstatus=0").arg(pane->id())); }, 5000))
+        << screenOf(pane).toStdString();
+    // A command for this computer only does not exist there: a usage error.
+    ASSERT_TRUE(pane->sendInput((run + QStringLiteral("here; echo status=$?\n")).toStdString()));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("status=2")); }, 5000)) << screenOf(pane).toStdString();
+    EXPECT_FALSE(screenOf(pane).contains(QStringLiteral("\nhere remote"))) << screenOf(pane).toStdString();
     delete shown;
 }
 

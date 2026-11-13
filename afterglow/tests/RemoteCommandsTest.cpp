@@ -55,6 +55,7 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -569,6 +570,75 @@ TEST_F(RemoteCommandsTest, TheRemoteTargetRunsOnlyRemoteCommandsOnTheSessionsPan
     EXPECT_EQ(frames.value(0).value(QStringLiteral("args")).toArray().at(1).toString(), QStringLiteral("there remote box 7 word\n"));
     frames = run(QStringLiteral("there"), 9);
     EXPECT_TRUE(frames.value(0).value(QStringLiteral("message")).toString().contains(QLatin1String("pane of its ssh session")));
+}
+
+// The socket that a window gives the clients that a mux daemon passes it
+// (MuxCommands): a client in a pane of a session of another host, on the
+// commands target, and on the remote host of an ssh session in a session
+// pane, on the remote target. Each gets only the commands marked remote, on
+// the pane, with the host. One socket serves each pane, host and target
+// until the pane closes, with no forward to cancel and no answer of the
+// pane to change.
+TEST_F(RemoteCommandsTest, AnEndpointServesTheRemoteCommandsOfItsPaneWithNoForward)
+{
+    ASSERT_TRUE(start());
+    m_scripts->setEnabled(true);
+    QString error;
+    const QString commands = m_remote->endpoint(FakePane, QStringLiteral("box"), true, &error);
+    ASSERT_FALSE(commands.isEmpty()) << error.toStdString();
+    EXPECT_TRUE(commands.startsWith(m_runtime + QStringLiteral("/afterglow-remote-"))) << commands.toStdString();
+    EXPECT_EQ(m_remote->endpoint(FakePane, QStringLiteral("box"), true, &error), commands);
+    const QString remote = m_remote->endpoint(FakePane, QStringLiteral("box"), false, &error);
+    ASSERT_FALSE(remote.isEmpty()) << error.toStdString();
+    EXPECT_NE(remote, commands);
+    EXPECT_NE(m_remote->endpoint(FakePane, QStringLiteral("other"), true, &error), commands);
+
+    // Each on its own target, with the commands that declare remote.
+    for (const auto& [socket, target, other] : {std::tuple{commands, QStringLiteral("commands"), QStringLiteral("remote")},
+                                                std::tuple{remote, QStringLiteral("remote"), QStringLiteral("commands")}}) {
+        SCOPED_TRACE(target.toStdString());
+        EXPECT_EQ(callOn(socket, other, QStringLiteral("list"), {}).value(0).value(QStringLiteral("code")).toString(),
+                  QStringLiteral("NO_SUCH_TARGET"));
+        QStringList listed;
+        for (const QJsonValue& entry : callOn(socket, target, QStringLiteral("list"), {}).value(0).value(QStringLiteral("result")).toArray())
+            listed << entry.toObject().value(QStringLiteral("command")).toString();
+        listed.sort();
+        EXPECT_EQ(listed, (QStringList{QStringLiteral("echo"), QStringLiteral("slow"), QStringLiteral("there")}));
+        const auto run = [&](const QString& command, double pane) {
+            return callOn(socket, target, QStringLiteral("run"),
+                          {QStringLiteral("r1"), QStringLiteral("far"), command, QJsonArray{QStringLiteral("word")},
+                           QStringLiteral("/home/me/src"), pane});
+        };
+        QList<QJsonObject> frames = run(QStringLiteral("there"), 0);
+        ASSERT_EQ(frames.size(), 2);
+        EXPECT_EQ(frames[0].value(QStringLiteral("args")).toArray().at(1).toString(), QStringLiteral("there remote box 7 word\n"));
+        frames = run(QStringLiteral("here"), 0);
+        EXPECT_EQ(frames.value(0).value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_COMMAND"));
+        frames = run(QStringLiteral("there"), 9);
+        // The run acts on the pane, and on no other.
+        EXPECT_TRUE(frames.value(0).value(QStringLiteral("message")).toString().endsWith(QLatin1String("pane, 7")) ||
+                    frames.value(0).value(QStringLiteral("message")).toString().endsWith(QLatin1String("session, 7")))
+            << frames.value(0).value(QStringLiteral("message")).toString().toStdString();
+    }
+    // A session of another host hears that its run acts on its own pane.
+    const QList<QJsonObject> elsewhere = callOn(commands, QStringLiteral("commands"), QStringLiteral("run"),
+                                                {QStringLiteral("r2"), QStringLiteral("far"), QStringLiteral("there"), QJsonArray{}, QString(), 9});
+    EXPECT_TRUE(elsewhere.value(0).value(QStringLiteral("message")).toString().contains(QLatin1String("session of another host")));
+
+    // The pane's answer to the query stays as it was: no ssh session of its own.
+    EXPECT_FALSE(m_answers.contains(FakePane));
+    m_remote->paneClosed(FakePane);
+    EXPECT_TRUE(m_remote->tokens().isEmpty());
+    EXPECT_FALSE(exists(commands));
+    EXPECT_FALSE(exists(remote));
+    expectNoCancel();
+    // A host that is no name.
+    EXPECT_TRUE(m_remote->endpoint(FakePane, QString(), true, &error).isEmpty());
+    EXPECT_FALSE(error.isEmpty());
+    // The setting off: no socket, and the reason.
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Terminal"), QStringLiteral("sshRemoteCommands"), false));
+    EXPECT_TRUE(m_remote->endpoint(FakePane, QStringLiteral("box"), true, &error).isEmpty());
+    EXPECT_TRUE(error.contains(QLatin1String("Terminal.sshRemoteCommands"))) << error.toStdString();
 }
 
 TEST_F(RemoteCommandsTest, TheRemoteTargetHasTheCallsOfARunAndNoMore)

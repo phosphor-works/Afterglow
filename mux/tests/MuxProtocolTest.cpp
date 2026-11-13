@@ -64,7 +64,11 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 13) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 14) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 14 names the pane and the kind of the client in the Open of a
+    // relay, and the host of a client of an ssh session.
+    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, {}, 7, Attach::RelayKind::Remote, "h"}),
+              std::string("\x01\x03\x07\x01h", 5));
     // Version 13 passes the command clients of a session pane (`aglow run`)
     // to the window: the Commands event and the window's CommandsChannel,
     // with their RelayFrame.
@@ -72,8 +76,8 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(std::string(Attach::CommandsCodec), "afterglow.mux.commands.v1");
     Attach::Event commands;
     commands.type = Attach::EventType::Commands;
-    commands.payload = Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, {}});
-    EXPECT_EQ(Attach::encode(commands), std::string("\x09\x00\x00\x00\x01\x03", 6));
+    commands.payload = Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, {}, 7});
+    EXPECT_EQ(Attach::encode(commands), std::string("\x09\x00\x00\x00\x01\x03\x07\x00", 8));
     EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Bytes, "{}\n"}), std::string("\x02\x03{}\n", 5));
     EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::End, {}}), std::string("\x03\x03", 2));
     // Version 12 added callerEnvironment to the options of a session: the
@@ -718,10 +722,21 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
 TEST(MuxProtocol, RelayFramesRoundTrip)
 {
     for (const std::uint64_t relay : {std::uint64_t(1), std::uint64_t(300), ~std::uint64_t(0)}) {
-        const auto open = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}}));
+        const auto open = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}, 0xffffffffu}));
         ASSERT_TRUE(open);
         EXPECT_EQ(open->part, Attach::RelayPart::Open);
         EXPECT_EQ(open->relay, relay);
+        EXPECT_EQ(open->pane, 0xffffffffu);
+        EXPECT_EQ(open->kind, Attach::RelayKind::Commands);
+        EXPECT_TRUE(open->host.empty());
+        // The host of an ssh session, whatever its bytes look like.
+        const std::string host("h\x00\xff", 3);
+        const auto remote =
+            Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}, 4, Attach::RelayKind::Remote, host}));
+        ASSERT_TRUE(remote);
+        EXPECT_EQ(remote->pane, 4u);
+        EXPECT_EQ(remote->kind, Attach::RelayKind::Remote);
+        EXPECT_TRUE(remote->host == host);
         // The bytes of a connection, whatever they look like.
         const std::string bytes("\x00\xff\n\x80", 4);
         const auto data = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Bytes, bytes}));
@@ -751,7 +766,12 @@ TEST(MuxProtocol, RelayFramesThatDoNotDecodeAreRefused)
         std::string_view("\x00\x01", 2),      // part 0
         std::string_view("\x04\x01", 2),      // the part after End
         std::string_view("\x01\x00\x01", 3),  // relay 0
-        std::string_view("\x01\x01\x00", 3),  // a byte after Open
+        std::string_view("\x01\x01", 2),      // Open without its pane
+        std::string_view("\x01\x01\x01", 3),  // Open without its kind
+        std::string_view("\x01\x01\x00\x00", 4), // Open of pane 0
+        std::string_view("\x01\x01\x01\x02", 4), // the kind after Remote
+        std::string_view("\x01\x01\x01\x00h", 5), // a byte after the Open of a client of the commands target
+        std::string_view("\x01\x01\x01\x01", 4), // the Open of a client of an ssh session without its host
         std::string_view("\x02\x01", 2),      // Bytes without bytes
         std::string_view("\x03\x01\x00", 3),  // a byte after End
         std::string_view("\x03\x81", 2),      // a varint that does not end
