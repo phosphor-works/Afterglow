@@ -416,7 +416,24 @@ A command that is not marked `remote` fails as a command that does not exist.
 | The run names a pane of the daemon that the window does not show | `CALL_FAILED`: `no pane N of session 'NAME' shows in its window` |
 | The window closes or detaches while the command runs | The command ends. The client gets `the window of session 'NAME' closed, and with it the runs of this client`, and exits with status 1. |
 
-`afterglow ssh` connects without [remote commands](CONTROL.md#remote-commands). With `-v`, it writes `a session pane takes no remote commands: the mux daemon runs no scripts` as the reason.
+### Remote commands of an ssh session in a session pane
+
+`afterglow ssh` in a session pane gets [remote commands](CONTROL.md#remote-commands) as in a pane outside a session.
+The daemon keeps the socket that ssh forwards, because the ssh session runs in the daemon and outlives a window.
+In a session of another host, the ssh session also runs on that host.
+The daemon passes each connection of the remote host to the window that shows the session.
+The window runs the command as for an ssh session of its own.
+The daemon also gives the pane its answer to the query of `aglow run` (OSC 24569).
+
+| Item | Value |
+| --- | --- |
+| Local socket | `remote-TOKEN.sock` with mode 0600, in the directory of the socket that session panes name in `AFTERGLOW_SOCKET`: `$XDG_RUNTIME_DIR/aglow-mux`, else `$XDG_STATE_HOME/aglow-mux` (see [sockets](#sockets)). A daemon that starts removes those that a daemon left when it was killed. |
+| Settings | `Terminal.sshRemoteCommands`, `Control.enabled` and `Scripts.enabled` as `afterglow mux new` found them, and the same settings of the window that runs the command |
+| End | When the `afterglow ssh` process ends, when its pane closes, and when the daemon ends. The daemon then cancels the forward with `ssh -O cancel`, with the `ssh` on its own `PATH` |
+| Limits | 16 sessions for each pane, 256 for the daemon, and 64 connections for each socket, as in a window |
+
+A pane of a session has no overlay, so `afterglow ssh` in an overlay gets no socket there.
+When no window shows the session, a client of the remote host gets `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts`.
 
 ## What the daemon answers
 
@@ -430,7 +447,7 @@ While a window shows the session, these answers go through the window, as the an
 | --- | --- |
 | Title and working directory | The daemon keeps the last value |
 | Notification query (OSC 99 `p=?`) | The daemon gives the answer of a window |
-| Query of the socket of an ssh session (OSC 24569) | The daemon answers that there is none (`error=off`) |
+| Query of the socket of an ssh session (OSC 24569) | The daemon answers with the socket of the newest ssh session of the pane (see [remote commands of an ssh session in a session pane](#remote-commands-of-an-ssh-session-in-a-session-pane)), else that there is none (`error=off`) |
 | Visibility report (mode 2033) | The window says whether you can see the pane. Until a window says it, the program hears that you cannot see the pane. This is also true after a takeover, and while no window shows the session. |
 | Images | The daemon keeps the images, also while no window shows the session. It decodes PNG (Kitty graphics `f=100`) and iTerm2 images (PNG, JPEG, GIF, WebP and BMP). Each image decodes in a process of its own, which the decoder of the daemon (`aglow-mux --decode-images`) starts. It decodes with libpng, libjpeg-turbo and libwebp, which the build includes. Each process has limits on its memory, its CPU time and the system calls that it can make. A decoder process that crashes or takes too long ends, and the daemon and the other sessions go on. The images do not decode on a kernel without seccomp filters, or on a kernel older than Linux 5.3 (`pidfd_open`). They also do not decode on a processor other than x86-64, little-endian AArch64, RISC-V 64 and little-endian POWER. The daemon then writes why on its standard error, which is the journal when it runs in `aglow-mux.service`. When the decoder cannot start, images do not decode for a minute, and the daemon writes why. The window shows the images that the daemon keeps. |
 

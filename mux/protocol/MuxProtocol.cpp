@@ -370,7 +370,9 @@ Json::Value toJson(const SessionOptions& o)
         {"size", toJson(o.size)},
         {"terminal", toJson(o.terminal)},
         {"notificationCapabilities", o.notificationCapabilities},
-        {"control", Json::Object{{"enabled", o.control.enabled}, {"allowReadText", o.control.allowReadText}}},
+        {"control", Json::Object{{"enabled", o.control.enabled},
+                                 {"allowReadText", o.control.allowReadText},
+                                 {"remoteCommandsOff", o.control.remoteCommandsOff}}},
     };
 }
 
@@ -399,6 +401,7 @@ std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::stri
         Reader c = r.nested(*control, "control");
         c.boolean("enabled", o.control.enabled);
         c.boolean("allowReadText", o.control.allowReadText);
+        c.string("remoteCommandsOff", o.control.remoteCommandsOff);
         c.noOtherKeys();
         r.absorb(c);
     }

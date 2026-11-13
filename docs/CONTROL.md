@@ -616,6 +616,7 @@ Remote commands need all of these:
 - With your own `ControlPath` and a `ControlMaster` other than `auto` or `autoask`: a master that runs already.
 - With `-M` on the command line: your own `ControlPath`, and a master that runs already on it. `-M` sets `ControlMaster yes`, and ssh with `-M` does not join a master. The forward goes on the master that runs, and the session authenticates on its own. A master that `afterglow ssh` made would hold the forward with no session, and end after its `ControlPersist`.
 - No tmux around `afterglow ssh` on this computer. In tmux, `AFTERGLOW_PANE_ID` can name another pane.
+- In a pane of a mux session, the mux daemon keeps the socket. See [remote commands of an ssh session in a session pane](MUX.md#remote-commands-of-an-ssh-session-in-a-session-pane).
 - `aglow` on the remote host, with the protocol of this Afterglow. `aglow --version` shows the protocol.
 - `aglow` on the `PATH` that the login shell of the remote user gets without a terminal. The probe below runs there.
 - `AllowStreamLocalForwarding` on the ssh server. Its default is `yes`.

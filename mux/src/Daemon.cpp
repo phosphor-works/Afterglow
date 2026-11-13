@@ -102,6 +102,13 @@ Daemon::Daemon(long fileLimit)
 
 Daemon::~Daemon()
 {
+    // Their forwards are cancelled, and their clients hear why. Nothing may
+    // leave a destructor, which may run as an exception unwinds.
+    try {
+        endAllSsh();
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "aglow-mux: cannot end the ssh sessions: %s\n", e.what());
+    }
     // Each pane closes its terminal, which hangs up its programs, and the
     // PTY's reaper kills those still there after a grace time; nothing waits
     // for them to exit. The listeners close after that: until then their
@@ -156,6 +163,9 @@ Daemon::Listen Daemon::listen(const std::vector<AfterglowProto::MuxSocket>& sock
         if (error) *error = "no socket to listen on: " + reasons;
         return Listen::Failed;
     }
+    // This daemon owns its directories now: the sockets of ssh sessions that
+    // a daemon left when it was killed go.
+    for (const AfterglowProto::MuxSocket& socket : sockets) removeStaleSshSockets(socket.directory);
     return Listen::Listening;
 }
 
@@ -166,6 +176,7 @@ Daemon::Exit Daemon::run()
     const std::size_t signalIndex = wakeIndex + 1;
     const std::size_t firstConnection = signalIndex + 1;
     std::vector<pollfd> fds;
+    std::vector<SshWatch> sshWatches;
     while (true) {
         fds.clear();
         // A starved listener stays readable, and would wake every poll: it
@@ -191,6 +202,8 @@ Daemon::Exit Daemon::run()
                 connectWait = left;
             }
         }
+        const std::size_t firstSsh = fds.size();
+        addSshFds(fds, sshWatches);
         // Lines that wait in a buffer get their turn at once. Until the
         // first session, the start wait bounds the poll: then an idle daemon
         // ends even when nothing wakes it. After the wait, only a connection
@@ -256,6 +269,9 @@ Daemon::Exit Daemon::run()
             });
         }
         std::erase_if(m_attachments, [&over](const auto& a) { return std::find(over.begin(), over.end(), a.get()) != over.end(); });
+        // The ssh sessions before the windows' answers: a client that came
+        // goes to its window with them.
+        handleSshFds(fds.data() + firstSsh, sshWatches);
         // Before the reads below, whose calls may wait for these windows.
         answerForwarded();
         answerRelays();
@@ -278,6 +294,8 @@ Daemon::Exit Daemon::run()
             if (!connection->open()) forget(connection.get());
         }
         std::erase_if(m_connections, [](const auto& c) { return !c->open(); });
+        // A pane that closed ends its ssh sessions.
+        pruneSsh();
         // A call can start a pane, end one or move panes: the window that
         // shows the session hears of it now, not at the next wake, which a
         // program that prints nothing never gives.

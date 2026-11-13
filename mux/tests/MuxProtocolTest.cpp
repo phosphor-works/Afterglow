@@ -64,7 +64,10 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 14) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 15) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 15 added control.remoteCommandsOff to the options of a
+    // session, and the remote calls of `afterglow ssh` on the control
+    // target of the daemon.
     // Version 14 names the pane and the kind of the client in the Open of a
     // relay, and the host of a client of an ssh session.
     EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, {}, 7, Attach::RelayKind::Remote, "h"}),
@@ -208,7 +211,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     SessionOptions fields;
     [[maybe_unused]] auto& [name, sessionEnvironment, callerEnvironment, umask, launch, size, terminal, notificationCapabilities,
                             controlOptions] = fields;
-    [[maybe_unused]] auto& [controlEnabled, allowReadText] = fields.control;
+    [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff] = fields.control;
     [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram] = fields.launch;
     [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
     [[maybe_unused]] auto& [scrollback, foreground, background, palette, cursorColor, cursorTextColor, selectionForeground,
@@ -221,7 +224,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(keys(options),
               (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
                                         "notificationCapabilities", "control"}));
-    EXPECT_EQ(keys(options["control"]), (std::vector<std::string>{"enabled", "allowReadText"}));
+    EXPECT_EQ(keys(options["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff"}));
     EXPECT_EQ(keys(options["launch"]), (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram"}));
     EXPECT_EQ(keys(options["size"]), (std::vector<std::string>{"cols", "rows", "cellWidth", "cellHeight"}));
     EXPECT_EQ(keys(options["terminal"]),
@@ -419,7 +422,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     o.launch.launchedProgram = "htop";
     o.size = {132, 43, 9, 18};
     o.notificationCapabilities = "a=focus:p=title";
-    o.control = {false, true};
+    o.control = {false, true, "remote commands are off (Terminal.sshRemoteCommands)"};
     AfterglowVt::TerminalOptions& t = o.terminal;
     t.maxScrollback = 1234;
     t.defaultForeground = {4, 5, 6};
@@ -472,6 +475,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     EXPECT_EQ(back->notificationCapabilities, o.notificationCapabilities);
     EXPECT_FALSE(back->control.enabled);
     EXPECT_TRUE(back->control.allowReadText);
+    EXPECT_EQ(back->control.remoteCommandsOff, "remote commands are off (Terminal.sshRemoteCommands)");
     EXPECT_TRUE(back->terminal == o.terminal);
     // Unset colors go as null and come back unset.
     SessionOptions unset;
@@ -517,11 +521,12 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         EXPECT_FALSE(sessionOptions(without(good, key), &error)) << key;
         EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
     }
-    // The Control settings: both, and booleans.
+    // The Control settings: all of them, two booleans and a reason.
     for (const auto& [value, key] : std::vector<std::pair<Json::Value, std::string>>{
              {Json::Object{{"enabled", true}}, "'control.allowReadText'"},
              {Json::Object{{"enabled", 1}, {"allowReadText", false}}, "'control.enabled'"},
-             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"other", 1}}, "'control.other'"}}) {
+             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", 1}}, "'control.remoteCommandsOff'"},
+             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", ""}, {"other", 1}}, "'control.other'"}}) {
         error.clear();
         EXPECT_FALSE(sessionOptions(with(good, "control", value), &error)) << Json::write(value);
         EXPECT_NE(error.find(key), std::string::npos) << key << ": " << error;

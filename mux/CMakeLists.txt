@@ -22,7 +22,7 @@ set_target_properties(afterglow_mux_image PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 # aglow-mux: the daemon that keeps sessions running while no window shows
 # them. No Qt: only the terminal core, the PTY, the protocol library and the
 # image decoder. The tests of its panes link the same code.
-add_library(afterglow_mux_daemon STATIC src/Attach.cpp src/Daemon.cpp src/DaemonCommands.cpp src/DaemonControl.cpp src/MuxPane.cpp src/Proxy.cpp
+add_library(afterglow_mux_daemon STATIC src/Attach.cpp src/Daemon.cpp src/DaemonCommands.cpp src/DaemonControl.cpp src/DaemonRemote.cpp src/MuxPane.cpp src/Proxy.cpp
                                        src/Session.cpp)
 target_include_directories(afterglow_mux_daemon PUBLIC src)
 target_compile_definitions(afterglow_mux_daemon PRIVATE AFTERGLOW_VERSION="${PROJECT_VERSION}")
