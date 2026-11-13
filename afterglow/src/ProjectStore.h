@@ -27,6 +27,10 @@ public:
     /// The "pane" object of the first pane that a project starts: the first
     /// leaf of its first tab.
     static QJsonObject firstPane(const QJsonObject& document);
+    /// The "pane" objects of all the panes of a project, tab by tab, each
+    /// tree's first side before its second: the order in which a window
+    /// lays them out (TerminalWindow::restoreProject).
+    static QList<QJsonObject> panes(const QJsonObject& document);
     /// Whether @p document opens into a mux session ("session": true).
     static bool opensSession(const QJsonObject& document);
     QStringList names() const;

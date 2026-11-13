@@ -54,12 +54,26 @@ QString lossText(MuxClient::Loss loss, const QString& name)
 
 } // namespace
 
-std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover, QString* error, const AfterglowMux::Route& route,
-                                              std::size_t eventQueue, std::size_t history)
+SessionLink& SessionLink::operator=(SessionLink&& other) noexcept
 {
-    const auto fail = [error](const QString& text) -> std::shared_ptr<MuxClient> {
+    if (this == &other) return *this;
+    if (fd >= 0) ::close(fd);
+    fd = std::exchange(other.fd, -1);
+    proxy = std::move(other.proxy);
+    return *this;
+}
+
+SessionLink::~SessionLink()
+{
+    if (fd >= 0) ::close(fd);
+}
+
+std::optional<SessionLink> attachSession(const QString& name, bool takeover, const AfterglowMux::Route& route, std::size_t eventQueue,
+                                         std::size_t history, QString* error)
+{
+    const auto fail = [error](const QString& text) -> std::optional<SessionLink> {
         if (error) *error = text;
-        return nullptr;
+        return std::nullopt;
     };
     if (route.proxy.empty() && route.sockets.candidates.empty()) return fail(QString::fromStdString(route.sockets.error));
     std::string reason;
@@ -80,14 +94,33 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
     if (!result) return fail(QString::fromStdString(AfterglowProto::printable(callError.message)));
     // The connection of the call carries the session's stream from here.
     AfterglowProto::IpcConnection::Error releaseError;
-    const int fd = reached.connection->release(&releaseError);
-    if (fd < 0) return fail(QStringLiteral("cannot show session '%1': %2").arg(name, QString::fromStdString(releaseError.message)));
+    SessionLink link;
+    link.proxy = reached.proxy;
+    link.fd = reached.connection->release(&releaseError);
+    if (link.fd < 0) return fail(QStringLiteral("cannot show session '%1': %2").arg(name, QString::fromStdString(releaseError.message)));
+    return link;
+}
 
+std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover, QString* error, const AfterglowMux::Route& route,
+                                              std::size_t eventQueue, std::size_t history)
+{
+    auto link = attachSession(name, takeover, route, eventQueue, history, error);
+    return link ? adopt(name, std::move(*link), error, route, eventQueue) : nullptr;
+}
+
+std::shared_ptr<MuxClient> MuxClient::adopt(const QString& name, SessionLink link, QString* error, const AfterglowMux::Route& route,
+                                             std::size_t eventQueue)
+{
+    const auto fail = [error](const QString& text) -> std::shared_ptr<MuxClient> {
+        if (error) *error = text;
+        return nullptr;
+    };
     std::shared_ptr<MuxClient> client(new MuxClient);
     client->m_session = name;
     client->m_eventQueue = eventQueue;
     client->m_route = route;
-    client->m_proxy = reached.proxy;
+    client->m_proxy = link.proxy;
+    const int fd = std::exchange(link.fd, -1);
     PhosphorChannel::Stream::Options options;
     options.maxChannelId = Attach::MaxChannelId;
     client->m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
@@ -102,8 +135,9 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
     // gets: the commands that a script marks remote.
     if (client->remote()) client->m_commands->setRemoteHost(client->host());
 
-    // The daemon sends the layout first: the window lays out the session's
-    // tabs and splits, and makes their panes.
+    // The daemon sends the layout first, as soon as the stream starts: the
+    // window lays out the session's tabs and splits, and makes their panes.
+    // The GUI thread waits for it here, at most Attach::ConnectWaitMs.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(Attach::ConnectWaitMs);
     while (!client->m_layoutCame && !client->m_ended) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());

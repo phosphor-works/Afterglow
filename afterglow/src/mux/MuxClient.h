@@ -28,6 +28,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <utility>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,6 +41,28 @@ class StreamWriter;
 } // namespace PhosphorChannel
 
 namespace Afterglow {
+
+/// The connection that answered an attach call: it carries the session's
+/// stream from then on. It closes unless MuxClient::adopt takes it.
+struct SessionLink
+{
+    /// First: it goes after the connection, which ends it.
+    std::shared_ptr<AfterglowMux::ProxyProcess> proxy;
+    int fd = -1;
+
+    SessionLink() = default;
+    SessionLink(SessionLink&& other) noexcept : proxy(std::move(other.proxy)), fd(std::exchange(other.fd, -1)) {}
+    SessionLink& operator=(SessionLink&& other) noexcept;
+    SessionLink(const SessionLink&) = delete;
+    SessionLink& operator=(const SessionLink&) = delete;
+    ~SessionLink();
+};
+
+/// The first half of MuxClient::attach(): the calls that wait for the
+/// daemon (its connection, maybe over ssh, and the attach call), with no Qt
+/// object, for any thread. Nothing, with @p error, when they fail.
+std::optional<SessionLink> attachSession(const QString& name, bool takeover, const AfterglowMux::Route& route, std::size_t eventQueue,
+                                         std::size_t history, QString* error);
 
 class Pane;
 
@@ -85,6 +108,11 @@ public:
     /// history rows that the window keeps of each pane.
     static std::shared_ptr<MuxClient> attach(const QString& name, bool takeover, QString* error, const AfterglowMux::Route& route,
                                              std::size_t eventQueue, std::size_t history);
+    /// The client of the connection of @p link, which answered the attach
+    /// call of session @p name (attachSession): the second half of attach(),
+    /// on the GUI thread. Waits until the daemon names the layout.
+    static std::shared_ptr<MuxClient> adopt(const QString& name, SessionLink link, QString* error, const AfterglowMux::Route& route,
+                                            std::size_t eventQueue);
     ~MuxClient() override;
 
     const QString& session() const { return m_session; }

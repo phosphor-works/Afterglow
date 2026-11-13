@@ -4,12 +4,14 @@
 #include "../ProjectStore.h"
 #include "../TerminalWindow.h"
 #include "../config/Settings.h"
+#include "../mux/MuxClient.h"
 #include "../mux/MuxSessions.h"
 
 #include "MuxProtocol.h"
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
+
 #include <unistd.h>
 
 namespace Afterglow {
@@ -96,7 +98,7 @@ void Control::openProjectSession(const QString& name, const QJsonObject& documen
                         .arg(name, QLatin1String(AfterglowMux::SessionNameRule)),
                     {});
     }
-    if (!m_openSessionWindow) return done(QStringLiteral("cannot open a window"), {});
+    if (!m_showSessionLink) return done(QStringLiteral("cannot open a window"), {});
     // One open of the project's session at a time: another one waits for it,
     // and then opens the project again, which finds its window. `--new`
     // starts a session of its own.
@@ -107,10 +109,12 @@ void Control::openProjectSession(const QString& name, const QJsonObject& documen
         }
         m_projectOpens.insert(name, {});
     }
-    // The name of the session, unless a window here still shows a session
-    // of the name, which ended before the window heard it, or another open
-    // asks for it: then the daemon names it.
-    const bool named = !sessionWindow(name) && !m_namingSessions.contains(name);
+    // A window here that shows a session of the name: it comes to the front,
+    // or it still shows a session that ended before it heard it.
+    const bool shown = sessionWindow(name);
+    // The name of the session, unless such a window, or another open, has
+    // it: then the daemon names it.
+    const bool named = !shown && !m_namingSessions.contains(name);
     if (named) m_namingSessions.insert(name);
     const auto finish = [this, name, newInstance, named, done = std::move(done)](const QString& error, const QVariantMap& result) {
         if (named) m_namingSessions.remove(name);
@@ -118,12 +122,25 @@ void Control::openProjectSession(const QString& name, const QJsonObject& documen
         if (newInstance) return;
         for (const auto& next : m_projectOpens.take(name)) next();
     };
-    // A new session: the project's first pane starts it, and its window
-    // starts the others in it. The restore gives the warnings, the first
-    // pane's too. The options come from this thread's settings.
+    // A new session: its first pane is the project's first, and the daemon
+    // starts the others in it too, before a window shows it, which then
+    // lays them out. The restore gives the warnings. The launches come from
+    // this thread's settings.
+    const Settings& settings = m_settings.settings();
     QStringList ignored;
-    const ProjectStore::Launch first = ProjectStore::launchOf(ProjectStore::firstPane(document), ignored);
-    AfterglowMux::SessionOptions options = localSessionOptions(m_settings.settings(), first.cwd, first.command, {});
+    const QList<QJsonObject> leaves = ProjectStore::panes(document);
+    const ProjectStore::Launch first = ProjectStore::launchOf(leaves.value(0), ignored);
+    AfterglowMux::SessionOptions options = localSessionOptions(settings, first.cwd, first.command, {});
+    std::vector<AfterglowMux::Launch> others;
+    for (qsizetype i = 1; i < leaves.size(); ++i) {
+        const ProjectStore::Launch launch = ProjectStore::launchOf(leaves[i], ignored);
+        others.push_back(localLaunch(settings, launch.cwd, launch.command));
+    }
+    // No window measured the panes: the size of a new window, which then
+    // resizes them.
+    const AfterglowMux::PaneSize size{settings.window.initialColumns, settings.window.initialRows, 0, 0};
+    const std::size_t eventQueue = settings.mux.eventQueue;
+    const std::size_t history = settings.terminal.maxScrollback;
     // What the calls read from the process: the GUI thread changes its
     // environment (an activation token).
     const LocalDaemon daemon = localDaemon();
@@ -132,18 +149,43 @@ void Control::openProjectSession(const QString& name, const QJsonObject& documen
         bool runs = false;
         QString session;
         QString error;
+        /// The daemon's IDs of the project's panes, in their order: the
+        /// session's first pane, then those that it started for the others.
+        std::vector<std::uint32_t> panes;
+        /// The attach that the window takes.
+        std::shared_ptr<SessionLink> link;
     };
     offThread<Started>(
-        [name, newInstance, named, daemon, closing = m_closing, options = std::move(options)]() mutable {
+        [name, newInstance, named, shown, daemon, others = std::move(others), size, eventQueue, history, closing = m_closing,
+         options = std::move(options)]() mutable {
             Started started;
+            AfterglowMux::Route route;
+            route.sockets = daemon.sockets;
+            const auto attach = [&](const QString& session) {
+                // A session that another Afterglow shows stays there.
+                if (auto link = attachSession(session, false, route, eventQueue, history, &started.error))
+                    started.link = std::make_shared<SessionLink>(std::move(*link));
+            };
             started.runs = localSessionRuns(daemon, name);
-            if ((!newInstance && started.runs) || closing->load()) return started;
+            if (closing->load()) return started;
+            if (!newInstance && started.runs) {
+                if (!shown) attach(name);
+                return started;
+            }
             // Another instance gets the daemon's next name, and so does a
             // project whose name another session has.
             options.name = started.runs || !named ? std::string() : name.toStdString();
-            started.session = newLocalSession(daemon, options, &started.error);
-            // Afterglow quits: no window lays the session out.
-            if (!started.session.isEmpty() && closing->load()) killLocalSession(daemon, started.session);
+            std::uint32_t first = 0;
+            started.session = newLocalSession(daemon, options, &started.error, &first);
+            if (started.session.isEmpty()) return started;
+            if (auto ids = startLocalPanes(daemon, started.session, others, size, *closing, &started.error)) {
+                started.panes.push_back(first);
+                started.panes.insert(started.panes.end(), ids->begin(), ids->end());
+                attach(started.session);
+            }
+            // Afterglow quits: no window lays the session out. One that quits
+            // after this look drops the answer, and the session runs on.
+            if (closing->load()) killLocalSession(daemon, started.session);
             return started;
         },
         [this, name, document, newInstance, daemon, finish](Started started) {
@@ -159,11 +201,18 @@ void Control::openProjectSession(const QString& name, const QJsonObject& documen
             // The session of the project runs: its window shows it, or a new one does.
             if (!newInstance && started.runs) {
                 TerminalWindow* window = sessionWindow(name);
-                if (!window) {
+                if (!window && started.link) {
+                    if (const QString error = m_showSessionLink(name, std::move(*started.link)); !error.isEmpty()) return finish(error, {});
+                    window = sessionWindow(name);
+                } else if (!window && started.error.isEmpty() && m_openSessionWindow) {
+                    // The window that showed it closed meanwhile, which is
+                    // rare: a new one attaches on this thread.
                     if (const QString error = m_openSessionWindow(name, {}); !error.isEmpty()) return finish(error, {});
                     window = sessionWindow(name);
                 }
-                if (!window) return finish(QStringLiteral("no window shows session %1").arg(name), {});
+                if (!window) {
+                    return finish(started.error.isEmpty() ? QStringLiteral("no window shows session %1").arg(name) : started.error, {});
+                }
                 return finish({}, opened(window, name, true, {}));
             }
             if (started.session.isEmpty()) return finish(started.error, {});
@@ -175,10 +224,15 @@ void Control::openProjectSession(const QString& name, const QJsonObject& documen
                     finish(killed ? why : QStringLiteral("%1, and session %2 still runs").arg(why, session), {});
                 });
             };
-            if (const QString why = m_openSessionWindow(session, {}); !why.isEmpty()) return fail(why);
+            if (!started.link) return fail(started.error);
+            if (const QString why = m_showSessionLink(session, std::move(*started.link)); !why.isEmpty()) return fail(why);
             TerminalWindow* window = sessionWindow(session);
-            if (!window || !window->focusedPane()) return fail(QStringLiteral("no window shows session %1").arg(session));
-            const QVariantMap restored = window->restoreProject(document, window->focusedPane());
+            if (!window) return fail(QStringLiteral("no window shows session %1").arg(session));
+            // The project's panes in their order, by the daemon's IDs: none
+            // for a pane whose program ended before the window opened.
+            QList<Pane*> panes;
+            for (const std::uint32_t id : started.panes) panes.append(id ? window->sessionPane(id) : nullptr);
+            const QVariantMap restored = window->restoreProject(document, panes);
             // Its end closes the window.
             if (const QString why = restored.value(QStringLiteral("error")).toString(); !why.isEmpty()) return fail(why);
             const QStringList warnings = restored.value(QStringLiteral("warnings")).toStringList();

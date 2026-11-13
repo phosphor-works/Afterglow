@@ -11591,7 +11591,8 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
         {"id": "t1", "title": "work", "active_pane": "b", "tree": {"direction": "right", "ratio": 0.5,
             "first": {"pane": {"id": "a", "cwd": "/tmp", "title": "", "command": []}},
             "second": {"pane": {"id": "b", "cwd": "~", "title": "editor", "command": []}}}},
-        {"id": "t2", "title": "logs", "active_pane": "c", "tree": {"pane": {"id": "c", "cwd": "/", "title": "", "command": ["sleep", "300"]}}}]})");
+        {"id": "t2", "title": "logs", "active_pane": "c", "tree": {"pane": {"id": "c", "cwd": "/", "title": "", "command": ["sleep", "300"]}}},
+        {"id": "t3", "title": "done", "active_pane": "d", "tree": {"pane": {"id": "d", "cwd": "/", "title": "", "command": ["true"]}}}]})");
     project.close();
     const auto windowOf = [](const QVariantMap& result) -> TerminalWindow* {
         for (TerminalWindow* w : TerminalWindow::windows()) {
@@ -11662,6 +11663,11 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
     EXPECT_EQ(tabs[1].toObject().value(QStringLiteral("tree")).toObject().value(QStringLiteral("pane")).toObject().value(QStringLiteral("command")),
               QJsonValue(QJsonArray{QStringLiteral("sleep"), QStringLiteral("300")}));
     EXPECT_EQ(tabs[1].toObject().value(QStringLiteral("title")).toString(), QStringLiteral("logs"));
+    // Each leaf has the pane that the daemon started for it: the directory
+    // that the daemon reads of its program. The pane of "true", which ended
+    // before or after the window opened, left no tab.
+    EXPECT_EQ(savedPane(saved, 0, {QStringLiteral("first")}).value(QStringLiteral("cwd")).toString(), QStringLiteral("/tmp"));
+    EXPECT_EQ(savedPane(saved, 1, {}).value(QStringLiteral("cwd")).toString(), QStringLiteral("/"));
 
     // Again: the window that shows it.
     QVariantMap again;
@@ -11694,12 +11700,13 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
         << QJsonDocument(resaved).toJson().toStdString();
     EXPECT_EQ(savedPane(resaved, 0, {QStringLiteral("first")}).value(QStringLiteral("command")).toArray(), QJsonArray());
 
-    // --no-session: a window of its own, outside any session.
+    // --no-session: a window of its own, outside any session, which holds
+    // the pane of "true" once it ended, as for any project.
     QVariantMap local;
     ASSERT_EQ(open(true, QStringLiteral("window"), local), QString());
     QPointer<TerminalWindow> plain = windowOf(local);
     ASSERT_NE(plain, nullptr);
-    EXPECT_EQ(plain->panes().size(), 3);
+    EXPECT_EQ(plain->panes().size(), 4);
     for (Pane* pane : plain->panes()) EXPECT_FALSE(pane->isSessionPane());
     delete plain;
     delete reattached;

@@ -27,14 +27,14 @@ namespace AfterglowMux {
 /// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
 /// MuxProtocolTest pins the keys of the options to this number, so that a new
 /// key changes it too.
-inline constexpr int ProtocolVersion = 17;
+inline constexpr int ProtocolVersion = 18;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
 
 namespace Fn {
 inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
-inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name}
+inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name, pane}: pane is its first pane's ID
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
 /// (protocol, name, {takeover, eventQueue, history}) -> {name}: after the

@@ -247,10 +247,11 @@ public:
     PaneOrigin paneOrigin(const Pane* pane) const { return m_paneOrigin.value(pane); }
 
     QJsonObject projectLayout() const;
-    /// Lays out @p document in this empty window. With @p first, the window
-    /// of a new session that shows only @p first, its pane: that pane is
-    /// the project's first, and the session starts the others.
-    QVariantMap restoreProject(const QJsonObject& document, Pane* first = nullptr);
+    /// Lays out @p document in this empty window. With @p started, the window
+    /// of a new session that shows only those panes, which the session
+    /// started for the project's panes, in their order
+    /// (ProjectStore::panes): the window starts none.
+    QVariantMap restoreProject(const QJsonObject& document, const QList<Pane*>& started = {});
     QString projectDirectory() const { return m_projectDirectory; }
     void setProjectDirectory(const QString& path) { m_projectDirectory = path; }
     QString projectName() const { return m_projectName; }

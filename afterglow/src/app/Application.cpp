@@ -66,6 +66,15 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
         return openLaunch({}, {},
                           {{QStringLiteral("session"), session}, {QStringLiteral("sessionHost"), host}, {QStringLiteral("takeover"), false}});
     });
+    m_control.setSessionLinkShower([this](const QString& session, SessionLink&& link) {
+        WindowOptions window;
+        AfterglowMux::Route route;
+        route.sockets = AfterglowProto::muxSockets();
+        QString error;
+        window.session = MuxClient::adopt(session, std::move(link), &error, route, m_settings.settings().mux.eventQueue);
+        if (!window.session) return error;
+        return newWindow(window) ? QString() : QStringLiteral("cannot show session '%1'").arg(session);
+    });
     // Some platform-theme versions leave Qt Quick at its default Fusion style.
     // Prefer the desktop bridge on Plasma, preserving explicit style choices
     // and falling back normally when the optional module is not installed.

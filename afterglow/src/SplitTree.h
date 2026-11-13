@@ -58,7 +58,10 @@ public:
     /// shape and ratios stay. Returns false with fewer than two panes.
     bool rotate(bool clockwise);
     QJsonObject snapshot(const std::function<QJsonObject(Pane*)>& pane) const;
-    /// Input must first pass ProjectStore::validate; factory must return a pane.
+    /// Input must first pass ProjectStore::validate.
+    /// A tree of the panes that @p factory gives for the leaves of a
+    /// snapshot. A leaf for which it gives none goes: the other side of its
+    /// split takes the split's place, and a tree with no pane is empty.
     static std::unique_ptr<SplitTree> restore(const QJsonObject&, const std::function<Pane*(const QJsonObject&)>&);
 
     /// Lays the tree out in @p area with dividers @p dividerWidth wide.
