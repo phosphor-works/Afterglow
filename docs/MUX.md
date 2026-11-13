@@ -206,7 +206,7 @@ A session pane differs from a pane outside a session in these ways:
 
 - The window of a session shows only the panes of that session (see [tabs and splits](#tabs-and-splits)).
 
-- A Sixel or iTerm2 image does not show when the program prints it before any window shows the session. A Kitty image that the program places then does not move the cursor. The daemon places images in cells, and only a window measures a cell.
+- Before any window shows the session, its cells have the size of the font of your settings (`Font`), at the scale of the primary screen when Afterglow starts the session, else at a scale of 1. The daemon places images in cells with that size. A window then measures its own cells, and an image that the program placed before keeps its cells. When the font does not load, the cells have no size: a Sixel or iTerm2 image does not show, and a Kitty image does not move the cursor, until a window shows the session.
 - An image shows when all of its pixels came from the daemon. The pixels of a large image come in more than one frame, so the image can show a short time after the text around it.
 - A bell, a notification or another request of the program comes after the text on the screen that the program wrote before it. It can come before history and before the pixels of an image that the program sent before it.
 - When a program sends an image again before its pixels came, the window shows each version that came whole.
