@@ -396,7 +396,8 @@ Without `--cwd`, a new tab or split starts in the directory of its pane, or wher
 In a session pane, `aglow run` and `afterglow run` run the commands of the scripts of the window that shows the session.
 The daemon runs no scripts. It passes the connection of the command to that window.
 The window runs the command as for one of its own panes, with its own settings (`Control.enabled`, `Scripts.enabled` and the limits of `Scripts`).
-A command that names the pane of the client, or no pane, acts on the window's pane of that session pane.
+A command acts on the pane that it names, as the window shows it. `aglow run` names the pane of the client, unless `--pane` names another pane of the session.
+A command that names no pane (pane 0) acts on the focused pane, as outside a session.
 The output, the exit status and the input of the command are as for a pane outside a session.
 
 | Case | Result |
@@ -404,6 +405,7 @@ The output, the exit status and the input of the command are as for a pane outsi
 | No window shows the session | `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts` |
 | The client does not run in a session pane of the daemon, nor below a program of one. A program that runs a terminal of its own, such as an editor, stays in the pane. A server that left the pane, such as a tmux server, does not. | `CALL_FAILED`: `only a client in a session pane reaches the mux daemon for the commands of scripts` |
 | The session has 64 command clients already | `CALL_FAILED`: `session 'NAME' has 64 command clients already` |
+| The window's ID of the pane makes the run request longer than 1 MiB. `aglow run` refuses such a run before it sends it. | `CALL_FAILED`: `with the window's ID of its pane, the run request is over 1 MiB` |
 | The run names a pane of the daemon that the window does not show | `CALL_FAILED`: `no pane N of session 'NAME' shows in its window` |
 | The window closes or detaches while the command runs | The command ends. The client gets `the window of session 'NAME' closed, and with it the runs of this client`, and exits with status 1. |
 | The session runs on another host (`--ssh`) | `CALL_FAILED`: `session 'NAME' runs on HOST, and its panes reach no commands of the scripts of this window` |

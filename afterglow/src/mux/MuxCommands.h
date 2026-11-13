@@ -14,7 +14,6 @@
 #include <map>
 #include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
 class QLocalSocket;
@@ -75,23 +74,22 @@ public:
     std::size_t connections() const { return m_relays.size(); }
 
     /// The line @p line of a client, without its '\n', for the window's
-    /// Afterglow: a run names the window's ID of its pane, and pane 0 is the
-    /// client's own, @p clientPane. Other lines of the commands target stay.
+    /// Afterglow: a run names the window's ID of its pane, by @p pane. Pane
+    /// 0, the focused pane, and the other lines of the commands target stay.
     /// Nothing for a line of another target, whose calls act on every
-    /// window by the Afterglow's own pane IDs, and for a run of a pane that
-    /// the window does not show: @p error gets the reply.
-    static std::optional<std::string> forWindow(const std::string& line, std::uint32_t clientPane,
-                                                const std::function<std::optional<quint32>(std::uint32_t)>& pane, const QString& session,
-                                                std::string* error);
+    /// window by the Afterglow's own pane IDs, for a run of a pane that the
+    /// window does not show, and for a run that the window's ID makes
+    /// longer than the Afterglow takes: @p error gets the reply.
+    static std::optional<std::string> forWindow(const std::string& line, const std::function<std::optional<quint32>(std::uint32_t)>& pane,
+                                                const QString& session, std::string* error);
 
 private:
     struct Relay
     {
         QLocalSocket* socket = nullptr;
-        std::uint32_t pane = 0;
         std::string unsent; ///< lines that wait for the socket to connect
     };
-    void open(std::uint64_t id, std::uint32_t pane);
+    void open(std::uint64_t id);
     void bytes(std::uint64_t id, std::string bytes);
     /// The client ended: the connection closes once what waits went.
     void endFromDaemon(std::uint64_t id);
@@ -109,8 +107,8 @@ private:
     Host m_host;
     QString m_refusal;
     std::map<std::uint64_t, Relay> m_relays;
-    /// The connections that opened before setHost(): their pane and lines.
-    std::map<std::uint64_t, std::pair<std::uint32_t, std::vector<std::string>>> m_early;
+    /// The connections that opened before setHost(), with their lines.
+    std::map<std::uint64_t, std::vector<std::string>> m_early;
     std::deque<std::string> m_waiting; ///< encoded frames for the channel
     std::size_t m_waitingBytes = 0;
 };

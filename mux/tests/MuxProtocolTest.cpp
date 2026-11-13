@@ -72,10 +72,10 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(std::string(Attach::CommandsCodec), "afterglow.mux.commands.v1");
     Attach::Event commands;
     commands.type = Attach::EventType::Commands;
-    commands.payload = Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, 7, {}});
-    EXPECT_EQ(Attach::encode(commands), std::string("\x09\x00\x00\x00\x01\x03\x07", 7));
-    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Bytes, 0, "{}\n"}), std::string("\x02\x03{}\n", 5));
-    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::End, 0, {}}), std::string("\x03\x03", 2));
+    commands.payload = Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, {}});
+    EXPECT_EQ(Attach::encode(commands), std::string("\x09\x00\x00\x00\x01\x03", 6));
+    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Bytes, "{}\n"}), std::string("\x02\x03{}\n", 5));
+    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::End, {}}), std::string("\x03\x03", 2));
     // Version 12 added callerEnvironment to the options of a session: the
     // environment of the caller (the proxy on another host).
     // Version 11 carries the stream of an attach on the connection of its
@@ -718,19 +718,18 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
 TEST(MuxProtocol, RelayFramesRoundTrip)
 {
     for (const std::uint64_t relay : {std::uint64_t(1), std::uint64_t(300), ~std::uint64_t(0)}) {
-        const auto open = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, 0xffffffffu, {}}));
+        const auto open = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}}));
         ASSERT_TRUE(open);
         EXPECT_EQ(open->part, Attach::RelayPart::Open);
         EXPECT_EQ(open->relay, relay);
-        EXPECT_EQ(open->pane, 0xffffffffu);
         // The bytes of a connection, whatever they look like.
         const std::string bytes("\x00\xff\n\x80", 4);
-        const auto data = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Bytes, 0, bytes}));
+        const auto data = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Bytes, bytes}));
         ASSERT_TRUE(data);
         EXPECT_EQ(data->part, Attach::RelayPart::Bytes);
         EXPECT_EQ(data->relay, relay);
         EXPECT_TRUE(data->bytes == bytes);
-        const auto end = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::End, 0, {}}));
+        const auto end = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::End, {}}));
         ASSERT_TRUE(end);
         EXPECT_EQ(end->part, Attach::RelayPart::End);
         EXPECT_EQ(end->relay, relay);
@@ -738,7 +737,7 @@ TEST(MuxProtocol, RelayFramesRoundTrip)
     // A Commands event carries the frame as its payload.
     Attach::Event event;
     event.type = Attach::EventType::Commands;
-    event.payload = Attach::encode(Attach::RelayFrame{2, Attach::RelayPart::Bytes, 0, "line\n"});
+    event.payload = Attach::encode(Attach::RelayFrame{2, Attach::RelayPart::Bytes, "line\n"});
     const auto back = Attach::decodeEvent(Attach::encode(event));
     ASSERT_TRUE(back);
     EXPECT_EQ(back->type, Attach::EventType::Commands);
@@ -752,9 +751,7 @@ TEST(MuxProtocol, RelayFramesThatDoNotDecodeAreRefused)
         std::string_view("\x00\x01", 2),      // part 0
         std::string_view("\x04\x01", 2),      // the part after End
         std::string_view("\x01\x00\x01", 3),  // relay 0
-        std::string_view("\x01\x01", 2),      // Open without its pane
-        std::string_view("\x01\x01\x00", 3),  // Open of pane 0
-        std::string_view("\x01\x01\x01\x00", 4), // a byte after Open
+        std::string_view("\x01\x01\x00", 3),  // a byte after Open
         std::string_view("\x02\x01", 2),      // Bytes without bytes
         std::string_view("\x03\x01\x00", 3),  // a byte after End
         std::string_view("\x03\x81", 2),      // a varint that does not end

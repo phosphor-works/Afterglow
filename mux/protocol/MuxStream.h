@@ -132,7 +132,7 @@ std::optional<Input> decodeInput(std::string_view frame);
 /// back on CommandsChannel. Each connection is a relay, by a number that the
 /// daemon gives it.
 enum class RelayPart : std::uint8_t {
-    Open = 1, ///< the daemon: a new relay, for the client in `pane`
+    Open = 1, ///< the daemon: a new relay
     Bytes = 2, ///< bytes of the connection: whole request lines from the daemon, any bytes from the window
     End = 3, ///< the connection ended on the side that sends this
 };
@@ -141,7 +141,6 @@ struct RelayFrame
 {
     std::uint64_t relay = 0; ///< from 1
     RelayPart part = RelayPart::Bytes;
-    std::uint32_t pane = 0; ///< Open: the daemon's ID of the pane that the client runs in
     std::string bytes; ///< Bytes: never empty
 };
 

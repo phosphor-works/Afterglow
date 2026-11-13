@@ -25,23 +25,19 @@ namespace IpcErrorCode = AfterglowProto::IpcErrorCode;
 std::string Daemon::startRelay(const IpcRequest& request, std::string line, pid_t caller, IpcServerConnection& connection)
 {
     const auto failed = [&request](const std::string& message) { return ipcError(request.id, IpcErrorCode::CallFailed, message); };
-    // The pane whose terminal the client runs in: the terminal session of
-    // the client, or of the nearest process above it whose session a pane's
-    // program leads (a shell in an editor's terminal, which has a session
-    // of its own). By the processes, not by an AFTERGLOW_PANE_ID that a
+    // The session of the pane whose terminal the client runs in: a pane's
+    // program leads the terminal session of the client, or of the nearest
+    // process above it (a shell in an editor's terminal has a session of
+    // its own). By the processes, not by an AFTERGLOW_PANE_ID that a
     // process of another terminal can carry.
     Session* session = nullptr;
-    std::uint32_t pane = 0;
     pid_t process = caller;
     for (int up = 0; !session && process > 1 && up < MaxAncestors; ++up) {
         const auto stat = AfterglowPty::processStat(process);
         if (!stat) break;
         for (const auto& s : m_sessions) {
             for (const auto& p : s->panes()) {
-                if (p->leads(pid_t(stat->session))) {
-                    session = s.get();
-                    pane = p->id();
-                }
+                if (p->leads(pid_t(stat->session))) session = s.get();
             }
         }
         process = pid_t(stat->parent);
@@ -60,8 +56,8 @@ std::string Daemon::startRelay(const IpcRequest& request, std::string line, pid_
     const std::uint64_t id = m_nextRelay++;
     line += '\n';
     const bool sent = guarded(*window, [&] {
-        window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Open, pane, {}});
-        window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Bytes, 0, std::move(line)});
+        window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Open, {}});
+        window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Bytes, std::move(line)});
         return true;
     });
     if (!sent) return failed("the window of session '" + session->name() + "' failed");
@@ -84,7 +80,7 @@ void Daemon::readRelay(IpcServerConnection& connection)
         if (line.empty()) continue;
         line += '\n';
         const bool sent = guarded(*window, [&] {
-            window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Bytes, 0, std::move(line)});
+            window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Bytes, std::move(line)});
             return true;
         });
         if (!sent) return;
@@ -100,7 +96,7 @@ void Daemon::endRelay(std::uint64_t id, bool tellWindow)
     if (tellWindow) {
         if (Attachment* const window = attachment(relay->second.window); window && window->showing()) {
             guarded(*window, [&] {
-                window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::End, 0, {}});
+                window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::End, {}});
                 return true;
             });
         }

@@ -3,6 +3,7 @@
 
 #include "mux/MuxCommands.h"
 
+#include <AfterglowProto/Ipc.h>
 #include <AfterglowProto/IpcServer.h>
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Run.h>
@@ -43,8 +44,7 @@ MuxCommands::~MuxCommands()
     closeAll();
 }
 
-std::optional<std::string> MuxCommands::forWindow(const std::string& line, std::uint32_t clientPane,
-                                                  const std::function<std::optional<quint32>(std::uint32_t)>& pane,
+std::optional<std::string> MuxCommands::forWindow(const std::string& line, const std::function<std::optional<quint32>(std::uint32_t)>& pane,
                                                   const QString& session, std::string* error)
 {
     // What is not a run of the commands target goes as it came: the
@@ -64,27 +64,36 @@ std::optional<std::string> MuxCommands::forWindow(const std::string& line, std::
     if (!args || !args->isArray() || args->toArray().size() != 6) return line;
     Json::Array changed = args->toArray();
     const auto id = changed[5].toInteger();
-    // The Afterglow refuses an ID that is not one, with its own message.
-    if (!id || *id < 0 || *id > 0xffffffffLL) return line;
-    const std::uint32_t daemonPane = *id == 0 ? clientPane : std::uint32_t(*id);
-    const auto windowPane = pane ? pane(daemonPane) : std::nullopt;
+    // The Afterglow refuses an ID that is not one, with its own message, and
+    // pane 0 is its focused pane, as for any client.
+    if (!id || *id <= 0 || *id > 0xffffffffLL) return line;
+    const auto windowPane = pane ? pane(std::uint32_t(*id)) : std::nullopt;
     if (!windowPane) {
         *error = AfterglowProto::ipcError((*request)["id"].toInteger(), AfterglowProto::IpcErrorCode::CallFailed,
-                                          "no pane " + std::to_string(daemonPane) + " of session '" + session.toStdString()
-                                              + "' shows in its window");
+                                          "no pane " + std::to_string(*id) + " of session '" + session.toStdString() + "' shows in its window");
         return std::nullopt;
     }
     changed[5] = Json::Value(double(*windowPane));
     *args = Json::Value(std::move(changed));
-    return Json::write(*request);
+    std::string written = Json::write(*request);
+    // A longer ID can pass the Afterglow's limit, which would close the
+    // connection: `aglow run` leaves room for the longest, another client
+    // gets this.
+    if (written.size() + 1 > AfterglowProto::IpcConnection::MaxRequestBytes) {
+        *error = AfterglowProto::ipcError((*request)["id"].toInteger(), AfterglowProto::IpcErrorCode::CallFailed,
+                                          "with the window's ID of its pane, the run request is over "
+                                              + std::to_string(AfterglowProto::IpcConnection::MaxRequestBytes >> 20) + " MiB");
+        return std::nullopt;
+    }
+    return written;
 }
 
 void MuxCommands::setHost(Host host)
 {
     m_host = std::move(host);
-    for (auto& [id, early] : std::exchange(m_early, {})) {
-        open(id, early.first);
-        for (std::string& line : early.second) bytes(id, std::move(line));
+    for (auto& [id, lines] : std::exchange(m_early, {})) {
+        open(id);
+        for (std::string& line : lines) bytes(id, std::move(line));
     }
 }
 
@@ -94,11 +103,11 @@ bool MuxCommands::frame(Attach::RelayFrame frame)
     case Attach::RelayPart::Open:
         if (m_relays.contains(frame.relay) || m_early.contains(frame.relay)) return false;
         // Before the window gave its host: the connection waits for it.
-        if (m_refusal.isEmpty() && !m_host.socket) m_early[frame.relay] = {frame.pane, {}};
-        else open(frame.relay, frame.pane);
+        if (m_refusal.isEmpty() && !m_host.socket) m_early[frame.relay] = {};
+        else open(frame.relay);
         return true;
     case Attach::RelayPart::Bytes:
-        if (const auto early = m_early.find(frame.relay); early != m_early.end()) early->second.second.push_back(std::move(frame.bytes));
+        if (const auto early = m_early.find(frame.relay); early != m_early.end()) early->second.push_back(std::move(frame.bytes));
         else bytes(frame.relay, std::move(frame.bytes));
         return true;
     case Attach::RelayPart::End:
@@ -109,23 +118,23 @@ bool MuxCommands::frame(Attach::RelayFrame frame)
     return false;
 }
 
-void MuxCommands::open(std::uint64_t id, std::uint32_t pane)
+void MuxCommands::open(std::uint64_t id)
 {
     QString error = m_refusal;
     const QString path = error.isEmpty() && m_host.socket ? m_host.socket(&error) : QString();
     if (path.isEmpty()) {
         if (error.isEmpty()) error = QStringLiteral("the window of session '%1' runs no commands of scripts").arg(m_session);
         // Not in m_relays: the bytes that follow are dropped.
-        send({id, Attach::RelayPart::Bytes, 0,
+        send({id, Attach::RelayPart::Bytes,
               AfterglowProto::ipcError(std::nullopt, AfterglowProto::IpcErrorCode::CallFailed, error.toStdString())});
-        send({id, Attach::RelayPart::End, 0, {}});
+        send({id, Attach::RelayPart::End, {}});
         return;
     }
     auto* socket = new QLocalSocket(this);
     // A client that reads slowly holds this much here, then the Afterglow's
     // socket fills.
     socket->setReadBufferSize(ReadBytes);
-    m_relays[id] = Relay{socket, pane, {}};
+    m_relays[id] = Relay{socket, {}};
     connect(socket, &QLocalSocket::connected, this, [this, id] {
         const auto relay = m_relays.find(id);
         if (relay == m_relays.end()) return;
@@ -156,9 +165,9 @@ void MuxCommands::bytes(std::uint64_t id, std::string bytes)
     // The daemon sends whole lines, one in each frame.
     if (bytes.ends_with('\n')) bytes.pop_back();
     std::string error;
-    const auto line = forWindow(bytes, relay->second.pane, m_host.pane, m_session, &error);
+    const auto line = forWindow(bytes, m_host.pane, m_session, &error);
     if (!line) {
-        send({id, Attach::RelayPart::Bytes, 0, std::move(error)});
+        send({id, Attach::RelayPart::Bytes, std::move(error)});
         return;
     }
     QLocalSocket* const socket = relay->second.socket;
@@ -199,16 +208,16 @@ void MuxCommands::endFromWindow(std::uint64_t id, const std::string& reason)
     // What the Afterglow sent before it closed goes first.
     if (socket->bytesAvailable() > 0) {
         const QByteArray rest = socket->readAll();
-        send({id, Attach::RelayPart::Bytes, 0, rest.toStdString()});
+        send({id, Attach::RelayPart::Bytes, rest.toStdString()});
     }
     m_relays.erase(relay);
     socket->disconnect(this);
     socket->deleteLater();
     if (!reason.empty()) {
-        send({id, Attach::RelayPart::Bytes, 0,
+        send({id, Attach::RelayPart::Bytes,
               AfterglowProto::ipcError(std::nullopt, AfterglowProto::IpcErrorCode::CallFailed, reason)});
     }
-    send({id, Attach::RelayPart::End, 0, {}});
+    send({id, Attach::RelayPart::End, {}});
 }
 
 void MuxCommands::readSockets()
@@ -219,7 +228,7 @@ void MuxCommands::readSockets()
             if (room <= 0) return;
             const QByteArray bytes = relay.socket->read(std::min({room, ReadBytes, relay.socket->bytesAvailable()}));
             if (bytes.isEmpty()) break;
-            send({id, Attach::RelayPart::Bytes, 0, bytes.toStdString()});
+            send({id, Attach::RelayPart::Bytes, bytes.toStdString()});
         }
     }
 }
