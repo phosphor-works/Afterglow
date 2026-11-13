@@ -11,10 +11,10 @@ do, !, env, xargs, timeout, nohup, sudo, strace...) skipped. So `then pkill x` d
 word inside a quoted string (grep 'a|sudo') doesn't trip it. Here-document bodies (commit messages) are text, not
 commands, unless a shell reads them as its script. The $(...) and backquote commands in a body whose delimiter is
 not quoted (<<EOF, not <<'EOF') are commands, because the shell runs them to expand the body. The scripts of nested
-shells, eval, watch, script -c, flock -c, tmux, ssh, parallel and a shell that reads standard input are read the same
-way, and so are the commands in another command's arguments (find -exec, parallel, gdb --args, flock, chrt,
-systemd-run). Every rule applies to a command that find, parallel, flock, chrt, taskset, catchsegv, flatpak-spawn or
-systemd-run starts, at any depth, with the environment and the directory that it starts in.
+shells, eval, trap, watch, script -c, flock -c, tmux, ssh, parallel and a shell that reads standard input are read
+the same way, and so are the commands in another command's arguments (find -exec, parallel, gdb --args, flock,
+chrt, systemd-run). Every rule applies to a command that find, parallel, flock, chrt, taskset, catchsegv,
+flatpak-spawn or systemd-run starts, at any depth, with the environment and the directory that it starts in.
 """
 
 import fnmatch
@@ -24,8 +24,11 @@ import os
 import pwd
 import re
 import shlex
+import signal
 import subprocess
 import sys
+import time
+import math
 
 # Local state that never goes into git: another tool's workspace, Python caches, build trees (build/, build-asan/)
 # and .cache. A file whose name starts with "build" is a source file (build-inspector.luau).
@@ -128,6 +131,8 @@ MSG_BROAD = 'Stage files by name (git add path...), not with -A, -u, ., *, :/ or
 MSG_PUSH = 'Never force-push. Fix the branch with a new commit instead.'
 MSG_PUSH_MAIN = ('Never push to main. Push a branch and open a pull request. The user merges it. '
                  'If this command makes the branch, name it: git push -u origin BRANCH.')
+MSG_APPENDED = ('xargs and parallel add the words of their input after the arguments of git, and one of them can be '
+                '-A, -a, --force or main. Name the files or the branch on the git command itself.')
 MSG_PUSH_UNKNOWN = ('This push names no branch, and the command runs git in a directory the guard cannot resolve, '
                     'or where git cannot tell its current branch. Name the branch: git push -u origin BRANCH.')
 # A directory the guard cannot know before the shell runs: $(...), $VAR, a backquote command, cd -, GIT_DIR
@@ -163,7 +168,7 @@ WRAPPER_VALUES = {
     'flock': {'-w', '--timeout', '--wait', '-E', '--conflict-exit-code'},
     'chrt': {'-T', '--sched-runtime', '-P', '--sched-period', '-D', '--sched-deadline'},
     # GNU parallel's options with a value (man parallel). -e, -i, -l, --eof, --max-lines and --replace take an
-    # optional one, and Getopt::Long gives them the next word too when it is not an option.
+    # optional one, which parallel_jobs() reads as Getopt::Long does (PARALLEL_OPTIONAL).
     'parallel': set(
         '-a --arg-file --arg-file-sep --arg-sep --basefile --bf --basenameextensionreplace --bner --basenamereplace '
         '--bnr --bin --block --block-size --block-timeout --bt --colsep -C --combineexec --combine-executable '
@@ -556,6 +561,11 @@ def split_wrappers(words):
                     return wrappers[:-1], 'command', words[i:]
                 i = after
         else:
+            if name == 'eval':
+                # zsh, the shell of the Bash tool, gives the VAR=value words before the builtin eval to its script
+                # as shell variables, not in the environment of the commands that the script runs (bash exports
+                # them): those commands get the shell's own environment
+                wrappers = [w for w in wrappers if not w.startswith('set:')]
             return wrappers, name, words[i + 1 :]
     return wrappers, '', []
 
@@ -596,8 +606,12 @@ def git_directory(args, cwd):
     return directory
 
 
-def check_git(args, places):
+def check_git(args, places, appended=False):
+    """The refusal for git ARGS run in PLACES, or None. With APPENDED, xargs or parallel adds words of its input
+    after ARGS, which the guard does not see: a push, an add or a commit can get main, --force, -A or -a."""
     sub, rest = git_subcommand(args)
+    if appended and sub in ('add', 'stage', 'commit', 'push'):
+        return MSG_APPENDED
     if sub in ('add', 'stage'):
         paths, broad, force = [], False, False
         for k, a in enumerate(rest):
@@ -1072,12 +1086,12 @@ def find_starts(args):
 
 def removes_input(word, args):
     """Whether WORD ARGS takes away paths that come from outside its own words: removes_from_input() for the command,
-    or for a command of a script that it runs (xargs sh -c 'rm "$@"' sh), whose arguments ("$@", "{}") are the
-    paths."""
+    for a command of a script that it runs (xargs sh -c 'rm "$@"' sh), whose arguments ("$@", "{}") are the
+    paths, or for the command that it starts (xargs flock /tmp/l rm)."""
     if removes_from_input(word, args):
         return True
-    return any(removes_input(name, rest) for script in shell_scripts(word, args)
-               for _, name, rest in simple_commands(script))
+    nested = [c for script in shell_scripts(word, args) for c in simple_commands(script)]
+    return any(removes_input(name, rest) for _, name, rest in nested + list(launched_commands([], word, args)))
 
 
 FIND_ACTIONS = ('-exec', '-execdir', '-ok', '-okdir')
@@ -1140,11 +1154,15 @@ def removes_mux_files(word, args, places):
         return next((w for w in paths if touches_mux(w, places, above)), None)
 
     def takes_found(action):
-        _, name, rest = split_wrappers(action)
-        if any('{}' in w for w in taken_paths(name, rest)[0]):
-            return True
-        return any('{}' in a for a in rest) and any(removes_input(n, r) for script in shell_scripts(name, rest)
-                                                    for _, n, r in simple_commands(script))
+        # The action's command, and the commands that it starts (-exec flock /tmp/l rm {} +)
+        command = split_wrappers(action)
+        for _, name, rest in [command] + started_commands(*command):
+            if any('{}' in w for w in taken_paths(name, rest)[0]):
+                return True
+            if any('{}' in a for a in rest) and any(removes_input(n, r) for script in shell_scripts(name, rest)
+                                                    for _, n, r in simple_commands(script)):
+                return True
+        return False
 
     if '-delete' in args or any(takes_found(action) for action in find_actions(args)):
         return next((w for w in find_starts(args) if touches_mux(w, places)), None)
@@ -1257,22 +1275,146 @@ def launches_window(args):
 
 # The words that end the command of parallel and start a list of its arguments, or of files that hold them
 PARALLEL_LISTS = {':::', '::::', ':::+', '::::+'}
+# parallel's options whose value is optional (-e, -i, -l and their long names): Getopt::Long gives them the next
+# word only when it is not an option, and to -l (a number) only when it is a number
+PARALLEL_OPTIONAL = {'-e', '--eof', '-i', '--replace', '-l', '--max-lines'}
+# The replacement strings of parallel ({}, {.}, {/}, {//}, {/.}, {#}, {%}, {3}, {3/}, {= perl =}...): a command with
+# one gets the arguments of a job in its place, and one without gets them at its end. --plus adds more of them.
+PARALLEL_REPLACE = re.compile(r'\{(\d*)(?:\.|/|//|/\.)?\}|\{[#%]\}|\{(\d*)=.*?=\}')
+PARALLEL_PLUS = re.compile(r'\{(\d*)[^{}\s]*\}')
+# More jobs than this from the ::: lists: the guard checks the job of each word with the first words of the other
+# lists, and one job with every word, instead of each combination
+MAX_PARALLEL_JOBS = 64
 
 
-def parallel_scripts(args):
-    """The shell commands that parallel ARGS runs: its command after its options, up to the first of PARALLEL_LISTS,
-    as one line (parallel joins the words and gives them to a shell, so 'rm -f {}' is rm), or without a command, each
-    word of its ::: lists. A command that parallel reads from its input is not known here."""
-    k = 0
+def parallel_change(word, how):
+    """WORD as parallel's {.} {/} {//} {/.} give it (HOW is '.', '/', '//' or '/.'), or as it is. These follow
+    the definitions in parallel itself: {.} is s:[.][^/.]*$::, {/} is s:.*/::, {/.} is both, and {//} is Perl's
+    File::Basename::dirname, the only one that drops slashes at the end."""
+    def no_extension(w):
+        return re.sub(r'[.][^/.]*$', '', w, count=1)
+
+    def strip_separators(d):
+        return re.sub(r'(.)/*\Z', r'\1', d, count=1, flags=re.S)
+
+    def fileparse(p):
+        i = p.rfind('/')
+        return p[: i + 1] or './', p[i + 1 :]
+
+    def dirname(p):
+        d, b = fileparse(p)
+        d = strip_separators(d)
+        if not b:
+            d, _ = fileparse(d)
+            d = strip_separators(d)
+        return d
+
+    base = re.sub(r'.*/', '', word, count=1)
+    return {'.': no_extension(word), '/': base, '//': dirname(word), '/.': no_extension(base)}.get(how, word)
+
+
+# The -d values of parallel that the guard reads, as parallel reads them. parallel expands others with Perl escapes
+# and sprintf, on bytes; the guard does not copy that, and blocks a command that gives another -d value.
+PARALLEL_DELIMITERS = {'\\t': '\t', '\\n': '\n', '\\r': '\r', '\\0': '\0'}
+
+
+def parallel_delimiter(value):
+    """The delimiter that parallel's -d VALUE gives: one ASCII character, or \\t \\n \\r \\0. Raises ValueError for
+    any other value, so the guard blocks the call."""
+    if value in PARALLEL_DELIMITERS:
+        return PARALLEL_DELIMITERS[value]
+    if len(value) == 1 and value.isascii() and value != '\\':
+        return value
+    raise ValueError('the guard does not read the parallel delimiter %r: use one ASCII character, or \\t \\n \\r \\0'
+                     % value)
+
+
+def parallel_jobs(args):
+    """(the shell commands that parallel ARGS runs, whether parallel adds words of its input or of files to them).
+    The command is the words after parallel's options, up to the first of PARALLEL_LISTS, as one line (parallel
+    joins the words and gives them to a shell, so 'rm -f {}' is rm). Each ::: list gives a job one word, quoted, in
+    the place of a replacement string or at the end (parallel git push origin ::: main is git push origin main).
+    Without a command, each word of the ::: lists is a command. The words of a :::: file, of -a FILE and of the
+    standard input, when no ::: list is given, are not known here."""
+    k, replace, plus, files = 0, None, False, False
+    delimiters = {'\n'}
     while k < len(args) and args[k].startswith('-'):
         if args[k] == '--':
             k += 1
             break
-        k = option_value('parallel', args, k)[3]
+        flag, _, value, after = option_value('parallel', args, k)
+        if (flag in PARALLEL_OPTIONAL and after == k + 2
+                and (value.startswith('-') or flag in ('-l', '--max-lines') and not re.fullmatch(r'[\d.]+', value))):
+            value, after = '', k + 1
+        if flag in ('-I', '-i', '--replace'):
+            replace = value or '{}'
+        plus |= args[k] == '--plus'
+        files |= flag in ('-a', '--arg-file')
+        if flag in ('-d', '--delimiter'):
+            delimiters.add(parallel_delimiter(value))
+        k = after
     end = next((j for j in range(k, len(args)) if args[j] in PARALLEL_LISTS), len(args))
-    if k < end:
-        return [' '.join(args[k:end])]
-    return [a for a in args[end:] if a not in PARALLEL_LISTS]
+    lists = []
+    for a in args[end:]:
+        if a in PARALLEL_LISTS:
+            lists.append([] if a.startswith(':::') and len(a.rstrip('+')) == 3 else None)
+        elif lists[-1] is not None:
+            lists[-1].append(a)
+    files |= not lists or None in lists
+    lists = [words for words in lists if words]
+    # parallel splits each word of the ::: lists at each newline ('x\nmain' is the jobs x and main), at the delimiter
+    # of -d, or not at all with -0, and the same way for every list. The guard checks each of these readings.
+    readings = [None, '\n'] + sorted(d for d in delimiters if d and d != '\n')
+
+    def read(words, delimiter):
+        return [piece for w in words for piece in ([w] if delimiter is None else w.split(delimiter))]
+
+    if k == end:
+        return list(dict.fromkeys(a for d in readings for words in lists for a in read(words, d))), files
+    command = ' '.join(args[k:end])
+    if not lists:
+        return [command], files
+    jobs = {}
+    for delimiter in readings:
+        read_lists = [read(words, delimiter) for words in lists]
+        distinct = [list(dict.fromkeys(words)) for words in read_lists]
+        reading = [()]
+        for words in distinct:
+            reading = [job + (w,) for job in reading for w in words]
+            if len(reading) > MAX_PARALLEL_JOBS:
+                firsts = [words[0] for words in distinct]
+                reading = [tuple(firsts[:n] + [w] + firsts[n + 1 :]) for n, words in enumerate(distinct)
+                           for w in words]
+                break
+        if math.prod(len(words) for words in read_lists) > MAX_PARALLEL_JOBS:
+            reading.append(tuple(w for words in read_lists for w in words))
+        jobs.update(dict.fromkeys(reading))
+
+    pattern = PARALLEL_PLUS if plus else PARALLEL_REPLACE
+    unknown = []
+
+    def job_line(job):
+        quoted = [shlex.quote(w) for w in job]
+
+        def value(m):
+            # {} and {3} are the words (of the third list), and {.} {/} {//} {/.} change them as parallel does. The
+            # guard does not compute other strings (--plus, {= perl =}): such a job counts as unknown input.
+            n = next((g for g in m.groups() if g), '')
+            change = re.fullmatch(r'\{\d*(\.|/|//|/\.)?\}', m.group(0))
+            if change is None:
+                unknown.append(m.group(0))
+            picked = [job[int(n) - 1]] if n and 0 < int(n) <= len(job) else list(job)
+            how = change.group(1) if change else None
+            return ' '.join(shlex.quote(parallel_change(w, how)) for w in picked)
+
+        if replace is not None and replace in command:
+            return command.replace(replace, ' '.join(quoted))
+        if replace is None and pattern.search(command):
+            return pattern.sub(value, command)
+        return command + ' ' + ' '.join(quoted)
+
+    lines = list(dict.fromkeys(job_line(job) for job in jobs))
+    return lines, files or bool(unknown)
 
 
 def argument_commands(wrappers, word, args):
@@ -1281,17 +1423,19 @@ def argument_commands(wrappers, word, args):
     a tracer the guard does not list. In those, only afterglow, aglow, a wrapper, a shell, eval, watch, gdb or
     VAR=value starts one, so that an argument such as -name stays an argument, and cmake --target afterglow-mux
     names a target. A command of TEXT_COMMANDS runs none: find -exec grep -l afterglow-mux {} + runs grep, and
-    parallel echo ::: systemctl runs echo. parallel adds the words of its input, or of its ::: lists, after its
-    commands."""
+    parallel echo ::: systemctl runs echo. The commands of parallel hold the words of its ::: lists, and get the
+    words of its input after them ('append'). A systemd-run --scope starts its command in this environment."""
     if word in TEXT_COMMANDS:
         return
-    outer = wrappers if word in INHERITS else wrappers + ['inherit:?']
+    inherits = word in INHERITS or (word == 'systemd-run' and systemd_scope(args))
+    outer = wrappers if inherits else wrappers + ['inherit:?']
     if word in ('find', 'parallel'):
         if word == 'find':
             nested = [split_wrappers(action) for action in find_actions(args)]
         else:
-            nested = [c for script in parallel_scripts(args) for c in simple_commands(script)]
-            outer = outer + ['append']
+            scripts, reads = parallel_jobs(args)
+            nested = [c for script in scripts for c in simple_commands(script)]
+            outer = outer + ['append'] * reads
         for inner, name, rest in nested:
             yield outer + inner, name, rest
             yield from argument_commands(outer + inner, name, rest)
@@ -1307,6 +1451,16 @@ def argument_commands(wrappers, word, args):
             k = len(args) - len(rest)
         else:
             k += 1
+
+
+def systemd_scope(args):
+    """Whether systemd-run ARGS starts its command with --scope, among its options before the command."""
+    k = 0
+    while k < len(args) and args[k].startswith('-') and args[k] not in ('-', '--'):
+        if args[k] == '--scope':
+            return True
+        k = option_value('systemd-run', args, k)[3]
+    return False
 
 
 def service_directory(user):
@@ -1347,9 +1501,10 @@ def launched_commands(wrappers, word, args):
         elif word == 'systemd-run' and flag == '--working-directory':
             directory = value
         elif word == 'systemd-run' and flag in ('-E', '--setenv'):
-            # -E NAME passes systemd-run's own value
-            sets.append('set:' + value if '=' in value else
-                        ('set:%s=%s' % (value, os.environ[value]) if value in os.environ else 'unset:' + value))
+            # -E NAME passes the value in systemd-run's own environment ($ when the guard does not know it)
+            own = environment(wrappers).get(value, None) if '=' not in value else None
+            sets.append('set:' + value if '=' in value else 'unset:' + value if own is None else
+                        'set:%s=%s' % (value, '$' if own is UNKNOWN else own))
         elif word == 'flatpak-spawn' and a.startswith('--env='):
             sets.append('set:' + a[len('--env='):])
         elif word == 'flatpak-spawn' and a == '--clear-env':
@@ -1470,10 +1625,10 @@ def ssh_command(args):
 
 
 def shell_scripts(word, args):
-    """The scripts that a nested shell, eval, watch, script -c, tmux, ssh, parallel or a gdb shell command runs.
+    """The scripts that a nested shell, eval, trap, watch, script -c, tmux, ssh, parallel or a gdb shell command runs.
     Every word after a shell's -c is checked: bash takes options after -c, and fish takes several -c and -C scripts.
     Each word of tmux can be a shell command (new-session, send-keys, run-shell). flock -c runs its command with
-    sh -c, and parallel runs its command with a shell (parallel_scripts())."""
+    sh -c, and parallel runs its commands with a shell (parallel_jobs()). trap runs its action."""
     if word in SHELLS:
         for k, a in enumerate(args):
             if a in ('-c', '--command', '-C', '--init-command') or 'c' in short_flags(a) or 'C' in short_flags(a):
@@ -1483,6 +1638,13 @@ def shell_scripts(word, args):
         return []
     if word == 'eval' and args:
         return [' '.join(args)]
+    if word == 'trap':  # trap ACTION SIGNAL...: the shell runs ACTION on a signal, at EXIT, or before each command
+        k = 0
+        while k < len(args) and args[k] in ('-l', '-p', '-P', '--'):
+            k += 1
+            if args[k - 1] == '--':
+                break
+        return args[k : k + 1] if k + 1 < len(args) and args[k] != '-' else []
     if word == 'watch':  # watch runs its words with sh -c
         k = 0
         while k < len(args) and args[k].startswith('-'):
@@ -1504,7 +1666,7 @@ def shell_scripts(word, args):
     if word == 'flock':
         return [args[k + 1] for k, a in enumerate(args[:-1]) if a in ('-c', '--command')]
     if word == 'parallel':
-        return parallel_scripts(args)
+        return parallel_jobs(args)[0]
     if word == 'tmux':
         return list(args)
     if word == 'ssh' or (word == 'afterglow' and args[:1] == ['ssh']):
@@ -1537,14 +1699,14 @@ def reads_stdin(word, args):
     return True
 
 
-def stdin_scripts(cmds, bodies, places):
-    """The scripts that a shell reads from standard input in this command line, when one does: the bodies of the
-    here-documents, the here-strings, a file after <, and the words of echo and printf, which a pipe can feed it."""
-    shells = [(word, args) for _, word, args in cmds if reads_stdin(word, args)]
-    if not shells:
+def stdin_scripts(readers, cmds, bodies, places):
+    """The scripts that a shell of READERS, the commands that read their script from standard input, may read in
+    the command line of CMDS: the bodies of the here-documents, the here-strings, a file after <, and the words of
+    echo and printf, which a pipe can feed it."""
+    if not readers:
         return []
     scripts = list(bodies)
-    for word, args in shells:
+    for _, word, args in readers:
         for k, a in enumerate(args):
             if a in ('<<<', '<') and k + 1 < len(args):
                 target = args[k + 1]
@@ -1594,6 +1756,8 @@ def started_commands(wrappers, word, args):
     runs in the directory of each file that find finds ('cwd:?')."""
     found, pending = [], [(wrappers, word, args)]
     while pending:
+        if time.monotonic() > deadline:
+            raise ValueError('the command takes longer to check than the guard allows')
         outer, name, rest = pending.pop()
         if name == 'find':
             nested = []
@@ -1602,7 +1766,8 @@ def started_commands(wrappers, word, args):
                 here = ['cwd:?'] if action in ('-execdir', '-okdir') else []
                 nested.append((outer + here + inner, nested_name, nested_rest))
         elif name == 'parallel':
-            nested = [(outer + ['append'] + inner, nested_name, nested_rest) for script in parallel_scripts(rest)
+            scripts, reads = parallel_jobs(rest)
+            nested = [(outer + ['append'] * reads + inner, nested_name, nested_rest) for script in scripts
                       for inner, nested_name, nested_rest in simple_commands(script)]
         else:
             nested = list(launched_commands(outer, name, rest))
@@ -1632,6 +1797,7 @@ def command_places(outer, wrappers, places):
 LOCAL_SCRIPTS = SHELLS | {'eval', 'watch', 'script', 'flock', 'parallel'}
 # The variables that the rules read from the environment of a command (environment())
 RULE_VARIABLES = CLIENT_VARIABLES + ('DESTDIR',)
+RULE_NAME = re.compile(r'(?<![A-Za-z0-9_])(%s)(?![A-Za-z0-9_])' % '|'.join(RULE_VARIABLES))
 # The commands that set or unset the variables that their arguments name: an argument with an expansion can name
 # one of RULE_VARIABLES without spelling it (export "$v=...", read "$v", eval "$x")
 NAMES_VARIABLES = set(
@@ -1639,8 +1805,9 @@ NAMES_VARIABLES = set(
     'zparseopts eval'.split()
 )
 # The commands after which a script can run with other variables, whatever their words spell: source and . run a
-# file, and an alias can put VAR=value in front of a later command
-READS_DEFINITIONS = {'source', '.', 'alias'}
+# file, an alias can put VAR=value in front of a later command, and trap runs its action before later commands
+# (DEBUG) with the quotes of the action still in it
+READS_DEFINITIONS = {'source', '.', 'alias', 'trap'}
 
 
 def passed_environment(wrappers, word, args):
@@ -1657,16 +1824,22 @@ def script_environment(inherited, script, cmds):
     script (CMDS) can change one of RULE_VARIABLES before a later command reads it: the script spells the name of
     one (export XDG_RUNTIME_DIR=..., for HOME in ..., ${DESTDIR:=...}), a command of NAMES_VARIABLES or printf -v
     names a variable through an expansion, a ${...=...} expansion assigns one (zsh's ${(P)v::=...} names it
-    indirectly), or the script runs a command of READS_DEFINITIONS or defines a function. Without them the guard
-    reads the script in this session's environment, as it reads a command line. A startup file of the shell
-    (~/.zshenv, fish's config.fish) that sets one of the variables is not seen."""
+    indirectly), the script runs a command of READS_DEFINITIONS, a command whose name the shell expands ($e
+    "$n=..." with e=export) or defines a function. A name counts in the text of the script and in its words with
+    the quotes removed (XDG_RUNTIME_""DIR is XDG_RUNTIME_DIR). Without them the guard reads the script in this
+    session's environment, as it reads a command line. A startup file of the shell (~/.zshenv, fish's config.fish)
+    that sets one of the variables is not seen."""
     if not inherited:
         return []
-    if any(re.search(r'(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])' % name, script) for name in RULE_VARIABLES):
+    words = [w for wrappers, word, args in cmds
+             for w in [word, *args, *(x.split(':', 1)[1] for x in wrappers if x.startswith(('set:', 'unset:')))]]
+    if any(RULE_NAME.search(text) for text in [script, *words]):
         return []
     if re.search(r'\$\{[^}]*=|\(\s*\)|(?<![A-Za-z0-9_-])function(?![A-Za-z0-9_-])', script):
         return []
     for _, word, args in cmds:
+        if '$' in word or '`' in word:
+            return []
         expands = any('$' in a or '`' in a for a in args)
         if (word in READS_DEFINITIONS or (word in NAMES_VARIABLES and expands)
                 or (word == 'printf' and expands and any(a.startswith('-v') for a in args))):
@@ -1674,9 +1847,38 @@ def script_environment(inherited, script, cmds):
     return list(inherited)
 
 
+# The scripts that one tool call has checked, with their results. The same script comes back at each level of a
+# nesting (parallel parallel ... ls, eval eval ..., watch watch ...), and checking it again at each one takes time
+# that doubles with each level. A hook that runs out of time lets the call run, so more checks than MAX_CHECKS, or
+# more text than MAX_CHECKED_TEXT, fail closed.
+CHECKED = {}
+# A check that runs past this many seconds fails closed: the hook gets 10 (settings.json), and a hook that runs out
+# of time lets the call run.
+CHECK_SECONDS = 5
+deadline = float('inf')
+checked_text = 0
+MAX_CHECKS = 512
+MAX_CHECKED_TEXT = 16 << 20
+
+
 def check_bash(command, cwd=None, inherited=()):
     """The message that blocks COMMAND, or None. A nested script is read in the directories CWD of the shell that
     runs it, and with INHERITED, the environment words (VAR=value, env -u, env -i) of the command that runs it."""
+    global checked_text
+    key = (command, tuple(cwd) if isinstance(cwd, list) else cwd, tuple(inherited))
+    if key in CHECKED:
+        return CHECKED[key]
+    checked_text += len(command)
+    if time.monotonic() > deadline:
+        raise ValueError('the command takes longer to check than the guard allows')
+    if len(CHECKED) >= MAX_CHECKS or checked_text > MAX_CHECKED_TEXT:
+        raise ValueError('the command nests more scripts than the guard checks in one call')
+    CHECKED[key] = message = check_script(command, cwd, inherited)
+    return message
+
+
+def check_script(command, cwd, inherited):
+    """check_bash() for a script that this tool call has not checked yet."""
     text, bodies, expansions = split_heredocs(command)
     cmds = list(simple_commands(text))
     inherited = script_environment(inherited, command, cmds)
@@ -1685,6 +1887,9 @@ def check_bash(command, cwd=None, inherited=()):
     # GIT_DIR or GIT_WORK_TREE. A cd in a subshell or a failed cd leaves the start in place, so all of them are
     # kept, not only the last. A nested shell starts from all of them.
     places = list(cwd) if isinstance(cwd, list) else [cwd or os.getcwd()]
+    # Each command of the line and each command that it starts, and the shells among them that read standard input,
+    # with their directories
+    ran, readers = [], []
     for wrappers, word, args in cmds:
         targets = [w[len('chdir:'):] for w in wrappers if w.startswith('chdir:')]
         if word in ('cd', 'pushd'):
@@ -1700,6 +1905,8 @@ def check_bash(command, cwd=None, inherited=()):
         commands = [(wrappers, word, args)] + list(argument_commands(wrappers, word, args))
         # This command and each command that it starts, each with its own wrappers and directories
         started = [(wrappers, word, args)] + started_commands(wrappers, word, args)
+        ran += started
+        readers += [(c, command_places(wrappers, c[0], places)) for c in started if reads_stdin(c[1], c[2])]
         for c in unique_commands(commands + started):
             where = command_places(wrappers, c[0], places)
             for script in shell_scripts(c[1], c[2]):
@@ -1720,7 +1927,7 @@ def check_bash(command, cwd=None, inherited=()):
         if any(stops_mux_unit(*c) or removes_mux_files(c[1], c[2], command_places(wrappers, c[0], places))
                for c in every):
             return MSG_MUX
-        if any(appends(c[0]) and removes_input(c[1], c[2]) for c in every) and names_mux(text, places):
+        if names_mux(text, places) and any(appends(c[0]) and removes_input(c[1], c[2]) for c in every):
             return MSG_MUX
         if any(opens_window(*c) for c in launches + started) or (word == 'gdb' and gdb_launches(wrappers, args)):
             return MSG_LAUNCH
@@ -1728,22 +1935,26 @@ def check_bash(command, cwd=None, inherited=()):
             where = command_places(wrappers, c[0], places)
             if path := edits_plasmazones(c[1], c[2], where):
                 return plasmazones_message(path)
-            if c[1] == 'git' and (msg := check_git(c[2], where)):
+            if c[1] == 'git' and (msg := check_git(c[2], where, appends(c[0]))):
                 return msg
     # Here-document commands run where the shell is when it reaches them, after any cd before them: check
     # them against every directory of the line, not only the start.
     for script in expansions:
         if message := check_bash(script, list(places), inherited):
             return message + ' ' + MSG_HEREDOC
-    for script in stdin_scripts(cmds, bodies, places):
-        if message := check_bash(script, list(places), inherited):
+    # A shell that reads its script from standard input runs it in the environment and the directories that it got
+    # (XDG_RUNTIME_DIR=/tmp/x bash <<'EOF', flock /tmp/l bash <<'EOF')
+    scripts = stdin_scripts([c for c, _ in readers], cmds, bodies, places)
+    for (reader, where), script in ((r, s) for r in readers for s in scripts):
+        if message := check_bash(script, where, passed_environment(*reader)):
             return message
-    # kill $(pgrep ...), pgrep ... | xargs kill, a loop over pgrep -f: kill with PIDs that a name matched
-    finders = {w for _, w, a in cmds if w in ('pgrep', 'pidof', 'ps')}
-    if any(w == 'systemctl' and 'show' in operands(a)[0] and any('MainPID' in x for x in a) for _, w, a in cmds):
+    # kill $(pgrep ...), pgrep ... | xargs kill, a loop over pgrep -f: kill with PIDs that a name matched, also when
+    # a command of the line starts the kill or the pgrep (flock /tmp/l kill $(pidof afterglow))
+    finders = {w for _, w, a in ran if w in ('pgrep', 'pidof', 'ps')}
+    if any(w == 'systemctl' and 'show' in operands(a)[0] and any('MainPID' in x for x in a) for _, w, a in ran):
         finders.add('systemctl')
-    pgrep_f = any(w == 'pgrep' and any(a == '--full' or 'f' in short_flags(a) for a in args) for _, w, args in cmds)
-    for wrappers, word, args in cmds:
+    pgrep_f = any(w == 'pgrep' and any(a == '--full' or 'f' in short_flags(a) for a in args) for _, w, args in ran)
+    for wrappers, word, args in ran:
         # parallel kill takes its PIDs from its input, as xargs kill does
         if word == 'parallel' and 'kill' in (os.path.basename(a) for a in args):
             word, wrappers = 'kill', wrappers + ['append']
@@ -1776,6 +1987,7 @@ MSG_FAILED = ('The guard could not check this call ({}), so it blocks it. Write 
 
 def check(call):
     """The message that blocks the hook input CALL, or None. A malformed input raises ValueError."""
+    global checked_text, deadline
     if not isinstance(call, dict):
         raise ValueError('the hook input is not an object')
     tool = call.get('tool_name', '')
@@ -1787,6 +1999,9 @@ def check(call):
         command = params.get('command', '')
         if not isinstance(command, str):
             raise ValueError('the command is not a string')
+        CHECKED.clear()
+        checked_text = 0
+        deadline = time.monotonic() + CHECK_SECONDS
         return check_bash(command, cwd)
     if tool in ('Edit', 'Write', 'MultiEdit', 'NotebookEdit'):
         path = params.get('file_path') or params.get('notebook_path') or ''
@@ -1796,11 +2011,25 @@ def check(call):
     return None
 
 
+def out_of_time(signum, frame):
+    # Ends the hook here, not with an exception: a handler of the check could catch one (TimeoutError is an
+    # OSError), and one raised during another exception could leave main with status 1, which lets the call run.
+    try:
+        print(MSG_FAILED.format('the command takes longer to check than the guard allows'), file=sys.stderr, flush=True)
+    finally:
+        os._exit(2)
+
+
 def main():
-    # A hook that fails with another status than 2 lets the call run: any failure of a check blocks it instead
+    # A hook that fails with another status than 2 lets the call run: any failure of a check blocks it instead.
+    # So does a hook that runs past its timeout: a timer ends any check after CHECK_SECONDS, wherever it is.
+    signal.signal(signal.SIGALRM, out_of_time)
+    signal.setitimer(signal.ITIMER_REAL, CHECK_SECONDS)
     try:
         message = check(json.load(sys.stdin))
+        signal.setitimer(signal.ITIMER_REAL, 0)
     except Exception as error:
+        signal.setitimer(signal.ITIMER_REAL, 0)
         print(MSG_FAILED.format(f'{type(error).__name__}: {error}'[:200]), file=sys.stderr)
         sys.exit(2)
     if message:
