@@ -74,6 +74,10 @@ public:
     /// a pane that exited since the window sent it goes, and a pane that it
     /// does not name yet is a tab of its own (Layout::reconcile).
     void setLayout(Layout layout);
+    /// The settings of the window that shows the session: its panes, and
+    /// those that start later, take the terminal values, and the calls of
+    /// `afterglow ctl` and `afterglow ssh` follow the control values.
+    void applySettings(const SessionSettings& settings);
 
     /// What listSessions says of the session to @p caller, the process of
     /// the client that asks (0 when unknown): see MuxPane::foregroundJob.

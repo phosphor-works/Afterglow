@@ -326,6 +326,19 @@ std::optional<QString> MuxClient::breakOut(const AfterglowMux::Layout& layout, Q
     return QString::fromStdString(name);
 }
 
+void MuxClient::sendSettings(const AfterglowMux::SessionSettings& settings)
+{
+    if (!showing()) return;
+    std::string json = Json::write(AfterglowMux::toJson(settings));
+    if (json == m_sentSettings) return;
+    Attach::Input input;
+    input.type = Attach::InputType::Settings;
+    input.bytes = json;
+    m_sentSettings = std::move(json);
+    queueInput(Attach::encode(input), false);
+    sendWaitingInput();
+}
+
 void MuxClient::sendLayout(const AfterglowMux::Layout& layout)
 {
     if (!showing()) return;

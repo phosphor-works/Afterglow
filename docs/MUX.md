@@ -215,7 +215,7 @@ A session pane differs from a pane outside a session in these ways:
   - A pane outside a session shows a compressed BMP (run-length encoding) and a GIF whose screen has an empty side. A session pane does not show them.
   - A session pane shows a BMP with a header of 52 or 56 bytes, or with its masks after the header (compression 6). A pane outside a session does not show it.
   - Where the first frame of a GIF does not draw, a session pane shows nothing, as Kitty and browsers do. A pane outside a session can show the background color of the GIF there.
-- The session keeps the terminal settings and the colors of the `afterglow mux new` that started it (see [environment](#environment)).
+- The session follows the terminal settings and the colors of the window that shows it, and keeps those of its last window while no window shows it (see [environment](#environment)).
 
 ### Exit status
 
@@ -358,11 +358,16 @@ The daemon removes `AFTERGLOW_OVERLAY`.
 An `afterglow` that starts from a session pane does not give `AFTERGLOW_SESSION` to its own panes.
 
 `afterglow mux new` also sends the terminal settings of your configuration, such as `Terminal.scrollback` and the theme colors.
-The session keeps these values. A later change of them does not change a running session.
+From then on, the session follows the settings of the window that shows it.
+The window sends them when it shows the session, and again after each change, such as an edit of the configuration file.
+The daemon gives them to each pane of the session, also to a pane that starts later.
+While no window shows the session, it keeps the settings of its last window.
+A change of the terminal settings replaces the colors that the programs set (OSC 4, 10, 11), as in a window.
+So does a window with other terminal settings that shows the session, such as an Afterglow with another configuration.
 The requests that reach a window follow the settings of that window, such as `Terminal.bell` and `Terminal.clipboardRead` (see [what a window answers](#what-a-window-answers)).
 A change of these settings applies at once.
 `afterglow mux new` reads no colors from the application palette.
-When `Colors.theme` names a dark and a light theme, the session gets the dark theme.
+When `Colors.theme` names a dark and a light theme, `afterglow mux new` gives the session the dark theme, and a window gives it the theme that the window shows.
 With a `plasma` theme, the session gets only the colors that `kdeglobals` sets, over the theme.
 When `kdeglobals` sets no background, `plasma` alone takes `afterglow-dark`.
 
@@ -376,8 +381,7 @@ Without `--pane`, a command acts on the pane that has the focus in the tab that 
 The control socket of a window that shows a session also lists the session panes, with the pane IDs of that window, and acts on them as on the panes of other windows.
 A pane ID in the daemon and a pane ID in a window can have the same value.
 
-The daemon follows `Control.enabled` and `Control.allowReadText` as `afterglow mux new` found them.
-A later change of them does not change a running session.
+The daemon follows `Control.enabled` and `Control.allowReadText` of the window that showed the session last, else as `afterglow mux new` found them.
 A window that answers a command follows its own settings too.
 
 | Command | No window shows the session | A window shows the session |
@@ -431,7 +435,7 @@ The daemon also gives the pane its answer to the query of `aglow run` (OSC 24569
 | Item | Value |
 | --- | --- |
 | Local socket | `remote-TOKEN.sock` with mode 0600, in the directory of the socket that session panes name in `AFTERGLOW_SOCKET`: `$XDG_RUNTIME_DIR/aglow-mux`, else `$XDG_STATE_HOME/aglow-mux` (see [sockets](#sockets)). A daemon that starts removes those that a daemon left when it was killed. |
-| Settings | `Terminal.sshRemoteCommands`, `Control.enabled` and `Scripts.enabled` as `afterglow mux new` found them, and the same settings of the window that runs the command |
+| Settings | `Terminal.sshRemoteCommands`, `Control.enabled` and `Scripts.enabled` of the window that showed the session last, else as `afterglow mux new` found them, and the same settings of the window that runs the command. When a window turns remote commands off, the sockets of the session close. |
 | End | When the `afterglow ssh` process ends, when its pane closes, and when the daemon ends. The daemon then cancels the forward with `ssh -O cancel`, with the `ssh` on its own `PATH` |
 | Limits | 16 sessions for each pane, 256 for the daemon, and 64 connections for each socket, as in a window |
 

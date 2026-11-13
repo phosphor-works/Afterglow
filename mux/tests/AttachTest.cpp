@@ -226,6 +226,14 @@ public:
         return send(message);
     }
 
+    [[nodiscard]] bool sendSettings(const SessionSettings& settings)
+    {
+        Attach::Input message;
+        message.type = Attach::InputType::Settings;
+        message.bytes = Json::write(toJson(settings));
+        return send(message);
+    }
+
     [[nodiscard]] bool sendLayout(const Layout& layout)
     {
         Attach::Input message;
@@ -2072,6 +2080,24 @@ TEST(MuxControl, AnSshSessionOfASessionPaneGetsASocketOfTheDaemon)
     EXPECT_FALSE(ctl.call("remoteSocketFailed", Json::Array{(*failing)["token"].toString(), "other"}));
     EXPECT_TRUE(ctl.call("remoteSocketFailed", Json::Array{(*failing)["token"].toString(), "forward"})) << ctl.error.message;
     EXPECT_FALSE(exists(failed));
+    // A window turns remote commands off: the sessions end, and a new one
+    // gets the reason. On again, a new one opens.
+    {
+        const auto live = open(AfterglowProto::ProtocolVersion);
+        ASSERT_TRUE(live) << agent.error;
+        const std::string liveSocket = (*live)["socket"].toString();
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "s"), "");
+        ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+        SessionSettings settings{daemon.options({"/bin/sh"}, "x").terminal, {true, true, "remote commands are off (Terminal.sshRemoteCommands)"}};
+        ASSERT_TRUE(w.sendSettings(settings));
+        EXPECT_TRUE(w.until([&] { return !exists(liveSocket); }));
+        EXPECT_FALSE(open(AfterglowProto::ProtocolVersion));
+        EXPECT_EQ(agent.error, "remote commands are off (Terminal.sshRemoteCommands)");
+        settings.control.remoteCommandsOff.clear();
+        ASSERT_TRUE(w.sendSettings(settings));
+        EXPECT_TRUE(w.until([&] { return bool(open(AfterglowProto::ProtocolVersion)); })) << agent.error;
+    }
     // The pane closes: its sessions end.
     const auto closing = open(AfterglowProto::ProtocolVersion);
     ASSERT_TRUE(closing) << agent.error;
@@ -2081,6 +2107,54 @@ TEST(MuxControl, AnSshSessionOfASessionPaneGetsASocketOfTheDaemon)
     EXPECT_TRUE(waitFor([&] { return readFile(log).find(closed) != std::string::npos; })) << readFile(log);
     EXPECT_EQ(readFile(log).find(failed), std::string::npos) << readFile(log);
     endProcess(process);
+}
+
+// The session follows the settings of the window that shows it: the daemon
+// gives its panes the new terminal values, whose colors reach the window
+// with the next frame, and answers `afterglow ctl` by the new Control
+// values, also once no window shows the session.
+TEST(MuxControl, TheSessionFollowsTheSettingsOfItsWindow)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s", false)) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    const auto listed = ctl.call("listPanes", {});
+    ASSERT_TRUE(listed) << ctl.error.message;
+    const std::uint32_t pane = paneIds(*listed).front();
+    EXPECT_FALSE(ctl.call("getText", Json::Array{std::int64_t(pane), "screen"}));
+    SessionSettings settings{daemon.options({"/bin/sh"}, "x").terminal, {true, true, ""}};
+    settings.terminal.defaultBackground = {1, 2, 3};
+    {
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "s"), "");
+        ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+        EXPECT_NE(w.replica.defaultBackground(), (AfterglowVt::Rgb{1, 2, 3}));
+        ASSERT_TRUE(w.sendSettings(settings));
+        EXPECT_TRUE(w.until([&] { return w.replica.defaultBackground() == AfterglowVt::Rgb{1, 2, 3}; }));
+        EXPECT_TRUE(w.until([&] { return bool(ctl.call("getText", Json::Array{std::int64_t(pane), "screen"})); })) << ctl.error.message;
+    }
+    // No window shows it: the session keeps them, and its next window shows them.
+    EXPECT_TRUE(ctl.call("getText", Json::Array{std::int64_t(pane), "screen"})) << ctl.error.message;
+    Window next;
+    ASSERT_EQ(next.attach(daemon, "s"), "");
+    ASSERT_TRUE(next.until([&] { return next.pane != 0; }));
+    EXPECT_TRUE(next.until([&] { return next.replica.defaultBackground() == AfterglowVt::Rgb{1, 2, 3}; }));
+    // A window that turns Control.enabled off: the session has no control
+    // target, as such a window has none.
+    settings.control.enabled = false;
+    ASSERT_TRUE(next.sendSettings(settings));
+    EXPECT_TRUE(next.until([&] {
+        return !ctl.call("listPanes", {}) && ctl.error.code == AfterglowProto::IpcErrorCode::NoSuchTarget;
+    })) << ctl.error.code << ": " << ctl.error.message;
+    // Settings that are not valid end the window's link, as a layout does.
+    Attach::Input bad;
+    bad.type = Attach::InputType::Settings;
+    bad.bytes = R"({"terminal":{},"control":{}})";
+    ASSERT_TRUE(next.send(bad));
+    EXPECT_TRUE(next.until([&] { return next.ended; }));
+    EXPECT_NE(daemon.errors().find("settings that are not valid"), std::string::npos) << daemon.errors();
 }
 
 // A session whose client had remote commands off gives `afterglow ssh` no

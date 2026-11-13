@@ -27,7 +27,7 @@ namespace AfterglowMux {
 /// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
 /// MuxProtocolTest pins the keys of the options to this number, so that a new
 /// key changes it too.
-inline constexpr int ProtocolVersion = 16;
+inline constexpr int ProtocolVersion = 17;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -195,6 +195,7 @@ struct ControlOptions
     /// of a call says it ("remote commands are off (SETTING)"), or empty:
     /// whether `afterglow ssh` in a session pane gets a socket.
     std::string remoteCommandsOff{};
+    bool operator==(const ControlOptions&) const = default;
 };
 
 AfterglowProto::Json::Value toJson(const PaneSize& size);
@@ -236,6 +237,21 @@ struct SessionOptions
 AfterglowProto::Json::Value toJson(const SessionOptions& options);
 /// nullopt for a value that is not a valid options object: @p error says why.
 std::optional<SessionOptions> sessionOptions(const AfterglowProto::Json::Value& value, std::string* error);
+
+/// The settings of the window that shows a session, which it sends after
+/// its attach and after each change of them (Attach::InputType::Settings):
+/// the session follows them from then on, also while no window shows it.
+struct SessionSettings
+{
+    AfterglowVt::TerminalOptions terminal;
+    ControlOptions control;
+    bool operator==(const SessionSettings&) const = default;
+};
+
+AfterglowProto::Json::Value toJson(const SessionSettings& settings);
+/// nullopt for a value that is not a valid settings object, by the rules of
+/// the terminal and control values of SessionOptions: @p error says why.
+std::optional<SessionSettings> sessionSettings(const AfterglowProto::Json::Value& value, std::string* error);
 
 /// A session in the result of listSessions.
 struct SessionInfo

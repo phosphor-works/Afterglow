@@ -287,6 +287,12 @@ public:
     /// replaced and the XTPUSHCOLORS stack is emptied. The cursor shape and
     /// blink a program chose stay unless the configured ones changed.
     void setOptions(const TerminalOptions& options);
+    /// The options of a replica, whose colors, cursor and modes come with
+    /// the frames of another terminal (StateReader): what a window reads of
+    /// them (word boundaries, bold as bright, contrast, bidi), its
+    /// scrollback and its image quota. No color resets, and no report to
+    /// the program, as setOptions makes.
+    void setViewOptions(const TerminalOptions& options);
 
     /// @param cellWidth, cellHeight cell size in pixels, reported by CSI 14/16 t.
     void resize(int cols, int rows, int cellWidth, int cellHeight);

@@ -131,6 +131,14 @@ void Session::kill()
     m_layout = {};
 }
 
+void Session::applySettings(const SessionSettings& settings)
+{
+    m_options.control = settings.control;
+    if (m_options.terminal == settings.terminal) return;
+    m_options.terminal = settings.terminal;
+    for (const auto& pane : m_panes) pane->setOptions(settings.terminal);
+}
+
 void Session::setLayout(Layout layout)
 {
     layout.reconcile(paneIds());

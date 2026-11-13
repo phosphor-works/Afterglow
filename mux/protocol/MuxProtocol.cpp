@@ -329,6 +329,25 @@ std::optional<T> readWhole(const Json::Value& value, std::string_view key, std::
     return out;
 }
 
+Json::Value toJson(const ControlOptions& control)
+{
+    return Json::Object{{"enabled", control.enabled}, {"allowReadText", control.allowReadText}, {"remoteCommandsOff", control.remoteCommandsOff}};
+}
+
+void readControl(Reader& outer, const Json::Value& object, ControlOptions& control)
+{
+    if (!object.isObject()) {
+        outer.fail("control", "is not an object");
+        return;
+    }
+    Reader c = outer.nested(object, "control");
+    c.boolean("enabled", control.enabled);
+    c.boolean("allowReadText", control.allowReadText);
+    c.string("remoteCommandsOff", control.remoteCommandsOff);
+    c.noOtherKeys();
+    outer.absorb(c);
+}
+
 } // namespace
 
 bool validSessionName(std::string_view name)
@@ -377,10 +396,30 @@ Json::Value toJson(const SessionOptions& o)
         {"size", toJson(o.size)},
         {"terminal", toJson(o.terminal)},
         {"notificationCapabilities", o.notificationCapabilities},
-        {"control", Json::Object{{"enabled", o.control.enabled},
-                                 {"allowReadText", o.control.allowReadText},
-                                 {"remoteCommandsOff", o.control.remoteCommandsOff}}},
+        {"control", toJson(o.control)},
     };
+}
+
+Json::Value toJson(const SessionSettings& s)
+{
+    return Json::Object{{"terminal", toJson(s.terminal)}, {"control", toJson(s.control)}};
+}
+
+std::optional<SessionSettings> sessionSettings(const Json::Value& value, std::string* error)
+{
+    if (!value.isObject()) {
+        if (error) *error = "the session settings are not an object";
+        return std::nullopt;
+    }
+    SessionSettings s;
+    Reader r(value, error);
+    if (const Json::Value* terminal = r.lookup("terminal")) readTerminal(r, *terminal, s.terminal);
+    else r.fail("terminal", "is missing");
+    if (const Json::Value* control = r.lookup("control")) readControl(r, *control, s.control);
+    else r.fail("control", "is missing");
+    r.noOtherKeys();
+    if (r.failed()) return std::nullopt;
+    return s;
 }
 
 std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::string* error)
@@ -404,14 +443,7 @@ std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::stri
     if (const Json::Value* terminal = r.lookup("terminal")) readTerminal(r, *terminal, o.terminal);
     else r.fail("terminal", "is missing");
     r.string("notificationCapabilities", o.notificationCapabilities);
-    if (const Json::Value* control = r.get("control", Json::Value::Type::Object)) {
-        Reader c = r.nested(*control, "control");
-        c.boolean("enabled", o.control.enabled);
-        c.boolean("allowReadText", o.control.allowReadText);
-        c.string("remoteCommandsOff", o.control.remoteCommandsOff);
-        c.noOtherKeys();
-        r.absorb(c);
-    }
+    if (const Json::Value* control = r.get("control", Json::Value::Type::Object)) readControl(r, *control, o.control);
     r.noOtherKeys();
     if (r.failed()) return std::nullopt;
     return o;

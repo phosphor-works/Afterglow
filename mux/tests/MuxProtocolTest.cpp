@@ -64,7 +64,26 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 16) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 17) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 17 added the window's settings to its input, with their keys:
+    // the session follows them.
+    SessionSettings followed;
+    followed.control.remoteCommandsOff = "off";
+    followed.terminal.defaultBackground = {1, 2, 3};
+    EXPECT_EQ(keys(toJson(followed)), (std::vector<std::string>{"terminal", "control"}));
+    EXPECT_EQ(keys(toJson(followed)["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff"}));
+    [[maybe_unused]] auto& [followedTerminal, followedControl] = followed;
+    std::string settingsError;
+    const auto settingsBack = sessionSettings(Json::parse(Json::write(toJson(followed))).value(), &settingsError);
+    ASSERT_TRUE(settingsBack) << settingsError;
+    EXPECT_TRUE(*settingsBack == followed);
+    EXPECT_FALSE(sessionSettings(Json::Object{{"terminal", toJson(followed)["terminal"]}}, &settingsError));
+    EXPECT_NE(settingsError.find("control"), std::string::npos) << settingsError;
+    Attach::Input settingsInput;
+    settingsInput.type = Attach::InputType::Settings;
+    settingsInput.bytes = "{}";
+    EXPECT_EQ(Attach::encode(settingsInput), std::string("\x0a\x00{}", 4));
+    EXPECT_EQ(Attach::decodeInput(Attach::encode(settingsInput))->bytes, "{}");
     // Version 16 added the command to a launch, the values of the panes to
     // a layout (MuxLayoutTest), and the command to the placePane call of the
     // daemon to a window.
@@ -846,8 +865,7 @@ TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
 {
     const std::string_view bad[] = {
         {},
-        std::string_view("\x0b\x01", 2),         // an unknown type
-        std::string_view("\x0a\x01", 2),         // the type after ControlReply
+        std::string_view("\x0b\x01", 2),         // the type after Settings
         std::string_view("\x08\x01\x00", 3),     // a byte after a ClosePane
         std::string_view("\x01", 1),             // no pane
         std::string_view("\x02\x01\x50\x18\x08", 5), // a Resize that ends early

@@ -110,6 +110,9 @@ enum class InputType : std::uint8_t {
     /// The answer to a Control event: {"id", "result"} or {"id", "error"} as
     /// JSON in `bytes`, with the daemon's pane IDs.
     ControlReply = 9,
+    /// The window's settings (SessionSettings), as JSON in `bytes`, after
+    /// the attach and after each change of them.
+    Settings = 10,
 };
 
 struct Input

@@ -65,7 +65,8 @@ std::string encode(const Input& input)
 {
     std::string out(1, char(input.type));
     varint(out, input.pane);
-    if (input.type == InputType::Bytes || input.type == InputType::Layout || input.type == InputType::ControlReply) {
+    if (input.type == InputType::Bytes || input.type == InputType::Layout || input.type == InputType::ControlReply
+        || input.type == InputType::Settings) {
         out += input.bytes;
     } else if (input.type == InputType::Resize) {
         for (const int v : {input.size.cols, input.size.rows, input.size.cellWidth, input.size.cellHeight}) {
@@ -84,7 +85,8 @@ std::optional<Input> decodeInput(std::string_view frame)
     const std::uint8_t type = r.byte();
     input.pane = std::uint32_t(r.varint(0xffffffffu));
     if (!r.ok()) return std::nullopt;
-    if (type == std::uint8_t(InputType::Bytes) || type == std::uint8_t(InputType::Layout) || type == std::uint8_t(InputType::ControlReply)) {
+    if (type == std::uint8_t(InputType::Bytes) || type == std::uint8_t(InputType::Layout) || type == std::uint8_t(InputType::ControlReply)
+        || type == std::uint8_t(InputType::Settings)) {
         input.type = InputType(type);
         input.bytes = std::string(r.rest());
         return input;

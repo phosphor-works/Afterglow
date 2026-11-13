@@ -327,6 +327,22 @@ void Attachment::readInput(Session& session)
             session.setLayout(std::move(*layout));
             continue;
         }
+        if (message->type == Attach::InputType::Settings) {
+            std::string error;
+            const auto json = AfterglowProto::Json::parse(message->bytes, &error);
+            auto settings = json ? sessionSettings(*json, &error) : std::nullopt;
+            if (!settings) {
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent settings that are not valid: %s\n", m_session.c_str(),
+                             error.c_str());
+                m_failed = true;
+                return;
+            }
+            session.applySettings(*settings);
+            // The window keeps as much history as its new scrollback.
+            m_replicaHistory = settings->terminal.maxScrollback;
+            for (auto& [id, link] : m_panes) link.state.setReplicaHistory(m_replicaHistory);
+            continue;
+        }
         MuxPane* pane = session.pane(message->pane);
         // A pane that exited since the window wrote: its input is lost, as
         // a window's input to a program that ended.
@@ -359,6 +375,7 @@ void Attachment::readInput(Session& session)
         case Attach::InputType::ClosePane:
         case Attach::InputType::Layout:
         case Attach::InputType::ControlReply:
+        case Attach::InputType::Settings:
             break; // taken above
         }
     }

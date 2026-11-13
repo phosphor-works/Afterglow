@@ -104,6 +104,9 @@ public:
     /// What the window's Reset and Clear actions do to a terminal of its
     /// own: the window shows the result with the next frame.
     void reset();
+    /// New terminal values (Terminal::setOptions), when they differ: the
+    /// window shows the result with the next frame.
+    void setOptions(const AfterglowVt::TerminalOptions& options);
     void clear();
     /// The program exited, or start() failed.
     bool exited() const { return m_exited.load(); }
