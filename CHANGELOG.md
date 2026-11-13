@@ -103,7 +103,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - A pane overview that shows the panes of every tab as live 3D cards to choose from, drawn by a replaceable shader pack.
 - Animated tab switches, drawn by a replaceable shader pack: a turning cube, a page flip, a shatter or a slide.
 - Panes that swing in on a hinge or switch on like a picture tube as they split. They fall away or switch off as they close.
-- A portal across a pane whose shell moves to another host, user or container, and a colored frame while it is away.
+- A portal for a pane whose shell moves to another host, user or container, and a colored frame while it is away. The pane spirals into a black hole and comes back out of it, or a ring sweeps across it. `Animation.contextDuration` sets the time.
 - Pane and tab moves between tabs and windows. A drag outside the tab bar detaches a tab into a new window.
 - Saved projects that store a window's tabs, splits, directories and launch arguments.
 - Terminal sessions that keep running without a window, in the `afterglow-mux` daemon. `afterglow mux new` starts a session with one pane and shows it in a window. `afterglow mux attach` shows a session in a window, and `afterglow mux detach` closes the session pane. One window at a time shows a session, and a second one takes it over. `Mux.onClose` decides whether closing that pane, its tab or its window ends the session. `afterglow mux ls` and `afterglow mux kill` list and end the sessions.

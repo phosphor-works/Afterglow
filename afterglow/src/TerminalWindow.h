@@ -1202,8 +1202,10 @@ private:
     bool m_anyPaneAway = false; ///< this frame: some visible pane is not here
     bool m_paneEffectsAvailable = false; ///< Shaders.paneEffects compiled
     bool paneEffectsAllowed() const;
-    /// How far an effect that started at @p at has run, 0 to 1.
+    /// How far an opening or a close that started at @p at has run, 0 to 1.
     float paneEffectProgress(std::chrono::steady_clock::time_point at) const;
+    /// The same for a context change, which has its own duration.
+    float contextChangeProgress(std::chrono::steady_clock::time_point at) const;
     /// Hands opening and closing panes to the renderer.
     void advancePaneEffects(bool& animating);
     bool m_paneEffectsShowing = false; ///< the last frame ran the pane effects chain
