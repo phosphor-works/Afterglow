@@ -159,7 +159,9 @@ This is true for the keys, the menu, scripts and `afterglow ctl`.
 Their programs run under the daemon, with the environment of the session (see [environment](#environment)).
 The window prepares them with its own settings, such as `Terminal.shell` and `Terminal.env`.
 
-The daemon keeps the tabs and splits of the session: their order, the ratio of each split, the pane that has the focus in each tab, a zoomed pane, the titles that you gave the tabs, and the tab that shows.
+The daemon keeps the tabs and splits of the session: their order, the ratio of each split, the pane that has the focus in each tab, a zoomed pane, the titles that you gave the tabs and the panes, and the tab that shows.
+It also keeps the command of each pane that a [project](PROJECTS.md#projects-and-mux-sessions) saves: the command that started the pane, or none for the shell.
+A window of a session of another host keeps no commands, because a project runs its commands on this computer.
 The window sends them after each change.
 The next window that shows the session shows them again.
 While no window shows the session, a pane whose program exits leaves its tab, as in a window.
@@ -434,6 +436,8 @@ The daemon also gives the pane its answer to the query of `aglow run` (OSC 24569
 | Limits | 16 sessions for each pane, 256 for the daemon, and 64 connections for each socket, as in a window |
 
 A pane of a session has no overlay, so `afterglow ssh` in an overlay gets no socket there.
+The daemon gives a socket only to an `afterglow ssh` that runs in the pane that it names, or below a program of that pane, by its processes.
+A process of another terminal that names the pane gets `CALL_FAILED`: `` only `afterglow ssh` in pane N opens a remote socket for it ``.
 When no window shows the session, a client of the remote host gets `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts`.
 
 ## What the daemon answers
@@ -518,6 +522,8 @@ When a session pane closes in the window, a file transfer that the window ran ge
 | Waiting output to one client | 32 MiB | The daemon closes the connection to a client that does not read its answers |
 | Environment, arguments and directory of a session | UTF-8 text | `afterglow mux new` changes each byte that is not UTF-8 to U+FFFD |
 | Wait for a window to start its stream after the answer to its attach call | 5 seconds | The session is free for another window, and the window does not show it |
+| Command of a pane that the daemon keeps for a project | 64 arguments of at most 4096 bytes | The pane saves as a shell |
+| Titles and commands of the panes that the daemon keeps, together | 256 KiB in a session | The panes past it save as shells, with the titles of their programs |
 | Input of a window that the program does not read | 32 MiB in the queue of the PTY, 4 MiB in the daemon, then 32 MiB in the window | The window refuses more input and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
 | Frames to a window | About 2 MiB of state in each frame, and at most 4 MiB, the largest frame of the stream | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
 | History rows to a window | `Terminal.scrollback` of the window, in rows | The daemon sends no older rows |

@@ -11493,9 +11493,50 @@ return {
     delete shown;
 }
 
+// `afterglow ssh` gets a remote socket only for the pane that it runs in: the
+// window tells the processes of a pane by their terminal session, and
+// refuses a call of another process, or of none.
+TEST_F(NativeWindow, RemoteSocketsOpenOnlyForTheProcessesOfTheirPane) {
+    const QString pidFile = directory.filePath(QStringLiteral("child.pid"));
+    restartApplication(QStringLiteral("remote-pane.conf"),
+        testSettings({{QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("sshRemoteCommands"), true}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("sleep 300 & echo $! > '%1'; wait").arg(pidFile)});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    qint64 child = 0;
+    ASSERT_TRUE(waitFor([&] {
+        QFile file(pidFile);
+        child = file.open(QIODevice::ReadOnly) ? file.readAll().trimmed().toLongLong() : 0;
+        return child > 0;
+    }, 5000));
+    Control& control = application->control();
+    // A child of the pane's program, and the program itself.
+    EXPECT_TRUE(control.runsIn(pane->id(), child, false));
+    EXPECT_TRUE(control.runsIn(pane->id(), pane->programPid(), false));
+    // Not this test, nor another pane, nor an overlay that the pane lacks.
+    EXPECT_FALSE(control.runsIn(pane->id(), QCoreApplication::applicationPid(), false));
+    EXPECT_FALSE(control.runsIn(pane->id() + 1000, child, false));
+    EXPECT_FALSE(control.runsIn(pane->id(), child, true));
+    EXPECT_FALSE(control.runsIn(pane->id(), 1, false));
+    // A call from no connection names no process.
+    PhosphorIpc::IpcRouter::InvokeOutcome outcome{};
+    QString message;
+    testSocket().router().invoke(QStringLiteral("control"), QStringLiteral("openRemoteSocket"),
+                                 {double(pane->id()), double(child), QStringLiteral("box"), QStringLiteral("/run/user/1000/afterglow"),
+                                  double(AfterglowProto::ProtocolVersion), QStringList{}, QStringLiteral("prod"), false},
+                                 &outcome, &message);
+    EXPECT_EQ(outcome, PhosphorIpc::IpcRouter::InvokeOutcome::CallFailed);
+    EXPECT_EQ(message, QStringLiteral("only `afterglow ssh` in pane %1 opens a remote socket for it").arg(pane->id()));
+    ::kill(pid_t(child), SIGKILL);
+}
+
 // A project that says "session": true opens into a mux session: its panes
 // are the session's, in the project's tabs and splits, with their commands.
-// Opening it again shows that session, also after its window closed, and
+// The daemon starts off the GUI thread, and an open that comes meanwhile
+// gets the same window. Opening it again shows that session, also after its
+// window closed, with the commands and titles that the project saves, and
 // --no-session opens it into a window of its own.
 TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
     MuxTest::TestDaemon daemon;
@@ -11512,7 +11553,7 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
     project.write(R"({"version": 1, "active_tab": "t1", "session": true, "tabs": [
         {"id": "t1", "title": "work", "active_pane": "b", "tree": {"direction": "right", "ratio": 0.5,
             "first": {"pane": {"id": "a", "cwd": "/tmp", "title": "", "command": []}},
-            "second": {"pane": {"id": "b", "cwd": "~", "title": "", "command": []}}}},
+            "second": {"pane": {"id": "b", "cwd": "~", "title": "editor", "command": []}}}},
         {"id": "t2", "title": "logs", "active_pane": "c", "tree": {"pane": {"id": "c", "cwd": "/", "title": "", "command": ["sleep", "300"]}}}]})");
     project.close();
     const auto windowOf = [](const QVariantMap& result) -> TerminalWindow* {
@@ -11525,9 +11566,44 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
         const auto panes = w->panes();
         return !panes.isEmpty() && std::all_of(panes.begin(), panes.end(), [](Pane* p) { return p->isSessionPane(); });
     };
+    /// The outcome of an open, which can come after openProject returns.
+    struct Outcome
+    {
+        bool done = false;
+        QString error;
+        QVariantMap result;
+    };
+    const auto start = [&](bool newInstance, const QString& mode) {
+        auto outcome = std::make_shared<Outcome>();
+        application->control().openProject(QStringLiteral("dev"), newInstance, mode, [outcome](const QString& error, const QVariantMap& result) {
+            *outcome = {true, error, result};
+        });
+        return outcome;
+    };
+    const auto open = [&](bool newInstance, const QString& mode, QVariantMap& result) {
+        const auto outcome = start(newInstance, mode);
+        if (!waitFor([&] { return outcome->done; }, 15000)) return QStringLiteral("no outcome");
+        result = outcome->result;
+        return outcome->error;
+    };
+    /// The saved pane of @p tab's tree at @p path ("first", "second").
+    const auto savedPane = [](const QJsonObject& document, int tab, const QStringList& path) {
+        QJsonObject node = document.value(QStringLiteral("tabs")).toArray().at(tab).toObject().value(QStringLiteral("tree")).toObject();
+        for (const QString& side : path) node = node.value(side).toObject();
+        return node.value(QStringLiteral("pane")).toObject();
+    };
 
-    QVariantMap result;
-    ASSERT_EQ(application->control().openProject(QStringLiteral("dev"), false, {}, result), QString());
+    // The daemon starts the session off the GUI thread: the open answers
+    // later. A second open meanwhile waits for it, and finds its window.
+    const auto first = start(false, {});
+    EXPECT_FALSE(first->done);
+    const auto second = start(false, {});
+    ASSERT_TRUE(waitFor([&] { return first->done && second->done; }, 15000));
+    ASSERT_EQ(first->error, QString());
+    ASSERT_EQ(second->error, QString());
+    const QVariantMap result = first->result;
+    EXPECT_TRUE(second->result.value(QStringLiteral("reused")).toBool());
+    EXPECT_EQ(second->result.value(QStringLiteral("window_id")), result.value(QStringLiteral("window_id")));
     EXPECT_EQ(result.value(QStringLiteral("session")).toString(), QStringLiteral("dev"));
     EXPECT_FALSE(result.value(QStringLiteral("reused")).toBool());
     QPointer<TerminalWindow> window = windowOf(result);
@@ -11552,7 +11628,7 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
 
     // Again: the window that shows it.
     QVariantMap again;
-    ASSERT_EQ(application->control().openProject(QStringLiteral("dev"), false, {}, again), QString());
+    ASSERT_EQ(open(false, {}, again), QString());
     EXPECT_TRUE(again.value(QStringLiteral("reused")).toBool());
     EXPECT_EQ(again.value(QStringLiteral("window_id")), result.value(QStringLiteral("window_id")));
 
@@ -11564,7 +11640,7 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
         return info && !info->attached && info->panes == 3;
     }, 5000));
     QVariantMap back;
-    ASSERT_EQ(application->control().openProject(QStringLiteral("dev"), false, {}, back), QString());
+    ASSERT_EQ(open(false, {}, back), QString());
     EXPECT_TRUE(back.value(QStringLiteral("reused")).toBool());
     QPointer<TerminalWindow> reattached = windowOf(back);
     ASSERT_NE(reattached, nullptr);
@@ -11572,10 +11648,18 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
     EXPECT_TRUE(allSessionPanes(reattached));
     EXPECT_EQ(reattached->tabs().size(), 2);
     EXPECT_EQ(reattached->projectName(), QStringLiteral("dev"));
+    // The daemon kept what the first window knew: this window saves the
+    // command and the title, as that one did.
+    const QJsonObject resaved = reattached->projectLayout();
+    EXPECT_EQ(savedPane(resaved, 1, {}).value(QStringLiteral("command")), QJsonValue(QJsonArray{QStringLiteral("sleep"), QStringLiteral("300")}))
+        << QJsonDocument(resaved).toJson().toStdString();
+    EXPECT_EQ(savedPane(resaved, 0, {QStringLiteral("second")}).value(QStringLiteral("title")).toString(), QStringLiteral("editor"))
+        << QJsonDocument(resaved).toJson().toStdString();
+    EXPECT_EQ(savedPane(resaved, 0, {QStringLiteral("first")}).value(QStringLiteral("command")).toArray(), QJsonArray());
 
     // --no-session: a window of its own, outside any session.
     QVariantMap local;
-    ASSERT_EQ(application->control().openProject(QStringLiteral("dev"), true, QStringLiteral("window"), local), QString());
+    ASSERT_EQ(open(true, QStringLiteral("window"), local), QString());
     QPointer<TerminalWindow> plain = windowOf(local);
     ASSERT_NE(plain, nullptr);
     EXPECT_EQ(plain->panes().size(), 3);

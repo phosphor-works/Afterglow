@@ -228,6 +228,9 @@ public:
     QString title() const;
     /// Overrides the title; empty returns to the program's.
     void setUserTitle(const QString& title);
+    /// The process of the program, which leads the terminal session of the
+    /// pane. 0 or less for a session pane, and once the program exited.
+    pid_t programPid() const;
     QString userTitle() const;
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
     /// is local and exists, else the foreground job's directory from /proc.
@@ -261,6 +264,9 @@ public:
     const QStringList& launchCommand() const { return m_launchCommand; }
     const QString& launchDirectory() const { return m_launchDirectory; }
     void setLaunch(const QString& cwd, const QStringList& command) { m_launchDirectory = cwd; m_launchCommand = command; }
+    /// The command that a project saves, for a session pane that another
+    /// window or the daemon started.
+    void setLaunchCommand(const QStringList& command) { m_launchCommand = command; }
     void setLaunchedProgram(const QString& name) { m_launchedProgram = name; }
     /// Keeps the pane open after an unsuccessful exit, until a key is
     /// pressed (the fallback panes of a restored project).
@@ -366,6 +372,8 @@ Q_SIGNALS:
     void programDragStarting();
     void searchStatusChanged(const QString& status);
     void titleUpdated(const QString& title);
+    /// The title that the user gave the pane changed (setUserTitle).
+    void userTitleChanged();
     void contextUpdated();
     void userVarUpdated(const QString& name, const QString& value);
     void shaderSignalsChanged();

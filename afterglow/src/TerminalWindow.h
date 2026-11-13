@@ -271,9 +271,9 @@ public:
     QString breakOutOfSession(Pane* pane, bool wholeTab, QString* session);
     /// Shows pane @p id of the session, which the daemon started for
     /// `afterglow ctl split` or `new-tab`: on @p side of @p beside, else in a
-    /// tab after its tab. A split without room becomes a tab. Then the window
-    /// sends its layout.
-    Pane* placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side);
+    /// tab after its tab. A split without room becomes a tab. It keeps
+    /// @p command, which a project saves. Then the window sends its layout.
+    Pane* placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side, const QStringList& command = {});
     /// The session pane of this window that shows pane @p id of the daemon.
     Pane* sessionPane(std::uint32_t id) const;
     bool swapPane(Pane* pane, SplitTree::Neighbour direction);
@@ -353,7 +353,8 @@ private:
     /// the session with Mux.onClose kill, else nothing; nothing for the
     /// session of a project, and when Afterglow quits (keepSessionOnClose).
     MuxRelease windowCloseRelease() const;
-    /// The tabs and splits of the window, for the daemon of its session.
+    /// The tabs and splits of the window, with the titles and commands of
+    /// its panes, for the daemon of its session.
     AfterglowMux::Layout sessionLayout() const;
     /// The tree, focus, zoom and title of @p tab, whose focus is @p focused.
     AfterglowMux::LayoutTab sessionTab(const Tab& tab, const Pane* focused) const;

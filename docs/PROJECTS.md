@@ -155,9 +155,10 @@ To end the session, run `afterglow mux kill NAME`, or end its programs.
 | It runs, with `--new` | Starts another session, whose name the daemon gives |
 
 A save of the window of a session of this computer writes `"session": true`.
-The window that started the panes of the project saves their commands.
-A window that shows the session again saves each pane as a shell in its directory, without its title, because the daemon keeps neither.
-Afterglow waits while it starts the daemon and the session: the windows do not respond until then, at most some seconds.
+The daemon keeps the command and the title of each pane, so a window that shows the session again saves them too.
+Afterglow starts the daemon and the session in the background: the windows go on responding while the daemon starts.
+The `afterglow ctl open-project` call, and the result of the `open_project` effect, come when the window of the session opens.
+While the session of a project starts, a second open of the project waits for it, and then focuses its window.
 A pane of a session closes when its program exits: the project does not hold it, as it holds a pane outside a session.
 A project whose name starts with `-` cannot name a session, and opens only into a window.
 

@@ -159,10 +159,13 @@ public:
         QJsonValue result;
         QString error;
     };
+    /// Sends the answer to a call of the control target, once.
+    using ControlReply = std::function<void(const ControlAnswer& answer)>;
     /// Answers the calls of `afterglow ctl` for the session that only a
     /// window can answer (Attach::EventType::Control), with the daemon's pane
-    /// IDs. On the GUI thread, after the frames and events that came first.
-    using ControlHandler = std::function<ControlAnswer(const QString& fn, const QJsonArray& args)>;
+    /// IDs, through @p reply: at once, or later (openProject). On the GUI
+    /// thread, after the frames and events that came first.
+    using ControlHandler = std::function<void(const QString& fn, const QJsonArray& args, ControlReply reply)>;
     void setControlHandler(ControlHandler handler) { m_controlHandler = std::move(handler); }
     /// Serves the command clients of the session's panes (`aglow run`) with
     /// @p host: the socket of the Afterglow whose commands answer them, and
@@ -211,6 +214,8 @@ private:
     /// Answers the calls of the control target that came (m_controlCalls).
     /// Out of handleFrames(): an answer makes panes, which read the stream.
     void answerControlCalls();
+    /// Sends @p answer to call @p id of the control target.
+    void sendControlReply(qint64 id, const ControlAnswer& answer);
     void updateNotifiers();
     void end(Loss loss);
     void lost();

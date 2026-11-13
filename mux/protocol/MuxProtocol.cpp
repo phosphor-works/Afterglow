@@ -3,6 +3,8 @@
 
 #include "MuxProtocol.h"
 
+#include "MuxLayout.h"
+
 #include <AfterglowProto/Text.h>
 
 #include <algorithm>
@@ -294,6 +296,10 @@ bool readLaunch(Reader& outer, const Json::Value& object, Launch& launch)
         }
     }
     r.string("launchedProgram", launch.launchedProgram);
+    if (r.strings("command", launch.command) && !launch.command.empty() && !validPaneCommand(launch.command)) {
+        r.fail("command", "has an empty program, more than " + std::to_string(MaxPaneCommandArgs) + " arguments, or one longer than "
+                              + std::to_string(MaxPaneCommandArg) + " bytes");
+    }
     r.noOtherKeys();
     return outer.absorb(r);
 }
@@ -341,6 +347,7 @@ Json::Value toJson(const Launch& launch)
         {"environment", environmentJson(launch.environment)},
         {"unset", Json::Array(launch.unset.begin(), launch.unset.end())},
         {"launchedProgram", launch.launchedProgram},
+        {"command", Json::Array(launch.command.begin(), launch.command.end())},
     };
 }
 

@@ -13,10 +13,14 @@
 #include <QObject>
 #include <QPair>
 #include <QPointer>
+#include <QSet>
+#include <QThreadPool>
 #include <QStringList>
 #include <QVariantMap>
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <functional>
 #include <optional>
 
@@ -65,8 +69,13 @@ public:
     /// Opens a window that shows mux session @p session of @p host (empty:
     /// this computer): empty, else why not.
     using SessionWindowOpener = std::function<QString(const QString& session, const QString& host)>;
+    /// The end of openProject(): its error, or empty and its result.
+    using ProjectOpened = std::function<void(const QString& error, const QVariantMap& result)>;
 
     Control(SettingsStore& settings, WindowFactory newWindow, QObject* parent = nullptr);
+    /// Drops the calls to the mux daemon that did not start, and has those
+    /// that run end the sessions that they start.
+    ~Control() override;
     /// For a drag of panes out of a session's window: they go to a new
     /// session, which a new window shows.
     void setSessionWindowOpener(SessionWindowOpener opener) { m_openSessionWindow = std::move(opener); }
@@ -97,9 +106,18 @@ public:
     QVariantList scriptDiagnostics() const { return m_scriptDiagnostics ? m_scriptDiagnostics() : QVariantList{}; }
     QStringList projectNames() const;
     QString saveProject(quint32 pane, const QString& name, bool overwrite, QVariantMap& result);
+    /// Whether process @p process runs in pane @p pane, or in its overlay with
+    /// @p overlay: the program leads the terminal session of the process, or
+    /// of the nearest process above it (a shell in an editor's terminal has
+    /// a session of its own). By the processes, not by an AFTERGLOW_PANE_ID
+    /// that a process of another terminal can carry.
+    bool runsIn(quint32 pane, qint64 process, bool overlay) const;
     /// Opens project @p name: into a mux session with @p mode "session", into
     /// a window with "window", and as the project says with an empty mode.
-    QString openProject(const QString& name, bool newInstance, const QString& mode, QVariantMap& result);
+    /// @p done gets the outcome once, before this returns, or later for a
+    /// session: the calls to the mux daemon, which can start it, run off the
+    /// GUI thread.
+    void openProject(const QString& name, bool newInstance, const QString& mode, ProjectOpened done);
     QString movePane(quint32 pane, quint32 target, const QString& placement, QVariantMap& result);
     QString detachTab(quint32 pane, QVariantMap& result);
     QString sendText(quint32 pane, const QString& text);
@@ -242,7 +260,11 @@ private:
     TerminalWindow* sessionWindow(const QString& session) const;
     /// openProject() into a mux session named @p name: its window, or a new
     /// window of the session that runs, or a new session.
-    QString openProjectSession(const QString& name, const QJsonObject& document, bool newInstance, QVariantMap& result);
+    void openProjectSession(const QString& name, const QJsonObject& document, bool newInstance, ProjectOpened done);
+    /// Runs @p work on a thread of m_daemonCalls, then @p then with its
+    /// result on this object's thread.
+    template<typename Result>
+    void offThread(std::function<Result()> work, std::function<void(Result)> then);
     ProjectStore projects() const;
     void projectDialog(Pane* pane, bool save);
     void attachPane(Pane* pane);
@@ -276,6 +298,17 @@ private:
         quint32 pane = 0;
     };
     QList<DockRecord> m_docks;
+    /// The projects whose session opens (openProjectSession), each with the
+    /// opens of it that wait for that one to end.
+    QHash<QString, QList<std::function<void()>>> m_projectOpens;
+    /// The session names that opens ask the daemon for, until it answers.
+    QSet<QString> m_namingSessions;
+    /// Set as this object goes: a session that a call to the daemon starts
+    /// then has no window to lay it out.
+    std::shared_ptr<std::atomic<bool>> m_closing = std::make_shared<std::atomic<bool>>(false);
+    /// The calls to the mux daemon of this computer. Last: it waits for its
+    /// calls as it goes, while the rest of this object is still there.
+    QThreadPool m_daemonCalls;
 };
 
 } // namespace Afterglow

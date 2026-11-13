@@ -9,6 +9,9 @@
 #include <QStringList>
 #include <QVariantMap>
 
+#include <string>
+#include <vector>
+
 namespace Afterglow {
 
 struct Settings;
@@ -39,5 +42,9 @@ void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantM
 /// other job runs (Pane::foregroundJob): the program's file name. Empty for
 /// the shell.
 QString launchedProgramName(const QStringList& command);
+
+/// @p command as a session pane's launch keeps it for a project
+/// (AfterglowMux::Launch::command): empty when it does not fit a layout.
+std::vector<std::string> sessionCommand(const QStringList& command);
 
 } // namespace Afterglow

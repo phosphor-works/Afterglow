@@ -776,12 +776,20 @@ void Pane::setSearchColors(std::uint32_t match, std::uint32_t current, std::uint
 
 void Pane::setUserTitle(const QString& title)
 {
+    bool changed = false;
     {
         std::lock_guard lock(m_mutex);
+        changed = m_userTitle != title;
         m_userTitle = title;
         m_shownTitle = m_userTitle.isEmpty() ? m_title : m_userTitle;
     }
     announceTitle();
+    if (changed) Q_EMIT userTitleChanged();
+}
+
+pid_t Pane::programPid() const
+{
+    return m_pty ? m_pty->pid() : 0;
 }
 
 void Pane::announceTitle()

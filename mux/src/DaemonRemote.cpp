@@ -183,6 +183,15 @@ std::string Daemon::remoteCall(const IpcRequest& request, pid_t caller)
         ssh.push_back(option.toString());
     }
     if (*pid <= 0 || *pid > 0x7fffffff) return failed(request, "a process ID is a whole number from 1");
+    // The pane is the one that the caller and the process it names run in,
+    // by their processes: a process of another pane gets no socket that
+    // runs remote commands for this one.
+    std::uint32_t callerPane = 0;
+    std::uint32_t processPane = 0;
+    if (!sessionOfProcess(caller, &callerPane) || callerPane != std::uint32_t(*paneId)
+        || !sessionOfProcess(pid_t(*pid), &processPane) || processPane != callerPane) {
+        return failed(request, "only `afterglow ssh` in pane " + std::to_string(*paneId) + " opens a remote socket for it");
+    }
     // ev.remote.host: a name, as `afterglow ssh` shows it.
     if (host.empty() || !AfterglowProto::isCleanText(host) || utf16Units(host) > MaxSshHostLength) {
         return failed(request, "the host is 1 to " + std::to_string(MaxSshHostLength) + " characters of text with no control characters");

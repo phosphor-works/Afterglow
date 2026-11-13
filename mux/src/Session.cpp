@@ -77,6 +77,11 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     if (!pane->start(std::move(spawn), launch.launchedProgram, error)) return false;
     m_panes.push_back(std::move(pane));
     m_layout.addTab(id);
+    // The next window saves the command in a project, as the client that
+    // started the pane would: while the layout has room for it.
+    std::size_t bytes = 0;
+    for (const std::string& arg : launch.command) bytes += arg.size();
+    if (!launch.command.empty() && m_layout.valueBytes() + bytes <= MaxLayoutValueBytes) m_layout.values[id].command = launch.command;
     return true;
 }
 

@@ -38,7 +38,8 @@ std::string muxDaemonPath(std::string* error)
 
 /// A connection to the daemon, which this starts when none answers: the
 /// aglow-mux next to afterglow.
-AfterglowMux::Reached connectOrStartDaemon(const AfterglowProto::MuxSockets& sockets, std::string* error)
+AfterglowMux::Reached connectOrStartDaemon(const AfterglowProto::MuxSockets& sockets, std::string* error,
+                                           const AfterglowMux::Environment& environment)
 {
     if (AfterglowMux::Reached reached = connectAny(sockets, error); reached.connection || !error->empty()) return reached;
     const std::string daemon = muxDaemonPath(error);
@@ -47,7 +48,7 @@ AfterglowMux::Reached connectOrStartDaemon(const AfterglowProto::MuxSockets& soc
         *error = "cannot find aglow-mux next to afterglow: " + daemon;
         return {};
     }
-    return AfterglowMux::connectOrStart(sockets, daemon, error);
+    return AfterglowMux::connectOrStart(sockets, daemon, environment, error);
 }
 
 /// The file mode creation mask of this process, which the programs of the
@@ -90,6 +91,7 @@ std::vector<std::pair<std::string, std::string>> sessionEnvironment()
 void sessionValues(AfterglowMux::SessionOptions& session, const Settings& settings, const QStringList& command)
 {
     session.launch.launchedProgram = launchedProgramName(command).toStdString();
+    session.launch.command = sessionCommand(command);
     // No window measured the panes: the size of a new window, in cells,
     // which the schema keeps within what a terminal takes.
     session.size = {settings.window.initialColumns, settings.window.initialRows, 0, 0};
@@ -140,10 +142,15 @@ AfterglowMux::SessionOptions localSessionOptions(const Settings& settings, const
     return session;
 }
 
-QString newLocalSession(const AfterglowMux::SessionOptions& options, QString* error)
+LocalDaemon localDaemon()
+{
+    return {AfterglowProto::muxSockets(), AfterglowMux::currentEnvironment()};
+}
+
+QString newLocalSession(const LocalDaemon& daemon, const AfterglowMux::SessionOptions& options, QString* error)
 {
     std::string reason;
-    AfterglowMux::Reached reached = connectOrStartDaemon(AfterglowProto::muxSockets(), &reason);
+    AfterglowMux::Reached reached = connectOrStartDaemon(daemon.sockets, &reason, daemon.environment);
     if (!reached.connection) {
         *error = QString::fromStdString(reason.empty() ? std::string("aglow-mux did not start") : printable(reason));
         return {};
@@ -164,10 +171,10 @@ QString newLocalSession(const AfterglowMux::SessionOptions& options, QString* er
     return QString::fromStdString(name);
 }
 
-bool killLocalSession(const QString& name)
+bool killLocalSession(const LocalDaemon& daemon, const QString& name)
 {
     std::string error;
-    AfterglowMux::Reached reached = connectAny(AfterglowProto::muxSockets(), &error);
+    AfterglowMux::Reached reached = connectAny(daemon.sockets, &error);
     if (!reached.connection) return false;
     IpcConnection::Error callError;
     return reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::KillSession, Json::Array{name.toStdString()}, CallTimeoutMs,
@@ -175,10 +182,10 @@ bool killLocalSession(const QString& name)
         .has_value();
 }
 
-bool localSessionRuns(const QString& name)
+bool localSessionRuns(const LocalDaemon& daemon, const QString& name)
 {
     std::string error;
-    AfterglowMux::Reached reached = connectAny(AfterglowProto::muxSockets(), &error);
+    AfterglowMux::Reached reached = connectAny(daemon.sockets, &error);
     if (!reached.connection) return false;
     const auto list = daemonSessions(*reached.connection, &error);
     return list && std::any_of(list->begin(), list->end(), [&](const auto& info) { return info.name == name.toStdString(); });

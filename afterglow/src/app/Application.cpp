@@ -196,10 +196,11 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     // `afterglow ctl` for the session: the calls that only this window can
     // answer, which the daemon passes it.
     if (options.session) {
-        options.session->setControlHandler([this, shown = QPointer<TerminalWindow>(window)](const QString& fn, const QJsonArray& args) {
-            if (!shown) return MuxClient::ControlAnswer{{}, QStringLiteral("the window of the session closed")};
-            return answerSessionCall(m_control, m_settings.settings(), *shown, fn, args);
-        });
+        options.session->setControlHandler(
+            [this, shown = QPointer<TerminalWindow>(window)](const QString& fn, const QJsonArray& args, MuxClient::ControlReply reply) {
+                if (!shown) return reply({{}, QStringLiteral("the window of the session closed")});
+                answerSessionCall(m_control, m_settings.settings(), *shown, fn, args, std::move(reply));
+            });
         // `aglow run` in a session pane: the commands target of this
         // process serves it, as it serves a pane outside a session. A
         // client of another host gets a socket of a remote session.
