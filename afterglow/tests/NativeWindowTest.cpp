@@ -7051,6 +7051,31 @@ TEST_F(NativeWindow, StatusAndContextChangesOnTheGuiThreadDoNotDeadlock) {
     EXPECT_EQ(pane->contextKind(), QStringLiteral("remote"));
 }
 
+// A change of context runs its portal for Animation.contextDuration, which is
+// not the time of a pane's open and close. Then the window asks for no more
+// frames, also while the pane is still away and keeps its frame.
+TEST_F(NativeWindow, AContextChangeAnimatesForContextDurationAndThenStops) {
+    // An open and close far shorter than the portal: a portal on their time
+    // would be over long before the check that it still draws.
+    restartApplication(QStringLiteral("portal.conf"),
+        testSettings({{QStringLiteral("Animation"), QJsonObject{{QStringLiteral("paneEffectDuration"), 16},
+                                                                 {QStringLiteral("contextDuration"), 4000}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    expectIdle(window);
+    pane->withTerminal([](AfterglowVt::Terminal& t) {
+        t.feed("\x1b]3008;start=p1;type=remote;user=someone;hostname=far-away-host\x1b\\");
+    });
+    ASSERT_TRUE(waitFor([&] { return pane->contextKind() == QStringLiteral("remote"); }));
+    // One second in, the portal still draws frames of its own.
+    drain(1000);
+    const auto during = window->submittedFrames();
+    EXPECT_TRUE(waitFor([&] { return window->submittedFrames() >= during + 3; }, 2000)) << window->submittedFrames() - during;
+    waitIdle(window);
+    EXPECT_EQ(pane->contextKind(), QStringLiteral("remote"));
+}
+
 // Window.workingDirectory names a directory that does not exist: a new tab
 // inherits the directory of the pane that it comes from, as the setting's
 // own description says, not the home directory. A split takes the same path

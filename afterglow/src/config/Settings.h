@@ -182,6 +182,7 @@ struct AnimationSettings
     QString tabCurve = QStringLiteral("spring:13,0.9");
     int tabDuration = 400;
     int paneEffectDuration = 420; ///< panes opening and closing (Shaders.paneEffects)
+    int contextDuration = 1000; ///< a pane's portal to another host, user or container (Shaders.paneEffects)
     /// An overlay's fade in and out over its pane (Shaders.overlayTransition),
     /// as splitCurve. The fade stops the first time it reaches its target, so
     /// a curve that overshoots never bounces back.
