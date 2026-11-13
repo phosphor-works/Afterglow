@@ -98,7 +98,7 @@ TEST(MuxDaemon, ControlAndCommandCallsFailWithAReason)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     for (const auto& [target, message] : std::vector<std::pair<std::string, std::string>>{
              {"control", "no session is selected: afterglow ctl --session NAME, or afterglow ctl in a session pane, selects one"},
-             {AfterglowProto::Run::Target, "a session pane takes no script commands: the mux daemon runs no scripts"}}) {
+             {AfterglowProto::Run::Target, "only a client in a session pane reaches the mux daemon for the commands of scripts"}}) {
         SCOPED_TRACE(target);
         IpcConnection::Error error;
         EXPECT_FALSE(daemon.call("listPanes", {}, &error, target));

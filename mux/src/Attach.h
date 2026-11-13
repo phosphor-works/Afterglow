@@ -130,6 +130,16 @@ public:
     void sendControl(std::string json);
     /// The answers of the window to those calls, as their JSON, oldest first.
     std::vector<std::string> takeControlReplies() { return std::exchange(m_controlReplies, {}); }
+    /// A part of a command connection that the window serves (an
+    /// Attach::EventType::Commands event).
+    void sendRelay(const Attach::RelayFrame& frame);
+    /// The events that wait for the window are under eventQueue(): the
+    /// daemon reads the next line of a command client. A client that sends
+    /// faster than the window takes waits in its socket.
+    bool relayRoom() const { return m_waitingBytes < m_eventQueue; }
+    /// The parts of command connections that the window sent, oldest first:
+    /// Bytes and End only.
+    std::vector<Attach::RelayFrame> takeRelayFrames() { return std::exchange(m_relayFrames, {}); }
 
 private:
     struct PaneLink
@@ -193,6 +203,7 @@ private:
     bool m_finishSent = false;
     bool m_layoutSent = false; ///< the first event, before any PaneOpened
     std::vector<std::string> m_controlReplies; ///< Attach::InputType::ControlReply, for the daemon
+    std::vector<Attach::RelayFrame> m_relayFrames; ///< from CommandsChannel, for the daemon
     bool m_outputEnded = false; ///< all went, and the stream's output ended: the window closes
 
     bool m_kill = false;

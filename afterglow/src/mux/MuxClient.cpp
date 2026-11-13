@@ -94,7 +94,15 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
     std::string streamError;
     client->m_input = client->m_stream->openWriter(Attach::ControlChannel, Attach::InputCodec, &streamError);
     if (client->m_input) client->m_actions = client->m_stream->openWriter(Attach::ActionChannel, Attach::ActionCodec, &streamError);
-    if (!client->m_input || !client->m_actions) return fail(QString::fromStdString(streamError));
+    PhosphorChannel::StreamWriter* commands =
+        client->m_actions ? client->m_stream->openWriter(Attach::CommandsChannel, Attach::CommandsCodec, &streamError) : nullptr;
+    if (!client->m_input || !client->m_actions || !commands) return fail(QString::fromStdString(streamError));
+    client->m_commands = std::make_unique<MuxCommands>(name, commands, [raw = client.get()] { raw->updateNotifiers(); });
+    // The programs of another host reach no command of this computer.
+    if (client->remote()) {
+        client->m_commands->setRefusal(
+            QStringLiteral("session '%1' runs on %2, and its panes reach no commands of the scripts of this window").arg(name, client->host()));
+    }
 
     // The daemon sends the layout first: the window lays out the session's
     // tabs and splits, and makes their panes.
@@ -124,6 +132,11 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
 }
 
 MuxClient::~MuxClient() = default;
+
+void MuxClient::setCommandsHost(MuxCommands::Host host)
+{
+    if (m_commands) m_commands->setHost(std::move(host));
+}
 
 bool MuxClient::hostEvent(Attach::Event& event, bool* lostLink)
 {
@@ -276,6 +289,9 @@ void MuxClient::release(std::uint32_t id, MuxRelease release)
     delete m_readNotifier;
     delete m_writeNotifier;
     m_readNotifier = m_writeNotifier = nullptr;
+    // Before the stream, which holds their channel: the clients' runs end,
+    // and the daemon tells them why.
+    if (m_commands) m_commands->closeAll();
     m_stream.reset();
     // Its stream's connection closed: the proxy ends by itself.
     m_proxy.reset();
@@ -443,6 +459,7 @@ void MuxClient::sendWaitingInput()
         m_waitingInput.pop_front();
     }
     if (m_waitingInput.empty()) m_waitingResizeOf.reset();
+    if (m_stream && m_commands) m_commands->writable();
     updateNotifiers();
 }
 
@@ -573,6 +590,9 @@ void MuxClient::handleFrames()
                     m_exits[event->pane] = event->status;
                     paneExited(event->pane);
                 }
+            } else if (event && event->type == Attach::EventType::Commands) {
+                auto relay = Attach::decodeRelay(event->payload);
+                bad = !relay || !m_commands || !m_commands->frame(std::move(*relay));
             } else if (event && event->type == Attach::EventType::Host) {
                 bad = !m_channels.contains(event->pane);
                 bool lostLink = false;
@@ -662,6 +682,9 @@ void MuxClient::end(Loss loss)
         m_ended = true;
         m_loss = loss;
     }
+    // The window serves the clients of the session no more: their runs end,
+    // and the daemon tells them why.
+    if (m_commands) m_commands->closeAll();
     // The calls that wait go, but those of a pane whose exit is half known:
     // its last frames still come, and a notification after the last output
     // of a session shows with them. No other pane takes calls any more.

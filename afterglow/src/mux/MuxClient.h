@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "MuxCommands.h"
 #include "MuxConnect.h"
 #include "MuxHost.h"
 #include "MuxLayout.h"
@@ -163,6 +164,10 @@ public:
     /// IDs. On the GUI thread, after the frames and events that came first.
     using ControlHandler = std::function<ControlAnswer(const QString& fn, const QJsonArray& args)>;
     void setControlHandler(ControlHandler handler) { m_controlHandler = std::move(handler); }
+    /// Serves the command clients of the session's panes (`aglow run`) with
+    /// @p host: the socket of the Afterglow whose commands answer them, and
+    /// the window's IDs of the panes. A session of another host gets none.
+    void setCommandsHost(MuxCommands::Host host);
 
     /// Reads the stream for up to @p waitMs, and handles what comes, until
     /// @p done: a pane that waits for the answer of a host call on the GUI
@@ -219,6 +224,8 @@ private:
     std::unique_ptr<PhosphorChannel::Stream> m_stream;
     PhosphorChannel::StreamWriter* m_input = nullptr;
     PhosphorChannel::StreamWriter* m_actions = nullptr; ///< Attach::ActionChannel: the kill
+    /// The command clients of the session's panes, on Attach::CommandsChannel.
+    std::unique_ptr<MuxCommands> m_commands;
     QSocketNotifier* m_readNotifier = nullptr;
     QSocketNotifier* m_writeNotifier = nullptr;
     std::vector<std::uint32_t> m_paneIds;

@@ -154,9 +154,10 @@ public:
     /// IpcConnection::MaxRequestBytes, its '\n' included, gets the error
     /// MALFORMED_REQUEST, and the connection closes.
     bool nextLine(std::string& line);
-    /// The next line, read as a request into @p request. A line that is not
-    /// one gets MALFORMED_REQUEST here.
-    Read nextRequest(IpcRequest& request);
+    /// The next line, read as a request into @p request, and as it came in
+    /// @p line when not null (a server that passes it on). A line that is
+    /// not one gets MALFORMED_REQUEST here.
+    Read nextRequest(IpcRequest& request, std::string* line = nullptr);
     /// A complete line waits: the next nextLine() returns it without a read.
     /// The caller then polls with a timeout of 0, as the socket may have
     /// nothing more to say.

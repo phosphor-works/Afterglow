@@ -64,7 +64,18 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 12) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 13) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 13 passes the command clients of a session pane (`aglow run`)
+    // to the window: the Commands event and the window's CommandsChannel,
+    // with their RelayFrame.
+    EXPECT_EQ(Attach::CommandsChannel, 2u);
+    EXPECT_EQ(std::string(Attach::CommandsCodec), "afterglow.mux.commands.v1");
+    Attach::Event commands;
+    commands.type = Attach::EventType::Commands;
+    commands.payload = Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, {}});
+    EXPECT_EQ(Attach::encode(commands), std::string("\x09\x00\x00\x00\x01\x03", 6));
+    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Bytes, "{}\n"}), std::string("\x02\x03{}\n", 5));
+    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::End, {}}), std::string("\x03\x03", 2));
     // Version 12 added callerEnvironment to the options of a session: the
     // environment of the caller (the proxy on another host).
     // Version 11 carries the stream of an attach on the connection of its
@@ -687,7 +698,7 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
 {
     const std::string_view bad[] = {
         {},                         // empty
-        std::string_view("\x09\x01\x00\x00", 4), // the type after Control
+        std::string_view("\x0a\x00\x00\x00", 4), // the type after Commands
         std::string_view("\x00\x01\x00\x00", 4), // type 0
         std::string_view("\x02\x01\x00\x00\x00", 5), // a byte after the event
         std::string_view("\x02\x81", 2),         // a varint that does not end
@@ -702,6 +713,50 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
         std::string_view("\x06\x01\x00\x04\x01", 5), // Host with status 3
     };
     for (const std::string_view frame : bad) EXPECT_FALSE(Attach::decodeEvent(frame)) << testing::PrintToString(std::string(frame));
+}
+
+TEST(MuxProtocol, RelayFramesRoundTrip)
+{
+    for (const std::uint64_t relay : {std::uint64_t(1), std::uint64_t(300), ~std::uint64_t(0)}) {
+        const auto open = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}}));
+        ASSERT_TRUE(open);
+        EXPECT_EQ(open->part, Attach::RelayPart::Open);
+        EXPECT_EQ(open->relay, relay);
+        // The bytes of a connection, whatever they look like.
+        const std::string bytes("\x00\xff\n\x80", 4);
+        const auto data = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Bytes, bytes}));
+        ASSERT_TRUE(data);
+        EXPECT_EQ(data->part, Attach::RelayPart::Bytes);
+        EXPECT_EQ(data->relay, relay);
+        EXPECT_TRUE(data->bytes == bytes);
+        const auto end = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::End, {}}));
+        ASSERT_TRUE(end);
+        EXPECT_EQ(end->part, Attach::RelayPart::End);
+        EXPECT_EQ(end->relay, relay);
+    }
+    // A Commands event carries the frame as its payload.
+    Attach::Event event;
+    event.type = Attach::EventType::Commands;
+    event.payload = Attach::encode(Attach::RelayFrame{2, Attach::RelayPart::Bytes, "line\n"});
+    const auto back = Attach::decodeEvent(Attach::encode(event));
+    ASSERT_TRUE(back);
+    EXPECT_EQ(back->type, Attach::EventType::Commands);
+    EXPECT_TRUE(back->payload == event.payload);
+}
+
+TEST(MuxProtocol, RelayFramesThatDoNotDecodeAreRefused)
+{
+    const std::string_view bad[] = {
+        {},                                   // empty
+        std::string_view("\x00\x01", 2),      // part 0
+        std::string_view("\x04\x01", 2),      // the part after End
+        std::string_view("\x01\x00\x01", 3),  // relay 0
+        std::string_view("\x01\x01\x00", 3),  // a byte after Open
+        std::string_view("\x02\x01", 2),      // Bytes without bytes
+        std::string_view("\x03\x01\x00", 3),  // a byte after End
+        std::string_view("\x03\x81", 2),      // a varint that does not end
+    };
+    for (const std::string_view frame : bad) EXPECT_FALSE(Attach::decodeRelay(frame)) << testing::PrintToString(std::string(frame));
 }
 
 TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)

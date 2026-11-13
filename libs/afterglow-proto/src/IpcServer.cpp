@@ -360,7 +360,7 @@ bool IpcServerConnection::nextLine(std::string& out)
     return false;
 }
 
-IpcServerConnection::Read IpcServerConnection::nextRequest(IpcRequest& request)
+IpcServerConnection::Read IpcServerConnection::nextRequest(IpcRequest& request, std::string* line)
 {
     std::string text;
     if (!nextLine(text)) return Read::None;
@@ -378,6 +378,7 @@ IpcServerConnection::Read IpcServerConnection::nextRequest(IpcRequest& request)
     }
     m_malformed = 0;
     request = std::move(*parsed);
+    if (line) *line = std::move(text);
     return Read::Request;
 }
 

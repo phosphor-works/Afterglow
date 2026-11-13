@@ -755,6 +755,13 @@ int watched(Client& client, const Signals& signals, const std::string& run, Json
             return exit && *exit >= 0 && *exit <= 255 ? int(*exit) : 1;
         }
         const std::string& type = frame["type"].toString();
+        // An error that answers no call: the server ends the connection, and
+        // says why (the mux daemon, when the window of a session closes).
+        if (type == "error" && !frame.find("id")) {
+            (void)IpcConnection::answer(std::move(frame), &error);
+            client.report(error);
+            return 1;
+        }
         const std::string& event = frame["signal"].toString();
         const Json::Array& eventArgs = frame["args"].toArray();
         if (type != "event" || frame["target"].toString() != client.target() || eventArgs.size() != 2 || eventArgs[0].toString() != run)
@@ -953,8 +960,14 @@ int start(Client& client, const std::vector<std::string>& args)
     if (running && client.remote() && !pane) request[5] = std::int64_t(0);
     // A run call that the router would refuse for the target that the
     // lookup found: else all of the input would go, for a run that cannot
-    // start.
-    if (running && !IpcConnection::fits(client.target(), "run", request)) return client.fail(requestTooLong(), UsageError);
+    // start. A mux daemon passes the run of a session pane to the window
+    // that shows the session, which names the pane by its own ID: the call
+    // must fit with the longest one.
+    if (running) {
+        Json::Array widest = request;
+        if (!client.remote() && widest[5].toInteger().value_or(0) != 0) widest[5] = std::int64_t(0xffffffff);
+        if (!IpcConnection::fits(client.target(), "run", widest)) return client.fail(requestTooLong(), UsageError);
+    }
     if (at == args.size()) {
         const std::string out = listing(*commands, {});
         if (!out.empty()) return client.print(out);

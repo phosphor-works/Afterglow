@@ -16,12 +16,14 @@
 #include "config/Settings.h"
 #include "control/CommandSocket.h"
 #include "control/Control.h"
+#include "mux/MuxCommands.h"
 #include "scripting/ScriptControl.h"
 #include "scripting/ScriptHost.h"
 #include "shell/Aglow.h"
 
 #include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Ipc.h>
+#include <AfterglowProto/IpcServer.h>
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Run.h>
 
@@ -2066,6 +2068,77 @@ TEST(AfterglowHelpTest, HelpAndVersionNeedNoDesktop)
         EXPECT_TRUE(r.out.contains(line)) << command.name << "\n" << qPrintable(r.out);
     }
 #endif
+}
+
+// The lines of a client in a session pane, as the window that shows the
+// session passes them to its Afterglow (MuxCommands::forWindow): the window
+// shows the daemon's pane 3 as its pane 41.
+std::optional<quint32> windowPane(std::uint32_t id)
+{
+    if (id == 3) return 41;
+    return std::nullopt;
+}
+
+std::string runLine(Json::Value pane, std::string padding = {})
+{
+    return Json::write(Json::Object{{"type", "call"},
+                                    {"id", 5},
+                                    {"target", "commands"},
+                                    {"fn", "run"},
+                                    {"args", Json::Array{"r", "tools", "greet", Json::Array{std::move(padding)}, "/", std::move(pane)}}});
+}
+
+TEST(MuxCommandsLine, ARunNamesTheWindowsIdOfItsPane)
+{
+    std::string error;
+    const auto line = MuxCommands::forWindow(runLine(3), windowPane, QStringLiteral("s"), &error);
+    ASSERT_TRUE(line) << error;
+    const auto request = Json::parse(*line);
+    ASSERT_TRUE(request);
+    EXPECT_EQ((*request)["id"].toInteger(), 5);
+    EXPECT_EQ((*request)["args"].toArray().at(5).toInteger(), 41);
+    EXPECT_EQ((*request)["args"].toArray().at(1).toString(), "tools");
+}
+
+TEST(MuxCommandsLine, OtherLinesOfTheCommandsTargetStayAsTheyCame)
+{
+    const std::string list = R"({"type":"call","id":1,"target":"commands","fn":"list","args":[]})";
+    const std::string ack = R"({"type":"call","id":2,"target":"commands","fn":"ack","args":["r",9]})";
+    const std::string subscribe = R"({"type":"subscribe","id":3,"target":"commands","signal":"stdout"})";
+    // Pane 0 is the focused pane, as for any client, and the Afterglow
+    // answers a pane ID that is not one, and a line that is not JSON.
+    for (const std::string& line : {list, ack, subscribe, runLine(0), runLine(-1), runLine("x"), std::string("garbage")}) {
+        std::string error;
+        EXPECT_EQ(MuxCommands::forWindow(line, windowPane, QStringLiteral("s"), &error), line);
+        EXPECT_TRUE(error.empty()) << error;
+    }
+}
+
+TEST(MuxCommandsLine, TheWindowRefusesWhatItCannotPassOn)
+{
+    const auto refused = [](const std::string& line) {
+        std::string error;
+        EXPECT_FALSE(MuxCommands::forWindow(line, windowPane, QStringLiteral("s"), &error)) << line;
+        return Json::parse(error).value_or(Json::Value());
+    };
+    // A pane of the session that the window does not show.
+    Json::Value reply = refused(runLine(4));
+    EXPECT_EQ(reply["type"].toString(), "error");
+    EXPECT_EQ(reply["id"].toInteger(), 5);
+    EXPECT_EQ(reply["code"].toString(), AfterglowProto::IpcErrorCode::CallFailed);
+    EXPECT_EQ(reply["message"].toString(), "no pane 4 of session 's' shows in its window");
+    // Another target, whose calls would act on every window.
+    reply = refused(R"({"type":"call","id":6,"target":"control","fn":"listPanes","args":[]})");
+    EXPECT_EQ(reply["id"].toInteger(), 6);
+    EXPECT_EQ(reply["code"].toString(), AfterglowProto::IpcErrorCode::NoSuchTarget);
+    // A run that the client measured with its pane ID, and that the
+    // window's longer ID makes too long.
+    const std::size_t base = runLine(3).size();
+    const std::string longest = runLine(3, std::string(AfterglowProto::IpcConnection::MaxRequestBytes - 1 - base, 'x'));
+    ASSERT_EQ(longest.size() + 1, AfterglowProto::IpcConnection::MaxRequestBytes);
+    reply = refused(longest);
+    EXPECT_EQ(reply["id"].toInteger(), 5);
+    EXPECT_NE(reply["message"].toString().find("over 1 MiB"), std::string::npos) << reply["message"].toString();
 }
 
 } // namespace

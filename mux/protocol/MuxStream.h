@@ -16,9 +16,11 @@
 // on channel 0 and the state of each pane on a channel of its own
 // (AfterglowVt::StateCodec), which PaneOpened names. Its first event is the
 // session's Layout, before any PaneOpened. The window writes its input and
-// its layout on channel 0, and its Kill and ClosePane on ActionChannel. The
-// ids of each direction are apart, so a pane's state channel and the action
-// channel can both be 1. Integers are LEB128 varints in their shortest form.
+// its layout on channel 0, its Kill and ClosePane on ActionChannel, and the
+// bytes of the command clients that the daemon passes it on
+// CommandsChannel. The ids of each direction are apart, so a pane's state
+// channel and the action channel can both be 1. Integers are LEB128 varints
+// in their shortest form.
 //
 // A pane's channel closes after its last frame, and then PaneClosed follows
 // on channel 0. The window learns that a pane's program exited once it has
@@ -33,6 +35,11 @@ inline constexpr std::uint32_t ControlChannel = 0;
 /// while input waits for a full PTY and the control channel gets no credit.
 inline constexpr std::uint32_t ActionChannel = 1;
 inline constexpr const char* ActionCodec = "afterglow.mux.actions.v1";
+/// The window's channel for the bytes of its command connections
+/// (RelayFrame). Not the input channel: input waits while a PTY is full,
+/// and the client of a run can be what keeps that PTY full.
+inline constexpr std::uint32_t CommandsChannel = 2;
+inline constexpr const char* CommandsCodec = "afterglow.mux.commands.v1";
 /// The ids of the state channels, which the window reads, are below this, so
 /// that a daemon that has run many panes still fits the window's stream: the
 /// daemon gives a pane the lowest channel id that is free.
@@ -56,6 +63,9 @@ enum class EventType : std::uint8_t {
     /// for the session): {"id", "fn", "args"} as JSON in `payload`, with the
     /// daemon's pane IDs. The window answers with ControlReply.
     Control = 8,
+    /// A part of a command connection that the window serves: an encoded
+    /// RelayFrame in `payload`.
+    Commands = 9,
 };
 
 /// The status of a Host event that holds a part of a call, not its end.
@@ -113,5 +123,28 @@ struct Input
 
 std::string encode(const Input& input);
 std::optional<Input> decodeInput(std::string_view frame);
+
+/// A client in a session pane that calls the commands of scripts (`aglow
+/// run`, target AfterglowProto::Run::Target) reaches the daemon, which runs
+/// no scripts. The daemon passes the connection to the window that shows the
+/// session: its request lines go to the window in Commands events, and the
+/// window serves them on a connection to its own Afterglow, whose bytes come
+/// back on CommandsChannel. Each connection is a relay, by a number that the
+/// daemon gives it.
+enum class RelayPart : std::uint8_t {
+    Open = 1, ///< the daemon: a new relay
+    Bytes = 2, ///< bytes of the connection: whole request lines from the daemon, any bytes from the window
+    End = 3, ///< the connection ended on the side that sends this
+};
+
+struct RelayFrame
+{
+    std::uint64_t relay = 0; ///< from 1
+    RelayPart part = RelayPart::Bytes;
+    std::string bytes; ///< Bytes: never empty
+};
+
+std::string encode(const RelayFrame& frame);
+std::optional<RelayFrame> decodeRelay(std::string_view frame);
 
 } // namespace AfterglowMux::Attach

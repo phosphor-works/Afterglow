@@ -23,7 +23,7 @@ std::string encode(const Event& event)
     if (event.type == EventType::Host) {
         varint(out, event.frames);
         out += event.payload;
-    } else if (event.type == EventType::Layout || event.type == EventType::Control) {
+    } else if (event.type == EventType::Layout || event.type == EventType::Control || event.type == EventType::Commands) {
         out += event.payload;
     }
     return out;
@@ -41,10 +41,12 @@ std::optional<Event> decodeEvent(std::string_view frame)
     if (type == std::uint8_t(EventType::Host) && r.ok()) {
         event.frames = r.varint(~std::uint64_t(0));
         if (r.ok()) event.payload = std::string(r.rest());
-    } else if ((type == std::uint8_t(EventType::Layout) || type == std::uint8_t(EventType::Control)) && r.ok()) {
+    } else if ((type == std::uint8_t(EventType::Layout) || type == std::uint8_t(EventType::Control)
+                || type == std::uint8_t(EventType::Commands))
+               && r.ok()) {
         event.payload = std::string(r.rest());
     }
-    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Control)) {
+    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Commands)) {
         return std::nullopt;
     }
     event.type = EventType(type);
@@ -111,6 +113,31 @@ std::optional<Input> decodeInput(std::string_view frame)
     input.size.cellHeight = std::min(value(), 65535);
     if (!r.ok() || !r.done()) return std::nullopt;
     return input;
+}
+
+std::string encode(const RelayFrame& frame)
+{
+    std::string out(1, char(frame.part));
+    varint(out, frame.relay);
+    if (frame.part == RelayPart::Bytes) out += frame.bytes;
+    return out;
+}
+
+std::optional<RelayFrame> decodeRelay(std::string_view bytes)
+{
+    Reader r(bytes);
+    RelayFrame frame;
+    const std::uint8_t part = r.byte();
+    frame.relay = r.varint(~std::uint64_t(0));
+    if (!r.ok() || frame.relay == 0) return std::nullopt;
+    if (part == std::uint8_t(RelayPart::Bytes)) {
+        frame.bytes = std::string(r.rest());
+        if (frame.bytes.empty()) return std::nullopt;
+    } else if ((part != std::uint8_t(RelayPart::Open) && part != std::uint8_t(RelayPart::End)) || !r.done()) {
+        return std::nullopt;
+    }
+    frame.part = RelayPart(part);
+    return frame;
 }
 
 } // namespace AfterglowMux::Attach

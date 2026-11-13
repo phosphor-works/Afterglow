@@ -860,6 +860,7 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.MuxOnCloseAppliesToAnOpenSessionPane` | A change of `Mux.onClose` reaches an open pane |
 | `NativeWindow.ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow` | A launch of a session that a window shows brings that window to the front and shows the session pane. A launch of an unknown session fails with the reason. |
 | `NativeWindow.ALargePasteReachesTheProgramOfASessionWhole` | Input larger than a frame goes in parts, in order |
+| `NativeWindow.AglowRunInASessionPaneRunsTheCommandsOfItsWindow` | `aglow run` in a session pane runs a command of the window's scripts on the window's pane, with its arguments, input, exit status and 6 MiB of output, also under `setsid -w`. A detach while a command runs ends it with the reason. A session that no window shows refuses the command. The test makes the socket of the test process listen in a directory of its own, and closes it at the end. |
 
 Not every test starts a daemon. A test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.
 The `Mux.*` tests and the native tests above do this with `mux/tests/TestDaemon.h`, and the `MuxCommandTest.*` tests in their `SetUp`.
