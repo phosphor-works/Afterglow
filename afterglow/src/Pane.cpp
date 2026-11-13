@@ -144,7 +144,10 @@ bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols,
 void Pane::setOptions(const AfterglowVt::TerminalOptions& options)
 {
     std::lock_guard lock(m_mutex);
-    m_terminal.setOptions(options);
+    // A session pane's colors, cursor and modes are the session's, which
+    // its frames carry once the daemon applied the options too.
+    if (m_session) m_terminal.setViewOptions(options);
+    else m_terminal.setOptions(options);
 }
 
 void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)

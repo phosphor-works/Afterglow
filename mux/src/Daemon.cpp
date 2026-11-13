@@ -294,12 +294,13 @@ Daemon::Exit Daemon::run()
             if (!connection->open()) forget(connection.get());
         }
         std::erase_if(m_connections, [](const auto& c) { return !c->open(); });
-        // A pane that closed ends its ssh sessions.
-        pruneSsh();
         // A call can start a pane, end one or move panes: the window that
         // shows the session hears of it now, not at the next wake, which a
         // program that prints nothing never gives.
         pumpAttachments();
+        // A pane that closed, or a window that turned remote commands off,
+        // ends ssh sessions.
+        pruneSsh();
         syncAttached();
         // Whether the poll saw it or not: a client that connected since the
         // poll waits in a backlog, and an idle daemon would close its

@@ -754,6 +754,14 @@ void MuxPane::change(std::function<void()> change)
     if (!m_changed.exchange(true)) m_wake();
 }
 
+void MuxPane::setOptions(const AfterglowVt::TerminalOptions& options)
+{
+    change([this, options] {
+        // setOptions replaces the colors that the program set: only for a change.
+        if (!(m_terminal.options() == options)) m_terminal.setOptions(options);
+    });
+}
+
 void MuxPane::reset()
 {
     change([this] { m_terminal.reset(); });

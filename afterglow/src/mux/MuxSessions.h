@@ -37,6 +37,9 @@ int currentUmask();
 std::vector<std::pair<std::string, std::string>> sessionEnvironment();
 /// What a session takes from @p settings whatever its host.
 void sessionValues(AfterglowMux::SessionOptions& session, const Settings& settings, const QStringList& command);
+/// The settings that a session follows, from @p settings: its terminal
+/// values and the Control settings of `afterglow ctl` and `afterglow ssh`.
+AfterglowMux::SessionSettings sessionSettings(const Settings& settings);
 /// The sessions of the daemon on @p connection, or nullopt with @p error.
 std::optional<std::vector<AfterglowMux::SessionInfo>> daemonSessions(AfterglowProto::IpcConnection& connection, std::string* error);
 

@@ -121,6 +121,10 @@ public:
     /// for the next window. A layout like the last one sent does not go
     /// again.
     void sendLayout(const AfterglowMux::Layout& layout);
+    /// The settings of the window, after its attach and after a change: the
+    /// session follows them (AfterglowMux::SessionSettings). Settings like
+    /// the last ones sent do not go again.
+    void sendSettings(const AfterglowMux::SessionSettings& settings);
     /// Moves the panes of @p layout to a new session of the daemon, which
     /// keeps that layout (Fn::BreakOut): the name of the new session, or
     /// nothing with @p error. The window then closes those panes with
@@ -237,6 +241,7 @@ private:
     AfterglowMux::Layout m_layout;
     bool m_layoutCame = false;
     std::string m_sentLayout; ///< the JSON of the last layout that went
+    std::string m_sentSettings; ///< the JSON of the last settings that went
     std::map<std::uint32_t, std::uint32_t> m_channels; ///< the state channel of each pane
     std::map<std::uint32_t, QPointer<Pane>> m_panes;
     /// The panes that the user closed while the session runs: their frames

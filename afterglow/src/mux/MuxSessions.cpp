@@ -95,9 +95,15 @@ void sessionValues(AfterglowMux::SessionOptions& session, const Settings& settin
     // No window measured the panes: the size of a new window, in cells,
     // which the schema keeps within what a terminal takes.
     session.size = {settings.window.initialColumns, settings.window.initialRows, 0, 0};
-    session.terminal = settings.terminal;
+    const AfterglowMux::SessionSettings followed = sessionSettings(settings);
+    session.terminal = followed.terminal;
     session.notificationCapabilities = NotificationCenter::capabilities();
-    session.control = {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString()};
+    session.control = followed.control;
+}
+
+AfterglowMux::SessionSettings sessionSettings(const Settings& settings)
+{
+    return {settings.terminal, {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString()}};
 }
 
 /// The sessions of the daemon on @p connection, or nullopt with @p error.

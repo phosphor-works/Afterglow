@@ -11493,6 +11493,43 @@ return {
     delete shown;
 }
 
+// A session follows the settings of the window that shows it: a change of
+// Colors.background reaches the daemon's terminal, which answers a query of
+// the background color (OSC 11) with it, and whose frames bring it to the
+// pane: the pane takes no colors of its own.
+TEST_F(NativeWindow, ASessionFollowsTheSettingsOfItsWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "set")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("set"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    // The query's answer comes as input: the script reads it up to the ST's
+    // backslash, and prints the color without its ESC. From a file: the
+    // shell's line editor would take the escape sequences of a typed one.
+    const QString script = directory.filePath(QStringLiteral("ask-background.sh"));
+    {
+        QFile file(script);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write(R"(stty -echo
+printf '\033]11;?\033\\'
+IFS= read -r -t 3 -d '\' a
+stty echo
+a=${a%?}
+echo "bg=${a#*rgb:}"
+)");
+    }
+    const std::string ask = "bash '" + script.toStdString() + "'\n";
+    setLive(shown, directory.filePath(QStringLiteral("afterglow.conf")), QStringLiteral("Colors"), QStringLiteral("background"),
+            QStringLiteral("#010203"));
+    if (HasFatalFailure()) return;
+    ASSERT_TRUE(pane->sendInput(ask));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("bg=0101/0202/0303")); }, 10000)) << screenOf(pane).toStdString();
+    EXPECT_TRUE(pane->withTerminal([](AfterglowVt::Terminal& t) { return t.defaultBackground() == AfterglowVt::Rgb{1, 2, 3}; }));
+    // Mux.onClose at its default: the session ends with its window.
+    delete shown;
+}
+
 // `afterglow ssh` gets a remote socket only for the pane that it runs in: the
 // window tells the processes of a pane by their terminal session, and
 // refuses a call of another process, or of none.
