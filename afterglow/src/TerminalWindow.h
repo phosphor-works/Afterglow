@@ -247,7 +247,10 @@ public:
     PaneOrigin paneOrigin(const Pane* pane) const { return m_paneOrigin.value(pane); }
 
     QJsonObject projectLayout() const;
-    QVariantMap restoreProject(const QJsonObject& document);
+    /// Lays out @p document in this empty window. With @p first, the window
+    /// of a new session that shows only @p first, its pane: that pane is
+    /// the project's first, and the session starts the others.
+    QVariantMap restoreProject(const QJsonObject& document, Pane* first = nullptr);
     QString projectDirectory() const { return m_projectDirectory; }
     void setProjectDirectory(const QString& path) { m_projectDirectory = path; }
     QString projectName() const { return m_projectName; }
@@ -256,6 +259,8 @@ public:
     QString detachTabTo(Pane* pane, TerminalWindow* destination);
     /// The window shows a mux session: all of its panes are the session's.
     bool showsSession() const { return m_session != nullptr; }
+    /// The name of the session that the window shows, empty for none.
+    QString sessionName() const;
     /// The session keeps running when the window closes, whatever Mux.onClose
     /// says: Afterglow quits.
     void keepSessionOnClose();
@@ -345,8 +350,8 @@ private:
     /// empty: a session's window keeps its panes, and takes no others.
     QString sessionMoveError(const TerminalWindow* destination) const;
     /// What closing session panes ends when the window closes with them:
-    /// the session with Mux.onClose kill, else nothing; nothing when
-    /// Afterglow quits (keepSessionOnClose).
+    /// the session with Mux.onClose kill, else nothing; nothing for the
+    /// session of a project, and when Afterglow quits (keepSessionOnClose).
     MuxRelease windowCloseRelease() const;
     /// The tabs and splits of the window, for the daemon of its session.
     AfterglowMux::Layout sessionLayout() const;

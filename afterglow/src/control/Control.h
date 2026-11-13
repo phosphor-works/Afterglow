@@ -97,7 +97,9 @@ public:
     QVariantList scriptDiagnostics() const { return m_scriptDiagnostics ? m_scriptDiagnostics() : QVariantList{}; }
     QStringList projectNames() const;
     QString saveProject(quint32 pane, const QString& name, bool overwrite, QVariantMap& result);
-    QString openProject(const QString& name, bool newInstance, QVariantMap& result);
+    /// Opens project @p name: into a mux session with @p mode "session", into
+    /// a window with "window", and as the project says with an empty mode.
+    QString openProject(const QString& name, bool newInstance, const QString& mode, QVariantMap& result);
     QString movePane(quint32 pane, quint32 target, const QString& placement, QVariantMap& result);
     QString detachTab(quint32 pane, QVariantMap& result);
     QString sendText(quint32 pane, const QString& text);
@@ -236,6 +238,11 @@ Q_SIGNALS:
     void tabSwitched(quint32 pane, quint32 fromTab, quint32 toTab, int direction);
 
 private:
+    /// The window that shows mux session @p session of this computer, or nullptr.
+    TerminalWindow* sessionWindow(const QString& session) const;
+    /// openProject() into a mux session named @p name: its window, or a new
+    /// window of the session that runs, or a new session.
+    QString openProjectSession(const QString& name, const QJsonObject& document, bool newInstance, QVariantMap& result);
     ProjectStore projects() const;
     void projectDialog(Pane* pane, bool save);
     void attachPane(Pane* pane);

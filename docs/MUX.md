@@ -144,7 +144,7 @@ The Reset and Clear actions of the window reset or clear the terminal of the ses
 | Event | Result |
 | --- | --- |
 | You close a pane or a tab, and the window has other panes | The programs of the pane or the tab end, as in a window outside a session. The session keeps running. |
-| You close the window, or its last pane or tab | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running, with its tabs and splits. |
+| You close the window, or its last pane or tab | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running, with its tabs and splits. The window of a [project's session](PROJECTS.md#projects-and-mux-sessions) always keeps it. |
 | You quit Afterglow | The session keeps running, whatever `Mux.onClose` says. At your last logout, the daemon can end too (see [start](#start)). |
 | `afterglow mux detach NAME` | The window closes. The session keeps running. In a session pane, `NAME` defaults to the session that holds that pane. |
 | Another window shows the session (`afterglow mux attach`) | The window closes, with a notice. The session keeps running. |
@@ -169,7 +169,8 @@ The shell of that pane reports its directory with OSC 7, OSC 9;9, OSC 633 or iTe
 When it reports no directory that exists on this computer, the window asks the daemon.
 The daemon gives the directory of the program in the foreground.
 When the daemon gives none, the new programs start in your home directory.
-A project saves each session pane as a shell in the directory of that pane. A project does not keep sessions.
+A [project](PROJECTS.md#projects-and-mux-sessions) can open into a session with the name of the project, and show it again after its window closed.
+The window of a project's session leaves the session running when it closes, whatever `Mux.onClose` says.
 
 A pane or a tab that you move to a new window leaves the session.
 This is true for a drag out of the window, `afterglow ctl move-pane --new-window` and `afterglow ctl detach-tab`.

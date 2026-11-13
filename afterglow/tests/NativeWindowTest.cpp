@@ -11493,6 +11493,98 @@ return {
     delete shown;
 }
 
+// A project that says "session": true opens into a mux session: its panes
+// are the session's, in the project's tabs and splits, with their commands.
+// Opening it again shows that session, also after its window closed, and
+// --no-session opens it into a window of its own.
+TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // The application finds the daemon by the environment: the test's own.
+    Afterglow::Test::Saved runtime("XDG_RUNTIME_DIR", QByteArray::fromStdString(daemon.runtime()));
+    Afterglow::Test::Saved state("XDG_STATE_HOME", QByteArray::fromStdString(daemon.stateHome()));
+    // Mux.onClose at its default: a project's session runs on all the same.
+    restartApplication(QStringLiteral("project-session.conf"), testSettings(), {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("projects"))));
+    QFile project(directory.filePath(QStringLiteral("projects/dev.json")));
+    ASSERT_TRUE(project.open(QIODevice::WriteOnly));
+    project.write(R"({"version": 1, "active_tab": "t1", "session": true, "tabs": [
+        {"id": "t1", "title": "work", "active_pane": "b", "tree": {"direction": "right", "ratio": 0.5,
+            "first": {"pane": {"id": "a", "cwd": "/tmp", "title": "", "command": []}},
+            "second": {"pane": {"id": "b", "cwd": "~", "title": "", "command": []}}}},
+        {"id": "t2", "title": "logs", "active_pane": "c", "tree": {"pane": {"id": "c", "cwd": "/", "title": "", "command": ["sleep", "300"]}}}]})");
+    project.close();
+    const auto windowOf = [](const QVariantMap& result) -> TerminalWindow* {
+        for (TerminalWindow* w : TerminalWindow::windows()) {
+            if (w->id() == result.value(QStringLiteral("window_id")).toUInt()) return w;
+        }
+        return nullptr;
+    };
+    const auto allSessionPanes = [](TerminalWindow* w) {
+        const auto panes = w->panes();
+        return !panes.isEmpty() && std::all_of(panes.begin(), panes.end(), [](Pane* p) { return p->isSessionPane(); });
+    };
+
+    QVariantMap result;
+    ASSERT_EQ(application->control().openProject(QStringLiteral("dev"), false, {}, result), QString());
+    EXPECT_EQ(result.value(QStringLiteral("session")).toString(), QStringLiteral("dev"));
+    EXPECT_FALSE(result.value(QStringLiteral("reused")).toBool());
+    QPointer<TerminalWindow> window = windowOf(result);
+    ASSERT_NE(window, nullptr);
+    ASSERT_TRUE(waitFor([&] { return window->panes().size() == 3; }, 5000)) << window->panes().size();
+    EXPECT_TRUE(allSessionPanes(window));
+    EXPECT_EQ(window->tabs().size(), 2);
+    EXPECT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "dev");
+        return info && info->panes == 3 && info->attached;
+    }, 5000));
+    // The window saves the project as it opened: into its session, with the
+    // command of its pane.
+    const QJsonObject saved = window->projectLayout();
+    EXPECT_TRUE(saved.value(QStringLiteral("session")).toBool());
+    const QJsonArray tabs = saved.value(QStringLiteral("tabs")).toArray();
+    ASSERT_EQ(tabs.size(), 2);
+    EXPECT_EQ(tabs[0].toObject().value(QStringLiteral("tree")).toObject().value(QStringLiteral("direction")).toString(), QStringLiteral("right"));
+    EXPECT_EQ(tabs[1].toObject().value(QStringLiteral("tree")).toObject().value(QStringLiteral("pane")).toObject().value(QStringLiteral("command")),
+              QJsonValue(QJsonArray{QStringLiteral("sleep"), QStringLiteral("300")}));
+    EXPECT_EQ(tabs[1].toObject().value(QStringLiteral("title")).toString(), QStringLiteral("logs"));
+
+    // Again: the window that shows it.
+    QVariantMap again;
+    ASSERT_EQ(application->control().openProject(QStringLiteral("dev"), false, {}, again), QString());
+    EXPECT_TRUE(again.value(QStringLiteral("reused")).toBool());
+    EXPECT_EQ(again.value(QStringLiteral("window_id")), result.value(QStringLiteral("window_id")));
+
+    // The window closes, and the session runs on, whatever Mux.onClose says:
+    // the project shows it again.
+    delete window;
+    ASSERT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "dev");
+        return info && !info->attached && info->panes == 3;
+    }, 5000));
+    QVariantMap back;
+    ASSERT_EQ(application->control().openProject(QStringLiteral("dev"), false, {}, back), QString());
+    EXPECT_TRUE(back.value(QStringLiteral("reused")).toBool());
+    QPointer<TerminalWindow> reattached = windowOf(back);
+    ASSERT_NE(reattached, nullptr);
+    ASSERT_TRUE(waitFor([&] { return reattached->panes().size() == 3; }, 5000)) << reattached->panes().size();
+    EXPECT_TRUE(allSessionPanes(reattached));
+    EXPECT_EQ(reattached->tabs().size(), 2);
+    EXPECT_EQ(reattached->projectName(), QStringLiteral("dev"));
+
+    // --no-session: a window of its own, outside any session.
+    QVariantMap local;
+    ASSERT_EQ(application->control().openProject(QStringLiteral("dev"), true, QStringLiteral("window"), local), QString());
+    QPointer<TerminalWindow> plain = windowOf(local);
+    ASSERT_NE(plain, nullptr);
+    EXPECT_EQ(plain->panes().size(), 3);
+    for (Pane* pane : plain->panes()) EXPECT_FALSE(pane->isSessionPane());
+    delete plain;
+    delete reattached;
+    EXPECT_TRUE(daemon.call(AfterglowMux::Fn::KillSession, AfterglowProto::Json::Array{"dev"})) << daemon.lastError();
+}
+
 // `afterglow ctl --session` while a window shows the session: the window
 // places the pane that the daemon starts, and answers what only it can do.
 TEST_F(NativeWindow, CtlForASessionReachesItsWindow) {

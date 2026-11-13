@@ -896,6 +896,8 @@ void TerminalWindow::keepSessionOnClose()
 MuxRelease TerminalWindow::windowCloseRelease() const
 {
     if (m_windowRelease) return *m_windowRelease;
+    // The session of a project keeps running for its next open.
+    if (!m_projectName.isEmpty()) return MuxRelease::Nothing;
     return m_settings.settings().mux.onClose == MuxSettings::Close::Kill ? MuxRelease::Session : MuxRelease::Nothing;
 }
 
@@ -990,6 +992,11 @@ QString TerminalWindow::breakOutOfSession(Pane* pane, bool wholeTab, QString* se
     m_breakingOut = false;
     *session = *name;
     return {};
+}
+
+QString TerminalWindow::sessionName() const
+{
+    return m_session ? m_session->session() : QString();
 }
 
 void TerminalWindow::scheduleSessionLayout()

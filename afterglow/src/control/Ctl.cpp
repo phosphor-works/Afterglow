@@ -80,7 +80,9 @@ a pane of a session, they act on that session.
   open-directory PATH [--layout NAME]   open a directory, optionally with a saved layout
   projects                              list saved projects
   save-project NAME [--overwrite]       save the pane's window layout
-  open-project NAME [--new]             switch to a project or launch its layout
+  open-project NAME [--new] [--session | --no-session]
+                                        switch to a project or launch its layout, into a
+                                        mux session or a window as the project says
   action NAME                           run a keybind action (split_right, new_tab...)
                                         or start a script command (script:ID.COMMAND)
   overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n|--no-stdin]
@@ -745,9 +747,13 @@ int runCtl(int argc, char** argv)
     }
     if (command == QLatin1String("open-project")) {
         const bool fresh = takeFlag(QStringLiteral("--new"));
+        const bool session = takeFlag(QStringLiteral("--session"));
+        const bool window = takeFlag(QStringLiteral("--no-session"));
+        if (session && window) return usage(QStringLiteral("open-project takes --session or --no-session, not both"));
         if (const auto error = extra(1)) return usage(*error);
-        if (args.size() != 1) return usage(QStringLiteral("open-project takes NAME [--new]"));
-        return printObject(QStringLiteral("openProject"), {args.first(), fresh});
+        if (args.size() != 1) return usage(QStringLiteral("open-project takes NAME [--new] [--session | --no-session]"));
+        const QString mode = session ? QStringLiteral("session") : window ? QStringLiteral("window") : QString();
+        return printObject(QStringLiteral("openProject"), {args.first(), fresh, mode});
     }
     if (command == QLatin1String("new-window")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());

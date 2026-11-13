@@ -672,7 +672,7 @@ PhosphorConfig::Schema buildSchema()
                                "keeps running with its tabs, and afterglow mux attach shows it again. Closing another tab "
                                "or pane of the window ends its programs. The session also keeps running after "
                                "afterglow mux detach, a takeover by another window, a quit of Afterglow, a crash and a lost "
-                               "connection.")),
+                               "connection. The window of a project that opens into a session always keeps its session.")),
         intKey(QStringLiteral("eventQueue"), int(d.mux.eventQueue >> 20), int(AfterglowMux::MinEventQueue >> 20),
                int(AfterglowMux::MaxEventQueue >> 20),
                QStringLiteral("Most mebibytes of requests, such as bells, notifications and clipboard requests, that "

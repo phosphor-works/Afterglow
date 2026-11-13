@@ -79,7 +79,8 @@ MuxClient::ControlAnswer answerSessionCall(Control& control, const Settings& set
     if (fn == QLatin1String("projects")) return {QJsonArray::fromStringList(control.projectNames()), {}};
     if (fn == QLatin1String("openProject")) {
         QVariantMap result;
-        if (const QString error = control.openProject(args.at(0).toString(), args.at(1).toBool(), result); !error.isEmpty()) return failed(error);
+        if (const QString error = control.openProject(args.at(0).toString(), args.at(1).toBool(), args.at(2).toString(), result); !error.isEmpty())
+            return failed(error);
         return {QJsonObject::fromVariantMap(result), {}};
     }
     if (fn == QLatin1String("scriptDiagnostics")) return {QJsonArray::fromVariantList(control.scriptDiagnostics()), {}};

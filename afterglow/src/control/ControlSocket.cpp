@@ -305,10 +305,10 @@ QVariantMap ControlApi::saveProject(double pane, const QString& name, bool overw
     return result;
 }
 
-QVariantMap ControlApi::openProject(const QString& name, bool newInstance)
+QVariantMap ControlApi::openProject(const QString& name, bool newInstance, const QString& mode)
 {
     QVariantMap result;
-    failed(m_control.openProject(name, newInstance, result));
+    failed(m_control.openProject(name, newInstance, mode, result));
     return result;
 }
 
