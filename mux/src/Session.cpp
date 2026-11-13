@@ -134,6 +134,10 @@ void Session::kill()
 void Session::applySettings(const SessionSettings& settings)
 {
     m_options.control = settings.control;
+    for (const auto& [name, value] : settings.environment) {
+        std::erase_if(m_options.environment, [&name](const auto& variable) { return variable.first == name; });
+        if (value) m_options.environment.emplace_back(name, *value);
+    }
     if (m_options.terminal == settings.terminal) return;
     m_options.terminal = settings.terminal;
     for (const auto& pane : m_panes) pane->setOptions(settings.terminal);

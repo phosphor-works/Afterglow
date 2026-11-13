@@ -64,7 +64,25 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 18) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 19) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 19 added the variables of Mux.updateEnvironment to the
+    // settings of a window, a value or null for each.
+    {
+        SessionSettings variables;
+        variables.environment = {{"SSH_AUTH_SOCK", "/run/a"}, {"DISPLAY", std::nullopt}};
+        EXPECT_EQ(Json::write(toJson(variables)["environment"]), R"([["SSH_AUTH_SOCK","/run/a"],["DISPLAY",null]])");
+        std::string variablesError;
+        const auto variablesBack = sessionSettings(Json::parse(Json::write(toJson(variables))).value(), &variablesError);
+        ASSERT_TRUE(variablesBack) << variablesError;
+        EXPECT_TRUE(*variablesBack == variables);
+        for (const char* bad : {R"([["A=B","x"]])", R"([["A",1]])", R"([["A"]])", R"(["A"])", R"([["","x"]])"}) {
+            Json::Object object = toJson(variables).toObject();
+            for (auto& [key, value] : object) {
+                if (key == "environment") value = Json::parse(bad).value();
+            }
+            EXPECT_FALSE(sessionSettings(Json::Value(object), &variablesError)) << bad;
+        }
+    }
     // Version 18 added the first pane's ID to the answer of newSession
     // (DaemonTest).
     // Version 17 added the window's settings to its input, with their keys:
@@ -72,9 +90,9 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     SessionSettings followed;
     followed.control.remoteCommandsOff = "off";
     followed.terminal.defaultBackground = {1, 2, 3};
-    EXPECT_EQ(keys(toJson(followed)), (std::vector<std::string>{"terminal", "control"}));
+    EXPECT_EQ(keys(toJson(followed)), (std::vector<std::string>{"terminal", "control", "environment"}));
     EXPECT_EQ(keys(toJson(followed)["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff"}));
-    [[maybe_unused]] auto& [followedTerminal, followedControl] = followed;
+    [[maybe_unused]] auto& [followedTerminal, followedControl, followedEnvironment] = followed;
     std::string settingsError;
     const auto settingsBack = sessionSettings(Json::parse(Json::write(toJson(followed))).value(), &settingsError);
     ASSERT_TRUE(settingsBack) << settingsError;

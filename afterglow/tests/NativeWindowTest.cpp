@@ -11530,6 +11530,38 @@ echo "bg=${a#*rgb:}"
     delete shown;
 }
 
+// A session of this computer takes the variables of Mux.updateEnvironment
+// from the Afterglow that shows it: a pane that starts after the window
+// attached has Afterglow's value, which the session did not have.
+TEST_F(NativeWindow, ASessionTakesTheVariablesOfTheAfterglowThatShowsIt) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "env")) << daemon.lastError();
+    const Afterglow::Test::Saved updated("TEST_UPDATED", "from-afterglow");
+    restartApplication(QStringLiteral("update-environment.conf"),
+                       testSettings({{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("updateEnvironment"), QJsonArray{QStringLiteral("TEST_UPDATED")}}}}}),
+                       {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("env"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    // The first pane started before: it keeps its environment.
+    ASSERT_TRUE(pane->sendInput("echo \"[${TEST_UPDATED-unset}]\"\n"));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("\n[unset]")); }, 5000)) << screenOf(pane).toStdString();
+    quint32 created = 0;
+    ASSERT_EQ(application->control().split(pane->id(), QStringLiteral("right"),
+                                           {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("echo \"[${TEST_UPDATED-unset}]\"; exec cat")},
+                                           {}, created),
+              QString());
+    Pane* later = nullptr;
+    for (Pane* p : shown->panes()) {
+        if (p->id() == created) later = p;
+    }
+    ASSERT_NE(later, nullptr);
+    EXPECT_TRUE(waitFor([&] { return screenOf(later).contains(QStringLiteral("[from-afterglow]")); }, 5000)) << screenOf(later).toStdString();
+    delete shown;
+}
+
 // `afterglow ssh` gets a remote socket only for the pane that it runs in: the
 // window tells the processes of a pane by their terminal session, and
 // refuses a call of another process, or of none.

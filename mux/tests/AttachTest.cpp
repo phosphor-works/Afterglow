@@ -2117,7 +2117,13 @@ TEST(MuxControl, TheSessionFollowsTheSettingsOfItsWindow)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    ASSERT_TRUE(readableShell(daemon, "s", false)) << daemon.lastError();
+    // A shell whose session has GONE, which a window's settings remove.
+    SessionOptions options = daemon.options({"/bin/sh"}, "s");
+    options.launch.environment.emplace_back("PS1", "$ ");
+    options.launch.environment.emplace_back("ENV", "/dev/null");
+    options.control.allowReadText = false;
+    options.environment.emplace_back("GONE", "old");
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
     ControlClient ctl(daemon);
     ASSERT_EQ(ctl.select("s"), "");
     const auto listed = ctl.call("listPanes", {});
@@ -2126,6 +2132,8 @@ TEST(MuxControl, TheSessionFollowsTheSettingsOfItsWindow)
     EXPECT_FALSE(ctl.call("getText", Json::Array{std::int64_t(pane), "screen"}));
     SessionSettings settings{daemon.options({"/bin/sh"}, "x").terminal, {true, true, ""}};
     settings.terminal.defaultBackground = {1, 2, 3};
+    // The panes that start later get the window's variables: a value, or none.
+    settings.environment = {{"UPDATED", "new"}, {"GONE", std::nullopt}};
     {
         Window w;
         ASSERT_EQ(w.attach(daemon, "s"), "");
@@ -2137,6 +2145,14 @@ TEST(MuxControl, TheSessionFollowsTheSettingsOfItsWindow)
     }
     // No window shows it: the session keeps them, and its next window shows them.
     EXPECT_TRUE(ctl.call("getText", Json::Array{std::int64_t(pane), "screen"})) << ctl.error.message;
+    const auto split = ctl.call("split", Json::Array{std::int64_t(pane), "right", Json::Array{}});
+    ASSERT_TRUE(split) << ctl.error.message;
+    const std::int64_t later = split->toInteger().value_or(0);
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{later, "echo \"[$UPDATED][${GONE-unset}]\"\n"})) << ctl.error.message;
+    EXPECT_TRUE(waitFor([&] {
+        const auto text = ctl.call("getText", Json::Array{later, "screen"});
+        return text && contains(text->toString(), "\n[new][unset]");
+    })) << ctl.error.message;
     Window next;
     ASSERT_EQ(next.attach(daemon, "s"), "");
     ASSERT_TRUE(next.until([&] { return next.pane != 0; }));

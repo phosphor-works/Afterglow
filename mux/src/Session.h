@@ -75,8 +75,9 @@ public:
     /// does not name yet is a tab of its own (Layout::reconcile).
     void setLayout(Layout layout);
     /// The settings of the window that shows the session: its panes, and
-    /// those that start later, take the terminal values, and the calls of
-    /// `afterglow ctl` and `afterglow ssh` follow the control values.
+    /// those that start later, take the terminal values, the calls of
+    /// `afterglow ctl` and `afterglow ssh` follow the control values, and
+    /// the panes that start later get the variables.
     void applySettings(const SessionSettings& settings);
 
     /// What listSessions says of the session to @p caller, the process of

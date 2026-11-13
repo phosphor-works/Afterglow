@@ -402,7 +402,9 @@ Json::Value toJson(const SessionOptions& o)
 
 Json::Value toJson(const SessionSettings& s)
 {
-    return Json::Object{{"terminal", toJson(s.terminal)}, {"control", toJson(s.control)}};
+    Json::Array environment;
+    for (const auto& [name, value] : s.environment) environment.push_back(Json::Array{name, value ? Json::Value(*value) : Json::Value(nullptr)});
+    return Json::Object{{"terminal", toJson(s.terminal)}, {"control", toJson(s.control)}, {"environment", std::move(environment)}};
 }
 
 std::optional<SessionSettings> sessionSettings(const Json::Value& value, std::string* error)
@@ -417,6 +419,20 @@ std::optional<SessionSettings> sessionSettings(const Json::Value& value, std::st
     else r.fail("terminal", "is missing");
     if (const Json::Value* control = r.lookup("control")) readControl(r, *control, s.control);
     else r.fail("control", "is missing");
+    // [name, value or null] pairs.
+    if (const Json::Value* environment = r.get("environment", Json::Value::Type::Array)) {
+        if (environment->toArray().size() > MaxUpdatedVariables) r.fail("environment", "has more than " + std::to_string(MaxUpdatedVariables) + " items");
+        for (const Json::Value& entry : environment->toArray()) {
+            const bool pair = entry.isArray() && entry.toArray().size() == 2 && entry.toArray()[0].isString()
+                && (entry.toArray()[1].isString() || entry.toArray()[1].isNull());
+            if (!pair || !validVariableName(entry.toArray()[0].toString())) {
+                r.fail("environment", "has an item that is not a [name, value or null] pair");
+                break;
+            }
+            const Json::Value& value = entry.toArray()[1];
+            s.environment.emplace_back(entry.toArray()[0].toString(), value.isNull() ? std::nullopt : std::optional(value.toString()));
+        }
+    }
     r.noOtherKeys();
     if (r.failed()) return std::nullopt;
     return s;

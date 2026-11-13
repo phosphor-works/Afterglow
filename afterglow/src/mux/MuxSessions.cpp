@@ -125,9 +125,19 @@ void sessionValues(AfterglowMux::SessionOptions& session, const Settings& settin
     session.control = followed.control;
 }
 
-AfterglowMux::SessionSettings sessionSettings(const Settings& settings)
+AfterglowMux::SessionSettings sessionSettings(const Settings& settings, bool environment)
 {
-    return {settings.terminal, {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString()}};
+    AfterglowMux::SessionSettings out{settings.terminal,
+                                      {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString()}};
+    if (!environment) return out;
+    for (const QString& name : settings.mux.updateEnvironment) {
+        const QByteArray encoded = name.toLocal8Bit();
+        // A value that is not UTF-8 becomes U+FFFD in JSON, as the session's
+        // environment does (sessionEnvironment).
+        if (qEnvironmentVariableIsSet(encoded.constData())) out.environment.emplace_back(name.toStdString(), qgetenv(encoded.constData()).toStdString());
+        else out.environment.emplace_back(name.toStdString(), std::nullopt);
+    }
+    return out;
 }
 
 /// The sessions of the daemon on @p connection, or nullopt with @p error.
