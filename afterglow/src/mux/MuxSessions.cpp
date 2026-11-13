@@ -6,6 +6,7 @@
 #include "PaneLaunch.h"
 #include "app/NotificationCenter.h"
 #include "config/Settings.h"
+#include "config/Theme.h"
 #include "control/RemoteSockets.h"
 #include "shell/Aglow.h"
 
@@ -13,6 +14,10 @@
 #include "MuxStart.h"
 
 #include <AfterglowProto/Socket.h>
+#include <AfterglowRender/FontSet.h>
+
+#include <QGuiApplication>
+#include <QScreen>
 #include <AfterglowProto/Text.h>
 
 #include <algorithm>
@@ -85,6 +90,25 @@ std::vector<std::pair<std::string, std::string>> sessionEnvironment()
     return env;
 }
 
+AfterglowMux::PaneSize initialPaneSize(const Settings& settings)
+{
+    AfterglowMux::PaneSize size{settings.window.initialColumns, settings.window.initialRows, 0, 0};
+    // Without a cell size, the daemon places no Sixel or iTerm2 image, and a
+    // Kitty image moves no cursor: the font's, as a window measures it.
+    double ratio = 1.0;
+    if (hasGuiApplication()) {
+        if (const QScreen* screen = QGuiApplication::primaryScreen()) ratio = screen->devicePixelRatio();
+    }
+    try {
+        const AfterglowRender::FontSet fonts(settings.font, ratio);
+        size.cellWidth = fonts.metrics().cellWidth;
+        size.cellHeight = fonts.metrics().cellHeight;
+    } catch (const std::exception&) {
+        // No font: no cell size, as before.
+    }
+    return size;
+}
+
 /// What a session takes from @p settings whatever its host: the program's
 /// name for `afterglow mux kill`, the size, the terminal and the Control
 /// settings.
@@ -92,9 +116,9 @@ void sessionValues(AfterglowMux::SessionOptions& session, const Settings& settin
 {
     session.launch.launchedProgram = launchedProgramName(command).toStdString();
     session.launch.command = sessionCommand(command);
-    // No window measured the panes: the size of a new window, in cells,
-    // which the schema keeps within what a terminal takes.
-    session.size = {settings.window.initialColumns, settings.window.initialRows, 0, 0};
+    // No window measured the panes: the size of a new window, which the
+    // schema keeps within what a terminal takes.
+    session.size = initialPaneSize(settings);
     const AfterglowMux::SessionSettings followed = sessionSettings(settings);
     session.terminal = followed.terminal;
     session.notificationCapabilities = NotificationCenter::capabilities();

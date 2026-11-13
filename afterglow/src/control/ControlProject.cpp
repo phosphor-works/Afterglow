@@ -138,7 +138,7 @@ void Control::openProjectSession(const QString& name, const QJsonObject& documen
     }
     // No window measured the panes: the size of a new window, which then
     // resizes them.
-    const AfterglowMux::PaneSize size{settings.window.initialColumns, settings.window.initialRows, 0, 0};
+    const AfterglowMux::PaneSize size = initialPaneSize(settings);
     const std::size_t eventQueue = settings.mux.eventQueue;
     const std::size_t history = settings.terminal.maxScrollback;
     // What the calls read from the process: the GUI thread changes its

@@ -24,6 +24,8 @@
 #include <charconv>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -737,4 +739,38 @@ TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
         std::string error;
         EXPECT_TRUE(AfterglowMux::sessionOptions(AfterglowMux::toJson(options), &error)) << json << ": " << error;
     }
+}
+
+// A session that no window shows has the cell size of the font of the
+// settings: its terminal answers a program's query of it (CSI 16 t), and
+// places Sixel and iTerm2 images, which it drops without one.
+TEST_F(MuxCommandTest, ADetachedSessionHasTheCellSizeOfTheFont)
+{
+    if (std::system("command -v python3 >/dev/null 2>&1") != 0) GTEST_SKIP() << "python3 is not installed";
+    const std::string out = m_dir + "/cell";
+    const std::string script = R"(import os, sys, time, tty
+tty.setraw(0)
+os.write(1, b'\x1b[16t')
+r = b''
+while not r.endswith(b't'):
+    r += os.read(0, 1)
+with open(sys.argv[1] + '.part', 'wb') as f:
+    f.write(r)
+os.rename(sys.argv[1] + '.part', sys.argv[1])
+while True:
+    try:
+        os.kill(int(sys.argv[2]), 0)
+    except OSError:
+        break
+    time.sleep(0.2)
+)";
+    ASSERT_EQ(mux({"new", "--detach", "--", "python3", "-I", "-c", script, out, std::to_string(::getpid())}).status, 0);
+    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+    // ESC [ 6 ; height ; width t
+    const std::string reply = readFile(out);
+    int height = 0;
+    int width = 0;
+    ASSERT_EQ(std::sscanf(reply.c_str(), "\x1b[6;%d;%dt", &height, &width), 2) << reply;
+    EXPECT_GT(width, 0);
+    EXPECT_GT(height, width);
 }

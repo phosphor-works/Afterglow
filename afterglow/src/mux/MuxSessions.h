@@ -37,6 +37,12 @@ AfterglowMux::Reached connectOrStartDaemon(const AfterglowProto::MuxSockets& soc
 int currentUmask();
 /// The environment of a session: this process's.
 std::vector<std::pair<std::string, std::string>> sessionEnvironment();
+/// The size of a new pane of a session before a window measures it:
+/// Window.initialColumns by Window.initialRows cells of the font of
+/// @p settings (Font). The cells are in device pixels: at the scale of the
+/// primary screen in Afterglow, and of 1 in a command without one. A
+/// window then measures its own. 0 by 0 pixels when the font does not load.
+AfterglowMux::PaneSize initialPaneSize(const Settings& settings);
 /// What a session takes from @p settings whatever its host.
 void sessionValues(AfterglowMux::SessionOptions& session, const Settings& settings, const QStringList& command);
 /// The settings that a session follows, from @p settings: its terminal
