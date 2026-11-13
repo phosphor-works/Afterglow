@@ -6,6 +6,7 @@
 #include "PaneLaunch.h"
 #include "app/NotificationCenter.h"
 #include "config/Settings.h"
+#include "control/RemoteSockets.h"
 #include "shell/Aglow.h"
 #include "mux/MuxRoute.h"
 #include "shell/Ssh.h"
@@ -349,7 +350,7 @@ int newSession(int argc, char** argv, const std::string& command = "new")
     session.size = {settings.window.initialColumns, settings.window.initialRows, 0, 0};
     session.terminal = settings.terminal;
     session.notificationCapabilities = NotificationCenter::capabilities();
-    session.control = {settings.control.enabled, settings.control.allowReadText};
+    session.control = {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString()};
 
     Reached reached = o.host ? AfterglowMux::reach(*route, true, &error) : connectOrStart(route->sockets, &error);
     if (!reached.connection) return fail(command, error.empty() ? std::string("aglow-mux did not start") : error);

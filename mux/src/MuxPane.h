@@ -125,6 +125,14 @@ public:
     /// `afterglow mux kill` typed at its prompt): the caller is no job to ask
     /// about. 0 for no caller.
     std::string foregroundJob(pid_t caller) const;
+    /// The answer to the query of `aglow run` for the socket of the ssh
+    /// session that runs in the pane (OSC 24569): the daemon keeps that
+    /// socket. Safe from any thread: the reader thread reads it.
+    void setRemoteSocket(AfterglowProto::Remote::Answer answer)
+    {
+        std::lock_guard lock(m_remoteMutex);
+        m_remoteSocket = std::move(answer);
+    }
     /// Whether the pane's program, which runs while the pane does, leads
     /// terminal session @p session: the processes of that session run in
     /// this pane.
@@ -192,10 +200,14 @@ public:
                    std::vector<std::uint8_t>& rgba) override;
     bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
                      std::vector<std::uint8_t>& rgba) override;
-    /// A session pane forwards no socket of an ssh session (afterglow ssh
-    /// runs in windows only): `aglow run` hears that it is off, not that the
-    /// terminal does not know the query.
-    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override { return AfterglowProto::Remote::Answer{}; }
+    /// The answer that the daemon gave the pane for its ssh sessions
+    /// (setRemoteSocket): without one, `aglow run` hears that it is off, not
+    /// that the terminal does not know the query.
+    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override
+    {
+        std::lock_guard lock(m_remoteMutex);
+        return m_remoteSocket;
+    }
 
     // IPtyListener
     void ptyData(std::string_view bytes) override;
@@ -283,6 +295,10 @@ private:
     /// Guards what follows: the reader thread queues host calls, and the
     /// daemon's thread takes them.
     mutable std::mutex m_hostMutex;
+    /// Guards m_remoteSocket alone: the reader thread asks for it while it
+    /// holds m_mutex.
+    std::mutex m_remoteMutex;
+    AfterglowProto::Remote::Answer m_remoteSocket;
     std::uint64_t m_window = 0;
     std::size_t m_hostLimit = 0;
     std::deque<WaitingCall> m_hostCalls;

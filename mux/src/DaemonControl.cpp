@@ -116,12 +116,14 @@ std::string Daemon::select(const IpcRequest& request, IpcServerConnection& conne
     return ipcReply(request.id.value_or(0), Json::Object{{"name", name}});
 }
 
-std::string Daemon::control(const IpcRequest& request, IpcServerConnection& connection, pid_t)
+std::string Daemon::control(const IpcRequest& request, IpcServerConnection& connection, pid_t caller)
 {
     const std::string& fn = request.fn;
-    // `afterglow ssh` asks for remote commands, which a session pane has not.
+    // `afterglow ssh` in a session pane: the daemon keeps the sockets of its
+    // remote commands, and their pane names its own session.
     if (among(fn, {"remoteCommandsEnabled", "openRemoteSocket", "remoteSocketForwarded", "remoteSocketFailed"})) {
-        return failed(request, "a session pane takes no remote commands: the mux daemon runs no scripts");
+        if (request.type != "call") return ipcError(request.id, IpcErrorCode::MalformedRequest, "the mux daemon answers only calls");
+        return remoteCall(request, caller);
     }
     const auto selected = m_selected.find(&connection);
     if (selected == m_selected.end()) {

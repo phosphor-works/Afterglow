@@ -8,6 +8,7 @@
 #include "Session.h"
 
 #include <AfterglowProto/IpcServer.h>
+#include <AfterglowProto/RemoteOsc.h>
 #include <AfterglowProto/Socket.h>
 
 #include <cstdint>
@@ -83,6 +84,72 @@ private:
     /// @p caller is the process of the client, 0 when unknown. Empty when
     /// the answer comes later: a window gives it (answerForwarded()).
     std::string answer(const AfterglowProto::IpcRequest& request, pid_t caller, AfterglowProto::IpcServerConnection& connection);
+
+    // The sockets of `afterglow ssh` in session panes, in DaemonRemote.cpp.
+    /// One ssh session's socket for remote commands, and the pane's answer
+    /// to the query of `aglow run`.
+    struct SshSession
+    {
+        std::string token;
+        std::uint32_t pane = 0;
+        std::uint64_t order = 0; ///< orders the sessions of a pane
+        int pidfd = -1; ///< of `afterglow ssh`: the session ends with it
+        std::unique_ptr<AfterglowProto::IpcListener> listener; ///< none for an answer without a socket, or once closed
+        std::string socket; ///< the local socket, the target of `ssh -O forward -R`
+        std::string path; ///< the socket's path on the remote host
+        std::vector<std::string> ssh; ///< the options of `ssh -O cancel`
+        std::string destination;
+        std::string host; ///< ev.remote.host
+        AfterglowProto::Remote::Answer answer;
+        bool answering = false; ///< the pane gives the answer: an error at once, a path once the forward came
+        bool full = false; ///< it refused a client for MaxSshConnections: logged once
+        ~SshSession();
+    };
+    /// What the poll of the loop watches for the ssh sessions.
+    struct SshWatch
+    {
+        enum class Kind { Listener, Process, Cancel } kind = Kind::Listener;
+        std::string token;
+        pid_t pid = 0; ///< Cancel
+    };
+    /// The limits of the window's sockets of ssh sessions (RemoteSockets).
+    static constexpr std::size_t MaxSshSessionsPerPane = 16;
+    static constexpr std::size_t MaxSshSessions = 256;
+    static constexpr std::size_t MaxSshConnections = 64;
+    static constexpr std::size_t MaxSshOptions = 256;
+    static constexpr std::size_t MaxSshHostLength = 255;
+    /// The calls of `afterglow ssh` on the control target:
+    /// remoteCommandsEnabled, openRemoteSocket, remoteSocketForwarded and
+    /// remoteSocketFailed.
+    std::string remoteCall(const AfterglowProto::IpcRequest& request, pid_t caller);
+    /// The session whose pane process @p process runs in (MaxAncestors), and
+    /// that pane in @p pane.
+    Session* sessionOfProcess(pid_t process, std::uint32_t* pane) const;
+    Session* sessionOfPane(std::uint32_t pane) const;
+    /// Gives pane @p pane the answer of its newest ssh session that answers,
+    /// else none.
+    void refreshAnswer(std::uint32_t pane);
+    /// Closes the socket of @p session: its clients hear @p reason.
+    void closeSshSocket(SshSession& session, const std::string& reason);
+    /// Ends ssh session @p token: its socket closes and its forward is cancelled.
+    void endSsh(const std::string& token, const std::string& reason);
+    /// Runs `ssh OPTIONS -O cancel -R REMOTE:LOCAL -- DESTINATION`, without waiting.
+    void cancelForward(const SshSession& session);
+    void addSshFds(std::vector<pollfd>& fds, std::vector<SshWatch>& watches) const;
+    void handleSshFds(const pollfd* fds, const std::vector<SshWatch>& watches);
+    /// A client on the remote host: its connection goes to the window that
+    /// shows the session of the pane.
+    void acceptSshClient(SshSession& session, int fd);
+    /// Ends the ssh sessions whose pane closed.
+    void pruneSsh();
+    /// Ends every ssh session, as the daemon ends.
+    void endAllSsh();
+    /// Removes the sockets of ssh sessions in @p directory whose lock no
+    /// daemon holds: a daemon that was killed left them.
+    static void removeStaleSshSockets(const std::string& directory);
+    /// Accepts the clients of every ssh session's socket: also of one that
+    /// starved (no descriptor was left), whose poll waits for no client.
+    void acceptSshClients();
 
     // The command clients of session panes (`aglow run`), which the window
     // of the session serves, in DaemonCommands.cpp.
@@ -212,12 +279,22 @@ private:
         std::uint64_t window = 0; ///< Attachment::serial()
         std::string session;
         std::string partial; ///< what the window sent after the last whole line
+        std::string sshToken; ///< the ssh session whose socket the client came through, empty for a client in a pane
     };
     std::map<std::uint64_t, Relay> m_relays;
     std::map<const AfterglowProto::IpcServerConnection*, std::uint64_t> m_relayOf;
     /// Connections that close once their output went: relays that ended.
     std::set<const AfterglowProto::IpcServerConnection*> m_closing;
     std::uint64_t m_nextRelay = 1;
+    std::map<std::string, std::unique_ptr<SshSession>> m_sshSessions; ///< by token
+    std::uint64_t m_sshOpened = 0;
+    /// The `ssh -O cancel` runs that the daemon reaps when they end.
+    struct Cancel
+    {
+        pid_t pid = 0;
+        int pidfd = -1;
+    };
+    std::vector<Cancel> m_cancels;
     /// The number of the next session without a name of its client.
     std::uint64_t m_nextName = 1;
     /// A session was created. Before that, the daemon waits for one for

@@ -13,6 +13,7 @@
 #include "MuxStream.h"
 
 #include <AfterglowProto/Base64.h>
+#include <AfterglowProto/Version.h>
 #include <AfterglowVt/Graphics.h>
 #include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
@@ -20,12 +21,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 using namespace MuxTest;
@@ -1836,9 +1839,164 @@ TEST(MuxControl, ACallNeedsASelectedSession)
     const auto selected = ctl.call(Fn::SelectPane, Json::Array{ProtocolVersion, 2}, Target);
     ASSERT_TRUE(selected) << ctl.error.message;
     EXPECT_EQ((*selected)["name"].toString(), "s");
-    // `afterglow ssh` asks for remote commands: none in a session.
-    EXPECT_FALSE(ctl.call("remoteCommandsEnabled", {}));
-    EXPECT_NE(ctl.error.message.find("no remote commands"), std::string::npos) << ctl.error.message;
+    // `afterglow ssh` asks for remote commands: a caller that runs in no
+    // pane of the daemon has none.
+    const auto enabled = ctl.call("remoteCommandsEnabled", {});
+    ASSERT_TRUE(enabled) << ctl.error.message;
+    EXPECT_FALSE(enabled->toBool());
+}
+
+namespace {
+
+/// A process that `afterglow ssh` plays: its socket ends with it.
+pid_t sleeper()
+{
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+        ::execl("/bin/sleep", "sleep", "60", static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+    return pid;
+}
+
+void endProcess(pid_t pid)
+{
+    ::kill(pid, SIGKILL);
+    ::waitpid(pid, nullptr, 0);
+}
+
+} // namespace
+
+// `afterglow ssh` in a session pane: the daemon keeps the socket that ssh
+// forwards for remote commands, with the checks and the lifetime of the
+// sockets that a window keeps for its own panes (RemoteCommandsTest).
+TEST(MuxControl, AnSshSessionOfASessionPaneGetsASocketOfTheDaemon)
+{
+    TestDaemon daemon;
+    // An ssh that logs its arguments: the daemon runs it to cancel a forward.
+    const std::string bin = daemon.dir() + "/bin";
+    const std::string log = daemon.dir() + "/ssh.log";
+    ASSERT_EQ(::mkdir(bin.c_str(), 0700), 0);
+    {
+        std::ofstream ssh(bin + "/ssh");
+        ssh << "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" << log << "'\n";
+    }
+    ASSERT_EQ(::chmod((bin + "/ssh").c_str(), 0700), 0);
+    const char* path = std::getenv("PATH");
+    daemon.daemonOnly("PATH", bin + ":" + (path ? path : "/usr/bin:/bin"));
+    // The socket of an ssh session that a killed daemon left goes.
+    const std::string directory = daemon.runtime() + "/aglow-mux";
+    const std::string stale = directory + "/remote-0123456789abcdef.sock";
+    ASSERT_EQ(::mkdir(directory.c_str(), 0700), 0);
+    std::ofstream(stale).put('x');
+    ASSERT_TRUE(exists(stale));
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    EXPECT_FALSE(exists(stale));
+    EXPECT_FALSE(exists(stale + ".lock"));
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    const auto listed = ctl.call("listPanes", {});
+    ASSERT_TRUE(listed) << ctl.error.message;
+    const std::uint32_t pane = paneIds(*listed).front();
+    pid_t process = sleeper();
+    ASSERT_GT(process, 0);
+    const auto open = [&](std::int64_t protocol, std::string directory = "/run/user/1000/afterglow", bool overlay = false,
+                          std::string host = "box") {
+        return ctl.call("openRemoteSocket", Json::Array{std::int64_t(pane), std::int64_t(process), host, directory, protocol,
+                                                        Json::Array{"-F", "none", "-S", "/cm"}, "prod", overlay});
+    };
+
+    const auto opened = open(AfterglowProto::ProtocolVersion);
+    ASSERT_TRUE(opened) << ctl.error.message;
+    const std::string token = (*opened)["token"].toString();
+    const std::string socket = (*opened)["socket"].toString();
+    const std::string remote = (*opened)["path"].toString();
+    EXPECT_EQ(token.size(), 16u);
+    EXPECT_EQ(remote, "/run/user/1000/afterglow/" + token + ".sock");
+    EXPECT_EQ(socket, daemon.runtime() + "/aglow-mux/remote-" + token + ".sock");
+    struct stat info{};
+    ASSERT_EQ(::stat(socket.c_str(), &info), 0);
+    EXPECT_TRUE(S_ISSOCK(info.st_mode));
+    EXPECT_EQ(info.st_mode & 077, 0u);
+    EXPECT_TRUE(ctl.call("remoteSocketForwarded", Json::Array{token})) << ctl.error.message;
+    {
+        // While no window shows the session, its client hears why.
+        RawClient client(socket);
+        ASSERT_TRUE(client.connected());
+        const auto reply = Json::parse(client.line());
+        ASSERT_TRUE(reply);
+        EXPECT_EQ((*reply)["type"].toString(), "error");
+        EXPECT_FALSE(reply->find("id"));
+        EXPECT_NE((*reply)["message"].toString().find("no window shows session 's'"), std::string::npos) << Json::write(*reply);
+    }
+
+    // Another protocol, and a path too long for the remote host: an answer
+    // and no socket.
+    auto other = open(AfterglowProto::ProtocolVersion + 1);
+    ASSERT_TRUE(other) << ctl.error.message;
+    EXPECT_EQ((*other)["error"].toString(), "version");
+    EXPECT_FALSE(other->find("socket"));
+    other = open(AfterglowProto::ProtocolVersion, "/" + std::string(100, 'd'));
+    ASSERT_TRUE(other) << ctl.error.message;
+    EXPECT_EQ((*other)["error"].toString(), "length");
+    // What a window refuses too.
+    const auto refuses = [&](std::optional<Json::Value> refused, const std::string& why) {
+        EXPECT_FALSE(refused) << why;
+        EXPECT_NE(ctl.error.message.find(why), std::string::npos) << ctl.error.message;
+    };
+    refuses(open(AfterglowProto::ProtocolVersion, "/run/user/1000/afterglow", true), "overlay");
+    refuses(open(AfterglowProto::ProtocolVersion, "run/user"), "remote directory");
+    refuses(open(AfterglowProto::ProtocolVersion, "/a:b"), "remote directory");
+    refuses(open(AfterglowProto::ProtocolVersion, "/run/user/1000/afterglow", false, ""), "host");
+    refuses(open(AfterglowProto::ProtocolVersion, "/run/user/1000/afterglow", false, "a\x1b"), "host");
+
+    // The socket ends with the process of `afterglow ssh`, and its forward
+    // is cancelled with the options that reach the shared connection.
+    endProcess(process);
+    EXPECT_TRUE(waitFor([&] { return !exists(socket); }));
+    const std::string cancel = "-F none -S /cm -O cancel -R " + remote + ":" + socket + " -- prod\n";
+    EXPECT_TRUE(waitFor([&] { return readFile(log).find(cancel) != std::string::npos; })) << readFile(log);
+    EXPECT_FALSE(ctl.call("remoteSocketForwarded", Json::Array{token}));
+
+    // A forward that failed: the socket closes, and nothing is cancelled.
+    process = sleeper();
+    const auto failing = open(AfterglowProto::ProtocolVersion);
+    ASSERT_TRUE(failing) << ctl.error.message;
+    const std::string failed = (*failing)["socket"].toString();
+    EXPECT_FALSE(ctl.call("remoteSocketFailed", Json::Array{(*failing)["token"].toString(), "other"}));
+    EXPECT_TRUE(ctl.call("remoteSocketFailed", Json::Array{(*failing)["token"].toString(), "forward"})) << ctl.error.message;
+    EXPECT_FALSE(exists(failed));
+    // The pane closes: its sessions end.
+    const auto closing = open(AfterglowProto::ProtocolVersion);
+    ASSERT_TRUE(closing) << ctl.error.message;
+    const std::string closed = (*closing)["socket"].toString();
+    ASSERT_TRUE(ctl.call("close", Json::Array{std::int64_t(pane)})) << ctl.error.message;
+    EXPECT_TRUE(waitFor([&] { return !exists(closed); }));
+    EXPECT_TRUE(waitFor([&] { return readFile(log).find(closed) != std::string::npos; })) << readFile(log);
+    EXPECT_EQ(readFile(log).find(failed), std::string::npos) << readFile(log);
+    endProcess(process);
+}
+
+// A session whose client had remote commands off gives `afterglow ssh` no
+// socket, and says why.
+TEST(MuxControl, RemoteCommandsOffInTheSessionGiveNoSocket)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions o = daemon.options({"/bin/sh"}, "off");
+    o.control.remoteCommandsOff = "remote commands are off (Terminal.sshRemoteCommands)";
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("off"), "");
+    const auto listed = ctl.call("listPanes", {});
+    ASSERT_TRUE(listed) << ctl.error.message;
+    const pid_t process = sleeper();
+    EXPECT_FALSE(ctl.call("openRemoteSocket", Json::Array{std::int64_t(paneIds(*listed).front()), std::int64_t(process), "box",
+                                                          "/run/user/1000/afterglow", AfterglowProto::ProtocolVersion, Json::Array{},
+                                                          "prod", false}));
+    EXPECT_EQ(ctl.error.message, "remote commands are off (Terminal.sshRemoteCommands)");
+    endProcess(process);
 }
 
 // While no window shows the session, the daemon answers the calls on its

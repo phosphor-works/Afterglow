@@ -27,7 +27,7 @@ namespace AfterglowMux {
 /// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
 /// MuxProtocolTest pins the keys of the options to this number, so that a new
 /// key changes it too.
-inline constexpr int ProtocolVersion = 14;
+inline constexpr int ProtocolVersion = 15;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -188,6 +188,10 @@ struct ControlOptions
 {
     bool enabled = true; ///< Control.enabled: off, the session takes no control calls
     bool allowReadText = false; ///< Control.allowReadText: get-text, and the commands in ls
+    /// Why the client's settings allow no remote commands, as the refusal
+    /// of a call says it ("remote commands are off (SETTING)"), or empty:
+    /// whether `afterglow ssh` in a session pane gets a socket.
+    std::string remoteCommandsOff{};
 };
 
 AfterglowProto::Json::Value toJson(const PaneSize& size);
@@ -220,8 +224,9 @@ struct SessionOptions
     /// The answer of a window to an OSC 99 query: what a program may ask of
     /// the desktop notifications of a window that later shows the session.
     std::string notificationCapabilities;
-    /// Control.enabled and Control.allowReadText of the client: what
-    /// `afterglow ctl` may do with the session in the daemon.
+    /// Control.enabled, Control.allowReadText and the remote commands of the
+    /// client: what `afterglow ctl` and `afterglow ssh` may do with the
+    /// session in the daemon.
     ControlOptions control;
 };
 

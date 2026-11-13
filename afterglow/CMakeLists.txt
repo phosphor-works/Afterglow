@@ -220,7 +220,8 @@ if(BUILD_TESTING)
     target_link_libraries(afterglow_native_tests PRIVATE afterglow_app GTest::gtest)
     # The mux tests run a daemon of their own (mux/tests/TestDaemon.h).
     target_include_directories(afterglow_native_tests PRIVATE ${PROJECT_SOURCE_DIR}/mux/tests)
-    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:aglow-mux>")
+    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:aglow-mux>"
+                                                              AFTERGLOW_FAKE_SSH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fake-ssh.sh")
     add_dependencies(afterglow_native_tests aglow-mux)
     # The aglow dnd twins of the kitten dnd tests run the aglow of this build.
     if(AFTERGLOW_BUILD_AGLOW)

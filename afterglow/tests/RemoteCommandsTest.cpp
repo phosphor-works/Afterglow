@@ -105,80 +105,6 @@ return {
 }
 )";
 
-/// A fake ssh for the probe tests. It writes each run's words to
-/// FAKE_SSH_LOG, separated by 0x1f, one run on each line, and acts as the
-/// FAKE_* variables say: the probe's report, the exit status of -O check
-/// and -O forward, an -O forward that ends only once the file
-/// FAKE_FORWARD_GATE is there, and a session that waits for the file
-/// FAKE_RELEASE.
-/// ssh -G reports what real ssh does without a ControlPath, or with the
-/// user's ControlPath FAKE_CONTROL_PATH, for the destination it is given,
-/// with RequestTTY force (FAKE_TTY), as -tt would: the helper runs without
-/// a terminal here. The helper's second ssh -G reads the user's files
-/// through -F /dev/stdin, and its own Host * block last: the fake takes
-/// that block's values, with %C as "fakehash", unless FAKE_USER sets
-/// ControlPath none or ControlMaster no ("path-none", "master-no"), or
-/// FAKE_CONTROL_PATH is set. A session whose test failed before it
-/// released it ends when its parent has gone, or after 3000 waits of 20 ms:
-/// it never outlives the test for long.
-const QByteArray FakeSsh = R"sh(#!/bin/sh
-{ for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> "$FAKE_SSH_LOG"
-op=; prev=; last=
-for a in "$@"; do
-    [ "$prev" = "-O" ] && op=$a
-    prev=$a; last=$a
-done
-for a in "$@"; do
-    case "$a" in -G)
-        printf 'host %s\nhostname %s.example\nuser me\nport 22\ncontrolpersist no\nrequesttty %s\n' "$last" "$last" "${FAKE_TTY:-force}"
-        [ -n "${FAKE_CONTROL_PATH:-}" ] && printf 'controlpath %s\n' "$FAKE_CONTROL_PATH"
-        case " $* " in
-            *" /dev/stdin "*)
-                own=$(sed -n 's/^ *ControlPath \(.*\)$/\1/p; s/^ *ControlMaster \(.*\)$/master \1/p')
-                case "${FAKE_USER:-}${FAKE_CONTROL_PATH:-}" in
-                    path-none|/*) ;;
-                    *) printf 'controlpath %s\n' "$(printf '%s\n' "$own" | sed -n '1s/%C/fakehash/p')";;
-                esac
-                case "${FAKE_USER:-}" in
-                    master-no) printf 'controlmaster false\n';;
-                    *) printf 'controlmaster %s\n' "$(printf '%s\n' "$own" | sed -n 's/^master //p')";;
-                esac;;
-            *) printf 'controlmaster false\n';;
-        esac
-        exit 0;;
-    esac
-done
-case "$op" in
-    check) exit "${FAKE_CHECK:-0}";;
-    forward)
-        n=0
-        while [ -n "${FAKE_FORWARD_GATE:-}" ] && [ ! -e "$FAKE_FORWARD_GATE" ]; do
-            n=$((n + 1)); [ "$n" -gt 3000 ] && exit 8
-            sleep 0.02
-        done
-        exit "${FAKE_FORWARD:-0}";;
-    ?*) exit 0;;
-esac
-case "$last" in
-    "sh -c "*)
-        printf 'runtime=/run/user/1000\nhome=/home/me\n'
-        case "${FAKE_AGLOW:-same}" in
-            same) printf 'aglow=aglow 0.0.0 (protocol %s)\ndir=%s\n' "$FAKE_PROTOCOL" "${FAKE_DIR:-/run/user/1000/afterglow}";;
-            other) printf 'aglow=aglow 9.9.9 (protocol 99)\ndir=%s\n' "${FAKE_DIR:-/run/user/1000/afterglow}";;
-            another) printf 'aglow=aglow 9.9.8 (protocol 98)\ndir=%s\n' "${FAKE_DIR:-/run/user/1000/afterglow}";;
-        esac
-        exit "${FAKE_PROBE_STATUS:-0}";;
-esac
-: > "$FAKE_RELEASE.started"
-parent=$PPID; n=0
-while [ ! -e "$FAKE_RELEASE" ]; do
-    kill -0 "$parent" 2>/dev/null || exit 9
-    n=$((n + 1)); [ "$n" -gt 3000 ] && exit 8
-    sleep 0.02
-done
-exit 7
-)sh";
-
 using Test::Saved;
 
 /// The server runs on this thread: wait with its event loop running.
@@ -248,11 +174,10 @@ protected:
         script.close();
         // The fake ssh, for the probe tests and for the cancels of RemoteSockets.
         ASSERT_TRUE(QDir().mkpath(m_dir.filePath(QStringLiteral("bin"))));
-        QFile ssh(fakeSsh());
-        ASSERT_TRUE(ssh.open(QIODevice::WriteOnly));
-        ssh.write(FakeSsh);
-        ssh.close();
-        ssh.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        // fake-ssh.sh says what it does.
+        QFile::remove(fakeSsh());
+        ASSERT_TRUE(QFile::copy(QStringLiteral(AFTERGLOW_FAKE_SSH), fakeSsh()));
+        QFile(fakeSsh()).setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
     }
 
     void TearDown() override

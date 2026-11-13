@@ -66,6 +66,7 @@
 #include <QKeyEvent>
 #include <QTemporaryDir>
 #include <AfterglowProto/Clipboard.h>
+#include <AfterglowProto/Version.h>
 #include <limits>
 #include <QThread>
 #include <QThreadPool>
@@ -11420,6 +11421,75 @@ return {
     ASSERT_TRUE(pane->sendInput((run + QStringLiteral("here; echo status=$?\n")).toStdString()));
     EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("status=2")); }, 5000)) << screenOf(pane).toStdString();
     EXPECT_FALSE(screenOf(pane).contains(QStringLiteral("\nhere remote"))) << screenOf(pane).toStdString();
+    delete shown;
+}
+
+// `afterglow ssh` in a session pane: the daemon keeps the socket that ssh
+// forwards, and the pane's answer to the query of `aglow run`. A remote
+// command that `aglow run` runs in the ssh session reaches the window that
+// shows the session. The fake ssh's forward links the remote path to the
+// daemon's socket, and its session runs `aglow run`.
+TEST_F(NativeWindow, AnSshSessionInASessionPaneRunsRemoteCommandsThroughTheDaemon) {
+    REQUIRE_AGLOW(aglow);
+    ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("scripts"))));
+    QFile script(directory.filePath(QStringLiteral("scripts/far.luau")));
+    ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+    script.write(R"(
+return {
+    metadata = { commands = { there = { summary = "Say where", remote = true } } },
+    run_command = function(command, ev)
+        return afterglow.output(ev, command .. " " .. ev.source .. " " .. ev.remote.host .. " " .. ev.pane.id .. "\n")
+    end,
+}
+)");
+    script.close();
+    restartApplication(QStringLiteral("ssh-session.conf"),
+        testSettings({{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("sshRemoteCommands"), true}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    const QString bin = directory.filePath(QStringLiteral("ssh-bin"));
+    ASSERT_TRUE(QDir().mkpath(bin));
+    // afterglow/tests/fake-ssh.sh says what it does.
+    ASSERT_TRUE(QFile::copy(QStringLiteral(AFTERGLOW_FAKE_SSH), bin + QStringLiteral("/ssh")));
+    ASSERT_TRUE(QFile::setPermissions(bin + QStringLiteral("/ssh"), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    // The remote directory of the sockets, where the forward's link goes.
+    const QString remote = directory.filePath(QStringLiteral("remote"));
+    ASSERT_TRUE(QDir().mkpath(remote));
+    const QString log = directory.filePath(QStringLiteral("ssh.log"));
+    MuxTest::TestDaemon daemon;
+    // The daemon cancels the forward with the fake ssh, which removes the link.
+    daemon.daemonOnly("PATH", bin.toStdString() + ":" + qgetenv("PATH").toStdString());
+    daemon.daemonOnly("FAKE_SSH_LOG", log.toStdString());
+    daemon.daemonOnly("FAKE_FORWARD_LINK", "1");
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "ssh")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("ssh"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+
+    const QString command = QStringLiteral("PATH='%1':\"$PATH\" FAKE_SSH_LOG='%2' FAKE_PROTOCOL=%3 FAKE_DIR='%4' FAKE_FORWARD_LINK=1 "
+                                           "FAKE_RELEASE='%5' FAKE_SESSION='env -u AFTERGLOW_SOCKET -u AFTERGLOW_PANE_ID %6 run far there; echo status=$?' "
+                                           "'%7' ssh -v far; echo ssh=$?\n")
+                                .arg(bin, log)
+                                .arg(AfterglowProto::ProtocolVersion)
+                                .arg(remote, directory.filePath(QStringLiteral("release")), aglow,
+                                     QCoreApplication::applicationDirPath() + QStringLiteral("/afterglow"));
+    ASSERT_TRUE(pane->sendInput(command.toStdString()));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("\nssh=")); }, 15000)) << screenOf(pane).toStdString();
+    // The window's pane, of a host that the ssh session names.
+    const QString screen = screenOf(pane);
+    EXPECT_TRUE(screen.contains(QStringLiteral("\nthere remote "))) << screen.toStdString();
+    EXPECT_TRUE(screen.contains(QStringLiteral(" %1\nstatus=0").arg(pane->id()))) << screen.toStdString();
+    // The session ended with its `afterglow ssh`: the daemon cancelled the
+    // forward, and the link went with it.
+    EXPECT_TRUE(waitFor([&] { return QDir(remote).entryList(QDir::System | QDir::Files).isEmpty(); }, 5000))
+        << QDir(remote).entryList(QDir::System | QDir::Files).join(QLatin1Char(' ')).toStdString();
+    QFile logged(log);
+    ASSERT_TRUE(logged.open(QIODevice::ReadOnly));
+    const QByteArray runs = logged.readAll();
+    EXPECT_TRUE(runs.contains("cancel")) << runs.toStdString();
     delete shown;
 }
 
