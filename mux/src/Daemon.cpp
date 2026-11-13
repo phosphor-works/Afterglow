@@ -445,9 +445,10 @@ std::string Daemon::newSession(const IpcRequest& request, pid_t caller)
     if (!session->addPane(m_nextPane++, session->firstLaunch(), session->firstSize(), paneSocket(), waker(), &error)) {
         return ipcError(request.id, Error::SpawnFailed, "cannot start the program of session '" + name + "': " + error);
     }
+    const std::uint32_t first = session->panes().front()->id();
     m_sessions.push_back(std::move(session));
     m_hadSession = true;
-    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}});
+    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}, {"pane", std::int64_t(first)}});
 }
 
 std::string Daemon::listSessions(const IpcRequest& request, pid_t caller)

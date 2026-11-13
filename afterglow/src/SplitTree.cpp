@@ -400,16 +400,25 @@ QJsonObject SplitTree::snapshot(const std::function<QJsonObject(Pane*)>& pane) c
 std::unique_ptr<SplitTree> SplitTree::restore(const QJsonObject& tree, const std::function<Pane*(const QJsonObject&)>& factory)
 {
     auto result = std::make_unique<SplitTree>(nullptr);
-    std::function<std::unique_ptr<Node>(const QJsonObject&, Node*)> decode = [&](const QJsonObject& value, Node* parent) {
+    std::function<std::unique_ptr<Node>(const QJsonObject&, Node*)> decode = [&](const QJsonObject& value, Node* parent) -> std::unique_ptr<Node> {
         auto node = std::make_unique<Node>();
         node->parent = parent;
-        if (value.contains(QStringLiteral("pane"))) node->pane = factory(value.value(QStringLiteral("pane")).toObject());
-        else {
-            node->vertical = value.value(QStringLiteral("direction")).toString() == QLatin1String("down");
-            node->ratio = value.value(QStringLiteral("ratio")).toDouble();
-            node->serial = result->m_nextSerial++;
-            node->first = decode(value.value(QStringLiteral("first")).toObject(), node.get());
-            node->second = decode(value.value(QStringLiteral("second")).toObject(), node.get());
+        if (value.contains(QStringLiteral("pane"))) {
+            node->pane = factory(value.value(QStringLiteral("pane")).toObject());
+            if (!node->pane) return nullptr;
+            return node;
+        }
+        node->vertical = value.value(QStringLiteral("direction")).toString() == QLatin1String("down");
+        node->ratio = value.value(QStringLiteral("ratio")).toDouble();
+        node->serial = result->m_nextSerial++;
+        node->first = decode(value.value(QStringLiteral("first")).toObject(), node.get());
+        node->second = decode(value.value(QStringLiteral("second")).toObject(), node.get());
+        // A side without a pane goes: the other side takes the split's place,
+        // as when a pane closes.
+        if (!node->first || !node->second) {
+            std::unique_ptr<Node> kept = std::move(node->first ? node->first : node->second);
+            if (kept) kept->parent = parent;
+            return kept;
         }
         return node;
     };

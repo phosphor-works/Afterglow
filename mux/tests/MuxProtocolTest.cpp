@@ -64,7 +64,9 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 17) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 18) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 18 added the first pane's ID to the answer of newSession
+    // (DaemonTest).
     // Version 17 added the window's settings to its input, with their keys:
     // the session follows them.
     SessionSettings followed;

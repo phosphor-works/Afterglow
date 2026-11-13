@@ -34,6 +34,7 @@ class Pane;
 class ProjectStore;
 class SettingsStore;
 class TerminalWindow;
+struct SessionLink;
 
 /// One pane as the control interface and scripts see it.
 struct PaneInfo
@@ -69,6 +70,10 @@ public:
     /// Opens a window that shows mux session @p session of @p host (empty:
     /// this computer): empty, else why not.
     using SessionWindowOpener = std::function<QString(const QString& session, const QString& host)>;
+    /// Opens a window that shows mux session @p session of this computer,
+    /// on @p link, the connection that answered its attach call
+    /// (attachSession): empty, else why not.
+    using SessionLinkShower = std::function<QString(const QString& session, SessionLink&& link)>;
     /// The end of openProject(): its error, or empty and its result.
     using ProjectOpened = std::function<void(const QString& error, const QVariantMap& result)>;
 
@@ -79,6 +84,9 @@ public:
     /// For a drag of panes out of a session's window: they go to a new
     /// session, which a new window shows.
     void setSessionWindowOpener(SessionWindowOpener opener) { m_openSessionWindow = std::move(opener); }
+    /// For a project that opens into a session, whose attach waited for the
+    /// daemon off the GUI thread.
+    void setSessionLinkShower(SessionLinkShower shower) { m_showSessionLink = std::move(shower); }
 
     /// Follows a window's panes; every window registers on creation.
     void attachWindow(TerminalWindow* window);
@@ -276,6 +284,7 @@ private:
     SettingsStore& m_settings;
     WindowFactory m_newWindow;
     SessionWindowOpener m_openSessionWindow;
+    SessionLinkShower m_showSessionLink;
     /// Moves @p pane of @p source, or its tab with @p tab, out of the session
     /// that @p source shows, to a new session in a new window.
     QString breakOut(TerminalWindow* source, Pane* pane, bool tab, QVariantMap& result);
