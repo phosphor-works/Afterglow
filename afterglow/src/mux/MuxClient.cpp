@@ -98,11 +98,9 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
         client->m_actions ? client->m_stream->openWriter(Attach::CommandsChannel, Attach::CommandsCodec, &streamError) : nullptr;
     if (!client->m_input || !client->m_actions || !commands) return fail(QString::fromStdString(streamError));
     client->m_commands = std::make_unique<MuxCommands>(name, commands, [raw = client.get()] { raw->updateNotifiers(); });
-    // The programs of another host reach no command of this computer.
-    if (client->remote()) {
-        client->m_commands->setRefusal(
-            QStringLiteral("session '%1' runs on %2, and its panes reach no commands of the scripts of this window").arg(name, client->host()));
-    }
+    // The programs of another host get what an ssh session of that host
+    // gets: the commands that a script marks remote.
+    if (client->remote()) client->m_commands->setRemoteHost(client->host());
 
     // The daemon sends the layout first: the window lays out the session's
     // tabs and splits, and makes their panes.

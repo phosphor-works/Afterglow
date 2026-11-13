@@ -31,13 +31,17 @@ std::string Daemon::startRelay(const IpcRequest& request, std::string line, pid_
     // its own). By the processes, not by an AFTERGLOW_PANE_ID that a
     // process of another terminal can carry.
     Session* session = nullptr;
+    std::uint32_t pane = 0;
     pid_t process = caller;
     for (int up = 0; !session && process > 1 && up < MaxAncestors; ++up) {
         const auto stat = AfterglowPty::processStat(process);
         if (!stat) break;
         for (const auto& s : m_sessions) {
             for (const auto& p : s->panes()) {
-                if (p->leads(pid_t(stat->session))) session = s.get();
+                if (p->leads(pid_t(stat->session))) {
+                    session = s.get();
+                    pane = p->id();
+                }
             }
         }
         process = pid_t(stat->parent);
@@ -56,7 +60,7 @@ std::string Daemon::startRelay(const IpcRequest& request, std::string line, pid_
     const std::uint64_t id = m_nextRelay++;
     line += '\n';
     const bool sent = guarded(*window, [&] {
-        window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Open, {}});
+        window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Open, {}, pane, Attach::RelayKind::Commands, {}});
         window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Bytes, std::move(line)});
         return true;
     });

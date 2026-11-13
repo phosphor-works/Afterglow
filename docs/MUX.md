@@ -400,6 +400,13 @@ A command acts on the pane that it names, as the window shows it. `aglow run` na
 A command that names no pane (pane 0) acts on the focused pane, as outside a session.
 The output, the exit status and the input of the command are as for a pane outside a session.
 
+A session of another host (`--ssh`) gets what an [ssh session](CONTROL.md#remote-commands) of that host gets.
+Its panes run only the commands that a script marks `remote`, and only with `Terminal.sshRemoteCommands` on in the window.
+A command acts on the pane of the client, and `ev.source` is `remote`.
+`ev.remote.host` is the host of the session, as `--ssh` names it.
+`aglow run` with no arguments lists only the commands that are marked `remote`.
+A command that is not marked `remote` fails as a command that does not exist.
+
 | Case | Result |
 | --- | --- |
 | No window shows the session | `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts` |
@@ -408,7 +415,6 @@ The output, the exit status and the input of the command are as for a pane outsi
 | The window's ID of the pane makes the run request longer than 1 MiB. `aglow run` refuses such a run before it sends it. | `CALL_FAILED`: `with the window's ID of its pane, the run request is over 1 MiB` |
 | The run names a pane of the daemon that the window does not show | `CALL_FAILED`: `no pane N of session 'NAME' shows in its window` |
 | The window closes or detaches while the command runs | The command ends. The client gets `the window of session 'NAME' closed, and with it the runs of this client`, and exits with status 1. |
-| The session runs on another host (`--ssh`) | `CALL_FAILED`: `session 'NAME' runs on HOST, and its panes reach no commands of the scripts of this window` |
 
 `afterglow ssh` connects without [remote commands](CONTROL.md#remote-commands). With `-v`, it writes `a session pane takes no remote commands: the mux daemon runs no scripts` as the reason.
 

@@ -600,7 +600,7 @@ When a connection closes, Afterglow cancels its runs and drops its input.
 ### Remote commands
 
 A command that a script marks `remote` can also run from a remote host.
-Run `aglow run` there, in a session of `afterglow ssh`.
+Run `aglow run` there, in a session of `afterglow ssh`, or in a pane of a [mux session](MUX.md#script-commands-in-a-session-pane) of that host.
 The run acts on the pane of the ssh session, and its `ev.source` is `remote`.
 The handler still gets all the panes in `ev.terminal`, and its effects can act on any pane, as for a local run.
 `Terminal.sshRemoteCommands` is off by default.

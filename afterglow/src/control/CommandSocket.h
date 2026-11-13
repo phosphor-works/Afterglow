@@ -145,6 +145,10 @@ public:
     {
         quint32 pane = 0; ///< the pane that runs the session: every run acts on it
         QString host; ///< ev.remote.host
+        /// The socket answers on Target, not Remote::Target: for a client in
+        /// a pane of a mux session of another host, which reaches the
+        /// commands target of the daemon there (MuxCommands).
+        bool commandsTarget = false;
     };
 
     /// The socket's runs count toward @p budget, which other sockets can

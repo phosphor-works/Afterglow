@@ -561,7 +561,7 @@ void CommandSocket::finish(quint64 connection, const QString& id, int status)
 
 QLatin1String CommandSocket::target() const
 {
-    return QLatin1String(m_remote ? AfterglowProto::Remote::Target : Target);
+    return QLatin1String(m_remote && !m_remote->commandsTarget ? AfterglowProto::Remote::Target : Target);
 }
 
 qint64 CommandSocket::waitingInputBytes() const
@@ -602,7 +602,9 @@ std::optional<quint32> CommandSocket::pane(double pane, QString& error) const
     // A remote host reaches the pane of its ssh session only.
     if (m_remote) {
         if (pane == 0 || quint32(pane) == m_remote->pane) return m_remote->pane;
-        error = QStringLiteral("a run from a remote host acts on the pane of its ssh session, %1").arg(m_remote->pane);
+        error = m_remote->commandsTarget
+            ? QStringLiteral("a run from a session of another host acts on its own pane, %1").arg(m_remote->pane)
+            : QStringLiteral("a run from a remote host acts on the pane of its ssh session, %1").arg(m_remote->pane);
         return std::nullopt;
     }
     if (pane == 0) return m_control.focusedPane().value_or(0);

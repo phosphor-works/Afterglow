@@ -124,24 +124,42 @@ struct Input
 std::string encode(const Input& input);
 std::optional<Input> decodeInput(std::string_view frame);
 
-/// A client in a session pane that calls the commands of scripts (`aglow
-/// run`, target AfterglowProto::Run::Target) reaches the daemon, which runs
-/// no scripts. The daemon passes the connection to the window that shows the
-/// session: its request lines go to the window in Commands events, and the
-/// window serves them on a connection to its own Afterglow, whose bytes come
-/// back on CommandsChannel. Each connection is a relay, by a number that the
-/// daemon gives it.
+/// A client that calls the commands of scripts reaches the daemon, which
+/// runs no scripts: a client in a session pane (`aglow run`, target
+/// AfterglowProto::Run::Target), or a client on the remote host of an
+/// `afterglow ssh` in a session pane, through the socket that the daemon
+/// keeps for that ssh session. The daemon passes the connection to the
+/// window that shows the session: its request lines go to the window in
+/// Commands events, and the window serves them on a connection to its own
+/// Afterglow, whose bytes come back on CommandsChannel. Each connection is a
+/// relay, by a number that the daemon gives it.
 enum class RelayPart : std::uint8_t {
     Open = 1, ///< the daemon: a new relay
     Bytes = 2, ///< bytes of the connection: whole request lines from the daemon, any bytes from the window
     End = 3, ///< the connection ended on the side that sends this
 };
 
+/// Who the client of a relay is, which decides the commands that it gets.
+enum class RelayKind : std::uint8_t {
+    /// A client in a session pane, of the commands target: the commands of
+    /// the window's scripts. For a session of another host, only those that
+    /// a script marks remote, as for an ssh session of that host.
+    Commands = 0,
+    /// A client on the remote host of an ssh session, of the target
+    /// AfterglowProto::Remote::Target: only the commands marked remote.
+    Remote = 1,
+};
+
 struct RelayFrame
 {
     std::uint64_t relay = 0; ///< from 1
     RelayPart part = RelayPart::Bytes;
-    std::string bytes; ///< Bytes: never empty
+    std::string bytes{}; ///< Bytes: never empty
+    /// Open: the daemon's ID of the pane of the client, or of the ssh
+    /// session that the client's socket belongs to. Never 0.
+    std::uint32_t pane = 0;
+    RelayKind kind = RelayKind::Commands; ///< Open
+    std::string host{}; ///< Open of RelayKind::Remote: the host of the ssh session (ev.remote.host), never empty
 };
 
 std::string encode(const RelayFrame& frame);

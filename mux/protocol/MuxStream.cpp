@@ -119,7 +119,13 @@ std::string encode(const RelayFrame& frame)
 {
     std::string out(1, char(frame.part));
     varint(out, frame.relay);
-    if (frame.part == RelayPart::Bytes) out += frame.bytes;
+    if (frame.part == RelayPart::Bytes) {
+        out += frame.bytes;
+    } else if (frame.part == RelayPart::Open) {
+        varint(out, frame.pane);
+        out.push_back(char(frame.kind));
+        if (frame.kind == RelayKind::Remote) out += frame.host;
+    }
     return out;
 }
 
@@ -133,7 +139,18 @@ std::optional<RelayFrame> decodeRelay(std::string_view bytes)
     if (part == std::uint8_t(RelayPart::Bytes)) {
         frame.bytes = std::string(r.rest());
         if (frame.bytes.empty()) return std::nullopt;
-    } else if ((part != std::uint8_t(RelayPart::Open) && part != std::uint8_t(RelayPart::End)) || !r.done()) {
+    } else if (part == std::uint8_t(RelayPart::Open)) {
+        frame.pane = std::uint32_t(r.varint(0xffffffffu));
+        const std::uint8_t kind = r.byte();
+        if (!r.ok() || frame.pane == 0 || kind > std::uint8_t(RelayKind::Remote)) return std::nullopt;
+        frame.kind = RelayKind(kind);
+        if (frame.kind == RelayKind::Remote) {
+            frame.host = std::string(r.rest());
+            if (frame.host.empty()) return std::nullopt;
+        } else if (!r.done()) {
+            return std::nullopt;
+        }
+    } else if (part != std::uint8_t(RelayPart::End) || !r.done()) {
         return std::nullopt;
     }
     frame.part = RelayPart(part);
