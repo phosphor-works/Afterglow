@@ -19,6 +19,8 @@ qt_add_library(afterglow_app STATIC
     src/mux/MuxClient.h
     src/mux/MuxCommands.cpp
     src/mux/MuxCommands.h
+    src/mux/MuxSessions.cpp
+    src/mux/MuxSessions.h
     src/mux/MuxRoute.cpp
     src/mux/MuxRoute.h
     src/PaneDialog.cpp
@@ -140,7 +142,7 @@ target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Rende
 # names are read as the escape codes read them (AfterglowProto/Color.h).
 target_link_libraries(afterglow_config PRIVATE afterglow_mux_protocol Afterglow::Proto)
 
-qt_add_library(afterglow_shell STATIC src/shell/ShellIntegration.cpp src/shell/ShellIntegration.h
+qt_add_library(afterglow_shell STATIC src/shell/Sibling.cpp src/shell/ShellIntegration.cpp src/shell/ShellIntegration.h
     src/shell/Ssh.cpp src/shell/Ssh.h)
 target_include_directories(afterglow_shell PUBLIC src)
 target_link_libraries(afterglow_shell PUBLIC Afterglow::Pty Qt6::Core PRIVATE Afterglow::Proto)

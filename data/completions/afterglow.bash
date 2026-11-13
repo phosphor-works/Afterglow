@@ -237,7 +237,7 @@ _afterglow_ctl()
     overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" ;;
     open-directory) _afterglow_unused --layout ;;
     save-project) _afterglow_unused $pane --overwrite ;;
-    open-project) _afterglow_unused --new ;;
+    open-project) _afterglow_unused --new "--session|--no-session" ;;
     watch | scripts | projects) ;;
     *) _afterglow_unused $pane ;;
     esac

@@ -260,7 +260,7 @@ Another number fails with `CALL_FAILED`.
 | `openDirectory` | directory, layout | An object: the window and its pane |
 | `projects` | None | The saved project names |
 | `saveProject` | pane, name, overwrite | An object: the name and the window |
-| `openProject` | name, new instance | An object: the window and its panes |
+| `openProject` | name, new instance, mode | An object: the window and its panes. The mode is `session`, `window`, or empty for what the project says. Into a session, the object also has `session`, its name. |
 | `scriptDiagnostics` | None | Script and package diagnostics |
 | `overlay` | pane, argv, options | An object: `exit_code`, `stdout` and `truncated`. See [overlays](#overlays). |
 | `screenshot` | pane, scope | An object: `png` (the PNG image in base64), `width` and `height` in device pixels. See [screenshots](#screenshots). |

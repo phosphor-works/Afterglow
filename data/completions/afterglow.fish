@@ -255,6 +255,9 @@ function __afterglow_ctl
             contains -- --overwrite $argv; or set -a offer --overwrite\t'Replace a project with the name'
         case open-project
             contains -- --new $argv; or set -a offer --new\t'Launch the layout again'
+            if not contains -- --session $argv; and not contains -- --no-session $argv
+                set -a offer --session\t'Open into a mux session' --no-session\t'Open into a window'
+            end
     end
     __afterglow_print $offer
 end

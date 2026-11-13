@@ -10,6 +10,7 @@
 #include <QLockFile>
 #include <QSaveFile>
 #include <QSet>
+#include <QStandardPaths>
 #include <cmath>
 
 namespace Afterglow {
@@ -89,9 +90,48 @@ QString ProjectStore::validate(const QJsonObject& document)
         tabs.insert(id.toString());
     }
     if (!tabs.contains(document.value(QStringLiteral("active_tab")).toString())) return tr("Invalid active project tab");
+    if (document.contains(QStringLiteral("session")) && !document.value(QStringLiteral("session")).isBool())
+        return tr("The session of a project is true or false");
     if (QJsonDocument(document).toJson(QJsonDocument::Compact).size() > MaxBytes) return tr("Project exceeds 1 MiB");
     return {};
 }
+ProjectStore::Launch ProjectStore::launchOf(const QJsonObject& pane, QStringList& warnings)
+{
+    Launch launch;
+    const auto savedId = pane.value(QStringLiteral("id")).toString();
+    launch.cwd = pane.value(QStringLiteral("cwd")).toString();
+    if (launch.cwd == QLatin1String("~")) launch.cwd = QDir::homePath();
+    else if (launch.cwd.startsWith(QLatin1String("~/"))) launch.cwd = QDir::homePath() + launch.cwd.mid(1);
+    if (!QFileInfo(launch.cwd).isDir()) {
+        warnings << tr("Pane %1: directory missing (%2). Using home").arg(savedId, launch.cwd);
+        launch.cwd = QDir::homePath();
+    }
+    for (const auto arg : pane.value(QStringLiteral("command")).toArray()) launch.command << arg.toString();
+    launch.configured = launch.command;
+    if (!launch.command.isEmpty()) {
+        const auto program = launch.command.first();
+        const auto resolved = program.contains(QLatin1Char('/')) ? QDir(launch.cwd).absoluteFilePath(program)
+                                                                : QStandardPaths::findExecutable(program);
+        if (resolved.isEmpty() || !QFileInfo(resolved).isFile() || !QFileInfo(resolved).isExecutable()) {
+            warnings << tr("Pane %1: command unavailable (%2). Starting a shell").arg(savedId, program);
+            launch.command.clear();
+        }
+    }
+    return launch;
+}
+
+QJsonObject ProjectStore::firstPane(const QJsonObject& document)
+{
+    QJsonObject node = document.value(QStringLiteral("tabs")).toArray().at(0).toObject().value(QStringLiteral("tree")).toObject();
+    while (!node.contains(QStringLiteral("pane")) && node.contains(QStringLiteral("first"))) node = node.value(QStringLiteral("first")).toObject();
+    return node.value(QStringLiteral("pane")).toObject();
+}
+
+bool ProjectStore::opensSession(const QJsonObject& document)
+{
+    return document.value(QStringLiteral("session")).toBool(false);
+}
+
 QStringList ProjectStore::names() const
 {
     QStringList result;

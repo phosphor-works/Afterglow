@@ -33,19 +33,6 @@ bool handles(const char* command)
     return false;
 }
 
-std::string siblingExecutable(const char* name, std::string* error)
-{
-    // read_symlink grows its buffer for a long path, where a fixed one would
-    // cut it short.
-    std::error_code failure;
-    const auto self = std::filesystem::read_symlink("/proc/self/exe", failure);
-    if (failure || self.empty()) {
-        *error = "cannot find its own executable: " + (failure ? failure.message() : std::string("the link is empty"));
-        return {};
-    }
-    return (self.parent_path() / name).string();
-}
-
 int run(int argc, char** argv)
 {
     // 127, as a shell answers for a command that it cannot find.

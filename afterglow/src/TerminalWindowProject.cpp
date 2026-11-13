@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "TerminalWindow.h"
+#include "Pane.h"
 #include "ProjectStore.h"
+#include "mux/MuxClient.h"
 #include <QDir>
-#include <QFileInfo>
 #include <QJsonArray>
-#include <QStandardPaths>
 
 namespace Afterglow {
 namespace {
@@ -32,50 +32,56 @@ QJsonObject TerminalWindow::projectLayout() const
         tabs.append(QJsonObject{{QStringLiteral("id"), QString::number(tab.id)}, {QStringLiteral("title"), tab.title.left(ProjectTitleLimit)},
                                 {QStringLiteral("active_pane"), QString::number(focused->id())}, {QStringLiteral("tree"), tree}});
     }
-    return {{QStringLiteral("version"), 1}, {QStringLiteral("active_tab"), QString::number(activeTabId())},
-            {QStringLiteral("tabs"), tabs}};
+    QJsonObject document{{QStringLiteral("version"), 1}, {QStringLiteral("active_tab"), QString::number(activeTabId())},
+                         {QStringLiteral("tabs"), tabs}};
+    // A window of a session of this computer: the project opens into its
+    // session again.
+    if (m_session && !m_session->remote()) document.insert(QStringLiteral("session"), true);
+    return document;
 }
 
-QVariantMap TerminalWindow::restoreProject(const QJsonObject& document)
+QVariantMap TerminalWindow::restoreProject(const QJsonObject& document, Pane* first)
 {
-    if (!m_tabs.empty()) return {{QStringLiteral("error"), QStringLiteral("Project destination must be empty")}};
+    // A window of a new session shows the session's first pane in one tab:
+    // the project takes its place, with that pane as its first.
+    const bool empty = first ? m_tabs.size() == 1 && m_tabs.front()->splits->paneCount() == 1 && m_session : m_tabs.empty();
+    if (!empty) return {{QStringLiteral("error"), QStringLiteral("Project destination must be empty")}};
     if (const auto error = ProjectStore::validate(document); !error.isEmpty())
         return {{QStringLiteral("error"), error}};
+    Pane* const reused = first;
+    // Its tree goes once the project's tabs are there: it does not own the pane.
+    std::vector<std::unique_ptr<Tab>> previous = std::move(m_tabs);
+    m_tabs.clear();
+    m_splits = nullptr;
     QVariantMap paneIds, tabIds;
     QStringList warnings;
+    QString failed;
     const auto tabs = document.value(QStringLiteral("tabs")).toArray();
     int active = 0;
     for (const auto tabValue : tabs) {
         const auto saved = tabValue.toObject();
         auto tab = std::make_unique<Tab>();
         tab->title = saved.value(QStringLiteral("title")).toString();
-        tab->splits = SplitTree::restore(saved.value(QStringLiteral("tree")).toObject(), [&](const QJsonObject& data) {
+        tab->splits = SplitTree::restore(saved.value(QStringLiteral("tree")).toObject(), [&](const QJsonObject& data) -> Pane* {
             const auto savedId = data.value(QStringLiteral("id")).toString();
-            auto cwd = data.value(QStringLiteral("cwd")).toString();
-            if (cwd == QLatin1String("~")) cwd = QDir::homePath();
-            else if (cwd.startsWith(QLatin1String("~/"))) cwd = QDir::homePath() + cwd.mid(1);
-            if (!QFileInfo(cwd).isDir()) {
-                warnings << QStringLiteral("Pane %1: directory missing (%2). Using home").arg(savedId, cwd);
-                cwd = QDir::homePath();
-            }
-            QStringList command;
-            for (const auto arg : data.value(QStringLiteral("command")).toArray()) command << arg.toString();
-            const auto configured = command;
-            if (!command.isEmpty()) {
-                const auto program = command.first();
-                const auto resolved = program.contains(QLatin1Char('/')) ? QDir(cwd).absoluteFilePath(program)
-                                                                        : QStandardPaths::findExecutable(program);
-                if (resolved.isEmpty() || !QFileInfo(resolved).isFile() || !QFileInfo(resolved).isExecutable()) {
-                    warnings << QStringLiteral("Pane %1: command unavailable (%2). Starting a shell").arg(savedId, program);
-                    command.clear();
+            const ProjectStore::Launch launch = ProjectStore::launchOf(data, warnings);
+            Pane* pane = std::exchange(first, nullptr);
+            // A session that refused a pane refuses the rest: none is asked for.
+            if (!pane && !failed.isEmpty()) return nullptr;
+            // The session started the first pane with this launch already.
+            if (!pane) {
+                // A session pane ends with its program, as in any session.
+                m_holdNextPane = !m_session && !launch.configured.isEmpty();
+                QString failure;
+                pane = createPane(launch.cwd, paneArea(), launch.command, &failure, {}, true);
+                if (!pane) {
+                    if (failed.isEmpty()) failed = QStringLiteral("Pane %1: %2").arg(savedId, failure);
+                    return nullptr;
                 }
+                if (!failure.isEmpty()) warnings << QStringLiteral("Pane %1: %2. Attempted /bin/sh recovery").arg(savedId, failure);
             }
-            m_holdNextPane = !configured.isEmpty();
-            QString failure;
-            auto* pane = createPane(cwd, paneArea(), command, &failure, {}, true);
-            pane->setLaunch(cwd, configured); // retain explicit intent if the launch used a fallback
+            pane->setLaunch(launch.cwd, launch.configured); // retain explicit intent if the launch used a fallback
             pane->setUserTitle(data.value(QStringLiteral("title")).toString());
-            if (!failure.isEmpty()) warnings << QStringLiteral("Pane %1: %2. Attempted /bin/sh recovery").arg(savedId, failure);
             paneIds.insert(savedId, pane->id());
             if (savedId == saved.value(QStringLiteral("active_pane")).toString()) tab->focused = pane;
             return pane;
@@ -85,8 +91,25 @@ QVariantMap TerminalWindow::restoreProject(const QJsonObject& document)
         if (savedId == document.value(QStringLiteral("active_tab")).toString()) active = int(m_tabs.size());
         m_tabs.push_back(std::move(tab));
     }
+    if (!failed.isEmpty()) {
+        // Only a session refuses a pane: the panes that it started end, and
+        // the window shows what it showed.
+        for (const auto& tab : m_tabs) {
+            tab->splits->forEachPane([&](Pane* pane, const QRect&) {
+                if (!pane || (!previous.empty() && previous.front()->splits->contains(pane))) return;
+                pane->setSessionRelease(MuxRelease::Pane);
+                pane->deleteLater();
+            });
+        }
+        m_tabs = std::move(previous);
+        finishTransfer();
+        return {{QStringLiteral("error"), failed}};
+    }
+    previous.clear();
     m_currentTab = active;
     finishTransfer();
+    // The session's first pane is in a tab of the project now.
+    if (reused) Q_EMIT paneMoved(reused);
     requestActivate();
     return {{QStringLiteral("window_id"), id()}, {QStringLiteral("pane_ids"), paneIds},
             {QStringLiteral("tab_ids"), tabIds}, {QStringLiteral("warnings"), warnings}, {QStringLiteral("reused"), false}};

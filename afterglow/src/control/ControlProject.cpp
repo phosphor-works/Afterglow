@@ -4,6 +4,9 @@
 #include "../ProjectStore.h"
 #include "../TerminalWindow.h"
 #include "../config/Settings.h"
+#include "../mux/MuxSessions.h"
+
+#include "MuxProtocol.h"
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -25,17 +28,26 @@ QString Control::saveProject(quint32 id, const QString& name, bool overwrite, QV
     result = {{QStringLiteral("name"), name}, {QStringLiteral("window_id"), window->id()}};
     return {};
 }
-QString Control::openProject(const QString& name, bool newInstance, QVariantMap& result)
+QString Control::openProject(const QString& name, bool newInstance, const QString& mode, QVariantMap& result)
 {
     if (!ProjectStore::validName(name)) return QStringLiteral("invalid project name");
-    if (!newInstance) for (const auto& window : m_windows) {
-        if (!window || window->projectName() != name || !window->focusedPane()) continue;
-        focus(window->focusedPane()->id());
-        result = {{QStringLiteral("name"), name}, {QStringLiteral("window_id"), window->id()}, {QStringLiteral("reused"), true}};
-        return {};
-    }
+    if (!mode.isEmpty() && mode != QLatin1String("session") && mode != QLatin1String("window"))
+        return QStringLiteral("a project opens into a session or a window");
     QJsonObject document;
     if (const auto error = projects().read(name, document); !error.isEmpty()) return error;
+    // A project whose name names no session opens into a window, unless
+    // asked for a session, which then says why not.
+    const bool session = mode.isEmpty() ? ProjectStore::opensSession(document) && AfterglowMux::validSessionName(name.toStdString())
+                                        : mode == QLatin1String("session");
+    // A window of the project, of the kind that it opens into.
+    if (!newInstance) for (const auto& window : m_windows) {
+        if (!window || window->projectName() != name || !window->focusedPane() || window->showsSession() != session) continue;
+        focus(window->focusedPane()->id());
+        result = {{QStringLiteral("name"), name}, {QStringLiteral("window_id"), window->id()}, {QStringLiteral("reused"), true}};
+        if (session) result.insert(QStringLiteral("session"), window->sessionName());
+        return {};
+    }
+    if (session) return openProjectSession(name, document, newInstance, result);
     auto* window = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
     if (!window) return QStringLiteral("cannot open a window");
     window->setProjectName(name);
@@ -48,6 +60,74 @@ QString Control::openProject(const QString& name, bool newInstance, QVariantMap&
     }
     result.insert(QStringLiteral("name"), name);
     const auto warnings = result.value(QStringLiteral("warnings")).toStringList();
+    if (!warnings.isEmpty() && window->focusedPane())
+        notify(window->focusedPane()->id(), QStringLiteral("Project opened with warnings"), warnings.join(QLatin1Char('\n')));
+    return {};
+}
+
+TerminalWindow* Control::sessionWindow(const QString& session) const
+{
+    for (const auto& window : m_windows) {
+        if (!window) continue;
+        for (Pane* pane : window->panes()) {
+            if (pane->showsSession(session)) return window;
+        }
+    }
+    return nullptr;
+}
+
+QString Control::openProjectSession(const QString& name, const QJsonObject& document, bool newInstance, QVariantMap& result)
+{
+    if (!AfterglowMux::validSessionName(name.toStdString()))
+        return QStringLiteral("project %1 cannot name a session: the name of a session must be %2").arg(name, QLatin1String(AfterglowMux::SessionNameRule));
+    if (!m_openSessionWindow) return QStringLiteral("cannot open a window");
+    const auto opened = [&](TerminalWindow* window, const QString& session, bool reused) {
+        window->setProjectName(name);
+        if (window->focusedPane()) focus(window->focusedPane()->id());
+        result.insert(QStringLiteral("name"), name);
+        result.insert(QStringLiteral("window_id"), window->id());
+        result.insert(QStringLiteral("session"), session);
+        result.insert(QStringLiteral("reused"), reused);
+    };
+    // The session of the project runs: its window shows it, or a new one does.
+    const bool runs = localSessionRuns(name);
+    if (!newInstance && runs) {
+        if (TerminalWindow* shown = sessionWindow(name)) {
+            opened(shown, name, true);
+            return {};
+        }
+        if (const QString error = m_openSessionWindow(name, {}); !error.isEmpty()) return error;
+        TerminalWindow* window = sessionWindow(name);
+        if (!window) return QStringLiteral("no window shows session %1").arg(name);
+        opened(window, name, true);
+        return {};
+    }
+    // A new session: the project's first pane starts it, and its window
+    // starts the others in it. Another instance gets the daemon's next name,
+    // and so does a project whose last session ended while a window here
+    // has not heard it yet: that window still shows a session of the name.
+    // The restore gives the warnings, the first pane's too.
+    QStringList ignored;
+    const ProjectStore::Launch first = ProjectStore::launchOf(ProjectStore::firstPane(document), ignored);
+    const bool taken = runs || sessionWindow(name);
+    QString error;
+    const QString session = newLocalSession(localSessionOptions(m_settings.settings(), first.cwd, first.command, taken ? QString() : name), &error);
+    if (session.isEmpty()) return error;
+    // A session that no window lays out is ended, and the error says so when it cannot be.
+    const auto fail = [&session](const QString& why) {
+        return killLocalSession(session) ? why : QStringLiteral("%1, and session %2 still runs").arg(why, session);
+    };
+    if (const QString why = m_openSessionWindow(session, {}); !why.isEmpty()) return fail(why);
+    TerminalWindow* window = sessionWindow(session);
+    if (!window || !window->focusedPane()) return fail(QStringLiteral("no window shows session %1").arg(session));
+    result = window->restoreProject(document, window->focusedPane());
+    if (const QString why = result.value(QStringLiteral("error")).toString(); !why.isEmpty()) {
+        result.clear();
+        // Its end closes the window.
+        return fail(why);
+    }
+    const QStringList warnings = result.value(QStringLiteral("warnings")).toStringList();
+    opened(window, session, false);
     if (!warnings.isEmpty() && window->focusedPane())
         notify(window->focusedPane()->id(), QStringLiteral("Project opened with warnings"), warnings.join(QLatin1Char('\n')));
     return {};
@@ -156,7 +236,7 @@ void Control::projectDialog(Pane* pane, bool save)
             [this, guard, report](QString error, QVariantMap data) {
                 if (!guard || !error.isEmpty()) return;
                 QVariantMap result;
-                report(openProject(data.value(QStringLiteral("id")).toString(), false, result));
+                report(openProject(data.value(QStringLiteral("id")).toString(), false, {}, result));
             }));
     }
 }

@@ -62,7 +62,8 @@ public:
     Q_INVOKABLE QVariantMap openDirectory(const QString& directory, const QString& layout);
     Q_INVOKABLE QStringList projects();
     Q_INVOKABLE QVariantMap saveProject(double pane, const QString& name, bool overwrite);
-    Q_INVOKABLE QVariantMap openProject(const QString& name, bool newInstance);
+    /// @p mode: "session", "window", or empty for what the project says.
+    Q_INVOKABLE QVariantMap openProject(const QString& name, bool newInstance, const QString& mode);
     Q_INVOKABLE QVariantList scriptDiagnostics();
     /// Runs @p argv over @p pane (0: the focused pane) and answers once it
     /// exits, with {exit_code, stdout, truncated}: stdout only with

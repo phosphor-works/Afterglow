@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ProjectStore.h"
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -93,6 +94,48 @@ TEST(ProjectStore, RejectsInvalidVersionsIdentitiesRatiosAndCommands)
     p["command"] = QJsonArray{"sh", "-c", "echo test"};
     EXPECT_TRUE(ProjectStore::validate(project({{"pane", p}})).isEmpty());
 }
+// "session" says whether the project opens into a mux session: true or
+// false, and false when it is not there.
+TEST(ProjectStore, TheSessionOfAProjectIsTrueOrFalse)
+{
+    auto doc = project();
+    EXPECT_FALSE(ProjectStore::opensSession(doc));
+    doc["session"] = true;
+    EXPECT_TRUE(ProjectStore::validate(doc).isEmpty());
+    EXPECT_TRUE(ProjectStore::opensSession(doc));
+    doc["session"] = false;
+    EXPECT_TRUE(ProjectStore::validate(doc).isEmpty());
+    EXPECT_FALSE(ProjectStore::opensSession(doc));
+    for (const QJsonValue& value : {QJsonValue(1), QJsonValue("yes"), QJsonValue(QJsonValue::Null)}) {
+        doc["session"] = value;
+        EXPECT_EQ(ProjectStore::validate(doc), QStringLiteral("The session of a project is true or false"));
+    }
+}
+
+// The first pane that a project starts, which starts its session, and its
+// launch as a window starts it.
+TEST(ProjectStore, TheFirstPaneIsTheFirstLeafOfTheFirstTab)
+{
+    QJsonObject first{{"id", "first"}, {"cwd", "/"}, {"title", ""}, {"command", QJsonArray{"/no/such/program", "-x"}}};
+    QJsonObject split{{"direction", "down"}, {"ratio", 0.5}, {"first", QJsonObject{{"pane", first}}}, {"second", pane("second")}};
+    const auto doc = project(split);
+    EXPECT_EQ(ProjectStore::firstPane(doc), first);
+    QStringList warnings;
+    const ProjectStore::Launch launch = ProjectStore::launchOf(first, warnings);
+    EXPECT_EQ(launch.cwd, QStringLiteral("/"));
+    // A command that is not there starts a shell, and the project keeps it.
+    EXPECT_TRUE(launch.command.isEmpty());
+    EXPECT_EQ(launch.configured, (QStringList{"/no/such/program", "-x"}));
+    ASSERT_EQ(warnings.size(), 1);
+    EXPECT_TRUE(warnings.first().contains(QLatin1String("command unavailable"))) << warnings.first().toStdString();
+    // A directory that is not there is the home directory.
+    first["cwd"] = "/no/such/directory";
+    first["command"] = QJsonArray{};
+    warnings.clear();
+    EXPECT_EQ(ProjectStore::launchOf(first, warnings).cwd, QDir::homePath());
+    EXPECT_EQ(warnings.size(), 1);
+}
+
 TEST(ProjectStore, BoundsTreesBeforeAnyPaneIsCreated)
 {
     auto root = pane();

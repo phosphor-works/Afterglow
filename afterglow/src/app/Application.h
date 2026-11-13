@@ -86,6 +86,8 @@ public:
     QString openLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
     /// An error message, empty on success.
     QString toggleQuickTerminal();
+    /// The control of the windows, as `afterglow ctl` reaches it. A test hook.
+    Control& control() { return m_control; }
 
 private:
     void bindShortcuts();
