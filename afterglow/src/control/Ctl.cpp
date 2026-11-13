@@ -319,6 +319,7 @@ QJsonValue sessionLaunch(QString directory, const QStringList& command)
     launch.environment = std::move(opts.environment);
     launch.unset = std::move(opts.unsetEnvironment);
     launch.launchedProgram = launchedProgramName(command).toStdString();
+    launch.command = sessionCommand(command);
     return QJsonDocument::fromJson(QByteArray::fromStdString(AfterglowProto::Json::write(AfterglowMux::toJson(launch)))).object();
 }
 
@@ -674,8 +675,8 @@ int runCtl(int argc, char** argv)
         std::printf("%lld\n", result->toInteger());
         return 0;
     };
-    auto printObject = [&client](const QString& fn, const QJsonArray& callArgs) {
-        const auto result = client.call(fn, callArgs);
+    auto printObject = [&client](const QString& fn, const QJsonArray& callArgs, int timeoutMs = ReplyTimeoutMs) {
+        const auto result = client.call(fn, callArgs, timeoutMs);
         if (!result) return 1;
         printJson(QJsonDocument(result->toObject()), QJsonDocument::Compact);
         return 0;
@@ -753,7 +754,9 @@ int runCtl(int argc, char** argv)
         if (const auto error = extra(1)) return usage(*error);
         if (args.size() != 1) return usage(QStringLiteral("open-project takes NAME [--new] [--session | --no-session]"));
         const QString mode = session ? QStringLiteral("session") : window ? QStringLiteral("window") : QString();
-        return printObject(QStringLiteral("openProject"), {args.first(), fresh, mode});
+        // A session can wait for the daemon to start, and for another open
+        // of the project.
+        return printObject(QStringLiteral("openProject"), {args.first(), fresh, mode}, 3 * ReplyTimeoutMs);
     }
     if (command == QLatin1String("new-window")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());

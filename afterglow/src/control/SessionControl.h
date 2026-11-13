@@ -17,8 +17,10 @@ struct Settings;
 /// Answers a call of `afterglow ctl` for the session that @p window shows,
 /// which the mux daemon passes to the window (MuxClient::ControlHandler): the
 /// calls that only a window can do, and the panes that the daemon started to
-/// place. Its arguments and its result name panes by the daemon's IDs.
-MuxClient::ControlAnswer answerSessionCall(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn,
-                                           const QJsonArray& args);
+/// place. Its arguments and its result name panes by the daemon's IDs. The
+/// answer goes to @p reply, at once, or later for a project that opens into
+/// a session.
+void answerSessionCall(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn, const QJsonArray& args,
+                       MuxClient::ControlReply reply);
 
 } // namespace Afterglow

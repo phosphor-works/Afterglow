@@ -4,6 +4,7 @@
 #include "Control.h"
 
 #include "../Pane.h"
+#include "../PaneOverlay.h"
 #include "../TerminalWindow.h"
 #include "../app/NotificationCenter.h"
 #include "../app/WindowStart.h"
@@ -19,6 +20,8 @@
 #include <QGuiApplication>
 #include <QSet>
 #include <QUrl>
+
+#include <AfterglowPty/Pty.h>
 
 #include <algorithm>
 #include <chrono>
@@ -206,6 +209,31 @@ std::optional<PaneInfo> Control::paneInfo(quint32 id) const
     TerminalWindow* window = nullptr;
     Pane* pane = find(id, &window);
     return pane ? std::optional(describe(window, pane)) : std::nullopt;
+}
+
+bool Control::runsIn(quint32 id, qint64 process, bool overlay) const
+{
+    // A terminal in a terminal (tmux, an editor) and a shell's nesting are
+    // far fewer.
+    constexpr int MaxAncestors = 64;
+    const Pane* pane = find(id);
+    if (pane && overlay) pane = pane->overlay() ? pane->overlay()->pane() : nullptr;
+    const pid_t leader = pane ? pane->programPid() : 0;
+    if (leader <= 0 || process <= 1 || process > std::numeric_limits<pid_t>::max()) return false;
+    pid_t at = pid_t(process);
+    for (int up = 0; at > 1 && up < MaxAncestors; ++up) {
+        const auto stat = AfterglowPty::processStat(at);
+        if (!stat) return false;
+        if (stat->session == leader) return true;
+        at = pid_t(stat->parent);
+    }
+    return false;
+}
+
+Control::~Control()
+{
+    m_closing->store(true);
+    m_daemonCalls.clear();
 }
 
 std::optional<quint32> Control::focusedPane() const

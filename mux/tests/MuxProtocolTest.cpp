@@ -64,7 +64,10 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 15) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 16) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 16 added the command to a launch, the values of the panes to
+    // a layout (MuxLayoutTest), and the command to the placePane call of the
+    // daemon to a window.
     // Version 15 added control.remoteCommandsOff to the options of a
     // session, and the remote calls of `afterglow ssh` on the control
     // target of the daemon.
@@ -122,9 +125,12 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(Attach::encode(layoutEvent), std::string("\x07\x00\x00\x00{}", 6));
     Layout layout;
     layout.addTab(4);
-    EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current"}));
+    layout.values[4] = {"t", {"htop"}};
+    EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current", "values"}));
     EXPECT_EQ(keys(toJson(layout)["tabs"].toArray()[0]), (std::vector<std::string>{"tree", "focused", "zoomed", "title"}));
-    [[maybe_unused]] auto& [tabs, current] = layout;
+    EXPECT_EQ(keys(toJson(layout)["values"].toArray()[0]), (std::vector<std::string>{"id", "title", "command"}));
+    [[maybe_unused]] auto& [tabs, current, values] = layout;
+    [[maybe_unused]] auto& [valueTitle, valueCommand] = layout.values[4];
     [[maybe_unused]] auto& [tree, focused, zoomed, tabTitle] = layout.tabs[0];
     [[maybe_unused]] auto& [nodePane, down, ratio] = layout.tabs[0].tree[0];
     // Version 8 added the frames of its pane before each Host event, which
@@ -212,7 +218,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     [[maybe_unused]] auto& [name, sessionEnvironment, callerEnvironment, umask, launch, size, terminal, notificationCapabilities,
                             controlOptions] = fields;
     [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff] = fields.control;
-    [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram] = fields.launch;
+    [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram, command] = fields.launch;
     [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
     [[maybe_unused]] auto& [scrollback, foreground, background, palette, cursorColor, cursorTextColor, selectionForeground,
                             selectionBackground, boldIsBright, minimumContrast, wordBoundaries, ambiguousWide, bidi, cursorShape,
@@ -225,7 +231,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
               (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
                                         "notificationCapabilities", "control"}));
     EXPECT_EQ(keys(options["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff"}));
-    EXPECT_EQ(keys(options["launch"]), (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram"}));
+    EXPECT_EQ(keys(options["launch"]), (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram", "command"}));
     EXPECT_EQ(keys(options["size"]), (std::vector<std::string>{"cols", "rows", "cellWidth", "cellHeight"}));
     EXPECT_EQ(keys(options["terminal"]),
               (std::vector<std::string>{"scrollback", "foreground", "background", "palette", "cursorColor", "cursorTextColor",
@@ -420,6 +426,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     o.launch.environment = {{"TERM", "afterglow"}, {"EMPTY", ""}};
     o.launch.unset = {"TMUX"};
     o.launch.launchedProgram = "htop";
+    o.launch.command = {"htop", "-d", "10"};
     o.size = {132, 43, 9, 18};
     o.notificationCapabilities = "a=focus:p=title";
     o.control = {false, true, "remote commands are off (Terminal.sshRemoteCommands)"};
@@ -459,6 +466,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     EXPECT_EQ(back->launch.environment, o.launch.environment);
     EXPECT_EQ(back->launch.unset, o.launch.unset);
     EXPECT_EQ(back->launch.launchedProgram, o.launch.launchedProgram);
+    EXPECT_EQ(back->launch.command, o.launch.command);
     // A launch and a size alone, as newPane takes them.
     const auto launch = launchFrom(Json::parse(Json::write(toJson(o.launch))).value(), &error);
     ASSERT_TRUE(launch) << error;
@@ -542,6 +550,11 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         {"unset", Json::Array{""}},
         {"unset", Json::Array{1}},
         {"launchedProgram", false},
+        {"command", "htop"},
+        {"command", Json::Array{1}},
+        {"command", Json::Array{""}},
+        {"command", Json::Array(65, Json::Value("a"))},
+        {"command", Json::Array{"vi", std::string(MaxPaneCommandArg + 1, 'x')}},
         {"umask", 0},
     };
     for (const auto& [key, value] : badLaunch) {

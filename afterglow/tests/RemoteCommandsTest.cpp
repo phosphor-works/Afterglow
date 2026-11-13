@@ -28,6 +28,7 @@
 #include <AfterglowProto/Lock.h>
 #include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Version.h>
+#include <AfterglowPty/Pty.h>
 
 #include <gtest/gtest.h>
 
@@ -224,6 +225,20 @@ protected:
                                                    });
         m_remote->setSsh(fakeSsh());
         m_controlSocket->setRemoteSockets(m_remote.get());
+        // The helper's `afterglow ssh` runs in no pane: it plays the one of
+        // FakePane (NativeWindow.RemoteSocketsOpenOnlyForTheProcessesOfTheirPane).
+        // One in m_pane, which no window holds, runs in its terminal session.
+        m_controlSocket->setPaneProcesses([this](quint32 pane, qint64 process, bool) {
+            if (pane == FakePane) return true;
+            if (!m_pane || pane != m_pane->id() || m_pane->programPid() <= 0) return false;
+            for (int up = 0; process > 1 && up < 64; ++up) {
+                const auto stat = AfterglowPty::processStat(pid_t(process));
+                if (!stat) return false;
+                if (stat->session == m_pane->programPid()) return true;
+                process = stat->parent;
+            }
+            return false;
+        });
         followScriptSettings(*m_scripts, *m_settings);
         qputenv("FAKE_SSH_LOG", log().toUtf8());
         return true;

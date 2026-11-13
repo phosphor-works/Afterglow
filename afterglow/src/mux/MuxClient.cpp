@@ -428,21 +428,27 @@ void MuxClient::answerControlCalls()
     while (!m_controlCalls.empty()) {
         const ControlCall call = std::move(m_controlCalls.front());
         m_controlCalls.pop_front();
-        ControlAnswer answer;
-        if (m_controlHandler) answer = m_controlHandler(call.fn, call.args);
-        else answer.error = QStringLiteral("this window answers no control calls");
-        // The answer goes after the layout that the call changed: the daemon
-        // reads the input in its order.
-        if (call.id == 0 || !showing()) continue;
-        QJsonObject reply{{QStringLiteral("id"), call.id}};
-        if (answer.error.isEmpty()) reply.insert(QStringLiteral("result"), answer.result);
-        else reply.insert(QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), QStringLiteral("CALL_FAILED")}, {QStringLiteral("message"), answer.error}});
-        Attach::Input input;
-        input.type = Attach::InputType::ControlReply;
-        input.bytes = QJsonDocument(reply).toJson(QJsonDocument::Compact).toStdString();
-        queueInput(Attach::encode(input), false);
-        sendWaitingInput();
+        ControlReply reply = [self = QPointer<MuxClient>(this), id = call.id](const ControlAnswer& answer) {
+            if (self) self->sendControlReply(id, answer);
+        };
+        if (m_controlHandler) m_controlHandler(call.fn, call.args, std::move(reply));
+        else reply({{}, QStringLiteral("this window answers no control calls")});
     }
+}
+
+void MuxClient::sendControlReply(qint64 id, const ControlAnswer& answer)
+{
+    // The answer goes after the layout that the call changed: the daemon
+    // reads the input in its order.
+    if (id == 0 || !showing()) return;
+    QJsonObject reply{{QStringLiteral("id"), id}};
+    if (answer.error.isEmpty()) reply.insert(QStringLiteral("result"), answer.result);
+    else reply.insert(QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), QStringLiteral("CALL_FAILED")}, {QStringLiteral("message"), answer.error}});
+    Attach::Input input;
+    input.type = Attach::InputType::ControlReply;
+    input.bytes = QJsonDocument(reply).toJson(QJsonDocument::Compact).toStdString();
+    queueInput(Attach::encode(input), false);
+    sendWaitingInput();
 }
 
 void MuxClient::sendWaitingInput()

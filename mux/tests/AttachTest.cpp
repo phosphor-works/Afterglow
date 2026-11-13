@@ -1865,6 +1865,96 @@ void endProcess(pid_t pid)
     ::waitpid(pid, nullptr, 0);
 }
 
+/// The program of a session pane, which makes the calls of `afterglow ssh`
+/// from there: the daemon opens a remote socket only for a caller in its
+/// pane. Each line that it reads goes to the daemon, and its answer comes
+/// back; "spawn" starts a sleep in the pane and answers with its process ID.
+struct PaneAgent
+{
+    PaneAgent(TestDaemon& daemon, const std::string& name)
+        : input(daemon.dir() + "/agent-" + name + ".in")
+        , output(daemon.dir() + "/agent-" + name + ".out")
+    {
+        if (::mkfifo(input.c_str(), 0600) != 0) ADD_FAILURE() << "no fifo " << input;
+        static const std::string script = R"(import os, socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.connect(os.environ['AFTERGLOW_SOCKET'])
+buf = b''
+def answer(line):
+    with open(sys.argv[2], 'ab') as f:
+        f.write(line)
+while True:
+    with open(sys.argv[1], 'rb') as f:
+        for line in f:
+            if line.strip() == b'spawn':
+                pid = os.fork()
+                if pid == 0:
+                    os.execvp('sleep', ['sleep', '60'])
+                answer(b'%d\n' % pid)
+                continue
+            s.sendall(line)
+            while b'\n' not in buf:
+                more = s.recv(65536)
+                if not more:
+                    sys.exit(1)
+                buf += more
+            reply, _, buf = buf.partition(b'\n')
+            answer(reply + b'\n')
+)";
+        started = bool(daemon.newSession(daemon.options({"python3", "-I", "-c", script, input, output}, name)));
+    }
+    /// The next answer, after @p line went to the agent.
+    std::string ask(const std::string& line)
+    {
+        // Without blocking: an agent that ended fails the test, not hangs it.
+        int fd = -1;
+        if (!waitFor([&] { return (fd = ::open(input.c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC)) >= 0; })) return {};
+        const std::string text = line + '\n';
+        std::size_t written = 0;
+        while (written < text.size()) {
+            const ssize_t n = ::write(fd, text.data() + written, text.size() - written);
+            if (n > 0) written += std::size_t(n);
+            else if (n < 0 && errno != EAGAIN && errno != EINTR) break;
+        }
+        ::close(fd);
+        std::string answer;
+        waitFor([&] {
+            const std::string all = readFile(output);
+            std::size_t at = 0;
+            for (std::size_t i = 0; i < answered && at != std::string::npos; ++i) at = all.find('\n', at) + 1;
+            const std::size_t end = all.find('\n', at);
+            if (end == std::string::npos) return false;
+            answer = all.substr(at, end - at);
+            return true;
+        });
+        ++answered;
+        return answer;
+    }
+    /// A process in the pane, which plays `afterglow ssh`.
+    pid_t spawn() { return pid_t(std::strtol(ask("spawn").c_str(), nullptr, 10)); }
+    /// A call of the control target from the pane, with its error message.
+    std::optional<Json::Value> call(const std::string& fn, Json::Array args)
+    {
+        error.clear();
+        const auto reply = Json::parse(ask(Json::write(Json::Object{
+            {"type", "call"}, {"id", std::int64_t(++calls)}, {"target", "control"}, {"fn", fn}, {"args", std::move(args)}})));
+        if (!reply) {
+            error = "no answer";
+            return std::nullopt;
+        }
+        if (const Json::Value* result = reply->find("result")) return *result;
+        error = (*reply)["message"].toString();
+        if (const Json::Value* inner = reply->find("error")) error = (*inner)["message"].toString();
+        return std::nullopt;
+    }
+    std::string input;
+    std::string output;
+    bool started = false;
+    std::size_t answered = 0;
+    std::int64_t calls = 0;
+    std::string error;
+};
+
 } // namespace
 
 // `afterglow ssh` in a session pane: the daemon keeps the socket that ssh
@@ -1872,6 +1962,7 @@ void endProcess(pid_t pid)
 // sockets that a window keeps for its own panes (RemoteCommandsTest).
 TEST(MuxControl, AnSshSessionOfASessionPaneGetsASocketOfTheDaemon)
 {
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
     TestDaemon daemon;
     // An ssh that logs its arguments: the daemon runs it to cancel a forward.
     const std::string bin = daemon.dir() + "/bin";
@@ -1893,22 +1984,36 @@ TEST(MuxControl, AnSshSessionOfASessionPaneGetsASocketOfTheDaemon)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     EXPECT_FALSE(exists(stale));
     EXPECT_FALSE(exists(stale + ".lock"));
-    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    PaneAgent agent(daemon, "s");
+    ASSERT_TRUE(agent.started) << daemon.lastError();
     ControlClient ctl(daemon);
     ASSERT_EQ(ctl.select("s"), "");
     const auto listed = ctl.call("listPanes", {});
     ASSERT_TRUE(listed) << ctl.error.message;
     const std::uint32_t pane = paneIds(*listed).front();
-    pid_t process = sleeper();
+    pid_t process = agent.spawn();
     ASSERT_GT(process, 0);
-    const auto open = [&](std::int64_t protocol, std::string directory = "/run/user/1000/afterglow", bool overlay = false,
-                          std::string host = "box") {
-        return ctl.call("openRemoteSocket", Json::Array{std::int64_t(pane), std::int64_t(process), host, directory, protocol,
-                                                        Json::Array{"-F", "none", "-S", "/cm"}, "prod", overlay});
+    const auto args = [&](std::int64_t protocol, const std::string& directory, bool overlay, const std::string& host) {
+        return Json::Array{std::int64_t(pane), std::int64_t(process), host, directory, protocol, Json::Array{"-F", "none", "-S", "/cm"}, "prod",
+                           overlay};
     };
+    const auto open = [&](std::int64_t protocol, std::string directory = "/run/user/1000/afterglow", bool overlay = false,
+                          std::string host = "box") { return agent.call("openRemoteSocket", args(protocol, directory, overlay, host)); };
+
+    // Only from the pane, for a process of the pane: a process of another
+    // terminal that names the pane gets no socket.
+    const std::string onlyThePane = "only `afterglow ssh` in pane " + std::to_string(pane) + " opens a remote socket for it";
+    EXPECT_FALSE(ctl.call("openRemoteSocket", args(AfterglowProto::ProtocolVersion, "/run/user/1000/afterglow", false, "box")));
+    EXPECT_EQ(ctl.error.message, onlyThePane);
+    pid_t outside = sleeper();
+    std::swap(process, outside);
+    EXPECT_FALSE(open(AfterglowProto::ProtocolVersion));
+    EXPECT_EQ(agent.error, onlyThePane);
+    std::swap(process, outside);
+    endProcess(outside);
 
     const auto opened = open(AfterglowProto::ProtocolVersion);
-    ASSERT_TRUE(opened) << ctl.error.message;
+    ASSERT_TRUE(opened) << agent.error;
     const std::string token = (*opened)["token"].toString();
     const std::string socket = (*opened)["socket"].toString();
     const std::string remote = (*opened)["path"].toString();
@@ -1934,16 +2039,16 @@ TEST(MuxControl, AnSshSessionOfASessionPaneGetsASocketOfTheDaemon)
     // Another protocol, and a path too long for the remote host: an answer
     // and no socket.
     auto other = open(AfterglowProto::ProtocolVersion + 1);
-    ASSERT_TRUE(other) << ctl.error.message;
+    ASSERT_TRUE(other) << agent.error;
     EXPECT_EQ((*other)["error"].toString(), "version");
     EXPECT_FALSE(other->find("socket"));
     other = open(AfterglowProto::ProtocolVersion, "/" + std::string(100, 'd'));
-    ASSERT_TRUE(other) << ctl.error.message;
+    ASSERT_TRUE(other) << agent.error;
     EXPECT_EQ((*other)["error"].toString(), "length");
     // What a window refuses too.
     const auto refuses = [&](std::optional<Json::Value> refused, const std::string& why) {
         EXPECT_FALSE(refused) << why;
-        EXPECT_NE(ctl.error.message.find(why), std::string::npos) << ctl.error.message;
+        EXPECT_NE(agent.error.find(why), std::string::npos) << agent.error;
     };
     refuses(open(AfterglowProto::ProtocolVersion, "/run/user/1000/afterglow", true), "overlay");
     refuses(open(AfterglowProto::ProtocolVersion, "run/user"), "remote directory");
@@ -1960,16 +2065,16 @@ TEST(MuxControl, AnSshSessionOfASessionPaneGetsASocketOfTheDaemon)
     EXPECT_FALSE(ctl.call("remoteSocketForwarded", Json::Array{token}));
 
     // A forward that failed: the socket closes, and nothing is cancelled.
-    process = sleeper();
+    process = agent.spawn();
     const auto failing = open(AfterglowProto::ProtocolVersion);
-    ASSERT_TRUE(failing) << ctl.error.message;
+    ASSERT_TRUE(failing) << agent.error;
     const std::string failed = (*failing)["socket"].toString();
     EXPECT_FALSE(ctl.call("remoteSocketFailed", Json::Array{(*failing)["token"].toString(), "other"}));
     EXPECT_TRUE(ctl.call("remoteSocketFailed", Json::Array{(*failing)["token"].toString(), "forward"})) << ctl.error.message;
     EXPECT_FALSE(exists(failed));
     // The pane closes: its sessions end.
     const auto closing = open(AfterglowProto::ProtocolVersion);
-    ASSERT_TRUE(closing) << ctl.error.message;
+    ASSERT_TRUE(closing) << agent.error;
     const std::string closed = (*closing)["socket"].toString();
     ASSERT_TRUE(ctl.call("close", Json::Array{std::int64_t(pane)})) << ctl.error.message;
     EXPECT_TRUE(waitFor([&] { return !exists(closed); }));
@@ -2107,7 +2212,7 @@ TEST(MuxControl, AWindowPlacesNewPanesAndAnswersWindowCalls)
     const Json::Value place = controls().front();
     EXPECT_EQ(place["id"].toInteger(), 0);
     EXPECT_EQ(place["fn"].toString(), "placePane");
-    EXPECT_EQ(Json::write(place["args"]), "[" + std::to_string(*split->toInteger()) + "," + std::to_string(w.pane) + ",\"left\"]");
+    EXPECT_EQ(Json::write(place["args"]), "[" + std::to_string(*split->toInteger()) + "," + std::to_string(w.pane) + ",\"left\",[]]");
 
     // The window answers a title; the client waits for that answer.
     std::optional<Json::Value> titled;

@@ -222,16 +222,23 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         if (!session.addPane(id, launch, size, paneSocket(), waker(), &error)) {
             return ipcError(request.id, Error::SpawnFailed, "cannot start the program of a pane of session '" + session.name() + "': " + error);
         }
-        // addPane made it a tab of its own at the end.
+        // addPane made it a tab of its own at the end, with its values.
+        auto values = session.layout().values.extract(id);
         session.layout().remove(id);
         static constexpr std::array<const char*, 4> SideNames{"right", "down", "left", "up"};
+        // The window keeps the command that the layout kept, for the
+        // layouts that it sends.
+        Json::Array command;
+        if (values) command = Json::Array(values.mapped().command.begin(), values.mapped().command.end());
         if (split) {
             session.layout().split(pane->id(), id, *side);
-            tellWindow(session, "placePane", Json::Array{std::int64_t(id), std::int64_t(pane->id()), SideNames[std::size_t(*side)]});
+            tellWindow(session, "placePane",
+                       Json::Array{std::int64_t(id), std::int64_t(pane->id()), SideNames[std::size_t(*side)], std::move(command)});
         } else {
             session.layout().insertTab(id, pane->id());
-            tellWindow(session, "placePane", Json::Array{std::int64_t(id), std::int64_t(pane->id()), "tab"});
+            tellWindow(session, "placePane", Json::Array{std::int64_t(id), std::int64_t(pane->id()), "tab", std::move(command)});
         }
+        if (values && session.layout().contains(id)) session.layout().values.insert(std::move(values));
         return ipcReply(request.id.value_or(0), std::int64_t(id));
     }
     if (fn == "close") {

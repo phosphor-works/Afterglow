@@ -260,7 +260,7 @@ Another number fails with `CALL_FAILED`.
 | `openDirectory` | directory, layout | An object: the window and its pane |
 | `projects` | None | The saved project names |
 | `saveProject` | pane, name, overwrite | An object: the name and the window |
-| `openProject` | name, new instance, mode | An object: the window and its panes. The mode is `session`, `window`, or empty for what the project says. Into a session, the object also has `session`, its name. |
+| `openProject` | name, new instance, mode | An object: the window and its panes. The mode is `session`, `window`, or empty for what the project says. Into a session, the object also has `session`, its name, and the answer comes when the window of the session opens. |
 | `scriptDiagnostics` | None | Script and package diagnostics |
 | `overlay` | pane, argv, options | An object: `exit_code`, `stdout` and `truncated`. See [overlays](#overlays). |
 | `screenshot` | pane, scope | An object: `png` (the PNG image in base64), `width` and `height` in device pixels. See [screenshots](#screenshots). |
@@ -610,6 +610,7 @@ Remote commands need all of these:
 
 - `Terminal.sshRemoteCommands`, `Control.enabled` and `Scripts.enabled`. `Terminal.sshIntegration` does not count: you can also run `afterglow ssh` yourself.
 - `AFTERGLOW_SOCKET` and `AFTERGLOW_PANE_ID` in the environment of `afterglow ssh`, as a pane of Afterglow sets them. `afterglow ssh` calls that socket for the pane.
+- `afterglow ssh` runs in that pane, or below a program of that pane. Afterglow finds the pane of a process from the processes, not from `AFTERGLOW_PANE_ID`. It refuses a process of another terminal with `` only `afterglow ssh` in pane N opens a remote socket for it ``. A terminal that a program of the pane started, such as `konsole &`, counts as the pane.
 - A terminal on the remote host: no remote command on the ssh command line, or `-t`.
 - A shared ssh connection. `afterglow ssh` makes one in `XDG_RUNTIME_DIR`, or uses the `ControlPath` of your SSH configuration. `XDG_RUNTIME_DIR` must be an absolute path of letters, digits, `/`, `.`, `_` and `-`, which ssh reads as a path and nothing more. Afterglow does not check that only you can enter it: keep it private, as systemd makes it.
 - No `ControlPath none` and no `ControlMaster no`, on the command line or in your SSH configuration. Afterglow keeps that choice and forwards no socket for the session.

@@ -62,8 +62,9 @@ public:
     Q_INVOKABLE QVariantMap openDirectory(const QString& directory, const QString& layout);
     Q_INVOKABLE QStringList projects();
     Q_INVOKABLE QVariantMap saveProject(double pane, const QString& name, bool overwrite);
-    /// @p mode: "session", "window", or empty for what the project says.
-    Q_INVOKABLE QVariantMap openProject(const QString& name, bool newInstance, const QString& mode);
+    /// @p mode: "session", "window", or empty for what the project says. A
+    /// project that opens into a session answers later.
+    Q_INVOKABLE void openProject(const QString& name, bool newInstance, const QString& mode);
     Q_INVOKABLE QVariantList scriptDiagnostics();
     /// Runs @p argv over @p pane (0: the focused pane) and answers once it
     /// exits, with {exit_code, stdout, truncated}: stdout only with
@@ -122,6 +123,9 @@ public:
     /// `ssh -O forward` failed for @p token: @p reason is forward.
     Q_INVOKABLE void remoteSocketFailed(const QString& token, const QString& reason);
     void setRemoteSockets(RemoteSockets* sockets) { m_remote = sockets; }
+    /// Whether a process runs in a pane, or in its overlay (Control::runsIn).
+    using PaneProcesses = std::function<bool(quint32 pane, qint64 process, bool overlay)>;
+    void setPaneProcesses(PaneProcesses check) { m_paneProcesses = std::move(check); }
 
     /// Whose overlays a connection's are, as Control knows them.
     static QString overlayOwner(quint64 connection) { return QStringLiteral("control:%1").arg(connection); }
@@ -176,6 +180,7 @@ private:
     Control& m_control;
     SettingsStore& m_settings;
     RemoteSockets* m_remote = nullptr;
+    PaneProcesses m_paneProcesses;
     QHash<quint64, QHash<QString, WaitingInput>> m_inputs;
     qsizetype m_inputBytes = 0;
     /// The open connections that have opened an overlay.
@@ -207,6 +212,9 @@ public:
     bool enabled() const { return m_enabled; }
     /// The sockets of remote commands, for the calls of `afterglow ssh`.
     void setRemoteSockets(RemoteSockets* sockets) { m_api.setRemoteSockets(sockets); }
+    /// For the tests, whose `afterglow ssh` runs in no pane: what tells the
+    /// processes of a pane, Control::runsIn by default.
+    void setPaneProcesses(ControlApi::PaneProcesses check) { m_api.setPaneProcesses(std::move(check)); }
 
 private:
     void applySettings();

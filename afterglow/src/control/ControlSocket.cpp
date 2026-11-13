@@ -305,11 +305,16 @@ QVariantMap ControlApi::saveProject(double pane, const QString& name, bool overw
     return result;
 }
 
-QVariantMap ControlApi::openProject(const QString& name, bool newInstance, const QString& mode)
+void ControlApi::openProject(const QString& name, bool newInstance, const QString& mode)
 {
-    QVariantMap result;
-    failed(m_control.openProject(name, newInstance, mode, result));
-    return result;
+    // A session waits for the mux daemon off the GUI thread: the call is
+    // answered then. Taken first: a call that cannot wait opens nothing.
+    const PendingReply reply = deferCall(QStringLiteral("opening a project needs a client connection"));
+    if (!reply) return;
+    m_control.openProject(name, newInstance, mode, [reply](const QString& error, const QVariantMap& result) {
+        if (error.isEmpty()) reply->finish(QJsonObject::fromVariantMap(result));
+        else reply->fail(error);
+    });
 }
 
 QVariantList ControlApi::scriptDiagnostics()
@@ -333,6 +338,16 @@ QVariantMap ControlApi::openRemoteSocket(double pane, double pid, const QString&
     }
     if (!isWhole(pid) || !isWhole(protocol) || std::abs(protocol) > 1e9) {
         failed(QStringLiteral("the process ID and the protocol are whole numbers"));
+        return {};
+    }
+    // The pane is the one that the caller and the process it names run in:
+    // a process of another terminal that names the pane gets no socket that
+    // runs remote commands for it.
+    const auto runsIn = [&](qint64 process) {
+        return m_paneProcesses ? m_paneProcesses(*id, process, overlay) : m_control.runsIn(*id, process, overlay);
+    };
+    if (!runsIn(connectionPid()) || !runsIn(qint64(std::clamp(pid, -1.0, 1e12)))) {
+        failed(QStringLiteral("only `afterglow ssh` in pane %1 opens a remote socket for it").arg(*id));
         return {};
     }
     RemoteSockets::Opened opened;

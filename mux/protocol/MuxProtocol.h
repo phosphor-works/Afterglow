@@ -27,7 +27,7 @@ namespace AfterglowMux {
 /// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
 /// MuxProtocolTest pins the keys of the options to this number, so that a new
 /// key changes it too.
-inline constexpr int ProtocolVersion = 15;
+inline constexpr int ProtocolVersion = 16;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -166,6 +166,9 @@ struct Launch
     /// The program of a command launch, which counts as running while it is
     /// in the foreground. Empty for a shell.
     std::string launchedProgram;
+    /// The command that the pane was asked to run, as a project saves it
+    /// (Layout::values), within validPaneCommand. Empty for a shell.
+    std::vector<std::string> command;
 };
 
 AfterglowProto::Json::Value toJson(const Launch& launch);

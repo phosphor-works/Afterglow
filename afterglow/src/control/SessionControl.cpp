@@ -37,10 +37,9 @@ MuxClient::ControlAnswer failed(const QString& error)
     return {QJsonValue(), error};
 }
 
-} // namespace
-
-MuxClient::ControlAnswer answerSessionCall(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn,
-                                           const QJsonArray& args)
+/// The answer of every call but openProject, which can come later.
+MuxClient::ControlAnswer answerNow(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn,
+                                   const QJsonArray& args)
 {
     // The pane of argument @p index, by its ID in the daemon.
     const auto paneAt = [&](qsizetype index) -> Pane* {
@@ -59,7 +58,9 @@ MuxClient::ControlAnswer answerSessionCall(Control& control, const Settings& set
         else if (side == QLatin1String("down")) direction = SplitTree::Direction::Down;
         else if (side == QLatin1String("left")) direction = SplitTree::Direction::Left;
         else if (side == QLatin1String("up")) direction = SplitTree::Direction::Up;
-        window.placeSessionPane(std::uint32_t(id), paneAt(1), direction);
+        QStringList command;
+        for (const QJsonValue& word : args.at(3).toArray()) command << word.toString();
+        window.placeSessionPane(std::uint32_t(id), paneAt(1), direction, command);
         return {};
     }
     // The calls without a pane.
@@ -77,12 +78,6 @@ MuxClient::ControlAnswer answerSessionCall(Control& control, const Settings& set
         return {QJsonObject::fromVariantMap(result), {}};
     }
     if (fn == QLatin1String("projects")) return {QJsonArray::fromStringList(control.projectNames()), {}};
-    if (fn == QLatin1String("openProject")) {
-        QVariantMap result;
-        if (const QString error = control.openProject(args.at(0).toString(), args.at(1).toBool(), args.at(2).toString(), result); !error.isEmpty())
-            return failed(error);
-        return {QJsonObject::fromVariantMap(result), {}};
-    }
     if (fn == QLatin1String("scriptDiagnostics")) return {QJsonArray::fromVariantList(control.scriptDiagnostics()), {}};
 
     // The calls on a pane: the daemon named one of its session.
@@ -142,6 +137,18 @@ MuxClient::ControlAnswer answerSessionCall(Control& control, const Settings& set
         return {QJsonObject::fromVariantMap(result), {}};
     }
     return failed(QStringLiteral("the window takes no call '%1' for a session").arg(fn));
+}
+
+} // namespace
+
+void answerSessionCall(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn, const QJsonArray& args,
+                       MuxClient::ControlReply reply)
+{
+    if (fn != QLatin1String("openProject")) return reply(answerNow(control, settings, window, fn, args));
+    control.openProject(args.at(0).toString(), args.at(1).toBool(), args.at(2).toString(),
+                        [reply = std::move(reply)](const QString& error, const QVariantMap& result) {
+                            reply(error.isEmpty() ? MuxClient::ControlAnswer{QJsonObject::fromVariantMap(result), {}} : failed(error));
+                        });
 }
 
 } // namespace Afterglow
