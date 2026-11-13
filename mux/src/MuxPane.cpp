@@ -112,6 +112,11 @@ std::string MuxPane::foregroundJob(pid_t caller) const
     return m_launchedProgram;
 }
 
+bool MuxPane::leads(pid_t session) const
+{
+    return m_pty && !m_exited && session > 0 && m_pty->pid() == session;
+}
+
 std::optional<MuxPane::Facts> MuxPane::facts() const
 {
     Facts facts;

@@ -15,6 +15,7 @@
 #include <map>
 #include <optional>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,15 @@ namespace AfterglowMux {
 class Daemon
 {
 public:
+    /// The lines of one connection that one pass of the loop answers or
+    /// passes on, empty ones included: a client that pipelines calls cannot
+    /// keep the others, the signals and the reaping of programs waiting.
+    static constexpr int MaxLinesPerRead = 64;
+    /// The command clients that the window of one session serves at a time.
+    static constexpr std::size_t MaxRelaysPerSession = 64;
+    /// The processes above a command client that the daemon looks at for
+    /// the pane that it runs in.
+    static constexpr int MaxAncestors = 64;
     /// How run() ended.
     struct Exit
     {
@@ -73,6 +83,32 @@ private:
     /// @p caller is the process of the client, 0 when unknown. Empty when
     /// the answer comes later: a window gives it (answerForwarded()).
     std::string answer(const AfterglowProto::IpcRequest& request, pid_t caller, AfterglowProto::IpcServerConnection& connection);
+
+    // The command clients of session panes (`aglow run`), which the window
+    // of the session serves, in DaemonCommands.cpp.
+    /// Passes @p connection, whose first request is @p request, read from
+    /// @p line, to the window that shows the session of the caller's pane.
+    /// Empty: the window answers. Else the error.
+    std::string startRelay(const AfterglowProto::IpcRequest& request, std::string line, pid_t caller,
+                           AfterglowProto::IpcServerConnection& connection);
+    /// Passes the lines of a relayed @p connection to its window, while the
+    /// window has room for them.
+    void readRelay(AfterglowProto::IpcServerConnection& connection);
+    /// The relay @p id ends: its connection closes once its output went.
+    /// @p tellWindow: the client ended it, and the window closes its side.
+    void endRelay(std::uint64_t id, bool tellWindow);
+    /// Sends the clients the lines that @p window sent them, and ends the
+    /// relays that it ended.
+    void deliverRelayFrames(Attachment& window);
+    /// deliverRelayFrames() for each window, and ends the relays whose
+    /// window went.
+    void answerRelays();
+    /// Whether the daemon reads the lines of @p connection now: not those of
+    /// a relayed one whose window has no room, nor of one that closes after
+    /// its output.
+    bool reads(const AfterglowProto::IpcServerConnection& connection) const;
+    /// The attachment by its serial(), or nullptr.
+    Attachment* attachment(std::uint64_t serial) const;
     /// @p caller gives the environment of a session with callerEnvironment.
     std::string newSession(const AfterglowProto::IpcRequest& request, pid_t caller);
     std::string killSession(const AfterglowProto::IpcRequest& request);
@@ -169,6 +205,19 @@ private:
     };
     std::map<std::uint64_t, Forward> m_forwards;
     std::uint64_t m_nextForward = 1;
+    /// The command connections that windows serve, by the ID of their relay.
+    struct Relay
+    {
+        AfterglowProto::IpcServerConnection* connection = nullptr;
+        std::uint64_t window = 0; ///< Attachment::serial()
+        std::string session;
+        std::string partial; ///< what the window sent after the last whole line
+    };
+    std::map<std::uint64_t, Relay> m_relays;
+    std::map<const AfterglowProto::IpcServerConnection*, std::uint64_t> m_relayOf;
+    /// Connections that close once their output went: relays that ended.
+    std::set<const AfterglowProto::IpcServerConnection*> m_closing;
+    std::uint64_t m_nextRelay = 1;
     /// The number of the next session without a name of its client.
     std::uint64_t m_nextName = 1;
     /// A session was created. Before that, the daemon waits for one for

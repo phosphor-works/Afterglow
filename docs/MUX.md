@@ -391,7 +391,23 @@ For `split` and `new-tab`, `afterglow ctl` prepares the program with your settin
 Without `--cwd`, a new tab or split starts in the directory of its pane, or where `Window.workingDirectory` says.
 `new-window` opens a window outside the session in the Afterglow of the window, and prints the ID of its pane there.
 
-In a session pane, `aglow run` gets the error `CALL_FAILED` with the message `a session pane takes no script commands: the mux daemon runs no scripts`.
+### Script commands in a session pane
+
+In a session pane, `aglow run` and `afterglow run` run the commands of the scripts of the window that shows the session.
+The daemon runs no scripts. It passes the connection of the command to that window.
+The window runs the command as for one of its own panes, with its own settings (`Control.enabled`, `Scripts.enabled` and the limits of `Scripts`).
+A command that names the pane of the client, or no pane, acts on the window's pane of that session pane.
+The output, the exit status and the input of the command are as for a pane outside a session.
+
+| Case | Result |
+| --- | --- |
+| No window shows the session | `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts` |
+| The client does not run in a session pane of the daemon, nor below a program of one. A program that runs a terminal of its own, such as an editor, stays in the pane. A server that left the pane, such as a tmux server, does not. | `CALL_FAILED`: `only a client in a session pane reaches the mux daemon for the commands of scripts` |
+| The session has 64 command clients already | `CALL_FAILED`: `session 'NAME' has 64 command clients already` |
+| The run names a pane of the daemon that the window does not show | `CALL_FAILED`: `no pane N of session 'NAME' shows in its window` |
+| The window closes or detaches while the command runs | The command ends. The client gets `the window of session 'NAME' closed, and with it the runs of this client`, and exits with status 1. |
+| The session runs on another host (`--ssh`) | `CALL_FAILED`: `session 'NAME' runs on HOST, and its panes reach no commands of the scripts of this window` |
+
 `afterglow ssh` connects without [remote commands](CONTROL.md#remote-commands). With `-v`, it writes `a session pane takes no remote commands: the mux daemon runs no scripts` as the reason.
 
 ## What the daemon answers

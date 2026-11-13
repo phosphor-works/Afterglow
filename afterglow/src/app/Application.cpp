@@ -200,6 +200,20 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
             if (!shown) return MuxClient::ControlAnswer{{}, QStringLiteral("the window of the session closed")};
             return answerSessionCall(m_control, m_settings.settings(), *shown, fn, args);
         });
+        // `aglow run` in a session pane: the commands target of this
+        // process serves it, as it serves a pane outside a session.
+        MuxCommands::Host commands;
+        commands.socket = [](QString* error) {
+            const QString path = InstanceSocket::processPath();
+            if (path.isEmpty()) *error = QStringLiteral("this afterglow listens on no socket, so it runs no commands for session panes");
+            return path;
+        };
+        commands.pane = [shown = QPointer<TerminalWindow>(window)](std::uint32_t id) -> std::optional<quint32> {
+            const Pane* pane = shown ? shown->sessionPane(id) : nullptr;
+            if (!pane) return std::nullopt;
+            return pane->id();
+        };
+        options.session->setCommandsHost(std::move(commands));
     }
     connect(window, &TerminalWindow::newWindowRequested, this,
             [this](const QString& cwd) { newWindow({cwd, {}, false, false, {}, false}); });

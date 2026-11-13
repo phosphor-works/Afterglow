@@ -755,6 +755,13 @@ int watched(Client& client, const Signals& signals, const std::string& run, Json
             return exit && *exit >= 0 && *exit <= 255 ? int(*exit) : 1;
         }
         const std::string& type = frame["type"].toString();
+        // An error that answers no call: the server ends the connection, and
+        // says why (the mux daemon, when the window of a session closes).
+        if (type == "error" && !frame.find("id")) {
+            (void)IpcConnection::answer(std::move(frame), &error);
+            client.report(error);
+            return 1;
+        }
         const std::string& event = frame["signal"].toString();
         const Json::Array& eventArgs = frame["args"].toArray();
         if (type != "event" || frame["target"].toString() != client.target() || eventArgs.size() != 2 || eventArgs[0].toString() != run)

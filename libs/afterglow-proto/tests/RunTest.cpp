@@ -867,6 +867,22 @@ TEST(RunClient, SaysWhyTheConnectionWasLost)
     EXPECT_NE(outcome.err.find("lost Afterglow: the server sent a line that is not a JSON object"), std::string::npos) << outcome.err;
 }
 
+TEST(RunClient, AnErrorThatAnswersNoCallEndsTheRunWithItsMessage)
+{
+    FakeServer server;
+    Client client(server, {"tools", "greet"});
+    ASSERT_TRUE(list(server, {command("tools", "greet")}));
+    const auto run = expect(server, "run");
+    ASSERT_TRUE(run);
+    server.event("commands", "stdout", {runId(*run), "before\n"});
+    server.write(R"({"type":"error","code":"CALL_FAILED","message":"the window closed"})" "\n");
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.out, "before\n");
+    EXPECT_NE(outcome.err.find("the window closed"), std::string::npos) << outcome.err;
+    EXPECT_EQ(outcome.err.find("lost Afterglow"), std::string::npos) << outcome.err;
+}
+
 TEST(RunRemote, TheTerminalsOscPayloadIsWhatFollowsItsNumber)
 {
     EXPECT_EQ(Remote::oscPayload("24569;path=/a.sock"), std::optional<std::string_view>("path=/a.sock"));

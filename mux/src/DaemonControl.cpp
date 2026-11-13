@@ -382,6 +382,9 @@ void Daemon::forget(const IpcServerConnection* connection)
 {
     m_selected.erase(connection);
     std::erase_if(m_forwards, [connection](const auto& forward) { return forward.second.connection == connection; });
+    // The window's connection of a client that went closes too.
+    if (const auto relay = m_relayOf.find(connection); relay != m_relayOf.end()) endRelay(relay->second, true);
+    m_closing.erase(connection);
 }
 
 } // namespace AfterglowMux

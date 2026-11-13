@@ -10791,6 +10791,103 @@ TEST_F(NativeWindow, AMuxSessionsReadsAndCommandsReachTheWindowAndBack) {
     delete shown;
 }
 
+// `aglow run` in a session pane reaches the mux daemon, which passes its
+// connection to the window that shows the session: the commands of the
+// window's scripts run on the window's pane, with the client's arguments,
+// input and exit status, and with output past the acknowledgement window,
+// whose acknowledgements pass the daemon too.
+TEST_F(NativeWindow, AglowRunInASessionPaneRunsTheCommandsOfItsWindow) {
+    REQUIRE_AGLOW(aglow);
+    ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("scripts"))));
+    QFile script(directory.filePath(QStringLiteral("scripts/relay.luau")));
+    ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+    script.write(R"(
+return {
+    metadata = { commands = {
+        where = { summary = "Print the pane and the arguments, then exit 4" },
+        read = { summary = "Echo stdin", stdin = true },
+        flood = { summary = "Write MIB parts of 1 MiB, each awaited", usage = "MIB" },
+        hold = { summary = "Say so, then wait a minute" },
+    } },
+    run_command = function(command, ev)
+        if command == "hold" then
+            afterglow.await(afterglow.output(ev, "holding\n"))
+            afterglow.sleep(60000)
+            return afterglow.output(ev, "held\n")
+        elseif command == "where" then
+            return { afterglow.output(ev, "pane " .. ev.pane.id .. " args " .. table.concat(ev.args, ",") .. "\n"),
+                     afterglow.exit(ev, 4) }
+        elseif command == "read" then
+            return afterglow.output(ev, "read " .. tostring(ev.stdin))
+        end
+        local part = string.rep("x", 1048576)
+        for _ = 1, tonumber(ev.args[1]) do
+            assert(afterglow.await(afterglow.output(ev, part)))
+        end
+        return afterglow.output(ev, "")
+    end,
+}
+)");
+    script.close();
+    restartApplication(QStringLiteral("relay.conf"),
+        testSettings({{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    // The window serves them on the socket of this process: one of the
+    // test's own, which it lets go after.
+    QTemporaryDir runtime;
+    ASSERT_TRUE(runtime.isValid());
+    ASSERT_EQ(testSocket().listen(runtime.filePath(QStringLiteral("afterglow-test.sock"))), InstanceSocket::Listen::Listening);
+    const auto unlisten = qScopeGuard([] { testSocket().close(); });
+
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "runs")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("runs"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    const QString run = aglow + QStringLiteral(" run relay ");
+    // The window's ID of the pane, not the daemon's that the client sent.
+    ASSERT_TRUE(pane->sendInput((run + QStringLiteral("where a b; echo status=$?\n")).toStdString()));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("pane %1 args a,b\nstatus=4").arg(pane->id())); }, 5000))
+        << screenOf(pane).toStdString();
+    ASSERT_TRUE(pane->sendInput((QStringLiteral("echo piped | ") + run + QStringLiteral("read; echo status=$?\n")).toStdString()));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("read piped\nstatus=0")); }, 5000))
+        << screenOf(pane).toStdString();
+    // A client in a terminal session of its own, as in an editor's
+    // terminal, still runs below the pane's program.
+    ASSERT_TRUE(pane->sendInput((QStringLiteral("setsid -w ") + run + QStringLiteral("where c; echo status=$?\n")).toStdString()));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("pane %1 args c\nstatus=4").arg(pane->id())); }, 5000))
+        << screenOf(pane).toStdString();
+    // 6 MiB: past the 4 MiB that the client may leave unacknowledged.
+    ASSERT_TRUE(pane->sendInput((run + QStringLiteral("flood 6 | wc -c; echo status=$?\n")).toStdString()));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("6291456\nstatus=0")); }, 15000))
+        << screenOf(pane).toStdString();
+
+    // A detach while a command runs: the window no longer serves the client,
+    // which hears why and exits with 1, in a session that runs on.
+    const QString out = QString::fromStdString(daemon.dir()) + QStringLiteral("/held");
+    ASSERT_TRUE(pane->sendInput((run + QStringLiteral("hold >%1 2>&1; echo status=$? >>%1\n").arg(out)).toStdString()));
+    ASSERT_TRUE(waitFor([&] { return fileContent(out).contains("holding"); }, 5000)) << fileContent(out).toStdString();
+    ASSERT_TRUE(daemon.call(AfterglowMux::Fn::Detach, AfterglowProto::Json::Array{"runs"})) << daemon.lastError();
+    EXPECT_TRUE(waitFor([&] { return fileContent(out).contains("status="); }, 5000)) << fileContent(out).toStdString();
+    EXPECT_TRUE(fileContent(out).contains("the window of session 'runs' closed")) << fileContent(out).toStdString();
+    EXPECT_TRUE(fileContent(out).endsWith("status=1\n")) << fileContent(out).toStdString();
+    EXPECT_FALSE(fileContent(out).contains("held\n"));
+    EXPECT_TRUE(waitDeleting([&] { return !shown; }, 5000));
+    delete shown;
+
+    // A session that no window shows runs no commands: its client hears why.
+    const QString alone = QString::fromStdString(daemon.dir()) + QStringLiteral("/alone");
+    const QString program = run + QStringLiteral("where >%1 2>&1; echo status=$? >>%1; sleep 60").arg(alone);
+    ASSERT_TRUE(daemon.newSession(daemon.options({"/bin/sh", "-c", program.toStdString()}, "alone"))) << daemon.lastError();
+    EXPECT_TRUE(waitFor([&] { return fileContent(alone).contains("status="); }, 5000)) << fileContent(alone).toStdString();
+    EXPECT_TRUE(fileContent(alone).contains("no window shows session 'alone', and only a window runs the commands of scripts"))
+        << fileContent(alone).toStdString();
+    EXPECT_TRUE(fileContent(alone).endsWith("status=1\n")) << fileContent(alone).toStdString();
+}
+
 // A drag waits for the program's answer on the GUI thread
 // (Terminal.dragAnswerWait). A session pane's commands come on the session's
 // stream, which only that thread reads: the wait reads it, and ends when they

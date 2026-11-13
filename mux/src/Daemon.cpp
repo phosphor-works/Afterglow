@@ -50,11 +50,6 @@ std::string readAll(const std::string& path)
     return bytes;
 }
 
-// The lines of one connection that one pass of the loop answers, empty ones
-// included: a client that pipelines calls cannot keep the others, the
-// signals and the reaping of programs waiting.
-constexpr int MaxLinesPerRead = 64;
-
 // ControlSocket::Target of the application. `afterglow ctl` in a session
 // pane calls it here, and `aglow run` calls AfterglowProto::Run::Target:
 // AFTERGLOW_SOCKET of the pane names this daemon.
@@ -182,9 +177,10 @@ Daemon::Exit Daemon::run()
         fds.push_back({m_signalFd, POLLIN, 0});
         bool pending = false;
         for (const auto& connection : m_connections) {
-            const short events = short((connection->wantsRead() ? POLLIN : 0) | (connection->wantsWrite() ? POLLOUT : 0));
+            const bool reading = reads(*connection);
+            const short events = short((reading && connection->wantsRead() ? POLLIN : 0) | (connection->wantsWrite() ? POLLOUT : 0));
             fds.push_back({connection->fd(), events, 0});
-            pending = pending || connection->pending();
+            pending = pending || (reading && connection->pending());
         }
         const std::size_t firstAttachment = fds.size();
         int connectWait = -1;
@@ -248,6 +244,9 @@ Daemon::Exit Daemon::run()
             if ((attachment->takeKill() || (shown && shown->empty())) && shown) endSession(session);
         }
         for (Attachment* attachment : over) {
+            // What the window sent its command clients before it went, the
+            // end of a run, still reaches them.
+            deliverRelayFrames(*attachment);
             // The calls that the window did not get get the answers of a
             // session that no window shows.
             const auto session = find(attachment->session());
@@ -259,11 +258,20 @@ Daemon::Exit Daemon::run()
         std::erase_if(m_attachments, [&over](const auto& a) { return std::find(over.begin(), over.end(), a.get()) != over.end(); });
         // Before the reads below, whose calls may wait for these windows.
         answerForwarded();
+        answerRelays();
         pumpAttachments();
         syncAttached();
         for (std::size_t i = firstConnection; i < firstAttachment; ++i) {
             auto& connection = *m_connections[i - firstConnection];
             if (fds[i].revents & POLLOUT) connection.flush();
+            if (!reads(connection)) {
+                // A client that hung up while its window had no room, or
+                // while its connection closes, has nothing more to say:
+                // its next poll would not wait.
+                if (fds[i].revents & (POLLHUP | POLLERR)) connection.close();
+                else if (m_closing.contains(&connection) && !connection.wantsWrite()) connection.close();
+                continue;
+            }
             if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) || connection.pending()) read(connection);
         }
         for (const auto& connection : m_connections) {
@@ -297,14 +305,23 @@ void Daemon::read(IpcServerConnection& connection)
     ucred peer{};
     socklen_t size = sizeof peer;
     const pid_t caller = ::getsockopt(connection.fd(), SOL_SOCKET, SO_PEERCRED, &peer, &size) == 0 ? peer.pid : 0;
+    if (m_relayOf.contains(&connection)) {
+        readRelay(connection);
+        return;
+    }
     IpcRequest request;
+    std::string line;
     for (int lines = 0; lines < MaxLinesPerRead; ++lines) {
-        const IpcServerConnection::Read next = connection.nextRequest(request);
+        const IpcServerConnection::Read next = connection.nextRequest(request, &line);
         if (next == IpcServerConnection::Read::None) return;
         if (next == IpcServerConnection::Read::Skipped) continue;
         std::string reply;
         try {
-            reply = answer(request, caller, connection);
+            // Before the type: a client of the commands target hears from
+            // the window whatever it sends (`aglow run` subscribes to its
+            // output, for one).
+            if (request.target == AfterglowProto::Run::Target) reply = startRelay(request, std::move(line), caller, connection);
+            else reply = answer(request, caller, connection);
         } catch (const std::exception& e) {
             // One call that fails (out of memory, no thread for a PTY) must
             // not end the sessions of all the others.
@@ -312,6 +329,12 @@ void Daemon::read(IpcServerConnection& connection)
         }
         // A window answers it later.
         if (!reply.empty()) connection.send(std::move(reply));
+        // The connection is the window's now: its other lines go there as
+        // they are.
+        if (m_relayOf.contains(&connection)) {
+            readRelay(connection);
+            return;
+        }
         if (m_attaching) {
             // The attach call made this connection the window's stream: it
             // is the attachment's now, and reads no more lines here.
@@ -334,11 +357,6 @@ void Daemon::read(IpcServerConnection& connection)
 
 std::string Daemon::answer(const IpcRequest& request, pid_t caller, IpcServerConnection& connection)
 {
-    // Before the type: a client of a session pane hears why, whatever it
-    // sends (`aglow run` subscribes to its output, for one).
-    if (request.target == AfterglowProto::Run::Target) {
-        return ipcError(request.id, IpcErrorCode::CallFailed, "a session pane takes no script commands: the mux daemon runs no scripts");
-    }
     if (request.target == ControlTarget) return control(request, connection, caller);
     if (request.type != "call") {
         return ipcError(request.id, IpcErrorCode::MalformedRequest, "the mux daemon answers only calls, not '" + request.type + "'");

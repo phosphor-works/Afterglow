@@ -66,11 +66,12 @@ int Attachment::timeoutMs() const
 void Attachment::startStream()
 {
     const int fd = std::exchange(m_fd, -1);
-    // The window writes only its input, on the control channel, and its
-    // Kill and ClosePane on the action channel.
+    // The window writes only its input, on the control channel, its Kill
+    // and ClosePane on the action channel, and the bytes of its command
+    // connections on the commands channel.
     PhosphorChannel::Stream::Options options;
-    options.maxChannels = 2;
-    options.maxChannelId = Attach::ActionChannel + 1;
+    options.maxChannels = 3;
+    options.maxChannelId = Attach::CommandsChannel + 1;
     m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
     std::string error;
     m_events = m_stream->openWriter(Attach::ControlChannel, Attach::EventCodec, &error);
@@ -182,6 +183,14 @@ void Attachment::sendControl(std::string json)
     sendEvent(control);
 }
 
+void Attachment::sendRelay(const Attach::RelayFrame& frame)
+{
+    Attach::Event commands;
+    commands.type = Attach::EventType::Commands;
+    commands.payload = Attach::encode(frame);
+    sendEvent(commands);
+}
+
 void Attachment::paneRemoved(std::uint32_t id, MuxPane* moved)
 {
     if (moved) {
@@ -261,6 +270,23 @@ void Attachment::readInput(Session& session)
             if (session.closePane(action->pane)) paneRemoved(action->pane);
         }
         if (m_kill) return;
+    }
+    // Apart from the input, which waits while a PTY is full: the client of a
+    // run can be what keeps it full, and waits for its output.
+    if (PhosphorChannel::StreamReader* commands = m_stream->reader(Attach::CommandsChannel)) {
+        if (commands->codec() != Attach::CommandsCodec) {
+            m_failed = true;
+            return;
+        }
+        while (commands->read(frame) == PhosphorChannel::ReadResult::Frame) {
+            auto relay = Attach::decodeRelay(frame);
+            // Only the daemon opens a relay.
+            if (!relay || relay->part == Attach::RelayPart::Open) {
+                m_failed = true;
+                return;
+            }
+            m_relayFrames.push_back(std::move(*relay));
+        }
     }
     PhosphorChannel::StreamReader* input = m_stream->reader(Attach::ControlChannel);
     if (!input) return;

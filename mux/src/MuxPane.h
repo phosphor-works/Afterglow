@@ -125,6 +125,10 @@ public:
     /// `afterglow mux kill` typed at its prompt): the caller is no job to ask
     /// about. 0 for no caller.
     std::string foregroundJob(pid_t caller) const;
+    /// Whether the pane's program, which runs while the pane does, leads
+    /// terminal session @p session: the processes of that session run in
+    /// this pane.
+    bool leads(pid_t session) const;
     /// The working directory of the program in the foreground, else of the
     /// first program: Pty::currentWorkingDirectory, which reads only /proc.
     /// Empty once the program exited, when neither directory remains, and
