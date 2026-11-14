@@ -90,6 +90,17 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     layoutEvent.type = Attach::EventType::Layout;
     layoutEvent.payload = "{}";
     EXPECT_EQ(Attach::encode(layoutEvent), std::string("\x07\x00\x00\x00{}", 6));
+    // It added too the Refresh input of a window that reads a pane's text,
+    // and the Refreshed event that answers it with the frames that hold it.
+    Attach::Input refresh;
+    refresh.type = Attach::InputType::Refresh;
+    refresh.pane = 5;
+    EXPECT_EQ(Attach::encode(refresh), std::string("\x09\x05", 2));
+    Attach::Event refreshed;
+    refreshed.type = Attach::EventType::Refreshed;
+    refreshed.pane = 3;
+    refreshed.frames = 300;
+    EXPECT_EQ(Attach::encode(refreshed), std::string("\x08\x03\x00\x00\xac\x02", 6));
     Layout layout;
     layout.addTab(4);
     EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current"}));
@@ -657,6 +668,17 @@ TEST(MuxProtocol, AttachEventsRoundTrip)
         ASSERT_TRUE(back);
         EXPECT_EQ(back->type, type);
     }
+    for (const std::uint64_t frames : {std::uint64_t(0), std::uint64_t(1) << 40}) {
+        Attach::Event refreshed;
+        refreshed.type = Attach::EventType::Refreshed;
+        refreshed.pane = 9;
+        refreshed.frames = frames;
+        const auto back = Attach::decodeEvent(Attach::encode(refreshed));
+        ASSERT_TRUE(back);
+        EXPECT_EQ(back->type, Attach::EventType::Refreshed);
+        EXPECT_EQ(back->pane, 9u);
+        EXPECT_EQ(back->frames, frames);
+    }
     // The layout takes the rest of the frame too.
     for (const std::string& payload : {std::string(), std::string(R"({"tabs":[],"current":0})"), std::string("\x80\x00\xff", 3)}) {
         Attach::Event layout;
@@ -695,7 +717,12 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
     static_assert(Attach::MaxChannelId == 257, "the frame of PaneOpened below names MaxChannelId");
     const std::string_view bad[] = {
         {},                         // empty
-        std::string_view("\x08\x01\x00\x00", 4), // the type after Layout
+        std::string_view("\x09\x01\x00\x00\x00", 5), // the type after Refreshed
+        std::string_view("\x08\x01\x00\x00", 4), // a Refreshed without its frames
+        std::string_view("\x08\x01\x00\x00\x01\x00", 6), // a byte after a Refreshed
+        std::string_view("\x08\x00\x00\x00\x01", 5), // Refreshed of pane 0
+        std::string_view("\x08\x01\x01\x00\x01", 5), // Refreshed on a channel
+        std::string_view("\x08\x01\x00\x01\x01", 5), // Refreshed with a status
         std::string_view("\x00\x01\x00\x00", 4), // type 0
         std::string_view("\x02\x01\x00\x00\x00", 5), // a byte after the event
         std::string_view("\x02\x81", 2),         // a varint that does not end
@@ -725,7 +752,8 @@ TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)
     ASSERT_TRUE(back);
     EXPECT_EQ(back->type, Attach::InputType::Bytes);
     EXPECT_EQ(back->bytes, bytes.bytes);
-    for (const auto type : {Attach::InputType::Reset, Attach::InputType::Clear, Attach::InputType::Kill, Attach::InputType::ClosePane}) {
+    for (const auto type : {Attach::InputType::Reset, Attach::InputType::Clear, Attach::InputType::Kill, Attach::InputType::ClosePane,
+                            Attach::InputType::Refresh}) {
         for (const std::uint32_t pane : {2u, 0xffffffffu}) {
             Attach::Input action;
             action.type = type;
@@ -778,8 +806,8 @@ TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
 {
     const std::string_view bad[] = {
         {},
-        std::string_view("\x0a\x01", 2),         // an unknown type
-        std::string_view("\x09\x01", 2),         // the type after ClosePane
+        std::string_view("\x0a\x01", 2),         // the type after Refresh
+        std::string_view("\x09\x01\x00", 3),     // a byte after a Refresh
         std::string_view("\x08\x01\x00", 3),     // a byte after a ClosePane
         std::string_view("\x07\x01{}", 4),        // a Layout of a pane
         std::string_view("\x01", 1),             // no pane

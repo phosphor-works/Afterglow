@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "MuxConnect.h"
 #include "MuxHost.h"
 #include "MuxLayout.h"
 #include "MuxProtocol.h"
@@ -170,6 +171,18 @@ public:
     /// thread, which alone reads the stream (a drag's answer wait). True
     /// when @p done.
     bool waitForHostCalls(int waitMs, const std::function<bool()>& done);
+    /// How long a refresh waits: as long as a call of the daemon, which a
+    /// daemon that does not answer one does not answer either.
+    static constexpr int RefreshWaitMs = AfterglowMux::CallTimeoutMs;
+    /// Asks the daemon for the screens and the history of panes @p ids as
+    /// they are now (Attach::InputType::Refresh), also of panes that the
+    /// window does not show, whose screens the daemon holds, and reads the
+    /// stream until their frames applied, for up to @p waitMs: before a read
+    /// of their text. The calls of the panes' terminals that come meanwhile
+    /// wait until after it, so that the read runs no answer of the window.
+    /// A pane whose frames do not come (no channel yet, or its program
+    /// exited) has nothing more to wait for. True when all came.
+    bool refresh(const std::vector<std::uint32_t>& ids, int waitMs = RefreshWaitMs);
 
 private:
     MuxClient() = default;
@@ -257,6 +270,17 @@ private:
         std::size_t bytes = 0;
     };
     std::map<std::uint32_t, std::uint64_t> m_framesRead; ///< the frames of each pane that the window read
+    /// The Refresh inputs of a pane and their Refreshed events, which come
+    /// in the same order: the newest names the frames that hold the screens.
+    struct Refreshes
+    {
+        std::uint64_t asked = 0;
+        std::uint64_t answered = 0;
+        std::uint64_t frames = 0; ///< of the newest Refreshed
+    };
+    std::map<std::uint32_t, Refreshes> m_refreshes;
+    /// refresh() reads the stream: the calls of the panes wait (releaseHostCalls).
+    bool m_holdingCalls = false;
     std::map<std::uint32_t, WaitingHostCalls> m_waitingHostCalls;
     std::size_t m_waitingHostBytes = 0;
     /// The most bytes of calls that wait for panes: what the daemon holds

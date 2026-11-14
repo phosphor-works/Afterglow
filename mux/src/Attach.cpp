@@ -352,6 +352,15 @@ bool Attachment::deliver(Session& session, const Attach::Input& message, bool wi
         // Only while this window is the pane's: one that went, or failed,
         // says nothing about what the user sees now.
         pane->setVisible(message.visible, m_serial);
+        // The screens that waited go in this pass (sendFrame).
+        if (const auto link = m_panes.find(message.pane); link != m_panes.end()) link->second.shown = message.visible;
+        break;
+    case Attach::InputType::Refresh:
+        // The window asks only for a pane whose frames it reads: one without
+        // a channel yet has nothing to read.
+        if (const auto link = m_panes.find(message.pane); link != m_panes.end() && !link->second.closed) {
+            link->second.refreshes = std::min(link->second.refreshes + 1, MaxRefreshes);
+        }
         break;
     case Attach::InputType::Kill:
     case Attach::InputType::ClosePane:
@@ -502,9 +511,10 @@ void Attachment::readLate(Session& session)
             break;
         case Attach::InputType::Resize:
         case Attach::InputType::Visible:
+        case Attach::InputType::Refresh:
         case Attach::InputType::Kill:
         case Attach::InputType::ClosePane:
-            break; // the size and the sight of a window that went
+            break; // the size, the sight and the reads of a window that went
         }
     }
 }
@@ -607,11 +617,18 @@ bool Attachment::sendFrame(PaneLink& l, MuxPane& pane)
     // The first frame of a pane carries everything; later ones what
     // changed, and the history that waits.
     l.deferred = false;
+    // A pane that the window does not show (a tab in the background, a
+    // window that nobody sees) gets what the window shows of it: its title,
+    // its directory, its status. Its screens catch up once it shows, before
+    // its host calls, which follow the text before them, and before the
+    // exit, so that the window has the screen that the program left, and
+    // for a read of its text (Refresh).
+    l.screens = l.shown || l.closed || l.refreshes > 0 || pane.callsWaiting(m_serial);
     const bool changed = pane.takeChanged();
-    if (!changed && !l.state.pending() && l.started) return true;
+    if (!changed && l.started && !(l.screens && (l.state.pending() || l.state.screensHeld()))) return true;
     // History past half the window waits for later frames, and so do rows
     // past it, so that every frame fits.
-    std::optional<std::string> next = pane.frame(l.state, l.writer->maxFrame() / 2);
+    std::optional<std::string> next = pane.frame(l.state, l.writer->maxFrame() / 2, l.screens);
     if (!next) {
         // An image decodes: the pane wakes the daemon when it is done.
         l.deferred = true;
@@ -719,6 +736,15 @@ void Attachment::pump(Session* session)
             if (l->started && l->waiting.empty() && !l->deferred) {
                 const std::size_t left = m_waitingBytes < m_eventQueue ? m_eventQueue - m_waitingBytes : 0;
                 sendHostCalls(*l, pane, left / (count - i));
+                // A read of the pane's text waits for the frames that hold
+                // its rows and its history whole.
+                if (l->refreshes > 0 && !l->state.textPending()) {
+                    Attach::Event refreshed;
+                    refreshed.type = Attach::EventType::Refreshed;
+                    refreshed.pane = pane.id();
+                    refreshed.frames = l->frames;
+                    for (; l->refreshes > 0 && !m_failed; --l->refreshes) sendEvent(refreshed);
+                }
             }
             if (m_failed) return;
         }
@@ -752,8 +778,12 @@ bool Attachment::busy() const
         // window's credit, which wakes the poll.
         if (l.closed && !(l.closed->hasHostCalls(m_serial) && m_waitingBytes >= m_eventQueue)) return true;
         // A frame that waits for a decode is no work: the pane wakes the
-        // daemon when the decode's feed ends.
-        if (!l.closed && !m_finish && !l.deferred && l.state.pending()) return true;
+        // daemon when the decode's feed ends. Neither are the history and
+        // the images of a pane that the window does not show: they wait for
+        // its screens.
+        if (!l.closed && !m_finish && !l.deferred && l.screens && l.state.pending()) return true;
+        // A pane that shows now: its screens catch up.
+        if (!l.closed && !m_finish && !l.deferred && l.shown && l.state.screensHeld()) return true;
     }
     return false;
 }

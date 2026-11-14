@@ -133,6 +133,9 @@ public:
     void setGpuTimingEnabled(bool enabled) { m_renderer->setGpuTimingEnabled(enabled); }
     double completedGpuSeconds() const { return m_renderer->completedGpuSeconds(); }
     std::uint64_t submittedFrames() const { return m_renderer->submittedFrames(); }
+    /// The layout waits to go to the daemon of the window's session
+    /// (scheduleSessionLayout). For the tests.
+    bool sessionLayoutPending() const { return m_sessionLayoutTimer.isActive(); }
     /// The size of the frames that the renderer draws, in device pixels:
     /// the size of a window screenshot. For the tests.
     QSize framePixels() const { return m_renderer->pixelSize(); }

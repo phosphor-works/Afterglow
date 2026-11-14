@@ -11351,6 +11351,50 @@ TEST_F(NativeWindow, ASessionsTabsAndSplitsComeBackWithTheNextWindow) {
     delete again;
 }
 
+// The window sends its layout a while after a change (scheduleSessionLayout),
+// not only as it closes: a new order of the tabs and a pane moved to a tab of
+// its own reach the daemon, and the next window shows them after a detach
+// that the daemon makes, which leaves the window nothing to send.
+TEST_F(NativeWindow, ASessionKeepsTheTabOrderAndTheMovedPanesOfItsWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "order")) << daemon.lastError();
+    QString error;
+    auto [shown, first] = showSessionAtPrompt(*application, daemon, QStringLiteral("order"), &error);
+    ASSERT_NE(first, nullptr) << error.toStdString();
+    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("/bin/cat")});
+    // The first tab: the shell and a pane beside it. The second tab: one pane.
+    const QPointer<Pane> beside = shown->splitPane(first, SplitTree::Direction::Right, cat, &error);
+    ASSERT_NE(beside, nullptr) << error.toStdString();
+    const QPointer<Pane> second = shown->openTab(cat, &error);
+    ASSERT_NE(second, nullptr) << error.toStdString();
+    for (const QPointer<Pane>& p : {beside, second}) ASSERT_TRUE(echoes(p, QStringLiteral("before")));
+    ASSERT_TRUE(waitFor([&] { return shown && !shown->sessionLayoutPending(); }));
+    // The second tab goes first, and the pane beside the shell to a tab of
+    // its own.
+    ASSERT_TRUE(shown->moveTabOf(second, 0).isEmpty());
+    shown->revealPane(beside);
+    ASSERT_TRUE(shown->runAction(beside, Action::MovePaneToTab));
+    const std::vector<std::vector<std::uint32_t>> tabs = sessionTabs(*shown);
+    const std::uint32_t firstId = first->sessionPaneId(), besideId = beside->sessionPaneId(), secondId = second->sessionPaneId();
+    ASSERT_EQ(tabs.size(), 3u);
+    EXPECT_EQ(tabs[0], std::vector<std::uint32_t>{secondId});
+    EXPECT_NE(std::find(tabs.begin(), tabs.end(), std::vector<std::uint32_t>{firstId}), tabs.end());
+    EXPECT_NE(std::find(tabs.begin(), tabs.end(), std::vector<std::uint32_t>{besideId}), tabs.end());
+    EXPECT_TRUE(shown->sessionLayoutPending());
+    ASSERT_TRUE(waitFor([&] { return shown && !shown->sessionLayoutPending(); }));
+    // Input after the layout: once it echoes, the daemon read the layout.
+    ASSERT_TRUE(echoes(second, QStringLiteral("after")));
+    ASSERT_TRUE(daemon.call(AfterglowMux::Fn::Detach, MuxTest::Json::Array{"order"})) << daemon.lastError();
+    ASSERT_TRUE(waitDeleting([&] { return !shown; }, 5000));
+    ASSERT_TRUE(waitFor([&] { return sessionDetached(daemon, "order") && sessionPaneCount(daemon, "order") == 3; }, 5000));
+    QPointer<TerminalWindow> again = showSession(*application, daemon, QStringLiteral("order"), &error);
+    ASSERT_NE(again, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return again && again->isExposed() && again->submittedFrames() > 0; }));
+    EXPECT_EQ(sessionTabs(*again), tabs);
+    delete again;
+}
+
 // The user closes panes and tabs of a session's window: the window asks
 // about their programs, which the daemon names, and the close ends those
 // programs only. The window and the session go on, and a new pane works.

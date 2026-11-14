@@ -259,7 +259,7 @@ void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
     setVisible(false, window);
 }
 
-std::optional<std::string> MuxPane::frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes)
+std::optional<std::string> MuxPane::frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes, bool screens)
 {
     std::lock_guard lock(m_mutex);
     if (m_decoding) {
@@ -269,6 +269,10 @@ std::optional<std::string> MuxPane::frame(AfterglowVt::StateWriter& writer, std:
         m_changed.store(true);
         return std::nullopt;
     }
+    // The scrolls move what the window keeps on the screens: they wait with
+    // them. A call that comes meanwhile changes the pane, and the next frame
+    // has the screens for it.
+    if (!screens) return writer.updateHeld(m_terminal);
     std::string frame = writer.update(m_terminal, maxBytes, &m_scrolls);
     // The frame carries them, also one that waits for room in the channel.
     m_scrolls.clear();
@@ -352,6 +356,12 @@ bool MuxPane::hasHostCalls(std::uint64_t window) const
 {
     std::lock_guard lock(m_hostMutex);
     return m_window == window && !m_hostCalls.empty() && m_hostCalls.front().number <= m_framed;
+}
+
+bool MuxPane::callsWaiting(std::uint64_t window) const
+{
+    std::lock_guard lock(m_hostMutex);
+    return m_window == window && !m_hostCalls.empty();
 }
 
 

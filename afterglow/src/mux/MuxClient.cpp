@@ -234,6 +234,7 @@ bool MuxClient::hostCall(std::uint32_t id, AfterglowMux::Host::Call call, std::s
 
 void MuxClient::releaseHostCalls(std::uint32_t id)
 {
+    if (m_holdingCalls) return;
     const auto pane = m_panes.find(id);
     const auto it = m_waitingHostCalls.find(id);
     if (pane == m_panes.end() || it == m_waitingHostCalls.end()) return;
@@ -652,6 +653,56 @@ bool MuxClient::waitForHostCalls(int waitMs, const std::function<bool()>& done)
     return done();
 }
 
+bool MuxClient::refresh(const std::vector<std::uint32_t>& ids, int waitMs)
+{
+    if (!showing()) return false;
+    std::map<std::uint32_t, std::uint64_t> tickets;
+    for (const std::uint32_t id : ids) {
+        if (tickets.contains(id) || !m_panes.contains(id) || !m_channels.contains(id) || m_closedChannels.contains(id)) continue;
+        Attach::Input input;
+        input.type = Attach::InputType::Refresh;
+        sendPaneInput(id, input);
+        tickets[id] = ++m_refreshes[id].asked;
+    }
+    const auto done = [&] {
+        for (const auto& [id, ticket] : tickets) {
+            // Its last frame came: nothing newer comes.
+            if (!m_channels.contains(id) || m_closedChannels.contains(id)) continue;
+            const auto refreshes = m_refreshes.find(id);
+            const auto read = m_framesRead.find(id);
+            if (refreshes == m_refreshes.end() || refreshes->second.answered < ticket || read == m_framesRead.end()
+                || read->second < refreshes->second.frames) {
+                return false;
+            }
+        }
+        return true;
+    };
+    const bool holding = std::exchange(m_holdingCalls, true);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(waitMs);
+    while (m_stream && !m_ended && !done()) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        if (left.count() <= 0) break;
+        // A stream that no longer works ends the link in handleFrames. The
+        // Refresh may wait for room in the channel.
+        m_stream->pump(int(left.count()));
+        sendWaitingInput();
+        handleFrames();
+    }
+    m_holdingCalls = holding;
+    const bool refreshed = showing() && done();
+    if (!refreshed) qCDebug(lcMux) << "the panes of session" << m_session << "did not refresh in" << waitMs << "ms";
+    updateNotifiers();
+    // The calls that came meanwhile, after the read.
+    if (!holding && !m_waitingHostCalls.empty()) {
+        QMetaObject::invokeMethod(this, [this] {
+            std::vector<std::uint32_t> waiting;
+            for (const auto& [id, calls] : m_waitingHostCalls) waiting.push_back(id);
+            for (const std::uint32_t id : waiting) releaseHostCalls(id);
+        }, Qt::QueuedConnection);
+    }
+    return refreshed;
+}
+
 void MuxClient::readable()
 {
     m_readQueued = false;
@@ -737,6 +788,15 @@ void MuxClient::handleFrames()
                 if (!bad) {
                     m_exits[event->pane] = event->status;
                     paneExited(event->pane);
+                }
+            } else if (event && event->type == Attach::EventType::Refreshed) {
+                // In the order that the window asked: never more answers than
+                // questions.
+                Refreshes* refreshes = m_channels.contains(event->pane) ? &m_refreshes[event->pane] : nullptr;
+                bad = !refreshes || refreshes->answered >= refreshes->asked;
+                if (!bad) {
+                    ++refreshes->answered;
+                    refreshes->frames = std::max(refreshes->frames, event->frames);
                 }
             } else if (event && event->type == Attach::EventType::Host) {
                 bad = !m_channels.contains(event->pane);
@@ -830,6 +890,7 @@ void MuxClient::paneExited(std::uint32_t id)
     m_hostParts.erase(id);
     if (auto waiting = m_waitingHostCalls.extract(id); !waiting.empty()) m_waitingHostBytes -= waiting.mapped().bytes;
     m_framesRead.erase(id);
+    m_refreshes.erase(id);
     const auto it = m_panes.find(id);
     // A pane that the window let go is forgotten. A bound one keeps its
     // closed channel until the window lets it go (letGo).

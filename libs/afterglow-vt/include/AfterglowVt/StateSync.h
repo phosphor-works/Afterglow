@@ -28,7 +28,9 @@
 // A writer remembers what each frame told the replica: every frame that
 // update() returns must reach the reader, in order, or the writer must be
 // reset() for a new replica. A frame that waits for room in its channel waits
-// whole, and goes before the next one.
+// whole, and goes before the next one. A replica that nobody sees can take
+// frames without the screens (updateHeld()), which catch up at the next
+// update().
 //
 // The replica numbers its rows as the writer does: the same stable id for
 // each row, and a new layout epoch of its own whenever the writer's changes,
@@ -107,6 +109,15 @@ public:
     /// @p scrolls: the region scrolls since the last frame, which the first
     /// frame leaves out: a new replica keeps nothing that they move.
     std::string update(const Terminal& terminal, std::size_t maxBytes, const RegionScrolls* scrolls = nullptr);
+    /// The next frame for a replica that nobody sees: update() without the
+    /// screens. It carries what a host shows of a terminal that it does not
+    /// draw, when it changed: the modes, the colors, the title and the
+    /// working directory, the OSC 133 marks, the program status, the shell
+    /// contexts and the extra cursors. The rows, the history, the cursors,
+    /// the cell size and the images wait, and so do the region scrolls: the
+    /// caller keeps them for the next update(), which sends the screens as
+    /// they are then. Empty when none of those sections changed.
+    std::string updateHeld(const Terminal& terminal);
     /// The most history rows that the replica keeps: the writer sends no
     /// older ones. 0 sends none.
     void setReplicaHistory(std::size_t rows) { m_replicaHistory = rows; }
@@ -120,8 +131,18 @@ public:
     /// without history and images, which a program that floods its pane
     /// keeps waiting while it writes.
     bool rowsPending() const;
+    /// The rows of the screens or of the history that wait for a later
+    /// frame: pending() without images, what a reader of the text needs.
+    bool textPending() const;
+    /// The terminal changed in an updateHeld() since the last update(), or
+    /// no update() ran yet: the screens of the replica are behind until the
+    /// next update().
+    bool screensHeld() const { return m_screensHeld || !m_screensStarted; }
 
 private:
+    /// update() and updateHeld(): @p held leaves the screens for later.
+    std::string write(const Terminal& terminal, std::size_t maxBytes, const RegionScrolls* scrolls, bool held);
+
     struct ScreenState
     {
         bool synced = false;
@@ -233,7 +254,9 @@ private:
     std::uint64_t m_generation = 0; ///< Terminal::generation() at the last frame
     std::uint64_t m_statusSerial = 0; ///< ProgramStatus::serial() at the last frame
     std::size_t m_replicaHistory = ~std::size_t(0);
-    bool m_started = false;
+    bool m_started = false; ///< a frame went
+    bool m_screensStarted = false; ///< an update() went: the screens of the replica started
+    bool m_screensHeld = false; ///< the terminal changed in an updateHeld() since the last update()
 };
 
 class AFTERGLOWVT_EXPORT StateReader

@@ -1836,3 +1836,62 @@ TEST(StateSync, RowsPendingLeavesOutHistoryAndImages)
         EXPECT_FALSE(p.writer.rowsPending());
     }
 }
+
+// A replica that nobody sees takes what its host shows of a pane that it does
+// not draw (the title, the directory, the status, the shell's marks) as it
+// changes, and no rows. The screens, the history, the images and the region
+// scrolls catch up at the next update(), as the terminal has them then.
+TEST(StateSync, AHeldFrameLeavesTheScreensForTheNextUpdate)
+{
+    std::string error;
+    Pair p(30, 6, 100);
+    p.source.resize(30, 6, 10, 20);
+    p.source.feed("before");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_FALSE(p.writer.screensHeld());
+    p.replicaHost.scrolls.clear();
+    p.source.feed("\x1b[2;4r\x1b[S\x1b[r\x1b[6;1H");
+    for (int i = 0; i < 20; ++i) p.source.feed("\r\nflood " + std::to_string(i));
+    p.source.feed(apc("a=T,f=32,s=2,v=2,i=7,q=2", rgba(2, 2, 255, 0, 0)));
+    p.source.feed("\x1b]2;building\x07\x1b]7;file:///tmp\x07\x1b]7501;state=working:progress=40\x1b\\\x1b]133;A\x07");
+    const std::string held = p.writer.updateHeld(p.source);
+    ASSERT_FALSE(held.empty());
+    ASSERT_TRUE(p.reader.apply(p.replica, held, &error)) << error;
+    EXPECT_FALSE(p.reader.screenChanged());
+    EXPECT_TRUE(p.writer.screensHeld());
+    EXPECT_EQ(p.replica.title(), "building");
+    EXPECT_EQ(p.replica.workingDirectory(), "file:///tmp");
+    EXPECT_EQ(statusDiffers(p.source, p.replica), "");
+    EXPECT_EQ(p.replica.semanticRegions().size(), p.source.semanticRegions().size());
+    // The screen as it was, without the image and the scroll.
+    EXPECT_EQ(rowText(p.replica, 0), "before");
+    EXPECT_EQ(p.replica.primaryScreen().historySize(), 0u);
+    EXPECT_TRUE(p.replica.graphics().images().empty());
+    EXPECT_TRUE(p.replicaHost.scrolls.empty());
+    // Output that changes nothing of those sections makes no held frame.
+    p.source.feed("\r\nmore");
+    EXPECT_EQ(p.writer.updateHeld(p.source), "");
+    // The next update() sends the screens as they are, with the scrolls
+    // that the caller kept.
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_FALSE(p.writer.screensHeld());
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+    EXPECT_EQ(p.replicaHost.scrolls.size(), 1u);
+
+    // A writer whose first frame is held: the screens and the images start at
+    // its first update(), which leaves out the scrolls before it, as for any
+    // new replica.
+    Pair q(30, 6, 100);
+    q.source.resize(30, 6, 10, 20);
+    q.source.feed("text" + apc("a=T,f=32,s=2,v=2,i=9,q=2", rgba(2, 2, 0, 0, 255)) + "\x1b]2;first\x07\x1b[2;4r\x1b[S\x1b[r");
+    EXPECT_TRUE(q.writer.screensHeld());
+    ASSERT_TRUE(q.reader.apply(q.replica, q.writer.updateHeld(q.source), &error)) << error;
+    EXPECT_EQ(q.replica.title(), "first");
+    EXPECT_EQ(q.replica.cols(), 20);
+    EXPECT_TRUE(q.writer.screensHeld());
+    ASSERT_TRUE(q.sync(&error)) << error;
+    EXPECT_EQ(differs(q.source, q.replica), "");
+    EXPECT_EQ(imagesDiffer(q.source, q.replica), "");
+    EXPECT_TRUE(q.replicaHost.scrolls.empty());
+}

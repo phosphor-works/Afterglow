@@ -20,6 +20,8 @@ QVariantMap Pane::readSelection(std::size_t limit) const
 
 QVariantMap Pane::semanticRegions() const
 {
+    // Whether a region is available depends on the rows that came.
+    refreshSession();
     std::lock_guard lock(m_mutex);
     QVariantList regions;
     for (const auto& region : m_terminal.semanticRegions()) {
@@ -44,6 +46,7 @@ QVariantMap Pane::semanticRegions() const
 
 QVariantMap Pane::readRegion(std::uint64_t id, std::size_t limit) const
 {
+    refreshSession();
     std::lock_guard lock(m_mutex);
     bool truncated = false;
     const auto text = m_terminal.semanticRegionText(id, std::min(limit, std::size_t(1024 * 1024)), &truncated);

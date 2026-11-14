@@ -169,6 +169,7 @@ public:
                     }
                 }
                 if (event->type == Attach::EventType::PaneClosed) closed.push_back(event->pane);
+                if (event->type == Attach::EventType::Refreshed) refreshes.push_back({event->pane, event->frames, framesOf(event->pane)});
                 if (event->type == Attach::EventType::Layout) {
                     const auto json = Json::parse(event->payload);
                     std::string error;
@@ -209,6 +210,7 @@ public:
                     ++frames;
                     std::string error;
                     if (!reader.apply(replica, frame, &error)) ADD_FAILURE() << "a frame does not apply: " << error;
+                    if (reader.screenChanged()) ++screenFrames;
                     if (!marker.empty() && !markerFrame && screen().find(marker) != std::string::npos) markerFrame = frames;
                     continue;
                 }
@@ -330,11 +332,21 @@ public:
     /// What the window showed once it had both halves of the first pane's exit.
     std::optional<std::string> screenAtExit;
     int frames = 0;
+    int screenFrames = 0; ///< those of frames that changed the visible rows (StateReader::screenChanged)
     std::map<std::uint32_t, std::unique_ptr<OtherPane>> others; ///< the other panes, by ID
     std::vector<Attach::Event> events;
     std::vector<Layout> layouts; ///< the Layout events
     std::vector<std::uint32_t> opened; ///< the panes of PaneOpened, in order
     std::vector<std::uint32_t> closed; ///< the panes of PaneClosed, in order
+    /// A Refreshed event: its pane, the frames that it names, and the frames
+    /// of the pane that came before it.
+    struct Refreshed
+    {
+        std::uint32_t pane = 0;
+        std::uint64_t frames = 0;
+        int read = 0;
+    };
+    std::vector<Refreshed> refreshes;
     std::vector<Host::Call> calls; ///< the host calls of the panes' terminals, oldest first
     std::vector<int> callFrames; ///< for each call, the frames of its pane that came before it
     std::vector<std::uint64_t> callSentAfter; ///< for each call, the frames that the daemon wrote before it
@@ -910,6 +922,91 @@ TEST(MuxAttach, TheWindowSaysWhetherThePaneCanBeSeen)
     visible.pane = over.pane;
     ASSERT_TRUE(over.send(visible));
     ASSERT_TRUE(over.until([&] { return !reports(over).empty() && reports(over).back() == "\x1b[?999;1n"; }));
+}
+
+// A pane that the window does not show (a tab in the background) gets no
+// screens: a program that floods it costs the window nothing to decode. What
+// the window shows of the tab still comes (the title). Its host calls come
+// after a frame with the text before them, its exit after the screen that the
+// program left, and the screen catches up once the pane shows again.
+TEST(MuxAttach, APaneThatTheWindowDoesNotShowGetsNoScreens)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "sh"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    const auto show = [&](bool visible) {
+        Attach::Input message;
+        message.type = Attach::InputType::Visible;
+        message.pane = w.pane;
+        message.visible = visible;
+        return w.send(message);
+    };
+    ASSERT_TRUE(show(false));
+    ASSERT_TRUE(w.type("printf '\\033]2;hid''den\\007'\n"));
+    ASSERT_TRUE(w.until([&] { return w.replica.title() == "hidden"; }));
+    const std::string shown = w.screen();
+    const std::size_t history = w.replica.primaryScreen().historySize();
+    const int screenFrames = w.screenFrames;
+    ASSERT_TRUE(w.type("i=0; while [ $i -lt 2000 ]; do echo flo''od $i; i=$((i+1)); done; printf '\\033]2;flo''oded\\007'\n"));
+    ASSERT_TRUE(w.until([&] { return w.replica.title() == "flooded"; }, 30s));
+    // The frames of the title and of the modes of the shell's prompt, which
+    // change no rows.
+    EXPECT_EQ(w.screenFrames, screenFrames);
+    EXPECT_EQ(w.screen(), shown);
+    EXPECT_EQ(w.replica.primaryScreen().historySize(), history);
+
+    // Shown again: the screen as it is now, and the history that it missed.
+    ASSERT_TRUE(show(true));
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "\nflood 1999 "); }, 30s)) << w.screen();
+    EXPECT_GT(w.replica.primaryScreen().historySize(), history);
+
+    // Hidden: a bell and a report come in the order that the program made
+    // them, after a frame with the text before them.
+    ASSERT_TRUE(show(false));
+    w.answerReports = false;
+    w.marker = "rang";
+    ASSERT_TRUE(w.type("printf 'ra''ng\\a\\033[6n'\n"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::Report); }));
+    const auto bell = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::Bell; });
+    const auto report = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::Report; });
+    ASSERT_NE(bell, w.calls.end());
+    EXPECT_LT(bell, report);
+    ASSERT_GT(w.markerFrame, 0);
+    EXPECT_GE(w.callSentAfter[std::size_t(bell - w.calls.begin())], std::uint64_t(w.markerFrame));
+
+    // A read of a hidden pane's text: the screen as it is now, then the
+    // answer, which names the frames that hold it. The pane stays hidden.
+    ASSERT_TRUE(w.type("i=0; while [ $i -lt 500 ]; do echo ag''ain $i; i=$((i+1)); done; printf '\\033]2;ag''ain\\007'\n"));
+    ASSERT_TRUE(w.until([&] { return w.replica.title() == "again"; }, 30s));
+    EXPECT_FALSE(contains(w.screen(), "again 499"));
+    const int before = w.frames;
+    Attach::Input refresh;
+    refresh.type = Attach::InputType::Refresh;
+    refresh.pane = w.pane;
+    ASSERT_TRUE(w.send(refresh));
+    ASSERT_TRUE(w.until([&] { return !w.refreshes.empty() && w.frames >= int(w.refreshes.back().frames); }));
+    ASSERT_EQ(w.refreshes.size(), 1u);
+    EXPECT_EQ(w.refreshes[0].pane, w.pane);
+    EXPECT_GT(w.refreshes[0].frames, std::uint64_t(before));
+    EXPECT_TRUE(contains(w.screen(), "\nagain 499 ")) << w.screen();
+    // With the history that scrolled meanwhile.
+    const std::string all = w.replica.text(AfterglowVt::Terminal::TextScope::All);
+    for (int i = 0; i < 500; ++i) EXPECT_TRUE(contains(all, "again " + std::to_string(i) + "\n")) << i;
+    const std::string refreshed = w.screen();
+    const int screenFrames2 = w.screenFrames;
+    ASSERT_TRUE(w.type("echo af''ter; printf '\\033]2;af''ter\\007'\n"));
+    ASSERT_TRUE(w.until([&] { return w.replica.title() == "after"; }));
+    EXPECT_EQ(w.screenFrames, screenFrames2);
+    EXPECT_EQ(w.screen(), refreshed);
+
+    // The exit of a hidden pane: the window has the screen that the program
+    // left before it learns of it.
+    ASSERT_TRUE(w.type("echo good''bye; exit 3\n"));
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::SessionEnded) && w.screenAtExit; }));
+    EXPECT_TRUE(contains(*w.screenAtExit, "\ngoodbye")) << *w.screenAtExit;
 }
 
 TEST(MuxAttach, ThePaneDirectoryIsThatOfTheForegroundProgram)

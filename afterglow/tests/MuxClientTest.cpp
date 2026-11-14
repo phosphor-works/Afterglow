@@ -196,6 +196,41 @@ TEST(MuxClient, TheJobsOfPanesComeTogether)
     EXPECT_EQ(shown.client->paneJob(second->sessionPaneId()), QStringLiteral("writer"));
 }
 
+// The daemon holds the screens of a pane that the user cannot see. A read of
+// its text asks for them (Pane::refreshSession): the read gives the text as
+// it is now, and the output after it is held again.
+TEST(MuxClient, AReadOfAHiddenPaneGivesItsCurrentText)
+{
+    using AfterglowVt::Terminal;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    Shown shown = show(daemon, "hidden");
+    ASSERT_TRUE(shown.client && shown.first);
+    Pane& pane = *shown.first;
+    const auto replica = [&pane] { return pane.withTerminal([](Terminal& t) { return t.text(Terminal::TextScope::Screen); }); };
+    pane.setSessionVisible(false);
+    EXPECT_TRUE(pane.sessionScreensHeld());
+    // cat prints the title sequence that it reads: the title comes, and the
+    // text before it is held.
+    ASSERT_TRUE(pane.sendInput("hidden text\n\x1b]2;one\x07\n"));
+    ASSERT_TRUE(waitFor([&] { return pane.title() == QStringLiteral("one"); })) << daemon.errors();
+    EXPECT_EQ(replica().find("hidden text"), std::string::npos) << replica();
+    EXPECT_TRUE(pane.text(Terminal::TextScope::Screen).contains(QStringLiteral("hidden text")));
+    EXPECT_TRUE(pane.readText(Terminal::TextScope::All, 4096).value(QStringLiteral("text")).toString().contains(QStringLiteral("hidden text")));
+    // Still hidden: the next read asks again.
+    EXPECT_TRUE(pane.sessionScreensHeld());
+    ASSERT_TRUE(pane.sendInput("more text\n\x1b]2;two\x07\n"));
+    ASSERT_TRUE(waitFor([&] { return pane.title() == QStringLiteral("two"); })) << daemon.errors();
+    EXPECT_EQ(replica().find("more text"), std::string::npos) << replica();
+    EXPECT_TRUE(pane.text(Terminal::TextScope::Screen).contains(QStringLiteral("more text")));
+    // Seen again, the screens come, and a read after one refresh needs none.
+    pane.setSessionVisible(true);
+    pane.refreshSession();
+    EXPECT_FALSE(pane.sessionScreensHeld());
+    ASSERT_TRUE(pane.sendInput("seen text\n"));
+    EXPECT_TRUE(waitFor([&] { return replica().find("seen text") != std::string::npos; })) << replica();
+}
+
 } // namespace
 
 int main(int argc, char** argv)

@@ -125,7 +125,20 @@ public:
     bool applySessionFrame(std::string_view frame);
     /// Whether the user can see this session pane: the daemon's terminal
     /// reports a change to the program (mode 2033). Sends a change only.
+    /// The daemon holds the screens of a pane that the user cannot see.
     void setSessionVisible(bool visible);
+    /// The daemon may hold the screens of this session pane: it was not
+    /// visible at some time since the last refreshSession(). GUI thread.
+    bool sessionScreensHeld() const { return m_session && !m_sessionGone && m_sessionHeld; }
+    /// For a read of the text, or a capture: the screens and the history of
+    /// a session pane whose screens the daemon may hold come now, and the
+    /// pane waits for them (MuxClient::refresh). The reads of the pane's
+    /// text (text, readText, semanticRegions, readRegion) call it. GUI
+    /// thread, without m_mutex.
+    void refreshSession() const;
+    /// MuxClient::refresh brought this pane's screens: a pane that the user
+    /// can see keeps them up to date from now on.
+    void sessionRefreshed() const;
     /// Whether the window draws the pane where the user can see it, as
     /// TerminalWindow::paneSeen decides, or as the tab that a switch leaves.
     /// A pane that nobody sees asks for no frames of its animated images.
@@ -679,6 +692,9 @@ private:
     bool m_leftSession = false; ///< GUI thread: leftSession()
     bool lastOutputArrivingLocked() const; ///< m_mutex held
     int m_sessionVisible = -1; ///< the last state given to the daemon (setSessionVisible), -1 for none yet
+    /// GUI thread: sessionScreensHeld(). A read refreshes the replica, so
+    /// the reads that are const change it.
+    mutable bool m_sessionHeld = false;
     bool m_sessionSynced = false; ///< GUI thread: a frame of the session applied (sessionSynced)
     bool m_snapshotSynced = false; ///< GUI thread: m_snapshot is of a frame of the session
     /// GUI thread: the last reported directory that knownDirectory checked,

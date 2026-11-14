@@ -755,7 +755,7 @@ ctest --test-dir build --output-on-failure -R '^(Proto\.(IpcServer|Socket)|Mux|M
 | `WindowImageDecode.*` | `afterglow_imagedecode_tests` | The decoder of a pane outside a session (Qt), with the files of `Image.ImageDecode.*`. It applies the gAMA chunk of a PNG, as Kitty does. It counts the gAMA, sRGB and cICP chunks as libpng does. It reads a top-down BMP. |
 | `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`). A replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are listed below the table. |
 | `MuxCommandTest.*` | `afterglow_mux_command_tests` | The commands of `afterglow mux`. The cases are listed below the table. |
-| `MuxClient.*` | `afterglow_mux_client_tests` | The link of a window to a session (`MuxClient`), with panes and no window, against a daemon of its own. A window shows more panes than the 64 channels of a stream by default. Panes that exit or close free their channels. The jobs of many panes come in one call. A window that loses its session hears it of each pane, not as the exit of its program. |
+| `MuxClient.*` | `afterglow_mux_client_tests` | The link of a window to a session (`MuxClient`), with panes and no window, against a daemon of its own. A window shows more panes than the 64 channels of a stream by default. Panes that exit or close free their channels. The jobs of many panes come in one call. A window that loses its session hears it of each pane, not as the exit of its program. A read of a pane that the window does not show gives its current text. |
 | `PaneLaunch.ASessionsPaneReadsTheSessionsEnvironment` | `afterglow_pane_tests` | A new pane of a session's window reads `TERMINFO_DIRS` from the environment of the session, not from the environment of Afterglow |
 | `ShellIntegration.ReadsTheInheritedEnvironmentWhenGiven` | `afterglow_shell_tests` | Shell integration of a session pane reads `SHELL`, `ZDOTDIR` and `AFTERGLOW_SHELL_INTEGRATION` from the environment of the session |
 | `SplitTree.PreorderGoesBothWaysWithoutRecursion` | `afterglow_app_tests` | The split tree of a tab goes to the preorder list of a session layout and back |
@@ -805,6 +805,7 @@ The `StateSync.*` tests cover these cases:
 - The reader tells a frame of output from one of history that catches up
 - The rows of either screen that wait for a later frame count as rows that wait, and history and image pixels do not
 - A reload of the window changes only the view options of the replica: word separators, bidirectional layout, bold as bright and minimum contrast. The colors, the cursor and the history stay those of the writer.
+- A held frame brings the title, the directory, the status and the marks, and leaves the screens, the history, the images and the region scrolls for the next update, which matches the terminal
 
 The `Mux.MuxAttach.*` tests cover these cases:
 
@@ -848,6 +849,7 @@ The `Mux.MuxAttach.*` tests cover these cases:
 - A pane whose program reads nothing does not stop the input of the other panes
 - A window changes no pane of another session, and only the process of the window that shows a session changes its panes
 - `newPane`, `paneJob` and `paneSession` refuse bad calls
+- A pane that the window does not show gets no screens while it floods, but its title, its bell, its report and its exit. A refresh brings its current screen and history, and the window shows it again on Visible.
 
 The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow mux new` starts in a session of its own:
 
@@ -888,6 +890,7 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.ASessionsWindowIsNotSavedAsAProject` | Save Project, from the menu and from `afterglow ctl`, refuses the window of a session and saves nothing |
 | `NativeWindow.APaneOfASessionsWindowStartsInTheSessionsEnvironment` | A new pane starts in the environment of the session, at the size that the window shows it at |
 | `NativeWindow.AQuitLeavesTheSessionsOfItsWindowsRunning` | A quit keeps the sessions running with `Mux.onClose` kill, and asks nothing about their programs. A quit that a window stops keeps `Mux.onClose`. |
+| `NativeWindow.ASessionKeepsTheTabOrderAndTheMovedPanesOfItsWindow` | The window sends its layout after a change of the tab order and a move of a pane to its own tab. A detach by the daemon keeps them for the next window. |
 | `NativeWindow.ALargePasteReachesTheProgramOfASessionWhole` | Input larger than a frame goes in parts, in order |
 
 Not every test starts a daemon. A test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.

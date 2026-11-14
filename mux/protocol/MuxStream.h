@@ -59,6 +59,9 @@ enum class EventType : std::uint8_t {
     Detached = 5, ///< `afterglow mux detach`: the window closes, the session runs on
     Host = 6, ///< a call of a pane's terminal to its host, or a part of one, in `payload` (MuxHost.h)
     Layout = 7, ///< the session's tabs and splits, as JSON in `payload` (MuxLayout.h): the first event
+    /// the answer to a Refresh of the pane, one for each: its screens and
+    /// history are whole in its first `frames` frames
+    Refreshed = 8,
 };
 
 /// The status of a Host event that holds a part of a call, not its end.
@@ -81,7 +84,8 @@ struct Event
     /// Host: the frames of the pane's state that the daemon wrote before the
     /// call. The window makes the call once it read as many: a frame larger
     /// than a fragment of the stream can still be on its way when the call
-    /// comes, and a bell goes after the text that rang it.
+    /// comes, and a bell goes after the text that rang it. Refreshed: the
+    /// frames that hold the screens that the Refresh asked for.
     std::uint64_t frames = 0;
     /// Host: the call, encoded, or its next part. A call larger than one
     /// frame comes in parts of at most HostPartBytes. Layout: its JSON.
@@ -102,6 +106,10 @@ enum class InputType : std::uint8_t {
     Visible = 6, ///< whether the user can see the pane (mode 2033), in `visible`
     Layout = 7, ///< the window's tabs and splits, as JSON in `bytes` (MuxLayout.h), after each change; pane 0
     ClosePane = 8, ///< the user closed the pane and the window stays: its program ends (ActionChannel only)
+    /// the window reads the pane's text, or draws it for a capture: the
+    /// daemon sends its screens and history as they are now, also while the
+    /// pane does not show, and then a Refreshed event
+    Refresh = 9,
 };
 
 struct Input

@@ -587,11 +587,26 @@ bool StateWriter::rowsPending() const
     return m_screens[0].rowsPending || m_screens[1].rowsPending;
 }
 
+bool StateWriter::textPending() const
+{
+    return rowsPending() || m_screens[0].historyPending || m_screens[1].historyPending;
+}
+
 namespace {
 bool sendable(const Image& image);
 } // namespace
 
 std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const RegionScrolls* scrolls)
+{
+    return write(t, maxBytes, scrolls, false);
+}
+
+std::string StateWriter::updateHeld(const Terminal& t)
+{
+    return write(t, 0, nullptr, true);
+}
+
+std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const RegionScrolls* scrolls, bool held)
 {
     std::string out(1, char(Version));
     const bool first = !m_started;
@@ -600,11 +615,22 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
     // rows that the last frames left out can go.
     const bool changed = first || t.generation() != m_generation;
     m_generation = t.generation();
+    // The screens of the first update(), and of one after held frames that
+    // saw a change, go as the terminal has them now: a change that a held
+    // frame took is still theirs.
+    const bool screensFirst = !held && !m_screensStarted;
+    const bool screensChanged = changed || screensFirst || (!held && m_screensHeld);
+    if (held) {
+        m_screensHeld = m_screensHeld || changed;
+    } else {
+        m_screensStarted = true;
+        m_screensHeld = false;
+    }
 
     std::string payload;
     // The scrolls go first: the reader keeps them for its host until the
-    // frame applied.
-    if (!first && scrolls && !scrolls->empty()) {
+    // frame applied. A new replica's screens keep nothing that they move.
+    if (!held && !screensFirst && scrolls && !scrolls->empty()) {
         Out o(payload);
         o.byte(scrolls->m_lost ? 1 : 0);
         o.varint(scrolls->m_entries.size());
@@ -744,6 +770,7 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
         }
         sendIfChanged(out, ExtraCursorsTag, payload, m_extraCursors, first);
     }
+    if (held) return out.size() == 1 ? std::string() : out;
 
     payload.clear();
     for (const Screen* s : {t.m_primary.get(), t.m_alternate.get()}) {
@@ -755,8 +782,8 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
     // The visible rows of both screens first, then their history in the
     // bytes that are left.
     Budget budget{maxBytes};
-    bool reset = writeRows(out, t, 0, m_screens[0], budget, changed);
-    reset = writeRows(out, t, 1, m_screens[1], budget, changed) || reset;
+    bool reset = writeRows(out, t, 0, m_screens[0], budget, screensChanged);
+    reset = writeRows(out, t, 1, m_screens[1], budget, screensChanged) || reset;
     // The cell size that the program's images were laid out at: the window
     // measured it, and the replica draws them at it. Before the images.
     {
@@ -764,7 +791,7 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
         Out o(cells);
         o.varint(std::uint64_t(std::max(t.m_cellWidth, 0)));
         o.varint(std::uint64_t(std::max(t.m_cellHeight, 0)));
-        if (first || cells != m_cellSize) {
+        if (screensFirst || cells != m_cellSize) {
             section(out, CellSizeTag, cells);
             m_cellSize = std::move(cells);
         }
@@ -772,7 +799,7 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
     // The images that show go before the history, the others after it. The
     // records of the versions whose pixels went go first: pixels that come
     // after them take the room of each frame.
-    const bool images = prepareImages(out, t, first);
+    const bool images = prepareImages(out, t, screensFirst);
     if (images) {
         writeDrops(out, budget);
         writeRecords(out, t, budget);
@@ -794,7 +821,7 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
     }
     // The cursors go after the rows, which the reader checks them against.
     // A screen that started over lost its cursor on the replica.
-    if (first || reset || payload != m_cursor) {
+    if (screensFirst || reset || payload != m_cursor) {
         section(out, CursorTag, payload);
         m_cursor = std::move(payload);
     }

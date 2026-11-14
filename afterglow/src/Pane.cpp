@@ -808,6 +808,7 @@ void Pane::announceTitle()
 
 QString Pane::text(AfterglowVt::Terminal::TextScope scope)
 {
+    refreshSession();
     std::string text;
     {
         std::lock_guard lock(m_mutex);
@@ -819,6 +820,7 @@ QString Pane::text(AfterglowVt::Terminal::TextScope scope)
 
 QVariantMap Pane::readText(AfterglowVt::Terminal::TextScope scope, std::size_t limit)
 {
+    refreshSession();
     std::string text;
     bool truncated = false;
     bool available = true;
@@ -1051,7 +1053,22 @@ void Pane::setSessionVisible(bool visible)
 {
     if (!m_session || m_sessionGone || m_sessionVisible == int(visible)) return;
     m_sessionVisible = int(visible);
+    // Until a refresh, also once visible again: the screens that the daemon
+    // held are on their way, and a read must not take the old ones.
+    if (!visible) m_sessionHeld = true;
     m_session->sendVisible(m_sessionPane, visible);
+}
+
+void Pane::refreshSession() const
+{
+    if (!sessionScreensHeld()) return;
+    if (m_session->refresh({m_sessionPane})) sessionRefreshed();
+}
+
+void Pane::sessionRefreshed() const
+{
+    // A pane that the user cannot see gets held frames again.
+    m_sessionHeld = m_sessionVisible == 0;
 }
 
 bool Pane::applySessionFrame(std::string_view frame)

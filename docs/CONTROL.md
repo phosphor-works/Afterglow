@@ -830,6 +830,8 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 `getText` and `screenshot` have no size limit.
 A reply with a long scrollback can take more than the 10 seconds of `afterglow ctl`.
 A screenshot of a large window also takes time: Afterglow waits for a frame and encodes the PNG.
+For a pane of a mux session that you cannot see, `getText` first gets the current screen and history from the daemon.
+It waits at most 5 seconds for them (see [session panes](MUX.md#session-panes)).
 
 Text that `afterglow ctl send-text` sends in parts arrives as separate inputs.
 Keys and other clients can type between two parts.

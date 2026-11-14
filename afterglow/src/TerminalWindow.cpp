@@ -2126,6 +2126,21 @@ void TerminalWindow::captureFrame(Pane* pane, CaptureScope scope, CaptureReply r
         reply(QStringLiteral("the pane is not on screen"), QStringLiteral("not_shown"), {});
         return;
     }
+    // The session panes that the capture draws, with the screens that the
+    // daemon held while they did not show (Pane::refreshSession).
+    if (m_session) {
+        const std::vector<Pane*> cards = overviewCards();
+        std::vector<Pane*> held;
+        std::vector<std::uint32_t> ids;
+        for (Pane* p : panes()) {
+            if (!p->sessionScreensHeld() || !paneSeen(p, cards)) continue;
+            held.push_back(p);
+            ids.push_back(p->sessionPaneId());
+        }
+        if (!ids.empty() && m_session->refresh(ids)) {
+            for (Pane* p : held) p->sessionRefreshed();
+        }
+    }
     auto capture = std::make_shared<PendingCapture>();
     capture->scope = scope;
     capture->target = host;

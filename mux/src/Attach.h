@@ -45,6 +45,14 @@ class Session;
 /// input that waits passes MaxHeldInput does the daemon stop reading the
 /// window's input channel, which then fills.
 ///
+/// The window says which panes the user can see (Attach::InputType::Visible).
+/// A pane that it does not show, in a tab in the background or a window that
+/// nobody sees, gets frames without its screens (StateWriter::updateHeld):
+/// a program that floods it costs the window nothing to decode. The screens
+/// catch up once the pane shows, before each of its host calls, before its
+/// exit, and when the window reads the pane's text (Attach::InputType::
+/// Refresh). A pane shows until the window says otherwise.
+///
 /// What a window that does not read makes the daemon hold, for each pane:
 /// the frames that the pane's channel takes (the stream's window, 4 MiB), one
 /// frame that it refused, and the host calls that wait in the pane
@@ -67,6 +75,11 @@ public:
     /// in bytes, with PhosphorChannel::Stream::FrameCost for each message:
     /// past it, the daemon reads no more of the window's input.
     static constexpr std::size_t MaxHeldInput = std::size_t(4) << 20;
+    /// The Refresh inputs of one pane that wait for their Refreshed events.
+    /// A window waits for one at a time, and leaves one behind only when its
+    /// wait timed out: past the bound, a Refresh gets no answer of its own,
+    /// and the window's wait for it times out.
+    static constexpr std::uint32_t MaxRefreshes = 1024;
 
     /// Listens on a new socket in @p directory for @p caller, to show
     /// @p session. Nullptr with @p error when the socket cannot be made.
@@ -176,6 +189,14 @@ private:
         std::string waiting; ///< a frame that the channel refused
         bool started = false; ///< the first frame went
         bool deferred = false; ///< the last frame waits for a decode: the host calls after it wait too
+        /// The window shows the pane, or did not say yet (InputType::Visible).
+        bool shown = true;
+        /// The last sendFrame() was for the screens: the history and images
+        /// that wait are work for the next pass.
+        bool screens = true;
+        /// The Refresh inputs that wait for their Refreshed events: the
+        /// frames carry the screens until the rows and the history went.
+        std::uint32_t refreshes = 0;
         std::uint64_t frames = 0; ///< the frames written on the channel, which each host call names
         std::unique_ptr<MuxPane> closed; ///< the pane once its program exited
     };
@@ -198,7 +219,9 @@ private:
     /// closed to its end, or when the stream failed (m_failed).
     PaneLink* link(MuxPane& pane);
     /// Sends the next frame of @p pane. True when nothing of it waits: no
-    /// refused frame, no change and no history.
+    /// refused frame, no change and no history. The frames of a pane that
+    /// the window does not show leave out the screens, until the pane shows,
+    /// a host call waits, or its program exited (MuxPane::frame).
     bool sendFrame(PaneLink& link, MuxPane& pane);
     /// Sends the host calls of @p pane that fit @p budget bytes of the queue,
     /// and at least one while the queue is below its limit, in parts when a
