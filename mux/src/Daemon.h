@@ -11,11 +11,12 @@
 #include <AfterglowProto/RemoteOsc.h>
 #include <AfterglowProto/Socket.h>
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
-#include <optional>
 #include <memory>
+#include <optional>
 #include <random>
 #include <set>
 #include <string>
@@ -143,6 +144,62 @@ private:
     void acceptSshClient(SshSession& session, int fd);
     /// Ends the ssh sessions whose pane closed.
     void pruneSsh();
+
+    // `afterglow ctl watch` for a session (DaemonWatch.cpp).
+    /// A subscription to an event of the control target of @p session.
+    std::string subscribe(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection, Session& session);
+    /// The end of a subscription of @p connection, which names no target.
+    std::string unsubscribe(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection);
+    /// Sends the events of the watched sessions that came since the last
+    /// pass, and those whose interval ended; ends the subscriptions of the
+    /// sessions that ended or turned control off.
+    void pumpWatch();
+    /// When the next entry of an interval ends, -1 for none.
+    int watchDueMs() const;
+    void forgetWatches(const AfterglowProto::IpcServerConnection* connection);
+    Session* sessionBySerial(std::uint64_t serial) const;
+    struct Subscription
+    {
+        AfterglowProto::IpcServerConnection* connection = nullptr;
+        std::int64_t id = 0; ///< the subscribe request's, which names its events
+        std::uint64_t session = 0; ///< Session::serial()
+        std::string signal;
+    };
+    /// What the last events of a pane said.
+    struct PaneWatch
+    {
+        std::optional<std::string> title;
+        std::optional<std::pair<std::string, std::string>> status;
+    };
+    /// An event that one kind and pane send at most once in an interval.
+    struct Merged
+    {
+        std::string signal;
+        std::uint32_t pane = 0;
+        std::optional<std::chrono::steady_clock::time_point> sent;
+        std::optional<AfterglowProto::Json::Array> waiting; ///< the newest, for the end of the interval
+    };
+    struct SessionWatch
+    {
+        std::string name;
+        bool readText = false;
+        std::chrono::milliseconds interval{0};
+        std::map<std::uint32_t, PaneWatch> panes;
+        std::uint32_t focused = 0;
+        std::map<std::string, Merged> merged; ///< by signal, pane and name
+    };
+    void sendWatch(std::uint64_t serial, const SessionWatch& watch, const std::string& signal, AfterglowProto::Json::Array args);
+    /// Sends what waits for @p pane.
+    void flushPane(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane);
+    /// An event that is never merged: what waits for its pane goes first.
+    void watchNow(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& signal, AfterglowProto::Json::Array args);
+    /// An event that goes at most once in Control.eventInterval for @p pane
+    /// and @p key (a user variable's name).
+    void watchMerged(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& key, const std::string& signal,
+                     AfterglowProto::Json::Array args);
+    std::vector<Subscription> m_subscriptions;
+    std::uint64_t m_lastSessionSerial = 0;
+    std::map<std::uint64_t, SessionWatch> m_watches; ///< by Session::serial()
     /// Ends every ssh session, as the daemon ends.
     void endAllSsh();
     /// Removes the sockets of ssh sessions in @p directory whose lock no

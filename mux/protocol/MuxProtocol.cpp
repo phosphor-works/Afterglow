@@ -331,7 +331,10 @@ std::optional<T> readWhole(const Json::Value& value, std::string_view key, std::
 
 Json::Value toJson(const ControlOptions& control)
 {
-    return Json::Object{{"enabled", control.enabled}, {"allowReadText", control.allowReadText}, {"remoteCommandsOff", control.remoteCommandsOff}};
+    return Json::Object{{"enabled", control.enabled},
+                        {"allowReadText", control.allowReadText},
+                        {"remoteCommandsOff", control.remoteCommandsOff},
+                        {"eventInterval", control.eventInterval}};
 }
 
 void readControl(Reader& outer, const Json::Value& object, ControlOptions& control)
@@ -344,6 +347,7 @@ void readControl(Reader& outer, const Json::Value& object, ControlOptions& contr
     c.boolean("enabled", control.enabled);
     c.boolean("allowReadText", control.allowReadText);
     c.string("remoteCommandsOff", control.remoteCommandsOff);
+    if (const auto interval = c.integer("eventInterval", 0, MaxEventInterval)) control.eventInterval = int(*interval);
     c.noOtherKeys();
     outer.absorb(c);
 }

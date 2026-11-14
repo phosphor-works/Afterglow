@@ -305,7 +305,13 @@ Json::Value toJson(const Layout& layout)
                                       {"title", value.title},
                                       {"command", Json::Array(value.command.begin(), value.command.end())}});
     }
-    return Json::Object{{"tabs", std::move(tabs)}, {"current", std::int64_t(layout.current)}, {"values", std::move(values)}};
+    Json::Object out{{"tabs", std::move(tabs)}, {"current", std::int64_t(layout.current)}, {"values", std::move(values)}};
+    if (!layout.moved.empty()) {
+        Json::Array moved;
+        for (const std::uint32_t pane : layout.moved) moved.push_back(std::int64_t(pane));
+        out.emplace_back("moved", std::move(moved));
+    }
+    return out;
 }
 
 std::optional<Layout> layoutFrom(const Json::Value& value, std::string* error)
@@ -315,7 +321,7 @@ std::optional<Layout> layoutFrom(const Json::Value& value, std::string* error)
         return std::nullopt;
     }
     for (const auto& [key, item] : value.toObject()) {
-        if (key != "tabs" && key != "current" && key != "values") {
+        if (key != "tabs" && key != "current" && key != "values" && key != "moved") {
             fail(error, "'" + key + "' is not a key of a layout");
             return std::nullopt;
         }
@@ -341,6 +347,20 @@ std::optional<Layout> layoutFrom(const Json::Value& value, std::string* error)
     layout.current = std::size_t(*index);
     // A layout of panes without values has none.
     if (const Json::Value* values = value.find("values"); values && !readValues(*values, layout, seen, error)) return std::nullopt;
+    if (const Json::Value* moved = value.find("moved")) {
+        if (!moved->isArray() || moved->toArray().size() > MaxLayoutPanes) {
+            fail(error, "the moved panes are not a list of the layout's panes");
+            return std::nullopt;
+        }
+        for (const Json::Value& item : moved->toArray()) {
+            const auto pane = paneId(item);
+            if (!pane || !seen.contains(*pane)) {
+                fail(error, "the moved panes are not a list of the layout's panes");
+                return std::nullopt;
+            }
+            layout.moved.push_back(*pane);
+        }
+    }
     return layout;
 }
 

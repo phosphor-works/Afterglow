@@ -64,7 +64,10 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 20) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 21) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 21 added Control.eventInterval to the control values, the
+    // moved panes to a window's layout, and the subscriptions of the control
+    // target of a session (AttachTest).
     // Version 20 added the parts of a ControlReply larger than one frame,
     // and the client of a Control event (AttachTest).
     Attach::Input replyPart;
@@ -100,7 +103,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     followed.control.remoteCommandsOff = "off";
     followed.terminal.defaultBackground = {1, 2, 3};
     EXPECT_EQ(keys(toJson(followed)), (std::vector<std::string>{"terminal", "control", "environment"}));
-    EXPECT_EQ(keys(toJson(followed)["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff"}));
+    EXPECT_EQ(keys(toJson(followed)["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
     [[maybe_unused]] auto& [followedTerminal, followedControl, followedEnvironment] = followed;
     std::string settingsError;
     const auto settingsBack = sessionSettings(Json::parse(Json::write(toJson(followed))).value(), &settingsError);
@@ -177,7 +180,11 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current", "values"}));
     EXPECT_EQ(keys(toJson(layout)["tabs"].toArray()[0]), (std::vector<std::string>{"tree", "focused", "zoomed", "title"}));
     EXPECT_EQ(keys(toJson(layout)["values"].toArray()[0]), (std::vector<std::string>{"id", "title", "command"}));
-    [[maybe_unused]] auto& [tabs, current, values] = layout;
+    [[maybe_unused]] auto& [tabs, current, values, moved] = layout;
+    // The moves of a window's layout go only when there are some.
+    layout.moved = {4};
+    EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current", "values", "moved"}));
+    layout.moved.clear();
     [[maybe_unused]] auto& [valueTitle, valueCommand] = layout.values[4];
     [[maybe_unused]] auto& [tree, focused, zoomed, tabTitle] = layout.tabs[0];
     [[maybe_unused]] auto& [nodePane, down, ratio] = layout.tabs[0].tree[0];
@@ -265,7 +272,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     SessionOptions fields;
     [[maybe_unused]] auto& [name, sessionEnvironment, callerEnvironment, umask, launch, size, terminal, notificationCapabilities,
                             controlOptions] = fields;
-    [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff] = fields.control;
+    [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff, eventInterval] = fields.control;
     [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram, command] = fields.launch;
     [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
     [[maybe_unused]] auto& [scrollback, foreground, background, palette, cursorColor, cursorTextColor, selectionForeground,
@@ -278,7 +285,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(keys(options),
               (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
                                         "notificationCapabilities", "control"}));
-    EXPECT_EQ(keys(options["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff"}));
+    EXPECT_EQ(keys(options["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
     EXPECT_EQ(keys(options["launch"]), (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram", "command"}));
     EXPECT_EQ(keys(options["size"]), (std::vector<std::string>{"cols", "rows", "cellWidth", "cellHeight"}));
     EXPECT_EQ(keys(options["terminal"]),
@@ -582,7 +589,10 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
              {Json::Object{{"enabled", true}}, "'control.allowReadText'"},
              {Json::Object{{"enabled", 1}, {"allowReadText", false}}, "'control.enabled'"},
              {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", 1}}, "'control.remoteCommandsOff'"},
-             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", ""}, {"other", 1}}, "'control.other'"}}) {
+             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", ""}, {"eventInterval", 10001}},
+              "'control.eventInterval'"},
+             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", ""}, {"eventInterval", 0}, {"other", 1}},
+              "'control.other'"}}) {
         error.clear();
         EXPECT_FALSE(sessionOptions(with(good, "control", value), &error)) << Json::write(value);
         EXPECT_NE(error.find(key), std::string::npos) << key << ": " << error;

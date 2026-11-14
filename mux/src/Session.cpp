@@ -75,6 +75,7 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     auto pane = std::make_unique<MuxPane>(id, m_options.terminal, size, m_options.notificationCapabilities, m_images, std::move(wake));
     pane->setTemporaryDirectory(temporaryDirectory);
     if (!pane->start(std::move(spawn), launch.launchedProgram, error)) return false;
+    pane->setWatched(m_watched);
     m_panes.push_back(std::move(pane));
     m_layout.addTab(id);
     // The next window saves the command in a project, as the client that
@@ -116,11 +117,22 @@ std::unique_ptr<MuxPane> Session::take(std::uint32_t id)
     std::unique_ptr<MuxPane> pane = std::move(*it);
     m_panes.erase(it);
     m_layout.remove(id);
+    // Another session takes it, which may not be watched.
+    pane->setWatched(false);
     return pane;
+}
+
+void Session::setWatched(bool watched)
+{
+    if (watched == m_watched) return;
+    m_watched = watched;
+    if (!watched) m_moved.clear();
+    for (const auto& pane : m_panes) pane->setWatched(watched);
 }
 
 void Session::adopt(std::unique_ptr<MuxPane> pane)
 {
+    pane->setWatched(m_watched);
     m_layout.addTab(pane->id());
     m_panes.push_back(std::move(pane));
 }
@@ -143,8 +155,14 @@ void Session::applySettings(const SessionSettings& settings)
     for (const auto& pane : m_panes) pane->setOptions(settings.terminal);
 }
 
+void Session::noteMoved(std::uint32_t pane)
+{
+    if (m_watched && m_moved.size() < MaxLayoutPanes) m_moved.push_back(pane);
+}
+
 void Session::setLayout(Layout layout)
 {
+    for (const std::uint32_t pane : std::exchange(layout.moved, {})) noteMoved(pane);
     layout.reconcile(paneIds());
     m_layout = std::move(layout);
 }

@@ -774,3 +774,39 @@ while True:
     EXPECT_GT(width, 0);
     EXPECT_GT(height, width);
 }
+
+// `afterglow ctl --session NAME watch` subscribes to the events of the session
+// in the daemon, also while no window shows it, and prints them.
+TEST_F(MuxCommandTest, CtlWatchPrintsTheEventsOfASession)
+{
+    std::vector<std::string> args{"new", "--detach", "--name", "seen"};
+    const auto command = waitsForTheTest();
+    args.insert(args.end(), command.begin(), command.end());
+    ASSERT_EQ(mux(args).status, 0);
+    // New tabs while the watch runs, however long it takes to subscribe: the
+    // watch prints those that come after.
+    std::atomic<bool> stop{false};
+    std::thread splits([this, &stop] {
+        for (int i = 0; i < 10 && !stop; ++i) {
+            std::this_thread::sleep_for(500ms);
+            EXPECT_EQ(ctl({"--session", "seen", "new-tab"}).status, 0);
+        }
+    });
+    const Result watched = run({"-c", std::string("exec timeout 6 '") + AFTERGLOW_BINARY + "' ctl --session seen watch"}, "/bin/sh");
+    stop = true;
+    splits.join();
+    EXPECT_NE(watched.out.find(R"(,"event":"paneCreated"})"), std::string::npos) << watched.out << watched.err;
+    EXPECT_NE(watched.out.find(R"(,"event":"focusChanged"})"), std::string::npos) << watched.out << watched.err;
+    // The session ends: the watch ends with status 1 and says why, where it
+    // once waited for ever (timeout's 124). A watch that comes after the end
+    // finds no session.
+    std::thread ending([this] {
+        std::this_thread::sleep_for(2000ms);
+        EXPECT_EQ(mux({"kill", "--force", "seen"}).status, 0);
+    });
+    const Result ended = run({"-c", std::string("exec timeout 8 '") + AFTERGLOW_BINARY + "' ctl --session seen watch"}, "/bin/sh");
+    ending.join();
+    EXPECT_EQ(ended.status, 1) << ended.out << ended.err;
+    EXPECT_TRUE(ended.err.find("session 'seen' ended") != std::string::npos || ended.err.find("no session named 'seen'") != std::string::npos)
+        << ended.err;
+}

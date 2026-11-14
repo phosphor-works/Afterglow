@@ -28,15 +28,19 @@ inline constexpr const char* NoSuchFn = "NO_SUCH_FN";
 inline constexpr const char* InvalidArg = "INVALID_ARG";
 inline constexpr const char* MalformedRequest = "MALFORMED_REQUEST";
 inline constexpr const char* CallFailed = "CALL_FAILED";
+inline constexpr const char* NoSuchSignal = "NO_SUCH_SIGNAL";
+inline constexpr const char* NoSuchSubscription = "NO_SUCH_SUBSCRIPTION";
 } // namespace IpcErrorCode
 
 struct IpcRequest
 {
-    std::string type; ///< "call" is the only type that a server of this library answers
+    std::string type; ///< "call", "subscribe" or "unsubscribe" for a server of this library
     std::optional<std::int64_t> id;
     std::string target;
     std::string fn;
     Json::Array args;
+    std::string signal; ///< subscribe: the event
+    std::int64_t subscriptionId = 0; ///< unsubscribe: the id of the subscribe request
 };
 
 /// Reads one request line with the rules of PhosphorIpc::parseRequest, in
@@ -48,6 +52,9 @@ std::optional<IpcRequest> parseIpcRequest(std::string_view line, std::string* er
 
 /// The lines that a server sends, each with its '\n'.
 std::string ipcReply(std::int64_t id, Json::Value result);
+/// An event of the subscription of request @p subscriptionId, as
+/// PhosphorIpc::buildEvent writes it.
+std::string ipcEvent(std::int64_t subscriptionId, Json::Array args);
 std::string ipcError(std::optional<std::int64_t> id, std::string_view code, std::string_view message);
 
 /// A listening Unix socket that takes connections only from processes of

@@ -9,11 +9,14 @@
 #include "control/Ctl.h"
 #include "control/IpcClient.h"
 
+#include "MuxProtocol.h"
+
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QDeadlineTimer>
+#include <QMetaMethod>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -829,6 +832,23 @@ TEST_F(ControlSocketTest, IntervalTurnedToZeroSendsWhatWaitsFirst)
 }
 
 } // namespace
+
+// The events of a session in the daemon are the window's: `afterglow ctl
+// watch` subscribes to every signal of ControlApi, and a session that
+// refused one would end the watch.
+TEST(ControlEvents, AreTheSignalsOfTheControlTarget)
+{
+    QStringList signalNames;
+    const QMetaObject& api = ControlApi::staticMetaObject;
+    for (int i = QObject::staticMetaObject.methodCount(); i < api.methodCount(); ++i) {
+        if (api.method(i).methodType() == QMetaMethod::Signal) signalNames << QString::fromLatin1(api.method(i).name());
+    }
+    QStringList daemon;
+    for (const std::string_view event : AfterglowMux::ControlEvents) daemon << QString::fromLatin1(event.data(), qsizetype(event.size()));
+    signalNames.sort();
+    daemon.sort();
+    EXPECT_EQ(signalNames, daemon);
+}
 
 int main(int argc, char** argv)
 {
