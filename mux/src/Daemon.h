@@ -16,6 +16,7 @@
 #include <map>
 #include <optional>
 #include <memory>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -272,6 +273,19 @@ private:
     };
     std::map<std::uint64_t, Forward> m_forwards;
     std::uint64_t m_nextForward = 1;
+    /// The number of each client whose calls go to windows: a window keeps
+    /// the overlays and their inputs of each client (`afterglow ctl
+    /// overlay`), and ends them when the client goes.
+    std::map<const AfterglowProto::IpcServerConnection*, std::uint64_t> m_clients;
+    /// From a random number: a window keeps the inputs of a client until it
+    /// hears that it went, and a daemon that starts again numbers others.
+    /// Within the 53 bits that a JSON number keeps exactly.
+    std::uint64_t m_nextClient = (std::uint64_t(std::random_device{}()) << 20) + 1;
+    /// The forwards of clients that went, by their ID, with their window:
+    /// that window can still answer them, and its answer goes nowhere.
+    std::map<std::uint64_t, std::uint64_t> m_abandonedForwards;
+    /// The sessions whose windows hold overlays or inputs of each client.
+    std::map<const AfterglowProto::IpcServerConnection*, std::set<std::string>> m_overlaySessions;
     /// The command connections that windows serve, by the ID of their relay.
     struct Relay
     {

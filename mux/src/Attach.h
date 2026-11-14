@@ -203,6 +203,7 @@ private:
     bool m_finishSent = false;
     bool m_layoutSent = false; ///< the first event, before any PaneOpened
     std::vector<std::string> m_controlReplies; ///< Attach::InputType::ControlReply, for the daemon
+    std::string m_controlReplyParts; ///< the ControlReplyPart frames of the reply that comes
     std::vector<Attach::RelayFrame> m_relayFrames; ///< from CommandsChannel, for the daemon
     bool m_outputEnded = false; ///< all went, and the stream's output ended: the window closes
 

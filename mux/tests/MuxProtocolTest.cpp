@@ -64,7 +64,16 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 19) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 20) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 20 added the parts of a ControlReply larger than one frame,
+    // and the client of a Control event (AttachTest).
+    Attach::Input replyPart;
+    replyPart.type = Attach::InputType::ControlReplyPart;
+    replyPart.bytes = "{\"id\"";
+    EXPECT_EQ(Attach::encode(replyPart), std::string("\x0b\x00{\"id\"", 7));
+    EXPECT_EQ(Attach::decodeInput(Attach::encode(replyPart))->type, Attach::InputType::ControlReplyPart);
+    // Under the output that waits for one client of the daemon.
+    static_assert(Attach::MaxControlReply < (std::size_t(32) << 20));
     // Version 19 added the variables of Mux.updateEnvironment to the
     // settings of a window, a value or null for each.
     {
@@ -885,7 +894,7 @@ TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
 {
     const std::string_view bad[] = {
         {},
-        std::string_view("\x0b\x01", 2),         // the type after Settings
+        std::string_view("\x0c\x01", 2),         // the type after ControlReplyPart
         std::string_view("\x08\x01\x00", 3),     // a byte after a ClosePane
         std::string_view("\x01", 1),             // no pane
         std::string_view("\x02\x01\x50\x18\x08", 5), // a Resize that ends early

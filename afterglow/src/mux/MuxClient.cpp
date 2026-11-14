@@ -409,10 +409,10 @@ bool MuxClient::sendInput(std::uint32_t id, std::string_view bytes)
     return true;
 }
 
-void MuxClient::queueInput(std::string frame, bool resize)
+void MuxClient::queueInput(std::string frame, bool resize, bool counted)
 {
-    m_waitingBytes.fetch_add(frame.size(), std::memory_order_relaxed);
-    m_waitingInput.push_back(std::move(frame));
+    if (counted) m_waitingBytes.fetch_add(frame.size(), std::memory_order_relaxed);
+    m_waitingInput.push_back({std::move(frame), counted});
     if (!resize) m_waitingResizeOf.reset();
 }
 
@@ -428,7 +428,7 @@ void MuxClient::sendResize(std::uint32_t id, const AfterglowMux::PaneSize& size)
     // first. A size that still waits with nothing after it is old: the new
     // one takes its place.
     if (m_waitingResizeOf == id && !m_waitingInput.empty()) {
-        std::string& last = m_waitingInput.back();
+        std::string& last = m_waitingInput.back().bytes;
         m_waitingBytes.fetch_sub(last.size(), std::memory_order_relaxed);
         m_waitingBytes.fetch_add(frame.size(), std::memory_order_relaxed);
         last = std::move(frame);
@@ -478,7 +478,7 @@ void MuxClient::answerControlCalls()
         ControlReply reply = [self = QPointer<MuxClient>(this), id = call.id](const ControlAnswer& answer) {
             if (self) self->sendControlReply(id, answer);
         };
-        if (m_controlHandler) m_controlHandler(call.fn, call.args, std::move(reply));
+        if (m_controlHandler) m_controlHandler(call.fn, call.args, call.client, std::move(reply));
         else reply({{}, QStringLiteral("this window answers no control calls")});
     }
 }
@@ -490,11 +490,28 @@ void MuxClient::sendControlReply(qint64 id, const ControlAnswer& answer)
     if (id == 0 || !showing()) return;
     QJsonObject reply{{QStringLiteral("id"), id}};
     if (answer.error.isEmpty()) reply.insert(QStringLiteral("result"), answer.result);
-    else reply.insert(QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), QStringLiteral("CALL_FAILED")}, {QStringLiteral("message"), answer.error}});
-    Attach::Input input;
-    input.type = Attach::InputType::ControlReply;
-    input.bytes = QJsonDocument(reply).toJson(QJsonDocument::Compact).toStdString();
-    queueInput(Attach::encode(input), false);
+    else
+        reply.insert(QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), answer.code.isEmpty() ? QStringLiteral("CALL_FAILED") : answer.code},
+                                                          {QStringLiteral("message"), answer.error}});
+    std::string json = QJsonDocument(reply).toJson(QJsonDocument::Compact).toStdString();
+    // One that does not fit a frame (a screenshot) goes in parts. One past
+    // what the daemon takes fails there: the client hears why, not this.
+    if (json.size() > Attach::MaxControlReply) {
+        QJsonObject tooLarge{{QStringLiteral("id"), id}};
+        tooLarge.insert(QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), QStringLiteral("failed")},
+                                                              {QStringLiteral("message"), QStringLiteral("the answer is larger than %1 MiB")
+                                                                                              .arg(Attach::MaxControlReply >> 20)}});
+        json = QJsonDocument(tooLarge).toJson(QJsonDocument::Compact).toStdString();
+    }
+    for (std::size_t at = 0;;) {
+        Attach::Input input;
+        const bool last = json.size() - at <= Attach::ControlReplyPartBytes;
+        input.type = last ? Attach::InputType::ControlReply : Attach::InputType::ControlReplyPart;
+        input.bytes = json.substr(at, last ? std::string::npos : Attach::ControlReplyPartBytes);
+        queueInput(Attach::encode(input), false, false);
+        if (last) break;
+        at += Attach::ControlReplyPartBytes;
+    }
     sendWaitingInput();
 }
 
@@ -505,8 +522,8 @@ void MuxClient::sendWaitingInput()
         m_waitingActions.pop_front();
     }
     while (m_stream && m_input && !m_waitingInput.empty()) {
-        if (m_input->tryWrite(m_waitingInput.front()) != WriteResult::Written) break;
-        m_waitingBytes.fetch_sub(m_waitingInput.front().size(), std::memory_order_relaxed);
+        if (m_input->tryWrite(m_waitingInput.front().bytes) != WriteResult::Written) break;
+        if (m_waitingInput.front().counted) m_waitingBytes.fetch_sub(m_waitingInput.front().bytes.size(), std::memory_order_relaxed);
         m_waitingInput.pop_front();
     }
     if (m_waitingInput.empty()) m_waitingResizeOf.reset();
@@ -625,7 +642,8 @@ void MuxClient::handleFrames()
                 bad = error.error != QJsonParseError::NoError || !id.isDouble() || id.toInteger(-1) < 0 || !call.value(QLatin1String("fn")).isString()
                     || !call.value(QLatin1String("args")).isArray();
                 if (!bad) {
-                    m_controlCalls.push_back({id.toInteger(), call.value(QLatin1String("fn")).toString(), call.value(QLatin1String("args")).toArray()});
+                    m_controlCalls.push_back({id.toInteger(), call.value(QLatin1String("fn")).toString(), call.value(QLatin1String("args")).toArray(),
+                                              call.value(QLatin1String("client")).toInteger(0)});
                     if (!std::exchange(m_controlCallsQueued, true)) QMetaObject::invokeMethod(this, &MuxClient::answerControlCalls, Qt::QueuedConnection);
                 }
             } else if (event && event->type == Attach::EventType::PaneOpened) {

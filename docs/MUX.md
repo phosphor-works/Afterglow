@@ -404,7 +404,26 @@ A window that answers a command follows its own settings too.
 | `move-pane`, `detach-tab` | The daemon moves the pane in its layout. A move to a new window makes a new session, as a [drag out](#tabs-and-splits) does, which no window shows. | The window moves the pane, as a drag in the window does |
 | `get-text --selection` | Empty: only a window has a selection | The window answers |
 | `set-title`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
-| `overlay`, `screenshot`, `watch` | Refused with `CALL is not available for a session yet` | Refused the same way |
+| `overlay`, `screenshot` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window runs the overlay or takes the picture, and answers when it is done |
+| `watch` | Refused with `afterglow ctl watch is not available for a session yet` | Refused the same way |
+
+The overlay of `afterglow ctl overlay` runs on the computer of the window, over the pane, as an overlay of the window's own pane does: its program and its `--cwd` are of that computer.
+It belongs to the client that asked for it: it closes when that client goes. The standard input of `afterglow ctl overlay` goes to the window in parts.
+`screenshot` needs `Control.allowReadText`, of the session and of the window.
+
+A session of another host reaches only what its programs could reach over ssh: no program of this computer runs for it.
+
+| Call from a session of another host | The window |
+| --- | --- |
+| `overlay` | Refuses it: `a session of another host runs no program on this computer` |
+| `new-window` with a command | Refuses it the same way. Without a command, it opens a window with your shell. |
+| `action script:ID.COMMAND` | Refuses it. `aglow run` in the session runs the script commands that a script marks remote. |
+
+| Limit of the calls that a window answers | Value | At the limit |
+| --- | --- | --- |
+| Answer of the window | 24 MiB of JSON, which the window sends in parts of 1 MiB | The call fails with the code `failed`: `the answer is larger than 24 MiB` |
+| Screenshots in progress for the clients of sessions | 4, for all clients | The call fails with the code `busy` |
+| Inputs of `overlayInput` that wait for `overlay` | 4 for each client, 64 MiB for all the clients of sessions | The `overlayInput` call fails |
 
 For `split` and `new-tab`, `afterglow ctl` prepares the program with your settings, as `afterglow mux new` does: `Terminal.shell`, shell integration and `Terminal.env`, over the environment of the session.
 Without `--cwd`, a new tab or split starts in the directory of its pane, or where `Window.workingDirectory` says.
@@ -451,7 +470,7 @@ The daemon also gives the pane its answer to the query of `aglow run` (OSC 24569
 | End | When the `afterglow ssh` process ends, when its pane closes, and when the daemon ends. The daemon then cancels the forward with `ssh -O cancel`, with the `ssh` on its own `PATH` |
 | Limits | 16 sessions for each pane, 256 for the daemon, and 64 connections for each socket, as in a window |
 
-A pane of a session has no overlay, so `afterglow ssh` in an overlay gets no socket there.
+The daemon gives a session pane no overlay. An overlay over a session pane runs in the window, on the computer of the window, so `afterglow ssh` in it gets no socket of the daemon.
 The daemon gives a socket only to an `afterglow ssh` that runs in the pane that it names, or below a program of that pane, by its processes.
 A process of another terminal that names the pane gets `CALL_FAILED`: `` only `afterglow ssh` in pane N opens a remote socket for it ``.
 When no window shows the session, a client of the remote host gets `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts`.

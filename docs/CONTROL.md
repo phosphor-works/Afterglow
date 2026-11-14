@@ -809,7 +809,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Screenshots in progress | 4, for all clients | The `screenshot` call fails with the code `busy`. |
 | `afterglow ctl overlay` standard input | 4 MiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |
 | One part of `overlayInput` from `afterglow ctl` | 512 KiB, written as a JSON string | `afterglow ctl` cuts the input there. JSON writes most C0 control characters, such as U+0001, as 6 bytes, and a part with them holds fewer bytes of input. |
-| Inputs of `overlayInput` that wait for `overlay` | 4 for each connection, 64 MiB for all connections | The `overlayInput` call fails. At the limit of 64 MiB, the parts that came before stay and wait. They go when `overlay` takes them, the connection closes or `Control.enabled` goes off. An input over 4 MiB fails, and Afterglow drops it. |
+| Inputs of `overlayInput` that wait for `overlay` | 4 for each connection, 64 MiB for all connections, and as much again for the clients of [mux sessions](MUX.md#control-of-a-session) | The `overlayInput` call fails. At the limit of 64 MiB, the parts that came before stay and wait. They go when `overlay` takes them, the connection closes or `Control.enabled` goes off. An input over 4 MiB fails, and Afterglow drops it. |
 | `afterglow ctl overlay --title` | 512 UTF-16 units | `afterglow ctl` exits with status 2 before it connects. |
 | `stdin` of the `overlay` call | The request line of 1 MiB | The socket closes the connection. |
 | `stdout` of an overlay's result | 1 MiB of UTF-8 | The text is cut, and `truncated` is true. |
