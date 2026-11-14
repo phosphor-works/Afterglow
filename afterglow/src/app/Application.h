@@ -87,6 +87,10 @@ public:
     /// An error message, empty on success.
     QString toggleQuickTerminal();
 
+protected:
+    /// Sees the application's QEvent::Quit before Qt closes the windows.
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
     void bindShortcuts();
     void quitWhenNoWindowsRemain();

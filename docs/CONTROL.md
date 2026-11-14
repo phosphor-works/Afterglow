@@ -31,7 +31,8 @@ Every pane of a window sets `AFTERGLOW_PANE_ID` to its pane ID and `AFTERGLOW_SO
 In a pane, `afterglow ctl` and `aglow run` send their requests to that process.
 Outside Afterglow, `afterglow ctl` and `aglow run` use the socket of the main process on the current Wayland display.
 
-A pane of a [mux session](MUX.md) sets `AFTERGLOW_SOCKET` to the socket of the mux daemon and `AFTERGLOW_SESSION` to the session name.
+A pane of a [mux session](MUX.md) sets `AFTERGLOW_SOCKET` to the socket of the mux daemon.
+Its `AFTERGLOW_SESSION` names the session where the pane started.
 The daemon answers each request to the `control` and `commands` targets with `CALL_FAILED` (see [control in a session pane](MUX.md#control-in-a-session-pane)).
 
 | Process | Socket |
@@ -253,9 +254,9 @@ Another number fails with `CALL_FAILED`.
 | `setTitle` | pane, title | None. An empty title gives the title back to the programs. |
 | `signal` | pane, channel, value | None. Channels are 0 to 7. |
 | `notify` | pane, title, body | None |
-| `runAction` | pane, action | None. Actions are keybind action names, or `script:ID.COMMAND`, which starts a [script command](#script-commands) with no arguments and returns before it ends. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. The call returns before the answer. A keybind action fails while its window shows a prompt or a script dialog, so that it cannot change the answer. For `script:ID.COMMAND`, a pane of 0 is the focused pane. When no pane has the focus, the command runs with no pane. |
-| `movePane` | pane, target, placement | An object: the pane after the move. See [projects](PROJECTS.md). |
-| `detachTab` | pane | An object: the pane in its new window |
+| `runAction` | pane, action | None. Actions are keybind action names, or `script:ID.COMMAND`, which starts a [script command](#script-commands) with no arguments and returns before it ends. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. With `Mux.onClose` at `detach`, closing the last tab of a mux session asks nothing about the programs of the session. They keep running. The call returns before the answer. A keybind action fails while its window shows a prompt or a script dialog, so that it cannot change the answer. For `script:ID.COMMAND`, a pane of 0 is the focused pane. When no pane has the focus, the command runs with no pane. |
+| `movePane` | pane, target, placement | An object: the pane after the move. See [projects](PROJECTS.md). A pane of a mux session that moves to a new window goes to a new session. The object then has its new pane ID (see [MUX.md](MUX.md#move-panes-and-tabs)). |
+| `detachTab` | pane | An object: the pane in its new window. For a tab of a mux session, it has the new pane ID in the new session. |
 | `openDirectory` | directory, layout | An object: the window and its pane |
 | `projects` | None | The saved project names |
 | `saveProject` | pane, name, overwrite | An object: the name and the window |
@@ -410,7 +411,7 @@ Thus take screenshots on a connection without subscriptions.
 | `id` | The pane ID |
 | `window` | The window ID |
 | `tab` | The tab's position in its window, from 0 |
-| `tab_id` | The tab ID. It does not change when the tab moves. |
+| `tab_id` | The tab ID. It does not change when the tab moves. A tab of a mux session that moves to a new window gets a new ID. |
 | `title` | The pane title |
 | `cwd` | The pane's working directory. Empty when it is unknown or removed. |
 | `command` | The running command (shell integration), empty at the prompt |
@@ -424,7 +425,7 @@ Thus take screenshots on a connection without subscriptions.
 | Event | Arguments |
 | --- | --- |
 | `paneCreated` | pane |
-| `paneMoved` | pane. Sent when the pane moves to another split, tab or window. Also sent for each pane of a tab that moves in its window, and of each tab that the move puts at another index. |
+| `paneMoved` | pane. Sent when the pane moves to another split, tab or window. Also sent for each pane of a tab that moves in its window, and of each tab that the move puts at another index. A pane of a mux session that moves to a new window sends `paneClosed`, then `paneCreated` with its new ID. |
 | `paneClosed` | pane |
 | `titleChanged` | pane, title |
 | `bell` | pane |

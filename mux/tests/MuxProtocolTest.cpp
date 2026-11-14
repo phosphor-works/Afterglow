@@ -6,6 +6,7 @@
 #include "MuxProtocol.h"
 #include "MuxStream.h"
 
+#include <AfterglowVt/Screen.h>
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -68,7 +69,11 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // Version 9 added the tabs and splits of a session: the newPane, paneJob,
     // breakOut and paneSession calls, the Layout event and input (MuxLayoutTest), the
     // ClosePane action, and the session's environment apart from the launch
-    // of each pane, with the variables that a launch unsets.
+    // of each pane, with the variables that a launch unsets. The options of
+    // a session hold the launch of its first pane and its size as objects of
+    // their own (SessionOptionsRefuseBadValues), and the umask moved from the
+    // launch to the session. The answers of attach (with the session's
+    // environment), newPane and breakOut are pinned by AttachTest.
     EXPECT_EQ(std::string(Fn::NewPane), "newPane");
     EXPECT_EQ(std::string(Fn::PaneJob), "paneJob");
     EXPECT_EQ(std::string(Fn::BreakOut), "breakOut");
@@ -91,7 +96,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(keys(toJson(layout)["tabs"].toArray()[0]), (std::vector<std::string>{"tree", "focused", "zoomed", "title"}));
     [[maybe_unused]] auto& [tabs, current] = layout;
     [[maybe_unused]] auto& [tree, focused, zoomed, tabTitle] = layout.tabs[0];
-    [[maybe_unused]] auto& [nodePane, down, ratio] = layout.tabs[0].tree[0];
+    [[maybe_unused]] auto& [nodePane, down, ratio, paneTitle] = layout.tabs[0].tree[0];
     // Version 8 added the frames of its pane before each Host event, which
     // the window reads before it makes the call (below).
     // Version 7 added the images and the cell size of the state codec
@@ -487,6 +492,8 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         {"unset", Json::Array{""}},
         {"unset", Json::Array{1}},
         {"launchedProgram", false},
+        // A key of another version: version 8 had the umask with the program,
+        // and version 9 has it in the session's options.
         {"umask", 0},
     };
     for (const auto& [key, value] : badLaunch) {
@@ -499,14 +506,14 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
     }
     const std::pair<const char*, Json::Value> badSize[] = {
         {"cols", 1},
-        {"cols", 4097},
+        {"cols", std::int64_t(1) << 31},
         {"cols", 2.5},
         {"rows", 0},
-        {"rows", 1048576 / 2 + 1},
+        {"rows", std::int64_t(1) << 31},
         {"cellWidth", -1},
-        {"cellWidth", 65536},
+        {"cellWidth", std::int64_t(1) << 31},
         {"cellHeight", -1},
-        {"cellHeight", 65536},
+        {"cellHeight", std::int64_t(1) << 31},
     };
     for (const auto& [key, value] : badSize) {
         error.clear();
@@ -516,6 +523,28 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         EXPECT_FALSE(paneSizeFrom(with(good["size"], key, value), &error)) << key;
         EXPECT_NE(error.find(std::string("'size.") + key + "'"), std::string::npos) << key << ": " << error;
     }
+    // A size past what a terminal can be is the largest terminal, as for a
+    // Resize: the window measured it.
+    const auto large = paneSizeFrom(Json::Object{{"cols", 5000}, {"rows", 100000}, {"cellWidth", 70000}, {"cellHeight", 16}}, &error);
+    ASSERT_TRUE(large) << error;
+    EXPECT_EQ(large->cols, AfterglowVt::Screen::MaxColumns);
+    EXPECT_EQ(large->rows, int(AfterglowVt::Screen::MaxCells) / AfterglowVt::Screen::MaxColumns);
+    EXPECT_EQ(large->cellWidth, 65535);
+    EXPECT_EQ(large->cellHeight, 16);
+    // The bad variable name, named as such.
+    EXPECT_FALSE(sessionOptions(with(good, "environment", Json::Array{Json::Array{"A=B", "c"}}), &error));
+    EXPECT_NE(error.find("variable name"), std::string::npos) << error;
+    // The environment of the attach answer reads as a session's does.
+    const auto environment = environmentFrom(environmentJson({{"A", "1"}, {"B", ""}}), &error);
+    ASSERT_TRUE(environment) << error;
+    EXPECT_EQ(*environment, (std::vector<std::pair<std::string, std::string>>{{"A", "1"}, {"B", ""}}));
+    EXPECT_FALSE(environmentFrom(Json::Array{Json::Array{"", "1"}}, &error));
+    EXPECT_FALSE(environmentFrom(Json::Object{}, &error));
+    // A key of the wire in an error is safe to print, and short.
+    error.clear();
+    EXPECT_FALSE(paneSizeFrom(with(good["size"], std::string(1000, 'k') + "\x1b", 1), &error));
+    EXPECT_LT(error.size(), 200u) << error;
+    EXPECT_EQ(error.find('\x1b'), std::string::npos);
 }
 
 TEST(MuxProtocol, TerminalValuesOutsideTheirBoundsAreRefusedByName)
@@ -628,6 +657,19 @@ TEST(MuxProtocol, AttachEventsRoundTrip)
         ASSERT_TRUE(back);
         EXPECT_EQ(back->type, type);
     }
+    // The layout takes the rest of the frame too.
+    for (const std::string& payload : {std::string(), std::string(R"({"tabs":[],"current":0})"), std::string("\x80\x00\xff", 3)}) {
+        Attach::Event layout;
+        layout.type = Attach::EventType::Layout;
+        layout.payload = payload;
+        const auto back = Attach::decodeEvent(Attach::encode(layout));
+        ASSERT_TRUE(back);
+        EXPECT_EQ(back->type, Attach::EventType::Layout);
+        EXPECT_EQ(back->pane, 0u);
+        EXPECT_EQ(back->channel, 0u);
+        EXPECT_EQ(back->status, -1);
+        EXPECT_TRUE(back->payload == payload);
+    }
     // A host call takes the rest of the frame, whatever its bytes look like.
     for (const int status : {-1, Attach::HostPart}) {
         for (const std::string& payload : {std::string(), Host::encode(Host::make(Host::Kind::Notify, "t", "b")), std::string("\x80\x00\xff", 3)}) {
@@ -650,6 +692,7 @@ TEST(MuxProtocol, AttachEventsRoundTrip)
 
 TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
 {
+    static_assert(Attach::MaxChannelId == 257, "the frame of PaneOpened below names MaxChannelId");
     const std::string_view bad[] = {
         {},                         // empty
         std::string_view("\x08\x01\x00\x00", 4), // the type after Layout
@@ -661,6 +704,10 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
         std::string_view("\x01\x00\x01\x00", 4), // PaneOpened of pane 0
         std::string_view("\x01\x01\x00\x00", 4), // PaneOpened on the channel of the events
         std::string_view("\x01\x01\x80\x20\x00", 5), // PaneOpened on channel 4096
+        std::string_view("\x01\x01\x81\x02\x00", 5), // PaneOpened on channel MaxChannelId (257)
+        std::string_view("\x07\x01\x00\x00{}", 6), // Layout of a pane
+        std::string_view("\x07\x00\x01\x00{}", 6), // Layout on a channel
+        std::string_view("\x07\x00\x00\x01{}", 6), // Layout with a status
         std::string_view("\x06\x00\x00\x00\x01", 5), // Host of pane 0
         std::string_view("\x06\x01\x01\x00\x01", 5), // Host on a channel
         std::string_view("\x06\x01\x00\x01\x01", 5), // Host with status 0
@@ -678,14 +725,27 @@ TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)
     ASSERT_TRUE(back);
     EXPECT_EQ(back->type, Attach::InputType::Bytes);
     EXPECT_EQ(back->bytes, bytes.bytes);
-    for (const auto type : {Attach::InputType::Reset, Attach::InputType::Clear, Attach::InputType::Kill}) {
-        Attach::Input action;
-        action.type = type;
-        action.pane = 2;
-        const auto decoded = Attach::decodeInput(Attach::encode(action));
+    for (const auto type : {Attach::InputType::Reset, Attach::InputType::Clear, Attach::InputType::Kill, Attach::InputType::ClosePane}) {
+        for (const std::uint32_t pane : {2u, 0xffffffffu}) {
+            Attach::Input action;
+            action.type = type;
+            action.pane = pane;
+            const auto decoded = Attach::decodeInput(Attach::encode(action));
+            ASSERT_TRUE(decoded);
+            EXPECT_EQ(decoded->type, type);
+            EXPECT_EQ(decoded->pane, pane);
+        }
+    }
+    // The layout takes the rest of the frame, as the bytes do.
+    for (const std::string& json : {std::string(), std::string(R"({"tabs":[],"current":0})"), std::string("\x80\x00\xff", 3)}) {
+        Attach::Input layout;
+        layout.type = Attach::InputType::Layout;
+        layout.bytes = json;
+        const auto decoded = Attach::decodeInput(Attach::encode(layout));
         ASSERT_TRUE(decoded);
-        EXPECT_EQ(decoded->type, type);
-        EXPECT_EQ(decoded->pane, 2u);
+        EXPECT_EQ(decoded->type, Attach::InputType::Layout);
+        EXPECT_EQ(decoded->pane, 0u);
+        EXPECT_TRUE(decoded->bytes == json);
     }
     // The value follows a pane of one varint byte, and one of two.
     for (const std::uint32_t pane : {2u, 300u}) {
@@ -721,6 +781,7 @@ TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
         std::string_view("\x0a\x01", 2),         // an unknown type
         std::string_view("\x09\x01", 2),         // the type after ClosePane
         std::string_view("\x08\x01\x00", 3),     // a byte after a ClosePane
+        std::string_view("\x07\x01{}", 4),        // a Layout of a pane
         std::string_view("\x01", 1),             // no pane
         std::string_view("\x02\x01\x50\x18\x08", 5), // a Resize that ends early
         std::string_view("\x02\x01\x50\x18\x08\x10\x00", 7), // a byte after the Resize

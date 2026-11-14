@@ -141,6 +141,25 @@ TEST(PaneLaunch, TerminfoDirsHoldEachDirectoryOnce)
     EXPECT_EQ(offered(), ours + ":/a::/b");
 }
 
+TEST(PaneLaunch, ASessionsPaneReadsTheSessionsEnvironment)
+{
+    if (!buildEntry()) GTEST_SKIP() << "no terminfo entry in the build tree";
+    // A window shows a session that another environment started: what the
+    // launch reads of the inherited variables is the session's.
+    const Afterglow::Test::Saved saved("TERMINFO_DIRS", "/window/terminfo");
+    const Afterglow::InheritedEnvironment session{{"TERMINFO_DIRS", "/session/terminfo"}};
+    SpawnOptions options;
+    Afterglow::offerTerminalEnvironment(options, QStringLiteral("afterglow"), &session);
+    const std::string dirs = valueOf(options, "TERMINFO_DIRS").value_or("(none)");
+    EXPECT_NE(dirs.find("/session/terminfo"), std::string::npos) << dirs;
+    EXPECT_EQ(dirs.find("/window/terminfo"), std::string::npos) << dirs;
+    // A session without the variable has only ours.
+    const Afterglow::InheritedEnvironment bare;
+    SpawnOptions plain;
+    Afterglow::offerTerminalEnvironment(plain, QStringLiteral("afterglow"), &bare);
+    EXPECT_EQ(valueOf(plain, "TERMINFO_DIRS").value_or("(none)").find("/window/terminfo"), std::string::npos);
+}
+
 TEST(PaneLaunch, TheLaunchsVariablesWinOverTheConfiguredOnes)
 {
     Settings settings = plainSettings();

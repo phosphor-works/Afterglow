@@ -66,7 +66,7 @@ std::optional<std::string> givenValue(const AfterglowPty::SpawnOptions& options,
 /// once: an Afterglow started from a pane of one inherits the list that
 /// this made, with its directories and its empty entry. Nullopt when no
 /// directory holds the entry.
-std::optional<std::string> terminfoDirectories()
+std::optional<std::string> terminfoDirectories(const InheritedEnvironment* environment)
 {
     std::vector<std::string> dirs;
     for (const char* d : {AFTERGLOW_BUILD_TERMINFO_DIR, AFTERGLOW_INSTALLED_TERMINFO_DIR}) {
@@ -76,7 +76,13 @@ std::optional<std::string> terminfoDirectories()
     }
     if (dirs.empty()) return std::nullopt;
     bool defaults = false;
-    const std::string inherited = qgetenv("TERMINFO_DIRS").toStdString();
+    std::string inherited;
+    if (!environment) {
+        inherited = qgetenv("TERMINFO_DIRS").toStdString();
+    } else if (const auto it = std::find_if(environment->rbegin(), environment->rend(), [](const auto& kv) { return kv.first == "TERMINFO_DIRS"; });
+               it != environment->rend()) {
+        inherited = it->second;
+    }
     for (std::size_t start = 0; !inherited.empty() && start <= inherited.size();) {
         const std::size_t end = std::min(inherited.find(':', start), inherited.size());
         std::string entry = inherited.substr(start, end - start);
@@ -98,7 +104,7 @@ std::optional<std::string> terminfoDirectories()
 } // namespace
 
 AfterglowPty::SpawnOptions prepareLaunch(const Settings& settings, const QString& workingDirectory, const QStringList& command,
-                                         const QVariantMap& environment)
+                                         const QVariantMap& environment, const InheritedEnvironment* inherited)
 {
     AfterglowPty::SpawnOptions opts;
     // The child starts in its home directory rather than failing in one that is gone.
@@ -114,7 +120,7 @@ AfterglowPty::SpawnOptions prepareLaunch(const Settings& settings, const QString
     } else if (!settings.shell.isEmpty()) {
         opts.argv = {QFile::encodeName(settings.shell).toStdString()};
     }
-    ShellIntegration::prepare(opts, settings.shellIntegration);
+    ShellIntegration::prepare(opts, settings.shellIntegration, {}, inherited);
     // Integrated shells wrap ssh when the helper is named; a launch's own
     // values win, including one that removes the variable.
     if (settings.sshIntegration) offer(opts, "AFTERGLOW_SSH_HELPER", QFile::encodeName(QCoreApplication::applicationFilePath()).toStdString());
@@ -124,7 +130,7 @@ AfterglowPty::SpawnOptions prepareLaunch(const Settings& settings, const QString
     return opts;
 }
 
-void offerTerminalEnvironment(AfterglowPty::SpawnOptions& opts, const QString& term)
+void offerTerminalEnvironment(AfterglowPty::SpawnOptions& opts, const QString& term, const InheritedEnvironment* inherited)
 {
     for (const std::string_view name : ForeignVariables) {
         if (!named(opts, name)) opts.unsetEnvironment.emplace_back(name);
@@ -133,7 +139,7 @@ void offerTerminalEnvironment(AfterglowPty::SpawnOptions& opts, const QString& t
     // The TERM that the child gets: a launch's own wins over Terminal.term.
     if (givenValue(opts, "TERM") == "afterglow") {
         // Our own entry: point ncurses at it, ahead of the system databases.
-        if (const auto dirs = terminfoDirectories()) offer(opts, "TERMINFO_DIRS", *dirs);
+        if (const auto dirs = terminfoDirectories(inherited)) offer(opts, "TERMINFO_DIRS", *dirs);
     }
     offer(opts, "COLORTERM", "truecolor");
     offer(opts, "TERM_PROGRAM", "afterglow");

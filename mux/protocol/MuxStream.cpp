@@ -56,6 +56,8 @@ std::optional<Event> decodeEvent(std::string_view frame)
     if (event.type == EventType::Host && (event.pane == 0 || event.channel != 0 || (event.status != -1 && event.status != HostPart))) {
         return std::nullopt;
     }
+    // The layout is the session's, of no pane.
+    if (event.type == EventType::Layout && (event.pane != 0 || event.channel != 0 || event.status != -1)) return std::nullopt;
     return event;
 }
 
@@ -83,6 +85,8 @@ std::optional<Input> decodeInput(std::string_view frame)
     input.pane = std::uint32_t(r.varint(0xffffffffu));
     if (!r.ok()) return std::nullopt;
     if (type == std::uint8_t(InputType::Bytes) || type == std::uint8_t(InputType::Layout)) {
+        // The window's layout is of no pane.
+        if (type == std::uint8_t(InputType::Layout) && input.pane != 0) return std::nullopt;
         input.type = InputType(type);
         input.bytes = std::string(r.rest());
         return input;

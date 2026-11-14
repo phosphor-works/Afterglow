@@ -435,6 +435,19 @@ void Terminal::setOptions(const TerminalOptions& options)
     }
 }
 
+void Terminal::setViewOptions(const TerminalOptions& options)
+{
+    if (options.boldIsBright == m_options.boldIsBright && options.minimumContrast == m_options.minimumContrast
+        && options.wordBoundaries == m_options.wordBoundaries && options.bidi == m_options.bidi) {
+        return;
+    }
+    m_options.boldIsBright = options.boldIsBright;
+    m_options.minimumContrast = options.minimumContrast;
+    m_options.wordBoundaries = options.wordBoundaries;
+    m_options.bidi = options.bidi;
+    touch();
+}
+
 void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
 {
     cols = std::clamp(cols, 2, 4096);

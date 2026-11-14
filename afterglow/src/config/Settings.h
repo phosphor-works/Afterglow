@@ -135,7 +135,8 @@ struct QuickTerminalSettings
 
 struct MuxSettings
 {
-    /// What closing the window, tab or pane that shows a mux session does.
+    /// What closing the window that shows a mux session, or its last tab or
+    /// pane, does. Closing another tab or pane ends only its programs.
     enum class Close { Kill, Detach };
     /// Kill ends the session and its programs, as a window that is not in a
     /// session ends its programs. Detach keeps the session running. A quit

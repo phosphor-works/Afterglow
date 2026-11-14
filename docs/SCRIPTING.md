@@ -168,6 +168,7 @@ A script ends its own key mode with `end_key_mode`.
 A generic `action` runs in the pane's tab, and shows that tab first.
 `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` act on the pane's tab and do not show it, as the tab menu does.
 `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on.
+With `Mux.onClose` at `detach`, closing the last tab of a mux session asks nothing about the programs of the session (see [MUX.md](MUX.md#windows-of-a-session)).
 `exec`, `select`, `prompt` and `overlay` deliver their results when the process or the dialog finishes.
 Use direct creation helpers when you need a returned pane ID.
 
@@ -320,7 +321,7 @@ When a program clears its last status, or the terminal resets, `ev.state` is `id
 `cwd` is the local directory that the shell reported last, or the working directory of the pane's foreground process.
 It is `""` when it is not known.
 For a session pane of a mux session, `cwd` is only the directory that the shell reported.
-Afterglow does not ask the mux daemon for it, because scripts read every pane often (see [MUX.md](MUX.md#windows-of-a-session)).
+Afterglow does not ask the mux daemon for it, because scripts read every pane often (see [MUX.md](MUX.md#working-directory)).
 Afterglow ignores a reported directory that names another host, such as the directory of an `ssh` session.
 A reported path without a host is used when that path exists on this machine.
 
@@ -582,7 +583,7 @@ When the overlay closes, the focus goes back to the pane. The pane's cursor and 
 | Situation | Behavior |
 | --- | --- |
 | The pane overview, other tabs | The overlay shows where its pane is. |
-| A moved pane, a detached tab | The overlay goes with its pane. |
+| A moved pane, a detached tab | The overlay goes with its pane. A pane of a mux session that moves to a new window goes to a new session, and its overlay ends (see [MUX.md](MUX.md#move-panes-and-tabs)). |
 | Zoom, a resize | They apply to both. The program of a full-pane overlay gets the pane's new size. Afterglow places a popup again, and its program gets the popup's new size. |
 | Saved projects | Overlays are not saved. |
 | Copy mode, search, hints, paste, the mouse | They act on the overlay while its pane has the focus. |
@@ -1019,6 +1020,7 @@ A pane area is part of the pane:
 - It shows on the pane's card in the pane overview, in a tab transition and in the frame of a pane that closes.
 - The pane shaders, the text and background layer shaders and the window shaders draw over it, as they draw over the pane's text.
 - It goes with the pane to another tab or window, and it closes with the pane.
+- A pane of a mux session that moves to a new window goes to a new session, and its areas close. The script gets `on_pane_created` for the pane in the new window, and can dock them again.
 
 The events of a pane area have `scope = "pane"`, and their `pane` is the pane of the area.
 While the pane overview is open, the cards take the pointer: a pane area gets no click, hover, wheel or drag.
@@ -1126,6 +1128,8 @@ Failed launches return errors and remove the incomplete ordinary pane.
 `left`, `right`, `up` and `down` place the pane beside `target`, which is required.
 `new-tab` and `new-window` take no target.
 `new-tab` is refused for a pane that is alone in its tab.
+In the window of a mux session, `new-window` and `detach_tab` move the pane or the tab to a new session.
+The pane then gets a new pane ID (see [MUX.md](MUX.md#move-panes-and-tabs)).
 Another combination is refused with `invalid_effect`.
 
 Set an environment value to `false` to remove it.

@@ -260,3 +260,41 @@ TEST(SplitTree, SplitKeepsBothSidesAtTheMinimum)
     EXPECT_GT(ratio, 0.0);
     EXPECT_LT(ratio, 1.0);
 }
+
+TEST(SplitTree, PreorderGoesBothWaysWithoutRecursion)
+{
+    // 1 | (2 over 3), as a mux session's layout keeps it.
+    SplitTree t(fake(1));
+    t.split(fake(1), fake(2), SplitTree::Direction::Right, 0.25);
+    t.split(fake(2), fake(3), SplitTree::Direction::Down);
+    const auto nodes = t.preorder();
+    ASSERT_EQ(nodes.size(), 5u);
+    EXPECT_EQ(nodes[0].pane, nullptr);
+    EXPECT_FALSE(nodes[0].vertical);
+    EXPECT_DOUBLE_EQ(nodes[0].ratio, 0.75);
+    EXPECT_EQ(nodes[1].pane, fake(1));
+    EXPECT_EQ(nodes[2].pane, nullptr);
+    EXPECT_TRUE(nodes[2].vertical);
+    EXPECT_EQ(nodes[3].pane, fake(2));
+    EXPECT_EQ(nodes[4].pane, fake(3));
+    const auto back = SplitTree::fromPreorder(nodes);
+    ASSERT_TRUE(back);
+    back->layout(QRect(0, 0, 401, 201), 1);
+    t.layout(QRect(0, 0, 401, 201), 1);
+    for (std::uintptr_t n = 1; n <= 3; ++n) EXPECT_EQ(back->rectOf(fake(n)), t.rectOf(fake(n)));
+
+    // A tree as deep as a session's pane limit: no stack per level.
+    std::vector<SplitTree::PreorderNode> deep;
+    for (std::uintptr_t n = 1; n < 256; ++n) deep.push_back({nullptr, n % 2 == 0, 0.5});
+    for (std::uintptr_t n = 1; n <= 256; ++n) deep.push_back({fake(n), false, 0.5});
+    const auto chain = SplitTree::fromPreorder(deep);
+    ASSERT_TRUE(chain);
+    EXPECT_EQ(chain->paneCount(), 256);
+    EXPECT_EQ(chain->preorder().size(), deep.size());
+
+    // What is no single whole tree.
+    EXPECT_FALSE(SplitTree::fromPreorder({}));
+    EXPECT_FALSE(SplitTree::fromPreorder({{nullptr, false, 0.5}, {fake(1), false, 0.5}}));
+    EXPECT_FALSE(SplitTree::fromPreorder({{fake(1), false, 0.5}, {fake(2), false, 0.5}}));
+    EXPECT_FALSE(SplitTree::fromPreorder({{nullptr, false, 1.0}, {fake(1), false, 0.5}, {fake(2), false, 0.5}}));
+}

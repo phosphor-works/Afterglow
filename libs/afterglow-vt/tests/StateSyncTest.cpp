@@ -369,6 +369,43 @@ TEST(StateSync, TextStylesLinksAndText)
     EXPECT_EQ(p.replica.title(), "the title");
 }
 
+TEST(StateSync, ViewOptionsLeaveTheReplicaAsItsWriter)
+{
+    Pair p(20, 4, 10);
+    p.source.feed("\x1b[5 q\x1b]4;3;rgb:12/34/56\x1b\\\x1b]11;rgb:01/02/03\x1b\\\x1b]12;rgb:aa/bb/cc\x1b\\x");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    // A reload of the window: other colours, cursor and history too, which
+    // stay the writer's.
+    TerminalOptions o = withScrollback(2);
+    o.basePalette[3] = {1, 1, 1};
+    o.defaultBackground = {9, 9, 9};
+    o.cursorColor = Rgb{7, 7, 7};
+    o.cursorShape = CursorShape::Underline;
+    o.boldIsBright = true;
+    o.minimumContrast = 4.5;
+    o.wordBoundaries = U"-";
+    o.bidi = BidiMode::Auto;
+    const std::uint64_t before = p.replica.generation();
+    p.replica.setViewOptions(o);
+    EXPECT_GT(p.replica.generation(), before);
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    EXPECT_TRUE(p.replica.options().boldIsBright);
+    EXPECT_DOUBLE_EQ(p.replica.options().minimumContrast, 4.5);
+    EXPECT_TRUE(p.replica.options().wordBoundaries == U"-");
+    EXPECT_EQ(p.replica.options().bidi, BidiMode::Auto);
+    EXPECT_EQ(p.replica.options().maxScrollback, 10u);
+    EXPECT_FALSE(p.replica.options().cursorColor.has_value());
+    // The same options again draw nothing new.
+    const std::uint64_t applied = p.replica.generation();
+    p.replica.setViewOptions(o);
+    EXPECT_EQ(p.replica.generation(), applied);
+    // Frames still apply over them.
+    p.source.feed("\x1b]4;3;rgb:65/43/21\x1b\\y");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+}
+
 TEST(StateSync, ShellIntegrationMarksAndRegions)
 {
     Pair p(30, 8, 100);

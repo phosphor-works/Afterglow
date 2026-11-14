@@ -7,14 +7,14 @@
 #include <AfterglowProto/Run.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
-#include <string_view>
 #include <exception>
 #include <functional>
+#include <string_view>
 
 #include <dirent.h>
 #include <poll.h>
@@ -245,16 +245,24 @@ Daemon::Exit Daemon::run()
         }
         std::vector<Attachment*> over;
         for (const auto& [attachment, revents] : attached) {
-            const auto session = attachment->finishing() ? m_sessions.end() : find(attachment->session());
-            Session* const shown = session == m_sessions.end() ? nullptr : session->get();
+            const auto session = find(attachment->session());
+            Session* const own = session == m_sessions.end() ? nullptr : session->get();
+            const bool finishing = attachment->finishing();
             // A window that left detaches: the session keeps running.
-            const bool keep = guarded(*attachment, [&] { return attachment->handle(revents, shown); });
+            const bool keep = guarded(*attachment, [&] { return attachment->handle(revents, own); });
             if (!keep) over.push_back(attachment);
+            if (!own) continue;
+            // What a window that no longer shows the session sent before it
+            // heard.
+            if (finishing) {
+                applyLate(*attachment, session);
+                continue;
+            }
             // The window closed and Mux.onClose is kill. Its own window
             // sends it, so a window that another took the session from
             // cannot end it. A window that closed the last pane of the
             // session ends it too: as when its last program exits.
-            if ((attachment->takeKill() || (shown && shown->empty())) && shown) endSession(session);
+            if (attachment->takeKill() || own->empty()) endSession(session);
         }
         for (Attachment* attachment : over) {
             // The calls that the window did not get get the answers of a
@@ -268,17 +276,21 @@ Daemon::Exit Daemon::run()
         std::erase_if(m_attachments, [&over](const auto& a) { return std::find(over.begin(), over.end(), a.get()) != over.end(); });
         pumpAttachments();
         syncAttached();
+        bool answered = false;
         for (std::size_t i = firstConnection; i < firstAttachment; ++i) {
             auto& connection = *m_connections[i - firstConnection];
             if (fds[i].revents & POLLOUT) connection.flush();
-            if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) || connection.pending()) read(connection);
+            if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) || connection.pending()) answered = read(connection) || answered;
         }
         std::erase_if(m_connections, [](const auto& c) { return !c->open(); });
-        // A call can start a pane, end one or move panes: the window that
-        // shows the session hears of it now, not at the next wake, which a
-        // program that prints nothing never gives.
-        pumpAttachments();
-        syncAttached();
+        // A call can start a pane, end one, move panes or attach a window:
+        // the window that shows the session hears of it now, not at the next
+        // wake, which a program that prints nothing never gives. Without a
+        // call, nothing changed since the pass above.
+        if (answered) {
+            pumpAttachments();
+            syncAttached();
+        }
         // Whether the poll saw it or not: a client that connected since the
         // poll waits in a backlog, and an idle daemon would close its
         // connection with the listener.
@@ -296,16 +308,18 @@ void Daemon::accept()
     }
 }
 
-void Daemon::read(IpcServerConnection& connection)
+bool Daemon::read(IpcServerConnection& connection)
 {
     ucred peer{};
     socklen_t size = sizeof peer;
     const pid_t caller = ::getsockopt(connection.fd(), SOL_SOCKET, SO_PEERCRED, &peer, &size) == 0 ? peer.pid : 0;
     IpcRequest request;
+    bool answered = false;
     for (int lines = 0; lines < MaxLinesPerRead; ++lines) {
         const IpcServerConnection::Read next = connection.nextRequest(request);
-        if (next == IpcServerConnection::Read::None) return;
+        if (next == IpcServerConnection::Read::None) return answered;
         if (next == IpcServerConnection::Read::Skipped) continue;
+        answered = true;
         std::string reply;
         try {
             reply = answer(request, caller);
@@ -316,6 +330,7 @@ void Daemon::read(IpcServerConnection& connection)
         }
         connection.send(std::move(reply));
     }
+    return answered;
 }
 
 std::string Daemon::answer(const IpcRequest& request, pid_t caller)
@@ -340,9 +355,9 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller)
     if (request.fn == Fn::Attach) return attach(request, caller);
     if (request.fn == Fn::Detach) return detach(request);
     if (request.fn == Fn::PaneDirectory) return paneDirectory(request);
-    if (request.fn == Fn::NewPane) return newPane(request);
+    if (request.fn == Fn::NewPane) return newPane(request, caller);
     if (request.fn == Fn::PaneJob) return paneJob(request, caller);
-    if (request.fn == Fn::BreakOut) return breakOut(request);
+    if (request.fn == Fn::BreakOut) return breakOut(request, caller);
     if (request.fn == Fn::PaneSession) return paneSession(request);
     return ipcError(request.id, IpcErrorCode::NoSuchFn, "no function '" + request.fn + "' on target '" + request.target + "'");
 }
@@ -370,7 +385,7 @@ std::string Daemon::newSession(const IpcRequest& request)
     // (2 s), and the other connections wait with it. Only a program or a
     // directory on a mount that does not answer takes that long; past the
     // wait, the PTY reports a late failure as the exit of the pane.
-    if (!session->addPane(m_nextPane++, session->firstLaunch(), session->firstSize(), paneSocket(), waker(), &error)) {
+    if (!session->addPane(nextPaneId(), session->firstLaunch(), session->firstSize(), paneSocket(), 0, 0, waker(), &error)) {
         return ipcError(request.id, Error::SpawnFailed, "cannot start the program of session '" + name + "': " + error);
     }
     m_sessions.push_back(std::move(session));
@@ -467,8 +482,17 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     std::string error;
     auto attachment = Attachment::listen(socket.substr(0, socket.rfind('/')), name, caller, &error);
     if (!attachment) return ipcError(request.id, IpcErrorCode::CallFailed, error);
+    // Made before the takeover too: the answer that cannot be made leaves
+    // the session where it is.
+    std::string reply = ipcReply(request.id.value_or(0), Json::Object{{"name", name},
+                                                                       {"socket", attachment->path()},
+                                                                       {"environment", environmentJson((*session)->options().environment)}});
+    m_attachments.reserve(m_attachments.size() + 1);
     if (previous) {
         guarded(*previous, [&] {
+            // What the window sent before the call, its last layout among it,
+            // counts: the new window starts from it.
+            previous->catchUp(**session);
             previous->pump(session->get());
             previous->finish(Attach::EventType::TakenOver, session->get());
             return true;
@@ -476,9 +500,9 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     }
     attachment->setEventQueue(eventQueue);
     attachment->setReplicaHistory(history);
-    const std::string path = attachment->path();
+    attachment->setPaneFinder([this](std::uint32_t id) { return findPane(id); });
     m_attachments.push_back(std::move(attachment));
-    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}, {"socket", path}});
+    return reply;
 }
 
 std::string Daemon::detach(const IpcRequest& request)
@@ -491,8 +515,11 @@ std::string Daemon::detach(const IpcRequest& request)
     if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
     Attachment* const attachment = shown(name);
     if (!attachment) return ipcError(request.id, Error::NotAttached, "no window shows session '" + name + "'");
-    // A window that did not connect yet hears it when it does.
+    // A window that did not connect yet hears it when it does. What the
+    // window sent before the call counts, its last layout among it, for the
+    // next window.
     guarded(*attachment, [&] {
+        attachment->catchUp(**session);
         attachment->pump(session->get());
         attachment->finish(Attach::EventType::Detached, session->get());
         return true;
@@ -500,19 +527,43 @@ std::string Daemon::detach(const IpcRequest& request)
     return ipcReply(request.id.value_or(0), nullptr);
 }
 
-std::string Daemon::paneDirectory(const IpcRequest& request)
+const MuxPane* Daemon::paneOfCall(const IpcRequest& request, const char* usage, std::string& refusal)
 {
-    const auto id = request.args.size() == 2 && request.args[0].isString() ? request.args[1].toInteger() : std::nullopt;
-    if (!id || *id < 0 || *id > 0xffffffffLL) return ipcError(request.id, IpcErrorCode::InvalidArg, "paneDirectory takes (name, pane)");
+    const auto id = request.args.size() == 2 && request.args[0].isString() ? paneIdFrom(request.args[1]) : std::nullopt;
+    if (!id) {
+        refusal = ipcError(request.id, IpcErrorCode::InvalidArg, usage);
+        return nullptr;
+    }
     const std::string& name = request.args[0].toString();
     const auto session = find(name);
-    if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
-    const MuxPane* pane = (*session)->pane(std::uint32_t(*id));
-    if (!pane) return ipcError(request.id, Error::NoSuchPane, "session '" + name + "' has no pane " + std::to_string(*id));
-    return ipcReply(request.id.value_or(0), pane->directory());
+    if (session == m_sessions.end()) {
+        refusal = ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+        return nullptr;
+    }
+    const MuxPane* pane = (*session)->pane(*id);
+    if (!pane) refusal = ipcError(request.id, Error::NoSuchPane, "session '" + name + "' has no pane " + std::to_string(*id));
+    return pane;
 }
 
-std::string Daemon::newPane(const IpcRequest& request)
+std::string Daemon::paneDirectory(const IpcRequest& request)
+{
+    std::string refusal;
+    const MuxPane* pane = paneOfCall(request, "paneDirectory takes (name, pane)", refusal);
+    return pane ? ipcReply(request.id.value_or(0), pane->directory()) : refusal;
+}
+
+std::string Daemon::callerRefusal(const IpcRequest& request, const std::string& name, pid_t caller) const
+{
+    // A window that another took the session from may call before it hears
+    // of the takeover: its panes would change a session that it no longer
+    // shows, behind the back of the window that does. A window of this
+    // process opens no second window of a session (Application::openLaunch).
+    const Attachment* attachment = shown(name);
+    if (!attachment || (caller > 0 && caller == attachment->caller())) return {};
+    return ipcError(request.id, Error::Attached, "another window shows session '" + name + "'");
+}
+
+std::string Daemon::newPane(const IpcRequest& request, pid_t caller)
 {
     if (request.args.size() != 4 || !request.args[1].isString()) {
         return ipcError(request.id, IpcErrorCode::InvalidArg, "newPane takes (protocol, name, launch, size)");
@@ -521,15 +572,26 @@ std::string Daemon::newPane(const IpcRequest& request)
     const std::string& name = request.args[1].toString();
     const auto session = find(name);
     if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    if (std::string refusal = callerRefusal(request, name, caller); !refusal.empty()) return refusal;
+    // The window reads the channels of at most that many panes, and the
+    // daemon takes no layout with more.
+    if ((*session)->panes().size() >= MaxSessionPanes) {
+        return ipcError(request.id, Error::TooManyPanes,
+                        "session '" + name + "' has " + std::to_string(MaxSessionPanes) + " panes, the most that a session can have");
+    }
     std::string error;
     const auto launch = launchFrom(request.args[2], &error);
     if (!launch) return ipcError(request.id, IpcErrorCode::InvalidArg, error);
     const auto size = paneSizeFrom(request.args[3], &error);
     if (!size) return ipcError(request.id, IpcErrorCode::InvalidArg, error);
     // The window that asked binds the pane before its first frame, which
-    // the next pass sends: it knows the ID from this answer.
-    const std::uint32_t id = m_nextPane++;
-    if (!(*session)->addPane(id, *launch, *size, paneSocket(), waker(), &error)) {
+    // the next pass sends: it knows the ID from this answer. The pane's
+    // calls wait for that window from the start.
+    const Attachment* attachment = shown(name);
+    const bool showing = attachment && attachment->showing();
+    const std::uint32_t id = nextPaneId();
+    if (!(*session)->addPane(id, *launch, *size, paneSocket(), showing ? attachment->serial() : 0, showing ? attachment->eventQueue() : 0,
+                             waker(), &error)) {
         return ipcError(request.id, Error::SpawnFailed, "cannot start the program of a pane of session '" + name + "': " + error);
     }
     return ipcReply(request.id.value_or(0), Json::Object{{"pane", std::int64_t(id)}});
@@ -537,25 +599,26 @@ std::string Daemon::newPane(const IpcRequest& request)
 
 std::string Daemon::paneJob(const IpcRequest& request, pid_t caller)
 {
-    const auto id = request.args.size() == 2 && request.args[0].isString() ? request.args[1].toInteger() : std::nullopt;
-    if (!id || *id < 0 || *id > 0xffffffffLL) return ipcError(request.id, IpcErrorCode::InvalidArg, "paneJob takes (name, pane)");
-    const std::string& name = request.args[0].toString();
-    const auto session = find(name);
-    if (session == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
-    const MuxPane* pane = (*session)->pane(std::uint32_t(*id));
-    if (!pane) return ipcError(request.id, Error::NoSuchPane, "session '" + name + "' has no pane " + std::to_string(*id));
-    return ipcReply(request.id.value_or(0), pane->foregroundJob(caller));
+    std::string refusal;
+    const MuxPane* pane = paneOfCall(request, "paneJob takes (name, pane)", refusal);
+    return pane ? ipcReply(request.id.value_or(0), pane->foregroundJob(caller)) : refusal;
 }
 
-std::string Daemon::breakOut(const IpcRequest& request)
+std::string Daemon::breakOut(const IpcRequest& request, pid_t caller)
 {
     if (request.args.size() != 3 || !request.args[1].isString()) {
         return ipcError(request.id, IpcErrorCode::InvalidArg, "breakOut takes (protocol, name, layout)");
     }
     if (auto error = versionError(request)) return *error;
+    // Each allocation before the first pane leaves its session: a failure
+    // then leaves every pane where it was, and no pane between two
+    // sessions, where its program would end. This one first, as it moves
+    // the sessions.
+    m_sessions.reserve(m_sessions.size() + 1);
     const std::string& name = request.args[1].toString();
     const auto from = find(name);
     if (from == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    if (std::string refusal = callerRefusal(request, name, caller); !refusal.empty()) return refusal;
     std::string error;
     auto layout = layoutFrom(request.args[2], &error);
     if (!layout) return ipcError(request.id, IpcErrorCode::InvalidArg, error);
@@ -565,34 +628,90 @@ std::string Daemon::breakOut(const IpcRequest& request)
     }
     if (ids.size() >= (*from)->panes().size()) {
         return ipcError(request.id, IpcErrorCode::InvalidArg,
-                        "these are all the panes of session '" + name + "': a new session would only give them another name");
+                        "these are all the panes of session '" + name + "', and a new session would only give them another name");
     }
     const std::string fresh = freeName();
-    auto session = std::make_unique<Session>(fresh, (*from)->options(), m_fileLimit, m_images);
-    Attachment* const attachment = shown(name);
+    // The session's environment, umask and terminal values. Its name is its
+    // own, and its panes come with their programs running: no first launch.
+    SessionOptions options = (*from)->options();
+    options.name = fresh;
+    options.launch = {};
+    options.size = {};
+    auto session = std::make_unique<Session>(fresh, std::move(options), m_fileLimit, m_images);
+    std::vector<std::unique_ptr<MuxPane>> panes;
+    panes.reserve(ids.size());
+    std::vector<std::pair<std::uint32_t, MuxPane*>> removed;
+    removed.reserve(ids.size());
+    std::string reply = ipcReply(request.id.value_or(0), Json::Object{{"name", fresh}});
+    // From here nothing allocates but the window (guarded).
     for (const std::uint32_t id : ids) {
-        std::unique_ptr<MuxPane> pane = (*from)->take(id);
-        if (attachment) {
-            guarded(*attachment, [&] {
-                attachment->paneRemoved(id, pane.get());
-                return true;
-            });
-        }
-        session->adopt(std::move(pane));
+        panes.push_back((*from)->take(id));
+        removed.emplace_back(id, panes.back().get());
     }
-    session->setLayout(std::move(*layout));
+    if (Attachment* attachment = shown(name)) {
+        guarded(*attachment, [&] {
+            attachment->panesRemoved(removed);
+            return true;
+        });
+    }
+    // The layout names these panes, each once, and no other: the session
+    // takes it as it is.
+    session->adopt(std::move(panes), std::move(*layout));
     m_sessions.push_back(std::move(session));
-    return ipcReply(request.id.value_or(0), Json::Object{{"name", fresh}});
+    return reply;
 }
 
 std::string Daemon::paneSession(const IpcRequest& request)
 {
-    const auto id = request.args.size() == 1 ? request.args[0].toInteger() : std::nullopt;
-    if (!id || *id < 0 || *id > 0xffffffffLL) return ipcError(request.id, IpcErrorCode::InvalidArg, "paneSession takes (pane)");
+    const auto id = request.args.size() == 1 ? paneIdFrom(request.args[0]) : std::nullopt;
+    if (!id) return ipcError(request.id, IpcErrorCode::InvalidArg, "paneSession takes (pane)");
     for (const auto& session : m_sessions) {
-        if (session->pane(std::uint32_t(*id))) return ipcReply(request.id.value_or(0), session->name());
+        if (session->pane(*id)) return ipcReply(request.id.value_or(0), session->name());
     }
     return ipcError(request.id, Error::NoSuchPane, "no session has pane " + std::to_string(*id));
+}
+
+MuxPane* Daemon::findPane(std::uint32_t id) const
+{
+    for (const auto& session : m_sessions) {
+        if (MuxPane* pane = session->pane(id)) return pane;
+    }
+    return nullptr;
+}
+
+std::uint32_t Daemon::nextPaneId()
+{
+    while (true) {
+        const std::uint32_t id = m_nextPane++;
+        if (id != 0 && !findPane(id)) return id;
+    }
+}
+
+void Daemon::applyLate(Attachment& attachment, std::vector<std::unique_ptr<Session>>::iterator session)
+{
+    Session& own = **session;
+    Attachment::Late late = attachment.takeLate();
+    // The user closed these panes before the window heard: their programs
+    // end, and the window that shows the session now no longer shows them.
+    for (const std::uint32_t id : late.closedPanes) {
+        if (!own.closePane(id)) continue;
+        if (Attachment* now = shown(own.name())) {
+            guarded(*now, [&] {
+                now->paneRemoved(id);
+                return true;
+            });
+        }
+    }
+    // Its last layout is the next window's, unless a window shows the
+    // session already and sends its own. A layout of a session that ended,
+    // whose name a new session took, names none of its panes: pane IDs are
+    // not used again.
+    if (late.layout && !shown(own.name())) {
+        const std::vector<std::uint32_t> named = late.layout->panes();
+        if (std::any_of(named.begin(), named.end(), [&own](std::uint32_t id) { return own.pane(id) != nullptr; })) own.setLayout(std::move(*late.layout));
+    }
+    // As when its last program exits.
+    if (own.empty()) endSession(session);
 }
 
 std::function<void()> Daemon::waker() const
@@ -633,6 +752,10 @@ void Daemon::pumpAttachments()
             return true;
         });
     }
+    // A failed window is over: its stream closes, so the window hears it,
+    // and the session no longer counts as shown. Nothing else would wake the
+    // poll for it.
+    std::erase_if(m_attachments, [](const auto& attachment) { return attachment->failed(); });
 }
 
 Attachment* Daemon::shown(const std::string& name) const

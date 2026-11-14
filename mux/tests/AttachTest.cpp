@@ -7,6 +7,7 @@
 
 #include "TestDaemon.h"
 
+#include "Attach.h"
 #include "ImageFiles.h"
 #include "MuxHost.h"
 #include "MuxLayout.h"
@@ -22,6 +23,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <memory>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -136,19 +139,33 @@ public:
                     calls.push_back(*call);
                     // As a window does: the call waits for the frames of its
                     // pane that the daemon wrote before it.
-                    callFrames.push_back(std::max(frames, int(event->frames)));
+                    callFrames.push_back(std::max(framesOf(event->pane), int(event->frames)));
                     callSentAfter.push_back(event->frames);
-                    // As a window does: it writes the terminal's reports.
-                    if (call->kind == Host::Kind::Report && answerReports && !type(call->text)) ADD_FAILURE() << "a report does not go";
+                    // As a window does: it writes the terminal's reports, to
+                    // the pane whose terminal made them.
+                    if (call->kind == Host::Kind::Report && answerReports) {
+                        Attach::Input report;
+                        report.pane = event->pane;
+                        report.bytes = call->text;
+                        if (!send(report)) ADD_FAILURE() << "a report does not go";
+                    }
                 }
                 if (event->type == Attach::EventType::PaneOpened) {
                     // The first event is the layout, which names the pane.
                     if (layouts.empty()) ADD_FAILURE() << "a pane opened before the layout came";
+                    // A pane opens once in a window: one that closed does not
+                    // come back, and a second PaneOpened would make it twice.
+                    if (std::find(opened.begin(), opened.end(), event->pane) != opened.end()) {
+                        ADD_FAILURE() << "pane " << event->pane << " opened twice";
+                    }
                     opened.push_back(event->pane);
-                    // The test reads the frames of the session's first pane.
+                    // The test reads the frames of the session's first pane
+                    // into replica, and those of the others into their own.
                     if (!pane) {
                         pane = event->pane;
                         channel = event->channel;
+                    } else {
+                        others[event->pane] = std::make_unique<OtherPane>(event->channel);
                     }
                 }
                 if (event->type == Attach::EventType::PaneClosed) closed.push_back(event->pane);
@@ -159,7 +176,7 @@ public:
                     if (!layout) ADD_FAILURE() << "the layout does not decode: " << error;
                     else layouts.push_back(std::move(*layout));
                 }
-                if (event->type == Attach::EventType::PaneClosed && channelClosed && !screenAtExit) screenAtExit = screen();
+                if (event->type == Attach::EventType::PaneClosed && event->pane == pane && channelClosed && !screenAtExit) screenAtExit = screen();
             }
         }
         // The frames of a pane that opened in these events.
@@ -169,6 +186,22 @@ public:
     void readFrames()
     {
         std::string frame;
+        for (auto& [id, other] : others) {
+            auto* state = other->closed ? nullptr : stream->reader(other->channel);
+            while (state) {
+                const PhosphorChannel::ReadResult result = state->read(frame);
+                if (result == PhosphorChannel::ReadResult::Frame) {
+                    ++other->frames;
+                    std::string error;
+                    if (!other->reader.apply(other->replica, frame, &error)) ADD_FAILURE() << "a frame of pane " << id << " does not apply: " << error;
+                    continue;
+                }
+                // Read to its end: the daemon may give its channel to a pane
+                // that opens later.
+                if (result == PhosphorChannel::ReadResult::Closed) other->closed = true;
+                break;
+            }
+        }
         if (auto* state = channel && !channelClosed ? stream->reader(channel) : nullptr) {
             while (true) {
                 const PhosphorChannel::ReadResult result = state->read(frame);
@@ -181,11 +214,19 @@ public:
                 }
                 if (result == PhosphorChannel::ReadResult::Closed) {
                     channelClosed = true;
-                    if (got(Attach::EventType::PaneClosed) && !screenAtExit) screenAtExit = screen();
+                    if (closedPane(pane) && !screenAtExit) screenAtExit = screen();
                 }
                 break;
             }
         }
+    }
+
+    /// The frames that came of pane @p id.
+    int framesOf(std::uint32_t id) const
+    {
+        if (id == pane) return frames;
+        const auto it = others.find(id);
+        return it == others.end() ? 0 : it->second->frames;
     }
 
     bool got(Attach::EventType type) const
@@ -261,23 +302,41 @@ public:
         return send(message);
     }
 
+    /// A pane of the window after the first, with a replica of its own.
+    struct OtherPane
+    {
+        explicit OtherPane(std::uint32_t channel)
+            : channel(channel)
+        {
+        }
+        std::uint32_t channel = 0;
+        bool closed = false; ///< its channel ended
+        int frames = 0;
+        NullHost host;
+        AfterglowVt::Terminal replica{20, 5, host};
+        AfterglowVt::StateReader reader;
+    };
+
     std::string socket;
     std::unique_ptr<PhosphorChannel::Stream> stream;
     PhosphorChannel::StreamWriter* input = nullptr;
     PhosphorChannel::StreamWriter* actions = nullptr;
+    /// The session's first pane, which pane, channel, frames, screen() and
+    /// screenAtExit are of, and which type() and resize() go to.
     std::uint32_t pane = 0;
     std::uint32_t channel = 0;
     bool channelClosed = false;
     bool ended = false;
-    /// What the window showed once it had both halves of the pane's exit.
+    /// What the window showed once it had both halves of the first pane's exit.
     std::optional<std::string> screenAtExit;
     int frames = 0;
+    std::map<std::uint32_t, std::unique_ptr<OtherPane>> others; ///< the other panes, by ID
     std::vector<Attach::Event> events;
     std::vector<Layout> layouts; ///< the Layout events
     std::vector<std::uint32_t> opened; ///< the panes of PaneOpened, in order
     std::vector<std::uint32_t> closed; ///< the panes of PaneClosed, in order
-    std::vector<Host::Call> calls; ///< the host calls of the pane's terminal, oldest first
-    std::vector<int> callFrames; ///< for each call, the frames that came before it
+    std::vector<Host::Call> calls; ///< the host calls of the panes' terminals, oldest first
+    std::vector<int> callFrames; ///< for each call, the frames of its pane that came before it
     std::vector<std::uint64_t> callSentAfter; ///< for each call, the frames that the daemon wrote before it
     std::string marker; ///< text whose first frame markerFrame counts
     int markerFrame = 0;
@@ -296,15 +355,23 @@ bool contains(const std::string& text, std::string_view part)
     return text.find(part) != std::string::npos;
 }
 
-/// A pane that a window asks for in session @p name, with @p argv, at a size
-/// of 40 by 10 cells. Its ID, or nothing with @p error.
+/// The size of the panes of newPane().
+constexpr PaneSize NewPaneSize{40, 10, 8, 16};
+
+/// A pane that a window asks for in session @p name, with @p launch, at
+/// NewPaneSize. Its ID, or nothing: why is in @p error, or in the daemon's
+/// lastError() without one. An answer without the ID is a failure.
 std::optional<std::uint32_t> newPane(TestDaemon& daemon, const std::string& name, Launch launch, IpcConnection::Error* error = nullptr)
 {
-    const auto result = daemon.call(Fn::NewPane, Json::Array{ProtocolVersion, name, toJson(launch), toJson(PaneSize{40, 10, 8, 16})}, error);
+    const auto result = daemon.call(Fn::NewPane, Json::Array{ProtocolVersion, name, toJson(launch), toJson(NewPaneSize)}, error);
     if (!result) return std::nullopt;
-    const auto id = (*result)["pane"].toInteger();
-    if (!id) return std::nullopt;
-    return std::uint32_t(*id);
+    const auto id = paneIdFrom((*result)["pane"]);
+    if (!id) {
+        ADD_FAILURE() << "the answer of newPane names no pane: " << Json::write(*result);
+        if (error) *error = {"", "the answer names no pane"};
+        return std::nullopt;
+    }
+    return *id;
 }
 
 Launch launchOf(std::vector<std::string> argv, const TestDaemon& daemon)
@@ -575,8 +642,19 @@ TEST(MuxAttach, TheAttachCallAnswersWithItsKeys)
     std::vector<std::string> keys;
     for (const auto& [key, value] : result->toObject()) keys.push_back(key);
     std::sort(keys.begin(), keys.end());
-    EXPECT_EQ(keys, (std::vector<std::string>{"name", "socket"}));
+    EXPECT_EQ(keys, (std::vector<std::string>{"environment", "name", "socket"}));
     EXPECT_EQ((*result)["name"].toString(), "keep");
+    // The session's environment, as `afterglow mux new` sent it: the window
+    // prepares the launches of new panes over it.
+    SessionOptions o = daemon.options(Waiting, "env");
+    o.environment = {{"FROM_SESSION", "1"}, {"EMPTY", ""}};
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    const auto answer = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "env", Json::Object{}}, &error);
+    ASSERT_TRUE(answer) << error.message;
+    std::string why;
+    const auto environment = environmentFrom((*answer)["environment"], &why);
+    ASSERT_TRUE(environment) << why;
+    EXPECT_EQ(*environment, o.environment);
 }
 
 TEST(MuxAttach, InputThatAFullPtyRefusesWaitsAndArrivesWhole)
@@ -1499,7 +1577,10 @@ TEST(MuxAttach, TheFirstEventIsTheSessionsLayout)
 }
 
 // A new tab or split of the window: the pane runs under the daemon, with the
-// session's environment and the changes of its own launch.
+// session's environment and the changes of its own launch, at the size that
+// the window asked for. Its program prints nothing, and the window gets the
+// pane and its first frame all the same: the daemon sends what a call
+// changed after it answered the call, not at its next wake.
 TEST(MuxAttach, ANewPaneHasTheSessionsEnvironmentAndItsOwnChanges)
 {
     TestDaemon daemon;
@@ -1514,13 +1595,23 @@ TEST(MuxAttach, ANewPaneHasTheSessionsEnvironmentAndItsOwnChanges)
     ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
 
     const std::string out = daemon.dir() + "/env";
-    Launch launch = launchOf(writesEnvironment(out), daemon);
+    const std::string size = daemon.dir() + "/size";
+    // The size first: the environment's file says that both are there.
+    Launch launch = launchOf({"/bin/sh", "-c", "stty size > '" + size + "'; env > '" + out + ".part' && mv '" + out + ".part' '" + out + "'; exec sleep 60"},
+                             daemon);
     launch.environment.emplace_back("FROM_PANE", "2");
     launch.unset.push_back("TMUX");
     launch.launchedProgram = "sleeper";
-    const auto id = newPane(daemon, "s", launch);
-    ASSERT_TRUE(id) << daemon.lastError();
+    // The answer has the ID only.
+    const auto answer = daemon.call(Fn::NewPane, Json::Array{ProtocolVersion, "s", toJson(launch), toJson(NewPaneSize)});
+    ASSERT_TRUE(answer) << daemon.lastError();
+    std::vector<std::string> keys;
+    for (const auto& [key, value] : answer->toObject()) keys.push_back(key);
+    EXPECT_EQ(keys, std::vector<std::string>{"pane"});
+    const auto id = paneIdFrom((*answer)["pane"]);
+    ASSERT_TRUE(id) << Json::write(*answer);
     ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+    EXPECT_EQ(readFile(size), std::to_string(NewPaneSize.rows) + " " + std::to_string(NewPaneSize.cols) + "\n");
     const std::string env = "\n" + readFile(out);
     EXPECT_NE(env.find("\nFROM_SESSION=1\n"), std::string::npos) << env;
     EXPECT_NE(env.find("\nFROM_PANE=2\n"), std::string::npos) << env;
@@ -1528,8 +1619,12 @@ TEST(MuxAttach, ANewPaneHasTheSessionsEnvironmentAndItsOwnChanges)
     EXPECT_EQ(env.find("\nFIRST_PANE_ONLY="), std::string::npos) << env;
     EXPECT_NE(env.find("\nAFTERGLOW_SESSION=s\n"), std::string::npos) << env;
     EXPECT_NE(env.find("\nAFTERGLOW_PANE_ID=" + std::to_string(*id) + "\n"), std::string::npos) << env;
-    // The window that shows the session gets its state.
-    ASSERT_TRUE(w.until([&] { return std::count(w.opened.begin(), w.opened.end(), *id) == 1; }));
+    // The window that shows the session gets the pane and its first frame,
+    // at its size, though the program prints nothing.
+    ASSERT_TRUE(w.until([&] { return w.framesOf(*id) > 0; })) << daemon.errors();
+    EXPECT_EQ(std::count(w.opened.begin(), w.opened.end(), *id), 1);
+    EXPECT_EQ(w.others.at(*id)->replica.cols(), NewPaneSize.cols);
+    EXPECT_EQ(w.others.at(*id)->replica.rows(), NewPaneSize.rows);
     const auto info = sessionNamed(daemon, "s");
     ASSERT_TRUE(info);
     EXPECT_EQ(info->panes, 2);
@@ -1540,7 +1635,7 @@ TEST(MuxAttach, ANewPaneHasTheSessionsEnvironmentAndItsOwnChanges)
     EXPECT_EQ(job->toString(), "sleeper");
 }
 
-TEST(MuxAttach, NewPaneAndPaneJobRefuseBadCalls)
+TEST(MuxAttach, NewPanePaneJobAndPaneSessionRefuseBadCalls)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
@@ -1561,12 +1656,40 @@ TEST(MuxAttach, NewPaneAndPaneJobRefuseBadCalls)
         EXPECT_EQ(error.code, code) << Json::write(args) << ": " << error.message;
     }
     // The session keeps its one pane.
-    EXPECT_EQ(sessionNamed(daemon, "s")->panes, 1);
-    IpcConnection::Error error;
-    EXPECT_FALSE(daemon.call(Fn::PaneJob, Json::Array{"s", 999}, &error));
-    EXPECT_EQ(error.code, Error::NoSuchPane);
-    EXPECT_FALSE(daemon.call(Fn::PaneJob, Json::Array{"none", 1}, &error));
-    EXPECT_EQ(error.code, Error::NoSuchSession);
+    EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 1);
+    // The pane of another session is none of this one.
+    const std::uint32_t kept = firstPaneOf(daemon, "keep");
+    ASSERT_NE(kept, 0u);
+    const std::pair<Json::Array, std::string> badJob[] = {
+        {Json::Array{"s", 999}, Error::NoSuchPane},
+        {Json::Array{"s", std::int64_t(kept)}, Error::NoSuchPane},
+        {Json::Array{"none", 1}, Error::NoSuchSession},
+        {Json::Array{"s"}, IpcErrorCode::InvalidArg},
+        {Json::Array{"s", 1, 1}, IpcErrorCode::InvalidArg},
+        {Json::Array{1, 1}, IpcErrorCode::InvalidArg},
+        {Json::Array{"s", "1"}, IpcErrorCode::InvalidArg},
+        {Json::Array{"s", 0}, IpcErrorCode::InvalidArg},
+        {Json::Array{"s", std::int64_t(1) << 32}, IpcErrorCode::InvalidArg},
+    };
+    for (const auto& [args, code] : badJob) {
+        IpcConnection::Error error;
+        EXPECT_FALSE(daemon.call(Fn::PaneJob, args, &error)) << Json::write(args);
+        EXPECT_EQ(error.code, code) << Json::write(args) << ": " << error.message;
+    }
+    const std::pair<Json::Array, std::string> badSession[] = {
+        {Json::Array{999}, Error::NoSuchPane},
+        {Json::Array{}, IpcErrorCode::InvalidArg},
+        {Json::Array{1, 1}, IpcErrorCode::InvalidArg},
+        {Json::Array{"1"}, IpcErrorCode::InvalidArg},
+        {Json::Array{0}, IpcErrorCode::InvalidArg},
+        {Json::Array{-1}, IpcErrorCode::InvalidArg},
+        {Json::Array{1.5}, IpcErrorCode::InvalidArg},
+    };
+    for (const auto& [args, code] : badSession) {
+        IpcConnection::Error error;
+        EXPECT_FALSE(daemon.call(Fn::PaneSession, args, &error)) << Json::write(args);
+        EXPECT_EQ(error.code, code) << Json::write(args) << ": " << error.message;
+    }
 }
 
 // The tabs and splits that a window sends are those of the next window.
@@ -1587,6 +1710,10 @@ TEST(MuxAttach, TheNextWindowGetsTheLayoutThatTheWindowSent)
         sent.tabs.push_back(LayoutTab{{LayoutNode{0, true, 0.25}, LayoutNode{w.pane}, LayoutNode{*second}}, *second, *second, ""});
         sent.tabs.push_back(LayoutTab{{LayoutNode{*third}}, *third, 0, "logs"});
         sent.current = 1;
+        // No wait for the daemon to read it: the layout is in the socket
+        // once sendLayout() returns (a small frame goes at once), and the
+        // detach reads what the window sent before the call
+        // (Attachment::catchUp) before it ends the window's stream.
         ASSERT_TRUE(w.sendLayout(sent));
         ASSERT_TRUE(w.until([&] { return w.opened.size() == 3; }));
         ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"s"})) << daemon.lastError();
@@ -1599,8 +1726,9 @@ TEST(MuxAttach, TheNextWindowGetsTheLayoutThatTheWindowSent)
     EXPECT_TRUE(again.layouts[0] == sent) << Json::write(toJson(again.layouts[0]));
 }
 
-// A layout that a pane's exit passed, or that came before a new pane: the
-// daemon keeps the panes of the session, each once.
+// A layout that names a pane that the session does not have (as one does
+// that a pane's exit passed: 9999 stands for that pane), and that came
+// before a new pane: the daemon keeps the panes of the session, each once.
 TEST(MuxAttach, TheDaemonKeepsTheSessionsPanesInTheLayout)
 {
     TestDaemon daemon;
@@ -1644,13 +1772,16 @@ TEST(MuxAttach, AWindowThatSendsALayoutThatIsNotValidLosesTheSession)
     ASSERT_TRUE(w.send(message));
     // The stream ends; the session keeps running for the next window.
     ASSERT_TRUE(w.until([&] { return w.ended; }));
-    ASSERT_TRUE(waitFor([&] { return !sessionNamed(daemon, "s")->attached; }));
+    ASSERT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "s");
+        return info && !info->attached;
+    }));
     EXPECT_NE(daemon.errors().find("a layout that is not valid"), std::string::npos) << daemon.errors();
 }
 
 // The user closes a pane, and the window stays: that program ends, the others
-// run on.
-TEST(MuxAttach, ClosingAPaneEndsOnlyItsProgram)
+// run on. Closing the last pane ends the session.
+TEST(MuxAttach, ClosingAPaneEndsItsProgramAndTheLastOneTheSession)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
@@ -1678,9 +1809,11 @@ TEST(MuxAttach, ClosingAPaneEndsOnlyItsProgram)
             EXPECT_EQ(e.status, -1);
         }
     }
-    EXPECT_EQ(sessionNamed(daemon, "s")->panes, 1);
+    EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 1);
     EXPECT_FALSE(w.got(Attach::EventType::SessionEnded));
-    // A pane that is gone already: nothing happens.
+    // A pane that is gone already: the window keeps the session, which the
+    // close of the last pane below shows. A close that acted on another
+    // pane would show only in that pane's session (AWindowChangesNoPaneOfAnotherSession).
     ASSERT_TRUE(w.closePane(*second));
     // The last pane: the session ends, as when its last program exits.
     ASSERT_TRUE(w.closePane(w.pane));
@@ -1712,7 +1845,7 @@ TEST(MuxAttach, APaneThatExitsWhileDetachedLeavesTheLayout)
         ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
     }
     std::ofstream(go).flush();
-    ASSERT_TRUE(waitFor([&] { return sessionNamed(daemon, "s")->panes == 1; }));
+    ASSERT_TRUE(waitFor([&] { return sessionNamed(daemon, "s").value_or(SessionInfo{}).panes == 1; }));
     Window again;
     ASSERT_EQ(again.attach(daemon, "s"), "");
     ASSERT_TRUE(again.until([&] { return again.pane != 0; }));
@@ -1731,31 +1864,44 @@ TEST(MuxAttach, PanesThatBreakOutRunOnInANewSession)
     SessionOptions o = daemon.options(Waiting, "s");
     o.environment.emplace_back("FROM_SESSION", "1");
     ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    // A session without a name takes the next number: the new one takes the
+    // number after it.
+    const auto numbered = daemon.newSession(daemon.options(Waiting));
+    ASSERT_TRUE(numbered) << daemon.lastError();
+    const std::string number = (*numbered)["name"].toString();
     Window w;
     ASSERT_EQ(w.attach(daemon, "s"), "");
     ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
     const std::string pidFile = daemon.dir() + "/pid";
-    const auto second = newPane(daemon, "s", launchOf({"/bin/sh", "-c", "echo $$ > '" + pidFile + "'; exec sleep 60"}, daemon));
+    const std::string movedEnvironment = daemon.dir() + "/moved-env";
+    const auto second =
+        newPane(daemon, "s", launchOf({"/bin/sh", "-c", "env > '" + movedEnvironment + "'; echo $$ > '" + pidFile + "'; exec sleep 60"}, daemon));
     const auto third = newPane(daemon, "s", launchOf(Waiting, daemon));
     ASSERT_TRUE(second && third) << daemon.lastError();
     ASSERT_TRUE(waitFor([&] { return readFile(pidFile).find('\n') != std::string::npos; }));
     const pid_t program = pid_t(std::strtol(readFile(pidFile).c_str(), nullptr, 10));
+    ASSERT_GT(program, 0);
     ASSERT_TRUE(w.until([&] { return w.opened.size() == 3; }));
 
     Layout moved;
     moved.tabs.push_back(LayoutTab{{LayoutNode{0, true, 0.4}, LayoutNode{*second}, LayoutNode{*third}}, *third, 0, "build"});
     const auto result = daemon.call(Fn::BreakOut, Json::Array{ProtocolVersion, "s", toJson(moved)});
     ASSERT_TRUE(result) << daemon.lastError();
+    // The answer has the new session's name only.
+    std::vector<std::string> keys;
+    for (const auto& [key, value] : result->toObject()) keys.push_back(key);
+    EXPECT_EQ(keys, std::vector<std::string>{"name"});
     const std::string fresh = (*result)["name"].toString();
     ASSERT_TRUE(validSessionName(fresh)) << fresh;
+    EXPECT_EQ(fresh, std::to_string(std::stoi(number) + 1));
     // The window of the first session no longer shows them, and the session
     // keeps its first pane.
     ASSERT_TRUE(w.until([&] { return w.closedPane(*second) && w.closedPane(*third); }));
     EXPECT_FALSE(w.got(Attach::EventType::SessionEnded));
-    EXPECT_EQ(sessionNamed(daemon, "s")->panes, 1);
+    EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 1);
     ASSERT_TRUE(sessionNamed(daemon, fresh));
-    EXPECT_EQ(sessionNamed(daemon, fresh)->panes, 2);
-    EXPECT_EQ(::kill(program, 0), 0);
+    EXPECT_EQ(sessionNamed(daemon, fresh).value_or(SessionInfo{}).panes, 2);
+    EXPECT_TRUE(running(program));
     // A window of the new session gets their layout.
     Window other;
     ASSERT_EQ(other.attach(daemon, fresh), "");
@@ -1763,19 +1909,22 @@ TEST(MuxAttach, PanesThatBreakOutRunOnInANewSession)
     ASSERT_EQ(other.layouts.size(), 1u);
     EXPECT_TRUE(other.layouts[0] == moved) << Json::write(toJson(other.layouts[0]));
     // Each pane names the session that holds it now: its AFTERGLOW_SESSION
-    // still names the first one.
+    // still names the first one, which its program got when it started.
     const auto holder = daemon.call(Fn::PaneSession, Json::Array{std::int64_t(*second)});
     ASSERT_TRUE(holder) << daemon.lastError();
     EXPECT_EQ(holder->toString(), fresh);
-    EXPECT_EQ(daemon.call(Fn::PaneSession, Json::Array{std::int64_t(w.pane)})->toString(), "s");
-    IpcConnection::Error noPane;
-    EXPECT_FALSE(daemon.call(Fn::PaneSession, Json::Array{9999}, &noPane));
-    EXPECT_EQ(noPane.code, Error::NoSuchPane);
-    // A new pane of the new session has the environment of the first one.
+    const auto own = daemon.call(Fn::PaneSession, Json::Array{std::int64_t(w.pane)});
+    ASSERT_TRUE(own) << daemon.lastError();
+    EXPECT_EQ(own->toString(), "s");
+    EXPECT_NE(("\n" + readFile(movedEnvironment)).find("\nAFTERGLOW_SESSION=s\n"), std::string::npos) << readFile(movedEnvironment);
+    // A new pane of the new session has the environment of the first one,
+    // and the name of the new session.
     const std::string out = daemon.dir() + "/env";
     ASSERT_TRUE(newPane(daemon, fresh, launchOf(writesEnvironment(out), daemon))) << daemon.lastError();
     ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
-    EXPECT_NE(("\n" + readFile(out)).find("\nFROM_SESSION=1\n"), std::string::npos);
+    const std::string env = "\n" + readFile(out);
+    EXPECT_NE(env.find("\nFROM_SESSION=1\n"), std::string::npos) << env;
+    EXPECT_NE(env.find("\nAFTERGLOW_SESSION=" + fresh + "\n"), std::string::npos) << env;
 }
 
 TEST(MuxAttach, BreakOutRefusesBadCalls)
@@ -1783,22 +1932,31 @@ TEST(MuxAttach, BreakOutRefusesBadCalls)
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    const std::uint32_t first = firstPaneOf(daemon, "s");
+    ASSERT_NE(first, 0u);
     const auto second = newPane(daemon, "s", launchOf(Waiting, daemon));
     ASSERT_TRUE(second) << daemon.lastError();
+    const std::uint32_t kept = firstPaneOf(daemon, "keep");
+    ASSERT_NE(kept, 0u);
     const std::vector<std::string> before = names(daemon.sessions());
     Layout alone;
     alone.addTab(*second);
     Layout unknown;
     unknown.addTab(9999);
+    Layout other;
+    other.addTab(kept);
     Layout all;
     all.addTab(*second);
-    all.addTab(*second - 1);
+    all.addTab(first);
     const std::pair<Json::Array, std::string> bad[] = {
         {Json::Array{ProtocolVersion, "none", toJson(alone)}, Error::NoSuchSession},
         {Json::Array{ProtocolVersion - 1, "s", toJson(alone)}, Error::VersionMismatch},
         {Json::Array{ProtocolVersion, "s", Json::Object{}}, IpcErrorCode::InvalidArg},
         {Json::Array{ProtocolVersion, "s"}, IpcErrorCode::InvalidArg},
+        {Json::Array{ProtocolVersion, 1, toJson(alone)}, IpcErrorCode::InvalidArg},
         {Json::Array{ProtocolVersion, "s", toJson(unknown)}, Error::NoSuchPane},
+        // The pane of another session.
+        {Json::Array{ProtocolVersion, "s", toJson(other)}, Error::NoSuchPane},
         // Every pane of the session: it would only get another name.
         {Json::Array{ProtocolVersion, "s", toJson(all)}, IpcErrorCode::InvalidArg},
     };
@@ -1807,6 +1965,374 @@ TEST(MuxAttach, BreakOutRefusesBadCalls)
         EXPECT_FALSE(daemon.call(Fn::BreakOut, args, &error)) << Json::write(args);
         EXPECT_EQ(error.code, code) << Json::write(args) << ": " << error.message;
     }
-    EXPECT_EQ(sessionNamed(daemon, "s")->panes, 2);
+    EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 2);
+    EXPECT_EQ(sessionNamed(daemon, "keep").value_or(SessionInfo{}).panes, 1);
     EXPECT_EQ(names(daemon.sessions()), before);
+}
+
+// One pane whose program reads nothing holds only its own input: the input
+// of the window's other panes goes on.
+TEST(MuxAttach, APaneThatReadsNothingDoesNotStopTheInputOfTheOthers)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string ready = daemon.dir() + "/ready";
+    SessionOptions o = daemon.options({"/bin/sh", "-c", "stty raw -echo; : > '" + ready + "'; exec sleep 60"});
+    o.name = "two";
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    ASSERT_TRUE(waitFor([&] { return exists(ready); }));
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "two"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    const std::string out = daemon.dir() + "/out";
+    const std::string readyB = daemon.dir() + "/readyB";
+    const auto other = newPane(daemon, "two", launchOf({"/bin/sh", "-c", "stty raw -echo; : > '" + readyB + "'; exec cat > '" + out + "'"}, daemon));
+    ASSERT_TRUE(other) << daemon.lastError();
+    ASSERT_TRUE(waitFor([&] { return exists(readyB); }));
+    ASSERT_TRUE(w.until([&] { return w.opened.size() == 2; }));
+    // Past the 32 MiB that the first pane's PTY queues, and below what the
+    // daemon holds for it before it stops reading the window's input.
+    const std::size_t total = (std::size_t(32) << 20) + (Attachment::MaxHeldInput / 2);
+    const std::string part(60000, 'x');
+    std::size_t sent = 0;
+    const auto deadline = std::chrono::steady_clock::now() + 30s;
+    while (sent < total && std::chrono::steady_clock::now() < deadline) {
+        if (w.type(part)) {
+            sent += part.size();
+        } else {
+            w.stream->pump(20);
+            w.read();
+        }
+    }
+    ASSERT_GE(sent, total) << "the first pane's input stopped the channel early";
+    // The other pane's program gets its input all the same.
+    Attach::Input input;
+    input.pane = *other;
+    input.bytes = "hello";
+    ASSERT_TRUE(w.until([&] { return w.send(input); }, 10s));
+    ASSERT_TRUE(w.until([&] { return readFile(out) == "hello"; }, 10s)) << readFile(out);
+}
+
+// The tabs and splits that the next window gets after the window closed a
+// pane and dragged another out: neither is in them.
+TEST(MuxAttach, TheNextWindowGetsNoPaneThatClosedOrBrokeOut)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    std::uint32_t first = 0;
+    {
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "s"), "");
+        ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+        first = w.pane;
+        const auto second = newPane(daemon, "s", launchOf(Waiting, daemon));
+        const auto third = newPane(daemon, "s", launchOf(Waiting, daemon));
+        ASSERT_TRUE(second && third) << daemon.lastError();
+        Layout sent;
+        sent.tabs.push_back(LayoutTab{{LayoutNode{0, true, 0.25}, LayoutNode{first}, LayoutNode{*second}}, *second, *second, "work"});
+        sent.tabs.push_back(LayoutTab{{LayoutNode{*third}}, *third, 0, "logs"});
+        ASSERT_TRUE(w.sendLayout(sent));
+        ASSERT_TRUE(w.until([&] { return w.opened.size() == 3; }));
+        ASSERT_TRUE(w.closePane(*second));
+        ASSERT_TRUE(w.until([&] { return w.closedPane(*second); }));
+        Layout moved;
+        moved.addTab(*third);
+        ASSERT_TRUE(daemon.call(Fn::BreakOut, Json::Array{ProtocolVersion, "s", toJson(moved)})) << daemon.lastError();
+        ASSERT_TRUE(w.until([&] { return w.closedPane(*third); }));
+        ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"s"})) << daemon.lastError();
+        ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
+    }
+    Window again;
+    ASSERT_EQ(again.attach(daemon, "s"), "");
+    ASSERT_TRUE(again.until([&] { return again.pane != 0; }));
+    ASSERT_EQ(again.layouts.size(), 1u);
+    const Layout& kept = again.layouts[0];
+    ASSERT_EQ(kept.tabs.size(), 1u);
+    EXPECT_EQ(kept.tabs[0].tree, std::vector<LayoutNode>{LayoutNode{first}});
+    EXPECT_EQ(kept.tabs[0].focused, first);
+    EXPECT_EQ(kept.tabs[0].zoomed, 0u);
+    EXPECT_EQ(kept.tabs[0].title, "work");
+    EXPECT_EQ(again.opened, std::vector<std::uint32_t>{first});
+}
+
+// A session has at most MaxSessionPanes panes. A window whose stream takes
+// fewer channels at once gets as many panes as it takes, and keeps the
+// session: the others wait for a channel.
+TEST(MuxAttach, ASessionStartsNoMorePanesThanAWindowReads)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    for (std::size_t panes = 1; panes < MaxSessionPanes; ++panes) ASSERT_TRUE(newPane(daemon, "s", launchOf(Waiting, daemon))) << panes << " " << daemon.lastError();
+    IpcConnection::Error error;
+    EXPECT_FALSE(newPane(daemon, "s", launchOf(Waiting, daemon), &error));
+    EXPECT_EQ(error.code, Error::TooManyPanes) << error.message;
+    ASSERT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, int(MaxSessionPanes));
+    // The test's stream takes the default of 64 channels, the events among them.
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    const std::size_t channels = PhosphorChannel::Stream::Options{}.maxChannels - 1;
+    ASSERT_TRUE(w.until([&] { return w.opened.size() == channels; }, 15s)) << w.opened.size();
+    EXPECT_FALSE(w.until([&] { return w.opened.size() > channels || w.ended; }, 500ms));
+    ASSERT_EQ(w.layouts.size(), 1u);
+    EXPECT_EQ(w.layouts[0].panes().size(), MaxSessionPanes);
+    EXPECT_TRUE(sessionNamed(daemon, "s").value_or(SessionInfo{}).attached);
+}
+
+// Only the process of the window that shows a session may change its panes:
+// a window that another one took the session from may still call.
+TEST(MuxAttach, OnlyTheProcessOfTheShownWindowChangesItsPanes)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    // Another process asks: a child of the test, which makes its own call.
+    const pid_t child = ::fork();
+    if (child == 0) {
+        IpcConnection::Error error;
+        const bool refused = !newPane(daemon, "s", launchOf(Waiting, daemon), &error) && error.code == Error::Attached;
+        std::_Exit(refused ? 0 : 1);
+    }
+    ASSERT_GT(child, 0);
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0) << status;
+    EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 1);
+    // The window's own process may.
+    EXPECT_TRUE(newPane(daemon, "s", launchOf(Waiting, daemon))) << daemon.lastError();
+}
+
+// A window acts on the panes of the session that it shows only: a close and
+// a layout that name a pane of another session, and the calls that do, leave
+// that pane where it is.
+TEST(MuxAttach, AWindowChangesNoPaneOfAnotherSession)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::uint32_t kept = firstPaneOf(daemon, "keep");
+    ASSERT_NE(kept, 0u);
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    ASSERT_TRUE(w.closePane(kept));
+    Layout stolen;
+    stolen.tabs.push_back(LayoutTab{{LayoutNode{0, false, 0.5}, LayoutNode{w.pane}, LayoutNode{kept}}, kept, 0, "both"});
+    ASSERT_TRUE(w.sendLayout(stolen));
+    Layout moved;
+    moved.addTab(kept);
+    IpcConnection::Error error;
+    EXPECT_FALSE(daemon.call(Fn::BreakOut, Json::Array{ProtocolVersion, "s", toJson(moved)}, &error));
+    EXPECT_EQ(error.code, Error::NoSuchPane) << error.message;
+    EXPECT_FALSE(daemon.call(Fn::PaneJob, Json::Array{"s", std::int64_t(kept)}, &error));
+    EXPECT_EQ(error.code, Error::NoSuchPane) << error.message;
+    // The detach reads what the window sent before it (Attachment::catchUp).
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"s"})) << daemon.lastError();
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
+    EXPECT_FALSE(w.closedPane(kept));
+    EXPECT_EQ(sessionNamed(daemon, "keep").value_or(SessionInfo{}).panes, 1);
+    const auto holder = daemon.call(Fn::PaneSession, Json::Array{std::int64_t(kept)});
+    ASSERT_TRUE(holder) << daemon.lastError();
+    EXPECT_EQ(holder->toString(), "keep");
+    // The next window of the session gets its own pane only, with the title
+    // of the tab.
+    Window again;
+    ASSERT_EQ(again.attach(daemon, "s"), "");
+    ASSERT_TRUE(again.until([&] { return again.pane != 0; }));
+    ASSERT_EQ(again.layouts.size(), 1u);
+    ASSERT_EQ(again.layouts[0].tabs.size(), 1u);
+    EXPECT_EQ(again.layouts[0].panes(), std::vector<std::uint32_t>{w.pane});
+    EXPECT_EQ(again.layouts[0].tabs[0].title, "both");
+    EXPECT_EQ(again.opened, std::vector<std::uint32_t>{w.pane});
+}
+
+// One of two panes exits while a window shows the session: the window hears
+// its status, the session goes on with the other pane, and its layout loses
+// the pane. The exit of the last pane ends the session.
+TEST(MuxAttach, APaneThatExitsWhileShownLeavesTheOthersAndTheLastEndsTheSession)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const auto exitsOn = [](const std::string& flag, int status) {
+        return std::vector<std::string>{"/bin/sh", "-c", "while [ ! -e '" + flag + "' ]; do sleep 0.05; done; exit " + std::to_string(status)};
+    };
+    const std::string firstGoes = daemon.dir() + "/first";
+    const std::string secondGoes = daemon.dir() + "/second";
+    ASSERT_TRUE(daemon.newSession(daemon.options(exitsOn(firstGoes, 4), "s"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    const auto second = newPane(daemon, "s", launchOf(exitsOn(secondGoes, 3), daemon));
+    ASSERT_TRUE(second) << daemon.lastError();
+    Layout split;
+    split.tabs.push_back(LayoutTab{{LayoutNode{0, false, 0.5}, LayoutNode{w.pane}, LayoutNode{*second}}, *second, 0, "work"});
+    ASSERT_TRUE(w.sendLayout(split));
+    ASSERT_TRUE(w.until([&] { return w.opened.size() == 2; }));
+
+    std::ofstream(secondGoes).flush();
+    ASSERT_TRUE(w.until([&] { return w.closedPane(*second); })) << daemon.errors();
+    const auto statusOf = [](const Window& window, std::uint32_t id) -> std::optional<int> {
+        for (const Attach::Event& e : window.events) {
+            if (e.type == Attach::EventType::PaneClosed && e.pane == id) return e.status;
+        }
+        return std::nullopt;
+    };
+    const auto status = statusOf(w, *second);
+    ASSERT_TRUE(status);
+    EXPECT_TRUE(WIFEXITED(*status) && WEXITSTATUS(*status) == 3) << *status;
+    EXPECT_FALSE(w.got(Attach::EventType::SessionEnded));
+    EXPECT_FALSE(w.ended);
+    EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 1);
+    // A window that takes the session over gets the layout without the pane.
+    Window next;
+    ASSERT_EQ(next.attach(daemon, "s"), "");
+    ASSERT_TRUE(next.until([&] { return next.pane != 0; }));
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::TakenOver); }));
+    ASSERT_EQ(next.layouts.size(), 1u);
+    ASSERT_EQ(next.layouts[0].tabs.size(), 1u);
+    EXPECT_EQ(next.layouts[0].tabs[0].tree, std::vector<LayoutNode>{LayoutNode{w.pane}});
+    EXPECT_EQ(next.layouts[0].tabs[0].focused, w.pane);
+    EXPECT_EQ(next.layouts[0].tabs[0].title, "work");
+    EXPECT_EQ(next.opened, std::vector<std::uint32_t>{w.pane});
+
+    std::ofstream(firstGoes).flush();
+    ASSERT_TRUE(next.until([&] { return next.got(Attach::EventType::SessionEnded); })) << daemon.errors();
+    const auto last = statusOf(next, w.pane);
+    ASSERT_TRUE(last);
+    EXPECT_TRUE(WIFEXITED(*last) && WEXITSTATUS(*last) == 4) << *last;
+    EXPECT_EQ(next.events.back().type, Attach::EventType::SessionEnded);
+    EXPECT_FALSE(sessionNamed(daemon, "s"));
+}
+
+// A pane that starts while no window shows the session is a tab of its own
+// in the next window, after the tabs that the last window sent.
+TEST(MuxAttach, APaneThatStartsWhileDetachedIsANewTabOfTheNextWindow)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    std::uint32_t first = 0;
+    {
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "s"), "");
+        ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+        first = w.pane;
+        Layout titled;
+        titled.tabs.push_back(LayoutTab{{LayoutNode{first, false, 0.5, "shell"}}, first, 0, "work"});
+        ASSERT_TRUE(w.sendLayout(titled));
+        ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"s"})) << daemon.lastError();
+        ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
+    }
+    const auto later = newPane(daemon, "s", launchOf(Waiting, daemon));
+    ASSERT_TRUE(later) << daemon.lastError();
+    Window again;
+    ASSERT_EQ(again.attach(daemon, "s"), "");
+    ASSERT_TRUE(again.until([&] { return again.opened.size() == 2; }));
+    ASSERT_EQ(again.layouts.size(), 1u);
+    const Layout& layout = again.layouts[0];
+    ASSERT_EQ(layout.tabs.size(), 2u);
+    EXPECT_EQ(layout.tabs[0].tree, std::vector<LayoutNode>{(LayoutNode{first, false, 0.5, "shell"})});
+    EXPECT_EQ(layout.tabs[0].title, "work");
+    EXPECT_EQ(layout.tabs[1].tree, std::vector<LayoutNode>{LayoutNode{*later}});
+    EXPECT_EQ(layout.tabs[1].focused, *later);
+    EXPECT_EQ(layout.current, 0u);
+}
+
+// A Kill and a ClosePane come on the action channel, a Layout with the input:
+// one on the other channel ends the window's stream, and the session runs on
+// with its panes for the next window.
+TEST(MuxAttach, AnInputOnTheWrongChannelLosesTheSession)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    const std::uint32_t first = firstPaneOf(daemon, "s");
+    ASSERT_NE(first, 0u);
+    const auto second = newPane(daemon, "s", launchOf(Waiting, daemon));
+    ASSERT_TRUE(second) << daemon.lastError();
+    const auto detached = [&] {
+        const auto info = sessionNamed(daemon, "s");
+        return info && !info->attached;
+    };
+    {
+        SCOPED_TRACE("a ClosePane with the input");
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "s"), "");
+        ASSERT_TRUE(w.until([&] { return w.opened.size() == 2; }));
+        Attach::Input close;
+        close.type = Attach::InputType::ClosePane;
+        close.pane = *second;
+        ASSERT_TRUE(w.send(close));
+        ASSERT_TRUE(w.until([&] { return w.ended; }));
+        EXPECT_FALSE(w.closedPane(*second));
+        ASSERT_TRUE(waitFor(detached));
+        EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 2);
+    }
+    {
+        SCOPED_TRACE("a Layout on the action channel");
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "s"), "");
+        ASSERT_TRUE(w.until([&] { return w.opened.size() == 2; }));
+        Layout layout;
+        layout.addTab(*second);
+        layout.addTab(first);
+        Attach::Input message;
+        message.type = Attach::InputType::Layout;
+        message.bytes = Json::write(toJson(layout));
+        ASSERT_EQ(w.actions->tryWrite(Attach::encode(message)), PhosphorChannel::WriteResult::Written);
+        ASSERT_TRUE(w.until([&] { return w.ended; }));
+        ASSERT_TRUE(waitFor(detached));
+        EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 2);
+    }
+    // Neither changed the layout.
+    Window again;
+    ASSERT_EQ(again.attach(daemon, "s"), "");
+    ASSERT_TRUE(again.until([&] { return again.opened.size() == 2; }));
+    ASSERT_EQ(again.layouts.size(), 1u);
+    ASSERT_EQ(again.layouts[0].tabs.size(), 2u);
+    EXPECT_EQ(again.layouts[0].tabs[0].focused, first);
+    EXPECT_EQ(again.layouts[0].tabs[1].focused, *second);
+}
+
+// The read of a pane that waits for the window, in the pane or in the
+// daemon's queue for the window, when the pane breaks out to a session that
+// no window shows: it gets the answer of such a session, as at a detach.
+TEST(MuxAttach, RequestsThatWaitWhenTheirPaneBreaksOutGetTheAnswerWithoutAWindow)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    const std::size_t mib = std::size_t(1) << 20;
+    // Each size alone: a failure of the first does not skip the second.
+    const auto breakOut = [mib](std::size_t queue) {
+        TestDaemon daemon;
+        ASSERT_TRUE(daemon.start()) << daemon.errors();
+        const std::string answer = daemon.dir() + "/answer";
+        ASSERT_TRUE(daemon.newSession(daemon.options(fillThenRead({2 * mib, 5 * mib / 2}, answer, 500), "s"))) << daemon.lastError();
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "s", true, queue), "");
+        ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+        // The pane that stays in the session.
+        ASSERT_TRUE(newPane(daemon, "s", launchOf(Waiting, daemon))) << daemon.lastError();
+        ASSERT_TRUE(w.until([&] { return w.opened.size() == 2; }));
+        w.readEvents = false;
+        ASSERT_TRUE(step(w, 2));
+        // The read waits: the window got no answer to give, and the daemon
+        // gave none (fillThenRead says "waited").
+        ASSERT_TRUE(w.until([&] { return contains(w.screen(), "ready waited"); })) << w.screen();
+        Layout moved;
+        moved.addTab(w.pane);
+        IpcConnection::Error error;
+        ASSERT_TRUE(daemon.call(Fn::BreakOut, Json::Array{ProtocolVersion, "s", toJson(moved)}, &error)) << error.message;
+        ASSERT_TRUE(w.until([&] { return exists(answer); }));
+        EXPECT_EQ(readFile(answer), readRefused());
+    };
+    // With 1 MiB, the read waits in the pane; with 4 MiB, behind the second
+    // write in the daemon's queue.
+    for (const std::size_t queue : {mib, 4 * mib}) {
+        SCOPED_TRACE(queue);
+        breakOut(queue);
+    }
 }

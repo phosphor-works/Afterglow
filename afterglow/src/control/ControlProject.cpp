@@ -10,6 +10,17 @@
 #include <unistd.h>
 
 namespace Afterglow {
+namespace {
+/// Why @p window cannot be saved as a project, else empty: a session's panes
+/// have no launch of the window's, and the daemon keeps the session's tabs.
+QString projectSaveError(const TerminalWindow& window)
+{
+    if (!window.showsSession()) return {};
+    return QStringLiteral("Session %1 keeps the tabs and splits of this window. A window of a mux session cannot be saved as a project.")
+        .arg(window.sessionName());
+}
+} // namespace
+
 ProjectStore Control::projects() const
 {
     return ProjectStore(QDir(QFileInfo(m_settings.path()).absolutePath()).filePath(QStringLiteral("projects")));
@@ -19,6 +30,7 @@ QString Control::saveProject(quint32 id, const QString& name, bool overwrite, QV
 {
     TerminalWindow* window = nullptr;
     if (!find(id, &window)) return QStringLiteral("no pane %1").arg(id);
+    if (const QString refused = projectSaveError(*window); !refused.isEmpty()) return refused;
     const auto error = projects().save(name, window->projectLayout(), overwrite);
     if (!error.isEmpty()) return error;
     window->setProjectName(name);
@@ -117,6 +129,11 @@ void Control::projectDialog(Pane* pane, bool save)
     };
     const auto owner = QStringLiteral("@projects");
     if (save) {
+        // Before the name is asked for.
+        if (const QString refused = projectSaveError(*window); !refused.isEmpty()) {
+            report(refused);
+            return;
+        }
         QVariantMap model{{QStringLiteral("kind"), QStringLiteral("prompt")}, {QStringLiteral("title"), QStringLiteral("Save window as project")},
                           {QStringLiteral("description"), QStringLiteral("Letters, digits, underscores or hyphens. Saves tabs, splits, directories and explicit launch commands.")},
                           {QStringLiteral("text"), window->projectName()}};

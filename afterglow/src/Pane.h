@@ -22,7 +22,6 @@
 #include <QTimer>
 #include <QString>
 
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -89,6 +88,10 @@ public:
                int cellHeight, QString* error);
     /// Applies changed config to the running terminal.
     void setOptions(const AfterglowVt::TerminalOptions& options);
+    /// Applies only the options that are the window's, not the terminal's
+    /// (Terminal::setViewOptions): for a session pane, whose colours and
+    /// history are the session's.
+    void setViewOptions(const AfterglowVt::TerminalOptions& options);
 
     void resize(int cols, int rows, int cellWidth, int cellHeight);
 
@@ -105,7 +108,8 @@ public:
     /// The pane shows mux session @p name, and has not lost it.
     bool showsSession(const QString& name) const;
     /// What closing the session pane ends: the window sets it as it closes
-    /// the pane, by what the close is (the pane alone, or the window).
+    /// the pane, by what the close is (the pane alone, or the window), or as
+    /// the pane moves to a session of its own (MuxRelease::Nothing).
     void setSessionRelease(MuxRelease release) { m_sessionRelease = release; }
     /// Closing the pane ends its program: always for a program of its own,
     /// and for a session pane unless its release ends nothing.
@@ -144,9 +148,13 @@ public:
     /// The program of the session pane exited, with @p status as waitpid gives it.
     void sessionPaneExited(int status);
     /// The window no longer shows the session (@p loss says why): the pane
-    /// closes. Once. With @p notice, it says why when the user did not ask
-    /// for it: one pane of the window does.
-    void sessionLost(MuxLoss loss, bool notice);
+    /// closes, with sessionLeft(), not closed(). Once. With @p notice, it
+    /// says why when the user did not ask for it: one pane of the window
+    /// does. False when the pane had left the session already (its program
+    /// exited), and said nothing.
+    bool sessionLost(MuxLoss loss, bool notice);
+    /// sessionLost() closed the pane: not its program's exit.
+    bool leftSession() const { return m_leftSession; }
     int cols() const;
     int rows() const;
 
@@ -252,6 +260,10 @@ public:
     /// For a session pane, the job of its program in the daemon, which the
     /// daemon names: the GUI thread waits for its answer.
     QString foregroundJob() const;
+    /// The daemon's id of this pane while foregroundJob() would ask the
+    /// daemon, else nullopt: a window asks for the jobs of all its session
+    /// panes with one MuxClient::paneJobs call.
+    std::optional<std::uint32_t> sessionJobPane() const;
     /// The command that a project saves for the pane and runs again when it
     /// opens: the program the pane was opened for (afterglow -e, a script,
     /// afterglow ctl, a project), even when a fallback shell runs in its
@@ -365,6 +377,8 @@ Q_SIGNALS:
     void programDragStarting();
     void searchStatusChanged(const QString& status);
     void titleUpdated(const QString& title);
+    /// The title that the user gave the pane changed (setUserTitle).
+    void userTitleChanged();
     void contextUpdated();
     void userVarUpdated(const QString& name, const QString& value);
     void shaderSignalsChanged();
@@ -395,6 +409,9 @@ Q_SIGNALS:
     void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths, int total,
         bool othersRefused);
     void closed();
+    /// The window lost the session of this session pane (sessionLost): the
+    /// pane closes, as do the others that lost it in the same pass.
+    void sessionLeft();
 
 private:
     // ITerminalHost: m_mutex held, on the pty thread, or for a session pane
@@ -657,8 +674,9 @@ private:
     // A session pane (showSession): no PTY of its own.
     std::shared_ptr<MuxClient> m_session;
     std::uint32_t m_sessionPane = 0;
-    MuxRelease m_sessionRelease{}; ///< MuxRelease::Pane
+    MuxRelease m_sessionRelease{}; ///< MuxRelease::Pane (Pane.cpp checks)
     std::atomic<bool> m_sessionGone{false};
+    bool m_leftSession = false; ///< GUI thread: leftSession()
     bool lastOutputArrivingLocked() const; ///< m_mutex held
     int m_sessionVisible = -1; ///< the last state given to the daemon (setSessionVisible), -1 for none yet
     bool m_sessionSynced = false; ///< GUI thread: a frame of the session applied (sessionSynced)
@@ -668,8 +686,6 @@ private:
     mutable QString m_checkedDirectory;
     mutable bool m_checkedDirectoryExists = false;
     quint64 m_statusBaseline = 0; ///< GUI thread: statusBaseline
-    /// The size last sent to the daemon: cols, rows, cell width and height.
-    std::array<int, 4> m_sentSize{0, 0, 0, 0};
     AfterglowVt::StateReader m_stateReader;
     // Declared last so it is destroyed first: its thread calls into the terminal.
     std::unique_ptr<AfterglowPty::Pty> m_pty;

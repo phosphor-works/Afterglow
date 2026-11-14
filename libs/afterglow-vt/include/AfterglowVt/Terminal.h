@@ -287,6 +287,12 @@ public:
     /// replaced and the XTPUSHCOLORS stack is emptied. The cursor shape and
     /// blink a program chose stay unless the configured ones changed.
     void setOptions(const TerminalOptions& options);
+    /// Applies only the options of @p options that change how the screen
+    /// draws and selects, not what it holds: boldIsBright, minimumContrast,
+    /// wordBoundaries and bidi. For a replica (StateSync), whose colours,
+    /// cursor and history are its writer's: setOptions would replace them
+    /// with the configured ones.
+    void setViewOptions(const TerminalOptions& options);
 
     /// @param cellWidth, cellHeight cell size in pixels, reported by CSI 14/16 t.
     void resize(int cols, int rows, int cellWidth, int cellHeight);
