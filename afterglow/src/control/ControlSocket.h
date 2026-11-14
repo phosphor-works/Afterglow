@@ -96,9 +96,9 @@ public:
     Q_INVOKABLE bool overlayInput(const QString& input, const QString& chunk, bool eof);
 
     /// Inputs that wait for overlay(), for one connection.
-    static constexpr int MaxWaitingInputs = 4;
+    static constexpr int MaxWaitingInputs = OverlayInputs::MaxWaiting;
     /// The bytes of all the inputs that wait, of every connection.
-    static constexpr qsizetype MaxWaitingInputBytes = 16 * OverlaySpec::MaxInput;
+    static constexpr qsizetype MaxWaitingInputBytes = OverlayInputs::MaxWaitingBytes;
     /// Screenshots from the call to the reply, of every connection: each
     /// holds a frame and its PNG. A client that closes its connection does
     /// not stop its frame or encode, so the count drops only as they end.
@@ -169,20 +169,12 @@ private:
     /// written), unless read access or control went off meanwhile.
     void finishScreenshot(PhosphorIpc::IpcPendingReply& reply, const QString& base64, const QSize& size);
 
-    struct WaitingInput
-    {
-        QByteArray bytes; ///< UTF-8
-        bool eof = false;
-    };
-    /// Drops the input @p name of @p connection.
-    void dropInput(quint64 connection, const QString& name);
-
     Control& m_control;
     SettingsStore& m_settings;
     RemoteSockets* m_remote = nullptr;
     PaneProcesses m_paneProcesses;
-    QHash<quint64, QHash<QString, WaitingInput>> m_inputs;
-    qsizetype m_inputBytes = 0;
+    /// Keyed by the connection's ID.
+    OverlayInputs m_inputs;
     /// The open connections that have opened an overlay.
     QSet<quint64> m_overlayClients;
     int m_screenshots = 0;

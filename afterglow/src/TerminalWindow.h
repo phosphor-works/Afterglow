@@ -262,6 +262,9 @@ public:
     bool showsSession() const { return m_session != nullptr; }
     /// The name of the session that the window shows, empty for none.
     QString sessionName() const;
+    /// The ssh destination of the daemon of that session, empty for this
+    /// computer.
+    QString sessionHost() const;
     /// The session keeps running when the window closes, whatever Mux.onClose
     /// says: Afterglow quits.
     void keepSessionOnClose();

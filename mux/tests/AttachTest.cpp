@@ -2270,7 +2270,7 @@ TEST(MuxControl, WhatOnlyAWindowDoesNeedsOne)
     EXPECT_FALSE(ctl.call("setTitle", Json::Array{0, "t"}));
     EXPECT_NE(ctl.error.message.find("no window shows session 's'"), std::string::npos) << ctl.error.message;
     EXPECT_FALSE(ctl.call("screenshot", Json::Array{0, "pane"}));
-    EXPECT_NE(ctl.error.message.find("not available for a session yet"), std::string::npos) << ctl.error.message;
+    EXPECT_NE(ctl.error.message.find("only a window can do screenshot"), std::string::npos) << ctl.error.message;
     EXPECT_FALSE(ctl.call("split", Json::Array{0, "right", Json::Array{"htop"}}));
     EXPECT_NE(ctl.error.message.find("launch"), std::string::npos) << ctl.error.message;
     EXPECT_FALSE(ctl.call("noSuchCall", {}));
@@ -2331,4 +2331,122 @@ TEST(MuxControl, AWindowPlacesNewPanesAndAnswersWindowCalls)
     waiting.join();
     EXPECT_FALSE(titled);
     EXPECT_NE(ctl.error.message.find("closed before it answered"), std::string::npos) << ctl.error.message;
+}
+
+// The calls of `afterglow ctl overlay` and `screenshot` go to the window that
+// shows the session, with the daemon's number of the client: the window
+// keeps that client's overlays and inputs, and hears when it goes. A large
+// answer, such as a PNG, comes in parts, and an error keeps its code.
+TEST(MuxControl, OverlaysAndScreenshotsGoToTheWindowWithTheirClient)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    const auto controls = [&w] {
+        std::vector<Json::Value> calls;
+        for (const Attach::Event& e : w.events) {
+            if (e.type == Attach::EventType::Control) calls.push_back(*Json::parse(e.payload));
+        }
+        return calls;
+    };
+    auto ctl = std::make_unique<ControlClient>(daemon);
+    ASSERT_EQ(ctl->select("s"), "");
+
+    // Each call waits on a thread of its own while the window's stream runs.
+    // A failed assertion joins it first: a call ends within its timeout.
+    std::thread caller;
+    struct JoinAtEnd
+    {
+        std::thread& thread;
+        ~JoinAtEnd()
+        {
+            if (thread.joinable()) thread.join();
+        }
+    } joinAtEnd{caller};
+    std::atomic<bool> answered{false};
+    const auto join = [&](std::thread& caller) {
+        EXPECT_TRUE(w.until([&] { return answered.load(); }));
+        caller.join();
+        answered = false;
+    };
+    // A screenshot whose answer is larger than a part: 3 parts and the rest.
+    std::optional<Json::Value> shot;
+    caller = std::thread([&] {
+        shot = ctl->call("screenshot", Json::Array{0, "pane"});
+        answered = true;
+    });
+    ASSERT_TRUE(w.until([&] { return controls().size() == 1; }));
+    const Json::Value call = controls().back();
+    EXPECT_EQ(call["fn"].toString(), "screenshot");
+    // The focused pane, by its ID.
+    EXPECT_EQ(Json::write(call["args"]), "[" + std::to_string(w.pane) + ",\"pane\"]");
+    const std::int64_t client = call["client"].toInteger().value_or(0);
+    EXPECT_GT(client, 0);
+    const std::string png(3 * Attach::ControlReplyPartBytes + 17, 'A');
+    const std::string answer = Json::write(Json::Object{{"id", call["id"]}, {"result", Json::Object{{"png", png}, {"width", 4}, {"height", 2}}}});
+    for (std::size_t at = 0; at < answer.size(); at += Attach::ControlReplyPartBytes) {
+        Attach::Input part;
+        part.type = at + Attach::ControlReplyPartBytes < answer.size() ? Attach::InputType::ControlReplyPart : Attach::InputType::ControlReply;
+        part.bytes = answer.substr(at, Attach::ControlReplyPartBytes);
+        ASSERT_TRUE(w.send(part));
+    }
+    join(caller);
+    ASSERT_TRUE(shot) << ctl->error.message;
+    EXPECT_EQ((*shot)["png"].toString().size(), png.size());
+    EXPECT_EQ((*shot)["width"].toInteger(), 4);
+
+    // An overlay's input and the overlay come with the same client, and an
+    // error of the window keeps its code.
+    std::optional<Json::Value> input;
+    caller = std::thread([&] {
+        input = ctl->call("overlayInput", Json::Array{"in", "text", true});
+        answered = true;
+    });
+    ASSERT_TRUE(w.until([&] { return controls().size() == 2; }));
+    EXPECT_EQ(controls().back()["fn"].toString(), "overlayInput");
+    EXPECT_EQ(controls().back()["client"].toInteger(), client);
+    Attach::Input reply;
+    reply.type = Attach::InputType::ControlReply;
+    reply.bytes = Json::write(Json::Object{{"id", controls().back()["id"]}, {"result", true}});
+    ASSERT_TRUE(w.send(reply));
+    join(caller);
+    EXPECT_TRUE(input) << ctl->error.message;
+    std::optional<Json::Value> overlay;
+    caller = std::thread([&] {
+        overlay = ctl->call("overlay", Json::Array{0, Json::Array{"true"}, Json::Object{{"input", "in"}}});
+        answered = true;
+    });
+    ASSERT_TRUE(w.until([&] { return controls().size() == 3; }));
+    EXPECT_EQ(controls().back()["fn"].toString(), "overlay");
+    EXPECT_EQ(controls().back()["client"].toInteger(), client);
+    reply.bytes = Json::write(Json::Object{{"id", controls().back()["id"]},
+                                           {"error", Json::Object{{"code", "spawn_failed"}, {"message", "no program true"}}}});
+    ASSERT_TRUE(w.send(reply));
+    join(caller);
+    EXPECT_FALSE(overlay);
+    EXPECT_EQ(ctl->error.code, "spawn_failed");
+
+    // The client goes: its window hears it, by its number.
+    ctl.reset();
+    ASSERT_TRUE(w.until([&] { return controls().size() == 4; }));
+    EXPECT_EQ(controls().back()["fn"].toString(), "clientGone");
+    EXPECT_EQ(controls().back()["id"].toInteger(), 0);
+    EXPECT_EQ(Json::write(controls().back()["args"]), "[" + std::to_string(client) + "]");
+}
+
+// A screenshot needs Control.allowReadText: refused with the window's code
+// first, also for a pane that does not exist, and with no window.
+TEST(MuxControl, AScreenshotWithoutReadAccessIsDenied)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s", false)) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    EXPECT_FALSE(ctl.call("screenshot", Json::Array{99, "pane"}));
+    EXPECT_EQ(ctl.error.code, "denied");
+    EXPECT_EQ(ctl.error.message, "screenshots are off (Control.allowReadText)");
 }

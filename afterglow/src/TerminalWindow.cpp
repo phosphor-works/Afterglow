@@ -1046,6 +1046,11 @@ QString TerminalWindow::sessionName() const
     return m_session ? m_session->session() : QString();
 }
 
+QString TerminalWindow::sessionHost() const
+{
+    return m_session ? m_session->host() : QString();
+}
+
 void TerminalWindow::scheduleSessionLayout()
 {
     if (m_session && !m_sessionLayoutTimer.isActive()) m_sessionLayoutTimer.start();
