@@ -102,6 +102,10 @@ struct Layout
     /// The values of the panes that have any, each a pane of the tabs, at
     /// most MaxLayoutValueBytes in all.
     std::map<std::uint32_t, PaneValues> values;
+    /// The panes that the window moved since its last layout, which
+    /// `afterglow ctl watch` hears of (paneMoved): a layout that the window
+    /// sends has them, and the daemon keeps none.
+    std::vector<std::uint32_t> moved;
     /// The bytes of the values.
     std::size_t valueBytes() const;
 

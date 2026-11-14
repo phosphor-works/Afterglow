@@ -128,7 +128,8 @@ void sessionValues(AfterglowMux::SessionOptions& session, const Settings& settin
 AfterglowMux::SessionSettings sessionSettings(const Settings& settings, bool environment)
 {
     AfterglowMux::SessionSettings out{settings.terminal,
-                                      {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString()}};
+                                      {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString(),
+                                       settings.control.eventInterval}};
     if (!environment) return out;
     for (const QString& name : settings.mux.updateEnvironment) {
         const QByteArray encoded = name.toLocal8Bit();

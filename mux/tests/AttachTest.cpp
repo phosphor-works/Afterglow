@@ -20,11 +20,14 @@
 #include <PhosphorChannel/Stream.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <set>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -2243,6 +2246,48 @@ TEST(MuxControl, TheDaemonAnswersWithoutAWindow)
     EXPECT_EQ(w.layouts[0].current, 1u);
 }
 
+// OSC 7 reports file://host/path, percent encoded. The daemon gives the path
+// to `afterglow ctl ls` and starts a new tab there, as a window does: the URL
+// itself is no directory to start in. A directory of another host is none
+// of this machine.
+TEST(MuxControl, TheDirectoryOfAShellIsAPathOfThisMachine)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "d")) << daemon.lastError();
+    const TempDir temp;
+    ASSERT_FALSE(temp.path.empty());
+    const std::string directory = (temp.path / "a b").string();
+    ASSERT_TRUE(std::filesystem::create_directory(directory));
+    std::string encoded;
+    for (const char c : directory) encoded += c == ' ' ? std::string("%20") : std::string(1, c);
+    std::array<char, 256> host{};
+    ASSERT_EQ(::gethostname(host.data(), host.size() - 1), 0);
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("d"), "");
+    const auto cwd = [&](std::size_t index) {
+        const auto listed = ctl.call("listPanes", {});
+        return listed && listed->toArray().size() > index ? listed->toArray()[index]["cwd"].toString() : std::string();
+    };
+    const auto report = [&](const std::string& url) {
+        return ctl.call("sendText", Json::Array{0, "printf '\\033]7;%s\\007' '" + url + "'\n"}).has_value();
+    };
+    ASSERT_TRUE(report("file://" + std::string(host.data()) + encoded)) << ctl.error.message;
+    ASSERT_TRUE(waitFor([&] { return cwd(0) == directory; })) << cwd(0);
+    const auto first = ctl.call("focusedPane", {});
+    ASSERT_TRUE(first) << ctl.error.message;
+    const auto tab = ctl.call("newTab", Json::Array{*first, "", Json::Array{}});
+    ASSERT_TRUE(tab) << ctl.error.message;
+    EXPECT_TRUE(waitFor([&] { return cwd(1) == directory; })) << cwd(1);
+    ASSERT_TRUE(ctl.call("focus", Json::Array{*first})) << ctl.error.message;
+    ASSERT_TRUE(report("file://elsewhere.invalid" + encoded)) << ctl.error.message;
+    // The shell never went there: /proc answers.
+    EXPECT_TRUE(waitFor([&] {
+        const std::string now = cwd(0);
+        return !now.empty() && now != directory && !now.starts_with("file:");
+    })) << cwd(0);
+}
+
 TEST(MuxControl, TheSessionsControlSettingsApply)
 {
     TestDaemon daemon;
@@ -2449,4 +2494,191 @@ TEST(MuxControl, AScreenshotWithoutReadAccessIsDenied)
     EXPECT_FALSE(ctl.call("screenshot", Json::Array{99, "pane"}));
     EXPECT_EQ(ctl.error.code, "denied");
     EXPECT_EQ(ctl.error.message, "screenshots are off (Control.allowReadText)");
+}
+
+// `afterglow ctl watch` for a session, also while no window shows it: the
+// daemon sends the events of its panes to the subscriptions of the session,
+// with the values that read access allows.
+TEST(MuxControl, WatchSendsTheEventsOfASessionWithoutAWindow)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions options = daemon.options({"/bin/sh"}, "w");
+    options.launch.environment.emplace_back("PS1", "$ ");
+    options.launch.environment.emplace_back("ENV", "/dev/null");
+    options.control.allowReadText = false;
+    options.control.eventInterval = 0;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("w"), "");
+    const auto listed = ctl.call("listPanes", {});
+    ASSERT_TRUE(listed) << ctl.error.message;
+    const std::int64_t pane = paneIds(*listed).front();
+
+    RawClient watcher(daemon.socket());
+    ASSERT_TRUE(watcher.connected());
+    const auto request = [&](Json::Object fields) {
+        EXPECT_TRUE(watcher.send(Json::write(Json::Value(std::move(fields))) + "\n"));
+        return Json::parse(watcher.line()).value_or(Json::Value());
+    };
+    EXPECT_EQ(request({{"type", "call"}, {"id", 1}, {"target", Target}, {"fn", Fn::SelectSession}, {"args", Json::Array{ProtocolVersion, "w"}}})["type"]
+                  .toString(),
+              "reply");
+    const std::vector<std::string> signals{"titleChanged", "paneCreated", "paneClosed", "bell", "userVarChanged", "focusChanged"};
+    for (std::size_t i = 0; i < signals.size(); ++i) {
+        const Json::Value reply = request({{"type", "subscribe"}, {"id", std::int64_t(10 + i)}, {"target", "control"}, {"signal", signals[i]}});
+        EXPECT_EQ(reply["type"].toString(), "reply") << Json::write(reply);
+    }
+    EXPECT_EQ(request({{"type", "subscribe"}, {"id", 30}, {"target", "control"}, {"signal", "noSuchEvent"}})["code"].toString(), "NO_SUCH_SIGNAL");
+
+    /// The events that come until @p signal with @p first argument, by
+    /// their signal: the subscription of each names it.
+    std::vector<std::pair<std::string, Json::Array>> events;
+    const auto until = [&](const std::string& signal, std::int64_t first) {
+        for (int i = 0; i < 64; ++i) {
+            const auto line = Json::parse(watcher.line());
+            if (!line) return false;
+            const auto id = (*line)["subscriptionId"].toInteger().value_or(0);
+            if ((*line)["type"].toString() != "event" || id < 10 || id >= std::int64_t(10 + signals.size())) continue;
+            const std::string& got = signals[std::size_t(id - 10)];
+            events.emplace_back(got, (*line)["args"].toArray());
+            if (got == signal && (*line)["args"].toArray().at(0).toInteger() == first) return true;
+        }
+        return false;
+    };
+    const auto seen = [&](const std::string& signal, const std::string& args) {
+        return std::any_of(events.begin(), events.end(), [&](const auto& e) { return e.first == signal && Json::write(e.second) == args; });
+    };
+    // A title, a bell and a user variable, whose value read access keeps.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]2;watched\\007\\007\\033]1337;SetUserVar=k=dmFs\\007'\n"}))
+        << ctl.error.message;
+    ASSERT_TRUE(until("userVarChanged", pane));
+    EXPECT_TRUE(seen("titleChanged", "[" + std::to_string(pane) + ",\"watched\"]"));
+    EXPECT_TRUE(seen("bell", "[" + std::to_string(pane) + "]"));
+    EXPECT_TRUE(seen("userVarChanged", "[" + std::to_string(pane) + ",\"k\",\"\"]"));
+    // A pane that starts, with the focus, and that closes.
+    const auto split = ctl.call("split", Json::Array{pane, "right", Json::Array{}});
+    ASSERT_TRUE(split) << ctl.error.message;
+    const std::int64_t added = split->toInteger().value_or(0);
+    ASSERT_TRUE(until("focusChanged", added));
+    EXPECT_TRUE(seen("paneCreated", "[" + std::to_string(added) + "]"));
+    // No longer the titles: the next event is the close.
+    EXPECT_EQ(request({{"type", "unsubscribe"}, {"id", 31}, {"subscriptionId", 10}})["type"].toString(), "reply");
+    EXPECT_EQ(request({{"type", "unsubscribe"}, {"id", 32}, {"subscriptionId", 10}})["code"].toString(), "NO_SUCH_SUBSCRIPTION");
+    events.clear();
+    ASSERT_TRUE(ctl.call("close", Json::Array{added})) << ctl.error.message;
+    ASSERT_TRUE(until("paneClosed", added));
+    EXPECT_FALSE(std::any_of(events.begin(), events.end(), [](const auto& e) { return e.first == "titleChanged"; }));
+}
+
+namespace {
+
+/// A connection that subscribes to events of session @p name, and reads them.
+struct Watcher
+{
+    Watcher(TestDaemon& daemon, const std::string& name)
+        : client(daemon.socket())
+    {
+        const Json::Value selected =
+            request({{"type", "call"}, {"id", 1}, {"target", Target}, {"fn", Fn::SelectSession}, {"args", Json::Array{ProtocolVersion, name}}});
+        EXPECT_EQ(selected["type"].toString(), "reply") << Json::write(selected);
+    }
+    Json::Value request(Json::Object fields)
+    {
+        EXPECT_TRUE(client.send(Json::write(Json::Value(std::move(fields))) + "\n"));
+        return Json::parse(client.line()).value_or(Json::Value());
+    }
+    /// Subscribes to @p signal with request @p id: the reply, or the error.
+    Json::Value subscribe(std::int64_t id, const std::string& signal)
+    {
+        signals[id] = signal;
+        return request({{"type", "subscribe"}, {"id", id}, {"target", "control"}, {"signal", signal}});
+    }
+    /// The next line: an event as "signal args", or an error as "error ID CODE MESSAGE".
+    std::string next()
+    {
+        const auto line = Json::parse(client.line());
+        if (!line) return {};
+        if ((*line)["type"].toString() == "error") {
+            return "error " + std::to_string((*line)["id"].toInteger().value_or(0)) + " " + (*line)["code"].toString() + " "
+                + (*line)["message"].toString();
+        }
+        return signals[(*line)["subscriptionId"].toInteger().value_or(0)] + " " + Json::write((*line)["args"]);
+    }
+    RawClient client;
+    std::map<std::int64_t, std::string> signals;
+};
+
+} // namespace
+
+// What review found that a session's watch must do: a title alone, with no
+// window, is an event; merged events keep the newest; a move of `afterglow
+// ctl` is one; a second subscription to an event is refused as PhosphorIpc
+// refuses it; and the end of the session closes its panes and ends the
+// subscriptions with an error.
+TEST(MuxControl, WatchHearsATitleAloneMergesAndEndsWithItsSession)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions options = daemon.options({"/bin/sh"}, "t");
+    options.launch.environment.emplace_back("PS1", "$ ");
+    options.launch.environment.emplace_back("ENV", "/dev/null");
+    options.control.allowReadText = true;
+    options.control.eventInterval = 400;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("t"), "");
+    const auto listed = ctl.call("listPanes", {});
+    ASSERT_TRUE(listed) << ctl.error.message;
+    const std::int64_t pane = paneIds(*listed).front();
+    const std::string id = std::to_string(pane);
+
+    Watcher watcher(daemon, "t");
+    for (const auto& [n, signal] : std::vector<std::pair<std::int64_t, std::string>>{{10, "titleChanged"}, {11, "paneMoved"}, {12, "paneClosed"}}) {
+        EXPECT_EQ(watcher.subscribe(n, signal)["type"].toString(), "reply");
+    }
+    const Json::Value twice = watcher.subscribe(20, "titleChanged");
+    EXPECT_EQ(twice["code"].toString(), "MALFORMED_REQUEST");
+    EXPECT_EQ(twice["message"].toString(), "already subscribed to 'control.titleChanged' on this connection (subscriptionId 10)");
+    EXPECT_EQ(watcher.subscribe(21, "noSuchEvent")["message"].toString(), "target 'control' has no signal 'noSuchEvent'");
+
+    // Three titles at once: the first goes, and the last waits for the
+    // interval; the one between is merged away.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]2;a\\007\\033]2;b\\007\\033]2;c\\007'\n"})) << ctl.error.message;
+    EXPECT_EQ(watcher.next(), "titleChanged [" + id + ",\"a\"]");
+    EXPECT_EQ(watcher.next(), "titleChanged [" + id + ",\"c\"]");
+
+    // A move of `afterglow ctl`, with no window.
+    const auto split = ctl.call("split", Json::Array{pane, "right", Json::Array{}});
+    ASSERT_TRUE(split) << ctl.error.message;
+    const std::int64_t added = split->toInteger().value_or(0);
+    ASSERT_TRUE(ctl.call("movePane", Json::Array{added, 0, "new-tab"})) << ctl.error.message;
+    EXPECT_EQ(watcher.next(), "paneMoved [" + std::to_string(added) + "]");
+
+    // The session ends: its panes close, then the subscriptions end.
+    ASSERT_TRUE(daemon.call(Fn::KillSession, Json::Array{"t"})) << daemon.lastError();
+    std::set<std::string> closed{watcher.next(), watcher.next()};
+    EXPECT_EQ(closed, (std::set<std::string>{"paneClosed [" + id + "]", "paneClosed [" + std::to_string(added) + "]"}));
+    std::set<std::string> ended{watcher.next(), watcher.next(), watcher.next()};
+    EXPECT_EQ(ended, (std::set<std::string>{"error 10 NO_SUCH_SESSION session 't' ended", "error 11 NO_SUCH_SESSION session 't' ended",
+                                            "error 12 NO_SUCH_SESSION session 't' ended"}));
+}
+
+// A window that turns Control.enabled off ends the subscriptions of its
+// session, as a window's control target ends its own.
+TEST(MuxControl, WatchEndsWhenAWindowTurnsControlOff)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "c")) << daemon.lastError();
+    Watcher watcher(daemon, "c");
+    EXPECT_EQ(watcher.subscribe(10, "bell")["type"].toString(), "reply");
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "c"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    SessionSettings settings{daemon.options({"/bin/sh"}, "x").terminal, {false, true, ""}};
+    ASSERT_TRUE(w.sendSettings(settings));
+    // The window's stream runs while the settings go out.
+    (void)w.until([] { return false; }, 300ms);
+    EXPECT_EQ(watcher.next(), "error 10 NO_SUCH_TARGET no target 'control'");
 }

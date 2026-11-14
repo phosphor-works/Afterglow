@@ -173,6 +173,12 @@ TEST(IpcServer, RefusesWhatPhosphorIpcRefuses)
         R"({"type":"call","id":1,"fn":"f"})",
         R"({"type":"call","id":1,"target":"t"})",
         R"({"type":"call","id":1,"target":"t","fn":"f","args":{}})",
+        R"({"type":"subscribe","id":1,"target":"t"})",
+        R"({"type":"subscribe","id":1,"signal":"s"})",
+        R"({"type":"unsubscribe","id":2})",
+        R"({"type":"unsubscribe","id":2,"subscriptionId":0})",
+        R"({"type":"unsubscribe","id":2,"subscriptionId":"1"})",
+        R"({"type":"unsubscribe","id":2,"subscriptionId":1.5})",
     };
     for (const char* line : bad) {
         std::string error;
@@ -201,6 +207,21 @@ TEST(IpcServer, ReadsFieldsInTheOrderAndRangeOfPhosphorIpc)
     const auto negative = parseIpcRequest(R"({"type":"call","id":-5,"target":"t","fn":"f"})", &error);
     ASSERT_TRUE(negative) << error;
     EXPECT_EQ(negative->id, -5);
+}
+
+// A subscription and its end, as PhosphorIpc reads them, and an event of it
+// as PhosphorIpc writes one.
+TEST(IpcServer, ParsesSubscriptionsAndWritesTheirEvents)
+{
+    std::string error;
+    const auto subscribe = parseIpcRequest(R"({"type":"subscribe","id":9,"target":"control","signal":"titleChanged"})", &error);
+    ASSERT_TRUE(subscribe) << error;
+    EXPECT_EQ(subscribe->target, "control");
+    EXPECT_EQ(subscribe->signal, "titleChanged");
+    const auto unsubscribe = parseIpcRequest(R"({"type":"unsubscribe","id":10,"subscriptionId":9})", &error);
+    ASSERT_TRUE(unsubscribe) << error;
+    EXPECT_EQ(unsubscribe->subscriptionId, 9);
+    EXPECT_EQ(ipcEvent(9, Json::Array{3, "vim"}), "{\"type\":\"event\",\"subscriptionId\":9,\"args\":[3,\"vim\"]}\n");
 }
 
 TEST(IpcServer, AnErrorWithoutAnIdHasNone)
