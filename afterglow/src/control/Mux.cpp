@@ -4,11 +4,11 @@
 #include "control/Mux.h"
 
 #include "PaneLaunch.h"
-#include "app/NotificationCenter.h"
 #include "config/Settings.h"
 #include "control/RemoteSockets.h"
 #include "shell/Aglow.h"
 #include "mux/MuxRoute.h"
+#include "mux/MuxSessions.h"
 #include "shell/Ssh.h"
 
 #include "MuxConnect.h"
@@ -33,7 +33,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -48,8 +47,6 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
-extern char** environ;
 
 namespace Afterglow {
 
@@ -109,59 +106,6 @@ int usage(const std::string& message)
 }
 
 using AfterglowProto::printable;
-
-std::string daemonPath(std::string* error)
-{
-    return Aglow::siblingExecutable("aglow-mux", error);
-}
-
-/// A connection to the daemon, which this starts when none answers: the
-/// aglow-mux next to afterglow.
-Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, std::string* error)
-{
-    if (Reached reached = connectAny(sockets, error); reached.connection || !error->empty()) return reached;
-    const std::string daemon = daemonPath(error);
-    if (daemon.empty()) return {};
-    if (::access(daemon.c_str(), X_OK) != 0) {
-        *error = "cannot find aglow-mux next to afterglow: " + daemon;
-        return {};
-    }
-    return AfterglowMux::connectOrStart(sockets, daemon, error);
-}
-
-/// The file mode creation mask of this process, which the programs of the
-/// session get, or -1. Read from /proc: umask() would change it to read it.
-int currentUmask()
-{
-    std::ifstream status("/proc/self/status");
-    for (std::string line; std::getline(status, line);) {
-        if (!line.starts_with("Umask:")) continue;
-        try {
-            return std::stoi(line.substr(6), nullptr, 8);
-        } catch (const std::exception&) {
-            return -1;
-        }
-    }
-    return -1;
-}
-
-/// The environment of the session: this command's. Each pane changes it with
-/// its launch, the first one with the values of this command's, and the
-/// variables that name another terminal or the shell that ran this command
-/// are among a launch's unsets (offerTerminalEnvironment). JSON carries
-/// text: a byte of a name, a value, an argument or a directory that is not
-/// UTF-8 becomes U+FFFD on the way to the daemon.
-std::vector<std::pair<std::string, std::string>> sessionEnvironment()
-{
-    std::vector<std::pair<std::string, std::string>> env;
-    for (char** e = environ; *e; ++e) {
-        const std::string_view entry(*e);
-        const auto eq = entry.find('=');
-        if (eq == std::string_view::npos || eq == 0) continue;
-        env.emplace_back(std::string(entry.substr(0, eq)), std::string(entry.substr(eq + 1)));
-    }
-    return env;
-}
 
 /// @p path as an absolute path, or nullopt when it is relative and the
 /// current directory was removed (it has no path then). Not QFileInfo: it
@@ -335,24 +279,11 @@ int newSession(int argc, char** argv, const std::string& command = "new")
         const auto cwd = absolute(o.cwd);
         if (!cwd) return fail(command, "the current directory was removed, so give an absolute directory with --cwd");
         if (!QFileInfo(*cwd).isDir()) return fail(command, "no directory " + printable(cwd->toStdString()));
-        AfterglowPty::SpawnOptions launch = prepareLaunch(settings, *cwd, o.command, {});
-        offerTerminalEnvironment(launch, settings.term);
-        session.environment = sessionEnvironment();
-        session.umask = currentUmask();
-        session.launch.argv = launch.argv;
-        session.launch.workingDirectory = launch.workingDirectory;
-        session.launch.environment = launch.environment;
-        session.launch.unset = launch.unsetEnvironment;
+        session = localSessionOptions(settings, *cwd, o.command, QString::fromStdString(o.name));
     }
-    session.launch.launchedProgram = launchedProgramName(o.command).toStdString();
-    // No window measured the panes: the size of a new window, in cells,
-    // which the schema keeps within what a terminal takes.
-    session.size = {settings.window.initialColumns, settings.window.initialRows, 0, 0};
-    session.terminal = settings.terminal;
-    session.notificationCapabilities = NotificationCenter::capabilities();
-    session.control = {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString()};
+    if (o.host) sessionValues(session, settings, o.command);
 
-    Reached reached = o.host ? AfterglowMux::reach(*route, true, &error) : connectOrStart(route->sockets, &error);
+    Reached reached = o.host ? AfterglowMux::reach(*route, true, &error) : connectOrStartDaemon(route->sockets, &error);
     if (!reached.connection) return fail(command, error.empty() ? std::string("aglow-mux did not start") : error);
     IpcConnection::Error callError;
     const auto result = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::NewSession,
@@ -378,31 +309,6 @@ int newSession(int argc, char** argv, const std::string& command = "new")
     return status;
 }
 
-/// The sessions of the daemon on @p connection, or nullopt with @p error.
-std::optional<std::vector<AfterglowMux::SessionInfo>> sessions(IpcConnection& connection, std::string* error)
-{
-    IpcConnection::Error callError;
-    const auto result = connection.call(AfterglowMux::Target, AfterglowMux::Fn::ListSessions, {}, CallTimeoutMs, &callError);
-    if (!result) {
-        *error = printable(callError.message);
-        return std::nullopt;
-    }
-    if (!result->isArray()) {
-        *error = "the daemon's list of sessions is not a list";
-        return std::nullopt;
-    }
-    std::vector<AfterglowMux::SessionInfo> list;
-    for (const Json::Value& item : result->toArray()) {
-        auto info = AfterglowMux::sessionInfo(item);
-        if (!info || !AfterglowMux::validSessionName(info->name)) {
-            *error = "the daemon sent a session that this afterglow cannot read";
-            return std::nullopt;
-        }
-        list.push_back(std::move(*info));
-    }
-    return list;
-}
-
 int listSessions(int argc, char** argv)
 {
     std::optional<std::string> host;
@@ -419,7 +325,7 @@ int listSessions(int argc, char** argv)
     if (!reached.connection && !error.empty()) return fail("ls", error);
     std::vector<AfterglowMux::SessionInfo> list;
     if (reached.connection) {
-        auto found = sessions(*reached.connection, &error);
+        auto found = daemonSessions(*reached.connection, &error);
         if (!found) return fail("ls", error);
         list = std::move(*found);
     }
@@ -461,7 +367,7 @@ int attachSession(int argc, char** argv)
         if (!reached.connection && !error.empty()) return fail("attach", error);
         std::optional<std::vector<AfterglowMux::SessionInfo>> list;
         if (reached.connection) {
-            list = sessions(*reached.connection, &error);
+            list = daemonSessions(*reached.connection, &error);
             if (!list) return fail("attach", error);
         }
         // No session: a new one, in a window.
@@ -550,7 +456,7 @@ int killSession(int argc, char** argv)
     // daemon running while the user answers.
     Reached reached = reachDaemon(host, &error);
     if (!reached.connection) return fail("kill", error.empty() ? std::string("no sessions") : error);
-    const auto list = sessions(*reached.connection, &error);
+    const auto list = daemonSessions(*reached.connection, &error);
     if (!list) return fail("kill", error);
     const auto found = std::find_if(list->begin(), list->end(), [&](const auto& s) { return s.name == name; });
     if (found == list->end()) return fail("kill", "no session named '" + printable(name) + "'");
@@ -581,7 +487,7 @@ int server(int argc, char**)
 {
     if (argc != 1) return usage("server takes no arguments");
     std::string error;
-    const std::string daemon = daemonPath(&error);
+    const std::string daemon = muxDaemonPath(&error);
     if (daemon.empty()) return fail("server", error, 127);
     char* const args[] = {const_cast<char*>(daemon.c_str()), nullptr};
     ::execv(daemon.c_str(), args);

@@ -7,6 +7,8 @@
 #include "config/Settings.h"
 #include "shell/ShellIntegration.h"
 
+#include "MuxLayout.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -146,6 +148,14 @@ void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantM
         if (it.value().metaType().id() == QMetaType::Bool) AfterglowPty::unsetVariable(options, it.key().toStdString());
         else AfterglowPty::setVariable(options, it.key().toStdString(), it.value().toString().toStdString());
     }
+}
+
+std::vector<std::string> sessionCommand(const QStringList& command)
+{
+    std::vector<std::string> out;
+    for (const QString& word : command) out.push_back(word.toStdString());
+    if (!out.empty() && !AfterglowMux::validPaneCommand(out)) out.clear();
+    return out;
 }
 
 QString launchedProgramName(const QStringList& command)
