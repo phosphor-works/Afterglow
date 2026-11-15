@@ -66,6 +66,15 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
         return openLaunch({}, {},
                           {{QStringLiteral("session"), session}, {QStringLiteral("sessionHost"), host}, {QStringLiteral("takeover"), false}});
     });
+    m_control.setSessionLinkShower([this](const QString& session, SessionLink&& link) {
+        WindowOptions window;
+        AfterglowMux::Route route;
+        route.sockets = AfterglowProto::muxSockets();
+        QString error;
+        window.session = MuxClient::adopt(session, std::move(link), &error, route, m_settings.settings().mux.eventQueue);
+        if (!window.session) return error;
+        return newWindow(window) ? QString() : QStringLiteral("cannot show session '%1'").arg(session);
+    });
     // Some platform-theme versions leave Qt Quick at its default Fusion style.
     // Prefer the desktop bridge on Plasma, preserving explicit style choices
     // and falling back normally when the optional module is not installed.
@@ -197,9 +206,9 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     // answer, which the daemon passes it.
     if (options.session) {
         options.session->setControlHandler(
-            [this, shown = QPointer<TerminalWindow>(window)](const QString& fn, const QJsonArray& args, MuxClient::ControlReply reply) {
+            [this, shown = QPointer<TerminalWindow>(window)](const QString& fn, const QJsonArray& args, qint64 client, MuxClient::ControlReply reply) {
                 if (!shown) return reply({{}, QStringLiteral("the window of the session closed")});
-                answerSessionCall(m_control, m_settings.settings(), *shown, fn, args, std::move(reply));
+                answerSessionCall(m_control, m_settings.settings(), *shown, fn, args, client, std::move(reply));
             });
         // `aglow run` in a session pane: the commands target of this
         // process serves it, as it serves a pane outside a session. A

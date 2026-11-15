@@ -126,8 +126,8 @@ std::string Daemon::remoteCall(const IpcRequest& request, pid_t caller)
     const std::string& fn = request.fn;
     const Json::Array& args = request.args;
     if (fn == "remoteCommandsEnabled") {
-        // The settings of the session that the caller runs in, as the
-        // client that started it found them.
+        // The settings of the session that the caller runs in, as its last
+        // window, else the client that started it, gave them.
         const Session* session = sessionOfProcess(caller, nullptr);
         return ipcReply(request.id.value_or(0), session && session->options().control.remoteCommandsOff.empty());
     }
@@ -455,11 +455,15 @@ void Daemon::acceptSshClient(SshSession& session, int fd)
 void Daemon::pruneSsh()
 {
     // The ssh sessions of panes that closed end: their runs and forwards go.
-    std::vector<std::string> gone;
+    // So do those of a session whose window turned remote commands off, as
+    // in a window of its own.
+    std::vector<std::pair<std::string, std::string>> gone;
     for (const auto& [token, session] : m_sshSessions) {
-        if (!sessionOfPane(session->pane)) gone.push_back(token);
+        const Session* owner = sessionOfPane(session->pane);
+        if (!owner) gone.emplace_back(token, "the pane of the ssh session closed");
+        else if (!owner->options().control.remoteCommandsOff.empty()) gone.emplace_back(token, owner->options().control.remoteCommandsOff);
     }
-    for (const std::string& token : gone) endSsh(token, "the pane of the ssh session closed");
+    for (const auto& [token, reason] : gone) endSsh(token, reason);
 }
 
 void Daemon::endAllSsh()

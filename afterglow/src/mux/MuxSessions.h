@@ -12,6 +12,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <atomic>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <utility>
@@ -35,10 +37,25 @@ AfterglowMux::Reached connectOrStartDaemon(const AfterglowProto::MuxSockets& soc
 int currentUmask();
 /// The environment of a session: this process's.
 std::vector<std::pair<std::string, std::string>> sessionEnvironment();
+/// The size of a new pane of a session before a window measures it:
+/// Window.initialColumns by Window.initialRows cells of the font of
+/// @p settings (Font). The cells are in device pixels: at the scale of the
+/// primary screen in Afterglow, and of 1 in a command without one. A
+/// window then measures its own. 0 by 0 pixels when the font does not load.
+AfterglowMux::PaneSize initialPaneSize(const Settings& settings);
 /// What a session takes from @p settings whatever its host.
 void sessionValues(AfterglowMux::SessionOptions& session, const Settings& settings, const QStringList& command);
+/// The settings that a session follows, from @p settings: its terminal
+/// values, the Control settings of `afterglow ctl` and `afterglow ssh`, and
+/// with @p environment the variables of Mux.updateEnvironment as this
+/// process has them (for a session of this computer only).
+AfterglowMux::SessionSettings sessionSettings(const Settings& settings, bool environment = false);
 /// The sessions of the daemon on @p connection, or nullopt with @p error.
 std::optional<std::vector<AfterglowMux::SessionInfo>> daemonSessions(AfterglowProto::IpcConnection& connection, std::string* error);
+
+/// What a pane of a session of this computer runs: @p command (empty: the
+/// shell) in @p cwd, prepared with @p settings, as a window prepares one.
+AfterglowMux::Launch localLaunch(const Settings& settings, const QString& cwd, const QStringList& command);
 
 /// The session that `afterglow mux new` starts on this computer for a pane
 /// in @p cwd, an absolute directory, that runs @p command (empty: the
@@ -56,8 +73,18 @@ struct LocalDaemon
 LocalDaemon localDaemon();
 
 /// Starts the session @p options in the daemon of this computer, which it
-/// starts when none runs. Its name, or empty with @p error.
-QString newLocalSession(const LocalDaemon& daemon, const AfterglowMux::SessionOptions& options, QString* error);
+/// starts when none runs. Its name, with the daemon's ID of its first pane
+/// in @p firstPane, or empty with @p error.
+QString newLocalSession(const LocalDaemon& daemon, const AfterglowMux::SessionOptions& options, QString* error,
+                        std::uint32_t* firstPane = nullptr);
+/// Starts a pane for each of @p launches in session @p session of the daemon
+/// of this computer, at @p size, each a tab of its own. Their IDs, in the
+/// order of @p launches, or nothing with @p error at the first that the
+/// daemon refuses, or once @p stop is set (the panes started before stay).
+std::optional<std::vector<std::uint32_t>> startLocalPanes(const LocalDaemon& daemon, const QString& session,
+                                                          const std::vector<AfterglowMux::Launch>& launches,
+                                                          const AfterglowMux::PaneSize& size, const std::atomic<bool>& stop,
+                                                          QString* error);
 /// Whether the daemon of this computer runs the session @p name. Starts no
 /// daemon.
 bool localSessionRuns(const LocalDaemon& daemon, const QString& name);

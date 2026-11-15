@@ -64,7 +64,58 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 16) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 21) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 21 added Control.eventInterval to the control values, the
+    // moved panes to a window's layout, and the subscriptions of the control
+    // target of a session (AttachTest).
+    // Version 20 added the parts of a ControlReply larger than one frame,
+    // and the client of a Control event (AttachTest).
+    Attach::Input replyPart;
+    replyPart.type = Attach::InputType::ControlReplyPart;
+    replyPart.bytes = "{\"id\"";
+    EXPECT_EQ(Attach::encode(replyPart), std::string("\x0b\x00{\"id\"", 7));
+    EXPECT_EQ(Attach::decodeInput(Attach::encode(replyPart))->type, Attach::InputType::ControlReplyPart);
+    // Under the output that waits for one client of the daemon.
+    static_assert(Attach::MaxControlReply < (std::size_t(32) << 20));
+    // Version 19 added the variables of Mux.updateEnvironment to the
+    // settings of a window, a value or null for each.
+    {
+        SessionSettings variables;
+        variables.environment = {{"SSH_AUTH_SOCK", "/run/a"}, {"DISPLAY", std::nullopt}};
+        EXPECT_EQ(Json::write(toJson(variables)["environment"]), R"([["SSH_AUTH_SOCK","/run/a"],["DISPLAY",null]])");
+        std::string variablesError;
+        const auto variablesBack = sessionSettings(Json::parse(Json::write(toJson(variables))).value(), &variablesError);
+        ASSERT_TRUE(variablesBack) << variablesError;
+        EXPECT_TRUE(*variablesBack == variables);
+        for (const char* bad : {R"([["A=B","x"]])", R"([["A",1]])", R"([["A"]])", R"(["A"])", R"([["","x"]])"}) {
+            Json::Object object = toJson(variables).toObject();
+            for (auto& [key, value] : object) {
+                if (key == "environment") value = Json::parse(bad).value();
+            }
+            EXPECT_FALSE(sessionSettings(Json::Value(object), &variablesError)) << bad;
+        }
+    }
+    // Version 18 added the first pane's ID to the answer of newSession
+    // (DaemonTest).
+    // Version 17 added the window's settings to its input, with their keys:
+    // the session follows them.
+    SessionSettings followed;
+    followed.control.remoteCommandsOff = "off";
+    followed.terminal.defaultBackground = {1, 2, 3};
+    EXPECT_EQ(keys(toJson(followed)), (std::vector<std::string>{"terminal", "control", "environment"}));
+    EXPECT_EQ(keys(toJson(followed)["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
+    [[maybe_unused]] auto& [followedTerminal, followedControl, followedEnvironment] = followed;
+    std::string settingsError;
+    const auto settingsBack = sessionSettings(Json::parse(Json::write(toJson(followed))).value(), &settingsError);
+    ASSERT_TRUE(settingsBack) << settingsError;
+    EXPECT_TRUE(*settingsBack == followed);
+    EXPECT_FALSE(sessionSettings(Json::Object{{"terminal", toJson(followed)["terminal"]}}, &settingsError));
+    EXPECT_NE(settingsError.find("control"), std::string::npos) << settingsError;
+    Attach::Input settingsInput;
+    settingsInput.type = Attach::InputType::Settings;
+    settingsInput.bytes = "{}";
+    EXPECT_EQ(Attach::encode(settingsInput), std::string("\x0a\x00{}", 4));
+    EXPECT_EQ(Attach::decodeInput(Attach::encode(settingsInput))->bytes, "{}");
     // Version 16 added the command to a launch, the values of the panes to
     // a layout (MuxLayoutTest), and the command to the placePane call of the
     // daemon to a window.
@@ -129,7 +180,11 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current", "values"}));
     EXPECT_EQ(keys(toJson(layout)["tabs"].toArray()[0]), (std::vector<std::string>{"tree", "focused", "zoomed", "title"}));
     EXPECT_EQ(keys(toJson(layout)["values"].toArray()[0]), (std::vector<std::string>{"id", "title", "command"}));
-    [[maybe_unused]] auto& [tabs, current, values] = layout;
+    [[maybe_unused]] auto& [tabs, current, values, moved] = layout;
+    // The moves of a window's layout go only when there are some.
+    layout.moved = {4};
+    EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current", "values", "moved"}));
+    layout.moved.clear();
     [[maybe_unused]] auto& [valueTitle, valueCommand] = layout.values[4];
     [[maybe_unused]] auto& [tree, focused, zoomed, tabTitle] = layout.tabs[0];
     [[maybe_unused]] auto& [nodePane, down, ratio] = layout.tabs[0].tree[0];
@@ -217,7 +272,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     SessionOptions fields;
     [[maybe_unused]] auto& [name, sessionEnvironment, callerEnvironment, umask, launch, size, terminal, notificationCapabilities,
                             controlOptions] = fields;
-    [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff] = fields.control;
+    [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff, eventInterval] = fields.control;
     [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram, command] = fields.launch;
     [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
     [[maybe_unused]] auto& [scrollback, foreground, background, palette, cursorColor, cursorTextColor, selectionForeground,
@@ -230,7 +285,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(keys(options),
               (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
                                         "notificationCapabilities", "control"}));
-    EXPECT_EQ(keys(options["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff"}));
+    EXPECT_EQ(keys(options["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
     EXPECT_EQ(keys(options["launch"]), (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram", "command"}));
     EXPECT_EQ(keys(options["size"]), (std::vector<std::string>{"cols", "rows", "cellWidth", "cellHeight"}));
     EXPECT_EQ(keys(options["terminal"]),
@@ -534,7 +589,10 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
              {Json::Object{{"enabled", true}}, "'control.allowReadText'"},
              {Json::Object{{"enabled", 1}, {"allowReadText", false}}, "'control.enabled'"},
              {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", 1}}, "'control.remoteCommandsOff'"},
-             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", ""}, {"other", 1}}, "'control.other'"}}) {
+             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", ""}, {"eventInterval", 10001}},
+              "'control.eventInterval'"},
+             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", ""}, {"eventInterval", 0}, {"other", 1}},
+              "'control.other'"}}) {
         error.clear();
         EXPECT_FALSE(sessionOptions(with(good, "control", value), &error)) << Json::write(value);
         EXPECT_NE(error.find(key), std::string::npos) << key << ": " << error;
@@ -846,8 +904,7 @@ TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
 {
     const std::string_view bad[] = {
         {},
-        std::string_view("\x0b\x01", 2),         // an unknown type
-        std::string_view("\x0a\x01", 2),         // the type after ControlReply
+        std::string_view("\x0c\x01", 2),         // the type after ControlReplyPart
         std::string_view("\x08\x01\x00", 3),     // a byte after a ClosePane
         std::string_view("\x01", 1),             // no pane
         std::string_view("\x02\x01\x50\x18\x08", 5), // a Resize that ends early
