@@ -110,9 +110,16 @@ def ctl_options(source, command):
     return set(re.findall(r'take(?:Value|Flag)\(QStringLiteral\("(-[^"]+)"\)\)', match.group(1)))
 
 
+def ctl_first_options(source):
+    """The options that runCtl in Ctl.cpp reads before the command: the usage and --session."""
+    found = set(re.findall(r'args\[0\] == QLatin1String\("(-[^"]+)"\)', source))
+    if '--session' not in found:
+        raise SystemExit(f'FAIL: no --session in runCtl in {CTL}')
+    return found
+
+
 def mux_commands():
-    """(commands, COMMAND -> options) of afterglow mux, as runMux and the command functions in Mux.cpp read them.
-    The options that only say that a feature is not available yet (--ssh) are not completed."""
+    """(commands, COMMAND -> options) of afterglow mux, as runMux and the command functions in Mux.cpp read them."""
     source = MUX.read_text()
     run = re.search(r'^int runMux\(.*?^\}', source, re.M | re.S)
     if not run:
@@ -129,8 +136,7 @@ def mux_commands():
         # --ssh DESTINATION, which takeSsh takes.
         if 'takeSsh(' in body.group(0):
             found.add('--ssh')
-        unavailable = set(re.findall(r'arg == "(--[a-z-]+)"\)\s*\{?\s*return fail\([^;]*not available yet', body.group(0)))
-        options[command] = found - unavailable
+        options[command] = found
     return list(commands), options
 
 
@@ -295,7 +301,12 @@ class Shells:
         (bash_dir / 'ssh').write_text('_stub_ssh() { COMPREPLY=(ssh-marker); }\ncomplete -F _stub_ssh ssh\n')
         (self.fish_dir / 'ssh.fish').write_text('complete -c ssh -f -a ssh-marker\n')
         (self.zsh_functions / '_ssh').write_text('#compdef ssh\ncompadd ssh-marker\n')
-        self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ.get("PATH", "/usr/bin:/bin")}',
+        # Only the stubs, the shells' directories and /usr/bin and /bin, not the rest of the user's PATH: an
+        # afterglow, aglow or aglow-mux of the user there would run by mistake, and a completion that falls back
+        # on one would pass.
+        shell_dirs = [str(Path(found).parent) for found in map(shutil.which, ('bash', 'fish', 'zsh')) if found]
+        path = ':'.join(dict.fromkeys([str(self.bin), *shell_dirs, '/usr/bin', '/bin']))
+        self.env = dict(os.environ, PATH=path,
                         STUB_LOG=str(self.log), STUB_IDS='nav\nscene', HOME=str(tmp),
                         XDG_CONFIG_HOME=str(tmp / '.config'), XDG_DATA_HOME=str(tmp / '.local/share'),
                         XDG_CACHE_HOME=str(tmp / '.cache'), XDG_STATE_HOME=str(tmp / '.local/state'),
@@ -499,9 +510,9 @@ def mux_cases(commands, options):
     # As after the options of ctl, the options that are left.
     yield 'afterglow mux new --name x ', options['new'] - {'--name'}
     yield 'afterglow mux kill -', options['kill']
-    yield 'afterglow mux kill --force -', {'--ssh'}
+    yield 'afterglow mux kill --force -', options['kill'] - {'--force'}
     yield 'afterglow mux attach -', options['attach']
-    yield 'afterglow mux attach --no-takeover -', {'--ssh'}
+    yield 'afterglow mux attach --no-takeover -', options['attach'] - {'--no-takeover'}
     # The session names are the daemon's: nothing to offer, not files.
     yield 'afterglow mux attach ', lambda got: 'adir' not in got
     yield 'afterglow mux detach -', options['detach']
@@ -511,10 +522,15 @@ def mux_cases(commands, options):
     yield 'afterglow mux ls --ssh far -', set()
     yield 'afterglow mux kill --ssh far -', options['kill'] - {'--ssh'}
     yield 'afterglow mux new --ssh far -', options['new'] - {'--ssh'}
+    # A directory of the host is the host's: none of this computer's.
+    yield 'afterglow mux new --ssh far --cwd ', set()
+    # The destination: hosts that the shell knows, never files.
+    yield 'afterglow mux ls --ssh ', lacks('adir', 'afile')
     yield 'afterglow mux server ', set()
+    yield 'afterglow mux server --ssh ', set()
 
 
-def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mux):
+def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mux, open_project, ctl_first):
     """(line, expected) pairs. A set is the exact result, a callable checks the result."""
     files = FILES
     yield 'afterglow ', {'ctl', 'mux', 'run', 'ssh', 'transfer', 'dnd', 'icat', 'clipboard'}
@@ -536,11 +552,14 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     yield from run_cases('afterglow', run)
     yield from mux_cases(*mux)
     yield 'afterglow ctl ', set(ctl_commands)
-    yield 'afterglow ctl -', {'-h', '--help', '--session'}
-    # The name of a session, which nothing lists, then the command.
+    yield 'afterglow ctl -', ctl_first
+    # The word --session itself, at the cursor.
+    yield 'afterglow ctl --session', {'--session'}
+    # The name of a session, which nothing lists, then the command: the
+    # usage comes only first.
     yield 'afterglow ctl --session ', set()
     yield 'afterglow ctl --session work ', set(ctl_commands)
-    yield 'afterglow ctl --session work -', {'-h', '--help'}
+    yield 'afterglow ctl --session work -', set()
     yield 'afterglow ctl --session work ls ', {'--json'}
     yield 'afterglow ctl --session work focus ', {'--pane'}
     yield 'afterglow ctl ls ', {'--json'}
@@ -575,6 +594,11 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     yield 'afterglow ctl new-tab --cwd adir ', {'--pane'}
     yield 'afterglow ctl open-directory ', {'adir'}
     yield 'afterglow ctl open-directory adir ', {'--layout'}
+    # --into-session and --no-session exclude each other.
+    yield 'afterglow ctl open-project -', open_project
+    yield 'afterglow ctl open-project --into-session -', open_project - {'--into-session', '--no-session'}
+    yield 'afterglow ctl open-project --no-session -', open_project - {'--into-session', '--no-session'}
+    yield 'afterglow ctl --session work open-project -', open_project
     yield 'afterglow ctl action ', set(actions) | {'script:nav.open', 'script:nav.list'}
     yield 'afterglow ctl action split_', {'split_right', 'split_down', 'split_left', 'split_up'}
     # Bash replaces only the part after the colon.
@@ -653,7 +677,7 @@ def main():
     source = CTL.read_text()
     sources = (string_list(source, 'Commands'), set(string_list(source, 'Paneless')), keybind_actions(),
                aglow_options(), run_options(), ctl_options(source, 'overlay'), ctl_options(source, 'screenshot'),
-               mux_commands())
+               mux_commands(), ctl_options(source, 'open-project'), ctl_first_options(source))
     check_value_options()
     with tempfile.TemporaryDirectory(prefix='afterglow-completion-') as tmp:
         shells = Shells(Path(tmp))
@@ -721,7 +745,8 @@ def main():
             print('SKIP: zsh is not installed')
         if not tested:
             print('SKIP: no shell to test')
-            return 77
+            # check_value_options() needs no shell: its failures still count.
+            return 1 if failures else 77
 
         # The afterglow or aglow that the line names, not the one on PATH: for afterglow, the aglow next to it. The
         # directory with a space in its name is quoted.

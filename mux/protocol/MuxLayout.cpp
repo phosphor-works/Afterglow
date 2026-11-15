@@ -105,10 +105,14 @@ bool readTab(const Json::Value& value, LayoutTab& tab, std::set<std::uint32_t>& 
     return true;
 }
 
-/// Reads the values of the panes in @p value into @p layout, whose tabs hold @p panes.
+/// Reads the values of the panes in @p value into @p layout, whose tabs
+/// hold @p panes.
 bool readValues(const Json::Value& value, Layout& layout, const std::set<std::uint32_t>& panes, std::string* error)
 {
     if (!value.isArray()) return fail(error, "the values of the panes are not a list");
+    // Values without a title or a command are not kept, so the layout's
+    // values do not show each pane that came.
+    std::set<std::uint32_t> named;
     for (const Json::Value& item : value.toArray()) {
         if (!item.isObject()) return fail(error, "the values of a pane are not an object");
         for (const auto& [key, field] : item.toObject()) {
@@ -117,23 +121,32 @@ bool readValues(const Json::Value& value, Layout& layout, const std::set<std::ui
         const Json::Value* id = item.find("id");
         const auto pane = id ? paneIdFrom(*id) : std::nullopt;
         if (!pane || !panes.contains(*pane)) return fail(error, "values name a pane that is not in the layout");
-        if (layout.values.contains(*pane)) return fail(error, "pane " + std::to_string(*pane) + " has values more than once");
+        if (!named.insert(*pane).second) return fail(error, "pane " + std::to_string(*pane) + " has values more than once");
         PaneValues values;
         const Json::Value* title = item.find("title");
         if (!title || !title->isString()) return fail(error, "the values of a pane have no 'title'");
         if (title->toString().size() > MaxPaneTitle) return fail(error, "a pane's title is longer than " + std::to_string(MaxPaneTitle) + " bytes");
         values.title = title->toString();
+        // Without "command" the sender does not know it, and the daemon
+        // keeps its own: an empty one clears it.
         const Json::Value* command = item.find("command");
-        if (!command || !command->isArray()) return fail(error, "the values of a pane have no 'command'");
-        for (const Json::Value& word : command->toArray()) {
-            if (!word.isString()) return fail(error, "a pane's command has an argument that is not text");
-            values.command.push_back(word.toString());
+        values.keepsCommand = !command;
+        if (command && !command->isArray()) return fail(error, "the 'command' of a pane is not a list");
+        // Refused before its words are copied.
+        if (command && command->toArray().size() > MaxPaneCommandArgs) {
+            return fail(error, "a pane's command has more than " + std::to_string(MaxPaneCommandArgs) + " arguments");
+        }
+        if (command) {
+            for (const Json::Value& word : command->toArray()) {
+                if (!word.isString()) return fail(error, "a pane's command has an argument that is not text");
+                values.command.push_back(word.toString());
+            }
         }
         if (!values.command.empty() && !validPaneCommand(values.command)) {
             return fail(error, "a pane's command has an empty program, more than " + std::to_string(MaxPaneCommandArgs)
                                    + " arguments, or one longer than " + std::to_string(MaxPaneCommandArg) + " bytes");
         }
-        if (!values.empty()) layout.values.emplace(*pane, std::move(values));
+        if (!values.empty() || values.keepsCommand) layout.values.emplace(*pane, std::move(values));
     }
     if (layout.valueBytes() > MaxLayoutValueBytes) {
         return fail(error, "the titles and commands of the panes are more than " + std::to_string(MaxLayoutValueBytes) + " bytes");
@@ -214,7 +227,11 @@ std::size_t currentAfter(std::size_t keptBefore, std::size_t tabs)
 bool Layout::remove(std::uint32_t pane)
 {
     if (pane == 0) return false;
-    values.erase(pane);
+    // Its values and its move go with it, and only when it goes.
+    const auto forget = [this, pane] {
+        values.erase(pane);
+        std::erase(moved, pane);
+    };
     for (std::size_t t = 0; t < tabs.size(); ++t) {
         std::vector<LayoutNode>& tree = tabs[t].tree;
         const auto leaf = std::find_if(tree.begin(), tree.end(), [pane](const LayoutNode& node) { return node.pane == pane; });
@@ -224,6 +241,7 @@ bool Layout::remove(std::uint32_t pane)
             tabs.erase(tabs.begin() + std::ptrdiff_t(t));
             if (t < current) --current;
             else if (t == current) current = currentAfter(t, tabs.size());
+            forget();
             return true;
         }
         // Its split, in one walk back: the subtrees that end before the pane
@@ -250,6 +268,7 @@ bool Layout::remove(std::uint32_t pane)
         }
         if (tabs[t].focused == pane) tabs[t].focused = firstPane(tree);
         if (tabs[t].zoomed == pane) tabs[t].zoomed = 0;
+        forget();
         return true;
     }
     return false;
@@ -322,12 +341,15 @@ void Layout::reconcile(const std::vector<std::uint32_t>& live)
         if (pane != 0 && present.insert(pane).second) addTab(pane);
     }
     if (current >= tabs.size()) current = tabs.empty() ? 0 : tabs.size() - 1;
-    // The values of the panes that went go with them.
+    // The values and the moves of the panes that went go with them.
     std::erase_if(values, [&alive](const auto& value) { return !alive.contains(value.first); });
+    std::erase_if(moved, [&alive](std::uint32_t pane) { return !alive.contains(pane); });
 }
 
 std::optional<std::size_t> Layout::tabOf(std::uint32_t pane) const
 {
+    // 0 marks a split, which every tab with a split has.
+    if (pane == 0) return std::nullopt;
     for (std::size_t t = 0; t < tabs.size(); ++t) {
         for (const LayoutNode& node : tabs[t].tree) {
             if (node.pane == pane) return t;
@@ -339,7 +361,7 @@ std::optional<std::size_t> Layout::tabOf(std::uint32_t pane) const
 bool Layout::split(std::uint32_t target, std::uint32_t added, Side side)
 {
     const auto t = tabOf(target);
-    if (!t) return false;
+    if (!t || added == 0) return false;
     std::vector<LayoutNode>& tree = tabs[*t].tree;
     const auto leaf = std::find_if(tree.begin(), tree.end(), [target](const LayoutNode& node) { return node.pane == target; });
     // The leaf becomes a split of the two: the added pane first on its left
@@ -352,15 +374,29 @@ bool Layout::split(std::uint32_t target, std::uint32_t added, Side side)
     tree.insert(at, {splitNode, first, second});
     tabs[*t].focused = added;
     tabs[*t].zoomed = 0;
+    // A window shows the pane's tab before it splits the pane.
+    current = *t;
     return true;
+}
+
+LayoutTab Layout::soleTab(std::uint32_t added)
+{
+    LayoutTab tab;
+    if (added == 0) return tab;
+    tab.tree.push_back(LayoutNode{added, false, 0.5});
+    tab.focused = added;
+    return tab;
 }
 
 void Layout::insertTab(std::uint32_t added, std::uint32_t beside)
 {
+    insertTab(soleTab(added), beside);
+}
+
+void Layout::insertTab(LayoutTab tab, std::uint32_t beside)
+{
+    if (tab.tree.empty()) return;
     const auto t = tabOf(beside);
-    LayoutTab tab;
-    tab.tree.push_back(LayoutNode{added, false, 0.5});
-    tab.focused = added;
     const std::size_t at = t ? *t + 1 : tabs.size();
     tabs.insert(tabs.begin() + std::ptrdiff_t(at), std::move(tab));
     current = at;
@@ -393,10 +429,10 @@ Json::Value toJson(const Layout& layout)
     }
     Json::Array values;
     for (const auto& [pane, value] : layout.values) {
-        if (value.empty()) continue;
-        values.push_back(Json::Object{{"id", std::int64_t(pane)},
-                                      {"title", value.title},
-                                      {"command", Json::Array(value.command.begin(), value.command.end())}});
+        if (value.empty() && !value.keepsCommand) continue;
+        Json::Object entry{{"id", std::int64_t(pane)}, {"title", value.title}};
+        if (!value.keepsCommand) entry.emplace_back("command", Json::Array(value.command.begin(), value.command.end()));
+        values.push_back(std::move(entry));
     }
     Json::Object out{{"tabs", std::move(tabs)}, {"current", std::int64_t(layout.current)}, {"values", std::move(values)}};
     if (!layout.moved.empty()) {

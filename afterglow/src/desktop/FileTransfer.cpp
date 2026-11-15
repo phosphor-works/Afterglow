@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "FileTransfer.h"
 #include "ProtoBytes.h"
+#include "ProcessUmask.h"
 #include <AfterglowProto/Delta.h>
 #include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Transfer.h>
@@ -220,22 +221,6 @@ namespace {
         QFile& m_file;
         bool m_end = false;
     };
-    // The umask, read without changing it. The process shares one umask, and
-    // code that sets one for a moment (a socket that binds with mode 0600)
-    // runs on the GUI thread: read it there, not on a worker.
-    mode_t currentUmask()
-    {
-        QFile status(QStringLiteral("/proc/self/status"));
-        if (status.open(QIODevice::ReadOnly))
-            for (const auto& line : status.readAll().split('\n'))
-                if (line.startsWith("Umask:")) {
-                    bool ok = false;
-                    const auto value = line.mid(6).trimmed().toUInt(&ok, 8);
-                    if (ok)
-                        return mode_t(value & 0777);
-                }
-        return mode_t(022);
-    }
     QString joined(const QString& directory, const QString& name)
     {
         return directory == QLatin1String("/") ? directory + name : directory + QLatin1Char('/') + name;
@@ -621,8 +606,11 @@ struct FileTransfer::Worker {
     QString password;
     qint64 deltaLimit = DefaultDeltaLimit;
     QElapsedTimer denied;
-    // Read on the GUI thread, which constructs the worker.
-    const mode_t creationMask = currentUmask();
+    // The umask, read without changing it (currentUmask). The process
+    // shares one umask, and code that sets one for a moment (a socket that
+    // binds with mode 0600) runs on the GUI thread: read it there, which
+    // constructs the worker, not on the worker.
+    const mode_t creationMask = currentUmask().value_or(mode_t(022));
     // Outgoing packets are paced. Keep at most a bounded amount queued.
     // Each keeps the fields that a cancel and a newer progress status look for.
     struct Packet {

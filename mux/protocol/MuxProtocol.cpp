@@ -90,10 +90,12 @@ public:
         if (value) out = value->toString();
         return value;
     }
-    bool strings(std::string_view key, std::vector<std::string>& out)
+    /// @p most: the most items, refused before they are copied.
+    bool strings(std::string_view key, std::vector<std::string>& out, std::size_t most = std::size_t(-1))
     {
         const Json::Value* value = get(key, Json::Value::Type::Array);
         if (!value) return false;
+        if (value->toArray().size() > most) return fail(key, "has more than " + std::to_string(most) + " items");
         for (const Json::Value& item : value->toArray()) {
             if (!item.isString()) return fail(key, "has an item that is not a string");
             out.push_back(item.toString());
@@ -299,7 +301,7 @@ bool readLaunch(Reader& outer, const Json::Value& object, Launch& launch)
         }
     }
     r.string("launchedProgram", launch.launchedProgram);
-    if (r.strings("command", launch.command) && !launch.command.empty() && !validPaneCommand(launch.command)) {
+    if (r.strings("command", launch.command, MaxPaneCommandArgs) && !launch.command.empty() && !validPaneCommand(launch.command)) {
         r.fail("command", "has an empty program, more than " + std::to_string(MaxPaneCommandArgs) + " arguments, or one longer than "
                               + std::to_string(MaxPaneCommandArg) + " bytes");
     }
@@ -453,16 +455,19 @@ std::optional<SessionSettings> sessionSettings(const Json::Value& value, std::st
     else r.fail("control", "is missing");
     // [name, value or null] pairs.
     if (const Json::Value* environment = r.get("environment", Json::Value::Type::Array)) {
-        if (environment->toArray().size() > MaxUpdatedVariables) r.fail("environment", "has more than " + std::to_string(MaxUpdatedVariables) + " items");
-        for (const Json::Value& entry : environment->toArray()) {
-            const bool pair = entry.isArray() && entry.toArray().size() == 2 && entry.toArray()[0].isString()
-                && (entry.toArray()[1].isString() || entry.toArray()[1].isNull());
-            if (!pair || !validVariableName(entry.toArray()[0].toString())) {
-                r.fail("environment", "has an item that is not a [name, value or null] pair");
-                break;
+        if (environment->toArray().size() > MaxUpdatedVariables) {
+            r.fail("environment", "has more than " + std::to_string(MaxUpdatedVariables) + " items");
+        } else {
+            for (const Json::Value& entry : environment->toArray()) {
+                const bool pair = entry.isArray() && entry.toArray().size() == 2 && entry.toArray()[0].isString()
+                    && (entry.toArray()[1].isString() || entry.toArray()[1].isNull());
+                if (!pair || !validVariableName(entry.toArray()[0].toString())) {
+                    r.fail("environment", "has an item that is not a [name, value or null] pair");
+                    break;
+                }
+                const Json::Value& value = entry.toArray()[1];
+                s.environment.emplace_back(entry.toArray()[0].toString(), value.isNull() ? std::nullopt : std::optional(value.toString()));
             }
-            const Json::Value& value = entry.toArray()[1];
-            s.environment.emplace_back(entry.toArray()[0].toString(), value.isNull() ? std::nullopt : std::optional(value.toString()));
         }
     }
     r.noOtherKeys();
@@ -512,7 +517,9 @@ std::optional<SessionInfo> sessionInfo(const Json::Value& value)
     if (!value.isObject()) return std::nullopt;
     SessionInfo info;
     Reader r(value, nullptr);
-    r.string("name", info.name);
+    // The name comes from a daemon, maybe of another host: a client prints
+    // it and passes it to --mux-attach.
+    if (r.string("name", info.name) && !validSessionName(info.name)) r.fail("name", std::string("is not ") + SessionNameRule);
     r.boolean("attached", info.attached);
     if (const auto n = r.integer("panes", 0, 1 << 20)) info.panes = int(*n);
     r.strings("jobs", info.jobs);

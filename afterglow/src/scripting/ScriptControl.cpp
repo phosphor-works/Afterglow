@@ -10,6 +10,49 @@
 
 namespace Afterglow {
 
+namespace {
+
+/// The result of an effect that gives a pane: @p pane, a paneMap, with its
+/// IDs on their own.
+QVariantMap paneResult(const QVariantMap& pane)
+{
+    return {{QStringLiteral("pane"), pane},
+            {QStringLiteral("pane_id"), pane.value(QStringLiteral("id"))},
+            {QStringLiteral("tab_id"), pane.value(QStringLiteral("tab_id"))},
+            {QStringLiteral("window_id"), pane.value(QStringLiteral("window"))}};
+}
+
+using Completion = std::function<void(ScriptHost::EffectResult)>;
+
+/// Runs @p start, which gives its completion a result once: before it
+/// returns, which is the result now, or later, which goes to @p complete
+/// and makes the result now a deferred one.
+ScriptHost::EffectResult deferrable(const std::function<void(Completion finish)>& start, Completion complete)
+{
+    struct Outcome
+    {
+        bool returned = false;
+        std::optional<ScriptHost::EffectResult> now;
+    };
+    const auto outcome = std::make_shared<Outcome>();
+    start([outcome, complete = std::move(complete)](ScriptHost::EffectResult result) {
+        if (outcome->returned) complete(std::move(result));
+        else outcome->now = std::move(result);
+    });
+    outcome->returned = true;
+    if (outcome->now) return *outcome->now;
+    return {{}, {}, {}, true};
+}
+
+/// The result of a split, tab or move, at once or later: operation_failed on
+/// an error, a code that ScriptHost gives only to a result that comes at once.
+ScriptHost::EffectResult laterResult(const QString& error, const QVariantMap& data)
+{
+    return {error, error.isEmpty() ? data : QVariantMap{}, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
+}
+
+} // namespace
+
 ScriptHost::Callbacks scriptCallbacks(Control& control)
 {
     ScriptHost::Callbacks c;
@@ -31,18 +74,6 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             if (kind == QLatin1String("open_directory")) return control.openDirectory(s("cwd"), s("layout"), data);
             if (kind == QLatin1String("save_project")) return control.saveProject(pane, s("name"), e.value(QStringLiteral("overwrite")).toBool(), data);
             if (kind == QLatin1String("list_projects")) { data.insert(QStringLiteral("names"), control.projectNames()); return {}; }
-            if (kind == QLatin1String("move_pane") || kind == QLatin1String("detach_tab")) {
-                QVariantMap moved;
-                const auto error = kind == QLatin1String("move_pane")
-                    ? control.movePane(pane, e.value(QStringLiteral("target")).toUInt(), s("placement"), moved)
-                    : control.detachTab(pane, moved);
-                // A pane of a mux session leaves in a new session, and a new
-                // pane of the window that shows it has another id.
-                if (error.isEmpty()) data = {{QStringLiteral("pane"), moved},
-                    {QStringLiteral("pane_id"), moved.value(QStringLiteral("id"), pane)}, {QStringLiteral("tab_id"), moved.value(QStringLiteral("tab_id"))},
-                    {QStringLiteral("window_id"), moved.value(QStringLiteral("window"))}};
-                return error;
-            }
             // ScriptHost marks the reads of a run whose client, a process
             // outside the window, can get the text.
             const bool clientRun = e.value(QStringLiteral("client_run")).toBool();
@@ -50,7 +81,7 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             if (kind == QLatin1String("read_text") || kind == QLatin1String("read_region")) {
                 const double limit = e.value(QStringLiteral("max_bytes")).toDouble();
                 if (!std::isfinite(limit) || limit < 1 || limit > ScriptHost::MaxReadTextBytes || limit != std::floor(limit))
-                    return QStringLiteral("max_bytes must be a whole number from 1 to %1").arg(ScriptHost::MaxReadTextBytes);
+                    return ScriptHost::maxBytesError();
                 return kind == QLatin1String("read_region") ? control.readRegion(pane, s("region"), int(limit), data, clientRun)
                     : control.readTextBounded(pane, s("scope"), int(limit), data, clientRun);
             }
@@ -59,12 +90,6 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             }
             if (kind == QLatin1String("notify")) {
                 return control.notify(pane, s("title"), s("body"));
-            }
-            if (kind == QLatin1String("split")) {
-                return control.split(pane, s("direction"), command, e.value(QStringLiteral("options")).toMap(), created);
-            }
-            if (kind == QLatin1String("new_tab")) {
-                return control.newTab(pane, s("cwd"), command, e.value(QStringLiteral("options")).toMap(), created);
             }
             if (kind == QLatin1String("new_window")) {
                 return control.newWindow(s("cwd"), command, e.value(QStringLiteral("options")).toMap(), created);
@@ -112,12 +137,10 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             return QStringLiteral("unknown effect \"%1\"").arg(kind);
         }();
         if (error.isEmpty() && created) {
-            if (const auto p = control.paneInfo(created)) {
-                data = {{QStringLiteral("pane"), Control::paneMap(*p)}, {QStringLiteral("pane_id"), p->id},
-                        {QStringLiteral("tab_id"), p->tabId}, {QStringLiteral("window_id"), p->window}};
-            }
+            if (const auto p = control.paneInfo(created)) data = paneResult(Control::paneMap(*p));
         }
-        return {error, data, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
+        if (error.isEmpty()) return {error, data, {}};
+        return {error, data, QStringLiteral("operation_failed")};
     };
     c.applyOwned = [&control, apply = c.apply](const QString& owner, const QVariantMap& e,
                                                std::function<void(ScriptHost::EffectResult)> complete) -> ScriptHost::EffectResult {
@@ -126,9 +149,10 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         // A refusal for a pane that has gone is no_pane, as everywhere else.
         // Only the error on a live pane depends on the kind.
         auto code = [&control, pane](const QString& error, const QString& live) {
-            return error.isEmpty() ? QString() : control.paneInfo(pane) ? live : QStringLiteral("no_pane");
+            return error.isEmpty() ? QString() : control.hasPane(pane) ? live : QStringLiteral("no_pane");
         };
-        // A dialog or key mode is refused because another holds the window.
+        // A dialog, key mode or tab menu is refused because another item
+        // holds the window.
         auto refusal = [&code](const QString& error) { return code(error, QStringLiteral("busy")); };
         if (kind == QLatin1String("shaders") || kind == QLatin1String("shader_parameters")
             || kind == QLatin1String("shader_presets") || kind == QLatin1String("shader_preset")
@@ -155,29 +179,73 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             return {error, {}, error.isEmpty() ? QString() : refusalCode, error.isEmpty()};
         }
         if (kind == QLatin1String("open_project")) {
-            // A window opens before openProject returns. A session waits for
-            // the mux daemon off the GUI thread: the result comes then.
-            struct Outcome
-            {
-                bool returned = false;
-                std::optional<ScriptHost::EffectResult> now;
-            };
-            const auto outcome = std::make_shared<Outcome>();
-            control.openProject(e.value(QStringLiteral("name")).toString(), e.value(QStringLiteral("new_instance")).toBool(), {},
-                                [outcome, complete = std::move(complete)](const QString& error, const QVariantMap& data) {
-                                    ScriptHost::EffectResult result{error, data, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
-                                    if (outcome->returned) complete(std::move(result));
-                                    else outcome->now = std::move(result);
-                                });
-            outcome->returned = true;
-            if (outcome->now) return *outcome->now;
-            return {{}, {}, {}, true};
+            // openProject answers at once for a window, a refusal or a reuse.
+            // A session opens off the GUI thread, and an open that waits for
+            // another one answers later: the result comes then.
+            return deferrable(
+                [&](Completion finish) {
+                    control.openProject(e.value(QStringLiteral("name")).toString(), e.value(QStringLiteral("new_instance")).toBool(), {},
+                                        [finish](const QString& error, const QVariantMap& data) {
+                                            finish({error, data, error.isEmpty() ? QString() : QStringLiteral("operation_failed")});
+                                        });
+                },
+                std::move(complete));
+        }
+        if (kind == QLatin1String("split") || kind == QLatin1String("new_tab")) {
+            // In the window of a mux session, the daemon starts the program
+            // off the GUI thread, and the result comes then. Elsewhere it
+            // comes at once.
+            const QStringList command = e.value(QStringLiteral("command")).toStringList();
+            const QVariantMap options = e.value(QStringLiteral("options")).toMap();
+            return deferrable(
+                [&](Completion finish) {
+                    const Control::PaneMade made = [&control, finish](const QString& error, quint32 created) {
+                        QVariantMap data;
+                        if (error.isEmpty() && created) {
+                            if (const auto p = control.paneInfo(created)) data = paneResult(Control::paneMap(*p));
+                        }
+                        finish(laterResult(error, data));
+                    };
+                    if (kind == QLatin1String("split")) {
+                        control.split(pane, e.value(QStringLiteral("direction")).toString(), command, options, made);
+                    } else {
+                        control.newTab(pane, e.value(QStringLiteral("cwd")).toString(), command, options, made);
+                    }
+                },
+                std::move(complete));
+        }
+        if (kind == QLatin1String("move_pane") || kind == QLatin1String("detach_tab")) {
+            // ScriptHost checks the effect's pane, not the target: a target
+            // that has gone is no_pane too.
+            const quint32 target = e.value(QStringLiteral("target")).toUInt();
+            if (kind == QLatin1String("move_pane") && target != 0 && !control.hasPane(target)) {
+                return {QStringLiteral("no pane %1").arg(target), {}, QStringLiteral("no_pane")};
+            }
+            // A pane of a mux session that moves to a new window leaves in a
+            // new session, off the GUI thread, and the pane of the window
+            // that shows it has another id: the result comes then. Control
+            // fails when no window shows it.
+            return deferrable(
+                [&](Completion finish) {
+                    const Control::PaneMoved moved = [finish](const QString& error, const QVariantMap& result) {
+                        finish(laterResult(error, error.isEmpty() ? paneResult(result) : QVariantMap{}));
+                    };
+                    if (kind == QLatin1String("move_pane")) {
+                        control.movePane(pane, target, e.value(QStringLiteral("placement")).toString(), moved);
+                    } else {
+                        control.detachTab(pane, moved);
+                    }
+                },
+                std::move(complete));
         }
         if (kind == QLatin1String("overview")) {
             // The window knows which script's overview it shows.
+            // Another script's key mode holds the keyboard: busy, as for a
+            // dialog or a key mode.
             QVariantMap data;
-            const auto error = control.overview(owner, pane, e.value(QStringLiteral("operation")).toString(), data);
-            return {error, data, code(error, QStringLiteral("operation_failed"))};
+            QString held;
+            const auto error = control.overview(owner, pane, e.value(QStringLiteral("operation")).toString(), data, &held);
+            return {error, data, error.isEmpty() || held.isEmpty() ? code(error, QStringLiteral("operation_failed")) : held};
         }
         if (kind == QLatin1String("key_mode")) {
             const auto error = control.scriptKeyMode(owner, pane, e.value(QStringLiteral("label")).toString());

@@ -448,7 +448,7 @@ TEST(Terminal, KittyKeyboardStack)
 TEST(Terminal, SetOptionsAppliesLive)
 {
     Term t(10, 2);
-    t.feed("\x1b]11;#000000\x07\x1b[1 q"); // a blinking block
+    t.feed("\x1b[1 q"); // a blinking block
     TerminalOptions o;
     o.defaultBackground = Rgb{1, 2, 3};
     o.cursorShape = CursorShape::Bar;
@@ -528,6 +528,12 @@ TEST(Terminal, ShellIntegrationCommands)
     ASSERT_EQ(host.commandsFinished.size(), 2u);
     EXPECT_EQ(host.commandsFinished[1], -1);
     EXPECT_EQ(t.text(Terminal::TextScope::Screen), "$ make test\nok 1\nok 2\n$ sleep 9");
+    // A negative code is not reported: -1, as the region has none.
+    t.feed("\x1b]133;B\x07false\r\n\x1b]133;C\x07\x1b]133;D;-7\x07");
+    ASSERT_EQ(host.commandsFinished.size(), 3u);
+    EXPECT_EQ(host.commandsFinished[2], -1);
+    ASSERT_FALSE(t.semanticRegions().empty());
+    EXPECT_FALSE(t.semanticRegions().back().exitCode.has_value());
 }
 
 TEST(Terminal, ClearScreenAndHistory)
@@ -833,20 +839,66 @@ TEST(Terminal, KeycapWidensAndSemanticEndIncludesRightmostCell)
     EXPECT_EQ(t.t.semanticRegionText(t.t.semanticRegions().back().id), "12345");
 }
 
-TEST(Terminal, ReloadKeepsTheProgramsCursorAndDropsItsColours)
+TEST(Terminal, ReloadKeepsTheProgramsCursorAndColours)
 {
     Term t(10, 2);
     t.feed("\x1b[6 q"); // a steady bar, as vim's insert mode asks
-    t.feed("\x1b]17;#102030\x07\x1b]4;1;#ff0000\x07\x1b[#P\x1b]4;1;#00ff00\x07");
+    // XTPUSHCOLORS saves the configured background and the program's red.
+    t.feed("\x1b]17;#102030\x07\x1b]4;1;#ff0000\x07\x1b[#P\x1b]4;1;#00ff00\x07\x1b]11;#010203\x07");
     TerminalOptions o = t.t.options();
-    o.maxScrollback = 5; // unrelated to the cursor and the colours
+    o.maxScrollback = 5; // unrelated to the cursor
+    o.basePalette[1] = {0x11, 0x11, 0x11};
+    o.basePalette[2] = {0x22, 0x22, 0x22};
+    o.defaultForeground = {0x33, 0x33, 0x33};
+    o.defaultBackground = {0x44, 0x44, 0x44};
     t.t.setOptions(o);
     EXPECT_EQ(t.t.cursorShape(), CursorShape::Bar);
     EXPECT_FALSE(t.t.modes().cursorBlink);
-    EXPECT_EQ(t.t.selectionBackground(), nullptr);
-    const Rgb base = t.t.paletteColor(1);
-    t.feed("\x1b[#Q"); // the stack went with the reload: nothing to pop
-    EXPECT_EQ(t.t.paletteColor(1), base);
+    // What the program set stays, and the rest takes the new configuration.
+    ASSERT_NE(t.t.selectionBackground(), nullptr);
+    EXPECT_EQ(*t.t.selectionBackground(), (Rgb{0x10, 0x20, 0x30}));
+    EXPECT_EQ(t.t.paletteColor(1), (Rgb{0x00, 0xff, 0x00}));
+    EXPECT_EQ(t.t.paletteColor(2), (Rgb{0x22, 0x22, 0x22}));
+    EXPECT_EQ(t.t.defaultForeground(), (Rgb{0x33, 0x33, 0x33}));
+    EXPECT_EQ(t.t.defaultBackground(), (Rgb{0x01, 0x02, 0x03}));
+    // The stack moved to the new configuration too: a pop brings back the
+    // program's red and no colour of the old configuration.
+    t.feed("\x1b[#Q");
+    EXPECT_EQ(t.t.paletteColor(1), (Rgb{0xff, 0x00, 0x00}));
+    EXPECT_EQ(t.t.paletteColor(2), (Rgb{0x22, 0x22, 0x22}));
+    EXPECT_EQ(t.t.defaultBackground(), (Rgb{0x44, 0x44, 0x44}));
+    ASSERT_NE(t.t.selectionBackground(), nullptr);
+    EXPECT_EQ(*t.t.selectionBackground(), (Rgb{0x10, 0x20, 0x30}));
+    // A reset returns to the new configuration.
+    t.feed("\x1b]104;1\x07\x1b]11;#010203\x07\x1b]111\x07");
+    EXPECT_EQ(t.t.paletteColor(1), (Rgb{0x11, 0x11, 0x11}));
+    EXPECT_EQ(t.t.defaultBackground(), (Rgb{0x44, 0x44, 0x44}));
+    // The same options again change nothing that a program set.
+    t.feed("\x1b]4;3;#abcdef\x07");
+    t.t.setOptions(o);
+    EXPECT_EQ(t.t.paletteColor(3), (Rgb{0xab, 0xcd, 0xef}));
+}
+
+// A held pane whose shell exited at its prompt: nothing draws the prompt
+// again, so a resize holds no frame for it and a click moves no cursor.
+TEST(Terminal, AnExitLeavesThePrompt)
+{
+    Term t(20, 4);
+    t.feed("\x1b]133;A;click_events=1\x1b\\$ \x1b]133;B\x1b\\");
+    ASSERT_TRUE(t.t.atShellPrompt());
+    ASSERT_TRUE(t.t.promptTakesClicks());
+    const std::uint64_t before = t.t.generation();
+    t.t.programExited();
+    EXPECT_GT(t.t.generation(), before);
+    EXPECT_FALSE(t.t.atShellPrompt());
+    EXPECT_FALSE(t.t.promptTakesClicks());
+    t.t.resize(12, 4, 10, 20);
+    EXPECT_FALSE(t.t.promptRedrawPending());
+    // A width change at a live prompt waits for the shell.
+    Term live(20, 4);
+    live.feed("\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\");
+    live.t.resize(12, 4, 10, 20);
+    EXPECT_TRUE(live.t.promptRedrawPending());
 }
 
 TEST(Terminal, MulticellWalkBelowTheScrollRegionEnds)
@@ -1301,6 +1353,13 @@ TEST(Terminal, CapabilityRepliesNeverEchoControlBytes)
     t.host.written.clear();
     t.feed("\x1bP+q5365\x1b\\"); // Se: back to the configured cursor
     EXPECT_EQ(t.host.written, "\x1bP1+r5365=1B5B302071\x1b\\");
+    // A well-formed name longer than any capability is not echoed.
+    t.host.written.clear();
+    t.feed("\x1bP+q" + std::string(256, 'A') + "\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1bP0+r" + std::string(256, 'A') + "\x1b\\");
+    t.host.written.clear();
+    t.feed("\x1bP+q" + std::string(1 << 20, 'A') + "\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1bP0+r\x1b\\");
 }
 
 TEST(Terminal, ClipboardReadReplyEchoesOnlySelectionLetters)

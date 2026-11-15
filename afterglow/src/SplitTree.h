@@ -58,10 +58,11 @@ public:
     /// shape and ratios stay. Returns false with fewer than two panes.
     bool rotate(bool clockwise);
     QJsonObject snapshot(const std::function<QJsonObject(Pane*)>& pane) const;
-    /// Input must first pass ProjectStore::validate.
     /// A tree of the panes that @p factory gives for the leaves of a
     /// snapshot. A leaf for which it gives none goes: the other side of its
-    /// split takes the split's place, and a tree with no pane is empty.
+    /// split takes the split's place, and a tree with no pane is empty
+    /// (paneCount() 0). Ratios keep the bounds of split(). The input must
+    /// first pass ProjectStore::validate.
     static std::unique_ptr<SplitTree> restore(const QJsonObject&, const std::function<Pane*(const QJsonObject&)>&);
 
     /// A node of the tree in preorder: a split comes before its first side,
@@ -77,7 +78,8 @@ public:
     /// it goes, which AfterglowMux::MaxSessionPanes bounds for a session's.
     std::vector<PreorderNode> preorder() const;
     /// The tree that @p nodes give in preorder, else null: when they are no
-    /// single whole tree, or a split's ratio is not above 0 and below 1.
+    /// single whole tree, or a split's ratio is not above 0 and below 1. A
+    /// ratio keeps the bounds of split().
     static std::unique_ptr<SplitTree> fromPreorder(const std::vector<PreorderNode>& nodes);
 
     /// Lays the tree out in @p area with dividers @p dividerWidth wide.

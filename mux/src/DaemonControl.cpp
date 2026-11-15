@@ -15,6 +15,9 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <exception>
+#include <optional>
+#include <set>
 #include <string_view>
 
 namespace AfterglowMux {
@@ -27,6 +30,39 @@ using AfterglowProto::IpcServerConnection;
 namespace IpcErrorCode = AfterglowProto::IpcErrorCode;
 
 namespace {
+
+/// Takes back what the shell integration of the window put in the variables
+/// of @p launch (ShellIntegration::prepare): a command such as `bash` gets
+/// the options of the integration in its arguments, and a login shell that
+/// runs without them must not get ENV or ZDOTDIR alone. A saved
+/// AFTERGLOW_ORIGINAL_NAME_SET of 1 gives NAME its value back, and 0 removes
+/// it.
+void dropShellIntegration(Launch& launch)
+{
+    constexpr std::string_view Prefix = "AFTERGLOW_ORIGINAL_";
+    constexpr std::string_view SetSuffix = "_SET";
+    auto& environment = launch.environment;
+    const auto valueOf = [&environment](const std::string& name) -> const std::string* {
+        for (const auto& [key, value] : environment) {
+            if (key == name) return &value;
+        }
+        return nullptr;
+    };
+    std::vector<std::pair<std::string, std::optional<std::string>>> restored;
+    for (const auto& [key, value] : environment) {
+        if (!key.starts_with(Prefix) || !key.ends_with(SetSuffix) || key.size() <= Prefix.size() + SetSuffix.size()) continue;
+        std::string name = key.substr(Prefix.size(), key.size() - Prefix.size() - SetSuffix.size());
+        const std::string* original = value == "1" ? valueOf(std::string(Prefix) + name) : nullptr;
+        restored.emplace_back(std::move(name), original ? std::optional<std::string>(*original) : std::nullopt);
+    }
+    std::erase_if(environment, [](const auto& entry) {
+        return entry.first.starts_with(Prefix) || entry.first == "AFTERGLOW_BASH_INJECT";
+    });
+    for (auto& [name, original] : restored) {
+        std::erase_if(environment, [&name](const auto& entry) { return entry.first == name; });
+        if (original) environment.emplace_back(name, std::move(*original));
+    }
+}
 
 bool among(std::string_view fn, std::initializer_list<std::string_view> names)
 {
@@ -47,6 +83,15 @@ bool windowCall(std::string_view fn)
                       "scriptDiagnostics", "overlay", "overlayInput", "screenshot"});
 }
 
+/// The number of arguments of a call that the daemon takes only as a
+/// window's control target takes it, whose router refuses another count.
+std::optional<std::size_t> arity(std::string_view fn)
+{
+    if (fn == "listPanes" || fn == "focusedPane") return 0;
+    if (fn == "focus" || fn == "close" || fn == "detachTab") return 1;
+    return std::nullopt;
+}
+
 std::optional<std::uint32_t> paneArg(const Json::Value& value)
 {
     const auto id = value.toInteger();
@@ -64,14 +109,20 @@ std::optional<Side> sideOf(const Json::Value& value)
     return std::nullopt;
 }
 
+/// Whether a pane of @p size has room for another one on @p side, as half
+/// of it: two columns or one row at least, as the daemon makes a split.
+bool roomBeside(const PaneSize& size, Side side)
+{
+    return side == Side::Right || side == Side::Left ? size.cols >= 4 : size.rows >= 2;
+}
+
 /// What `afterglow ctl ls` says of @p pane, as a window's control target says
 /// it: the window is 0, and the ID of a tab is its place from 1.
 Json::Value paneMap(const Session& session, const MuxPane& pane, bool readText)
 {
     const Layout& layout = session.layout();
     const std::size_t tab = layout.tabOf(pane.id()).value_or(0);
-    const bool focused = layout.current < layout.tabs.size() && layout.tabs[layout.current].focused == pane.id();
-    const MuxPane::Facts facts = pane.facts().value_or(MuxPane::Facts{});
+    const MuxPane::Facts facts = pane.facts();
     return Json::Object{
         {"id", std::int64_t(pane.id())},
         {"window", 0},
@@ -83,14 +134,9 @@ Json::Value paneMap(const Session& session, const MuxPane& pane, bool readText)
         {"command", readText ? facts.command : std::string()},
         {"cols", facts.size.cols},
         {"rows", facts.size.rows},
-        {"focused", focused},
+        {"focused", session.focusedPane() == pane.id()},
         {"context", ""},
     };
-}
-
-std::string failed(const IpcRequest& request, const std::string& message)
-{
-    return ipcError(request.id, IpcErrorCode::CallFailed, message);
 }
 
 } // namespace
@@ -99,21 +145,24 @@ std::string Daemon::select(const IpcRequest& request, IpcServerConnection& conne
 {
     if (request.args.size() != 2) return ipcError(request.id, IpcErrorCode::InvalidArg, request.fn + " takes (protocol, " + (request.fn == Fn::SelectSession ? "name)" : "pane)"));
     if (auto error = versionError(request)) return *error;
-    std::string name;
+    const Session* session = nullptr;
     if (request.fn == Fn::SelectSession) {
         if (!request.args[1].isString()) return ipcError(request.id, IpcErrorCode::InvalidArg, "selectSession takes (protocol, name)");
-        name = request.args[1].toString();
-        if (find(name) == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+        const std::string& name = request.args[1].toString();
+        const auto it = find(name);
+        if (it == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+        session = it->get();
     } else {
         const auto id = paneArg(request.args[1]);
         if (!id) return ipcError(request.id, IpcErrorCode::InvalidArg, "selectPane takes (protocol, pane)");
-        for (const auto& session : m_sessions) {
-            if (session->pane(*id)) name = session->name();
-        }
-        if (name.empty()) return ipcError(request.id, Error::NoSuchPane, "no session has pane " + std::to_string(*id));
+        session = sessionOfPane(*id);
+        if (!session) return ipcError(request.id, Error::NoSuchPane, "no session has pane " + std::to_string(*id));
     }
-    m_selected[&connection] = name;
-    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}});
+    m_selected[&connection] = Selected{session->serial(), session->name()};
+    // The session's environment, over which `afterglow ctl` prepares the
+    // launch of a split or a new tab, as for the session's first pane.
+    return ipcReply(request.id.value_or(0),
+                    Json::Object{{"name", session->name()}, {"environment", environmentJson(session->options().environment)}});
 }
 
 std::string Daemon::control(const IpcRequest& request, IpcServerConnection& connection, pid_t caller)
@@ -129,16 +178,26 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
     if (selected == m_selected.end()) {
         return failed(request, "no session is selected: afterglow ctl --session NAME, or afterglow ctl in a session pane, selects one");
     }
-    const auto it = find(selected->second);
-    if (it == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "session '" + selected->second + "' ended");
+    // The session that the connection selected, not a later one of its name.
+    const auto it = std::find_if(m_sessions.begin(), m_sessions.end(),
+                                 [&selected](const auto& s) { return s->serial() == selected->second.serial; });
+    if (it == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "session '" + selected->second.name + "' ended");
     Session& session = **it;
     // As the control target of a window that Control.enabled turns off.
     if (!session.options().control.enabled) return ipcError(request.id, IpcErrorCode::NoSuchTarget, "no target 'control'");
     if (request.type == "subscribe") return subscribe(request, connection, session);
     if (request.type != "call") return ipcError(request.id, IpcErrorCode::MalformedRequest, "the control target answers calls, not '" + request.type + "'");
-    // As a window refuses one: first, also for a pane that does not exist.
-    if (fn == "screenshot" && !session.options().control.allowReadText) {
-        return ipcError(request.id, "denied", "screenshots are off (Control.allowReadText)");
+    if (const auto count = arity(fn); count && request.args.size() != *count) {
+        return ipcError(request.id, IpcErrorCode::InvalidArg,
+                        "argument count mismatch: 'control." + fn + "' expects " + std::to_string(*count) + ", got "
+                            + std::to_string(request.args.size()));
+    }
+    const bool readText = session.options().control.allowReadText;
+    // As a window refuses them: first, also for a pane that does not exist.
+    if (fn == "screenshot" && !readText) return ipcError(request.id, "denied", "screenshots are off (Control.allowReadText)");
+    if (fn == "getText" && !readText) return failed(request, "reading pane text is off (Control.allowReadText)");
+    if (fn == "split" && request.args.size() >= 2 && request.args[1].isString() && !sideOf(request.args[1])) {
+        return failed(request, "direction must be left, right, up or down");
     }
 
     Json::Array args = request.args;
@@ -147,14 +206,15 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         const auto id = args.empty() ? std::nullopt : paneArg(args[0]);
         if (!id) return ipcError(request.id, IpcErrorCode::InvalidArg, "a pane ID is a whole number from 0 to 4294967295");
         // 0: the pane that has the focus, as a window takes it.
-        const std::uint32_t chosen = *id != 0 ? *id : session.layout().tabs.at(session.layout().current).focused;
+        const std::uint32_t chosen = *id != 0 ? *id : session.focusedPane();
         pane = session.pane(chosen);
         if (!pane) return failed(request, "no pane " + std::to_string(chosen) + " in session '" + session.name() + "'");
         args[0] = std::int64_t(chosen);
     }
-    const bool readText = session.options().control.allowReadText;
-    Attachment* const window = shown(session.name());
-    const bool showing = window && window->showing();
+    // The window of the session, also one that the daemon still waits for,
+    // and the window that shows it now.
+    Attachment* const shownWindow = shown(session.name());
+    Attachment* const window = shownWindow && shownWindow->showing() ? shownWindow : nullptr;
 
     if (fn == "listPanes") {
         Json::Array panes;
@@ -163,32 +223,34 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         }
         return ipcReply(request.id.value_or(0), std::move(panes));
     }
-    if (fn == "focusedPane") {
-        return ipcReply(request.id.value_or(0), std::int64_t(session.layout().tabs.at(session.layout().current).focused));
-    }
+    if (fn == "focusedPane") return ipcReply(request.id.value_or(0), std::int64_t(session.focusedPane()));
     if (fn == "sendText") {
         if (args.size() != 2 || !args[1].isString()) return ipcError(request.id, IpcErrorCode::InvalidArg, "sendText takes (pane, text)");
-        switch (pane->input(args[1].toString())) {
-        case MuxPane::Input::Written: return ipcReply(request.id.value_or(0), nullptr);
-        case MuxPane::Input::Full: return failed(request, "the program of pane " + std::to_string(pane->id()) + " reads no more input now");
-        case MuxPane::Input::Gone: break;
-        }
-        return failed(request, "the program of pane " + std::to_string(pane->id()) + " exited");
+        // The window's input that waits for room in the PTY goes first: the
+        // text would pass it. The words of a window's refusal.
+        if (shownWindow && shownWindow->holdsInput(pane->id())) return failed(request, "program closed or input queue full");
+        if (pane->input(args[1].toString()) == MuxPane::Input::Written) return ipcReply(request.id.value_or(0), nullptr);
+        return failed(request, "program closed or input queue full");
     }
     if (fn == "getText") {
         if (args.size() != 2 || !args[1].isString()) return ipcError(request.id, IpcErrorCode::InvalidArg, "getText takes (pane, scope)");
-        if (!readText) return failed(request, "reading pane text is off (Control.allowReadText)");
         const std::string& scope = args[1].toString();
         // A selection is the window's.
-        if (scope == "selection") return showing ? forward(request, connection, session, args) : ipcReply(request.id.value_or(0), "");
+        if (scope == "selection") return window ? forward(request, connection, session, args) : ipcReply(request.id.value_or(0), "");
         std::optional<AfterglowVt::Terminal::TextScope> textScope;
         if (scope == "screen") textScope = AfterglowVt::Terminal::TextScope::Screen;
         else if (scope == "scrollback") textScope = AfterglowVt::Terminal::TextScope::All;
         else if (scope == "last-output") textScope = AfterglowVt::Terminal::TextScope::LastOutput;
         if (!textScope) return failed(request, "scope is screen, scrollback, selection or last-output");
-        const auto text = pane->text(*textScope);
+        auto text = pane->text(*textScope);
         if (!text) return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
-        return ipcReply(request.id.value_or(0), *text);
+        std::string reply = ipcReply(request.id.value_or(0), std::move(*text));
+        // A connection takes no more at once: it would close with no answer.
+        if (reply.size() > IpcServerConnection::MaxWaitingBytes) {
+            return failed(request,
+                          "the text of pane " + std::to_string(pane->id()) + " is larger than one answer can hold: read a smaller scope");
+        }
+        return reply;
     }
     if (fn == "split" || fn == "newTab") {
         const bool split = fn == "split";
@@ -196,19 +258,30 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             return ipcError(request.id, IpcErrorCode::InvalidArg, split ? "split takes (pane, direction, command[, launch])"
                                                                         : "newTab takes (pane, directory, command[, launch])");
         }
-        const auto side = split ? sideOf(args[1]) : std::optional<Side>(Side::Right);
-        if (!side) return failed(request, "direction is left, right, up or down");
-        // The window reads the channels of at most that many panes, and the
-        // daemon takes no layout with more.
-        if (session.panes().size() >= MaxSessionPanes) {
-            return ipcError(request.id, Error::TooManyPanes,
-                            "session '" + session.name() + "' has " + std::to_string(MaxSessionPanes) + " panes, the most that a session can have");
+        const Side side = split ? *sideOf(args[1]) : Side::Right;
+        if (session.panes().size() >= MaxSessionPanes) return tooManyPanes(request, session);
+        // The window places the pane: a call that it has no room for waits in no queue.
+        if (window) {
+            if (std::string full = windowFull(request, *window); !full.empty()) return full;
         }
         // The program that `afterglow ctl` prepared with its settings, as
         // `afterglow mux new` does. A client that prepares none gets the
-        // program of the session's first pane, its shell, but not its
-        // directory: the pane's own comes first, as in a window.
+        // shell of the session's first launch, whole: the shell integration
+        // put its options in the arguments and its variables in the
+        // environment, and one without the other breaks (bash reads ENV only
+        // with --posix, and the sh programs that it starts read ENV too).
+        // After a command, the user's login shell with the variables of that
+        // launch. Never the first launch's directory: the pane's own comes
+        // first, as in a window.
         Launch launch = session.firstLaunch();
+        if (!launch.command.empty() || !launch.launchedProgram.empty()) {
+            launch.argv.clear();
+            launch.launchedProgram.clear();
+            launch.command.clear();
+            // A command that is a shell (`afterglow mux new -- bash`) got
+            // the integration's variables with its options.
+            dropShellIntegration(launch);
+        }
         launch.workingDirectory.clear();
         if (args.size() == 4) {
             std::string error;
@@ -219,47 +292,62 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             return failed(request, "a command in a session runs with the launch that afterglow ctl --session prepares");
         }
         if (!split && !args[1].toString().empty()) launch.workingDirectory = args[1].toString();
-        const auto facts = pane->facts();
+        const MuxPane::Facts facts = pane->facts();
         // A new tab or split starts where its pane is, as in a window.
-        if (launch.workingDirectory.empty()) launch.workingDirectory = facts ? facts->directory : pane->directory();
+        if (launch.workingDirectory.empty()) launch.workingDirectory = facts.directory;
         if (launch.workingDirectory.empty()) launch.workingDirectory = session.firstLaunch().workingDirectory;
         // Half of the pane's room, or all of it in a tab: the window that
-        // shows the session measures it again.
-        PaneSize size = facts ? facts->size : session.firstSize();
-        if (*side == Side::Right || *side == Side::Left) size.cols = std::max(2, size.cols / (split ? 2 : 1));
-        else size.rows = std::max(1, size.rows / 2);
+        // shows the session measures it again, and makes a tab of a split
+        // that has no room. Without a window, such a split is refused, as a
+        // window refuses one.
+        PaneSize size = facts.size;
+        if (split) {
+            if (!window && !roomBeside(size, side)) return failed(request, "not enough room for another pane");
+            if (side == Side::Right || side == Side::Left) size.cols = std::max(2, size.cols / 2);
+            else size.rows = std::max(1, size.rows / 2);
+        }
         // The pane's calls wait for the window that shows the session from
         // the start, as those of a pane that the window asked for.
         const std::uint32_t id = nextPaneId();
         std::string error;
-        if (!session.addPane(id, launch, size, paneSocket(), showing ? window->serial() : 0, showing ? window->eventQueue() : 0, waker(),
+        if (!session.addPane(id, launch, size, paneSocket(), window ? window->serial() : 0, window ? window->eventQueue() : 0, waker(),
                              &error)) {
             return ipcError(request.id, Error::SpawnFailed, "cannot start the program of a pane of session '" + session.name() + "': " + error);
         }
-        // addPane made it a tab of its own at the end, with its values.
-        auto values = session.layout().values.extract(id);
-        session.layout().remove(id);
-        static constexpr std::array<const char*, 4> SideNames{"right", "down", "left", "up"};
-        // The window keeps the command that the layout kept, for the
-        // layouts that it sends.
+        // addPane made it a tab of its own at the end, with its values. The
+        // window keeps the command that the layout kept, for the layouts that
+        // it sends.
+        Layout& layout = session.changeLayout();
         Json::Array command;
-        if (values) command = Json::Array(values.mapped().command.begin(), values.mapped().command.end());
-        if (split) {
-            session.layout().split(pane->id(), id, *side);
-            tellWindow(session, "placePane",
-                       Json::Array{std::int64_t(id), std::int64_t(pane->id()), SideNames[std::size_t(*side)], std::move(command)});
-        } else {
-            session.layout().insertTab(id, pane->id());
-            tellWindow(session, "placePane", Json::Array{std::int64_t(id), std::int64_t(pane->id()), "tab", std::move(command)});
+        if (const auto kept = layout.values.find(id); kept != layout.values.end()) {
+            command = Json::Array(kept->second.command.begin(), kept->second.command.end());
         }
-        if (values && session.layout().contains(id)) session.layout().values.insert(std::move(values));
+        // Its place has room, and its new tab is made, before it leaves that
+        // tab: out of memory, it stays there, and the layout holds each pane.
+        LayoutTab alone;
+        if (split) {
+            std::vector<LayoutNode>& tree = layout.tabs.at(layout.tabOf(pane->id()).value_or(0)).tree;
+            tree.reserve(tree.size() + 2);
+        } else {
+            layout.tabs.reserve(layout.tabs.size() + 1);
+            alone = Layout::soleTab(id);
+        }
+        // remove() would drop the pane's values: they move with it.
+        auto values = layout.values.extract(id);
+        layout.remove(id);
+        if (split) layout.split(pane->id(), id, side);
+        else layout.insertTab(std::move(alone), pane->id());
+        if (values) layout.values.insert(std::move(values));
+        static constexpr std::array<const char*, 4> SideNames{"right", "down", "left", "up"};
+        const char* const place = split ? SideNames[std::size_t(side)] : "tab";
+        tellWindow(session, "placePane", Json::Array{std::int64_t(id), std::int64_t(pane->id()), place, std::move(command)});
         return ipcReply(request.id.value_or(0), std::int64_t(id));
     }
     if (fn == "close") {
         const std::uint32_t id = pane->id();
-        if (session.closePane(id) && window) {
-            guarded(*window, [&] {
-                window->paneRemoved(id);
+        if (session.closePane(id) && shownWindow) {
+            guarded(*shownWindow, [&] {
+                shownWindow->paneRemoved(id);
                 return true;
             });
         }
@@ -268,14 +356,17 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         return ipcReply(request.id.value_or(0), nullptr);
     }
     if (fn == "focus") {
-        session.layout().focus(pane->id());
+        if (window) {
+            if (std::string full = windowFull(request, *window); !full.empty()) return full;
+        }
+        session.changeLayout().focus(pane->id());
         tellWindow(session, "focus", Json::Array{std::int64_t(pane->id())});
         return ipcReply(request.id.value_or(0), nullptr);
     }
     if (fn == "movePane" || fn == "detachTab") {
         // The window moves its panes, a new window included, and sends its
         // layout back.
-        if (showing) {
+        if (window) {
             if (fn == "movePane" && args.size() == 3) {
                 const auto target = paneArg(args[1]);
                 if (target && *target != 0 && !session.pane(*target)) {
@@ -285,16 +376,23 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             return forward(request, connection, session, args);
         }
         const std::uint32_t id = pane->id();
-        Layout& layout = session.layout();
-        const std::size_t tab = layout.tabOf(id).value_or(0);
-        if (fn == "detachTab") {
-            Layout moved;
-            moved.tabs.push_back(layout.tabs.at(tab));
+        const Layout& current = session.layout();
+        const std::size_t tab = current.tabOf(id).value_or(0);
+        // A pane that leaves for a new session keeps its title and command.
+        const auto movedOut = [&](Layout moved) -> std::string {
+            for (const std::uint32_t p : moved.panes()) {
+                if (const auto values = current.values.find(p); values != current.values.end()) moved.values.insert(*values);
+            }
             std::string error;
             const auto fresh = breakOutPanes(session, std::move(moved), &error);
             if (!fresh) return failed(request, error);
             const auto now = find(*fresh);
             return ipcReply(request.id.value_or(0), paneMap(**now, *(*now)->pane(id), readText));
+        };
+        if (fn == "detachTab") {
+            Layout moved;
+            moved.tabs.push_back(current.tabs.at(tab));
+            return movedOut(std::move(moved));
         }
         if (args.size() != 3 || !args[2].isString()) return ipcError(request.id, IpcErrorCode::InvalidArg, "movePane takes (pane, target, placement)");
         const auto target = paneArg(args[1]);
@@ -309,41 +407,60 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         if (placement == "new-window") {
             Layout moved;
             moved.addTab(id);
-            std::string error;
-            const auto fresh = breakOutPanes(session, std::move(moved), &error);
-            if (!fresh) return failed(request, error);
-            const auto now = find(*fresh);
-            return ipcReply(request.id.value_or(0), paneMap(**now, *(*now)->pane(id), readText));
+            return movedOut(std::move(moved));
         }
         if (placement == "new-tab") {
             std::uint32_t beside = 0;
-            for (const LayoutNode& node : layout.tabs.at(tab).tree) {
+            for (const LayoutNode& node : current.tabs.at(tab).tree) {
                 if (node.pane != 0 && node.pane != id && beside == 0) beside = node.pane;
             }
             if (beside == 0) return failed(request, "The pane is alone in its tab already");
+            // The room for the tab, and the tab, before the pane leaves its
+            // place, and its values with it.
+            Layout& layout = session.changeLayout();
+            layout.tabs.reserve(layout.tabs.size() + 1);
+            LayoutTab alone = Layout::soleTab(id);
+            auto values = layout.values.extract(id);
             layout.remove(id);
-            layout.insertTab(id, beside);
+            layout.insertTab(std::move(alone), beside);
+            if (values) layout.values.insert(std::move(values));
         } else {
             if (*target == id) return failed(request, "cannot move a pane beside itself");
-            if (!session.pane(*target)) return failed(request, "no pane " + std::to_string(*target) + " in session '" + session.name() + "'");
+            const MuxPane* beside = session.pane(*target);
+            if (!beside) return failed(request, "no pane " + std::to_string(*target) + " in session '" + session.name() + "'");
+            if (!roomBeside(beside->facts().size, *side)) return failed(request, "There is not enough room beside that pane");
+            Layout& layout = session.changeLayout();
+            std::vector<LayoutNode>& tree = layout.tabs.at(layout.tabOf(*target).value_or(0)).tree;
+            tree.reserve(tree.size() + 2);
+            auto values = layout.values.extract(id);
             layout.remove(id);
             layout.split(*target, id, *side);
+            if (values) layout.values.insert(std::move(values));
         }
         // With no window: `afterglow ctl watch` hears of it here.
         session.noteMoved(id);
         return ipcReply(request.id.value_or(0), paneMap(session, *pane, readText));
     }
     if (windowCall(fn)) {
-        if (!showing) return failed(request, "no window shows session '" + session.name() + "', and only a window can do " + fn);
+        if (!window) return failed(request, "no window shows session '" + session.name() + "', and only a window can do " + fn);
         return forward(request, connection, session, args);
     }
     return ipcError(request.id, IpcErrorCode::NoSuchFn, "no function '" + fn + "' on target 'control' of a session");
 }
 
+std::string Daemon::windowFull(const IpcRequest& request, const Attachment& window)
+{
+    if (window.relayRoom()) return {};
+    return failed(request, "the window of session '" + window.session() + "' has not taken the calls before this one yet: try again");
+}
+
 std::string Daemon::forward(const IpcRequest& request, IpcServerConnection& connection, Session& session, const Json::Array& args)
 {
-    Attachment* const window = shown(session.name());
-    if (!window || !window->showing()) return failed(request, "no window shows session '" + session.name() + "'");
+    Attachment* const window = showing(session.name());
+    if (!window) return failed(request, "no window shows session '" + session.name() + "'");
+    // A window that does not read its events gets no more calls: they would
+    // wait in the daemon without a bound.
+    if (std::string full = windowFull(request, *window); !full.empty()) return full;
     const std::uint64_t id = m_nextForward++;
     auto [client, added] = m_clients.try_emplace(&connection, m_nextClient);
     if (added) ++m_nextClient;
@@ -355,13 +472,15 @@ std::string Daemon::forward(const IpcRequest& request, IpcServerConnection& conn
     if (!sent) return failed(request, "the window of session '" + session.name() + "' failed");
     if (request.fn == "overlay" || request.fn == "overlayInput") m_overlaySessions[&connection].insert(session.name());
     m_forwards[id] = Forward{&connection, request.id, window->serial(), session.name()};
+    // A client that ends its side after its call still gets the answer.
+    connection.keepAtEnd(true);
     return {};
 }
 
 void Daemon::tellWindow(const Session& session, const std::string& fn, Json::Array args)
 {
-    Attachment* const window = shown(session.name());
-    if (!window || !window->showing()) return;
+    Attachment* const window = showing(session.name());
+    if (!window) return;
     // ID 0: the window answers nothing.
     guarded(*window, [&] {
         window->sendControl(Json::write(Json::Object{{"id", 0}, {"fn", fn}, {"args", std::move(args)}}));
@@ -369,31 +488,54 @@ void Daemon::tellWindow(const Session& session, const std::string& fn, Json::Arr
     });
 }
 
-void Daemon::answerForwarded()
+void Daemon::passReplies(Attachment& window)
 {
-    for (const auto& window : m_attachments) {
-        for (const std::string& text : window->takeControlReplies()) {
-            const auto reply = Json::parse(text);
+    for (const std::string& text : window.takeControlReplies()) {
+        // The client of an answer that fails (out of memory) loses its
+        // connection, which tells it, and the other answers still go. One
+        // that fails before its client is known waits for the end of the
+        // window, as an answer that never came.
+        IpcServerConnection* client = nullptr;
+        const bool passed = contained("an answer of a window", [&] {
+            auto reply = Json::parse(text);
             const auto id = reply ? (*reply)["id"].toInteger() : std::nullopt;
             const auto forward = id && *id > 0 ? m_forwards.find(std::uint64_t(*id)) : m_forwards.end();
-            // A client that went: its answer goes nowhere.
-            if (forward == m_forwards.end() && id && m_abandonedForwards.erase(std::uint64_t(*id))) continue;
+            if (forward == m_forwards.end() && id && *id > 0) {
+                // A client that went: the answer of the window that got its
+                // call goes nowhere.
+                const auto abandoned = m_abandonedForwards.find(std::uint64_t(*id));
+                if (abandoned != m_abandonedForwards.end() && abandoned->second == window.serial()) {
+                    m_abandonedForwards.erase(abandoned);
+                    return;
+                }
+            }
             // Only the window that got the call answers it.
-            if (forward == m_forwards.end() || forward->second.window != window->serial()) {
-                std::fprintf(stderr, "aglow-mux: the window of session %s answered a call that it did not get\n",
-                             window->session().c_str());
-                continue;
+            if (forward == m_forwards.end() || forward->second.window != window.serial()) {
+                std::fprintf(stderr, "aglow-mux: the window of session %s answered a call that it did not get\n", window.session().c_str());
+                return;
             }
             const Forward& f = forward->second;
+            IpcServerConnection* const connection = f.connection;
+            client = connection;
             if (const Json::Value* error = reply->find("error")) {
                 const std::string& code = (*error)["code"].toString();
-                f.connection->send(ipcError(f.request, code.empty() ? IpcErrorCode::CallFailed : code, (*error)["message"].toString()));
+                connection->send(ipcError(f.request, code.empty() ? IpcErrorCode::CallFailed : code, (*error)["message"].toString()));
             } else {
-                f.connection->send(ipcReply(f.request.value_or(0), (*reply)["result"]));
+                // Moved: an answer can be a screenshot of many megabytes.
+                Json::Value* result = reply->find("result");
+                connection->send(ipcReply(f.request.value_or(0), result ? std::move(*result) : Json::Value(nullptr)));
             }
             m_forwards.erase(forward);
-        }
+            holdForAnswers(*connection);
+        });
+        // The end of the pass forgets it, and its calls that wait.
+        if (!passed && client) client->close();
     }
+}
+
+void Daemon::answerForwarded()
+{
+    for (const auto& window : m_attachments) passReplies(*window);
     // A window that went answers nothing more.
     std::erase_if(m_abandonedForwards, [this](const auto& abandoned) {
         return std::none_of(m_attachments.begin(), m_attachments.end(),
@@ -407,34 +549,65 @@ void Daemon::answerForwarded()
             ++it;
             continue;
         }
-        it->second.connection->send(ipcError(it->second.request, IpcErrorCode::CallFailed,
-                                             "the window of session '" + it->second.session + "' closed before it answered"));
+        IpcServerConnection* const connection = it->second.connection;
+        // Out of memory, the client gets no error: its connection closes,
+        // which tells it, and the other calls still get theirs.
+        const bool told = contained("an answer of a window", [&] {
+            connection->send(ipcError(it->second.request, IpcErrorCode::CallFailed,
+                                      "the window of session '" + it->second.session + "' closed before it answered"));
+        });
+        if (!told) connection->close();
         it = m_forwards.erase(it);
+        holdForAnswers(*connection);
     }
+}
+
+void Daemon::holdForAnswers(IpcServerConnection& connection)
+{
+    const bool waits = std::any_of(m_forwards.begin(), m_forwards.end(), [&](const auto& f) { return f.second.connection == &connection; })
+        || std::any_of(m_subscriptions.begin(), m_subscriptions.end(), [&](const Subscription& s) { return s.connection == &connection; });
+    connection.keepAtEnd(waits);
 }
 
 void Daemon::forget(const IpcServerConnection* connection)
 {
-    // Its overlays end, and its inputs go.
-    if (const auto sessions = m_overlaySessions.find(connection); sessions != m_overlaySessions.end()) {
-        for (const std::string& name : sessions->second) {
-            if (const auto session = find(name); session != m_sessions.end()) {
-                tellWindow(**session, "clientGone", Json::Array{std::int64_t(m_clients.at(connection))});
-            }
-        }
-        m_overlaySessions.erase(sessions);
-    }
-    m_clients.erase(connection);
+    // First what names the connection, which needs no allocation: a failure
+    // below (out of memory) leaves no pointer to it behind.
     m_selected.erase(connection);
+    m_closing.erase(connection);
     forgetWatches(connection);
-    std::erase_if(m_forwards, [this, connection](const auto& forward) {
-        if (forward.second.connection != connection) return false;
-        m_abandonedForwards.emplace(forward.first, forward.second.window);
-        return true;
-    });
-    // The window's connection of a client that went closes too.
+    std::optional<std::uint64_t> client;
+    if (const auto it = m_clients.find(connection); it != m_clients.end()) {
+        client = it->second;
+        m_clients.erase(it);
+    }
+    std::set<std::string> overlays;
+    if (const auto it = m_overlaySessions.find(connection); it != m_overlaySessions.end()) {
+        overlays = std::move(it->second);
+        m_overlaySessions.erase(it);
+    }
+    for (auto it = m_forwards.begin(); it != m_forwards.end();) {
+        if (it->second.connection != connection) {
+            ++it;
+            continue;
+        }
+        // Its window can still answer it, and that answer goes nowhere. Out
+        // of memory, the answer counts as one of a call that it did not get.
+        try {
+            m_abandonedForwards.emplace(it->first, it->second.window);
+        } catch (const std::exception&) {
+        }
+        it = m_forwards.erase(it);
+    }
+    // The window's connection of a client that went closes too: as the
+    // connection is gone, it closes nothing here.
     if (const auto relay = m_relayOf.find(connection); relay != m_relayOf.end()) endRelay(relay->second, true);
     m_closing.erase(connection);
+    // Its overlays end, and its inputs go.
+    if (!client) return;
+    for (const std::string& name : overlays) {
+        if (const auto session = find(name); session != m_sessions.end()) tellWindow(**session, "clientGone", Json::Array{std::int64_t(*client)});
+    }
 }
 
 } // namespace AfterglowMux

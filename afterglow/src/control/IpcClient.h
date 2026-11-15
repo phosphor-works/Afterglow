@@ -45,6 +45,13 @@ public:
 
     bool connectTo(const QString& path, int timeoutMs, Error* error);
     bool connected() const { return m_socket.state() == QLocalSocket::ConnectedState; }
+    /// Drops the connection, if any: connectTo can reach another socket then.
+    void disconnect()
+    {
+        m_socket.abort();
+        m_frames.clear();
+        m_subscriptions.clear();
+    }
     /// The process at the other end (SO_PEERCRED), or 0 when it runs as
     /// another user.
     pid_t peerPid() const;

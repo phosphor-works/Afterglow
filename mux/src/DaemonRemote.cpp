@@ -13,6 +13,7 @@
 
 #include "Daemon.h"
 
+#include <AfterglowProto/Lock.h>
 #include <AfterglowProto/Random.h>
 #include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Text.h>
@@ -21,12 +22,11 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
-
-#include <AfterglowProto/Lock.h>
-
-#include <csignal>
+#include <string_view>
+#include <utility>
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -49,9 +49,15 @@ namespace IpcErrorCode = AfterglowProto::IpcErrorCode;
 
 namespace {
 
-std::string failed(const IpcRequest& request, const std::string& message)
+/// The start of the names of the sockets of ssh sessions of this host, with
+/// the ID of its state socket (muxStateSocketName()): a state directory on a
+/// home that hosts share holds those of other hosts too, whose locks this
+/// host may not see.
+std::string sshSocketPrefix()
 {
-    return ipcError(request.id, IpcErrorCode::CallFailed, message);
+    std::string id = AfterglowProto::muxStateSocketName();
+    if (id.ends_with(".sock")) id.resize(id.size() - 5);
+    return "remote-" + id + "-";
 }
 
 /// A path that can go into ssh's -R REMOTE:LOCAL: ssh splits it at ':' and
@@ -230,7 +236,7 @@ std::string Daemon::remoteCall(const IpcRequest& request, pid_t caller)
     } else {
         // Beside the daemon's own socket, in the directory that only the user enters.
         const std::string& own = paneSocket();
-        const std::string local = own.substr(0, own.rfind('/') + 1) + "remote-" + *token + ".sock";
+        const std::string local = own.substr(0, own.rfind('/') + 1) + sshSocketPrefix() + *token + ".sock";
         if (local.size() > AfterglowProto::MaxSocketPathBytes) return failed(request, "the socket path " + local + " is too long");
         if (!forwardable(local)) return failed(request, "the socket directory " + local + " has a ':', a '\\' or a control character");
         auto listener = std::make_unique<AfterglowProto::IpcListener>();
@@ -275,13 +281,15 @@ void Daemon::closeSshSocket(SshSession& session, const std::string& reason)
     if (!session.listener) return;
     session.listener->close();
     session.listener.reset();
-    // Its clients' runs end with their connections: they hear why.
-    std::vector<std::uint64_t> ended;
-    for (const auto& [id, relay] : m_relays) {
-        if (relay.sshToken == session.token) ended.push_back(id);
-    }
-    for (const std::uint64_t id : ended) {
-        m_relays.at(id).connection->send(ipcError(std::nullopt, IpcErrorCode::CallFailed, reason));
+    // Its clients' runs end with their connections: they hear why. Out of
+    // memory, a client does not, and its relay ends all the same.
+    for (auto it = m_relays.begin(); it != m_relays.end();) {
+        const std::uint64_t id = it->first;
+        const Relay& relay = it->second;
+        // endRelay() erases only this one.
+        ++it;
+        if (relay.sshToken != session.token) continue;
+        contained("a remote client", [&] { relay.connection->send(ipcError(std::nullopt, IpcErrorCode::CallFailed, reason)); });
         endRelay(id, true);
     }
 }
@@ -292,9 +300,11 @@ void Daemon::endSsh(const std::string& token, const std::string& reason)
     if (it == m_sshSessions.end()) return;
     std::unique_ptr<SshSession> session = std::move(it->second);
     m_sshSessions.erase(it);
-    if (session->listener) cancelForward(*session);
+    // Each part on its own: one that fails (out of memory) leaves the others
+    // to do. Its socket closes whatever fails.
+    if (session->listener) contained("the cancel of a remote forward", [&] { cancelForward(*session); });
     closeSshSocket(*session, reason);
-    refreshAnswer(session->pane);
+    contained("the answer of a pane to aglow run", [&] { refreshAnswer(session->pane); });
 }
 
 void Daemon::cancelForward(const SshSession& session)
@@ -312,32 +322,56 @@ void Daemon::cancelForward(const SshSession& session)
     for (std::string& word : words) argv.push_back(word.data());
     argv.push_back(nullptr);
     posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    for (int fd : {0, 1, 2}) posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd ? O_WRONLY : O_RDONLY, 0);
+    posix_spawnattr_t attributes;
+    if (const int code = ::posix_spawn_file_actions_init(&actions); code != 0) {
+        std::fprintf(stderr, "aglow-mux: cannot run ssh to cancel a remote forward: %s\n", std::strerror(code));
+        return;
+    }
+    if (const int code = ::posix_spawnattr_init(&attributes); code != 0) {
+        ::posix_spawn_file_actions_destroy(&actions);
+        std::fprintf(stderr, "aglow-mux: cannot run ssh to cancel a remote forward: %s\n", std::strerror(code));
+        return;
+    }
     // The daemon blocks the signals of its signalfd and ignores SIGPIPE:
     // ssh gets neither, so that a signal still ends one that hangs.
-    posix_spawnattr_t attributes;
-    posix_spawnattr_init(&attributes);
     sigset_t none;
     ::sigemptyset(&none);
     sigset_t defaults;
     ::sigemptyset(&defaults);
     for (const int signal : {SIGPIPE, SIGTERM, SIGINT, SIGHUP}) ::sigaddset(&defaults, signal);
-    posix_spawnattr_setsigmask(&attributes, &none);
-    posix_spawnattr_setsigdefault(&attributes, &defaults);
-    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+    bool prepared = true;
+    for (const int fd : {0, 1, 2}) {
+        prepared = prepared && ::posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd ? O_WRONLY : O_RDONLY, 0) == 0;
+    }
+    prepared = prepared && ::posix_spawnattr_setsigmask(&attributes, &none) == 0
+        && ::posix_spawnattr_setsigdefault(&attributes, &defaults) == 0
+        && ::posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF) == 0;
     pid_t pid = 0;
-    const int spawned = posix_spawnp(&pid, argv[0], &actions, &attributes, argv.data(), environ);
-    posix_spawnattr_destroy(&attributes);
-    posix_spawn_file_actions_destroy(&actions);
+    const int spawned = prepared ? ::posix_spawnp(&pid, argv[0], &actions, &attributes, argv.data(), environ) : EINVAL;
+    ::posix_spawnattr_destroy(&attributes);
+    ::posix_spawn_file_actions_destroy(&actions);
     if (spawned != 0) {
         std::fprintf(stderr, "aglow-mux: cannot run ssh to cancel a remote forward: %s\n", std::strerror(spawned));
         return;
     }
     // Reaped when its pidfd says that it ended (handleSshFds). Without one
-    // (no descriptor left), each pass of the loop looks: the daemon never
-    // waits for ssh.
-    m_cancels.push_back({pid, pidfdOpen(pid)});
+    // (no descriptor left), the loop looks every CancelLookMs: the daemon
+    // never waits for ssh. One that runs past CancelWaitMs is killed.
+    m_cancels.push_back({pid, pidfdOpen(pid), std::chrono::steady_clock::now() + std::chrono::milliseconds(CancelWaitMs), false});
+}
+
+int Daemon::sshDueMs() const
+{
+    const auto now = std::chrono::steady_clock::now();
+    int due = -1;
+    for (const Cancel& cancel : m_cancels) {
+        // A killed one ends at once: its pidfd says so.
+        const auto left = std::chrono::ceil<std::chrono::milliseconds>(cancel.deadline - now).count();
+        int ms = cancel.killed ? -1 : int(std::max<std::int64_t>(0, left));
+        if (cancel.pidfd < 0) ms = ms < 0 ? CancelLookMs : std::min(ms, CancelLookMs);
+        if (ms >= 0 && (due < 0 || ms < due)) due = ms;
+    }
+    return due;
 }
 
 void Daemon::addSshFds(std::vector<pollfd>& fds, std::vector<SshWatch>& watches) const
@@ -360,25 +394,33 @@ void Daemon::addSshFds(std::vector<pollfd>& fds, std::vector<SshWatch>& watches)
 
 void Daemon::handleSshFds(const pollfd* fds, const std::vector<SshWatch>& watches)
 {
+    const auto now = std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < watches.size(); ++i) {
         const SshWatch& watch = watches[i];
+        // A socket's clients: acceptSshClients() below takes them all.
+        if (watch.kind == SshWatch::Kind::Listener) continue;
         if (watch.kind == SshWatch::Kind::Cancel) {
-            if (fds[i].fd >= 0 && !(fds[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
-            int status = 0;
-            if (::waitpid(watch.pid, &status, WNOHANG) == 0) continue;
             const auto it = std::find_if(m_cancels.begin(), m_cancels.end(), [&](const Cancel& c) { return c.pid == watch.pid; });
-            if (it != m_cancels.end()) {
-                if (it->pidfd >= 0) ::close(it->pidfd);
-                m_cancels.erase(it);
+            if (it == m_cancels.end()) continue;
+            // Its pidfd shows its end. Without one, the loop looks
+            // (sshDueMs()).
+            int status = 0;
+            const bool looked = it->pidfd < 0 || (fds[i].revents & (POLLIN | POLLHUP | POLLERR));
+            if (!looked || ::waitpid(it->pid, &status, WNOHANG) == 0) {
+                // A master that does not answer keeps it: it ends now.
+                if (!it->killed && now >= it->deadline) {
+                    ::kill(it->pid, SIGKILL);
+                    it->killed = true;
+                }
+                continue;
             }
+            if (it->pidfd >= 0) ::close(it->pidfd);
+            m_cancels.erase(it);
             continue;
         }
         if (!(fds[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
-        const auto it = m_sshSessions.find(watch.token);
-        if (it == m_sshSessions.end()) continue;
-        if (watch.kind == SshWatch::Kind::Process) {
-            endSsh(watch.token, "the ssh session of the remote command ended");
-            continue;
+        if (m_sshSessions.contains(watch.token)) {
+            contained("the end of an ssh session", [&] { endSsh(watch.token, "the ssh session of the remote command ended"); });
         }
     }
     acceptSshClients();
@@ -401,10 +443,11 @@ void Daemon::removeStaleSshSockets(const std::string& directory)
 {
     DIR* dir = ::opendir(directory.c_str());
     if (!dir) return;
+    const std::string prefix = sshSocketPrefix();
     std::vector<std::string> sockets;
     while (const dirent* entry = ::readdir(dir)) {
         const std::string_view name = entry->d_name;
-        if (name.starts_with("remote-") && name.ends_with(".sock")) sockets.emplace_back(name);
+        if (name.starts_with(prefix) && name.ends_with(".sock")) sockets.emplace_back(name);
     }
     ::closedir(dir);
     for (const std::string& name : sockets) {
@@ -419,37 +462,65 @@ void Daemon::removeStaleSshSockets(const std::string& directory)
 
 void Daemon::acceptSshClient(SshSession& session, int fd)
 {
-    auto connection = std::make_unique<IpcServerConnection>(fd);
-    const auto clients = std::count_if(m_relays.begin(), m_relays.end(), [&](const auto& r) { return r.second.sshToken == session.token; });
-    if (std::size_t(clients) >= MaxSshConnections) {
-        // Before it reads a request, as the socket of a window's ssh session.
-        if (!std::exchange(session.full, true)) {
-            std::fprintf(stderr, "aglow-mux: the remote socket of the ssh session to %s has %zu connections, and refuses more\n",
-                         session.host.c_str(), MaxSshConnections);
-        }
-        connection->close();
-        return;
-    }
-    Session* const owner = sessionOfPane(session.pane);
-    Attachment* const window = owner ? shown(owner->name()) : nullptr;
-    if (!window || !window->showing()) {
-        // An error that answers no call: the client's first call reads it.
-        connection->send(ipcError(std::nullopt, IpcErrorCode::CallFailed,
-                                  owner ? "no window shows session '" + owner->name() + "', and only a window runs the commands of scripts"
-                                        : std::string("the pane of the ssh session has closed")));
-        m_closing.insert(connection.get());
-        m_connections.push_back(std::move(connection));
-        return;
-    }
-    const std::uint64_t id = m_nextRelay++;
-    const bool sent = guarded(*window, [&] {
-        window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Open, {}, session.pane, Attach::RelayKind::Remote, session.host});
-        return true;
+    // The daemon owns the connection first. When a part below fails (out of
+    // memory), the connection closes, and the end of the pass forgets it: a
+    // client of the remote host never stays as one whose calls the daemon
+    // answers itself.
+    std::unique_ptr<IpcServerConnection> owned;
+    const bool owns = contained("a remote client", [&] {
+        owned = std::make_unique<IpcServerConnection>(fd);
+        m_connections.push_back(std::move(owned));
     });
-    if (!sent) return;
-    m_relays[id] = Relay{connection.get(), window->serial(), owner->name(), {}, session.token};
-    m_relayOf[connection.get()] = id;
-    m_connections.push_back(std::move(connection));
+    if (!owns) {
+        // Unless a connection holds it.
+        if (!owned) ::close(fd);
+        return;
+    }
+    IpcServerConnection& connection = *m_connections.back();
+    std::uint64_t id = 0;
+    const bool served = contained("a remote client", [&] {
+        const auto clients = std::count_if(m_relays.begin(), m_relays.end(), [&](const auto& r) { return r.second.sshToken == session.token; });
+        if (std::size_t(clients) >= MaxSshConnections) {
+            // Before it reads a request, as the socket of a window's ssh session.
+            if (!std::exchange(session.full, true)) {
+                std::fprintf(stderr, "aglow-mux: the remote socket of the ssh session to %s has %zu connections, and refuses more\n",
+                             session.host.c_str(), MaxSshConnections);
+            }
+            connection.close();
+            return;
+        }
+        Session* const owner = sessionOfPane(session.pane);
+        Attachment* const window = owner ? showing(owner->name()) : nullptr;
+        if (!window) {
+            // An error that answers no call: the client's first call reads it.
+            connection.send(ipcError(std::nullopt, IpcErrorCode::CallFailed,
+                                     owner ? "no window shows session '" + owner->name() + "', and only a window runs the commands of scripts"
+                                           : std::string("the pane of the ssh session has closed")));
+            m_closing.insert(&connection);
+            return;
+        }
+        // The relay before the window hears of it, as for a client in a
+        // pane (startRelay()).
+        id = m_nextRelay++;
+        m_relays[id] = Relay{&connection, window->serial(), owner->name(), {}, session.token};
+        m_relayOf[&connection] = id;
+        const bool sent = guarded(*window, [&] {
+            window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Open, {}, session.pane, Attach::RelayKind::Remote, session.host});
+            return true;
+        });
+        if (!sent) {
+            m_relayOf.erase(&connection);
+            m_relays.erase(id);
+            // As the other refusals: the client's first call reads why.
+            connection.send(ipcError(std::nullopt, IpcErrorCode::CallFailed, "the window of session '" + owner->name() + "' failed"));
+            m_closing.insert(&connection);
+        }
+    });
+    if (!served) {
+        m_relayOf.erase(&connection);
+        if (id != 0) m_relays.erase(id);
+        connection.close();
+    }
 }
 
 void Daemon::pruneSsh()
@@ -457,13 +528,19 @@ void Daemon::pruneSsh()
     // The ssh sessions of panes that closed end: their runs and forwards go.
     // So do those of a session whose window turned remote commands off, as
     // in a window of its own.
-    std::vector<std::pair<std::string, std::string>> gone;
-    for (const auto& [token, session] : m_sshSessions) {
-        const Session* owner = sessionOfPane(session->pane);
-        if (!owner) gone.emplace_back(token, "the pane of the ssh session closed");
-        else if (!owner->options().control.remoteCommandsOff.empty()) gone.emplace_back(token, owner->options().control.remoteCommandsOff);
+    // One that fails to end (out of memory) costs no other.
+    for (auto it = m_sshSessions.begin(); it != m_sshSessions.end();) {
+        const SshSession& session = *it->second;
+        // endSsh() erases only this one.
+        ++it;
+        const Session* owner = sessionOfPane(session.pane);
+        if (owner && owner->options().control.remoteCommandsOff.empty()) continue;
+        contained("the end of an ssh session", [&] {
+            // A copy: the session and its token go while it ends.
+            const std::string token = session.token;
+            endSsh(token, owner ? owner->options().control.remoteCommandsOff : std::string("the pane of the ssh session closed"));
+        });
     }
-    for (const auto& [token, reason] : gone) endSsh(token, reason);
 }
 
 void Daemon::endAllSsh()
@@ -472,7 +549,9 @@ void Daemon::endAllSsh()
     for (const auto& [token, session] : m_sshSessions) all.push_back(token);
     for (const std::string& token : all) endSsh(token, "the mux daemon ended");
     // The cancels that run end without the daemon.
-    for (const Cancel& cancel : m_cancels) ::close(cancel.pidfd);
+    for (const Cancel& cancel : m_cancels) {
+        if (cancel.pidfd >= 0) ::close(cancel.pidfd);
+    }
     m_cancels.clear();
 }
 

@@ -83,10 +83,12 @@ private:
 /// Control.enabled and Scripts.enabled are on. It keeps each connection's
 /// stdin and runs, and cancels the runs of a connection that closes.
 ///
-/// For a socket that `afterglow ssh` forwards to a remote host
-/// (RemoteSockets), it is the "remote" target instead: the calls of a run,
-/// for the commands that declare remote, on the pane of the ssh session,
-/// with ev.source "remote". Terminal.sshRemoteCommands must be on too.
+/// For a socket of RemoteSockets, it serves a remote session: the calls of
+/// a run, for the commands that declare remote, on the pane of the
+/// session, with ev.source "remote". Terminal.sshRemoteCommands must be on
+/// too. The socket that `afterglow ssh` forwards to a remote host has the
+/// "remote" target. An endpoint for a client that a mux daemon passes a
+/// window has the "remote" target, or this one (RemoteSession::commandsTarget).
 ///
 /// The output of the runs from run() goes out while the client has
 /// acknowledged all but AckWindow bytes of it, for all the runs of its
@@ -140,10 +142,11 @@ public:
     /// the queue, its string and its callback.
     static constexpr qint64 OutputPartBytes = 128;
 
-    /// The ssh session of a forwarded socket.
+    /// The remote session of a socket of RemoteSockets: the ssh session of
+    /// a forwarded socket, or the host of an endpoint.
     struct RemoteSession
     {
-        quint32 pane = 0; ///< the pane that runs the session: every run acts on it
+        quint32 pane = 0; ///< the pane of the session, the window's ID: every run acts on it
         QString host; ///< ev.remote.host
         /// The socket answers on Target, not Remote::Target: for a client in
         /// a pane of a mux session of another host, which reaches the
@@ -164,7 +167,8 @@ public:
     bool enabled() const { return m_enabled; }
     /// Ends every run, whose reply fails with @p message: the socket closes.
     void cancelAll(const QString& message) { dropAll(message, true); }
-    /// The target's name: Target, or AfterglowProto::Remote::Target for a remote session.
+    /// The target's name: AfterglowProto::Remote::Target for a remote
+    /// session, unless it has commandsTarget, else Target.
     QLatin1String target() const;
     /// The budget of the socket's runs, for the sockets that share it.
     const std::shared_ptr<CommandBudget>& budget() const { return m_budget; }

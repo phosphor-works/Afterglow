@@ -299,3 +299,80 @@ TEST(SplitTree, PreorderGoesBothWays)
     EXPECT_FALSE(SplitTree::fromPreorder({{fake(1), false, 0.5}, {fake(2), false, 0.5}}));
     EXPECT_FALSE(SplitTree::fromPreorder({{nullptr, false, 1.0}, {fake(1), false, 0.5}, {fake(2), false, 0.5}}));
 }
+
+namespace {
+QJsonObject leaf(const QString& id)
+{
+    return {{QStringLiteral("pane"), QJsonObject{{QStringLiteral("id"), id}}}};
+}
+
+QJsonObject splitOf(const QString& direction, double ratio, const QJsonObject& first, const QJsonObject& second)
+{
+    return {{QStringLiteral("direction"), direction}, {QStringLiteral("ratio"), ratio}, {QStringLiteral("first"), first},
+            {QStringLiteral("second"), second}};
+}
+
+/// The pane of a leaf by its number, none for "gone".
+Pane* paneOf(const QJsonObject& pane)
+{
+    const QString id = pane.value(QStringLiteral("id")).toString();
+    return id == QLatin1String("gone") ? nullptr : fake(id.toULongLong());
+}
+
+QJsonObject idOf(Pane* pane)
+{
+    return {{QStringLiteral("id"), QString::number(reinterpret_cast<std::uintptr_t>(pane) / 16)}};
+}
+} // namespace
+
+// A leaf that the factory gives no pane goes: the other side of its split
+// takes the split's place, also inside another split.
+TEST(SplitTree, ARestoredLeafWithoutAPaneGoes)
+{
+    const QRect area(0, 0, 200, 100);
+    for (const QJsonObject& tree : {splitOf(QStringLiteral("right"), 0.3, leaf(QStringLiteral("gone")), leaf(QStringLiteral("2"))),
+                                    splitOf(QStringLiteral("right"), 0.3, leaf(QStringLiteral("2")), leaf(QStringLiteral("gone")))}) {
+        const auto t = SplitTree::restore(tree, paneOf);
+        ASSERT_NE(t, nullptr);
+        EXPECT_EQ(t->paneCount(), 1);
+        t->layout(area, 2);
+        EXPECT_EQ(t->rectOf(fake(2)), area);
+        EXPECT_EQ(t->snapshot(idOf), leaf(QStringLiteral("2")));
+    }
+    // 1 / (gone | 3): the split of 1 and 3 keeps its direction and ratio.
+    const auto nested = SplitTree::restore(
+        splitOf(QStringLiteral("down"), 0.25, leaf(QStringLiteral("1")),
+                splitOf(QStringLiteral("right"), 0.5, leaf(QStringLiteral("gone")), leaf(QStringLiteral("3")))),
+        paneOf);
+    ASSERT_NE(nested, nullptr);
+    EXPECT_EQ(nested->paneCount(), 2);
+    EXPECT_EQ(nested->snapshot(idOf), splitOf(QStringLiteral("down"), 0.25, leaf(QStringLiteral("1")), leaf(QStringLiteral("3"))));
+}
+
+// A tree whose leaves all have no pane is empty, and safe to use.
+TEST(SplitTree, AnEmptyRestoredTreeIsSafe)
+{
+    const auto t = SplitTree::restore(splitOf(QStringLiteral("right"), 0.5, leaf(QStringLiteral("gone")), leaf(QStringLiteral("gone"))),
+                                      [](const QJsonObject&) -> Pane* { return nullptr; });
+    ASSERT_NE(t, nullptr);
+    EXPECT_EQ(t->paneCount(), 0);
+    t->layout(QRect(0, 0, 100, 100), 2);
+    t->equalize();
+    EXPECT_FALSE(t->rotate(true));
+    EXPECT_TRUE(t->snapshot([](Pane*) { return QJsonObject{}; }).isEmpty());
+}
+
+// A ratio from a file or a session keeps the bounds of split(): each side
+// has a pixel.
+TEST(SplitTree, RestoredRatiosKeepTheBoundsOfSplit)
+{
+    const auto t = SplitTree::restore(splitOf(QStringLiteral("right"), 1e-9, leaf(QStringLiteral("1")), leaf(QStringLiteral("2"))), paneOf);
+    ASSERT_NE(t, nullptr);
+    EXPECT_DOUBLE_EQ(t->snapshot(idOf).value(QStringLiteral("ratio")).toDouble(), 0.001);
+    const auto fromNodes = SplitTree::fromPreorder({{nullptr, false, 1e-9}, {fake(1), false, 0.5}, {fake(2), false, 0.5}});
+    ASSERT_NE(fromNodes, nullptr);
+    ASSERT_EQ(fromNodes->preorder().size(), 3u);
+    EXPECT_DOUBLE_EQ(fromNodes->preorder()[0].ratio, 0.001);
+    fromNodes->layout(QRect(0, 0, 1000, 100), 0);
+    EXPECT_GE(fromNodes->rectOf(fake(1)).width(), 1);
+}

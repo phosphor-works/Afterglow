@@ -76,8 +76,10 @@ target_link_libraries(afterglow_vtfuzz PRIVATE afterglow_fuzz_proto PkgConfig::P
 add_executable(afterglow_protofuzz protofuzz.cpp)
 target_link_libraries(afterglow_protofuzz PRIVATE afterglow_fuzz_proto)
 
-# The codecs of the attach stream and the readers of the calls' values, as
-# afterglow_mux_protocol compiles them.
+# The codecs of the attach stream and the readers of the calls' values: four
+# sources of afterglow_mux_protocol (MuxHost, MuxLayout, MuxProtocol and
+# MuxStream), compiled again. MuxConnect and MuxStart, which reach and start
+# the daemon, are left out.
 add_executable(afterglow_muxfuzz muxfuzz.cpp "${PROJECT_SOURCE_DIR}/mux/protocol/MuxHost.cpp"
     "${PROJECT_SOURCE_DIR}/mux/protocol/MuxLayout.cpp" "${PROJECT_SOURCE_DIR}/mux/protocol/MuxProtocol.cpp"
     "${PROJECT_SOURCE_DIR}/mux/protocol/MuxStream.cpp")

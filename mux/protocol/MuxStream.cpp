@@ -69,6 +69,12 @@ std::optional<Event> decodeEvent(std::string_view frame)
         return std::nullopt;
     }
     if (event.type == EventType::Refreshed && (event.pane == 0 || event.channel != 0 || event.status != -1)) return std::nullopt;
+    // A program's end names its pane. The end of the link names nothing.
+    if (event.type == EventType::PaneClosed && (event.pane == 0 || event.channel != 0)) return std::nullopt;
+    if ((event.type == EventType::SessionEnded || event.type == EventType::TakenOver || event.type == EventType::Detached)
+        && (event.pane != 0 || event.channel != 0 || event.status != -1)) {
+        return std::nullopt;
+    }
     return event;
 }
 

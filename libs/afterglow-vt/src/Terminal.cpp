@@ -42,6 +42,11 @@ constexpr std::string_view Version = AFTERGLOW_VT_VERSION;
 /// may produce: each is a write to the program, and the list can be long.
 constexpr int MaxRepliesPerSequence = 256;
 
+/// Hex digits of an XTGETTCAP name that a reply echoes. Capability names are
+/// a few letters: a longer one is malformed, and a reply that echoes a
+/// name the size of the DCS payload would flood the program's input.
+constexpr std::size_t MaxCapabilityHex = 256;
+
 /// iTerm2 files (OSC 1337): the base64 of an image sent in parts, the size
 /// of a download, and the arguments of a MultipartFile.
 constexpr std::size_t MaxITerm2Base64 = 96u * 1024 * 1024;
@@ -56,10 +61,6 @@ constexpr std::size_t base64Length(std::size_t bytes)
 
 /// Longest command line a shell can report (OSC 133 cmdline, cmdline_url).
 constexpr std::size_t MaxCommandLine = 65536;
-
-/// Longest working directory a program can report, in bytes (a percent-encoded
-/// OSC 7 URI of a path up to PATH_MAX fits).
-constexpr std::size_t MaxWorkingDirectory = 8192;
 
 /// What OSC 9 and OSC 777 notification text may hold besides printable text.
 /// No line feed: the parser drops C0 bytes inside an OSC string, so the text
@@ -181,8 +182,6 @@ std::string formatColorReply(std::string_view prefix, Rgb c, bool bel)
     return out;
 }
 
-/// Prints with the G-sets out of the way (REP, OSC 66): GL acts as ASCII and
-/// a pending single shift waits, and both come back afterwards.
 /// The width rules of a grapheme cluster, for print(), which joins its
 /// characters one at a time, and for Terminal::clusterWidth(). VS16 after a
 /// text-default emoji makes a narrow cluster two cells wide (kitty's text
@@ -204,6 +203,8 @@ bool narrowsCluster(char32_t previous, char32_t cp)
     return cp == Unicode::VariationSelector15 && Unicode::props(previous).narrowsWithVs15;
 }
 
+/// Prints with the G-sets out of the way (OSC 66): GL acts as ASCII and a
+/// pending single shift waits, and both come back afterwards.
 class CharsetBypass
 {
 public:
@@ -416,15 +417,25 @@ void Terminal::setOptions(const TerminalOptions& options)
     // A reload changes settings unrelated to the cursor too (scrollback,
     // colours): the shape a program chose stays unless the configured one changed.
     const bool cursorChanged = options.cursorShape != m_options.cursorShape || options.cursorBlink != m_options.cursorBlink;
+    // The colours a program set stay, as they do when a window with another
+    // theme shows a session: only those that still have the configured
+    // value move to the new one, in the stack too, so that a pop brings back
+    // no colour of the old configuration. The cursor and selection colours
+    // that no program set read the options.
+    const auto before = buildPalette(m_options.basePalette);
+    const auto after = buildPalette(options.basePalette);
+    const auto rebase = [&](std::array<Rgb, 256>& palette, Rgb& fg, Rgb& bg) {
+        for (std::size_t i = 0; i < palette.size(); ++i) {
+            if (palette[i] == before[i]) palette[i] = after[i];
+        }
+        if (fg == m_options.defaultForeground) fg = options.defaultForeground;
+        if (bg == m_options.defaultBackground) bg = options.defaultBackground;
+    };
+    rebase(m_palette, m_defaultFg, m_defaultBg);
+    for (auto& slot : m_colorSlots) {
+        if (slot) rebase(slot->palette, slot->foreground, slot->background);
+    }
     m_options = options;
-    m_protocolColors = {};
-    m_palette = buildPalette(m_options.basePalette);
-    m_defaultFg = m_options.defaultForeground;
-    m_defaultBg = m_options.defaultBackground;
-    m_hasCursorColor = false;
-    m_hasSelectionFg = false;
-    m_hasSelectionBg = false;
-    clearColorStack(); // a pop would bring back the colours from before the reload
     if (cursorChanged) {
         m_cursorShape = m_options.cursorShape;
         m_modes.cursorBlink = m_options.cursorBlink;
@@ -437,29 +448,33 @@ void Terminal::setOptions(const TerminalOptions& options)
 
 void Terminal::setViewOptions(const TerminalOptions& options)
 {
+    // The quota is only kept: a replica's images are the ones its writer's
+    // quota keeps. An eviction of its own would drop an image that the
+    // writer counts as sent and places again, and the reader refuses that
+    // frame.
+    m_options.graphicsQuota = options.graphicsQuota;
     const bool scrollback = options.maxScrollback != m_options.maxScrollback;
-    const bool quota = options.graphicsQuota != m_options.graphicsQuota;
-    if (!scrollback && !quota && options.boldIsBright == m_options.boldIsBright && options.minimumContrast == m_options.minimumContrast
-        && options.wordBoundaries == m_options.wordBoundaries && options.bidi == m_options.bidi) {
+    if (!scrollback && options.boldIsBright == m_options.boldIsBright && options.minimumContrast == m_options.minimumContrast
+        && options.wordBoundaries == m_options.wordBoundaries && options.bidi == m_options.bidi
+        && options.ambiguousWide == m_options.ambiguousWide) {
         return;
     }
-    if (scrollback) m_primary->setMaxScrollback(options.maxScrollback);
-    if (quota) {
-        for (GraphicsStore& store : m_graphics) store.setQuota(options.graphicsQuota);
+    if (scrollback) {
+        m_primary->setMaxScrollback(options.maxScrollback);
     }
     m_options.boldIsBright = options.boldIsBright;
     m_options.minimumContrast = options.minimumContrast;
     m_options.wordBoundaries = options.wordBoundaries;
     m_options.bidi = options.bidi;
+    m_options.ambiguousWide = options.ambiguousWide;
     m_options.maxScrollback = options.maxScrollback;
-    m_options.graphicsQuota = options.graphicsQuota;
     touch();
 }
 
 void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
 {
-    cols = std::clamp(cols, 2, 4096);
-    rows = std::clamp(rows, 1, 1048576 / cols);
+    cols = std::clamp(cols, 2, Screen::MaxColumns);
+    rows = std::clamp(rows, 1, int(Screen::MaxCells) / cols);
     // Clipped to the size the screen really takes.
     std::erase_if(m_extraCursors, [&](const auto& c) { return c.first.first >= rows || c.first.second >= cols; });
     cellWidth = std::clamp(cellWidth, 0, 65535);
@@ -3756,7 +3771,18 @@ std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncate
 void Terminal::programExited()
 {
     m_host.terminalProtocol(0, {});
-    if (m_programStatus.endActivity()) {
+    // No shell draws its prompt again: a held pane reflows the prompt it
+    // left as any output, holds no frame for a redraw and moves no cursor
+    // for a click.
+    const bool prompt = m_semanticZone != SemanticZone::Output || m_promptRedrawPending || m_promptClickEvents;
+    m_semanticZone = SemanticZone::Output;
+    m_promptRedrawPending = false;
+    m_promptClickEvents = false;
+    const bool status = m_programStatus.endActivity();
+    if (prompt || status) {
+        touch();
+    }
+    if (status) {
         m_host.programStatusChanged();
     }
     endITerm2Multipart(); // nothing will send its FileEnd now
@@ -4409,6 +4435,7 @@ void Terminal::semanticPrompt(std::string_view args)
             const std::string_view rest = args.substr(2);
             const auto end = rest.find(';');
             std::from_chars(rest.data(), rest.data() + (end == std::string_view::npos ? rest.size() : end), code);
+            code = std::max(code, -1); // a negative code is no code: the host hears -1
         }
         // Also while a full-screen program still has the alternate screen
         // (it was killed): the marks are on the primary screen either way.
@@ -5053,7 +5080,7 @@ void Terminal::dcsDispatch(const Params& params, const Intermediates& inter, std
         for (int answered = 0; pos <= data.size() && answered < MaxRepliesPerSequence; ++answered) {
             const auto semi = data.find(';', pos);
             const std::string_view hexName = data.substr(pos, semi == std::string_view::npos ? semi : semi - pos);
-            const std::optional<std::string> name = fromHex(hexName);
+            const std::optional<std::string> name = hexName.size() <= MaxCapabilityHex ? fromHex(hexName) : std::nullopt;
             const auto* cap = name ? findCapability(*name) : nullptr;
             std::string r;
             if (cap) {

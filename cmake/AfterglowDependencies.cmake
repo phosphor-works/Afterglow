@@ -209,10 +209,16 @@ function(afterglow_fetch_dependency name)
         # The hash is part of the stamp, so a re-pinned archive under the same
         # version extracts again. The stamp is written after a whole
         # extraction, so one cut short is redone on the next configure, and so
-        # is a tree that was removed after it.
+        # is a tree that was removed after it. The stamps of the other hashes
+        # of this version go before an extraction: the tree is no longer
+        # theirs, and a return to an older pin must extract it again.
         set(dest "${AFTERGLOW_DEPS_BUILD_DIR}/${name}-${version}")
         set(stamp "${AFTERGLOW_DEPS_BUILD_DIR}/.${name}-${version}-${sha}")
         if(NOT EXISTS "${stamp}" OR NOT IS_DIRECTORY "${dest}")
+            file(GLOB stale LIST_DIRECTORIES false "${AFTERGLOW_DEPS_BUILD_DIR}/.${name}-${version}-*")
+            if(stale)
+                file(REMOVE ${stale})
+            endif()
             file(REMOVE_RECURSE "${dest}" "${dest}.tmp")
             file(ARCHIVE_EXTRACT INPUT "${archive}" DESTINATION "${dest}.tmp")
             file(GLOB top LIST_DIRECTORIES true "${dest}.tmp/*")
@@ -266,4 +272,31 @@ function(afterglow_third_party_target)
             AUTOUIC OFF)
         target_compile_options(${target} PRIVATE -w)
     endforeach()
+endfunction()
+
+# afterglow_install_bundled_notices(<directory>)
+#
+# Installs into <directory> the notices of the third-party code and data that
+# the binaries hold: zlib-ng and xxHash (libs/afterglow-proto), the image
+# codecs (AFTERGLOW_IMAGE_NOTICES of libs/afterglow-image), and the license of
+# the Unicode Character Database, from which libs/afterglow-vt has its
+# generated tables (UnicodeTables.inc). Its callers are the license
+# directory of the application in a whole build (afterglow/CMakeLists.txt),
+# and those of aglow (tools/aglow/CMakeLists.txt) and aglow-mux
+# (mux/CMakeLists.txt) in a build of the two alone. aglow holds no Unicode
+# table, and gets the same set: the programs of Afterglow carry one set of
+# notices. It reads the variables that libs/afterglow-proto and
+# libs/afterglow-image set, so it runs in a directory added after them.
+function(afterglow_install_bundled_notices directory)
+    # A notice that is missing is an error of the configure, not of the install.
+    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/LICENSES/Unicode-3.0.txt")
+        message(FATAL_ERROR "The notice LICENSES/Unicode-3.0.txt was not found, and it must install with the binaries.")
+    endif()
+    install(FILES "${AFTERGLOW_ZLIB_LICENSE}" DESTINATION "${directory}" RENAME LICENSE.zlib-ng)
+    install(FILES "${AFTERGLOW_XXHASH_LICENSE}" DESTINATION "${directory}" RENAME LICENSE.xxHash)
+    foreach(notice IN LISTS AFTERGLOW_IMAGE_NOTICES)
+        string(REGEX MATCH "^(.+)=([^=]+)$" matched "${notice}")
+        install(FILES "${CMAKE_MATCH_1}" DESTINATION "${directory}" RENAME "${CMAKE_MATCH_2}")
+    endforeach()
+    install(FILES "${PROJECT_SOURCE_DIR}/LICENSES/Unicode-3.0.txt" DESTINATION "${directory}" RENAME LICENSE.Unicode)
 endfunction()

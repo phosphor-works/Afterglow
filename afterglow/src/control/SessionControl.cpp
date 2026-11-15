@@ -8,10 +8,14 @@
 #include "config/Settings.h"
 #include "config/Keybinds.h"
 #include "control/Control.h"
+#include "control/ControlSocket.h"
 
-#include <QImage>
+#include <AfterglowProto/IpcServer.h>
+
 #include <QJsonObject>
-#include <QPointer>
+#include <QMetaMethod>
+
+#include <cmath>
 
 namespace Afterglow {
 
@@ -28,15 +32,34 @@ qint64 daemonId(quint32 id)
     return 0;
 }
 
-/// A pane map of Control, with the daemon's ID of the pane.
-QJsonObject daemonPaneMap(QVariantMap map)
+/// A pane map of Control as the daemon writes one: the daemon's ID of the
+/// pane, window 0, the ID of a tab its place from 1, and no context, which
+/// the daemon does not know. The command leaves only with read access.
+QJsonObject daemonPaneMap(const Control& control, QVariantMap map)
 {
+    map = control.clientPaneMap(std::move(map));
     map.insert(QStringLiteral("id"), daemonId(map.value(QStringLiteral("id")).toUInt()));
+    map.insert(QStringLiteral("window"), 0);
+    map.insert(QStringLiteral("tab_id"), map.value(QStringLiteral("tab")).toInt() + 1);
+    map.insert(QStringLiteral("context"), QString());
     return QJsonObject::fromVariantMap(map);
 }
 
+/// The pane of argument @p index of @p window, by its ID in the daemon.
+Pane* paneAt(const TerminalWindow& window, const QJsonArray& args, qsizetype index)
+{
+    const qint64 id = args.at(index).toInteger(-1);
+    return id > 0 && id <= 0xffffffffLL ? window.sessionPane(std::uint32_t(id)) : nullptr;
+}
+
+QString noPane(const QJsonArray& args, qsizetype index)
+{
+    return QStringLiteral("no pane %1 in this window").arg(args.at(index).toInteger(-1));
+}
+
 /// A session of another host reaches what its programs could reach over
-/// ssh, and no more: no program of this computer runs for it.
+/// ssh, and no more: no program of this computer runs for it, and it reads
+/// and writes nothing of this computer.
 const QString OtherHostRunsNothingHere = QStringLiteral("a session of another host runs no program on this computer");
 
 MuxClient::ControlAnswer failed(const QString& error, const QString& code = {})
@@ -44,24 +67,168 @@ MuxClient::ControlAnswer failed(const QString& error, const QString& code = {})
     return {QJsonValue(), error, code};
 }
 
+/// The calls that a session of another host does not get: they start a
+/// program here, open a window here, or read or write the projects, the
+/// scripts or the screen of this computer.
+bool localOnly(const QString& fn)
+{
+    static const QStringList Names{QStringLiteral("overlay"),      QStringLiteral("overlayInput"), QStringLiteral("screenshot"),
+                                   QStringLiteral("newWindow"),    QStringLiteral("openDirectory"), QStringLiteral("openProject"),
+                                   QStringLiteral("saveProject"),  QStringLiteral("projects"),     QStringLiteral("scriptDiagnostics")};
+    return Names.contains(fn);
+}
+
+/// Whether keybind action @p action reaches past the window of the session
+/// and its panes: it starts a program here, opens a window or a dialog of
+/// this computer, reads or writes its clipboard or its config, or ends what
+/// the user holds. No default: a new action must take a side here.
+bool reachesThisComputer(Action action)
+{
+    switch (action) {
+    case Action::NewWindow:
+    case Action::Copy:
+    case Action::Paste:
+    case Action::SelectAll:
+    case Action::ShowLastOutput:
+    case Action::OpenConfig:
+    case Action::ReloadConfig:
+    case Action::UsePackageShaders:
+    case Action::SaveProject:
+    case Action::SwitchProject:
+    case Action::EndScriptKeyMode:
+    case Action::CancelOverlay:
+        return true;
+    case Action::None:
+    case Action::SplitRight:
+    case Action::SplitDown:
+    case Action::SplitLeft:
+    case Action::SplitUp:
+    case Action::ClosePane:
+    case Action::NewTab:
+    case Action::CloseTab:
+    case Action::CloseWindow:
+    case Action::NextTab:
+    case Action::PreviousTab:
+    case Action::FocusLeft:
+    case Action::FocusRight:
+    case Action::FocusUp:
+    case Action::FocusDown:
+    case Action::EqualizeSplits:
+    case Action::FontBigger:
+    case Action::FontSmaller:
+    case Action::FontReset:
+    case Action::ScrollPageUp:
+    case Action::ScrollPageDown:
+    case Action::ScrollTop:
+    case Action::ScrollBottom:
+    case Action::JumpPromptUp:
+    case Action::JumpPromptDown:
+    case Action::Search:
+    case Action::CommandPalette:
+    case Action::UrlsOpen:
+    case Action::UrlsCopy:
+    case Action::UnicodeInput:
+    case Action::ClearScreen:
+    case Action::ResetTerminal:
+    case Action::RenamePane:
+    case Action::RenameTab:
+    case Action::NotifyOnFinish:
+    case Action::MoveTabLeft:
+    case Action::MoveTabRight:
+    case Action::GotoTab1:
+    case Action::GotoTab2:
+    case Action::GotoTab3:
+    case Action::GotoTab4:
+    case Action::GotoTab5:
+    case Action::GotoTab6:
+    case Action::GotoTab7:
+    case Action::GotoTab8:
+    case Action::GotoTab9:
+    case Action::ToggleFullscreen:
+    case Action::TogglePaneZoom:
+    case Action::ResizeLeft:
+    case Action::ResizeRight:
+    case Action::ResizeUp:
+    case Action::ResizeDown:
+    case Action::CopyMode:
+    case Action::ShowHints:
+    case Action::SwapLeft:
+    case Action::SwapRight:
+    case Action::SwapUp:
+    case Action::SwapDown:
+    case Action::RotatePanesClockwise:
+    case Action::RotatePanesCounterclockwise:
+    case Action::PaneOverview:
+    case Action::MovePaneToTab:
+    case Action::MovePaneToWindow:
+    case Action::DetachTab:
+        return false;
+    }
+    return true;
+}
+
+/// Whether @p action, by its config name, reaches past the window of the
+/// session (reachesThisComputer). A name that is no action is not refused
+/// here: Control says that it is none.
+bool reachesThisComputer(const QString& action)
+{
+    for (Action a : Keybinds::allActions()) {
+        if (Keybinds::token(a) == action) return reachesThisComputer(a);
+    }
+    return false;
+}
+
+/// Why the call @p fn with @p args does not fit the method of the same name
+/// of ControlApi, which the control target of a window has: a wrong number
+/// of arguments, or one that does not convert to its type, in the words of
+/// the router of the control socket. Nothing for a call that fits, and for
+/// the daemon's own calls, which ControlApi does not have. The daemon passes
+/// the arguments of a client as they came.
+std::optional<MuxClient::ControlAnswer> argumentError(const QString& fn, const QJsonArray& args)
+{
+    const QMetaObject& api = ControlApi::staticMetaObject;
+    const QByteArray name = fn.toLatin1();
+    std::optional<QMetaMethod> method;
+    for (int i = api.methodOffset(); i < api.methodCount(); ++i) {
+        const QMetaMethod candidate = api.method(i);
+        if (candidate.methodType() != QMetaMethod::Method || candidate.name() != name) continue;
+        method = candidate;
+        if (candidate.parameterCount() == args.size()) break;
+    }
+    if (!method) return std::nullopt;
+    const QString invalid = QLatin1String(AfterglowProto::IpcErrorCode::InvalidArg);
+    if (method->parameterCount() != args.size()) {
+        return failed(QStringLiteral("argument count mismatch: 'control.%1' expects %2, got %3").arg(fn).arg(method->parameterCount()).arg(args.size()),
+                      invalid);
+    }
+    for (qsizetype i = 0; i < args.size(); ++i) {
+        QVariant value = args.at(i).toVariant();
+        const QMetaType expected(method->parameterType(int(i)));
+        if (value.metaType() == expected) continue;
+        const char* given = value.typeName();
+        if (!value.convert(expected)) {
+            return failed(QStringLiteral("arg %1 for 'control.%2': cannot convert %3 to %4")
+                              .arg(i)
+                              .arg(fn, QLatin1String(given ? given : "<null-variant>"), QLatin1String(expected.name())),
+                          invalid);
+        }
+    }
+    return std::nullopt;
+}
+
 /// Who owns the overlays and the inputs of @p client of the session that
 /// @p window shows.
 QString sessionOwner(const TerminalWindow& window, qint64 client)
 {
-    return Control::sessionClientOwner(window.sessionHost(), window.sessionName(), client);
+    return Control::sessionClientOwner(window.id(), client);
 }
 
-/// The answer of every call but openProject, which can come later.
-MuxClient::ControlAnswer answerNow(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn,
-                                   const QJsonArray& args)
+/// The answer of the calls that answer at once: all but clientGone, overlay,
+/// overlayInput, screenshot, movePane, detachTab and openProject, which
+/// answerSessionCall takes.
+MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, const QString& fn, const QJsonArray& args)
 {
-    // The pane of argument @p index, by its ID in the daemon.
-    const auto paneAt = [&](qsizetype index) -> Pane* {
-        const qint64 id = args.at(index).toInteger(-1);
-        return id > 0 ? window.sessionPane(std::uint32_t(id)) : nullptr;
-    };
-    const auto noPane = [&](qsizetype index) { return failed(QStringLiteral("no pane %1 in this window").arg(args.at(index).toInteger(-1))); };
-
+    const bool otherHost = !window.sessionHost().isEmpty();
     if (fn == QLatin1String("placePane")) {
         // The daemon started it for `afterglow ctl split` or `new-tab`.
         const qint64 id = args.at(0).toInteger(-1);
@@ -74,15 +241,20 @@ MuxClient::ControlAnswer answerNow(Control& control, const Settings& settings, T
         else if (side == QLatin1String("up")) direction = SplitTree::Direction::Up;
         QStringList command;
         for (const QJsonValue& word : args.at(3).toArray()) command << word.toString();
-        window.placeSessionPane(std::uint32_t(id), paneAt(1), direction, command);
+        // A refusal goes back for a call that waits for an answer: the
+        // daemon's own placement (ID 0) gets none.
+        if (!window.placeSessionPane(std::uint32_t(id), paneAt(window, args, 1), direction, command) && !window.sessionPane(std::uint32_t(id))) {
+            return failed(window.closing() ? QStringLiteral("this window of session %1 is closing").arg(window.sessionName())
+                                           : QStringLiteral("the window cannot show pane %1").arg(id));
+        }
         return {};
     }
-    // The calls without a pane.
+    // The calls without a pane: a session of another host has none of them
+    // (localOnly).
     if (fn == QLatin1String("newWindow")) {
         quint32 created = 0;
         QStringList command;
         for (const QJsonValue& word : args.at(1).toArray()) command << word.toString();
-        if (!command.isEmpty() && !window.sessionHost().isEmpty()) return failed(OtherHostRunsNothingHere);
         if (const QString error = control.newWindow(args.at(0).toString(), command, created); !error.isEmpty()) return failed(error);
         // A window of its own, outside the session: the ID of its pane there.
         return {qint64(created), {}};
@@ -96,8 +268,8 @@ MuxClient::ControlAnswer answerNow(Control& control, const Settings& settings, T
     if (fn == QLatin1String("scriptDiagnostics")) return {QJsonArray::fromVariantList(control.scriptDiagnostics()), {}};
 
     // The calls on a pane: the daemon named one of its session.
-    Pane* pane = paneAt(0);
-    if (!pane) return noPane(0);
+    Pane* pane = paneAt(window, args, 0);
+    if (!pane) return failed(noPane(args, 0));
     const quint32 id = pane->id();
     if (fn == QLatin1String("focus")) {
         if (const QString error = control.focus(id); !error.isEmpty()) return failed(error);
@@ -114,10 +286,20 @@ MuxClient::ControlAnswer answerNow(Control& control, const Settings& settings, T
         return {};
     }
     if (fn == QLatin1String("signal")) {
-        if (const QString error = control.signal(id, int(args.at(1).toDouble(-1)), args.at(2).toDouble()); !error.isEmpty()) return failed(error);
+        // As the control target reads a channel: a whole number up to 1024,
+        // which Control names the valid channels for, else -1.
+        const double channel = args.at(1).toDouble(-1);
+        const int index = std::isfinite(channel) && std::floor(channel) == channel && channel >= 0 && channel <= 1024 ? int(channel) : -1;
+        if (const QString error = control.signal(id, index, args.at(2).toDouble()); !error.isEmpty()) return failed(error);
         return {};
     }
     if (fn == QLatin1String("notify")) {
+        // Another host can send them as often as it likes: they count as a
+        // program's notifications of the pane do (Notifications.rateLimit).
+        if (otherHost) {
+            control.notice(id, args.at(1).toString(), args.at(2).toString());
+            return {};
+        }
         if (const QString error = control.notify(id, args.at(1).toString(), args.at(2).toString()); !error.isEmpty()) return failed(error);
         return {};
     }
@@ -125,31 +307,13 @@ MuxClient::ControlAnswer answerNow(Control& control, const Settings& settings, T
         const QString action = args.at(1).toString();
         // A script command of another host's session goes through `aglow
         // run`, which runs only the commands that a script marks remote.
-        if (action.startsWith(Keybinds::ScriptPrefix) && !window.sessionHost().isEmpty()) {
+        if (otherHost && action.startsWith(Keybinds::ScriptPrefix)) {
             return failed(QStringLiteral("a session of another host runs only the script commands that a script marks remote, with aglow run"));
         }
-        // As the control target of the window: these read pane text.
-        if (!settings.control.allowReadText && Control::readsPaneText(action)) {
-            return failed(QStringLiteral("action %1 reads pane text, which is off (Control.allowReadText)").arg(action));
-        }
-        if (const QString error = control.runAction(id, action); !error.isEmpty()) return failed(error);
+        if (otherHost && reachesThisComputer(action)) return failed(OtherHostRunsNothingHere);
+        // As the control target of the window: some read pane text.
+        if (const QString error = control.runClientAction(id, action); !error.isEmpty()) return failed(error);
         return {};
-    }
-    if (fn == QLatin1String("movePane")) {
-        quint32 target = 0;
-        if (args.at(1).toInteger(-1) != 0) {
-            Pane* beside = paneAt(1);
-            if (!beside) return noPane(1);
-            target = beside->id();
-        }
-        QVariantMap result;
-        if (const QString error = control.movePane(id, target, args.at(2).toString(), result); !error.isEmpty()) return failed(error);
-        return {daemonPaneMap(result), {}};
-    }
-    if (fn == QLatin1String("detachTab")) {
-        QVariantMap result;
-        if (const QString error = control.detachTab(id, result); !error.isEmpty()) return failed(error);
-        return {daemonPaneMap(result), {}};
     }
     if (fn == QLatin1String("saveProject")) {
         QVariantMap result;
@@ -164,19 +328,24 @@ MuxClient::ControlAnswer answerNow(Control& control, const Settings& settings, T
 void answerSessionCall(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn, const QJsonArray& args,
                        qint64 client, MuxClient::ControlReply reply)
 {
-    const auto paneAt = [&](qsizetype index) -> Pane* {
-        const qint64 id = args.at(index).toInteger(-1);
-        return id > 0 ? window.sessionPane(std::uint32_t(id)) : nullptr;
-    };
     // The daemon tells it when a client that opened overlays or sent their
     // input went (ID 0: no answer).
     if (fn == QLatin1String("clientGone")) {
         control.endSessionClient(sessionOwner(window, args.at(0).toInteger(0)), QStringLiteral("The client went away"));
         return reply({});
     }
-    if ((fn == QLatin1String("overlay") || fn == QLatin1String("overlayInput")) && !window.sessionHost().isEmpty()) {
-        return reply(failed(OtherHostRunsNothingHere));
+    // As the control target of the window, which Control.enabled takes
+    // away: the daemon checks the settings that the window sent it last,
+    // and a daemon of another host checks nothing for this computer. The
+    // daemon's own changes still reach the window, which shows its layout
+    // (ID 0: no answer).
+    if (!settings.control.enabled && fn != QLatin1String("placePane") && fn != QLatin1String("focus")) {
+        return reply(failed(QStringLiteral("no target 'control'"), QLatin1String(AfterglowProto::IpcErrorCode::NoSuchTarget)));
     }
+    // As the router of the control socket refuses it: setTitle(pane) must
+    // not clear the title.
+    if (auto refused = argumentError(fn, args)) return reply(*refused);
+    if (!window.sessionHost().isEmpty() && localOnly(fn)) return reply(failed(OtherHostRunsNothingHere));
     if (fn == QLatin1String("overlayInput")) {
         const QString error = control.addSessionOverlayInput(sessionOwner(window, client), args.at(0).toString(), args.at(1).toString(),
                                                              args.at(2).toBool());
@@ -191,20 +360,15 @@ void answerSessionCall(Control& control, const Settings& settings, TerminalWindo
         if (!error.isEmpty()) return reply(failed(error));
         QStringList argv;
         for (const QJsonValue& word : args.at(1).toArray()) argv << word.toString();
-        auto spec = OverlaySpec::read(argv, options, &error);
-        if (spec) error = Control::localDirectory(spec->cwd);
+        const auto spec = Control::clientOverlaySpec(argv, options, error);
         if (!error.isEmpty()) return reply(failed(error));
-        Pane* pane = paneAt(0);
-        if (!pane) return reply(failed(QStringLiteral("no pane %1 in this window").arg(args.at(0).toInteger(-1)), QStringLiteral("no_pane")));
+        Pane* pane = paneAt(window, args, 0);
+        if (!pane) return reply(failed(noPane(args, 0), QStringLiteral("no_pane")));
         QString code;
-        error = control.overlay(
-            owner, {}, pane->id(), *spec,
-            [reply, &settings](const QString& error, const QString& code, const QVariantMap& result) {
-                if (!error.isEmpty()) return reply(failed(error, code));
-                // Gated as it goes out: read access can go while the program runs.
-                QVariantMap answer = result;
-                if (!settings.control.allowReadText) answer.remove(QStringLiteral("stdout"));
-                reply({QJsonObject::fromVariantMap(answer), {}});
+        error = control.clientOverlay(
+            owner, pane->id(), *spec,
+            [reply](const QString& error, const QString& code, const QVariantMap& result) {
+                reply(error.isEmpty() ? MuxClient::ControlAnswer{QJsonObject::fromVariantMap(result), {}} : failed(error, code));
             },
             code);
         if (!error.isEmpty()) return reply(failed(error, code));
@@ -214,46 +378,40 @@ void answerSessionCall(Control& control, const Settings& settings, TerminalWindo
     if (fn == QLatin1String("screenshot")) {
         const auto scope = Control::captureScopeFromName(args.at(1).toString());
         if (!scope) return reply(failed(QStringLiteral("scope is pane, tab or window")));
+        // The permission goes first, as for the control target: it holds
+        // for every pane.
         QString code;
         if (const QString refused = control.captureRefusal(code); !refused.isEmpty()) return reply(failed(refused, code));
-        Pane* pane = paneAt(0);
-        if (!pane) return reply(failed(QStringLiteral("no pane %1 in this window").arg(args.at(0).toInteger(-1)), QStringLiteral("no_pane")));
-        if (!control.startSessionScreenshot()) {
-            return reply(failed(QStringLiteral("%1 screenshots are in progress").arg(Control::MaxSessionScreenshots), QStringLiteral("busy")));
-        }
-        const QPointer<Control> guard(&control);
-        const QString error = control.capture(
+        Pane* pane = paneAt(window, args, 0);
+        if (!pane) return reply(failed(noPane(args, 0), QStringLiteral("no_pane")));
+        const QString error = control.screenshot(
             pane->id(), *scope,
-            [reply, guard, &settings](const QString& error, const QString& code, const QImage& image) {
-                if (!guard) return reply(failed(QStringLiteral("Afterglow quits"), QStringLiteral("failed")));
-                if (!error.isEmpty()) {
-                    guard->endSessionScreenshot();
-                    return reply(failed(error, code));
-                }
-                // A 4K PNG takes a moment to encode: not on the thread that
-                // draws the windows.
-                guard->encodePng(image, [reply, guard, &settings, size = image.size()](const QString& base64) {
-                    if (guard) guard->endSessionScreenshot();
-                    // Checked again as the picture goes out, as the control
-                    // target checks it.
-                    QString code;
-                    const QString refused = guard ? guard->captureRefusal(code) : QStringLiteral("Afterglow quits");
-                    if (!refused.isEmpty()) return reply(failed(refused, code.isEmpty() ? QStringLiteral("failed") : code));
-                    if (!settings.control.enabled) return reply(failed(QStringLiteral("Control.enabled is off"), QStringLiteral("cancelled")));
-                    if (base64.isEmpty()) return reply(failed(QStringLiteral("the PNG could not be written"), QStringLiteral("failed")));
-                    reply({QJsonObject{{QStringLiteral("png"), base64}, {QStringLiteral("width"), size.width()},
-                                       {QStringLiteral("height"), size.height()}},
-                           {}});
-                });
+            [reply](const QString& error, const QString& code, const QJsonObject& result) {
+                reply(error.isEmpty() ? MuxClient::ControlAnswer{result, {}} : failed(error, code));
             },
             code);
-        if (!error.isEmpty()) {
-            control.endSessionScreenshot();
-            return reply(failed(error, code));
-        }
+        if (!error.isEmpty()) return reply(failed(error, code));
         return;
     }
-    if (fn != QLatin1String("openProject")) return reply(answerNow(control, settings, window, fn, args));
+    if (fn == QLatin1String("movePane") || fn == QLatin1String("detachTab")) {
+        // A pane that leaves for a new session waits for the daemon off the
+        // GUI thread: the answer goes then.
+        Pane* pane = paneAt(window, args, 0);
+        if (!pane) return reply(failed(noPane(args, 0)));
+        quint32 target = 0;
+        if (fn == QLatin1String("movePane") && args.at(1).toInteger(-1) != 0) {
+            Pane* beside = paneAt(window, args, 1);
+            if (!beside) return reply(failed(noPane(args, 1)));
+            target = beside->id();
+        }
+        const Control::PaneMoved moved = [&control, reply](const QString& error, const QVariantMap& result) {
+            reply(error.isEmpty() ? MuxClient::ControlAnswer{daemonPaneMap(control, result), {}} : failed(error));
+        };
+        if (fn == QLatin1String("movePane")) control.movePane(pane->id(), target, args.at(2).toString(), moved);
+        else control.detachTab(pane->id(), moved);
+        return;
+    }
+    if (fn != QLatin1String("openProject")) return reply(answerNow(control, window, fn, args));
     control.openProject(args.at(0).toString(), args.at(1).toBool(), args.at(2).toString(),
                         [reply = std::move(reply)](const QString& error, const QVariantMap& result) {
                             reply(error.isEmpty() ? MuxClient::ControlAnswer{QJsonObject::fromVariantMap(result), {}} : failed(error));

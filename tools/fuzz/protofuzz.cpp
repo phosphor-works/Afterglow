@@ -24,6 +24,9 @@
 //  11 phosphor-ipc request lines of aglow-mux: each message parsed as a
 //     request, and the whole input as the stream of one connection, read by
 //     the server side (IpcServerConnection) in parts
+//  12 phosphor-ipc lines of a server, as a client reads them
+//     (IpcConnection on an adopted socket, as over `aglow-mux proxy`) in
+//     parts, and the release of the connection to the next protocol
 
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/Clipboard.h>
@@ -47,6 +50,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <sys/socket.h>
@@ -496,10 +500,15 @@ void ipcServer(std::string_view input)
             // What the daemon then reads is there, and the id is the one
             // that an error would name.
             if (request->type.empty() || (request->type == "call" && (request->target.empty() || request->fn.empty()))
-                || request->args.size() > 4096 || request->id != id) {
+                || (request->type == "subscribe" && (request->target.empty() || request->signal.empty()))
+                || (request->type == "unsubscribe" && request->subscriptionId == 0) || request->args.size() > 4096
+                || request->id != id) {
                 __builtin_trap();
             }
             checkLine(AfterglowProto::ipcReply(request->id.value_or(0), request->target));
+            // An event carries the request's arguments as its own, whatever
+            // they hold.
+            checkLine(AfterglowProto::ipcEvent(request->id.value_or(0), request->args));
         } else if (error.empty()) {
             __builtin_trap();
         }
@@ -544,6 +553,63 @@ void ipcServer(std::string_view input)
     ::close(pair[1]);
 }
 
+/// What a server sends, as a client reads it: each frame is a JSON object,
+/// and the reads end. A connection that holds bytes no frame took gives no
+/// descriptor to the next protocol, and one that holds none does.
+void ipcClient(std::string_view input)
+{
+    int pair[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, pair) != 0) {
+        return;
+    }
+    using Read = AfterglowProto::IpcConnection::Read;
+    AfterglowProto::IpcConnection client;
+    client.adopt(pair[0]);
+    constexpr std::size_t Part = 4096;
+    const std::size_t bound = 2 * (input.size() / Part + 1) + 8;
+    std::size_t sent = 0;
+    Read got = Read::Timeout;
+    for (std::size_t rounds = 0;; ++rounds) {
+        if (rounds > bound) {
+            __builtin_trap();
+        }
+        if (sent < input.size()) {
+            const ssize_t n = ::send(pair[1], input.data() + sent, std::min(Part, input.size() - sent), MSG_NOSIGNAL);
+            if (n > 0) {
+                sent += std::size_t(n);
+            }
+        }
+        // A timeout of 0: the reads take what the socket holds, and wait for nothing.
+        AfterglowProto::Json::Value frame;
+        while ((got = client.next(frame, 0)) == Read::Frame) {
+            if (!frame.isObject()) {
+                __builtin_trap();
+            }
+            AfterglowProto::IpcConnection::Error error;
+            (void)AfterglowProto::IpcConnection::answers(frame, 1);
+            (void)AfterglowProto::IpcConnection::connectionError(frame);
+            (void)AfterglowProto::IpcConnection::answer(std::move(frame), &error);
+        }
+        if (got == Read::Closed || sent == input.size()) {
+            break;
+        }
+    }
+    if (got != Read::Closed) {
+        // Every byte came: what follows the last line feed waits.
+        const std::size_t newline = input.rfind('\n');
+        const bool waits = input.size() > (newline == std::string_view::npos ? 0 : newline + 1);
+        AfterglowProto::IpcConnection::Error error;
+        const int fd = client.release(&error);
+        if (waits != (fd < 0)) {
+            __builtin_trap();
+        }
+        if (fd >= 0) {
+            ::close(fd);
+        }
+    }
+    ::close(pair[1]);
+}
+
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
@@ -552,7 +618,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     }
     const std::string_view input(reinterpret_cast<const char*>(data + 1), size - 1);
-    switch (data[0] % 12) {
+    switch (data[0] % 13) {
     case 0:
         transfer(input);
         break;
@@ -588,6 +654,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         break;
     case 11:
         ipcServer(input);
+        break;
+    case 12:
+        ipcClient(input);
         break;
     }
     return 0;

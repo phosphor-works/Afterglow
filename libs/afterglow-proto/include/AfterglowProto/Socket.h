@@ -42,8 +42,10 @@ std::string displayName(std::string_view waylandDisplay);
 std::string sharedSocketPath(const EnvironmentLookup& env = systemEnvironment);
 /// $XDG_RUNTIME_DIR/afterglow-<display>-<pid>.sock: the socket of an
 /// afterglow that runs on its own. That is one started with --config, -o or
-/// --class, and one that could not hand its window to the main afterglow
-/// (another executable, or no answer). Empty as sharedSocketPath() is.
+/// --class, and one that could not hand its window to the main afterglow:
+/// another executable, a main afterglow that it cannot verify, a command too
+/// long to hand over, or no answer (main.cpp). Empty as sharedSocketPath()
+/// is.
 std::string ownSocketPath(std::int64_t pid, const EnvironmentLookup& env = systemEnvironment);
 
 struct SocketLookup
@@ -51,15 +53,18 @@ struct SocketLookup
     std::string path; ///< empty when there is none: error says why
     /// The socket of $AFTERGLOW_SOCKET. A pane of a window sets it to the
     /// socket of the Afterglow that runs the pane. A pane of a mux session
-    /// sets it to the socket of the mux daemon, which answers the `control`
-    /// and `commands` targets with CALL_FAILED, also while a window shows the
-    /// session.
+    /// sets it to the socket of the mux daemon, which serves the `control`
+    /// target for the session, and passes a client of the `commands` target
+    /// to the window that shows the session.
     bool own = false;
     /// $AFTERGLOW_PANE_ID whenever $AFTERGLOW_SOCKET is set, else 0. The
     /// lookup cannot tell a socket of another Afterglow from the pane's own:
     /// a user who points AFTERGLOW_SOCKET at another one clears
     /// AFTERGLOW_PANE_ID, or gives the client a pane.
     std::int64_t pane = 0;
+    /// $AFTERGLOW_SESSION is set with $AFTERGLOW_SOCKET: a pane of a mux
+    /// session, whose socket is the mux daemon's.
+    bool session = false;
     std::string error;
 };
 
@@ -67,8 +72,25 @@ struct SocketLookup
 /// pane, else the shared socket of the display. A pane ID without a socket
 /// is an error: another afterglow on the display numbers its panes from 1
 /// too, and would act on a pane with the same number. So is a path over
-/// MaxSocketPathBytes.
+/// MaxSocketPathBytes, and an $AFTERGLOW_SOCKET that is not an absolute path:
+/// each client would find it from its own working directory.
 SocketLookup findSocket(const EnvironmentLookup& env = systemEnvironment);
+
+/// Who listens at the socket of @p lookup, for a message: "the Afterglow of
+/// this display", "the mux daemon of this session pane", "the Afterglow that
+/// runs this pane" or "the Afterglow at $AFTERGLOW_SOCKET".
+std::string socketOwner(const SocketLookup& lookup);
+/// Why nobody listens at the socket of @p lookup (ENOENT, ECONNREFUSED), by
+/// what is at its path now. In a pane of a mux session whose socket file is
+/// gone, it says so: logind removes the runtime directory when the last
+/// login of the user ends, and the daemon goes on at its other socket.
+std::string noServerReason(const SocketLookup& lookup);
+
+/// The name of the directories of the mux daemon's sockets (muxSockets()).
+inline constexpr std::string_view MuxDirectoryName = "aglow-mux";
+/// Whether @p path names a file in such a directory: a socket of the mux
+/// daemon, or of an ssh session in a session pane (remote-ID-TOKEN.sock).
+bool inMuxDirectory(std::string_view path);
 
 /// A socket of the mux daemon.
 struct MuxSocket

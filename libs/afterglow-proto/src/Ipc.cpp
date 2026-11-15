@@ -59,13 +59,22 @@ IpcConnection::~IpcConnection()
     close();
 }
 
-void IpcConnection::disconnect(std::string reason)
+void IpcConnection::disconnect(std::string reason, bool notJson)
 {
     if (m_fd >= 0) ::close(m_fd);
     m_fd = -1;
     m_buffer.clear();
     m_head = m_scanned = 0;
     m_closeReason = std::move(reason);
+    m_closedOnText = notJson;
+    m_sendClosed.clear();
+}
+
+void IpcConnection::setClosed(Error* error) const
+{
+    if (!error) return;
+    set(error, {}, m_closeReason);
+    error->notJson = m_closedOnText;
 }
 
 void IpcConnection::close()
@@ -94,17 +103,30 @@ bool IpcConnection::connect(const std::string& path, Error* error, int timeoutMs
     // full, up to SO_SNDTIMEO (0 there would wait without end). A signal
     // ends that wait with nothing connected, so connect() starts again: the
     // EALREADY of a TCP connect that goes on in the background never comes.
-    if (timeoutMs >= 0 && !sendTimeout(m_fd, std::max(timeoutMs, 1))) {
-        set(error, {}, std::strerror(errno));
-        close();
-        return false;
-    }
-    int result;
-    do {
+    // Each start waits only what is left, so a signal that repeats does not
+    // make the wait longer.
+    const std::int64_t deadline = deadlineOf(timeoutMs);
+    int result = -1;
+    int failure = 0;
+    for (bool first = true;; first = false) {
+        if (deadline >= 0) {
+            const int left = remaining(deadline);
+            if (left == 0 && !first) {
+                failure = EAGAIN;
+                break;
+            }
+            if (!sendTimeout(m_fd, std::max(left, 1))) {
+                set(error, {}, std::strerror(errno));
+                close();
+                return false;
+            }
+        }
         result = ::connect(m_fd, reinterpret_cast<const sockaddr*>(&address), sizeof address);
-    } while (result != 0 && errno == EINTR);
+        if (result == 0) break;
+        failure = errno;
+        if (failure != EINTR) break;
+    }
     if (result != 0) {
-        const int failure = errno;
         const bool late = failure == EAGAIN || failure == EWOULDBLOCK;
         set(error, {}, late ? "the server accepts no connection" : std::strerror(failure), late);
         if (error) error->noServer = failure == ENOENT || failure == ECONNREFUSED;
@@ -170,7 +192,12 @@ std::optional<std::int64_t> IpcConnection::sendCall(const std::string& target, c
                                                      std::int64_t deadline, int wakeFd, Error* error)
 {
     if (m_fd < 0) {
-        set(error, {}, m_closeReason.empty() ? "not connected" : m_closeReason);
+        setClosed(error);
+        if (error && error->message.empty()) error->message = "not connected";
+        return std::nullopt;
+    }
+    if (!m_sendClosed.empty()) {
+        set(error, {}, m_sendClosed);
         return std::nullopt;
     }
     std::string line = requestLine(m_nextId + 1, target, fn, std::move(args));
@@ -189,11 +216,15 @@ std::optional<std::int64_t> IpcConnection::sendCall(const std::string& target, c
             written += std::size_t(n);
             continue;
         }
-        if (n < 0 && errno == EINTR) continue; // a signal's handler wrote to wakeFd, which the poll sees
+        // A blocking send, without a wait to end, that a signal stopped
+        // before any byte went. A send with a wait does not block: the
+        // poll below sees the wake.
+        if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && waits) {
             pollfd fds[2] = {{m_fd, POLLOUT, 0}, {wakeFd, POLLIN, 0}};
             const int ready = ::poll(fds, wakeFd >= 0 ? 2 : 1, remaining(deadline));
             if (ready < 0 && errno == EINTR) continue;
+            const int failure = errno;
             const bool woken = ready > 0 && wakeFd >= 0 && fds[1].revents;
             if (ready > 0 && !woken) continue;
             // The server reads a line whole or not at all: part of one would
@@ -204,13 +235,21 @@ std::optional<std::int64_t> IpcConnection::sendCall(const std::string& target, c
             } else if (ready == 0) {
                 set(error, {}, "the server did not read the request in time", true);
             } else {
-                set(error, {}, std::strerror(errno));
+                set(error, {}, std::strerror(failure));
             }
             return std::nullopt;
         }
-        const std::string why = std::string("the connection closed: ") + (n < 0 ? std::strerror(errno) : "nothing was written");
+        const int failure = n < 0 ? errno : 0;
+        const std::string why = std::string("the connection closed: ") + (n < 0 ? std::strerror(failure) : "nothing was written");
         set(error, {}, why);
-        disconnect(why);
+        // The server closed its end. What it sent before is still in the
+        // socket, such as an error that says why: the reads go on to that
+        // end, and only the sends stop.
+        if (failure == EPIPE || failure == ECONNRESET) {
+            m_sendClosed = why;
+        } else {
+            disconnect(why);
+        }
         return std::nullopt;
     }
     return ++m_nextId;
@@ -221,38 +260,45 @@ std::optional<Json::Value> IpcConnection::call(const std::string& target, const 
 {
     const std::int64_t deadline = deadlineOf(timeoutMs);
     const auto id = sendCall(target, fn, std::move(args), deadline, wakeFd, error);
-    if (!id) return std::nullopt;
+    // A server that closed its end before the request went can have said
+    // why first: the reads go on to that end, for an error without an id.
+    // Without one, the error of the send stays.
+    if (!id && m_sendClosed.empty()) return std::nullopt;
     while (true) {
         Json::Value frame;
         std::size_t bytes = 0;
         const Read status = readFrame(frame, deadline, wakeFd, &bytes);
-        if (status == Read::Timeout) {
-            set(error, {}, "no reply in time", true);
-            return std::nullopt;
-        }
         if (status == Read::Woken) {
             interrupted(error);
             return std::nullopt;
         }
-        if (status != Read::Frame) {
-            set(error, {}, m_closeReason);
+        if (!id && status != Read::Frame) {
+            // The send failed as the server closed: a line that is not JSON,
+            // read before the close, says more than the send's error.
+            if (m_closedOnText) setClosed(error);
             return std::nullopt;
         }
-        // The router cannot name the request of a line it could not read;
-        // this client waits for one call at a time, so it is this one.
-        if (answers(frame, *id) || (frame["type"].toString() == "error" && !frame.find("id"))) {
-            return answer(std::move(frame), error);
+        if (status == Read::Timeout) {
+            set(error, {}, "no reply in time", true);
+            return std::nullopt;
         }
+        if (status != Read::Frame) {
+            setClosed(error);
+            return std::nullopt;
+        }
+        // This client waits for one call at a time, so an error that names
+        // no request answers this one.
+        if ((id && answers(frame, *id)) || connectionError(frame)) return answer(std::move(frame), error);
         m_waitingBytes += bytes;
         m_waiting.emplace_back(std::move(frame), bytes);
         if (m_waitingBytes > MaxWaitingBytes) {
             disconnect("the server sent over " + std::to_string(MaxWaitingBytes >> 20) + " MiB before the answer");
-            set(error, {}, m_closeReason);
+            setClosed(error);
             return std::nullopt;
         }
         // Frames that keep coming do not hold the call past its deadline.
         if (deadline >= 0 && now() >= deadline) {
-            set(error, {}, "no reply in time", true);
+            if (id) set(error, {}, "no reply in time", true);
             return std::nullopt;
         }
     }
@@ -274,6 +320,11 @@ bool IpcConnection::answers(const Json::Value& frame, std::int64_t id)
 {
     const std::string& type = frame["type"].toString();
     return (type == "reply" || type == "error") && frame["id"].toInteger() == id;
+}
+
+bool IpcConnection::connectionError(const Json::Value& frame)
+{
+    return frame["type"].toString() == "error" && !frame.find("id");
 }
 
 std::optional<Json::Value> IpcConnection::answer(const Json::Value& frame, Error* error)
@@ -305,7 +356,7 @@ IpcConnection::Read IpcConnection::readFrame(Json::Value& frame, std::int64_t de
             std::string reason;
             auto parsed = Json::parse(line, &reason);
             if (!parsed || !parsed->isObject()) {
-                disconnect("the server sent a line that is not a JSON object" + (reason.empty() ? "" : ": " + reason));
+                disconnect("the server sent a line that is not a JSON object" + (reason.empty() ? "" : ": " + reason), true);
                 return Read::Closed;
             }
             if (bytes) *bytes = line.size() + 1;

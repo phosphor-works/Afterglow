@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Apart from the rest of Aglow.cpp, which only the executable builds: the
-// application starts the aglow-mux next to it too (mux/MuxSessions.cpp).
+// Apart from Aglow.cpp, which only the executable builds: the application
+// starts the aglow-mux next to it too (afterglow/src/mux/MuxSessions.cpp).
 
-#include "shell/Aglow.h"
+#include "shell/Sibling.h"
 
 #include <filesystem>
 #include <string>

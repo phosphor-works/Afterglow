@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
-#include <cstring>
 #include <iterator>
 #include <utility>
 
@@ -36,7 +35,7 @@ static_assert(Attach::ControlReplyPartBytes + 32 <= PhosphorChannel::Stream::Opt
 
 Attachment::Attachment(std::string session)
     : m_session(std::move(session))
-    , m_deadline(std::chrono::steady_clock::now() + std::chrono::milliseconds(Attach::ConnectWaitMs))
+    , m_deadline(std::chrono::steady_clock::now() + std::chrono::milliseconds(Attach::StreamStartWaitMs))
     , m_serial(++lastSerial)
 {
 }
@@ -51,13 +50,26 @@ void Attachment::adopt(int fd, std::string unsent)
 {
     m_fd = fd;
     m_unsent = std::move(unsent);
-    ::fcntl(m_fd, F_SETFL, ::fcntl(m_fd, F_GETFL) | O_NONBLOCK);
+    // The daemon never blocks on a window: a connection that cannot be made
+    // non-blocking ends the attachment.
+    const int flags = ::fcntl(m_fd, F_GETFL);
+    if (flags < 0 || ::fcntl(m_fd, F_SETFL, flags | O_NONBLOCK) < 0) m_failed = true;
+}
+
+Attachment::Late Attachment::takeLate()
+{
+    Late late = std::exchange(m_late, {});
+    // The finish's count stays for the late input of the next passes.
+    m_late.layoutChanges = late.layoutChanges;
+    return late;
 }
 
 pollfd Attachment::pollFd() const
 {
-    // No connection yet: nothing to wait for but the deadline.
-    if (!m_stream) return {m_fd, short(m_fd < 0 ? 0 : POLLIN | (m_unsent.empty() ? 0 : POLLOUT)), 0};
+    // Before adopt(): nothing to wait for but the deadline. Then the end of
+    // the attach answer waits for room, and after it the window's first
+    // bytes start the stream; a hangup shows either way.
+    if (!m_stream) return {m_fd, short(m_fd < 0 ? 0 : (m_unsent.empty() ? POLLIN : POLLOUT)), 0};
     return {m_stream->readFd(), short(POLLIN | (m_stream->wantsWrite() ? POLLOUT : 0)), 0};
 }
 
@@ -71,9 +83,10 @@ int Attachment::timeoutMs() const
 void Attachment::startStream()
 {
     const int fd = std::exchange(m_fd, -1);
-    // The window writes its input and its layout on the control channel, its
-    // actions on the action channel (Attach::isAction), and the bytes of its
-    // command connections on the commands channel.
+    // The window writes its input, its layout, its settings and its answers
+    // to forwarded calls on the control channel, its actions on the action
+    // channel (Attach::isAction), and the bytes of its command connections on
+    // the commands channel.
     PhosphorChannel::Stream::Options options;
     options.maxChannels = 3;
     options.maxChannelId = Attach::CommandsChannel + 1;
@@ -89,9 +102,11 @@ void Attachment::startStream()
 void Attachment::sendEvent(const Attach::Event& event, std::shared_ptr<const std::string> call)
 {
     const bool part = event.type == Attach::EventType::Host && event.status == Attach::HostPart;
-    WaitingEvent waiting{Attach::encode(event), event.pane, std::move(call), !part};
-    m_waitingBytes += waiting.encoded.size() + Host::CallCost;
+    WaitingEvent waiting{Attach::encode(event), event.pane, std::move(call), !part, event.type == Attach::EventType::Control};
+    const std::size_t cost = waiting.encoded.size() + Host::CallCost;
+    // Counted once it waits: a push that runs out of memory counts nothing.
     m_waitingEvents.push_back(std::move(waiting));
+    m_waitingBytes += cost;
     flushEvents();
 }
 
@@ -156,9 +171,8 @@ void Attachment::returnHostCalls(Session* session, bool windowGone)
     const auto goesWhole = [&](const WaitingEvent& waiting) { return waiting.call == m_partSent && !windowGone; };
     for (const WaitingEvent& waiting : m_waitingEvents) {
         if (!returned(waiting) || goesWhole(waiting)) continue;
-        // The parts of one call wait in a row. One that got its answer here
-        // already gets no second.
-        if (waiting.call != m_answeredPart && (calls.empty() || calls.back().second != waiting.call)) calls.emplace_back(waiting.pane, waiting.call);
+        // The parts of one call wait in a row.
+        if (calls.empty() || calls.back().second != waiting.call) calls.emplace_back(waiting.pane, waiting.call);
     }
     std::size_t bytes = 0;
     const auto kept = std::remove_if(m_waitingEvents.begin(), m_waitingEvents.end(), [&](const WaitingEvent& waiting) {
@@ -170,7 +184,6 @@ void Attachment::returnHostCalls(Session* session, bool windowGone)
     m_waitingBytes -= bytes;
     if (!session) return;
     for (const auto& [id, call] : calls) {
-        if (call == m_partSent) m_answeredPart = call;
         if (MuxPane* pane = session->pane(id)) pane->answerWithoutWindow(*call);
     }
 }
@@ -222,7 +235,7 @@ void Attachment::panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane
         std::vector<std::pair<MuxPane*, std::shared_ptr<const std::string>>> calls;
         for (const WaitingEvent& waiting : m_waitingEvents) {
             MuxPane* pane = movedPane(waiting);
-            if (pane && waiting.call != m_answeredPart && (calls.empty() || calls.back().second != waiting.call)) {
+            if (pane && (calls.empty() || calls.back().second != waiting.call)) {
                 calls.emplace_back(pane, waiting.call);
             }
         }
@@ -265,23 +278,41 @@ void Attachment::panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane
 void Attachment::finish(Attach::EventType type, Session* session)
 {
     if (m_finish) return;
-    m_finish = type;
     // The last event does not wait behind calls that the window would answer
     // after it no longer shows the session.
     returnHostCalls(session);
-    // A window that did not connect yet keeps its connect deadline.
-    if (m_stream) m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FinishWaitMs);
+    // Nor behind the calls of `afterglow ctl` that did not go: the daemon
+    // fails them (Daemon::answerForwarded), and the window must not run them.
+    // In one pass that allocates nothing, as in returnHostCalls().
+    std::size_t bytes = 0;
+    const auto kept = std::remove_if(m_waitingEvents.begin(), m_waitingEvents.end(), [&bytes](const WaitingEvent& waiting) {
+        if (!waiting.control) return false;
+        bytes += waiting.encoded.size() + Host::CallCost;
+        return true;
+    });
+    m_waitingEvents.erase(kept, m_waitingEvents.end());
+    m_waitingBytes -= bytes;
     // The input that waits for a PTY is for a session that no longer shows
     // here: as for a window that left, it waits for nothing, and goes before
     // what the window sent after it (readLate()). The bytes of a pane that
-    // went to another session too, also when this session ended.
-    for (const auto& [id, waiting] : m_heldInput) {
-        for (const Attach::Input& message : waiting) {
+    // went to another session too, also when this session ended. Before the
+    // finish counts: after a failure here (out of memory), the finish that
+    // the daemon makes then delivers the rest. Each message leaves before it
+    // goes, so none goes twice.
+    while (!m_heldInput.empty()) {
+        std::deque<Attach::Input>& waiting = m_heldInput.begin()->second;
+        while (!waiting.empty()) {
+            const Attach::Input message = std::move(waiting.front());
+            waiting.pop_front();
+            m_heldBytes -= message.bytes.size() + PhosphorChannel::Stream::FrameCost;
             if (message.type != Attach::InputType::Resize) deliver(session, message, true);
         }
+        m_heldInput.erase(m_heldInput.begin());
     }
-    m_heldInput.clear();
-    m_heldBytes = 0;
+    if (session) m_late.layoutChanges = session->layoutChanges();
+    m_finish = type;
+    // A window that did not connect yet keeps its connect deadline.
+    if (m_stream) m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FinishWaitMs);
 }
 
 bool Attachment::finished() const
@@ -295,16 +326,26 @@ bool Attachment::deliver(Session* session, const Attach::Input& message, bool wi
     // A pane that went to another session since the window wrote: its
     // answers to the calls that the window took, and what the user typed,
     // still reach its program. Not its size, which its next window measures.
-    if (!pane && message.type == Attach::InputType::Bytes && m_findPane && m_movedPanes.contains(message.pane)) pane = m_findPane(message.pane);
+    if (!pane && message.type == Attach::InputType::Bytes && m_findPane && m_movedPanes.contains(message.pane)) {
+        pane = m_findPane(message.pane);
+        // Its program ended there: the window's bytes for it go nowhere.
+        if (!pane) m_movedPanes.erase(message.pane);
+    }
     // A pane that exited since the window wrote: its input is lost, as a
     // window's input to a program that ended.
     if (!pane) return true;
     switch (message.type) {
     case Attach::InputType::Bytes:
+        // A window that left waits for nothing: once a pane refused its
+        // bytes, the rest of them go nowhere, as a cut paste must not run
+        // with its Enter.
+        if (windowLeft && m_cutPanes.contains(message.pane)) return true;
         // The program reads slowly, or the pane's input that waits behind a
         // decode reached its bound: the input waits for room, and the pane's
         // input after it waits behind it.
-        return pane->input(message.bytes) != MuxPane::Input::Full || windowLeft;
+        if (pane->input(message.bytes) != MuxPane::Input::Full) return true;
+        if (windowLeft) m_cutPanes.insert(message.pane);
+        return windowLeft;
     case Attach::InputType::Resize:
         pane->resize(message.size);
         break;
@@ -325,8 +366,9 @@ bool Attachment::deliver(Session* session, const Attach::Input& message, bool wi
         break;
     case Attach::InputType::Refresh:
         // The window asks only for a pane whose frames it reads: one without
-        // a channel yet has nothing to read. Each gets its answer: the
-        // window counts them.
+        // a channel yet has nothing to read, and one whose program exited
+        // (reap() closed its link, which still sends its last frames) reads
+        // nothing new. Each other gets its answer: the window counts them.
         if (const auto link = m_panes.find(message.pane); link != m_panes.end() && !link->second.closed) ++link->second.refreshes;
         break;
     case Attach::InputType::Kill:

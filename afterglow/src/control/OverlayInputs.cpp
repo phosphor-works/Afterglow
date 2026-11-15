@@ -3,14 +3,13 @@
 
 #include "OverlayInputs.h"
 
-#include <QRegularExpression>
+#include "../scripting/ScriptNames.h"
 
 namespace Afterglow {
 
 bool OverlayInputs::validName(const QString& name)
 {
-    static const QRegularExpression rule(QStringLiteral("\\A[A-Za-z0-9_-]{1,64}\\z"));
-    return rule.match(name).hasMatch();
+    return Afterglow::validName(name);
 }
 
 QString OverlayInputs::add(const QString& owner, const QString& name, const QString& chunk, bool eof)
@@ -53,7 +52,7 @@ QString OverlayInputs::resolve(const QString& owner, QVariantMap& options)
     }
     drop(owner, name);
     if (options.contains(QStringLiteral("stdin"))) return QStringLiteral("the overlay options stdin and input exclude each other");
-    if (!complete) return QStringLiteral("no complete input %1 on this connection").arg(name);
+    if (!complete) return QStringLiteral("no complete input %1 for this client").arg(name);
     options.insert(QStringLiteral("stdin"), QString::fromUtf8(bytes));
     return {};
 }

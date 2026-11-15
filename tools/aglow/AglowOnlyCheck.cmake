@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-# cmake -DSOURCE=<dir> -DBINARY=<dir> -DGENERATOR=<name> -DPHOSPHOR_LIBS=<dir> [-DMAKE_PROGRAM=<path>]
+# cmake -DSOURCE=<dir> -DBINARY=<dir> -DGENERATOR=<name> -DPHOSPHOR_LIBS=<dir> -DMUX_LIBS=<library>,...
+#       [-DMAKE_PROGRAM=<path>]
 #       [-DBUILD_TYPE=<type>] [-DC_COMPILER=<path>] [-DCXX_COMPILER=<path>]
 #       [-DC_FLAGS=<flags>] [-DCXX_FLAGS=<flags>] [-DLINKER_FLAGS=<flags>]
 #       [-DCONFIGS=<TYPE>,...] [-DC_FLAGS_<TYPE>=<flags>] [-DCXX_FLAGS_<TYPE>=<flags>]
 #       [-DLINKER_FLAGS_<TYPE>=<flags>]
+#       [-DPREFIX_PATH=<dir>:...] [-DPKG_CONFIG=<path>] [-DTOOLCHAIN_FILE=<file>] [-DSYSROOT=<dir>]
 #       [-DCPM_CACHE=<dir>] [-DDEPS_ARCHIVES=<dir>] [-DCONFIG=<type>] [-DJOBS=<n>] -P AglowOnlyCheck.cmake
 #
 # Builds aglow and aglow-mux alone (AFTERGLOW_AGLOW_ONLY) from SOURCE in
@@ -19,11 +21,12 @@
 #     checkout;
 #   - with aglow-mux and the Phosphor checkout PHOSPHOR_LIBS, the
 #     configuration succeeds with find_package(Qt6) disabled, and CMake
-#     reports that variable as unused;
-#   - that build succeeds;
+#     reports that variable as unused, also with the tests (BUILD_TESTING),
+#     which are only configured;
+#   - the build without the tests succeeds;
 #   - the prefix holds bin/aglow and bin/aglow-mux, the private libraries of
-#     aglow-mux, the completions of aglow and the license notices of both,
-#     and nothing else;
+#     aglow-mux (MUX_LIBS), the completions of aglow and the license notices
+#     of both, and nothing else;
 #   - the installed aglow and aglow-mux run.
 #
 # The tools, the build type and the flags are those of the build that runs the
@@ -33,12 +36,16 @@
 # case, and the flags of each type come as they are, also empty, as that
 # build has them.
 # CPM_CACHE and DEPS_ARCHIVES are those of that build too, so that the pinned
-# archives come from where that build took them.
+# archives come from where that build took them, and so are the places where
+# it found PCRE2 and its other packages: PREFIX_PATH (its CMAKE_PREFIX_PATH,
+# with a colon between the directories), PKG_CONFIG, TOOLCHAIN_FILE and
+# SYSROOT. The link time optimization of afterglow-vt is off: GCC's
+# -flto=auto would run a job for each processor, beyond JOBS.
 
-foreach(required SOURCE BINARY GENERATOR PHOSPHOR_LIBS)
+foreach(required SOURCE BINARY GENERATOR PHOSPHOR_LIBS MUX_LIBS)
     if(NOT ${required})
         message(FATAL_ERROR "usage: cmake -DSOURCE=<dir> -DBINARY=<dir> -DGENERATOR=<name> -DPHOSPHOR_LIBS=<dir> "
-                            "-P ${CMAKE_CURRENT_LIST_FILE}")
+                            "-DMUX_LIBS=<library>,... -P ${CMAKE_CURRENT_LIST_FILE}")
     endif()
 endforeach()
 if(NOT JOBS)
@@ -63,16 +70,27 @@ set(args -G "${GENERATOR}"
     -DAFTERGLOW_AGLOW_ONLY=ON
     "-DAFTERGLOW_CODEC_BUILD_JOBS=${JOBS}"
     -DCMAKE_DISABLE_FIND_PACKAGE_Qt6=ON
-    -DBUILD_TESTING=OFF)
+    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF)
 foreach(pair "CMAKE_MAKE_PROGRAM;MAKE_PROGRAM" "CMAKE_BUILD_TYPE;BUILD_TYPE" "CMAKE_C_COMPILER;C_COMPILER"
              "CMAKE_CXX_COMPILER;CXX_COMPILER" "CMAKE_C_FLAGS;C_FLAGS" "CMAKE_CXX_FLAGS;CXX_FLAGS"
-             "CMAKE_EXE_LINKER_FLAGS;LINKER_FLAGS" "CPM_SOURCE_CACHE;CPM_CACHE" "AFTERGLOW_DEPS_ARCHIVES;DEPS_ARCHIVES")
+             "CMAKE_EXE_LINKER_FLAGS;LINKER_FLAGS" "CPM_SOURCE_CACHE;CPM_CACHE" "AFTERGLOW_DEPS_ARCHIVES;DEPS_ARCHIVES"
+             "PKG_CONFIG_EXECUTABLE;PKG_CONFIG" "CMAKE_TOOLCHAIN_FILE;TOOLCHAIN_FILE" "CMAKE_SYSROOT;SYSROOT")
     list(GET pair 0 name)
     list(GET pair 1 given)
     if(${given})
         list(APPEND args "-D${name}=${${given}}")
     endif()
 endforeach()
+
+# find_package, find_library and pkg_check_modules read the environment
+# variable too, and it holds a list with no semicolon.
+if(PREFIX_PATH)
+    if(DEFINED ENV{CMAKE_PREFIX_PATH} AND NOT "$ENV{CMAKE_PREFIX_PATH}" STREQUAL "")
+        set(ENV{CMAKE_PREFIX_PATH} "${PREFIX_PATH}:$ENV{CMAKE_PREFIX_PATH}")
+    else()
+        set(ENV{CMAKE_PREFIX_PATH} "${PREFIX_PATH}")
+    endif()
+endif()
 
 string(REPLACE "," ";" configs "${CONFIGS}")
 foreach(config IN LISTS configs)
@@ -105,12 +123,20 @@ endfunction()
 # aglow without aglow-mux reads no Phosphor checkout. Only configured: the
 # build with aglow-mux compiles the same aglow.
 aglow_only_run("configuration without aglow-mux" ${CMAKE_COMMAND} -S "${SOURCE}" -B "${BINARY}/no-mux" ${args}
-               -DAFTERGLOW_BUILD_MUX=OFF "-DAFTERGLOW_PHOSPHOR_LIBS_DIR=${BINARY}/no-phosphor-libs")
+               -DBUILD_TESTING=OFF -DAFTERGLOW_BUILD_MUX=OFF "-DAFTERGLOW_PHOSPHOR_LIBS_DIR=${BINARY}/no-phosphor-libs")
 aglow_only_unused("${output}" CMAKE_DISABLE_FIND_PACKAGE_Qt6 AFTERGLOW_PHOSPHOR_LIBS_DIR)
 file(REMOVE_RECURSE "${BINARY}/no-mux")
 
+# The tests of afterglow-proto, afterglow-image, aglow, the terminal core,
+# the PTY and aglow-mux, which docs/BUILD.md runs in this build: only
+# configured, because building them would take as long again.
+aglow_only_run("configuration with the tests" ${CMAKE_COMMAND} -S "${SOURCE}" -B "${BINARY}/tests" ${args}
+               -DBUILD_TESTING=ON -DAFTERGLOW_BUILD_MUX=ON "-DAFTERGLOW_PHOSPHOR_LIBS_DIR=${PHOSPHOR_LIBS}")
+aglow_only_unused("${output}" CMAKE_DISABLE_FIND_PACKAGE_Qt6)
+file(REMOVE_RECURSE "${BINARY}/tests")
+
 aglow_only_run(configuration ${CMAKE_COMMAND} -S "${SOURCE}" -B "${build}" ${args}
-               -DAFTERGLOW_BUILD_MUX=ON "-DAFTERGLOW_PHOSPHOR_LIBS_DIR=${PHOSPHOR_LIBS}")
+               -DBUILD_TESTING=OFF -DAFTERGLOW_BUILD_MUX=ON "-DAFTERGLOW_PHOSPHOR_LIBS_DIR=${PHOSPHOR_LIBS}")
 aglow_only_unused("${output}" CMAKE_DISABLE_FIND_PACKAGE_Qt6)
 
 set(config)
@@ -123,8 +149,8 @@ aglow_only_run(installation ${CMAKE_COMMAND} --install "${build}" --prefix "${pr
 # A static aglow also carries the notices of glibc and libstdc++, and the
 # texts of the licenses that they name, when it holds those libraries.
 file(STRINGS "${build}/CMakeCache.txt" static REGEX "^AGLOW_STATIC_LINK_WORKS:INTERNAL=1$")
-file(STRINGS "${build}/CMakeCache.txt" glibc REGEX "^AGLOW_GLIBC:INTERNAL=1$")
-file(STRINGS "${build}/CMakeCache.txt" libstdcxx REGEX "^AGLOW_LIBSTDCXX:INTERNAL=1$")
+file(STRINGS "${build}/CMakeCache.txt" glibc REGEX "^AGLOW_RUNTIME_GLIBC:INTERNAL=1$")
+file(STRINGS "${build}/CMakeCache.txt" libstdcxx REGEX "^AGLOW_RUNTIME_LIBSTDCXX:INTERNAL=1$")
 file(STRINGS "${build}/CMakeCache.txt" libdir REGEX "^CMAKE_INSTALL_LIBDIR:PATH=")
 string(REGEX REPLACE "^[^=]*=" "" libdir "${libdir}")
 set(expected bin/aglow share/bash-completion/completions/aglow share/fish/vendor_completions.d/aglow.fish
@@ -132,11 +158,12 @@ set(expected bin/aglow share/bash-completion/completions/aglow share/fish/vendor
     share/licenses/aglow/LICENSE.xxHash share/licenses/aglow/LICENSE.zlib-ng
     share/licenses/aglow/LICENSE.libpng share/licenses/aglow/LICENSE.libjpeg-turbo share/licenses/aglow/README.ijg
     share/licenses/aglow/NOTICE.IJG share/licenses/aglow/LICENSE.libwebp share/licenses/aglow/PATENTS.libwebp
+    share/licenses/aglow/LICENSE.Unicode
     bin/aglow-mux share/licenses/aglow-mux/GPL-3.0-or-later.txt share/licenses/aglow-mux/LGPL-2.1-or-later.txt
     share/licenses/aglow-mux/LICENSE.xxHash share/licenses/aglow-mux/LICENSE.zlib-ng
     share/licenses/aglow-mux/LICENSE.libpng share/licenses/aglow-mux/LICENSE.libjpeg-turbo
     share/licenses/aglow-mux/README.ijg share/licenses/aglow-mux/NOTICE.IJG share/licenses/aglow-mux/LICENSE.libwebp
-    share/licenses/aglow-mux/PATENTS.libwebp)
+    share/licenses/aglow-mux/PATENTS.libwebp share/licenses/aglow-mux/LICENSE.Unicode)
 if(static AND glibc)
     list(APPEND expected share/licenses/aglow/LICENSE.glibc)
 endif()
@@ -146,7 +173,8 @@ endif()
 file(GLOB_RECURSE installed LIST_DIRECTORIES false RELATIVE "${prefix}" "${prefix}/*")
 # The private libraries of aglow-mux, by their names and sonames: their
 # versions are those of Afterglow and of phosphor-channel.
-foreach(library AfterglowVt AfterglowPty PhosphorChannel)
+string(REPLACE "," ";" libraries "${MUX_LIBS}")
+foreach(library IN LISTS libraries)
     set(found ${installed})
     list(FILTER found INCLUDE REGEX "^${libdir}/afterglow/lib${library}\\.so\\.[0-9.]+$")
     if(NOT found)

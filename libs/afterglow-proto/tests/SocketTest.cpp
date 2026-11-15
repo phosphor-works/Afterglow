@@ -147,16 +147,15 @@ TEST(Socket, MuxSocketsAreTheRuntimeAndTheStateDirectory)
 {
     const auto env = environment({{"XDG_RUNTIME_DIR", "/run/user/1000/"},
                                   {"XDG_STATE_HOME", "/home/u/state/"},
-                                  {"HOME", "/home/u"},
-                                  {"WAYLAND_DISPLAY", "mux"}});
+                                  {"HOME", "/home/u"}});
     const MuxSockets sockets = muxSockets(env);
     ASSERT_EQ(sockets.candidates.size(), 2u) << sockets.error;
     EXPECT_TRUE(sockets.error.empty()) << sockets.error;
     // A directory of its own: never afterglow-*.sock next to the terminal's
-    // sockets, which a WAYLAND_DISPLAY of "mux" would name.
+    // sockets, which InstanceSocket removes when they refuse connections,
+    // and which the name of a display can match.
     EXPECT_EQ(sockets.candidates[0].path, "/run/user/1000/aglow-mux/socket");
     EXPECT_EQ(sockets.candidates[0].directory, "/run/user/1000/aglow-mux");
-    EXPECT_NE(sockets.candidates[0].path, sharedSocketPath(env));
     // A file for each host: a home on NFS has one state directory for all.
     EXPECT_EQ(sockets.candidates[1].path, "/home/u/state/aglow-mux/" + muxStateSocketName());
     EXPECT_EQ(sockets.candidates[1].directory, "/home/u/state/aglow-mux");
@@ -234,4 +233,54 @@ TEST(Socket, AHostNameIsSafeInAFileName)
     EXPECT_EQ(hostFileName("box"), "box");
     EXPECT_EQ(hostFileName("a/b/"), "a_b_");
     EXPECT_EQ(hostFileName(""), "localhost");
+}
+
+TEST(Socket, ARelativeSocketOfThePaneIsAnError)
+{
+    // Each client would find it from its own working directory.
+    const auto lookup = findSocket(environment({{"AFTERGLOW_SOCKET", "run/s.sock"}, {"AFTERGLOW_PANE_ID", "2"}}));
+    EXPECT_TRUE(lookup.path.empty());
+    EXPECT_TRUE(lookup.own);
+    EXPECT_EQ(lookup.error, "AFTERGLOW_SOCKET is not an absolute path");
+}
+
+TEST(Socket, ASessionPaneIsOneWithTheSocketAndTheSession)
+{
+    EXPECT_TRUE(findSocket(environment({{"AFTERGLOW_SOCKET", "/r/aglow-mux/socket"}, {"AFTERGLOW_SESSION", "s"}})).session);
+    EXPECT_FALSE(findSocket(environment({{"AFTERGLOW_SOCKET", "/r/aglow-mux/socket"}})).session);
+    EXPECT_FALSE(findSocket(environment({{"AFTERGLOW_SESSION", "s"}, {"XDG_RUNTIME_DIR", "/r"}})).session);
+}
+
+TEST(Socket, TheMessagesNameWhoListensAtTheSocket)
+{
+    const auto lookup = [](std::map<std::string, std::string> values) { return findSocket(environment(std::move(values))); };
+    const std::string missing = "/nonexistent-afterglow-test/aglow-mux/socket";
+    const SocketLookup display = lookup({{"XDG_RUNTIME_DIR", "/nonexistent-afterglow-test"}});
+    const SocketLookup pane = lookup({{"AFTERGLOW_SOCKET", missing}, {"AFTERGLOW_PANE_ID", "3"}});
+    const SocketLookup named = lookup({{"AFTERGLOW_SOCKET", missing}});
+    const SocketLookup gone = lookup({{"AFTERGLOW_SOCKET", missing}, {"AFTERGLOW_PANE_ID", "3"}, {"AFTERGLOW_SESSION", "s"}});
+    // A file that is there, and that nobody listens on.
+    const SocketLookup exited = lookup({{"AFTERGLOW_SOCKET", "/"}, {"AFTERGLOW_PANE_ID", "3"}, {"AFTERGLOW_SESSION", "s"}});
+    EXPECT_EQ(socketOwner(display), "the Afterglow of this display");
+    EXPECT_EQ(socketOwner(pane), "the Afterglow that runs this pane");
+    EXPECT_EQ(socketOwner(named), "the Afterglow at $AFTERGLOW_SOCKET");
+    EXPECT_EQ(socketOwner(gone), "the mux daemon of this session pane");
+    EXPECT_EQ(noServerReason(display), "no running Afterglow on this display");
+    EXPECT_EQ(noServerReason(pane), "the Afterglow that runs this pane has exited");
+    EXPECT_EQ(noServerReason(named), "no Afterglow at $AFTERGLOW_SOCKET");
+    EXPECT_EQ(noServerReason(gone), "the socket of the mux daemon of this session pane is gone: $AFTERGLOW_SOCKET names no file");
+    EXPECT_EQ(noServerReason(exited), "the mux daemon of this session pane has exited");
+}
+
+TEST(Socket, TheMuxDirectoryIsTheParentOfAPath)
+{
+    EXPECT_TRUE(inMuxDirectory("/run/user/1000/aglow-mux/socket"));
+    EXPECT_TRUE(inMuxDirectory("/home/u/.local/state/aglow-mux/remote-0123456789abcdef.sock"));
+    EXPECT_FALSE(inMuxDirectory("/run/user/1000/afterglow-wayland-0.sock"));
+    EXPECT_FALSE(inMuxDirectory("/run/aglow-mux-other/socket"));
+    EXPECT_FALSE(inMuxDirectory("/aglow-mux"));
+    EXPECT_FALSE(inMuxDirectory("socket"));
+    for (const MuxSocket& socket : muxSockets(environment({{"XDG_RUNTIME_DIR", "/r"}, {"HOME", "/h"}})).candidates) {
+        EXPECT_TRUE(inMuxDirectory(socket.path)) << socket.path;
+    }
 }

@@ -33,8 +33,12 @@ Outside Afterglow, `afterglow ctl` and `aglow run` use the socket of the main pr
 
 A pane of a [mux session](MUX.md) sets `AFTERGLOW_SOCKET` to the socket of the mux daemon.
 Its `AFTERGLOW_SESSION` names the session where the pane started.
-There, `afterglow ctl` acts on the session through the daemon, and `afterglow ctl --session NAME` does so from anywhere (see [control of a session](MUX.md#control-of-a-session)).
-The daemon answers each request to the `commands` target with `CALL_FAILED`.
+There, `afterglow ctl` acts on the session through the daemon.
+`afterglow ctl --session NAME` does so from any terminal of this computer (see [control of a session](MUX.md#control-of-a-session)).
+It reaches only the daemon of this computer, not the daemon of another host.
+The daemon passes a client of the `commands` target, such as `aglow run`, to the window that shows the session.
+See [script commands in a session pane](MUX.md#script-commands-in-a-session-pane).
+Without such a window, the request fails with `CALL_FAILED`.
 
 | Process | Socket |
 | --- | --- |
@@ -58,9 +62,11 @@ They do not check that the pane belongs to the process of that socket.
 In a pane, `AFTERGLOW_PANE_ID` names a pane of the process that runs the pane.
 When you set `AFTERGLOW_SOCKET` to another Afterglow in a pane, clear `AFTERGLOW_PANE_ID` or give `--pane`.
 If you do not, the command acts on the pane that has the same ID in the other process.
+In a session pane, also clear `AFTERGLOW_SESSION`.
+While it is set, `afterglow ctl` takes `AFTERGLOW_SOCKET` for the socket of the mux daemon, and the command fails.
 
 ```sh
-AFTERGLOW_SOCKET=PATH AFTERGLOW_PANE_ID= afterglow ctl action new_tab
+AFTERGLOW_SOCKET=PATH AFTERGLOW_PANE_ID= AFTERGLOW_SESSION= afterglow ctl action new_tab
 ```
 
 Without `XDG_RUNTIME_DIR`, Afterglow listens on no socket.
@@ -85,6 +91,9 @@ A termination signal that Afterglow got as ignored, for example `SIGHUP` under `
 3. The focused pane of the active window.
 4. The focused pane of the window that was active last.
 
+With `--session NAME`, `afterglow ctl` does not do step 2.
+In place of steps 3 and 4, it acts on the pane that has the focus in the tab that shows in that session.
+
 For `action script:ID.COMMAND`, `afterglow ctl` does steps 1 and 2.
 When they give no pane, Afterglow does steps 3 and 4.
 When no pane has the focus, the command runs with no pane, as with `aglow run`.
@@ -100,6 +109,7 @@ To do this, add these lines to `~/.tmux.conf`. They are tmux commands, not shell
 ```text
 set -ga update-environment AFTERGLOW_PANE_ID
 set -ga update-environment AFTERGLOW_SOCKET
+set -ga update-environment AFTERGLOW_SESSION
 ```
 
 tmux then gives the new values to the panes that start after the attach.
@@ -134,6 +144,7 @@ The overlays that control clients opened close, and their `overlay` calls fail w
 The sockets of the ssh sessions for [remote commands](#remote-commands) close, and their runs fail.
 The socket stays open with the `launch` target, because later launches of Afterglow use it.
 Any program of the same user can call `launch.newWindow`, and that window can run a command or show a mux session.
+With `sessionHost`, the call also runs ssh to that destination, with your keys and your SSH configuration.
 
 ## Protocol
 
@@ -194,7 +205,20 @@ The events of a run arrive before the reply of the run.
 | `no_pane`, `busy`, `spawn_failed`, `cancelled` | An `overlay` call failed. See [overlays](#overlays). |
 | `denied`, `busy`, `no_pane`, `not_shown`, `failed`, `cancelled` | A `screenshot` call failed. See [screenshots](#screenshots). |
 
-`phosphorctl` from the Phosphor shell can also use the socket: `phosphorctl --socket "$AFTERGLOW_SOCKET" list`.
+In a session pane, `AFTERGLOW_SOCKET` is the socket of the [mux daemon](MUX.md#control-of-a-session).
+A client of that socket first selects the session with a call of the `mux` target.
+`selectSession` takes the protocol version and the session name. `selectPane` takes the protocol version and a pane ID of the daemon.
+The daemon answers only calls and subscriptions. It answers with the codes above, and also with these:
+
+| Code | Cause |
+| --- | --- |
+| `NO_SUCH_SESSION` | No session has the name, or the selected session ended. Also ends a subscription when its session ends. |
+| `NO_SUCH_PANE` | No session has the pane that `selectPane` names. |
+| `VERSION_MISMATCH` | The client speaks another protocol version than the daemon. |
+| `TOO_MANY_PANES` | `split` or `newTab` in a session that has 256 panes, the most that a session can have. |
+| `SPAWN_FAILED` | The daemon cannot start the program of the new pane of `split` or `newTab`. |
+
+Outside a session pane, `phosphorctl` from the Phosphor shell can also use the socket: `phosphorctl --socket "$AFTERGLOW_SOCKET" list`.
 
 ## Launches
 
@@ -232,6 +256,7 @@ Start Afterglow with `-o`, `--config` or `--class` when a window needs the envir
 | `activationToken` | string | The launcher's `XDG_ACTIVATION_TOKEN`, which lets the window take the focus |
 | `session` | string | Show this [mux session](MUX.md#windows-of-a-session) in place of a program. When a window of this process shows it already, that window comes to the front, and the call succeeds. |
 | `takeover` | boolean | With `session`: take the session from a window of another process that shows it. The default is true. With false, the call fails when such a window shows the session. |
+| `sessionHost` | string | With `session`: the session runs on this ssh destination. The window reaches the daemon of that host through ssh (see [sessions on another host](MUX.md#sessions-on-another-host)). Empty for a session of this computer. |
 
 When `directoryGiven` is false or missing, the `Window.workingDirectory` setting can replace the working directory.
 An empty command runs the shell.
@@ -260,7 +285,7 @@ Another number fails with `CALL_FAILED`.
 | `detachTab` | pane | An object: the pane in its new window. For a tab of a mux session, it has the new pane ID in the new session. |
 | `openDirectory` | directory, layout | An object: the window and its pane |
 | `projects` | None | The saved project names |
-| `saveProject` | pane, name, overwrite | An object: the name and the window |
+| `saveProject` | pane, name, overwrite | An object: the name and the window. When a pane has a command that a project cannot keep, the object also has `warnings`: those commands, which the project saves as the shell. |
 | `openProject` | name, new instance, mode | An object: the window and its panes. The mode is `session`, `window`, or empty for what the project says. Into a session, the object also has `session`, its name, and the answer comes when the window of the session opens. |
 | `scriptDiagnostics` | None | Script and package diagnostics |
 | `overlay` | pane, argv, options | An object: `exit_code`, `stdout` and `truncated`. See [overlays](#overlays). |
@@ -395,7 +420,7 @@ A screenshot shows more than `getText` reads, for example the program of an over
 | Code | Cause |
 | --- | --- |
 | `denied` | `Control.allowReadText` is off. Afterglow checks it again when the reply goes out. |
-| `busy` | 4 screenshots are in progress, from all clients. |
+| `busy` | 4 screenshots are in progress, from all clients, those of mux sessions too. |
 | `no_pane` | No pane has the ID, or no pane has the focus for a pane of 0. |
 | `not_shown` | The window is not on the screen, is minimized, or closed before the frame. For the `pane` and `tab` scopes also: the pane is in a tab in the background, the pane closed, or the overview shows or closes. For the `pane` scope also: another pane of the tab is zoomed. |
 | `failed` | Afterglow drew no frame in 2 seconds, for example when the compositor sends no frames to the window. It also fails when Afterglow cannot read the frame or write the PNG. Some GPU drivers cannot read a window back: Afterglow then logs a warning. |
@@ -412,7 +437,7 @@ Thus take screenshots on a connection without subscriptions.
 | `id` | The pane ID |
 | `window` | The window ID |
 | `tab` | The tab's position in its window, from 0 |
-| `tab_id` | The tab ID. It does not change when the tab moves. A tab of a mux session that moves to a new window gets a new ID. |
+| `tab_id` | The tab ID. It does not change when the tab moves. A tab of a mux session that moves to a new window gets a new ID. For a mux session (`afterglow ctl --session`), `tab_id` is the place of the tab from 1 (see [MUX.md](MUX.md#control-of-a-session)). |
 | `title` | The pane title |
 | `cwd` | The pane's working directory. Empty when it is unknown or removed. |
 | `command` | The running command (shell integration), empty at the prompt |
@@ -805,7 +830,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Lines that do not parse, one after the other | 16 | The socket closes the connection at the next one. |
 | Waiting output to one client | 16 MiB | The socket closes the connection to a client that does not read its events. |
 | Subscriptions on one connection | 256 | The subscription fails with `MALFORMED_REQUEST`. A second subscription to the same event also fails. |
-| `afterglow ctl` reply time | 10 seconds, 30 seconds for `screenshot` | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. `afterglow ctl overlay` waits for the program without a limit. |
+| `afterglow ctl` reply time | 10 seconds, 30 seconds for `screenshot` and `open-project` | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. `afterglow ctl overlay` waits for the program without a limit. |
 | Time to draw the frame of a screenshot | 2 seconds | The `screenshot` call fails with the code `failed`. |
 | Screenshots in progress | 4, for all clients | The `screenshot` call fails with the code `busy`. |
 | `afterglow ctl overlay` standard input | 4 MiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |

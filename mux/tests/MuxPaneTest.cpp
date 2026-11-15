@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// A pane of the daemon while its program's image decodes: the daemon's one
-// thread does not wait for the decode.
+// A pane of the daemon: while its program's image decodes, the daemon's one
+// thread does not wait for the decode. And what the pane keeps of its shell
+// for `afterglow ctl ls` and `afterglow ctl watch`.
 
 #include "ImageDecoder.h"
 #include "ImageFiles.h"
@@ -10,6 +11,7 @@
 #include "TestDaemon.h"
 
 #include <AfterglowProto/Base64.h>
+#include <AfterglowProto/DndUri.h>
 #include <AfterglowPty/Pty.h>
 #include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
@@ -153,9 +155,40 @@ struct StuckDecode
 // Only a kernel that lists no children skips: a server that does not start
 // or does not name itself is a failure.
 #define SKIP_WITHOUT_SERVER(stuck)                                                                                  \
-    if (!MuxTest::childrenListed()) GTEST_SKIP() << "the kernel lists no children of a process (CONFIG_PROC_CHILDREN)"; \
-    ASSERT_FALSE((stuck).dir.path.empty());                                                                         \
-    ASSERT_GT((stuck).server, 0) << "the decoder's server did not start, or did not name itself afterglow-image"
+    do {                                                                                                            \
+        if (!MuxTest::childrenListed()) GTEST_SKIP() << "the kernel lists no children of a process (CONFIG_PROC_CHILDREN)"; \
+        ASSERT_FALSE((stuck).dir.path.empty());                                                                     \
+        ASSERT_GT((stuck).server, 0) << "the decoder's server did not start, or did not name itself afterglow-image"; \
+    } while (false)
+
+/// A pane whose program is `/bin/sh -c SCRIPT sh ARGS...` in @p directory,
+/// in an environment of its own, with nothing of the user's session. Its
+/// decoder runs and decodes nothing.
+struct ShellPane
+{
+    // Before the pane: it goes after it.
+    std::unique_ptr<ImageDecoder> decoder;
+    std::unique_ptr<MuxPane> pane;
+
+    /// @p watched: the daemon watches the pane from its start.
+    ShellPane(const std::string& script, const std::vector<std::string>& args, const std::string& directory, bool watched = false)
+    {
+        decoder = std::make_unique<ImageDecoder>(AFTERGLOW_MUX);
+        pane = std::make_unique<MuxPane>(1, AfterglowVt::TerminalOptions{}, PaneSize{80, 24, 10, 20}, std::string(), *decoder, [] {});
+        pane->setWatched(watched);
+        AfterglowPty::SpawnOptions spawn;
+        spawn.argv = {"/bin/sh", "-c", script, "sh"};
+        spawn.argv.insert(spawn.argv.end(), args.begin(), args.end());
+        spawn.workingDirectory = directory;
+        spawn.inheritEnvironment = false;
+        spawn.environment = {{"PATH", "/usr/bin:/bin"}, {"HOME", directory}, {"TERM", "xterm-256color"}};
+        std::string error;
+        if (!pane->start(std::move(spawn), std::string(), &error)) {
+            ADD_FAILURE() << "the pane did not start: " << error;
+            pane.reset();
+        }
+    }
+};
 
 } // namespace
 
@@ -307,4 +340,75 @@ TEST(MuxPane, APaneThatClosesDoesNotWaitForItsDecode)
     const auto start = Clock::now();
     stuck.pane.reset();
     EXPECT_LT(Clock::now() - start, std::chrono::seconds(5));
+}
+
+// What `afterglow ctl ls` says of a pane's directory: the one that its shell
+// reported when it is a directory of this host, else the directory of its
+// program.
+TEST(MuxPane, FactsGiveTheCheckedDirectoryOfTheShell)
+{
+    TempDir home;
+    TempDir reported;
+    TempDir other;
+    ASSERT_FALSE(home.path.empty());
+    ASSERT_FALSE(reported.path.empty());
+    ASSERT_FALSE(other.path.empty());
+    const std::string here = std::filesystem::canonical(home.path).string();
+    // The shell reports $1, a URL of this host. Each step waits for its
+    // file in $3: then it reports a directory that does not exist, $1
+    // again, and last, from a context on another host, the plain path $2,
+    // and a title after it.
+    const std::string script = "flags=$3\n"
+                               "step() { i=0; while [ ! -e \"$flags/$1\" ] && [ $i -lt 1000 ]; do sleep 0.02; i=$((i+1)); done; }\n"
+                               "printf '\\033]7;%s\\007' \"$1\"\n"
+                               "step one\n"
+                               "printf '\\033]7;file://localhost/no/such/directory/here\\007'\n"
+                               "step two\n"
+                               "printf '\\033]7;%s\\007' \"$1\"\n"
+                               "step three\n"
+                               "printf '\\033]3008;start=elsewhere;type=remote;targethost=aglow-test.invalid\\033\\\\'\n"
+                               "printf '\\033]7;%s\\007' \"$2\"\n"
+                               "printf '\\033]2;done\\007'\n"
+                               "exec sleep 60\n";
+    const std::string url = "file://localhost" + AfterglowProto::dndPercentEncode(reported.path.string());
+    ShellPane shell(script, {url, other.path.string(), home.path.string()}, home.path.string());
+    ASSERT_TRUE(shell.pane);
+    const auto directoryIs = [&shell](const std::string& wanted) {
+        return MuxTest::waitFor([&] { return shell.pane->facts().directory == wanted; }, std::chrono::seconds(10));
+    };
+    const auto next = [&home](const char* step) { std::ofstream(home.path / step) << ""; };
+    ASSERT_TRUE(directoryIs(reported.path.string())) << shell.pane->facts().directory;
+    // No such directory here: the directory of the program.
+    next("one");
+    ASSERT_TRUE(directoryIs(here)) << shell.pane->facts().directory;
+    next("two");
+    ASSERT_TRUE(directoryIs(reported.path.string())) << shell.pane->facts().directory;
+    // A plain path names a directory of the other host: the directory of
+    // the program again, not the path, though this host has it.
+    // The title comes after the path: the terminal read both. The context
+    // alone already gives the directory of the program.
+    next("three");
+    ASSERT_TRUE(MuxTest::waitFor([&] { return shell.pane->facts().title == "done"; }, std::chrono::seconds(10)))
+        << shell.pane->facts().title;
+    EXPECT_EQ(shell.pane->facts().directory, here);
+}
+
+// Past the limit of a watch's events, the newest title still takes the
+// place of the last one: `afterglow ctl watch` hears where it ended.
+TEST(MuxPane, AWatchPastItsLimitKeepsTheNewestTitle)
+{
+    static_assert(MuxPane::MaxWatchEvents < 1100);
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    ShellPane shell("i=0; while [ $i -lt 1100 ]; do printf '\\033]2;t%d\\007' $i; i=$((i+1)); done; exec sleep 60", {},
+                    home.path.string(), true);
+    ASSERT_TRUE(shell.pane);
+    // The title and its event change under one lock.
+    ASSERT_TRUE(MuxTest::waitFor([&shell] { return shell.pane->title() == "t1099"; }, std::chrono::seconds(20))) << shell.pane->title();
+    const std::vector<MuxPane::WatchEvent> events = shell.pane->takeWatchEvents();
+    EXPECT_EQ(events.size(), MuxPane::MaxWatchEvents);
+    ASSERT_FALSE(events.empty());
+    EXPECT_TRUE(events.back().kind == MuxPane::WatchEvent::Kind::Title);
+    EXPECT_EQ(events.back().text, "t1099");
+    EXPECT_EQ(events.front().text, "t0");
 }

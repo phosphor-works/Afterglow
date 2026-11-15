@@ -6,6 +6,7 @@
 #include "Control.h"
 #include "RemoteSockets.h"
 #include "../config/Settings.h"
+#include "../scripting/ScriptNames.h"
 
 #include <AfterglowProto/Random.h>
 #include <AfterglowProto/Remote.h>
@@ -14,7 +15,6 @@
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QPointer>
-#include <QRegularExpression>
 // Private, as the renderer's QRhi is: only a metaobject built at run time
 // gives each command an entry of its own in the schema. Qt6::CorePrivate is
 // linked for it.
@@ -43,12 +43,12 @@ constexpr int Cancelled = 130;
 /// that no event line comes near the client's frame limit.
 constexpr qsizetype EventText = 1024 * 1024;
 
-/// The protocol's rule for a run ID, which the client makes up. Not
-/// validScriptId: the rules for script IDs are the scripts' own.
+/// The protocol's rule for a run ID, which the client makes up: that of a
+/// name (validName). Not validScriptId: the rules for script IDs are the
+/// scripts' own.
 std::optional<QString> runIdError(const QString& id)
 {
-    static const QRegularExpression re(QStringLiteral("\\A[A-Za-z0-9_-]{1,64}\\z"));
-    if (re.match(id).hasMatch()) return std::nullopt;
+    if (validName(id)) return std::nullopt;
     return QStringLiteral("a run ID is 1 to 64 letters, digits, _ and -");
 }
 
@@ -602,8 +602,10 @@ std::optional<quint32> CommandSocket::pane(double pane, QString& error) const
     // A remote host reaches the pane of its ssh session only.
     if (m_remote) {
         if (pane == 0 || quint32(pane) == m_remote->pane) return m_remote->pane;
+        // The client of a session numbers panes as its daemon does: the
+        // window's number of its pane would name another one.
         error = m_remote->commandsTarget
-            ? QStringLiteral("a run from a session of another host acts on its own pane, %1").arg(m_remote->pane)
+            ? QStringLiteral("a run from a session of another host acts on its own pane only")
             : QStringLiteral("a run from a remote host acts on the pane of its ssh session, %1").arg(m_remote->pane);
         return std::nullopt;
     }

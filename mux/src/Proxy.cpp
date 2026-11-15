@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include <fcntl.h>
@@ -38,26 +39,30 @@ struct Direction
     bool ended = false; ///< @p from ended: what waits still goes, then @p to ends
 };
 
-void nonblocking(int fd)
+/// Makes @p fd non-blocking: its flags before, or -1 when it cannot.
+int nonblocking(int fd)
 {
-    ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONBLOCK);
+    const int flags = ::fcntl(fd, F_GETFL);
+    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
+    return flags;
 }
 
-/// Reads what @p d.from has, up to MaxWaiting. False on a failure.
-bool fill(Direction& d)
+/// Reads what @p d.from has, up to MaxWaiting. A read that fails ends the
+/// direction as its end does: what waits still goes. A daemon that closed
+/// with input unread gives ECONNRESET after its last bytes, for one.
+void fill(Direction& d)
 {
     char buffer[65536];
     while (d.waiting.size() < MaxWaiting) {
         const ssize_t n = ::read(d.from, buffer, sizeof buffer);
         if (n < 0 && errno == EINTR) continue;
-        if (n < 0) return errno == EAGAIN || errno == EWOULDBLOCK;
-        if (n == 0) {
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n <= 0) {
             d.ended = true;
-            return true;
+            return;
         }
         d.waiting.append(buffer, std::size_t(n));
     }
-    return true;
 }
 
 /// Writes what waits to @p d.to. False on a failure, a closed reader too.
@@ -72,16 +77,50 @@ bool drain(Direction& d)
     return true;
 }
 
+/// The flags of standard input and output as the proxy found them: they
+/// belong to descriptions that other processes may share (a shell that ran
+/// it), and go back as they were.
+struct Standard
+{
+    std::array<int, 2> flags{-1, -1};
+    void restore(int fd)
+    {
+        if (flags[std::size_t(fd)] >= 0) ::fcntl(fd, F_SETFL, flags[std::size_t(fd)]);
+        flags[std::size_t(fd)] = -1;
+    }
+    ~Standard()
+    {
+        restore(0);
+        restore(1);
+    }
+};
+
 /// Copies standard input to @p socket and @p socket to standard output until
-/// both directions ended.
+/// both directions ended. The daemon's end of its output does not end the
+/// input: a window's stream that the daemon finished still reads what the
+/// window sends until then (Attachment::readLate). The daemon's close does.
 int bridge(int socket)
 {
-    for (const int fd : {0, 1, socket}) nonblocking(fd);
+    Standard standard;
+    for (const int fd : {0, 1}) {
+        standard.flags[std::size_t(fd)] = nonblocking(fd);
+        if (standard.flags[std::size_t(fd)] < 0) {
+            std::fprintf(stderr, "aglow-mux proxy: cannot make standard %s non-blocking: %s\n", fd == 0 ? "input" : "output",
+                         std::strerror(errno));
+            return 1;
+        }
+    }
+    if (nonblocking(socket) < 0) {
+        std::fprintf(stderr, "aglow-mux proxy: cannot make its connection non-blocking: %s\n", std::strerror(errno));
+        return 1;
+    }
     std::array<Direction, 2> directions{Direction{0, socket, {}}, Direction{socket, 1, {}}};
-    bool outputEnded = false; // the end of the socket's direction went to standard output
-    bool inputEnded = false; // the end of standard input went to the daemon
+    Direction& input = directions[0];
+    Direction& output = directions[1];
+    bool inputEnded = false; // the end of standard input went to the daemon, or the daemon takes no more
+    bool outputEnded = false; // the end of the daemon's output went to standard output
     while (!(inputEnded && outputEnded)) {
-        std::array<pollfd, 4> fds{};
+        std::array<pollfd, 5> fds{};
         nfds_t count = 0;
         // The reads of each direction while its buffer has room, and its
         // writes while it holds bytes.
@@ -89,29 +128,53 @@ int bridge(int socket)
             if (!d.ended && d.waiting.size() < MaxWaiting) fds[count++] = {d.from, POLLIN, 0};
             if (!d.waiting.empty()) fds[count++] = {d.to, POLLOUT, 0};
         }
-        if (count == 0 && !inputEnded && directions[0].ended && directions[0].waiting.empty()) {
+        // Once the output ended, the daemon's close shows as a hangup: what
+        // the client sends then goes nowhere.
+        const nfds_t hangup = count;
+        if (outputEnded) fds[count++] = {socket, 0, 0};
+        // Each iteration that does not end the loop waits for something.
+        if (::poll(fds.data(), count, -1) < 0 && errno != EINTR) {
+            std::fprintf(stderr, "aglow-mux proxy: poll failed: %s\n", std::strerror(errno));
+            return 1;
+        }
+        if (outputEnded && (fds[hangup].revents & (POLLHUP | POLLERR))) {
+            input.ended = true;
+            input.waiting.clear();
+            inputEnded = true;
+        }
+        if (!input.ended) fill(input);
+        // A daemon that takes no more ends the input the same way.
+        if (!inputEnded && !drain(input)) {
+            input.ended = true;
+            input.waiting.clear();
+            inputEnded = true;
+        }
+        if (!output.ended) fill(output);
+        // The client went: nothing reads what either end sends.
+        if (!drain(output)) return 0;
+        if (!inputEnded && input.ended && input.waiting.empty()) {
             // Standard input ended and all of it went: the daemon hears the
             // end of the client's side.
             ::shutdown(socket, SHUT_WR);
             inputEnded = true;
-            continue;
         }
-        if (count > 0 && ::poll(fds.data(), count, -1) < 0 && errno != EINTR) return 1;
-        for (Direction& d : directions) {
-            if (!d.ended && !fill(d)) return 1;
-            if (!drain(d)) return 0;
-        }
-        if (!inputEnded && directions[0].ended && directions[0].waiting.empty()) {
-            ::shutdown(socket, SHUT_WR);
-            inputEnded = true;
-        }
-        // The daemon closed the connection, and all that it sent went: the
-        // client hears the end.
-        if (!outputEnded && directions[1].ended && directions[1].waiting.empty()) {
+        if (!outputEnded && output.ended && output.waiting.empty()) {
+            // The daemon ended its output, and all that it sent went: the
+            // client hears the end. Standard output may be the socket of
+            // standard input too (sshd can give one socket for both), which
+            // a close alone would not end.
+            standard.restore(1);
+            // With one description for both, the restore made standard input
+            // blocking too, and fill() would then wait in read() for the
+            // client, deaf to the daemon's close. It stays non-blocking until
+            // the end restores it (Standard).
+            if (!inputEnded) {
+                const int flags = ::fcntl(0, F_GETFL);
+                if (flags >= 0 && !(flags & O_NONBLOCK)) ::fcntl(0, F_SETFL, flags | O_NONBLOCK);
+            }
+            ::shutdown(1, SHUT_WR);
             ::close(1);
             outputEnded = true;
-            // The client's side means nothing more: the daemon's end is gone.
-            inputEnded = true;
         }
     }
     return 0;

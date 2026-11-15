@@ -156,6 +156,9 @@ QString TerminalWindow::movePaneTo(Pane* pane, TerminalWindow* destination, Pane
     if (index < 0 || !destination || (beside && destination->tabOf(beside) < 0) || pane == beside)
         return QStringLiteral("Invalid pane destination");
     if (const QString refused = sessionMoveError(destination); !refused.isEmpty()) return refused;
+    // A break out takes it to another session wherever it is, and closes it
+    // here then (finishBreakOut): the move would be for nothing.
+    if (m_session && m_leavingPanes.contains(pane)) return QStringLiteral("This pane is leaving session %1 already").arg(m_session->session());
     // A new tab in its own window for a pane alone in its tab would only
     // replace the tab, with a new ID and without its title.
     if (destination == this && !beside && m_tabs[std::size_t(index)]->splits->paneCount() == 1)

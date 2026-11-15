@@ -60,6 +60,17 @@ Options:
 
 The log is long. Read it with `grep`, never in full.
 
+Three tests show a read of freed memory only with AddressSanitizer:
+`NativeWindow.AWindowWhoseOnlyPaneClosesGoesAfterThePaneAndItsDock`,
+`NativeWindow.AWindowDeletedWhileItShowsReachesNoSlotOfItsOwn` and
+`NativeWindow.WindowsDeletedWhileTheirChromeLoadsLeaveTheNextChromeSound`. After a change to the lifetime of a
+window or a pane, build the `debug` preset (`build-debug`, steps 1 and 2 of "Sanitizer build" in docs/TESTING.md) and
+run only them. LeakSanitizer stays off: the Vulkan loader, libdbus and the GPU driver keep memory until the exit.
+
+    systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 env ASAN_OPTIONS=detect_leaks=0 \
+        python3 .claude/skills/ag-verify-live/headless_native.py --binary build-debug/afterglow/afterglow_native_tests \
+        --filter 'NativeWindow.AWindowWhoseOnlyPaneClosesGoesAfterThePaneAndItsDock:NativeWindow.AWindowDeletedWhileItShowsReachesNoSlotOfItsOwn:NativeWindow.WindowsDeletedWhileTheirChromeLoadsLeaveTheNextChromeSound'
+
 ### Platform themes
 
 The download dialog tests (`NativeWindow.ADownloadsSaveDialog*` and `NativeWindow.ANativeGtk*`) test the native file

@@ -29,7 +29,7 @@ From a shell in a pane, run `aglow run fzf-picker pick`. The overlay opens over 
 
 The package types the path only when the pane shows its prompt.
 When a program runs in the pane, for example an editor, the package shows a notification instead.
-This check uses [shell integration](../../../docs/INPUT.md#shell-integration). Without it, the package always types the path.
+This check uses [shell integration](../../../../docs/INPUT.md#shell-integration). Without it, the package always types the path.
 
 Because `aglow run` prints the path, you can use the result in a command:
 

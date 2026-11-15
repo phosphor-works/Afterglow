@@ -32,14 +32,16 @@ struct Settings;
 QString remoteCommandsOff(const Settings& settings);
 
 /// The sockets that `afterglow ssh` forwards to remote hosts, one for each
-/// ssh session, while remoteCommandsOff() is empty.
+/// ssh session, and the endpoints of the clients that a mux daemon passes a
+/// window (endpoint()), while remoteCommandsOff() is empty.
 ///
 /// A session's socket is $XDG_RUNTIME_DIR/afterglow-remote-<token>.sock,
-/// with the "remote" target only (CommandSocket for a remote session), and
-/// the lock file of InstanceSocket next to it. The session also keeps the
-/// answer of its pane to `aglow run`'s query (OSC 24569): the socket's path
-/// on the remote host once `ssh -O forward` added it (forwarded()), or the
-/// reason why there is none. It ends when the process that opened it exits
+/// with one target (CommandSocket for a remote session): "remote" for an
+/// ssh session, "remote" or "commands" for an endpoint. The lock file of
+/// InstanceSocket is next to it. An ssh session also keeps the answer of
+/// its pane to `aglow run`'s query (OSC 24569): the socket's path on the
+/// remote host once `ssh -O forward` added it (forwarded()), or the reason
+/// why there is none. It ends when the process that opened it exits
 /// (watched with a pidfd), when its pane closes, or when the settings turn
 /// it off. Then a forward that was added is cancelled with `ssh -O cancel`.
 class RemoteSockets : public QObject
@@ -53,18 +55,24 @@ public:
     using PaneAnswer = std::function<bool(quint32 pane, const AfterglowProto::Remote::Answer& answer,
                                           const std::optional<AfterglowProto::Remote::Answer>& overlay)>;
 
-    /// Sessions of one pane at most: its ssh sessions in the background and
-    /// the one in front. A client in a loop opens no more.
-    static constexpr int MaxSessionsPerPane = 16;
-    /// Sessions of the process at most, each a socket and a pidfd.
-    static constexpr int MaxSessions = 256;
+    /// ssh sessions of one pane at most: those in the background and the one
+    /// in front. A client in a loop opens no more. Endpoints do not count.
+    /// The limits are those of the mux daemon too (AfterglowProto::Remote).
+    static constexpr int MaxSessionsPerPane = int(AfterglowProto::Remote::MaxSessionsPerPane);
+    /// Endpoints of one pane at most, one for each host that its clients
+    /// come from. A new one takes the place of the one that was handed out
+    /// least lately and has no connection.
+    static constexpr int MaxEndpointsPerPane = 16;
+    /// Sessions and endpoints of the process at most, each a socket, and
+    /// for a session a pidfd.
+    static constexpr int MaxSessions = int(AfterglowProto::Remote::MaxSessions);
     /// Connections open at once on the socket of one session, at most. Each
     /// `aglow run` takes one, and Scripts.commandRunLimit lets at most 16
     /// runs of a script go at once. The router closes a connection past it
     /// at accept, before it reads a request.
-    static constexpr int MaxConnectionsPerSession = 64;
+    static constexpr int MaxConnectionsPerSession = int(AfterglowProto::Remote::MaxConnections);
     /// UTF-16 units of the host name of a session (ev.remote.host) at most.
-    static constexpr qsizetype MaxHostLength = 255;
+    static constexpr qsizetype MaxHostLength = qsizetype(AfterglowProto::Remote::MaxHostLength);
 
     /// The runs of every session share @p budget, the one of the process's
     /// own CommandSocket. Without one, the sessions share one of their own.
@@ -107,14 +115,16 @@ public:
     /// exist.
     QString open(const Request& request, Opened& out);
     /// `ssh -O forward` added the forward of @p token's socket: the pane
-    /// answers with its path. An error, or empty. The client cancels the
-    /// forward on an error: the session ended before the forward came, and
-    /// its cancel found nothing to cancel.
+    /// answers with its path. An error, or empty, also for an endpoint,
+    /// which has no forward. The client cancels the forward on an error: the
+    /// session ended before the forward came, and its cancel found nothing
+    /// to cancel.
     QString forwarded(const QString& token);
     /// The forward of @p token's session failed, or the client cancelled it
     /// when forwarded() did not answer in time: the socket closes, and the
     /// pane answers with @p reason. Only "forward" comes from the client.
-    /// Returns an error (also for a session with no socket), or empty.
+    /// Returns an error (also for a session with no socket, and for an
+    /// endpoint), or empty.
     QString failed(const QString& token, const QString& reason);
     /// Ends the sessions of @p pane, which closed.
     void paneClosed(quint32 pane);
@@ -122,13 +132,13 @@ public:
     /// (MuxCommands): a client in a pane of a session of another host, or on
     /// the remote host of an ssh session in a session pane. Its runs act on
     /// @p pane, which the window shows, with @p host as ev.remote.host, and
-    /// get only the commands
-    /// that a script marks remote, as on the socket of an ssh session. It
-    /// answers on CommandSocket::Target with @p commandsTarget, else on
-    /// Remote::Target. No ssh session holds it, it has no forward, and the
-    /// pane's answer to OSC 24569 stays: it serves the next client too,
-    /// until the pane closes or the settings turn remote commands off. Its
-    /// path, or empty with the reason in @p error.
+    /// get only the commands that a script marks remote, as on the socket of
+    /// an ssh session. It answers on CommandSocket::Target with
+    /// @p commandsTarget, else on Remote::Target. No ssh session holds it, it
+    /// has no forward, and the pane's answer to OSC 24569 stays: it serves
+    /// the next client too, until the pane closes, the settings turn remote
+    /// commands off, or a new endpoint of the pane takes its place
+    /// (MaxEndpointsPerPane). Its path, or empty with the reason in @p error.
     QString endpoint(quint32 pane, const QString& host, bool commandsTarget, QString* error);
 
     /// The tokens of the open sessions. A test hook.

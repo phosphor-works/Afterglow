@@ -4,8 +4,10 @@
 // The "commands" socket target, the plain C++ run client of afterglow-proto
 // against the real phosphor-ipc router, and `aglow run` itself, also as
 // `afterglow run` runs it, the command lines of `afterglow ctl` and
-// `afterglow --help`, and `afterglow ctl overlay` against a target of the
-// test's own. Every test listens on a socket of its own, in a
+// `afterglow --help`, `afterglow ctl overlay` and `afterglow ctl screenshot`
+// against a target of the test's own, and the lines of a command client in
+// a session pane as the window of the session passes them on
+// (MuxCommands::forWindow). Every test listens on a socket of its own, in a
 // runtime directory of its own, or points AFTERGLOW_SOCKET where nothing
 // listens: the session that runs the tests may run inside an afterglow pane,
 // whose AFTERGLOW_SOCKET these tests must never reach.
@@ -48,7 +50,9 @@
 #include <QThread>
 
 #include <atomic>
+#include <cerrno>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <thread>
 #include <sys/stat.h>
@@ -159,6 +163,33 @@ bool pumpUntil(const std::function<bool()>& done, int timeoutMs = 5000)
         QThread::msleep(1);
     }
     return true;
+}
+
+/// Sends @p signal to @p process while it runs. Once QProcess saw it end,
+/// processId() is 0, and kill(0, ...) would signal the whole process group:
+/// ctest and every test of a -j run. Until then the pid is the process or
+/// its zombie, which QProcess has not reaped.
+bool signalIfRunning(QProcess& process, int signal)
+{
+    const qint64 pid = process.processId();
+    return process.state() != QProcess::NotRunning && pid > 0 && ::kill(pid_t(pid), signal) == 0;
+}
+
+/// The environment of this process for a program of this build that must
+/// reach no Afterglow and no mux daemon of the user's: @p runtime as
+/// XDG_RUNTIME_DIR, with XDG_STATE_HOME and HOME under it (the state socket
+/// of a mux daemon), and no pane, session, tmux or display. The session that
+/// runs the tests may run inside an afterglow pane of a mux session.
+QProcessEnvironment isolatedEnvironment(const QString& runtime)
+{
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime);
+    env.insert(QStringLiteral("XDG_STATE_HOME"), runtime + QStringLiteral("/state"));
+    env.insert(QStringLiteral("HOME"), runtime + QStringLiteral("/home"));
+    for (const QString& name : {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("AFTERGLOW_SESSION"), QStringLiteral("TMUX"),
+                                QStringLiteral("TMUX_PANE"), QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("DISPLAY")})
+        env.remove(name);
+    return env;
 }
 
 /// The client of afterglow-proto blocks, so it runs on a thread of its own
@@ -349,7 +380,8 @@ protected:
     Saved m_runtimeDir{"XDG_RUNTIME_DIR"};
     Saved m_socketVar{"AFTERGLOW_SOCKET"};
     Saved m_paneVar{"AFTERGLOW_PANE_ID"};
-    QTemporaryDir m_dir;
+    /// Under /tmp: TMPDIR can be too long for the path of a socket in it.
+    QTemporaryDir m_dir{QStringLiteral("/tmp/afterglow-commands-XXXXXX")};
     QString m_runtime;
     QString m_socketName = QStringLiteral("afterglow-commands-test.sock");
     std::unique_ptr<SettingsStore> m_settings;
@@ -498,7 +530,7 @@ TEST_F(CommandSocketTest, StdinOverTheLimitIsRefusedNotCut)
     EXPECT_EQ(output(plain, "stdout"), QStringLiteral("plain nil\n"));
 
     // A limit of 0 refuses any input, and takes none.
-    m_settings->write(QStringLiteral("Scripts"), QStringLiteral("commandStdinLimit"), 0);
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Scripts"), QStringLiteral("commandStdinLimit"), 0));
     EXPECT_EQ(input(QStringLiteral("z"), QStringLiteral("x"), true).value(QStringLiteral("code")), QLatin1String(CommandSocket::InputTooLarge));
     EXPECT_TRUE(input(QStringLiteral("e"), QString(), true).value(QStringLiteral("result")).toBool());
 }
@@ -593,17 +625,18 @@ TEST_F(CommandSocketTest, FollowsControlAndScriptsEnabled)
     ASSERT_TRUE(start(R"({"Control": {"enabled": false}})"));
     EXPECT_FALSE(m_commands->enabled());
     EXPECT_FALSE(m_instance->router().listTargets().contains(QStringLiteral("commands")));
-    m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true);
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true));
     EXPECT_TRUE(m_commands->enabled());
     QLocalSocket client;
     ASSERT_TRUE(connect(client));
     for (const char* group : {"Control", "Scripts"}) {
+        SCOPED_TRACE(group);
         const qint64 run = send(client, QStringLiteral("run"), {QLatin1String(group), QStringLiteral("cmds"), QStringLiteral("wait"),
                                                               QJsonArray{QStringLiteral("60000")}, QString(), 0});
-        ASSERT_TRUE(waitFor([&] { return client.canReadLine(); }));
+        EXPECT_TRUE(waitFor([&] { return client.canReadLine(); }));
         // Turning either off ends the target and fails the run that waits,
         // with the reason, before the scripts stop.
-        m_settings->write(QLatin1String(group), QStringLiteral("enabled"), false);
+        EXPECT_TRUE(m_settings->write(QLatin1String(group), QStringLiteral("enabled"), false));
         EXPECT_FALSE(m_commands->enabled());
         const QJsonObject failed = last(until(client, run));
         EXPECT_EQ(failed.value(QStringLiteral("type")), QStringLiteral("error"));
@@ -611,7 +644,7 @@ TEST_F(CommandSocketTest, FollowsControlAndScriptsEnabled)
             << qPrintable(failed.value(QStringLiteral("message")).toString());
         EXPECT_EQ(call(client, QStringLiteral("list")).value(QStringLiteral("code")), QStringLiteral("NO_SUCH_TARGET"));
         EXPECT_EQ(m_scripts->isEnabled(), QLatin1String(group) == QLatin1String("Control"));
-        m_settings->write(QLatin1String(group), QStringLiteral("enabled"), true);
+        EXPECT_TRUE(m_settings->write(QLatin1String(group), QStringLiteral("enabled"), true));
         EXPECT_TRUE(m_commands->enabled());
         EXPECT_TRUE(m_scripts->isEnabled());
     }
@@ -996,10 +1029,8 @@ protected:
 
     QProcessEnvironment environment() const
     {
-        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        env.insert(QStringLiteral("XDG_RUNTIME_DIR"), m_runtime);
+        QProcessEnvironment env = isolatedEnvironment(m_runtime);
         env.insert(QStringLiteral("AFTERGLOW_SOCKET"), socketPath());
-        env.remove(QStringLiteral("AFTERGLOW_PANE_ID"));
         return env;
     }
 
@@ -1090,7 +1121,7 @@ TEST_F(RunBinaryTest, ReadsStdinOnlyForACommandThatTakesIt)
     for (int i = 0; i < 100000; ++i) big += "line\x01\xc3\xa9\n";
     r = run({QStringLiteral("cmds"), QStringLiteral("read")}, big);
     EXPECT_EQ(r.status, 0);
-    // Not EXPECT_EQ: gtest's diff of 900 KB would fill the memory.
+    // Not EXPECT_EQ: gtest's diff of 800 KB would fill the memory.
     EXPECT_TRUE(r.out.toUtf8() == big) << r.out.size() << " of " << big.size() << " bytes";
     // -n passes none.
     r = run({QStringLiteral("-n"), QStringLiteral("cmds"), QStringLiteral("read")}, "abc");
@@ -1131,7 +1162,7 @@ TEST_F(RunBinaryTest, ASignalCancelsTheRunAndEndsTheClient)
         const Result r = run({QStringLiteral("cmds"), QStringLiteral("wait"), QStringLiteral("60000")}, {}, false, {},
                              [&, signal = signal](QProcess& process) {
                                  ASSERT_TRUE(pumpUntil([&] { return process.canReadLine(); }));
-                                 ::kill(pid_t(process.processId()), signal);
+                                 EXPECT_TRUE(signalIfRunning(process, signal));
                              });
         EXPECT_EQ(r.signal, signal);
         EXPECT_EQ(r.status, status);
@@ -1161,7 +1192,7 @@ TEST_F(RunBinaryTest, ASignalEndsAWaitForStdin)
     const Result r = run({QStringLiteral("cmds"), QStringLiteral("read")}, QByteArray(600 * 1024, 'x'), true, {},
                          [this](QProcess& process) {
                              ASSERT_TRUE(pumpUntil([this] { return m_commands->waitingInputBytes() > 0; }));
-                             ::kill(pid_t(process.processId()), SIGTERM);
+                             EXPECT_TRUE(signalIfRunning(process, SIGTERM));
                          });
     EXPECT_EQ(r.signal, SIGTERM);
     EXPECT_EQ(r.status, 143);
@@ -1212,11 +1243,13 @@ TEST_F(RunBinaryTest, AnInheritedIgnoredSigintStaysIgnored)
     process.setChildProcessModifier([] { ::signal(SIGINT, SIG_IGN); });
     start(process, {QStringLiteral("cmds"), QStringLiteral("wait"), QStringLiteral("60000")});
     ASSERT_TRUE(process.waitForStarted());
+    ASSERT_GT(process.processId(), 0);
     process.closeWriteChannel();
     ASSERT_TRUE(pumpUntil([&] { return process.canReadLine(); }));
-    ::kill(pid_t(process.processId()), SIGINT);
+    ASSERT_TRUE(signalIfRunning(process, SIGINT));
     EXPECT_FALSE(pumpUntil([&] { return process.state() == QProcess::NotRunning; }, 500));
-    ::kill(pid_t(process.processId()), SIGTERM);
+    // The SIGINT ended it when the test fails: then nothing gets the SIGTERM.
+    signalIfRunning(process, SIGTERM);
     ASSERT_TRUE(pumpUntil([&] { return process.state() == QProcess::NotRunning; }));
     EXPECT_EQ(process.exitStatus(), QProcess::CrashExit);
     EXPECT_EQ(process.exitCode(), SIGTERM);
@@ -1225,7 +1258,7 @@ TEST_F(RunBinaryTest, AnInheritedIgnoredSigintStaysIgnored)
 TEST_F(RunBinaryTest, ArgumentsOverOneRequestAreAUsageError)
 {
     ASSERT_TRUE(start());
-    // 100 arguments within their length, about 1.2 MiB of UTF-8 together:
+    // 100 arguments within their length, about 1.1 MiB of UTF-8 together:
     // over one request, and far below the kernel's limit on argv for exec.
     QStringList args{QStringLiteral("cmds"), QStringLiteral("greet")};
     for (int i = 0; i < 100; ++i) args << QString(4000, QChar(0x4e00));
@@ -1275,7 +1308,7 @@ TEST_F(RunBinaryTest, AfterglowRunRunsAglowRun)
         // The process runs aglow itself, not a client inside afterglow.
         EXPECT_EQ(QFileInfo(QStringLiteral("/proc/%1/exe").arg(process.processId())).canonicalFilePath(),
                   QFileInfo(aglow()).canonicalFilePath());
-        ::kill(pid_t(process.processId()), SIGINT);
+        EXPECT_TRUE(signalIfRunning(process, SIGINT));
     });
     EXPECT_EQ(r.signal, SIGINT);
     EXPECT_EQ(r.status, 130);
@@ -1288,7 +1321,19 @@ TEST_F(RunBinaryTest, AfterglowRunSaysWhenItCannotRunAglow)
     // a copy on another file system. It runs the aglow beside it, never one
     // on PATH, and ends before it looks for a socket.
     const QFileInfo binary(QStringLiteral(AFTERGLOW_BINARY));
-    QTemporaryDir lone(binary.absolutePath() + QStringLiteral("/afterglow-exec-test-XXXXXX"));
+    // In the build directory, not under /tmp: a hard link needs the same
+    // file system. A ctest timeout kills a test before its directory goes:
+    // the name holds the pid of the test, and a later run removes the
+    // directories of tests that are gone.
+    const QString prefix = QStringLiteral("afterglow-exec-test-");
+    QDir build(binary.absolutePath());
+    for (const QString& name : build.entryList({prefix + QLatin1Char('*')}, QDir::Dirs | QDir::NoDotAndDotDot)) {
+        bool number = false;
+        const qint64 pid = name.mid(prefix.size()).section(QLatin1Char('-'), 0, 0).toLongLong(&number);
+        const bool owned = number && pid > 0 && pid <= std::numeric_limits<pid_t>::max() && (::kill(pid_t(pid), 0) == 0 || errno == EPERM);
+        if (!owned) QDir(build.filePath(name)).removeRecursively();
+    }
+    QTemporaryDir lone(build.filePath(prefix + QString::number(QCoreApplication::applicationPid()) + QStringLiteral("-XXXXXX")));
     ASSERT_TRUE(lone.isValid());
     m_afterglow = lone.filePath(QStringLiteral("afterglow"));
     if (::link(QFile::encodeName(binary.filePath()).constData(), QFile::encodeName(m_afterglow).constData()) != 0) {
@@ -1360,10 +1405,8 @@ TEST(AfterglowRunWithoutAglowTest, SaysThatTheBuildHasNoAglow)
     // A socket that no afterglow listens on, should it look for one.
     QTemporaryDir runtime;
     ASSERT_TRUE(runtime.isValid());
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime.path());
+    QProcessEnvironment env = isolatedEnvironment(runtime.path());
     env.insert(QStringLiteral("AFTERGLOW_SOCKET"), runtime.filePath(QStringLiteral("none.sock")));
-    env.remove(QStringLiteral("AFTERGLOW_PANE_ID"));
     QProcess process;
     process.setProcessEnvironment(env);
     process.start(QStringLiteral(AFTERGLOW_BINARY), {QStringLiteral("run"), QStringLiteral("cmds"), QStringLiteral("greet")});
@@ -1394,11 +1437,8 @@ Isolated isolate(const QString& program, const QStringList& args, const QByteArr
         ADD_FAILURE() << "no runtime directory";
         return {};
     }
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime.path());
+    QProcessEnvironment env = isolatedEnvironment(runtime.path());
     env.insert(QStringLiteral("AFTERGLOW_SOCKET"), runtime.filePath(QStringLiteral("none.sock")));
-    for (const QString& name : {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("DISPLAY")})
-        env.remove(name);
     QProcess process;
     process.setProcessEnvironment(env);
     process.start(program, args);
@@ -1484,7 +1524,25 @@ TEST(CtlBinaryTest, UsageErrorsExitWithTwoBeforeAnyConnection)
           // The rules of afterglow.overlay, in the words of a usage error.
           std::pair{QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("--title"), QStringLiteral("a\tb"), QStringLiteral("--"),
                                 QStringLiteral("fzf")},
-                    QStringLiteral("the overlay title has a control character, a line break or a bidirectional control")}}) {
+                    QStringLiteral("the overlay title has a control character, a line break or a bidirectional control")},
+          // The session comes before the command, with a name.
+          std::pair{QStringList{ctl, QStringLiteral("--session")}, QStringLiteral("--session needs the name of a session")},
+          std::pair{QStringList{ctl, QStringLiteral("--session"), QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("ls")},
+                    QStringLiteral("--session needs the name of a session")},
+          std::pair{QStringList{ctl, QStringLiteral("--session"), QStringLiteral("work")}, QStringLiteral("no command after --session work")},
+          std::pair{QStringList{ctl, QStringLiteral("--session"), QStringLiteral("bad name"), QStringLiteral("ls")},
+                    QStringLiteral("--session takes the name of a session: 1 to 64 ASCII letters, digits, '_' or '-', with a letter, a "
+                                   "digit or '_' first")},
+          std::pair{QStringList{ctl, QStringLiteral("--session"), QStringLiteral("a"), QStringLiteral("--session"), QStringLiteral("b"),
+                                QStringLiteral("ls")},
+                    QStringLiteral("--session is given more than once")},
+          std::pair{QStringList{ctl, QStringLiteral("open-project"), QStringLiteral("x"), QStringLiteral("--into-session"),
+                                QStringLiteral("--no-session")},
+                    QStringLiteral("open-project takes --into-session or --no-session, not both")},
+          // The session of open-project is --into-session: --session goes
+          // before the command.
+          std::pair{QStringList{ctl, QStringLiteral("open-project"), QStringLiteral("x"), QStringLiteral("--session")},
+                    QStringLiteral("unknown option --session")}}) {
         const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
         EXPECT_EQ(r.status, 2) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.err);
         EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n\nUsage: afterglow ctl ").arg(message))) << qPrintable(r.err);
@@ -1528,11 +1586,8 @@ TEST(CtlBinaryTest, AClosedStandardInputReadsAsEmpty)
 {
     QTemporaryDir runtime(QStringLiteral("/tmp/afterglow-ctl-XXXXXX"));
     ASSERT_TRUE(runtime.isValid());
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime.path());
+    QProcessEnvironment env = isolatedEnvironment(runtime.path());
     env.insert(QStringLiteral("AFTERGLOW_SOCKET"), runtime.filePath(QStringLiteral("none.sock")));
-    for (const QString& name : {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("DISPLAY")})
-        env.remove(name);
     QProcess process;
     process.setProcessEnvironment(env);
     process.setChildProcessModifier([] { ::close(STDIN_FILENO); });
@@ -1637,11 +1692,8 @@ AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, cons
             }
         });
     });
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime.path());
+    QProcessEnvironment env = isolatedEnvironment(runtime.path());
     env.insert(QStringLiteral("AFTERGLOW_SOCKET"), path);
-    for (const QString& name : {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("DISPLAY")})
-        env.remove(name);
     QProcess process;
     process.setProcessEnvironment(env);
     process.setWorkingDirectory(runtime.path());
@@ -1814,8 +1866,8 @@ TEST(CtlScreenshotTest, WritesTheImageWhereFileSaysAndTheErrorsOfTheCall)
         r = ctlAgainst(image, {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--window"), target}, {}, -1, {}, screenshot);
         EXPECT_EQ(r.outcome.status, 0) << qPrintable(target) << qPrintable(r.outcome.err);
         EXPECT_EQ(r.outcome.out, QString::fromLatin1(png)) << qPrintable(target);
-        ASSERT_EQ(r.calls.size(), 1);
-        EXPECT_EQ(r.calls.first().value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("window")}));
+        EXPECT_EQ(r.calls.size(), 1) << qPrintable(target);
+        EXPECT_EQ(r.calls.value(0).value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("window")}));
     }
 
     // A failed write names the file and leaves no file.
@@ -1839,7 +1891,7 @@ TEST(CtlScreenshotTest, WritesTheImageWhereFileSaysAndTheErrorsOfTheCall)
 
     // A terminal, as standard output or as FILE, would get the bytes of the
     // PNG: a usage error, before anything is written.
-    const AfterglowProto::UniqueFd master(posix_openpt(O_RDWR | O_NOCTTY));
+    const AfterglowProto::UniqueFd master(posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC));
     ASSERT_TRUE(master.valid());
     ASSERT_EQ(grantpt(master.get()), 0);
     ASSERT_EQ(unlockpt(master.get()), 0);
@@ -1976,7 +2028,7 @@ TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)
     // A terminal is no list: the call goes at once, without stdin. Both
     // ends are opened with O_NOCTTY: neither becomes the controlling
     // terminal of the test or of afterglow.
-    const AfterglowProto::UniqueFd master(posix_openpt(O_RDWR | O_NOCTTY));
+    const AfterglowProto::UniqueFd master(posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC));
     ASSERT_TRUE(master.valid());
     ASSERT_EQ(grantpt(master.get()), 0);
     ASSERT_EQ(unlockpt(master.get()), 0);
@@ -2094,25 +2146,75 @@ TEST(MuxCommandsLine, ARunNamesTheWindowsIdOfItsPane)
     std::string error;
     const auto line = MuxCommands::forWindow(runLine(3), AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error);
     ASSERT_TRUE(line) << error;
-    const auto request = Json::parse(*line);
-    ASSERT_TRUE(request);
-    EXPECT_EQ((*request)["id"].toInteger(), 5);
-    EXPECT_EQ((*request)["args"].toArray().at(5).toInteger(), 41);
-    EXPECT_EQ((*request)["args"].toArray().at(1).toString(), "tools");
+    // Only the pane changes.
+    EXPECT_EQ(*line, runLine(41));
 }
 
 TEST(MuxCommandsLine, OtherLinesOfTheCommandsTargetStayAsTheyCame)
 {
     const std::string list = R"({"type":"call","id":1,"target":"commands","fn":"list","args":[]})";
     const std::string ack = R"({"type":"call","id":2,"target":"commands","fn":"ack","args":["r",9]})";
+    const std::string input = R"({"type":"call","id":4,"target":"commands","fn":"input","args":["r","abc",true]})";
     const std::string subscribe = R"({"type":"subscribe","id":3,"target":"commands","signal":"stdout"})";
-    // Pane 0 is the focused pane, as for any client, and the Afterglow
-    // answers a pane ID that is not one, and a line that is not JSON.
-    for (const std::string& line : {list, ack, subscribe, runLine(0), runLine(-1), runLine("x"), std::string("garbage")}) {
+    // Six arguments whose last is a pane of the session: only a run names a
+    // pane.
+    const std::string notRun = R"({"type":"call","id":8,"target":"commands","fn":"list","args":["r","tools","greet",[],"/",3]})";
+    const std::string notCall = R"({"type":"subscribe","id":9,"target":"commands","fn":"run","args":["r","tools","greet",[],"/",3]})";
+    // Without a focus to give, pane 0 is the client's own (an endpoint of
+    // RemoteSockets).
+    for (const std::string& line : {list, ack, input, subscribe, notRun, notCall, runLine(0)}) {
         std::string error;
         EXPECT_EQ(MuxCommands::forWindow(line, AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error), line);
         EXPECT_TRUE(error.empty()) << error;
     }
+}
+
+// A number that is no pane ID never reaches the Afterglow: one below 0, one
+// that is not whole, one past 2^53 that a JSON reader cannot hold exactly,
+// and one past 32 bits, which a cast would make pane 3.
+TEST(MuxCommandsLine, ARunOfANumberThatIsNoPaneIdIsRefused)
+{
+    for (const double pane : {-1.0, 1.5, 18014398509481984.0, 4294967299.0}) {
+        std::string error;
+        EXPECT_FALSE(MuxCommands::forWindow(runLine(pane), AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error)) << pane;
+        const Json::Value reply = Json::parse(error).value_or(Json::Value());
+        EXPECT_EQ(reply["type"].toString(), "error") << pane;
+        EXPECT_EQ(reply["id"].toInteger(), 5) << pane;
+        EXPECT_EQ(reply["code"].toString(), AfterglowProto::IpcErrorCode::InvalidArg) << pane;
+        EXPECT_EQ(reply["message"].toString(), "the pane of a run from a client of session 's' is not a pane ID") << pane;
+    }
+}
+
+// A client of a session of this computer reaches the Afterglow, whose pane 0
+// is its own focused pane, maybe of another window: the window gives the
+// focused pane of the session's window instead.
+TEST(MuxCommandsLine, PaneZeroIsTheFocusedPaneOfTheSessionWindow)
+{
+    std::string error;
+    // The focused pane is not the window's pane of daemon pane 3 (41), so
+    // that a pane ID that took the focus shows.
+    const std::function<std::optional<quint32>()> focused = [] { return std::optional<quint32>(42); };
+    const auto line = MuxCommands::forWindow(runLine(0), AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error, &focused);
+    ASSERT_TRUE(line) << error;
+    EXPECT_EQ(*line, runLine(42));
+    // Another pane keeps its own ID.
+    const auto other = MuxCommands::forWindow(runLine(3), AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error, &focused);
+    ASSERT_TRUE(other) << error;
+    EXPECT_EQ(*other, runLine(41));
+
+    const std::function<std::optional<quint32>()> none = [] { return std::optional<quint32>(); };
+    error.clear();
+    EXPECT_FALSE(MuxCommands::forWindow(runLine(0), AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error, &none));
+    const Json::Value reply = Json::parse(error).value_or(Json::Value());
+    EXPECT_EQ(reply["id"].toInteger(), 5);
+    EXPECT_EQ(reply["code"].toString(), AfterglowProto::IpcErrorCode::CallFailed);
+    EXPECT_EQ(reply["message"].toString(), "no pane of session 's' has the focus in its window");
+
+    // A run of pane 0 on the remote target, for an endpoint, stays.
+    const std::string remoteRun = R"({"type":"call","id":7,"target":"remote","fn":"run","args":["r","tools","greet",[],"/",0]})";
+    error.clear();
+    EXPECT_EQ(MuxCommands::forWindow(remoteRun, AfterglowProto::Remote::Target, windowPane, QStringLiteral("s"), &error), remoteRun);
+    EXPECT_TRUE(error.empty()) << error;
 }
 
 TEST(MuxCommandsLine, AClientOfAnSshSessionReachesOnlyTheRemoteTarget)
@@ -2121,17 +2223,31 @@ TEST(MuxCommandsLine, AClientOfAnSshSessionReachesOnlyTheRemoteTarget)
     std::string error;
     const auto line = MuxCommands::forWindow(remoteRun, AfterglowProto::Remote::Target, windowPane, QStringLiteral("s"), &error);
     ASSERT_TRUE(line) << error;
-    EXPECT_EQ((*Json::parse(*line))["args"].toArray().at(5).toInteger(), 41);
+    const auto request = Json::parse(*line);
+    ASSERT_TRUE(request);
+    EXPECT_EQ((*request)["args"].toArray().at(5).toInteger(), 41);
+    // The other lines of the remote target go as they came.
+    for (const std::string& other : {std::string(R"({"type":"call","id":1,"target":"remote","fn":"list","args":[]})"),
+                                     std::string(R"({"type":"call","id":2,"target":"remote","fn":"ack","args":["r",9]})"),
+                                     std::string(R"({"type":"call","id":4,"target":"remote","fn":"input","args":["r","abc",true]})"),
+                                     std::string(R"({"type":"subscribe","id":3,"target":"remote","signal":"stdout"})")}) {
+        error.clear();
+        EXPECT_EQ(MuxCommands::forWindow(other, AfterglowProto::Remote::Target, windowPane, QStringLiteral("s"), &error), other);
+        EXPECT_TRUE(error.empty()) << error;
+    }
     // The commands target, which a client of an ssh session does not have.
-    EXPECT_FALSE(MuxCommands::forWindow(runLine(3), AfterglowProto::Remote::Target, windowPane, QStringLiteral("s"), &error));
-    EXPECT_EQ((*Json::parse(error))["code"].toString(), AfterglowProto::IpcErrorCode::NoSuchTarget);
+    error.clear();
+    ASSERT_FALSE(MuxCommands::forWindow(runLine(3), AfterglowProto::Remote::Target, windowPane, QStringLiteral("s"), &error));
+    EXPECT_EQ(Json::parse(error).value_or(Json::Value())["code"].toString(), AfterglowProto::IpcErrorCode::NoSuchTarget);
 }
 
 TEST(MuxCommandsLine, TheWindowRefusesWhatItCannotPassOn)
 {
     const auto refused = [](const std::string& line) {
         std::string error;
-        EXPECT_FALSE(MuxCommands::forWindow(line, AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error)) << line;
+        // A line can be about 1 MiB: its size, and its start.
+        EXPECT_FALSE(MuxCommands::forWindow(line, AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error))
+            << line.size() << " bytes: " << line.substr(0, 200);
         return Json::parse(error).value_or(Json::Value());
     };
     // A pane of the session that the window does not show.
@@ -2144,6 +2260,25 @@ TEST(MuxCommandsLine, TheWindowRefusesWhatItCannotPassOn)
     reply = refused(R"({"type":"call","id":6,"target":"control","fn":"listPanes","args":[]})");
     EXPECT_EQ(reply["id"].toInteger(), 6);
     EXPECT_EQ(reply["code"].toString(), AfterglowProto::IpcErrorCode::NoSuchTarget);
+    // A pane that is not a number: phosphor-ipc would make "7" pane 7 and
+    // true pane 1 of the Afterglow.
+    for (const Json::Value& pane : {Json::Value("7"), Json::Value(true)}) {
+        reply = refused(runLine(pane));
+        EXPECT_EQ(reply["id"].toInteger(), 5);
+        EXPECT_EQ(reply["code"].toString(), AfterglowProto::IpcErrorCode::InvalidArg);
+    }
+    // Lines that the window cannot read as the Afterglow does: not JSON,
+    // several lines in one, and nested deeper than the reader takes. The
+    // second holds a call of another target.
+    reply = refused("garbage");
+    EXPECT_EQ(reply["code"].toString(), AfterglowProto::IpcErrorCode::MalformedRequest);
+    EXPECT_EQ(reply.find("id"), nullptr);
+    reply = refused("{\"x\":\n" + std::string(R"({"type":"call","id":6,"target":"control","fn":"listPanes","args":[]})") + "\n}");
+    EXPECT_EQ(reply["code"].toString(), AfterglowProto::IpcErrorCode::MalformedRequest);
+    const std::string deep = R"({"type":"call","id":5,"target":"commands","x":)" + std::string(Json::MaxDepth + 1, '[')
+                             + std::string(Json::MaxDepth + 1, ']') + "}";
+    reply = refused(deep);
+    EXPECT_EQ(reply["code"].toString(), AfterglowProto::IpcErrorCode::MalformedRequest);
     // A run that the client measured with its pane ID, and that the
     // window's longer ID makes too long.
     const std::size_t base = runLine(3).size();
@@ -2152,6 +2287,14 @@ TEST(MuxCommandsLine, TheWindowRefusesWhatItCannotPassOn)
     reply = refused(longest);
     EXPECT_EQ(reply["id"].toInteger(), 5);
     EXPECT_NE(reply["message"].toString().find("over 1 MiB"), std::string::npos) << reply["message"].toString();
+    // One byte shorter: with the longer ID, the line and its '\n' are the
+    // most that the Afterglow takes.
+    const std::string fits = runLine(3, std::string(AfterglowProto::IpcConnection::MaxRequestBytes - 2 - base, 'x'));
+    std::string error;
+    const auto passed = MuxCommands::forWindow(fits, AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error);
+    ASSERT_TRUE(passed) << error;
+    EXPECT_EQ(passed->size() + 1, AfterglowProto::IpcConnection::MaxRequestBytes);
+    EXPECT_TRUE(*passed == runLine(41, std::string(AfterglowProto::IpcConnection::MaxRequestBytes - 2 - base, 'x')));
 }
 
 } // namespace

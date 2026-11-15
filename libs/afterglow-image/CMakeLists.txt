@@ -138,6 +138,12 @@ function(afterglow_add_libjpeg_turbo)
         "-DCMAKE_MAKE_PROGRAM:FILEPATH=${CMAKE_MAKE_PROGRAM}" -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON
         -DENABLE_SHARED:BOOL=OFF -DENABLE_STATIC:BOOL=ON -DWITH_TURBOJPEG:BOOL=ON -DWITH_TOOLS:BOOL=OFF
         -DWITH_TESTS:BOOL=OFF)
+    # The assembler found here: the other build has none of the search paths
+    # of this one (CMAKE_PREFIX_PATH, a given AFTERGLOW_NASM), and would build
+    # without its SIMD code where this one said that it has it.
+    if(AFTERGLOW_NASM)
+        list(APPEND arguments "-DCMAKE_ASM_NASM_COMPILER:FILEPATH=${AFTERGLOW_NASM}")
+    endif()
     set(forwarded CMAKE_TOOLCHAIN_FILE CMAKE_C_COMPILER_LAUNCHER CMAKE_C_COMPILER_TARGET CMAKE_SYSROOT)
     if(CMAKE_CROSSCOMPILING)
         # Without a toolchain file, the system of the target is in these two.
@@ -201,8 +207,9 @@ afterglow_add_libjpeg_turbo()
 afterglow_third_party_target(afterglow_png afterglow_webp)
 
 # The codecs are linked into aglow and aglow-mux, so their notices go
-# with the binaries: each entry is a file and the name that it installs
-# under. LICENSE.md of libjpeg-turbo names README.ijg, which holds the
+# with the binaries (afterglow_install_bundled_notices in
+# cmake/AfterglowDependencies.cmake): each entry is a file and the name that
+# it installs under. LICENSE.md of libjpeg-turbo names README.ijg, which holds the
 # license of the Independent JPEG Group, so that file keeps its name. That
 # license asks that the documents of a program say that it is based in part
 # on the work of the Independent JPEG Group: notices/IJG.txt says it where
@@ -222,18 +229,6 @@ foreach(notice IN LISTS AFTERGLOW_IMAGE_NOTICES)
 endforeach()
 set(AFTERGLOW_IMAGE_NOTICES "${AFTERGLOW_IMAGE_NOTICES}" PARENT_SCOPE)
 
-# afterglow_install_image_notices(<directory>)
-#
-# Installs the notices of the three codecs into <directory>: the license
-# directory of the application in a whole build (afterglow/CMakeLists.txt),
-# and that of aglow in a build of aglow alone (tools/aglow/CMakeLists.txt).
-function(afterglow_install_image_notices directory)
-    foreach(notice IN LISTS AFTERGLOW_IMAGE_NOTICES)
-        string(REGEX MATCH "^(.+)=([^=]+)$" matched "${notice}")
-        install(FILES "${CMAKE_MATCH_1}" DESTINATION "${directory}" RENAME "${CMAKE_MATCH_2}")
-    endforeach()
-endfunction()
-
 add_library(AfterglowImage STATIC
     src/Bmp.cpp
     src/Decode.cpp
@@ -245,7 +240,9 @@ add_library(AfterglowImage STATIC
 add_library(Afterglow::Image ALIAS AfterglowImage)
 target_include_directories(AfterglowImage PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(AfterglowImage PRIVATE afterglow_png afterglow_turbojpeg afterglow_webp)
-# PIC: aglow and aglow-mux are position-independent executables.
+# PIC: aglow links it into a static position-independent program
+# (-static-pie, tools/aglow) where the C library allows one, also with a
+# compiler that makes no PIE by default. aglow-mux links it too.
 set_target_properties(AfterglowImage PROPERTIES POSITION_INDEPENDENT_CODE ON AUTOMOC OFF AUTOUIC OFF)
 
 # The image files of the tests, which the tests of aglow-mux and the

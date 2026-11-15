@@ -23,12 +23,14 @@ struct Settings;
 /// pane itself: @p workingDirectory, or the home directory when it is not a
 /// directory (the HOME that the configuration or the launch gives, else the
 /// inherited one, when that is a directory); the configured environment,
-/// then the launch's; @p command, else
-/// Terminal.shell, else the user's shell; shell integration; and
-/// AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO unless the launch names
-/// them. A window's panes and a mux session's both start from it. A window
-/// adds its own fallback when the program fails to start. Shell integration
-/// reads the variables that the program would inherit in @p inherited.
+/// then the launch's; @p command, else Terminal.shell, else the user's
+/// shell; shell integration; and AFTERGLOW_SSH_HELPER and
+/// AFTERGLOW_SSH_TERMINFO unless the launch names them. With
+/// Terminal.sshIntegration off, it removes an inherited AFTERGLOW_SSH_HELPER
+/// unless the launch names it. A window's panes and a mux session's both
+/// start from it. A window adds its own fallback when the program fails to
+/// start. Shell integration reads the variables that the program would
+/// inherit in @p inherited.
 AfterglowPty::SpawnOptions prepareLaunch(const Settings& settings, const QString& workingDirectory, const QStringList& command,
                                          const QVariantMap& environment, const InheritedEnvironment* inherited = nullptr);
 
@@ -51,7 +53,15 @@ void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantM
 QString launchedProgramName(const QStringList& command);
 
 /// @p command as a session pane's launch keeps it for a project
-/// (AfterglowMux::Launch::command): empty when it does not fit a layout.
+/// (AfterglowMux::Launch::command): empty when a project would not keep it
+/// (ProjectStore::keepsCommand), which is when it does not fit a layout.
+/// The launch warns of that once (localLaunch, sessionValues).
 std::vector<std::string> sessionCommand(const QStringList& command);
+
+/// The directories of the PATH in which the program of a pane that
+/// prepareLaunch starts from @p settings is looked for: those of the
+/// configured PATH, an empty entry as ".", or none for the PATH of this
+/// process. For ProjectStore::launchOf.
+QStringList launchSearchPath(const Settings& settings);
 
 } // namespace Afterglow

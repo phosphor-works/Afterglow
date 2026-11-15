@@ -22,6 +22,8 @@
 #include <algorithm>
 #include <cerrno>
 #include <climits>
+#include <utility>
+#include <vector>
 
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -35,7 +37,7 @@ namespace Remote = AfterglowProto::Remote;
 namespace {
 
 /// The options of `ssh -O cancel` that a client can give, at most.
-constexpr qsizetype MaxSshOptions = 256;
+constexpr qsizetype MaxSshOptions = qsizetype(Remote::MaxOptions);
 
 bool cleanText(const QString& text)
 {
@@ -170,7 +172,7 @@ QString RemoteSockets::open(const Request& request, Opened& out)
     if (request.destination.isEmpty() || request.destination.startsWith(QLatin1Char('-')))
         return QStringLiteral("the ssh destination must not be empty or start with '-'");
     if (m_sessions.size() >= MaxSessions) return QStringLiteral("afterglow has %1 remote sessions already").arg(MaxSessions);
-    const auto ofPane = std::count_if(m_sessions.cbegin(), m_sessions.cend(), [&](const auto& s) { return s->pane == request.pane; });
+    const auto ofPane = std::count_if(m_sessions.cbegin(), m_sessions.cend(), [&](const auto& s) { return s->pane == request.pane && !s->endpoint; });
     if (ofPane >= MaxSessionsPerPane)
         return QStringLiteral("pane %1 has %2 remote sessions already").arg(request.pane).arg(MaxSessionsPerPane);
     const auto token = AfterglowProto::randomHex(Remote::TokenBytes);
@@ -263,16 +265,31 @@ QString RemoteSockets::endpoint(quint32 pane, const QString& host, bool commands
     for (const auto& session : std::as_const(m_sessions)) {
         if (session->endpoint && session->pane == pane && session->host == host && session->commandsTarget == commandsTarget
             && !session->socket.isEmpty()) {
+            // Handed out again: the last to make room for another host.
+            session->order = ++m_opened;
             return session->socket;
         }
     }
+    // An endpoint lives as long as its pane: one pane that reaches many
+    // hosts would fill its places. The one handed out least lately goes,
+    // unless a client still uses it.
+    std::vector<const Session*> ofPane;
+    for (const auto& s : std::as_const(m_sessions)) {
+        if (s->endpoint && s->pane == pane) ofPane.push_back(s.get());
+    }
+    if (ofPane.size() >= std::size_t(MaxEndpointsPerPane)) {
+        const Session* idle = nullptr;
+        for (const Session* s : ofPane) {
+            if ((!s->router || s->router->connectionCount() == 0) && (!idle || s->order < idle->order)) idle = s;
+        }
+        if (!idle) {
+            *error = QStringLiteral("pane %1 has %2 remote command sockets in use already").arg(pane).arg(MaxEndpointsPerPane);
+            return {};
+        }
+        close(idle->token, QStringLiteral("another host took the place of its remote command socket"));
+    }
     if (m_sessions.size() >= MaxSessions) {
         *error = QStringLiteral("afterglow has %1 remote sessions already").arg(MaxSessions);
-        return {};
-    }
-    const auto ofPane = std::count_if(m_sessions.cbegin(), m_sessions.cend(), [&](const auto& s) { return s->pane == pane; });
-    if (ofPane >= MaxSessionsPerPane) {
-        *error = QStringLiteral("pane %1 has %2 remote sessions already").arg(pane).arg(MaxSessionsPerPane);
         return {};
     }
     const auto token = AfterglowProto::randomHex(Remote::TokenBytes);
@@ -299,6 +316,8 @@ QString RemoteSockets::forwarded(const QString& token)
 {
     const std::shared_ptr<Session> session = m_sessions.value(token);
     if (!session) return QStringLiteral("no remote socket %1: its session has ended").arg(token);
+    // An endpoint has no forward, and the pane's answer is not its own.
+    if (session->endpoint) return QStringLiteral("remote socket %1 has no forward").arg(token);
     if (session->socket.isEmpty()) return QStringLiteral("remote socket %1 is closed").arg(token);
     if (!session->answering) {
         session->answering = true;
@@ -312,7 +331,7 @@ QString RemoteSockets::failed(const QString& token, const QString& reason)
     const std::shared_ptr<Session> session = m_sessions.value(token);
     if (!session) return QStringLiteral("no remote socket %1").arg(token);
     if (reason != QLatin1String("forward")) return QStringLiteral("the reason of a failed forward is forward");
-    if (session->socket.isEmpty()) return QStringLiteral("remote socket %1 has no forward").arg(token);
+    if (session->socket.isEmpty() || session->endpoint) return QStringLiteral("remote socket %1 has no forward").arg(token);
     // Nothing to cancel: the forward was never added, or the client
     // cancelled it after its remoteSocketForwarded got no answer in time,
     // which can come before this.
@@ -325,11 +344,13 @@ QString RemoteSockets::failed(const QString& token, const QString& reason)
 
 void RemoteSockets::paneClosed(quint32 pane)
 {
-    QStringList ended;
+    QList<std::pair<QString, bool>> ended;
     for (const auto& session : std::as_const(m_sessions)) {
-        if (session->pane == pane) ended << session->token;
+        if (session->pane == pane) ended.append({session->token, session->endpoint});
     }
-    for (const QString& token : std::as_const(ended)) close(token, QStringLiteral("the pane of the ssh session closed"));
+    for (const auto& [token, endpoint] : std::as_const(ended)) {
+        close(token, endpoint ? QStringLiteral("the pane of the remote command closed") : QStringLiteral("the pane of the ssh session closed"));
+    }
 }
 
 QString RemoteSockets::socket(const QString& token) const

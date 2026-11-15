@@ -98,7 +98,34 @@ std::string procLines(pid_t pid, const char* file, const char* prefix)
 }
 
 #define SKIP_WITHOUT(script)                                                                                        \
-    if ((script).empty()) GTEST_SKIP() << "the temporary directory runs no program (noexec)"
+    do {                                                                                                            \
+        if ((script).empty()) GTEST_SKIP() << "the temporary directory runs no program (noexec)";                 \
+    } while (false)
+
+/// @p path as one word of sh, whatever its bytes: the scripts of these
+/// tests name files under TMPDIR. The decoder runs a server with its own
+/// arguments, so a script cannot take its paths as arguments.
+std::string shellQuoted(const std::filesystem::path& path)
+{
+    std::string out = "'";
+    for (const char c : path.string()) {
+        if (c == '\'') out += "'\\''";
+        else out += c;
+    }
+    return out + "'";
+}
+
+/// Whether a decode of this process runs: it holds the memory file of its
+/// image (decode() makes it before it waits for the server).
+bool decodeRuns()
+{
+    std::error_code ignored;
+    for (const auto& fd : std::filesystem::directory_iterator("/proc/self/fd", ignored)) {
+        std::error_code error;
+        if (std::filesystem::read_symlink(fd.path(), error).string().starts_with("/memfd:afterglow-image")) return true;
+    }
+    return false;
+}
 
 } // namespace
 
@@ -197,7 +224,7 @@ TEST(MuxImageDecoder, AServerThatIsMissingOrEndsDecodesNothing)
         ImageDecoder missing(path);
         EXPECT_FALSE(decode(missing, Png, ImageFormats::Png).ok);
         const std::string starts = (dir.path / "later-starts").string();
-        const std::string later = dir.script("later", "echo started >> '" + starts + "'\nexit 1");
+        const std::string later = dir.script("later", "echo started >> " + shellQuoted(starts) + "\nexit 1");
         SKIP_WITHOUT(later);
         EXPECT_FALSE(decode(missing, Png, ImageFormats::Png).ok);
         EXPECT_FALSE(std::filesystem::exists(starts));
@@ -209,7 +236,7 @@ TEST(MuxImageDecoder, AServerThatIsMissingOrEndsDecodesNothing)
     TempDir dir;
     ASSERT_FALSE(dir.path.empty());
     const std::string starts = (dir.path / "starts").string();
-    const std::string ends = dir.script("ends", "echo started >> '" + starts + "'\nexit 1");
+    const std::string ends = dir.script("ends", "echo started >> " + shellQuoted(starts) + "\nexit 1");
     SKIP_WITHOUT(ends);
     ImageDecoder decoder(ends);
     for (int i = 0; i < 3; ++i) EXPECT_FALSE(decode(decoder, Png, ImageFormats::Png).ok);
@@ -265,8 +292,8 @@ TEST(MuxImageDecoder, AServerThatDoesNotAnswerEndsAtTheDeadline)
     TempDir dir;
     ASSERT_FALSE(dir.path.empty());
     const std::string once = (dir.path / "once").string();
-    const std::string stuck = dir.script("stuck", "if [ ! -e '" + once + "' ]; then : > '" + once + "'; exec /bin/sleep 60; fi\nexec '"
-                                                      + AFTERGLOW_MUX + "' \"$@\"");
+    const std::string stuck = dir.script("stuck", "if [ ! -e " + shellQuoted(once) + " ]; then : > " + shellQuoted(once) + "; exec /bin/sleep 60; fi\nexec "
+                                                      + shellQuoted(AFTERGLOW_MUX) + " \"$@\"");
     SKIP_WITHOUT(stuck);
     ImageDecoder decoder(stuck, 300);
     const auto start = Clock::now();
@@ -285,17 +312,21 @@ TEST(MuxImageDecoder, AServerThatDoesNotAnswerEndsAtTheDeadline)
 
 TEST(MuxImageDecoder, ADecodeThatWaitsForAnotherEndsWhenItsPaneCloses)
 {
-    // One pane's request waits 3 s for a server that does not answer. A
+    // One pane's request waits 1 s for a server that does not answer. A
     // second pane waits behind it, and closes: its decode ends at once, not
-    // when the first one's wait ends.
+    // when its own wait ends, 1 s after it began.
     TempDir dir;
     ASSERT_FALSE(dir.path.empty());
     const std::string stuck = dir.script("stuck", "exec /bin/sleep 60");
     SKIP_WITHOUT(stuck);
-    ImageDecoder decoder(stuck, 3000);
-    std::thread first([&decoder] { EXPECT_FALSE(decode(decoder, Png, ImageFormats::Png).ok); });
-    // The first request holds the server by now.
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    ASSERT_FALSE(decodeRuns());
+    ImageDecoder decoder(stuck, 1000);
+    // Joined also when an ASSERT below returns.
+    std::jthread first([&decoder] { EXPECT_FALSE(decode(decoder, Png, ImageFormats::Png).ok); });
+    // The first request holds the server once its image is in a memory
+    // file: it takes the server right after, before the second one makes its
+    // own.
+    ASSERT_TRUE(MuxTest::waitFor(decodeRuns));
     const int cancel = ::eventfd(0, EFD_CLOEXEC);
     ASSERT_GE(cancel, 0);
     std::thread closes([cancel] {
@@ -309,22 +340,26 @@ TEST(MuxImageDecoder, ADecodeThatWaitsForAnotherEndsWhenItsPaneCloses)
     closes.join();
     first.join();
     ::close(cancel);
-    EXPECT_LT(took, std::chrono::milliseconds(1500));
+    // The close comes at 100 ms, and the wait ends at 1000 ms.
+    EXPECT_LT(took, std::chrono::milliseconds(500));
 }
 
 TEST(MuxImageDecoder, TheServerTakesOnlyItsDaemon)
 {
     // aglow-mux --decode-images runs only as the child of the daemon
-    // whose process id it gets: pid 1 is not its parent.
+    // whose process id it gets: the parent of this process is not its
+    // parent.
     pid_t pid = 0;
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
     const std::string argument(AfterglowMux::DecodeServerArgument);
-    char* const argv[] = {const_cast<char*>(AFTERGLOW_MUX), const_cast<char*>(argument.c_str()), const_cast<char*>("1"), nullptr};
+    std::string other = std::to_string(::getppid());
+    char* const argv[] = {const_cast<char*>(AFTERGLOW_MUX), const_cast<char*>(argument.c_str()), other.data(), nullptr};
     char* const env[] = {nullptr};
-    ASSERT_EQ(::posix_spawn(&pid, AFTERGLOW_MUX, &actions, nullptr, argv, env), 0);
+    const int spawned = ::posix_spawn(&pid, AFTERGLOW_MUX, &actions, nullptr, argv, env);
     posix_spawn_file_actions_destroy(&actions);
+    ASSERT_EQ(spawned, 0);
     int status = 0;
     ASSERT_EQ(::waitpid(pid, &status, 0), pid);
     EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 1) << status;
@@ -364,10 +399,16 @@ TEST(MuxImageDecoder, ADecodingProcessHasItsLimitsAndItsFilter)
     EXPECT_TRUE(d.ok);
     ASSERT_FALSE(status.empty()) << "no decoding process was seen with its filter";
     EXPECT_NE(status.find("NoNewPrivs:\t1"), std::string::npos) << status;
+    // The process can end between its status and its limits: then there is
+    // nothing to check, which is a failure, not a pass.
+    ASSERT_FALSE(limits.empty()) << "the decoding process ended before its limits were read";
     const auto line = [&limits](const char* name) {
         const std::size_t at = limits.find(name);
         return at == std::string::npos ? std::string() : limits.substr(at, limits.find('\n', at) - at);
     };
+    for (const char* name : {"Max address space", "Max cpu time", "Max core file size"}) {
+        EXPECT_FALSE(line(name).empty()) << name << ": " << limits;
+    }
     EXPECT_EQ(line("Max address space").find("unlimited"), std::string::npos) << limits;
     EXPECT_EQ(line("Max cpu time").find("unlimited"), std::string::npos) << limits;
     EXPECT_NE(line("Max core file size").find(" 0 "), std::string::npos) << limits;
@@ -376,17 +417,23 @@ TEST(MuxImageDecoder, ADecodingProcessHasItsLimitsAndItsFilter)
 TEST(MuxImageDecoder, PanesDecodeAtOnce)
 {
     // The PTY reader threads of the panes call decode() at once: each gets
-    // the pixels of its own image.
+    // the pixels of its own image, as one decode alone gives them.
     ImageDecoder decoder(AFTERGLOW_MUX);
+    const std::string* const files[] = {&Png, &Gif, &Bmp};
+    std::vector<Decoded> alone;
+    for (const std::string* file : files) {
+        alone.push_back(decode(decoder, *file, ImageFormats::Common));
+        ASSERT_TRUE(alone.back().ok);
+    }
     std::vector<std::thread> panes;
     std::atomic<int> wrong = 0;
     for (int pane = 0; pane < 4; ++pane) {
-        panes.emplace_back([&decoder, &wrong, pane] {
+        panes.emplace_back([&decoder, &wrong, &files, &alone, pane] {
             for (int i = 0; i < 20; ++i) {
-                const std::string& file = (pane + i) % 3 == 0 ? Png : (pane + i) % 3 == 1 ? Gif : Bmp;
-                const Decoded d = decode(decoder, file, ImageFormats::Common);
-                const std::uint32_t side = &file == &Png ? 3 : &file == &Gif ? 4 : 2;
-                if (!d.ok || d.width != side) ++wrong;
+                const std::size_t which = std::size_t(pane + i) % 3;
+                const Decoded d = decode(decoder, *files[which], ImageFormats::Common);
+                const Decoded& expected = alone[which];
+                if (!d.ok || d.width != expected.width || d.height != expected.height || d.rgba != expected.rgba) ++wrong;
             }
         });
     }
@@ -425,9 +472,15 @@ TEST(MuxImageDecoder, ADecodeEndsAtItsDeadlineOrWhenItIsCancelled)
     bool warm = false;
     for (int attempt = 0; attempt < 5 && !warm; ++attempt) warm = decode(quick, Png, ImageFormats::Png).ok;
     ASSERT_TRUE(warm);
+    // Each wait ends between its deadline and the end of a whole decode:
+    // halfway between them is the bound.
+    const auto bound = std::chrono::milliseconds(wait) + (full - std::chrono::milliseconds(wait)) / 2;
     start = Clock::now();
     EXPECT_FALSE(decode(quick, large, ImageFormats::Png).ok);
-    EXPECT_GE(Clock::now() - start, std::chrono::milliseconds(wait));
+    const auto waited = Clock::now() - start;
+    EXPECT_GE(waited, std::chrono::milliseconds(wait));
+    EXPECT_LT(waited, bound) << std::chrono::duration_cast<std::chrono::milliseconds>(waited).count() << " ms of a decode of "
+                             << std::chrono::duration_cast<std::chrono::milliseconds>(full).count() << " ms";
 
     // The pane closes while its image decodes.
     const int cancel = ::eventfd(0, EFD_CLOEXEC);
@@ -442,6 +495,8 @@ TEST(MuxImageDecoder, ADecodeEndsAtItsDeadlineOrWhenItIsCancelled)
     const auto took = Clock::now() - start;
     closes.join();
     EXPECT_GE(took, std::chrono::milliseconds(wait));
+    EXPECT_LT(took, bound) << std::chrono::duration_cast<std::chrono::milliseconds>(took).count() << " ms of a decode of "
+                           << std::chrono::duration_cast<std::chrono::milliseconds>(full).count() << " ms";
     // A pane that closed decodes nothing more, and the server goes on for
     // the others.
     EXPECT_FALSE(decode(decoder, Png, ImageFormats::Png, cancel).ok);
@@ -455,7 +510,7 @@ TEST(MuxImageDecoder, APaneThatClosesLeavesTheServerToTheOthers)
     // its request waits for the answer. exec keeps the process.
     TempDir dir;
     ASSERT_FALSE(dir.path.empty());
-    const std::string slow = dir.script("slow", std::string("/bin/sleep 1\nexec '") + AFTERGLOW_MUX + "' \"$@\"");
+    const std::string slow = dir.script("slow", "/bin/sleep 1\nexec " + shellQuoted(AFTERGLOW_MUX) + " \"$@\"");
     SKIP_WITHOUT(slow);
     if (!childrenListed()) GTEST_SKIP() << "the kernel lists no children of a process (CONFIG_PROC_CHILDREN)";
     const std::set<pid_t> before = children();

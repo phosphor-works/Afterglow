@@ -14,22 +14,24 @@
 #include <utility>
 #include <vector>
 
-// The calls of the mux daemon's control target, and the values that they
-// carry. The client (afterglow mux) and the daemon (aglow-mux) share this
-// code. They can still come from two builds: a daemon keeps running while
-// the user installs a new afterglow. ProtocolVersion tells them apart.
+// The calls of the mux daemon (Target), and the values that they carry. Its
+// clients (`afterglow mux`, the windows and the projects of afterglow, and
+// `aglow-mux proxy`) and the daemon (aglow-mux) share this code. They can
+// still come from two builds: a daemon keeps running while the user installs
+// a new afterglow. ProtocolVersion tells them apart.
 
 namespace AfterglowMux {
 
 /// Changes when a call, its arguments or its result change. Each end checks
 /// it: the client calls Fn::Version first on each connection, and the daemon
-/// refuses a newSession, an attach, a newPane or a breakOut of another
-/// version: the calls that take it as their first argument. The codecs of the
-/// attach stream (MuxStream.h), of the host calls on it (MuxHost.h) and of the
-/// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
-/// MuxProtocolTest pins the keys of the options to this number, so that a new
-/// key changes it too.
-inline constexpr int ProtocolVersion = 22;
+/// refuses a newSession, an attach, a newPane, a breakOut, a selectSession
+/// or a selectPane of another version: the calls that take it as their
+/// first argument. The codecs of the attach stream (MuxStream.h), of the
+/// host calls on it (MuxHost.h) and of the state frames in it
+/// (AfterglowVt::StateCodec, StateSync.h) change with it. MuxProtocolTest
+/// pins the keys of the options to this number, so that a new key changes it
+/// too.
+inline constexpr int ProtocolVersion = 23;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -47,15 +49,15 @@ inline constexpr const char* NewSession = "newSession"; ///< (protocol, options)
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
 /// (protocol, name, {takeover, eventQueue, history}) -> {name, window,
-/// environment}: after the answer, the connection of the call
-/// carries the session's stream (MuxStream.h). The client sends nothing after
-/// the call until the answer came, and then starts the stream, which writes
-/// first: the daemon sends nothing after the answer until then. So neither
-/// side's line reader takes a byte of the stream, also through a proxy
-/// (`aglow-mux proxy`). window is the serial of the window, which its
-/// newPane and breakOut give. environment is the
-/// session's environment (SessionOptions::environment, environmentJson()),
-/// which the window's launches of new panes change, as the daemon does.
+/// environment}: after the answer, the connection of the call carries the
+/// session's stream (MuxStream.h). The client sends nothing after the call
+/// until the answer came, and then starts the stream, which writes first:
+/// the daemon sends nothing after the answer until then. So neither side's
+/// line reader takes a byte of the stream, also through a proxy (`aglow-mux
+/// proxy`). window is the serial of the window, which its newPane and
+/// breakOut give. environment is the session's environment
+/// (SessionOptions::environment, environmentJson()), which the window's
+/// launches of new panes change, as the daemon does.
 inline constexpr const char* Attach = "attach";
 /// (name) -> null: the window of the session closes, and the session keeps running.
 inline constexpr const char* Detach = "detach";
@@ -89,12 +91,15 @@ inline constexpr const char* BreakOut = "breakOut";
 /// no process changes the environment of another: a client in a session
 /// pane asks by its AFTERGLOW_PANE_ID.
 inline constexpr const char* PaneSession = "paneSession";
-/// (protocol, name) -> {name}: the calls of the control target on this
-/// connection act on session @p name (`afterglow ctl --session NAME`).
+/// (protocol, name) -> {name, environment}: the calls of the control target
+/// on this connection act on session @p name (`afterglow ctl --session
+/// NAME`). environment is the session's environment (environmentJson()),
+/// for the programs that `afterglow ctl` prepares for its panes.
 inline constexpr const char* SelectSession = "selectSession";
-/// (protocol, pane) -> {name}: the calls of the control target on this
-/// connection act on the session that holds the pane now (`afterglow ctl`
-/// in a session pane, by its AFTERGLOW_PANE_ID).
+/// (protocol, pane) -> {name, environment}: the calls of the control target
+/// on this connection act on the session that holds the pane now
+/// (`afterglow ctl` in a session pane, by its AFTERGLOW_PANE_ID), as for
+/// selectSession.
 inline constexpr const char* SelectPane = "selectPane";
 } // namespace Fn
 
@@ -122,16 +127,18 @@ inline constexpr const char* SpawnFailed = "SPAWN_FAILED";
 inline constexpr const char* Attached = "ATTACHED";
 /// No window shows the session.
 inline constexpr const char* NotAttached = "NOT_ATTACHED";
-/// The session has MaxSessionPanes panes (MuxLayout.h): newPane starts none.
+/// The session has MaxSessionPanes panes (MuxLayout.h): newPane, and the
+/// split and newTab of `afterglow ctl`, start none.
 inline constexpr const char* TooManyPanes = "TOO_MANY_PANES";
 } // namespace Error
 
-/// The environment variable with the descriptor of a pipe that `afterglow
-/// mux` gives a daemon that it starts in a session of its own, whose stderr
-/// is /dev/null. The daemon writes ReportListening there once it listens,
-/// else ReportHeld and why, or only why it cannot start, and closes it. An
-/// end of the pipe with none of them is a daemon that ended before it
-/// listened.
+/// The environment variable with the descriptor of a pipe that a client
+/// (connectOrStart: `afterglow mux`, the projects of afterglow from a worker
+/// thread, `aglow-mux proxy --start`) gives a daemon that it starts in a
+/// session of its own, whose stderr is /dev/null. The daemon writes
+/// ReportListening there once it listens, else ReportHeld and why, or only
+/// why it cannot start, and closes it. An end of the pipe with none of them
+/// is a daemon that ended before it listened.
 inline constexpr const char* ReportFdVariable = "AGLOW_MUX_REPORT_FD";
 /// A byte that no message has: the daemon listens.
 inline constexpr char ReportListening = '\0';
@@ -212,7 +219,9 @@ struct PaneSize
 struct ControlOptions
 {
     bool enabled = true; ///< Control.enabled: off, the session takes no control calls
-    bool allowReadText = false; ///< Control.allowReadText: get-text, and the commands in ls
+    /// Control.allowReadText: get-text, screenshots, the command lines in ls,
+    /// and the command lines and user variables in the events of watch.
+    bool allowReadText = false;
     /// Why the client's settings allow no remote commands, as the refusal
     /// of a call says it ("remote commands are off (SETTING)"), or empty:
     /// whether `afterglow ssh` in a session pane gets a socket.
@@ -234,7 +243,10 @@ struct SessionOptions
 {
     std::string name; ///< empty: the daemon's next number
     /// The environment of the client, which each pane of the session changes
-    /// with its launch: the daemon's own is not used. With
+    /// with its launch: the daemon's own is not used. A local session
+    /// carries all of the client's environment: with the rest of the call,
+    /// it must fit one request line of 1 MiB (IpcConnection::MaxRequestBytes)
+    /// as JSON, with its escapes. With
     /// callerEnvironment, the variables that it sets over the environment of
     /// the caller.
     std::vector<std::pair<std::string, std::string>> environment;

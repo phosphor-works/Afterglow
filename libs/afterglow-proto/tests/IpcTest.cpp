@@ -9,10 +9,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <string>
 #include <thread>
 
 #include <fcntl.h>
+#include <pthread.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 using namespace AfterglowProto;
@@ -36,6 +39,8 @@ long elapsedMs(std::chrono::steady_clock::time_point since)
 {
     return long(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - since).count());
 }
+
+extern "C" void onTestSignal(int) { }
 
 } // namespace
 
@@ -90,6 +95,7 @@ TEST(Ipc, AnErrorWithoutAnIdAnswersTheCall)
     EXPECT_FALSE(client.call("t", "f", {}, 5000, &error));
     EXPECT_EQ(error.code, "MALFORMED_REQUEST");
     EXPECT_EQ(error.message, "bad");
+    EXPECT_FALSE(error.notJson);
 }
 
 TEST(Ipc, ALineThatIsNotJsonClosesWithItsReason)
@@ -104,6 +110,11 @@ TEST(Ipc, ALineThatIsNotJsonClosesWithItsReason)
     EXPECT_NE(error.message.find("not a JSON object"), std::string::npos) << error.message;
     EXPECT_NE(error.message.find("at byte 9"), std::string::npos) << error.message;
     EXPECT_EQ(client.closeReason(), error.message);
+    EXPECT_TRUE(error.notJson);
+    // A later call of the closed connection says the same.
+    IpcConnection::Error again;
+    EXPECT_FALSE(client.call("t", "f", {}, 5000, &again));
+    EXPECT_TRUE(again.notJson) << again.message;
 }
 
 TEST(Ipc, ALineOverTheFrameLimitCloses)
@@ -256,4 +267,186 @@ TEST(Ipc, AnAnswerGivesTheResult)
     EXPECT_FALSE(IpcConnection::answer(failed, &error));
     EXPECT_EQ(error.code, "C");
     EXPECT_EQ(error.message, "M");
+}
+
+TEST(Ipc, ASendToAServerThatClosedKeepsWhatItSentBefore)
+{
+    FakeServer server;
+    IpcConnection client;
+    ASSERT_TRUE(connect(client, server));
+    // The mux daemon says why it ends the connection, then closes it.
+    ASSERT_TRUE(server.write(eventLine(1)));
+    ASSERT_TRUE(server.frame(Json::Object{{"type", "error"}, {"code", "CALL_FAILED"}, {"message", "the window closed"}}));
+    server.hangUp();
+    IpcConnection::Error error;
+    EXPECT_FALSE(client.send("t", "ack", {}, &error));
+    EXPECT_NE(error.message.find("the connection closed"), std::string::npos) << error.message;
+    // Only the sends stop: the frames that came before the end are read.
+    EXPECT_TRUE(client.connected());
+    EXPECT_FALSE(client.send("t", "ack", {}, &error));
+    Json::Value frame;
+    ASSERT_EQ(client.next(frame, 5000), IpcConnection::Read::Frame);
+    EXPECT_EQ(frame["args"].toArray().at(0).toInteger(), 1);
+    ASSERT_EQ(client.next(frame, 5000), IpcConnection::Read::Frame);
+    EXPECT_TRUE(IpcConnection::connectionError(frame));
+    EXPECT_EQ(frame["message"].toString(), "the window closed");
+    EXPECT_EQ(client.next(frame, 5000), IpcConnection::Read::Closed);
+    EXPECT_FALSE(client.connected());
+}
+
+TEST(Ipc, ACallToAServerThatClosedGetsTheReasonThatItSent)
+{
+    FakeServer server;
+    IpcConnection client;
+    ASSERT_TRUE(connect(client, server));
+    ASSERT_TRUE(server.write(eventLine(1)));
+    ASSERT_TRUE(server.frame(Json::Object{{"type", "error"}, {"code", "CALL_FAILED"}, {"message", "no window shows it"}}));
+    server.hangUp();
+    IpcConnection::Error error;
+    EXPECT_FALSE(client.call("t", "f", {}, 5000, &error));
+    EXPECT_EQ(error.code, "CALL_FAILED");
+    EXPECT_EQ(error.message, "no window shows it");
+    // The event before it waits for next().
+    Json::Value frame;
+    ASSERT_EQ(client.next(frame, 0), IpcConnection::Read::Frame);
+    EXPECT_EQ(frame["args"].toArray().at(0).toInteger(), 1);
+}
+
+// A server that wrote a line that is not JSON and closed before the call
+// went: the call's error is that line, as on an open connection, not the
+// failed send.
+TEST(Ipc, ACallToAServerThatClosedAfterTextSaysSo)
+{
+    FakeServer server;
+    IpcConnection client;
+    ASSERT_TRUE(connect(client, server));
+    ASSERT_TRUE(server.write("Welcome to the host\n"));
+    server.hangUp();
+    IpcConnection::Error error;
+    EXPECT_FALSE(client.call("t", "f", {}, 5000, &error));
+    EXPECT_TRUE(error.notJson) << error.message;
+    EXPECT_NE(error.message.find("not a JSON object"), std::string::npos) << error.message;
+}
+
+TEST(Ipc, AnErrorWithoutAnIdIsAConnectionError)
+{
+    EXPECT_TRUE(IpcConnection::connectionError(Json::Object{{"type", "error"}, {"code", "C"}, {"message", "M"}}));
+    EXPECT_FALSE(IpcConnection::connectionError(Json::Object{{"type", "error"}, {"id", 2}, {"code", "C"}, {"message", "M"}}));
+    EXPECT_FALSE(IpcConnection::connectionError(Json::Object{{"type", "reply"}, {"result", 1}}));
+    EXPECT_FALSE(IpcConnection::connectionError(Json::Object{{"type", "event"}, {"target", "t"}, {"signal", "s"}}));
+}
+
+TEST(Ipc, AnAdoptedSocketIsTheConnection)
+{
+    int pair[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair), 0);
+    IpcConnection client;
+    client.adopt(pair[0]);
+    EXPECT_TRUE(client.connected());
+    EXPECT_EQ(client.fd(), pair[0]);
+    IpcConnection::Error error;
+    EXPECT_EQ(client.send("t", "f", Json::Array{1}, &error), 1) << error.message;
+    char buffer[256];
+    const ssize_t n = ::recv(pair[1], buffer, sizeof buffer, 0);
+    ASSERT_GT(n, 0);
+    const auto request = Json::parse(std::string_view(buffer, std::size_t(n - 1)));
+    ASSERT_TRUE(request);
+    EXPECT_EQ((*request)["fn"].toString(), "f");
+    const std::string line = eventLine(4);
+    ASSERT_EQ(::send(pair[1], line.data(), line.size(), 0), ssize_t(line.size()));
+    Json::Value frame;
+    ASSERT_EQ(client.next(frame, 5000), IpcConnection::Read::Frame);
+    EXPECT_EQ(frame["args"].toArray().at(0).toInteger(), 4);
+    client.close();
+    ::close(pair[1]);
+}
+
+TEST(Ipc, ReleaseGivesTheSocketUpOnlyWhenNothingWaits)
+{
+    IpcConnection client;
+    IpcConnection::Error error;
+    EXPECT_EQ(client.release(&error), -1);
+    EXPECT_EQ(error.message, "not connected");
+
+    int pair[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair), 0);
+    client.adopt(pair[0]);
+    const std::string line = eventLine(1);
+    ASSERT_EQ(::send(pair[1], line.data(), line.size(), 0), ssize_t(line.size()));
+    Json::Value frame;
+    ASSERT_EQ(client.next(frame, 5000), IpcConnection::Read::Frame);
+    // All that came was taken: the socket goes to the caller, open.
+    const int released = client.release(&error);
+    EXPECT_EQ(released, pair[0]) << error.message;
+    EXPECT_FALSE(client.connected());
+    EXPECT_EQ(::fcntl(pair[0], F_GETFD), FD_CLOEXEC);
+    ::close(pair[0]);
+    ::close(pair[1]);
+
+    // Bytes after the frame that the caller took: the next protocol would
+    // lose them.
+    for (const std::string& more : {std::string("{\"type\""), eventLine(2)}) {
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair), 0);
+        client.adopt(pair[0]);
+        const std::string both = line + more;
+        ASSERT_EQ(::send(pair[1], both.data(), both.size(), 0), ssize_t(both.size()));
+        ASSERT_EQ(client.next(frame, 5000), IpcConnection::Read::Frame);
+        EXPECT_EQ(client.release(&error), -1) << more;
+        EXPECT_EQ(error.message, "the server sent more than its answer before the next protocol");
+        // The connection closed, its socket with it.
+        EXPECT_FALSE(client.connected());
+        EXPECT_EQ(::fcntl(pair[0], F_GETFD), -1);
+        ::close(pair[1]);
+    }
+
+    // A frame that a call set aside waits too. A new connection: its
+    // first call has id 1.
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair), 0);
+    IpcConnection caller;
+    caller.adopt(pair[0]);
+    const std::string reply = Json::write(Json::Object{{"type", "reply"}, {"id", 1}, {"result", true}}) + "\n";
+    const std::string waiting = eventLine(3) + reply;
+    ASSERT_EQ(::send(pair[1], waiting.data(), waiting.size(), 0), ssize_t(waiting.size()));
+    ASSERT_TRUE(caller.call("t", "f", {}, 5000, &error)) << error.message;
+    EXPECT_EQ(caller.release(&error), -1);
+    EXPECT_FALSE(caller.connected());
+    ::close(pair[1]);
+}
+
+TEST(Ipc, ASignalThatRepeatsDoesNotMakeTheWaitOfAConnectLonger)
+{
+    // A backlog of 0 holds one connection: a second one waits.
+    FakeServer server(0);
+    ASSERT_TRUE(server.valid());
+    IpcConnection first;
+    IpcConnection::Error error;
+    ASSERT_TRUE(first.connect(server.path(), &error, 1000)) << error.message;
+    // A handler without SA_RESTART: each signal ends the wait of connect()
+    // with EINTR, and the connection starts again.
+    struct sigaction action{};
+    struct sigaction old{};
+    action.sa_handler = onTestSignal;
+    sigemptyset(&action.sa_mask);
+    ASSERT_EQ(::sigaction(SIGUSR1, &action, &old), 0);
+    const pthread_t waiter = ::pthread_self();
+    std::atomic<bool> stop = false;
+    std::thread signaller([&] {
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!stop && std::chrono::steady_clock::now() < end) {
+            ::pthread_kill(waiter, SIGUSR1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    });
+    IpcConnection second;
+    const auto start = std::chrono::steady_clock::now();
+    const bool connected = second.connect(server.path(), &error, 300);
+    const long waited = elapsedMs(start);
+    stop = true;
+    signaller.join();
+    ::sigaction(SIGUSR1, &old, nullptr);
+    EXPECT_FALSE(connected);
+    EXPECT_TRUE(error.timedOut) << error.message;
+    // A wait that started again in full after each signal would last until
+    // the signals stop, 2 s.
+    EXPECT_LT(waited, 1500);
 }

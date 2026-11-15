@@ -23,7 +23,6 @@
 #include <vector>
 
 #include <poll.h>
-#include <sys/types.h>
 
 namespace AfterglowMux {
 
@@ -31,10 +30,12 @@ class Session;
 
 /// The window that a session shows in. The attach call makes it, and its own
 /// connection carries the window's stream from then on: a phosphor-channel
-/// stream with the session's layout and state to the window, and the
-/// window's input, its layout and the panes that it closes back
-/// (MuxStream.h). So the window reaches it as it reached the daemon, also
-/// through a proxy on another host (`aglow-mux proxy`).
+/// stream with the session's layout and state to the window, and back the
+/// window's input, its layout, its settings, the panes that it closes, its
+/// answers to the calls that the daemon passed it, and the bytes of the
+/// command connections that it serves (MuxStream.h). So the window reaches
+/// it as it reached the daemon, also through a proxy on another host
+/// (`aglow-mux proxy`).
 ///
 /// A pane's frame that the channel refuses waits, and no newer frame is made
 /// until it went: a frame covers every change since the one before, so the
@@ -44,7 +45,9 @@ class Session;
 /// bound of input: in the attachment, for that pane, with the pane's input
 /// that follows it. The input of the other panes goes on. Only once the
 /// input that waits passes MaxHeldInput does the daemon stop reading the
-/// window's input channel, which then fills.
+/// window's control channel, which then fills: the window's layouts, its
+/// settings and its answers to forwarded calls of `afterglow ctl` come on it
+/// too, and wait with it until a program reads its input or the window goes.
 ///
 /// The window says which panes the user can see (Attach::InputType::Visible).
 /// A pane that it does not show, in a tab in the background or a window that
@@ -61,8 +64,10 @@ class Session;
 /// What a window that does not read makes the daemon hold, for each pane:
 /// the frames that the pane's channel takes (the stream's window, 4 MiB), one
 /// frame that it refused, and the host calls that wait in the pane
-/// (Mux.eventQueue). Then the events that wait (Mux.eventQueue and one call)
-/// and the input above. A session has at most MaxSessionPanes panes.
+/// (Mux.eventQueue). Then the events that wait: Mux.eventQueue, with one host
+/// call, one call of `afterglow ctl` or one part of a command connection past
+/// it (relayRoom(): the daemon passes no more of them to a window that has no
+/// room), and the input above. A session has at most MaxSessionPanes panes.
 ///
 /// The daemon never blocks on a window. A pane whose program exited keeps
 /// its terminal here until its last frames and calls went; a takeover, a
@@ -113,8 +118,8 @@ public:
     /// @p session, the session of its name, or nullptr when there is none.
     /// Once finishing(), it sends nothing of the session, and reads what the
     /// window sent before it heard (takeLate()). False when the attachment is
-    /// over: the window left or failed, it never came, or a finished one sent
-    /// everything or ran out of time.
+    /// over: the window left or failed, it never came, or a finished one's
+    /// window closed or its time ran out.
     bool handle(short revents, Session* session);
     /// Reads what the window sent so far, before a takeover or a detach
     /// finishes the attachment: its last layout and the panes that it
@@ -129,12 +134,17 @@ public:
     {
         std::vector<std::uint32_t> closedPanes;
         std::optional<Layout> layout;
+        /// Session::layoutChanges() at the finish: a change of `afterglow
+        /// ctl` since then counts over the window's late layout.
+        std::uint64_t layoutChanges = 0;
     };
-    Late takeLate() { return std::exchange(m_late, {}); }
+    Late takeLate();
     /// Sends what changed in @p session, nullptr once finishing(), and what
     /// waits.
     void pump(Session* session);
-    /// A frame can go now: the daemon polls without waiting.
+    /// Work waits that the next pass can do at once: a frame that can go,
+    /// input that went and whose next input the window's channel holds, or
+    /// the last event of a finished one. The daemon polls without waiting.
     bool busy() const;
     /// The time left for the window to start its stream, or for a finished
     /// attachment to send what waits; -1 when neither waits.
@@ -160,10 +170,18 @@ public:
     /// as takeLate() says, and once the panes that closed sent their last
     /// frames, @p type is the last event. A window that did not connect yet
     /// gets it when it does. The host calls that did not go yet go back to
-    /// the panes of @p session (returnHostCalls()). The input that waits
+    /// the panes of @p session (returnHostCalls()), and the calls of the
+    /// control target that did not go yet never go. The input that waits
     /// for a PTY goes as for a window that left: the bytes, a reset and a
     /// clear once, without a wait, and no size. Without @p session (it
     /// ended), only the bytes of the panes that went to another session.
+    ///
+    /// The answers of a program's queries can come out of order then: the
+    /// calls that go back are answered at once, as a pane that no window
+    /// shows answers them, and the newer calls of a new window too, while the
+    /// window answers the older calls that it got before it heard
+    /// (readLate()). A program that fences a query with DA1 sees the fence
+    /// answered first: the window's answer to the query comes after it.
     void finish(Attach::EventType type, Session* session = nullptr);
     /// Drops the host calls that wait for the channel. Those of the live panes
     /// of @p session get the answers of a pane that no window shows: the
@@ -189,7 +207,10 @@ public:
     /// pane's host calls wait for (MuxPane::setWindow).
     std::uint64_t serial() const { return m_serial; }
     /// A call of the control target for the window to answer (an
-    /// Attach::EventType::Control event): @p json is its {"id", "fn", "args"}.
+    /// Attach::EventType::Control event): @p json is its {"id", "fn", "args"}
+    /// and, for a call of a client, its "client" (MuxStream.h). One that has
+    /// not gone when the attachment finishes never goes: the window does not
+    /// run a call whose client hears that it failed.
     void sendControl(std::string json);
     /// The answers of the window to those calls, as their JSON, oldest first.
     std::vector<std::string> takeControlReplies() { return std::exchange(m_controlReplies, {}); }
@@ -203,6 +224,9 @@ public:
     /// The parts of command connections that the window sent, oldest first:
     /// Bytes and End only.
     std::vector<Attach::RelayFrame> takeRelayFrames() { return std::exchange(m_relayFrames, {}); }
+    /// Input of the window for pane @p pane waits for room in its PTY: input
+    /// of another client would pass it.
+    bool holdsInput(std::uint32_t pane) const { return m_heldInput.contains(pane); }
 
 private:
     struct PaneLink
@@ -234,17 +258,20 @@ private:
     /// The window wrote its first bytes: its stream starts here too.
     void startStream();
     void readInput(Session& session);
-    /// readInput() once finishing(): what counts goes to m_late. Without
-    /// @p session (it ended), the bytes of the panes that went to another
-    /// session still go.
     /// Reads the bytes of the window's command connections (m_relayFrames).
     /// False when the window failed.
     bool readCommands();
+    /// readInput() once finishing(): what counts goes to m_late. Without
+    /// @p session (it ended), the bytes of the panes that went to another
+    /// session still go.
     void readLate(Session* session);
     /// Gives @p message to its pane: one of @p session, or for its bytes one
     /// that went to another session. Without @p session (it ended), only
-    /// the latter. False when the pane's PTY has no room for its bytes and
-    /// @p windowLeft is not: then it waits.
+    /// the latter. False when the pane takes no bytes now and @p windowLeft
+    /// is not: its PTY has no room, or the pane's input that waits behind a
+    /// decode reached its bound (MuxPane::Input::Full). Then it waits. With
+    /// @p windowLeft, bytes that the pane refuses are lost, and so are the
+    /// pane's bytes after them (m_cutPanes).
     bool deliver(Session* session, const Attach::Input& message, bool windowLeft);
     /// Holds @p message behind the input that waits for its pane.
     void hold(Attach::Input message);
@@ -253,7 +280,8 @@ private:
     bool sendHeldInput(Session& session, bool windowLeft);
     /// The pane's link, made now with the lowest channel that is free.
     /// Nullptr when no channel is free, until the window reads one that
-    /// closed to its end, or when the stream failed (m_failed).
+    /// closed to its end, before the window's hello, whose limits it waits
+    /// for, or when the stream failed (m_failed).
     PaneLink* link(MuxPane& pane);
     /// Sends the next frame of @p pane. True when nothing of it waits: no
     /// refused frame, no change and no history. The frames of a pane that
@@ -287,11 +315,10 @@ private:
         /// its pane when the window does not get it.
         std::shared_ptr<const std::string> call;
         bool last = true; ///< not a part that more parts follow
+        bool control = false; ///< a call of the control target (sendControl())
     };
     /// The call whose parts go, after its first went: its other parts go too.
     std::shared_ptr<const std::string> m_partSent;
-    /// m_partSent when returnHostCalls() answered it: once.
-    std::shared_ptr<const std::string> m_answeredPart;
     std::deque<WaitingEvent> m_waitingEvents; ///< events that the channel did not take yet
     std::size_t m_waitingBytes = 0; ///< with Host::CallCost for each
     std::size_t m_eventQueue = std::size_t(DefaultEventQueue);
@@ -312,8 +339,13 @@ private:
     bool m_inputDue = false; ///< held input went in pump(): the next handle() reads what follows it
     Late m_late;
     std::function<MuxPane*(std::uint32_t)> m_findPane;
-    /// The panes that went to another session while this window showed them.
+    /// The panes that went to another session while this window showed them,
+    /// while they run.
     std::set<std::uint32_t> m_movedPanes;
+    /// The panes whose bytes a PTY refused after the window left: their
+    /// bytes after those go nowhere, so that a paste cut in the middle does
+    /// not run with the Enter after it.
+    std::set<std::uint32_t> m_cutPanes;
     /// What the window said of each pane of the session that it can see
     /// (InputType::Visible), also before the pane's link: a link starts
     /// with it.

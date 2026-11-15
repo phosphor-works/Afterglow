@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include "ProcessUmask.h"
+#include "shell/ShellIntegration.h"
+
 #include "MuxConnect.h"
 #include "MuxProtocol.h"
 #include "MuxStart.h"
@@ -11,32 +14,38 @@
 
 #include <QString>
 #include <QStringList>
+#include <QVariantMap>
 
 #include <atomic>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
+
+#include <sys/types.h>
 
 namespace Afterglow {
 
 struct Settings;
 
-// The sessions of the mux daemon of this computer, as `afterglow mux` and a
-// project that opens into a session start and find them.
+// The sessions of the mux daemon, as `afterglow mux` and a project that opens
+// into a session start and find them. The functions named Local, with
+// localLaunch, localSessionOptions and localDaemon, are for the daemon of
+// this computer. The others serve a session of another host too.
 
 /// The aglow-mux next to afterglow, or empty with @p error.
 std::string muxDaemonPath(std::string* error);
 /// A connection to the daemon, which this starts when none answers: the
-/// aglow-mux next to afterglow, in @p environment.
+/// aglow-mux next to afterglow, in @p environment. Nothing, with
+/// @p sockets' error, when no socket path can be used.
 AfterglowMux::Reached connectOrStartDaemon(const AfterglowProto::MuxSockets& sockets, std::string* error,
                                            const AfterglowMux::Environment& environment = AfterglowMux::currentEnvironment());
-/// The file mode creation mask of this process, which the programs of a
-/// session get, or -1.
-int currentUmask();
-/// The environment of a session: this process's.
-std::vector<std::pair<std::string, std::string>> sessionEnvironment();
+/// Why the daemon's call @p fn failed, for the user: its message, made
+/// printable, or a text that names the call when it gave none. Never empty:
+/// callers read an empty error as success.
+std::string callFailure(const AfterglowProto::IpcConnection::Error& error, std::string_view fn);
 /// The size of a new pane of a session before a window measures it:
 /// Window.initialColumns by Window.initialRows cells of the font of
 /// @p settings (Font). The cells are in device pixels: at the scale of the
@@ -54,12 +63,18 @@ AfterglowMux::SessionSettings sessionSettings(const Settings& settings, bool env
 std::optional<std::vector<AfterglowMux::SessionInfo>> daemonSessions(AfterglowProto::IpcConnection& connection, std::string* error);
 
 /// What a pane of a session of this computer runs: @p command (empty: the
-/// shell) in @p cwd, prepared with @p settings, as a window prepares one.
-AfterglowMux::Launch localLaunch(const Settings& settings, const QString& cwd, const QStringList& command);
+/// shell) in @p cwd, with the launch's own @p environment, prepared with
+/// @p settings, as a window prepares one. It reads the variables that the
+/// program inherits in @p inherited: the session's environment, to which
+/// the daemon applies what the launch sets and unsets, or this process's
+/// without it.
+AfterglowMux::Launch localLaunch(const Settings& settings, const QString& cwd, const QStringList& command,
+                                 const InheritedEnvironment* inherited = nullptr, const QVariantMap& environment = {});
 
-/// The session that `afterglow mux new` starts on this computer for a pane
-/// in @p cwd, an absolute directory, that runs @p command (empty: the
-/// shell), with @p settings. @p name empty: the daemon names it.
+/// The session that `afterglow mux new`, or a project that opens into a
+/// new session, starts on this computer for a pane in @p cwd, an absolute
+/// directory, that runs @p command (empty: the shell), with @p settings.
+/// Its size is initialPaneSize(). @p name empty: the daemon names it.
 AfterglowMux::SessionOptions localSessionOptions(const Settings& settings, const QString& cwd, const QStringList& command,
                                                  const QString& name);
 /// What the calls to the daemon of this computer read from the process: its
@@ -89,7 +104,9 @@ std::optional<std::vector<std::uint32_t>> startLocalPanes(const LocalDaemon& dae
 /// daemon.
 bool localSessionRuns(const LocalDaemon& daemon, const QString& name);
 /// Ends the session @p name of the daemon of this computer, and its
-/// programs. Starts no daemon. False when the daemon did not end it.
+/// programs. Starts no daemon. True also when it ran no more (no such
+/// session, no daemon). False when it may still run: the daemon refused, or
+/// did not answer.
 bool killLocalSession(const LocalDaemon& daemon, const QString& name);
 
 } // namespace Afterglow

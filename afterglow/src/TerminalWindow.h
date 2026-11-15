@@ -6,6 +6,7 @@
 
 #include "Pane.h"
 #include "PaneOverlay.h"
+#include "ProjectStore.h"
 #include "SplitTree.h"
 #include "ShownText.h"
 #include "animation/FrameClock.h"
@@ -36,8 +37,10 @@
 #include <vector>
 
 namespace AfterglowMux {
+struct Launch;
 struct Layout;
 struct LayoutTab;
+struct PaneSize;
 }
 
 namespace AfterglowRender {
@@ -66,7 +69,8 @@ struct WindowOptions
     bool hold = false;
     bool empty = false; ///< Internal: receive live panes or a restored project before showing.
     QVariantMap environment = {};
-    /// A mux session that the window shows (afterglow mux attach): its tabs
+    /// A mux session that the window shows (afterglow mux attach, a project
+    /// that opens into a session, or panes that break out of one): its tabs
     /// and splits, in place of programs of its own. Each new tab and split of
     /// the window is a pane of the session.
     std::shared_ptr<MuxClient> session = {};
@@ -170,6 +174,11 @@ public:
     /// opens beside that pane's tab and inherits its directory; otherwise
     /// beside the current tab, from the focused pane.
     Pane* openTab(const PaneLaunchOptions& options, QString* error, Pane* from = nullptr);
+    /// Why splitPane and openTab refuse @p options, else empty: a session of
+    /// another host takes no cwd and no env, which name this computer's
+    /// paths and values. Its new panes start where the pane that they open
+    /// from is, there.
+    QString remoteLaunchError(const PaneLaunchOptions& options) const;
     void requestClosePane(Pane* pane) { closePane(pane); }
     /// Runs a keybind action as if it were pressed in @p pane. The tab
     /// actions of a pane in another tab (close, rename, move, detach, and a
@@ -204,8 +213,9 @@ public:
     /// Scripts drive the pane overview: "open", "close" (back to where it
     /// was) or "choose" (the highlighted pane); and move its highlight to
     /// @p target, or by @p step cards when no target is given. "open" is
-    /// refused while a script other than @p owner holds a key mode.
-    QString scriptOverview(const QString& owner, Pane* pane, const QString& operation, QVariantMap& result);
+    /// refused while a script other than @p owner holds a key mode, with
+    /// @p code "busy".
+    QString scriptOverview(const QString& owner, Pane* pane, const QString& operation, QVariantMap& result, QString* code = nullptr);
     QString scriptOverviewMove(Pane* pane, Pane* target, int step, QVariantMap& result);
     /// The overview for scripts: open, highlighted and its cards, by pane ID.
     QVariantMap overviewState() const;
@@ -253,12 +263,20 @@ public:
     };
     PaneOrigin paneOrigin(const Pane* pane) const { return m_paneOrigin.value(pane); }
 
-    QJsonObject projectLayout() const;
+    /// The window as a project document. A pane whose command a project
+    /// cannot keep (ProjectStore::keepsCommand) saves as the shell, with a
+    /// line in @p warnings.
+    QJsonObject projectLayout(QStringList* warnings = nullptr) const;
     /// Lays out @p document in this empty window. With @p started, the window
     /// of a new session that shows only those panes, which the session
     /// started for the project's panes, in their order
-    /// (ProjectStore::panes): the window starts none.
-    QVariantMap restoreProject(const QJsonObject& document, const QList<Pane*>& started = {});
+    /// (ProjectStore::panes): the window starts none. The window of a
+    /// session takes a project only so. @p launches, when given, are the
+    /// launches of the panes in that order, which the caller made already
+    /// (ProjectStore::launchOf) with @p launchWarnings: the window does not
+    /// look for the programs again.
+    QVariantMap restoreProject(const QJsonObject& document, const QList<Pane*>& started = {}, const QList<ProjectStore::Launch>& launches = {},
+                               const QStringList& launchWarnings = {});
     QString projectDirectory() const { return m_projectDirectory; }
     void setProjectDirectory(const QString& path) { m_projectDirectory = path; }
     QString projectName() const { return m_projectName; }
@@ -274,36 +292,58 @@ public:
     QString sessionHost() const;
     /// The window closed, and waits for its delete: it shows its session
     /// until then, but must not show again, nor be the window that a new
-    /// attach reveals. Its delete releases the session as Mux.onClose says.
+    /// attach reveals. Its delete releases the session as
+    /// windowCloseRelease says.
     bool closing() const { return m_closing; }
     /// With @p keep, the session keeps running when the window closes,
     /// whatever Mux.onClose says: Afterglow quits. Without, Mux.onClose
     /// decides again: the quit did not happen.
     void keepSessionOnClose(bool keep = true);
+    /// The window shows the session that a project opened into, a --new
+    /// instance too (Control::openProjectSession): the session keeps running
+    /// when the window closes, for the next open of the project, whatever
+    /// Mux.onClose says. A save under a project name does not set it.
+    void keepSessionForProject() { m_projectSession = true; }
     /// What a window kept for the panes that broke out of its session, for
     /// the window that shows them next (adoptBreakOut).
     struct BreakOut;
+    /// The end of breakOutOfSession(): the name of the new session, which a
+    /// new window then shows, and what this window kept for the panes
+    /// (null when this window closed meanwhile); or an error.
+    using BrokeOut = std::function<void(const QString& error, const QString& session, std::shared_ptr<const BreakOut> kept)>;
     /// Moves @p pane, or its whole tab with @p wholeTab, out of the session
     /// to a new session of the daemon, where its programs run on, and closes
     /// it here: a drag, a key, the menu, a script or afterglow ctl moves it
-    /// to a new window. @p session gets the name of the new session, which a
-    /// new window then shows, and @p kept what this window kept for the
-    /// panes. Empty, else why not.
-    QString breakOutOfSession(Pane* pane, bool wholeTab, QString* session, std::shared_ptr<const BreakOut>* kept);
-    /// Why breakOutOfSession refuses @p pane, or its tab with @p wholeTab,
-    /// before it asks the daemon: they are all the panes of the session.
-    /// Empty when they may go, and in a window that shows no session.
-    QString breakOutError(const Pane* pane, bool wholeTab) const;
+    /// to a new window. The daemon's call runs off the GUI thread: a refusal
+    /// at once, else empty, and @p done gets the outcome later, once. Until
+    /// then the panes stay here and take input, and no other break out
+    /// takes them. A pane that closes meanwhile does not go: its program
+    /// ends, or runs on in the new session when the daemon moved it first.
+    QString breakOutOfSession(Pane* pane, bool wholeTab, BrokeOut done);
     /// The panes of this window that show what broke out of another
     /// window's session get what that window kept for them: their split
     /// titles, notify on finish, clipboard grants, the looks that scripts
     /// gave them, their pointer shapes and the keys held over them.
     void adoptBreakOut(const std::shared_ptr<const BreakOut>& kept);
     /// Shows pane @p id of the session, which the daemon started for
-    /// `afterglow ctl split` or `new-tab`: on @p side of @p beside, else in a
-    /// tab after its tab. A split without room becomes a tab. It keeps
-    /// @p command, which a project saves. Then the window sends its layout.
-    Pane* placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side, const QStringList& command = {});
+    /// `afterglow ctl split` or `new-tab`, or for startSessionPane: on
+    /// @p side of @p beside, with @p fraction of the split, else in a tab
+    /// after its tab. A split without room becomes a tab. For a session of
+    /// this computer, it keeps @p command, which a project saves. Then the
+    /// window sends its layout. Null when the window is closing, or shows
+    /// the pane already.
+    Pane* placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side, const QStringList& command,
+                           double fraction = 0.5);
+    /// The end of startSessionPane(): the new pane, or null and why not.
+    using SessionPaneStarted = std::function<void(Pane* pane, const QString& error)>;
+    /// splitPane() of @p from on @p side, or without a side openTab() beside
+    /// it, in the window of a mux session, with the daemon's call off the
+    /// GUI thread, which goes on meanwhile (a script's split or new tab): a
+    /// refusal at once, else empty, and @p done gets the outcome later,
+    /// once, also when this window closes first. The window places the pane
+    /// as placeSessionPane() does: when @p from closed meanwhile, or a split
+    /// lost its room, in a tab.
+    QString startSessionPane(Pane* from, std::optional<SplitTree::Direction> side, const PaneLaunchOptions& options, SessionPaneStarted done);
     /// The session pane of this window that shows pane @p id of the daemon.
     Pane* sessionPane(std::uint32_t id) const;
     bool swapPane(Pane* pane, SplitTree::Neighbour direction);
@@ -371,16 +411,39 @@ private:
     /// With @p fallback, a program that fails to start leaves a held pane
     /// with a plain sh, never null. In a session's window the daemon starts
     /// the program (createSessionLaunchPane): no fallback, and null with
-    /// @p failure when the daemon refuses. Projects open in windows of
-    /// their own, which show no session.
+    /// @p failure when the daemon refuses. A project that opens into a
+    /// session has its panes started by the daemon before the window shows,
+    /// so restoreProject asks createPane for none there.
     Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
     /// A pane that shows pane @p id of @p session: no program of its own.
     Pane* createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id);
-    /// createPane in a window that shows a session: the daemon starts the
-    /// program, with the session's environment and what the launch changes
-    /// in it.
+    /// createPane in a window that shows a session. The pane that the daemon
+    /// started for placeSessionPane shows as it is. Else a closing window
+    /// refuses, and the daemon starts the program. In a session of this
+    /// computer, it starts with this window's settings, the session's
+    /// environment and what the launch changes in it. In a session of
+    /// another host, it starts with @p command alone (the host's login
+    /// shell for none), in @p workingDirectory there (newPaneDirectory).
     Pane* createSessionLaunchPane(const QString& workingDirectory, const QRect& area, const QStringList& command, QString* failure,
                                   const QVariantMap& environment);
+    /// What the daemon of the window's session starts for a new pane, as
+    /// createSessionLaunchPane says.
+    AfterglowMux::Launch sessionLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& environment) const;
+    /// The cells of @p area, and their pixels, for a new pane's program.
+    AfterglowMux::PaneSize paneSize(const QRect& area) const;
+    /// The refusal of a window of a session that is closing.
+    QString closingRefusal() const;
+    /// Why breakOutOfSession refuses @p pane, or its tab with @p wholeTab,
+    /// before it asks the daemon: they are all the panes of the session, or
+    /// all but those that are leaving it, one of them is leaving already, or
+    /// the window is closing. Empty when they may go, and in a window that
+    /// shows no session.
+    QString breakOutError(const Pane* pane, bool wholeTab) const;
+    /// The second half of breakOutOfSession(), once the daemon moved the
+    /// panes of @p moved: what this window kept for those that are still
+    /// here, which then close here as panes that left. @p wholeTab: they
+    /// were a tab, which closes as one when it still holds only them.
+    std::shared_ptr<const BreakOut> finishBreakOut(const QList<QPointer<Pane>>& moved, bool wholeTab);
     /// Why a pane or a tab of this window cannot move to @p destination, else
     /// empty: a session's window keeps its panes, and takes no others.
     QString sessionMoveError(const TerminalWindow* destination) const;
@@ -392,10 +455,12 @@ private:
     void setClosingRelease(const QList<Pane*>& closing);
     /// What closing session panes ends when the window closes with them:
     /// the session with Mux.onClose kill, else nothing; nothing for the
-    /// session of a project, and when Afterglow quits (keepSessionOnClose).
+    /// session that a project opened into (keepSessionForProject), and when
+    /// Afterglow quits (keepSessionOnClose).
     MuxRelease windowCloseRelease() const;
-    /// The tabs and splits of the window, with the titles and commands of
-    /// its panes, for the daemon of its session.
+    /// The tabs and splits of the window, with the titles of its panes, and
+    /// their commands for a session of this computer, for the daemon of its
+    /// session.
     AfterglowMux::Layout sessionLayout() const;
     /// The tree, focus, zoom and title of @p tab, whose focus is @p focused.
     AfterglowMux::LayoutTab sessionTab(const Tab& tab, const Pane* focused) const;
@@ -503,15 +568,24 @@ private:
     /// The jobs that confirmClose names for @p panes, as it shows them (an
     /// overlay's program too); empty when confirmClose is off or none runs.
     /// When the whole window of a session closes and the session runs on
-    /// (Mux.onClose detach, or a quit), only the overlays' programs end.
+    /// (Mux.onClose detach, a quit, or the session that a project opened
+    /// into), only the overlays' programs end.
     QStringList closingJobs(const QList<Pane*>& panes) const;
     /// Where a new tab, split or window starts, given the directory it
     /// would inherit (the workingDirectory setting).
     QString startDirectory(const QString& inherited) const;
+    /// Where a new tab or split that opens from @p from starts, when the
+    /// launch names no directory: startDirectory of what it inherits. In a
+    /// session of another host, the directory of the program of @p from
+    /// there, which its daemon tells. Empty for the pane that the daemon
+    /// started already (m_placingPane), which needs none.
+    QString newPaneDirectory(const Pane* from) const;
     /// The directory that a new tab, split or window takes from @p from: its
     /// workingDirectory unless Window.workingDirectory names a directory of
     /// its own (fixedStartDirectory), else empty, so that no session pane
-    /// waits for the daemon for nothing.
+    /// waits for the daemon for nothing. Empty for a pane of a session of
+    /// another host, whose directory is not on this computer: a split or a
+    /// tab there asks newPaneDirectory instead.
     QString inheritedDirectory(const Pane* from) const;
     /// The directory that Window.workingDirectory names: home, or a path that
     /// is a directory. None for inherit, and for a path that is not a
@@ -740,8 +814,8 @@ private:
     QHash<quint32, SentKey> m_sentKeys;
     std::uint64_t m_sentKeyOrder = 0;
     /// Sends the release of every key in m_sentKeys to its pane now, and
-    /// takes the keys: a drag takes the keyboard (QDrag::exec), and their
-    /// releases would go to it.
+    /// takes the keys: a drag takes the keyboard (QDrag::exec), and another
+    /// window that takes the focus gets their releases.
     void releaseSentKeys();
     /// A mode holds the keyboard: the overview, URL mode, Unicode input,
     /// copy mode or a script's key mode. Input-method text does not reach
@@ -762,7 +836,8 @@ private:
     void updateChrome();
     /// The command palette's list: every action but the palette itself and
     /// the end of a script key mode, then the script commands that have a
-    /// palette title.
+    /// palette title. Cancel Overlay shows only over an overlay, and Move
+    /// Pane to Window and Detach Tab only when breakOutError lets them go.
     void updatePaletteActions();
     /// Starts a script command from the palette, a key or the menu, with no
     /// arguments. @p token by value: the list it comes from can change
@@ -1418,24 +1493,42 @@ private:
     QByteArray m_pendingPaste;
     QPointer<Pane> m_pendingPastePane;
     QString m_fixedTitle; ///< afterglow --title
-    bool m_holdNextPane = false; ///< afterglow --hold, for the first pane
+    /// The next pane that createPane starts stays open after its program
+    /// exits: afterglow --hold for the first pane, and each pane of a
+    /// restored project that asks for it.
+    bool m_holdNextPane = false;
     std::function<void()> m_pendingConfirm; ///< what a confirm prompt goes ahead with
     QList<QPointer<Pane>> m_pendingConfirmPanes; ///< the panes the confirm prompt is about
     bool m_closeConfirmed = false; ///< the window may close without asking
     /// The mux session that the window shows, else null (WindowOptions::session).
     std::shared_ptr<MuxClient> m_session;
     QTimer m_sessionLayoutTimer;
-    /// The session panes that moved since the last layout went (paneMoved).
+    /// The session panes that moved since the last layout went (paneMoved),
+    /// each once.
     std::vector<std::uint32_t> m_movedSessionPanes;
+    /// tabsChanged tells only of a program's title, which the session's
+    /// layout does not hold.
+    bool m_programTitleChange = false;
     /// Panes close because they went to another session: their programs
     /// run on (breakOutOfSession).
     bool m_breakingOut = false;
+    /// The panes whose break out waits for the daemon's answer
+    /// (breakOutOfSession): no other break out takes them.
+    QList<QPointer<Pane>> m_leavingPanes;
     /// The pane that the daemon started, which the next createPane shows
     /// (placeSessionPane).
     std::optional<std::uint32_t> m_placingPane;
+    /// The next createPane starts a program that a project does not save,
+    /// and that the daemon of a session does not keep: the pager of Show
+    /// Last Output, which reads a file that goes with it. In a session, the
+    /// name of the pager, which runs under /bin/sh, as the pane's job.
+    std::optional<QString> m_unsavedLaunch;
     /// The window's close ends nothing of its session: Afterglow quits
     /// (keepSessionOnClose).
     bool m_keepSession = false;
+    /// A project opened into the session: the window's close ends nothing
+    /// of it (keepSessionForProject).
+    bool m_projectSession = false;
     bool m_closing = false; ///< closing()
     bool m_pointerHidden = false; ///< hidden while typing
     QElapsedTimer m_lastBellSound;

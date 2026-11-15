@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // aglow-mux: the daemon that keeps terminal sessions running while no
-// window shows them. It has no Qt, no display and no GPU. `afterglow mux`
-// starts it, in a systemd user unit or in a session of its own.
+// window shows them. It has no Qt, no display and no GPU. A client that
+// finds none starts it (MuxStart), in a systemd user unit or in a session of
+// its own: `afterglow mux`, a window that opens a project into a session,
+// and `aglow-mux proxy --start` for a client on another host.
 
 #include "Daemon.h"
 #include "ImageDecoder.h"
+#include "MuxConnect.h"
 #include "MuxProtocol.h"
 #include "Proxy.h"
 
@@ -40,8 +43,9 @@ It ends when no session is left, and after %d seconds when no session
 starts. SIGTERM, SIGINT and SIGHUP end it and its sessions.
 
 proxy carries one connection to the daemon of this host on standard input
-and output, for afterglow mux --ssh on another host. With --start, it starts
-the daemon when none runs. Without it, it exits with status 3 when none runs.
+and output, for the --ssh option of afterglow mux on another host. With
+--start, it starts the daemon when none runs. Without it, it exits with
+status 3 when none runs.
 )";
 
 int g_endSignal = 0;
@@ -124,8 +128,8 @@ int main(int argc, char** argv)
     std::signal(SIGCHLD, SIG_DFL);
     if (argc >= 2 && std::strcmp(argv[1], AfterglowMux::ProxyArgument) == 0) {
         if (argc == 2) return AfterglowMux::runProxy(false);
-        if (argc == 3 && std::strcmp(argv[2], "--start") == 0) return AfterglowMux::runProxy(true);
-        std::fprintf(stderr, "aglow-mux proxy: the only option is --start\n");
+        if (argc == 3 && std::strcmp(argv[2], AfterglowMux::ProxyStartOption) == 0) return AfterglowMux::runProxy(true);
+        std::fprintf(stderr, "aglow-mux proxy: the only option is %s\n", AfterglowMux::ProxyStartOption);
         return 2;
     }
     std::atexit(endWithSignal);

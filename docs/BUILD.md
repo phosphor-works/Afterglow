@@ -138,11 +138,12 @@ git clone https://github.com/phosphor-works/PlasmaZones ../PlasmaZones
 3. Select the PlasmaZones commit that this Afterglow source was tested with:
 
 ```sh
-git -C ../PlasmaZones checkout f8a408aae
+git -C ../PlasmaZones checkout 1187fd9a4
 ```
 
 A later PlasmaZones commit can change the Phosphor API. The build then fails.
 An older PlasmaZones checkout lacks `cmake/PhosphorDependencies.cmake`, or a library such as `phosphor-channel`. The configuration then stops with an error.
+Another older checkout configures, and the build then fails in a Phosphor call.
 
 4. Configure the build with the installation prefix:
 
@@ -176,7 +177,7 @@ The build compiles the Phosphor libraries with Afterglow.
 ## Build aglow and aglow-mux alone
 
 Build `aglow` and the [mux daemon](MUX.md) `aglow-mux` alone on a computer that does not run Afterglow, for example a remote host.
-`afterglow mux --ssh` runs the `aglow-mux` of the remote host.
+The `--ssh DESTINATION` option of `afterglow mux` runs the `aglow-mux` of the remote host.
 A distribution can also package `aglow` and `aglow-mux` on their own from this build.
 This build needs CMake 3.21 or later, a C compiler, a C++20 compiler and the static C and C++ runtime libraries.
 NASM is optional, as in the full build.
@@ -192,7 +193,9 @@ It compiles zlib-ng, xxHash, libpng, libjpeg-turbo and libwebp from their [sourc
 
 To build `aglow` without `aglow-mux`, add `-DAFTERGLOW_BUILD_MUX=OFF` to the configuration command.
 That build does not need PCRE2 or a PlasmaZones checkout.
-It downloads only CPM.cmake and the archives of `cmake/AfterglowDependencies.cmake`.
+
+This build, with or without `aglow-mux`, downloads only CPM.cmake and the archives of `cmake/AfterglowDependencies.cmake`.
+phosphor-channel downloads nothing.
 By default, the CPM cache is `.cache/cpm` in the Afterglow directory.
 `-DCPM_SOURCE_CACHE` and the `CPM_SOURCE_CACHE` environment variable change it.
 To build on a computer without network access, download the archives as in step 3 of the procedure in [source archives](#source-archives).
@@ -206,35 +209,46 @@ git clone https://github.com/phosphor-works/Afterglow
 cd Afterglow
 ```
 
-2. Configure the build with `AFTERGLOW_AGLOW_ONLY`:
+2. For `aglow-mux`, get the Phosphor source in the adjacent directory, at the commit of the [build steps](#build):
+
+```sh
+git clone https://github.com/phosphor-works/PlasmaZones ../PlasmaZones
+git -C ../PlasmaZones checkout 1187fd9a4
+```
+
+Skip this step when you configure with `-DAFTERGLOW_BUILD_MUX=OFF`.
+Without the checkout, the configuration of `aglow-mux` stops with an error.
+
+3. Configure the build with `AFTERGLOW_AGLOW_ONLY`:
 
 ```sh
 cmake -B build-aglow -DAFTERGLOW_AGLOW_ONLY=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 ```
 
 When the PlasmaZones checkout is not next to the Afterglow directory, add `-DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/PlasmaZones/phosphor-libs` to the command.
-Without GTest, add `-DBUILD_TESTING=OFF` to the command, and skip step 4.
+Without GTest, add `-DBUILD_TESTING=OFF` to the command, and skip step 5.
 
-3. Build `aglow` and `aglow-mux`:
+4. Build `aglow` and `aglow-mux`:
 
 ```sh
 cmake --build build-aglow
 ```
 
-4. Run the tests:
+5. Run the tests:
 
 ```sh
 ctest --test-dir build-aglow --output-on-failure
 ```
 
-5. Install `aglow` and `aglow-mux`:
+6. Install `aglow` and `aglow-mux`:
 
 ```sh
 sudo cmake --install build-aglow
 ```
 
 The installation contains `bin/aglow`, its license notices in `share/licenses/aglow`, and its Bash, Zsh and Fish completions.
-The license notices are those of zlib-ng, xxHash, libpng, libjpeg-turbo (with `README.ijg` and `NOTICE.IJG`) and libwebp in the table in [install](#install).
+The license notices are those of zlib-ng, xxHash, libpng, libjpeg-turbo (with `README.ijg` and `NOTICE.IJG`), libwebp and the Unicode Character Database (`LICENSE.Unicode`).
+The table in [install](#install) lists them.
 A static `aglow` also has the notices of glibc and libstdc++.
 The texts of the licenses that they name are also installed. These are `LGPL-2.1-or-later.txt`, and `GPL-3.0-or-later.txt` for a static `aglow`.
 The completions go in the directories of the full build (see [install](#install)), and `AFTERGLOW_ZSH_COMPLETION_DIR` also applies.
@@ -273,6 +287,7 @@ The license notices of the third-party code in the binaries go in `share/license
 | `README.ijg` | The license of the Independent JPEG Group, which the notice of libjpeg-turbo names | Always |
 | `LICENSE.libwebp` | The notice of libwebp, which `aglow-mux` also contains | Always |
 | `PATENTS.libwebp` | The patent grant of libwebp | Always |
+| `LICENSE.Unicode` | The Unicode License v3 of the Unicode Character Database, from which the character width and grapheme tables of `afterglow` and `aglow-mux` come | Always |
 | `NOTICE.IJG` | The statement that `aglow` and `aglow-mux` are based in part on the work of the Independent JPEG Group | Always |
 | `LICENSE.Luau` and `LICENSE.Lua` | The notices of Luau and of Lua, which the scripts of `afterglow` run with | Unless the build uses the system's Luau (`PLASMAZONES_SYSTEM_LUAU`) |
 | `LICENSE.valijson` | The notice of valijson, which `afterglow` checks JSON files with | Unless the build uses the system's valijson (`PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON`) |

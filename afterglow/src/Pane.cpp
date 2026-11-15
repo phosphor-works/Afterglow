@@ -118,6 +118,10 @@ bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols,
     // OSC 24569 answer of its own, apart from the pane's (RemoteSockets).
     if (m_overlayHost) AfterglowPty::setVariable(opts, "AFTERGLOW_OVERLAY", "1");
     else AfterglowPty::unsetVariable(opts, "AFTERGLOW_OVERLAY");
+    // Only the daemon sets it, for a program of its session: one that a
+    // launch's env gave a pane of the window would send `afterglow ctl` and
+    // `afterglow mux detach` to a session that holds another pane of that ID.
+    AfterglowPty::unsetVariable(opts, "AFTERGLOW_SESSION");
     // The pane ID means something only to this process: `afterglow ctl` in a
     // second instance's pane must reach that instance, not the first.
     if (const QString socket = InstanceSocket::processPath(); !socket.isEmpty()) {
@@ -155,8 +159,9 @@ void Pane::setOptions(const AfterglowVt::TerminalOptions& options)
 
 void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
 {
-    // A session pane whose program ended holds its last screen: no daemon
-    // resizes it any more, and its images take the new cell size here.
+    // A session pane whose session is gone closes once the queued close
+    // reaches the window: a resize before then sizes the replica here, as
+    // no daemon resizes it any more.
     if (m_session && !m_sessionGone) {
         // The daemon resizes the session's terminal and its PTY. The replica
         // takes the new size with the next frame, so it never shows rows
@@ -551,6 +556,9 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
             m_searchNotice = scrolled ? tr("Text moved during the search. Search again") : searchError(result);
             if (result.truncated)
                 m_searchNotice = m_searchNotice.isEmpty() ? tr("Limited results") : tr("%1 (limited results)").arg(m_searchNotice);
+            if (job->partial)
+                m_searchNotice = m_searchNotice.isEmpty() ? tr("Older lines are still arriving")
+                                                          : tr("%1 (older lines are still arriving)").arg(m_searchNotice);
             if (m_searchCurrent >= 0) revealRow(m_terminal, std::size_t(m_terminal.screen().absoluteIndexOf(m_searchMatches.back().start.row)));
             ++m_selectionSerial;
         }
@@ -567,13 +575,19 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
 
 void Pane::search(const QString& query, int direction, bool regex)
 {
+    // A session pane that the user could not see has older screens until a refresh.
+    refreshSession();
     const auto needle = query.toStdU32String();
     bool layoutChanged = false;
+    bool arrived = false;
     {
         std::lock_guard lock(m_mutex);
         layoutChanged = m_searchEpoch != m_terminal.screen().layoutEpoch() || m_searchAlt != m_terminal.modes().altScreen;
+        // Older rows that came add to the history without a new layout: a
+        // search that stepped through the matches would never see them.
+        arrived = m_searchPartial && !historyArrivingLocked();
     }
-    if (layoutChanged || m_searchStale || needle != m_searchQuery || regex != m_searchRegex || !m_searchActive) {
+    if (layoutChanged || arrived || m_searchStale || needle != m_searchQuery || regex != m_searchRegex || !m_searchActive) {
         clearSearch();
         m_searchStale = false;
         m_searchActive = true; m_searchRegex = regex; m_searchQuery = needle;
@@ -586,6 +600,7 @@ void Pane::search(const QString& query, int direction, bool regex)
             m_movedFrom = NoRow;
             job->lastRow = screen.rowsDropped() + screen.totalRows();
             job->nextRow = screen.rowsDropped();
+            job->partial = m_searchPartial = historyArrivingLocked();
         }
         m_searchJob = job;
         Q_EMIT searchStatusChanged(tr("Searching…"));
@@ -848,6 +863,16 @@ bool Pane::lastOutputArriving() const
     return lastOutputArrivingLocked();
 }
 
+bool Pane::historyArrivingLocked() const
+{
+    if (!m_session || m_terminal.modes().altScreen) return false;
+    const AfterglowVt::Screen& screen = m_terminal.screen();
+    if (screen.totalRows() == 0) return false;
+    // From id 0: received() then counts the older rows that the daemon has
+    // and did not send yet, as well as the blank places of newer ones.
+    return !m_stateReader.received(0, screen.rowsDropped() + screen.totalRows() - 1);
+}
+
 bool Pane::lastOutputArrivingLocked() const
 {
     // A session pane's history comes over several frames: newer rows that did
@@ -917,6 +942,10 @@ std::optional<std::uint32_t> Pane::sessionJobPane() const
 
 QString Pane::knownDirectory() const
 {
+    // The program of a session of another host runs there: what its shell
+    // reports names a path on that host, and a directory here of the same
+    // name is not the one the program is in.
+    if (m_session && m_session->remote()) return {};
     QString reported;
     {
         std::lock_guard lock(m_mutex);
@@ -936,9 +965,12 @@ QString Pane::knownDirectory() const
 QString Pane::workingDirectory() const
 {
     const QString known = knownDirectory();
-    if (!known.isEmpty() || !m_session || m_sessionGone) return known;
-    // The daemon and the window share the machine, so its path is one here,
-    // though the directory can go before the window uses it.
+    // A daemon on another host answers through its ssh link, and with a path
+    // there: the window asks it itself where a new pane of that session
+    // starts (TerminalWindow::createSessionLaunchPane).
+    if (!known.isEmpty() || !m_session || m_sessionGone || m_session->remote()) return known;
+    // A local daemon shares the machine with the window, so its path is one
+    // here, though the directory can go before the window uses it.
     const QString asked = m_session->directory(m_sessionPane);
     return QFileInfo(asked).isDir() ? asked : QString();
 }
@@ -1178,14 +1210,25 @@ bool Pane::sessionLost(MuxLoss loss, bool notice)
     // A detach or a kill that the user asked for closes the pane as asked.
     // The others close it without a word from the user: say why, once for
     // the window.
-    const QString name = m_session ? m_session->session() : QString();
+    // A session of another host is named with its host, whose daemon
+    // `afterglow mux ls` asks only with --ssh.
+    const QString host = m_session && m_session->remote() ? m_session->host() : QString();
+    const QString name = !m_session ? QString()
+        : host.isEmpty()            ? m_session->session()
+                                    : tr("%1 on %2").arg(m_session->session(), host);
+    const QString list = host.isEmpty() ? QStringLiteral("afterglow mux ls") : QStringLiteral("afterglow mux ls --ssh %1").arg(host);
     if (notice && loss == MuxLoss::TakenOver) {
         NotificationCenter::instance().showNotice(this, tr("Session %1 moved").arg(name), tr("Another window shows session %1 now.").arg(name));
     } else if (notice && loss == MuxLoss::Broken) {
         // The daemon ended, or the window let the session go (a frame that
         // did not apply, a full queue of calls): the session can run on.
         NotificationCenter::instance().showNotice(this, tr("Session %1 is gone from this window").arg(name),
-                                                  tr("This window lost its link to session %1. Run afterglow mux ls to see whether the session still runs.").arg(name));
+                                                  tr("This window lost its link to session %1. Run %2 to see whether the session still runs.").arg(name, list));
+    } else if (notice && loss == MuxLoss::MovedOut) {
+        // A break out whose answer did not come in time: the daemon moved
+        // the pane all the same, to a session that no window shows.
+        NotificationCenter::instance().showNotice(this, tr("Pane moved to a new session"),
+                                                  tr("The mux daemon moved the pane to a session of its own, but its answer came too late. Run %1 to find the session.").arg(list));
     }
     m_leftSession = true;
     QMetaObject::invokeMethod(this, [this] { Q_EMIT sessionLeft(); }, Qt::QueuedConnection);
@@ -1234,8 +1277,8 @@ void Pane::workingDirectoryChanged(std::string_view directory)
     // m_mutex held: on the pty thread, or for a session pane on the GUI thread
     // (applySessionFrame). OSC 7 sends file://host/path, percent encoded; the
     // others send a plain path. A directory on another host leaves /proc to
-    // answer, which knows the local end of the session (for a session pane,
-    // the daemon's, through workingDirectory).
+    // answer, which knows the local end of the session (for a pane of a
+    // local session, the daemon's, through workingDirectory).
     QByteArray path;
     if (directory.starts_with("file://")) {
         const std::string_view rest = directory.substr(7);

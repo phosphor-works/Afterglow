@@ -8,10 +8,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <charconv>
 #include <cstdlib>
 
 #include <limits.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -130,18 +132,51 @@ SocketLookup findSocket(const EnvironmentLookup& env)
 {
     const std::string_view owner = value(env, "AFTERGLOW_SOCKET");
     const std::string_view paneText = value(env, "AFTERGLOW_PANE_ID");
-    if (owner.empty() && !paneText.empty()) return {{}, false, 0, "the Afterglow that runs this pane has no socket"};
+    if (owner.empty() && !paneText.empty()) return {{}, false, 0, false, "the Afterglow that runs this pane has no socket"};
     if (!owner.empty()) {
-        if (std::string error = socketPathError(owner); !error.empty()) return {{}, true, 0, std::move(error)};
+        const bool session = !value(env, "AFTERGLOW_SESSION").empty();
+        // As a relative XDG_RUNTIME_DIR: it would follow the working directory.
+        if (!owner.starts_with('/')) return {{}, true, 0, session, "AFTERGLOW_SOCKET is not an absolute path"};
+        if (std::string error = socketPathError(owner); !error.empty()) return {{}, true, 0, session, std::move(error)};
         std::int64_t pane = 0;
         const auto [end, ec] = std::from_chars(paneText.data(), paneText.data() + paneText.size(), pane);
         const bool valid = ec == std::errc() && end == paneText.data() + paneText.size() && pane > 0 && pane <= 0xFFFFFFFFLL;
-        return {std::string(owner), true, valid ? pane : 0, {}};
+        return {std::string(owner), true, valid ? pane : 0, session, {}};
     }
     std::string shared = sharedSocketPath(env);
-    if (shared.empty()) return {{}, false, 0, noRuntimeDirectory(env)};
-    if (std::string error = socketPathError(shared); !error.empty()) return {{}, false, 0, std::move(error)};
-    return {std::move(shared), false, 0, {}};
+    if (shared.empty()) return {{}, false, 0, false, noRuntimeDirectory(env)};
+    if (std::string error = socketPathError(shared); !error.empty()) return {{}, false, 0, false, std::move(error)};
+    return {std::move(shared), false, 0, false, {}};
+}
+
+std::string socketOwner(const SocketLookup& lookup)
+{
+    if (!lookup.own) return "the Afterglow of this display";
+    if (lookup.session) return "the mux daemon of this session pane";
+    return lookup.pane ? "the Afterglow that runs this pane" : "the Afterglow at $AFTERGLOW_SOCKET";
+}
+
+std::string noServerReason(const SocketLookup& lookup)
+{
+    if (!lookup.own) return "no running Afterglow on this display";
+    struct stat info{};
+    const bool missing = ::stat(lookup.path.c_str(), &info) != 0 && (errno == ENOENT || errno == ENOTDIR);
+    if (lookup.session) {
+        // No lookup of the daemon's other socket: the message says what is
+        // wrong with the environment of the pane.
+        return missing ? "the socket of the mux daemon of this session pane is gone: $AFTERGLOW_SOCKET names no file"
+                       : "the mux daemon of this session pane has exited";
+    }
+    if (lookup.pane) return "the Afterglow that runs this pane has exited";
+    return "no Afterglow at $AFTERGLOW_SOCKET";
+}
+
+bool inMuxDirectory(std::string_view path)
+{
+    const std::size_t slash = path.rfind('/');
+    if (slash == std::string_view::npos) return false;
+    const std::string_view directory = path.substr(0, slash);
+    return directory.substr(directory.rfind('/') + 1) == MuxDirectoryName;
 }
 
 MuxSockets muxSockets(const EnvironmentLookup& env)
@@ -156,15 +191,16 @@ MuxSockets muxSockets(const EnvironmentLookup& env)
         sockets.candidates.push_back({std::move(path), std::move(directory)});
     };
     // A directory of its own, never a file next to the terminal's sockets:
-    // InstanceSocket removes stale afterglow-*.sock files, and a
-    // WAYLAND_DISPLAY of "mux" would name aglow-mux.sock.
+    // InstanceSocket removes the afterglow-*.sock files there that refuse
+    // connections, and a name such as afterglow-mux.sock is the shared
+    // socket of a display named "mux".
     if (const std::string_view runtime = runtimeDirectory(env); !runtime.empty()) {
-        add(join(runtime, "aglow-mux"), "socket");
+        add(join(runtime, MuxDirectoryName), "socket");
     } else {
         sockets.error = noRuntimeDirectory(env);
     }
     if (const std::string state = stateDirectory(env); !state.empty()) {
-        add(join(state, "aglow-mux"), muxStateSocketName());
+        add(join(state, MuxDirectoryName), muxStateSocketName());
     } else {
         sockets.error += std::string(sockets.error.empty() ? "" : " and ") + "neither XDG_STATE_HOME nor HOME is an absolute path";
     }

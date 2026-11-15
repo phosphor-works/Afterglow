@@ -49,8 +49,11 @@ target_link_libraries(afterglow_zlib INTERFACE zlib-ng)
 target_include_directories(afterglow_zlib SYSTEM INTERFACE ${AFTERGLOW_ZLIB_NG_BINARY_DIR} ${AFTERGLOW_ZLIB_NG_SOURCE_DIR})
 
 afterglow_third_party_target(zlib-ng afterglow_xxhash)
-# Both are linked into the binaries, so their notices go with them. They
-# install with the other license texts (afterglow/CMakeLists.txt).
+# Both are linked into the binaries, so their notices go with them:
+# afterglow_install_bundled_notices (cmake/AfterglowDependencies.cmake)
+# installs them for the application (afterglow/CMakeLists.txt), and for
+# aglow and aglow-mux when they install alone (tools/aglow/CMakeLists.txt,
+# mux/CMakeLists.txt).
 set(AFTERGLOW_ZLIB_LICENSE "${AFTERGLOW_ZLIB_NG_SOURCE_DIR}/LICENSE.md" PARENT_SCOPE)
 set(AFTERGLOW_XXHASH_LICENSE "${xxhash_SOURCE_DIR}/LICENSE" PARENT_SCOPE)
 

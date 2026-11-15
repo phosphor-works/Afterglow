@@ -168,26 +168,29 @@ _afterglow_ctl() {
         'overlay:run a command over the pane and print its result'
         'screenshot:save the pane, its tab or its window as PNG'
     )
-    # --session NAME comes before the command.
-    if [[ $words[2] == --session ]]; then
+    # --session NAME comes before the command. afterglow mux ls lists the
+    # names, but a completion runs no program but aglow run --complete. With
+    # the cursor on the word --session itself, that word is the one being
+    # completed.
+    if [[ $words[2] == --session ]] && (( CURRENT > 2 )); then
         if (( CURRENT == 3 )); then
             _message 'session name'
             return
         fi
         words[2,3]=()
         (( CURRENT -= 2 ))
+        # The usage only comes first: a command follows.
+        if (( CURRENT == 2 )); then
+            [[ $PREFIX == -* ]] || _describe -t commands 'ctl command' commands
+            return
+        fi
     elif (( CURRENT == 2 )) && [[ $PREFIX == -* ]]; then
         help=('-h:show the usage' '--help:show the usage' '--session:act on a mux session')
         _describe -t options 'option' help
         return
     fi
     if (( CURRENT == 2 )); then
-        if [[ $PREFIX == -* ]]; then
-            help=('-h:show the usage' '--help:show the usage')
-            _describe -t options 'option' help
-        else
-            _describe -t commands 'ctl command' commands
-        fi
+        _describe -t commands 'ctl command' commands
         return
     fi
     # From here, words[1] is the ctl command.
@@ -233,7 +236,7 @@ _afterglow_ctl() {
     notify) _arguments -S $pane '1:title:' '*:body:' ;;
     open-directory) _arguments '--layout[a saved layout]:layout:' '1:directory:_directories' ;;
     save-project) _arguments $pane '--overwrite[replace a project with the name]' '1:name:' ;;
-    open-project) _arguments '--new[launch the layout again]' '(--no-session)--session[open into a mux session]' '(--session)--no-session[open into a window]' '1:name:' ;;
+    open-project) _arguments '--new[launch the layout again]' '(--no-session)--into-session[open into a mux session]' '(--into-session)--no-session[open into a window]' '1:name:' ;;
     action) _arguments $pane '1:action:_afterglow_actions' ;;
     watch|scripts|projects) ;;
     *) _arguments $pane ;;
@@ -271,9 +274,12 @@ _afterglow_mux() {
             _normal
             return
         fi
+        # With --ssh the directory is one of that host.
+        local cwd='--cwd[start in the directory]:directory:_directories'
+        (( ${words[(I)--ssh]} )) && cwd='--cwd[start in the directory of the host]:directory of the host:'
         _arguments \
             '--name[the session name]:name:' \
-            '--cwd[start in the directory]:directory:_directories' \
+            "$cwd" \
             '--detach[create the session without a window]' \
             "$ssh"
         ;;

@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // The test daemon of the mux tests: each test runs its own aglow-mux, with
-// a runtime and a state directory of its own under /tmp and no AFTERGLOW_*
-// variables, so no test reaches the daemon of the user.
+// a runtime and a state directory of its own under /tmp and only the
+// variables of an allow list (TestDaemon::cleanEnvironment()), so no test
+// reaches the daemon, the Afterglow, the bus or the shell history of the user.
 
 #pragma once
 
@@ -19,6 +20,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <csignal>
@@ -29,6 +32,7 @@
 #include <functional>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #include <thread>
 
 #include <fcntl.h>
@@ -84,13 +88,41 @@ inline bool exists(const std::string& path)
     return ::lstat(path.c_str(), &info) == 0;
 }
 
-/// A program that keeps its session open until the test ends it.
-inline const std::vector<std::string> Waiting = {"/bin/sh", "-c", "exec sleep 60"};
+/// A program that keeps its session open until the test ends it: longer
+/// than any test runs, so that no session ends by itself. The end of the
+/// daemon (~TestDaemon) hangs it up.
+inline const std::vector<std::string> Waiting = {"/bin/sh", "-c", "exec sleep 3600"};
 
-/// A program that writes its environment to @p file, then waits.
+/// A program that writes its environment to @p file, then waits as Waiting.
 inline std::vector<std::string> writesEnvironment(const std::string& file)
 {
-    return {"/bin/sh", "-c", "env > '" + file + ".part' && mv '" + file + ".part' '" + file + "'; exec sleep 60"};
+    return {"/bin/sh", "-c", "env > '" + file + ".part' && mv '" + file + ".part' '" + file + "'; exec sleep 3600"};
+}
+
+/// The start of the name of the directory of each test daemon, before the
+/// process ID of the test that owns it.
+inline constexpr const char* DirectoryPrefix = "aglow-mux-";
+
+/// Removes the directories of test daemons whose test is gone: one that
+/// CTest killed, or that crashed, ran no ~TestDaemon. Only those of this
+/// user, whose owner process no longer runs.
+inline void removeDeadDirectories()
+{
+    std::error_code error;
+    for (std::filesystem::directory_iterator it("/tmp", error), end; !error && it != end; it.increment(error)) {
+        const std::filesystem::directory_entry& entry = *it;
+        const std::string name = entry.path().filename().string();
+        if (!name.starts_with(DirectoryPrefix)) continue;
+        const std::string rest = name.substr(std::strlen(DirectoryPrefix));
+        const std::size_t dash = rest.find('-');
+        if (dash == 0 || dash == std::string::npos || rest.find_first_not_of("0123456789") != dash) continue;
+        const long owner = std::strtol(rest.c_str(), nullptr, 10);
+        struct stat info{};
+        if (owner <= 0 || ::lstat(entry.path().c_str(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != ::getuid()) continue;
+        if (::kill(pid_t(owner), 0) == 0 || errno != ESRCH) continue;
+        std::error_code ignored;
+        std::filesystem::remove_all(entry.path(), ignored);
+    }
 }
 
 class TestDaemon
@@ -98,9 +130,11 @@ class TestDaemon
 public:
     TestDaemon()
     {
-        // Under /tmp: TMPDIR can be too long for a socket path.
-        char dir[] = "/tmp/aglow-mux-XXXXXX";
-        if (!::mkdtemp(dir)) {
+        removeDeadDirectories();
+        // Under /tmp: TMPDIR can be too long for a socket path. The ID of
+        // this process names the owner, for removeDeadDirectories().
+        std::string dir = std::string("/tmp/") + DirectoryPrefix + std::to_string(::getpid()) + "-XXXXXX";
+        if (!::mkdtemp(dir.data())) {
             ADD_FAILURE() << "cannot create a directory under /tmp: " << std::strerror(errno);
             return;
         }
@@ -133,25 +167,35 @@ public:
     /// The socket that call() connects to.
     void callOn(std::string path) { m_callSocket = std::move(path); }
 
-    /// The environment of this process, without the variables that lead to
-    /// the user's Afterglow, and with the test's directories.
+    /// The variables of this process that the daemon and its sessions get:
+    /// an allow list, so that no variable leads to the user's Afterglow, mux
+    /// daemon, bus, display or tmux (AFTERGLOW_*, AGLOW_MUX_REPORT_FD,
+    /// DBUS_SESSION_BUS_ADDRESS, WAYLAND_DISPLAY, TMUX), no shell of a test
+    /// reads or writes the user's history or startup files (HISTFILE,
+    /// PROMPT_COMMAND, ENV, BASH_ENV), and a failure prints no secret into
+    /// the log. Then the test's directories, and /bin/sh as the login shell.
+    static bool allowed(std::string_view name)
+    {
+        static constexpr std::array<std::string_view, 8> Names{"PATH", "LANG", "LANGUAGE", "TZ", "USER", "LOGNAME", "TMPDIR", "LD_LIBRARY_PATH"};
+        // The options of the sanitizers (tools/sanitizers): ASAN_OPTIONS and the others.
+        return std::find(Names.begin(), Names.end(), name) != Names.end() || name.starts_with("LC_") || (name.ends_with("SAN_OPTIONS") && name.size() > 11);
+    }
     std::vector<std::pair<std::string, std::string>> cleanEnvironment() const
     {
         std::vector<std::pair<std::string, std::string>> env;
         for (char** e = environ; *e; ++e) {
             const std::string entry(*e);
             const auto eq = entry.find('=');
+            if (eq == std::string::npos) continue;
             const std::string name = entry.substr(0, eq);
-            if (name.starts_with("AFTERGLOW_") || name == "XDG_RUNTIME_DIR" || name == "XDG_STATE_HOME" || name == "HOME" || name == "TMUX"
-                || name == "TMUX_PANE") {
-                continue;
-            }
-            env.emplace_back(name, eq == std::string::npos ? "" : entry.substr(eq + 1));
+            if (allowed(name)) env.emplace_back(name, entry.substr(eq + 1));
         }
         env.emplace_back("XDG_RUNTIME_DIR", runtime());
         // The daemon listens under the state directory too: never the user's.
         env.emplace_back("XDG_STATE_HOME", stateHome());
         env.emplace_back("HOME", m_dir + "/home");
+        // Not the user's login shell, which reads the user's startup files.
+        env.emplace_back("SHELL", "/bin/sh");
         return env;
     }
 
@@ -160,8 +204,7 @@ public:
     /// and a connection, the daemon ends.
     bool start(bool keep = true, bool ignoreHangup = false)
     {
-        m_pid = spawnDaemon(ignoreHangup);
-        if (m_pid <= 0) return false;
+        if (spawnDaemon(ignoreHangup) <= 0) return false;
         const bool answers = waitFor([this] {
             IpcConnection connection;
             IpcConnection::Error error;
@@ -181,12 +224,23 @@ public:
     /// test's daemon, or with @p other a second one. With @p ignoreHangup
     /// it starts with SIGHUP ignored, as under nohup. Its stdin is /dev/null
     /// and its stdout and stderr go to daemon.err: it holds no pipe of
-    /// ctest, and it ends with this process (PR_SET_PDEATHSIG).
+    /// ctest, and it ends with the thread that started it, the test's main
+    /// thread (PR_SET_PDEATHSIG). -1 when it cannot start, or when the test
+    /// has no directory: the daemon would get XDG_RUNTIME_DIR=/run.
     /// @p report: the write end of a pipe that the daemon gets as its
     /// report descriptor (AfterglowMux::ReportFdVariable), as from
     /// `afterglow mux new`; -1 for none.
     pid_t spawnDaemon(bool ignoreHangup = false, bool other = false, int report = -1)
     {
+        if (m_dir.empty()) {
+            ADD_FAILURE() << "the test has no directory for a daemon";
+            return -1;
+        }
+        // A second daemon in one place would leave the first to nobody.
+        if ((other ? m_other : m_pid) > 0) {
+            ADD_FAILURE() << "a daemon of this test runs already";
+            return -1;
+        }
         std::vector<std::string> store;
         for (const auto& [name, value] : m_environment) {
             const bool replaced = std::any_of(m_daemonOnly.begin(), m_daemonOnly.end(), [&](const auto& only) { return only.first == name; });
@@ -208,17 +262,18 @@ public:
         if (pid == 0) {
             ::prctl(PR_SET_PDEATHSIG, SIGKILL);
             if (::getppid() != parent) ::_exit(127);
+            // The report goes to 3 first, from above 10: the files opened
+            // below then never take 3, and the report is never one of them.
+            if (report >= 0) {
+                const int high = ::fcntl(report, F_DUPFD, 10);
+                if (high < 0 || ::dup2(high, 3) != 3) ::_exit(127);
+            }
             const int in = ::open("/dev/null", O_RDONLY);
             const int out = ::open(err.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
             if (in < 0 || out < 0) ::_exit(127);
             if (rlimit limit{}; m_startFileLimit > 0 && ::getrlimit(RLIMIT_NOFILE, &limit) == 0) {
                 limit.rlim_cur = m_startFileLimit;
                 ::setrlimit(RLIMIT_NOFILE, &limit);
-            }
-            if (report >= 0 && report != 3) {
-                ::dup2(report, 3);
-            } else if (report == 3) {
-                ::fcntl(3, F_SETFD, 0);
             }
             ::dup2(in, 0);
             ::dup2(out, 1);
@@ -268,8 +323,9 @@ public:
         IpcConnection connection;
         IpcConnection::Error& e = error ? *error : m_lastError;
         e = {};
-        if (!connection.connect(m_callSocket, &e, 2000)) return std::nullopt;
-        auto result = connection.call(target, fn, std::move(args), 5000, &e);
+        std::optional<Json::Value> result;
+        if (connection.connect(m_callSocket, &e, 2000)) result = connection.call(target, fn, std::move(args), 5000, &e);
+        // lastError() describes this call, also when it got no connection.
         if (&e != &m_lastError) m_lastError = e;
         return result;
     }
@@ -301,6 +357,10 @@ public:
         const auto result = call(Fn::ListSessions, {});
         if (!result) {
             ADD_FAILURE() << "listSessions failed: " << lastError();
+            return list;
+        }
+        if (!result->isArray()) {
+            ADD_FAILURE() << "listSessions answered no list: " << Json::write(*result);
             return list;
         }
         for (const Json::Value& item : result->toArray()) {
@@ -366,6 +426,11 @@ public:
         }
         return true;
     }
+    /// Ends this side of the connection, as a client that sent its last
+    /// call does: the daemon reads the end, and can still answer.
+    bool endSending() { return ::shutdown(m_fd, SHUT_WR) == 0; }
+    /// A line() read the end of the connection.
+    bool ended() const { return m_ended; }
     /// The next line, without its '\n'; empty after five seconds or at the end.
     std::string line()
     {
@@ -379,6 +444,7 @@ public:
             if (::poll(&p, 1, 5000) <= 0) return {};
             char buffer[4096];
             const ssize_t n = ::read(m_fd, buffer, sizeof buffer);
+            if (n == 0) m_ended = true;
             if (n <= 0) return {};
             m_buffer.append(buffer, std::size_t(n));
         }
@@ -387,6 +453,7 @@ public:
 private:
     int m_fd = -1;
     std::string m_buffer;
+    bool m_ended = false;
 };
 
 inline std::vector<std::string> names(const std::vector<SessionInfo>& sessions)
@@ -396,13 +463,20 @@ inline std::vector<std::string> names(const std::vector<SessionInfo>& sessions)
     return list;
 }
 
-/// A session that runs an interactive sh, with a plain prompt.
-inline bool shellSession(TestDaemon& daemon, const std::string& name)
+/// The options of a session that runs an interactive sh, with a plain
+/// prompt and no startup file.
+inline SessionOptions shellOptions(const TestDaemon& daemon, const std::string& name)
 {
     SessionOptions o = daemon.options({"/bin/sh"}, name);
     o.launch.environment.emplace_back("PS1", "$ ");
     o.launch.environment.emplace_back("ENV", "/dev/null");
-    return bool(daemon.newSession(o));
+    return o;
+}
+
+/// A session that runs an interactive sh, with a plain prompt.
+inline bool shellSession(TestDaemon& daemon, const std::string& name)
+{
+    return bool(daemon.newSession(shellOptions(daemon, name)));
 }
 
 /// The session @p name of the daemon, if it has one.

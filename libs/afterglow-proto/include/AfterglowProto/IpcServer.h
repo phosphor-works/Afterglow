@@ -14,10 +14,12 @@
 #include <sys/types.h>
 
 // The server side of the phosphor-ipc wire format, without Qt: one JSON
-// object on each line. aglow-mux has no Qt, and answers the clients that
-// the Qt server of PhosphorIpc::IpcRouter answers too: `afterglow mux`, and
-// in a session pane, whose AFTERGLOW_SOCKET names the daemon, `afterglow
-// ctl`, `aglow run` and `afterglow ssh`.
+// object on each line, which the clients of PhosphorIpc read as they read
+// the Qt server of PhosphorIpc::IpcRouter. aglow-mux has no Qt, and answers
+// with it: `afterglow mux`, `afterglow ctl --session NAME` from anywhere,
+// the window that attaches a session (also through `aglow-mux proxy` over
+// ssh), and in a session pane, whose AFTERGLOW_SOCKET names the daemon,
+// `afterglow ctl`, `aglow run` and `afterglow ssh`.
 
 namespace AfterglowProto {
 
@@ -44,9 +46,11 @@ struct IpcRequest
 };
 
 /// Reads one request line with the rules of PhosphorIpc::parseRequest, in
-/// its order, for the fields of a call. On a failure, @p error says why and
-/// @p id gets the request's id when it has a valid one, so that the error
-/// can name it.
+/// its order, for the fields of a call, a subscribe and an unsubscribe. A
+/// schema request is not read: its type passes with no check of its fields,
+/// as a server of this library answers no schema. On a failure, @p error
+/// says why and @p id gets the request's id when it has a valid one, so that
+/// the error can name it.
 std::optional<IpcRequest> parseIpcRequest(std::string_view line, std::string* error,
                                           std::optional<std::int64_t>* id = nullptr);
 
@@ -146,13 +150,14 @@ public:
     void close();
     /// Gives the descriptor up, for another protocol on the same connection
     /// (the stream of a mux attach), with the output that did not go yet in
-    /// @p unsent. -1, and the connection stays, when the client sent more
-    /// than the lines that the caller took: the next protocol would lose
-    /// those bytes.
+    /// @p unsent when not null. -1, and the connection stays, when the client
+    /// sent more than the lines that the caller took: the next protocol
+    /// would lose those bytes. -1 too when the connection is closed: a
+    /// caller that tells the two apart checks open() first.
     int release(std::string* unsent);
 
     /// The next complete line in @p line, without its '\n' and the '\r'
-    /// before it. Fills the buffer at most once (reads until the socket has
+    /// characters before it. Fills the buffer at most once (reads until the socket has
     /// nothing more, or a line over the limit is in), so that a client that
     /// sends without a pause cannot keep the caller here. An empty line is
     /// returned too: it is no request, but a caller that bounds its work for
@@ -165,18 +170,25 @@ public:
     /// @p line when not null (a server that passes it on). A line that is
     /// not one gets MALFORMED_REQUEST here.
     Read nextRequest(IpcRequest& request, std::string* line = nullptr);
-    /// A complete line waits: the next nextLine() returns it without a read.
+    /// A complete line waits: the next nextLine() returns it without a read,
+    /// or refuses it when it is over the limit, and the connection closes.
     /// The caller then polls with a timeout of 0, as the socket may have
     /// nothing more to say.
     bool pending() const;
-    /// Whether the client can send more. Not after it ended its side: its
-    /// answers still go out, and the connection closes after them.
+    /// Whether the client can send more. Not after it ended its side: the
+    /// output queued then still goes out, and the connection closes after
+    /// it, unless keepAtEnd() holds it for an answer that comes later.
     bool wantsRead() const { return m_fd >= 0 && !m_eof; }
+    /// While @p keep, the end of the client's side does not close the
+    /// connection: the server still owes it an answer (a call that another
+    /// process answers). When the caller lets go and the client ended its
+    /// side with every answer sent, the connection closes then.
+    void keepAtEnd(bool keep);
     /// Queues @p line and writes what the socket takes.
     void send(std::string line);
     /// Writes waiting output. False when the connection failed.
     bool flush();
-    bool wantsWrite() const { return m_out.size() > m_outOffset; }
+    bool wantsWrite() const { return m_fd >= 0 && m_out.size() > m_outOffset; }
 
 private:
     bool fill();
@@ -187,6 +199,10 @@ private:
     std::size_t m_inHead = 0;
     std::size_t m_scanned = 0; ///< bytes after m_inHead that have no '\n'
     bool m_eof = false;
+    bool m_keep = false; ///< keepAtEnd()
+    /// A read failed (ECONNRESET): the client is gone, and its complete
+    /// lines are still read, with no answer.
+    bool m_peerGone = false;
     int m_malformed = 0; ///< malformed lines in a row
     std::string m_out;
     std::size_t m_outOffset = 0;

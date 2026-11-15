@@ -45,7 +45,8 @@ namespace AfterglowMux {
 ///
 /// The callbacks of the terminal and of the PTY run on the PTY reader thread,
 /// with m_mutex held for the terminal's, and the terminal's also on the
-/// daemon's thread for a resize, a reset, a clear and a visibility change.
+/// daemon's thread for a resize, a reset, new terminal values (setOptions),
+/// a clear and a visibility change.
 /// They reach the daemon's thread only through @p wake, which must be safe to
 /// call from any thread. While an image decodes, the reader thread lets
 /// m_mutex go and the terminal stays its own: the daemon's thread does not
@@ -56,14 +57,16 @@ class MuxPane final : public AfterglowVt::ITerminalHost, public AfterglowPty::IP
 {
 public:
     /// @p wake runs when the program exits, after output, a resize, a reset,
-    /// a clear or a host call once takeChanged() took the change before it,
-    /// when a host call waits for the window and none waited before, when the
-    /// PTY's input queue has room again after it refused input, or takes no
-    /// more input, and at the end of a feed that made the changes and wrote
-    /// the input that waited for its decode. The reader thread runs it for
-    /// output, host calls, the exit, the queue and that feed. The daemon's
-    /// thread runs it for the others, and for the host calls of a resize, a
-    /// reset, a visibility change and a new window.
+    /// new terminal values, a clear or a host call once takeChanged() took
+    /// the change before it, when a host call waits for the window and none
+    /// waited before, when a watch event waits for the daemon and none waited
+    /// before (setWatched()), when the PTY's input queue has room again after
+    /// it refused input, or takes no more input, and at the end of a feed that
+    /// made the changes and wrote the input that waited for its decode. The
+    /// reader thread runs it for output, host calls, watch events, the exit,
+    /// the queue and that feed. The daemon's thread runs it for the others,
+    /// and for the host calls of a resize, a reset, a visibility change and a
+    /// new window.
     /// It must be safe to call from any thread.
     /// @p images decodes the pane's PNG and iTerm2 images, and outlives it.
     MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, const PaneSize& size,
@@ -77,9 +80,11 @@ public:
     bool start(AfterglowPty::SpawnOptions options, std::string launchedProgram, std::string* error);
     /// The wait status of the program, once exited().
     int exitStatus() const { return m_exitStatus.load(); }
-    /// Whether output or a host call came since the last call. No call, as while no window
-    /// is attached, wakes the daemon no more: the next window's first frame
-    /// carries everything.
+    /// Whether something for the next frame came since the last call: output,
+    /// a host call, a change of the daemon (a resize, a reset, new terminal
+    /// values, a clear), or a frame that waited for a decode. No call, as
+    /// while no window is attached, wakes the daemon no more: the next
+    /// window's first frame carries everything.
     bool takeChanged() { return m_changed.exchange(false); }
     /// What input() did.
     enum class Input : std::uint8_t {
@@ -104,10 +109,10 @@ public:
     /// What the window's Reset and Clear actions do to a terminal of its
     /// own: the window shows the result with the next frame.
     void reset();
+    void clear();
     /// New terminal values (Terminal::setOptions), when they differ: the
     /// window shows the result with the next frame.
     void setOptions(const AfterglowVt::TerminalOptions& options);
-    void clear();
     /// The program exited, or start() failed.
     bool exited() const { return m_exited.load(); }
     /// The next frame of @p writer (StateWriter::update), with the region
@@ -154,19 +159,24 @@ public:
     struct Facts
     {
         std::string title;
-        /// The directory of this machine that the shell reported, else directory().
+        /// The directory of this machine that the shell reported, else
+        /// directory(). Not one that is no directory here, nor one with a
+        /// control byte or that is not UTF-8, nor a plain path from a shell
+        /// on another host (an ssh context).
         std::string directory;
         std::string command; ///< the running command (OSC 133), empty at the prompt
         PaneSize size;
     };
-    /// Nothing while an image decodes: the reader thread has the terminal.
-    std::optional<Facts> facts() const;
+    /// Without the terminal, also while an image decodes: the reader thread
+    /// keeps them, and checks a directory that the shell reports once, with
+    /// no lock that the daemon's thread waits for.
+    Facts facts() const;
     /// The state and text of the newest program status record (OSC 7501),
     /// as the control target names them (idle, working, done, blocked,
     /// error): idle and empty without one. Nothing while an image decodes.
     std::optional<std::pair<std::string, std::string>> status() const;
-    /// The title of the terminal. Nothing while an image decodes.
-    std::optional<std::string> title() const;
+    /// The title of the terminal, also while an image decodes.
+    std::string title() const;
 
     /// What the terminal tells its host that `afterglow ctl watch` hears of
     /// the pane, while the daemon watches it (setWatched): the daemon need
@@ -181,7 +191,8 @@ public:
         std::uint64_t milliseconds = 0; ///< CommandFinished: how long it ran
     };
     /// The most events, and bytes of them, that wait for the daemon: past
-    /// them, new ones go.
+    /// them, a new title, status or value of a user variable takes the place
+    /// of the last one of its kind that waits, and the other new events go.
     static constexpr std::size_t MaxWatchEvents = 1024;
     static constexpr std::size_t MaxWatchBytes = std::size_t(4) << 20;
     void setWatched(bool watched);
@@ -194,7 +205,8 @@ public:
     /// The window that shows the pane, by Attachment::serial(), or 0 for
     /// none. The calls of its terminal to its host (MuxHost.h) wait for that
     /// window, up to @p queueBytes with their Host::CallCost: Mux.eventQueue.
-    /// A call that finds nothing else waiting goes whatever its size. A new
+    /// A call that finds nothing else waiting goes up to Host::MaxCall,
+    /// whatever the queue holds. A new
     /// window gets the pointer shape, the user variables and the running
     /// command again. The calls that wait for a window that goes get
     /// answerWithoutWindow().
@@ -224,6 +236,8 @@ public:
     void bell() override;
     void flash() override;
     void titleChanged(std::string_view title) override;
+    void workingDirectoryChanged(std::string_view directory) override;
+    void contextChanged() override;
     void programStatusChanged() override;
     void notify(std::string_view title, std::string_view body) override;
     void clipboardWrite(std::string_view selection, std::string_view data) override;
@@ -258,17 +272,17 @@ private:
     void setVisibleLocked(bool visible, std::uint64_t window);
     bool decodeOutsideLock(std::string_view data, ImageFormats formats, std::uint32_t& width, std::uint32_t& height,
                            std::vector<std::uint8_t>& rgba);
+    static std::pair<std::string, std::string> statusOf(const AfterglowVt::ProgramStatus& status);
+    /// Keeps @p event for the daemon, which watches (m_watched): true when
+    /// the daemon must wake for it, as nothing waited before. m_hostMutex
+    /// held.
+    bool watchLocked(WatchEvent event);
+    /// The size of the terminal now, for facts(). m_mutex held.
+    void keepSizeLocked();
 
     const std::uint32_t m_id;
     std::function<void()> m_wake;
     std::atomic<bool> m_changed{false};
-    static std::pair<std::string, std::string> statusOf(const AfterglowVt::ProgramStatus& status);
-    /// Keeps @p event for the daemon while it watches: true when the daemon
-    /// must wake for it, as nothing waited before. Under m_hostMutex.
-    bool watchLocked(WatchEvent event);
-    std::atomic<bool> m_watched{false};
-    std::vector<WatchEvent> m_watchEvents; ///< under m_hostMutex
-    std::size_t m_watchBytes = 0; ///< of m_watchEvents
     std::atomic<int> m_exitStatus{0};
     const std::string m_notificationCapabilities;
     ImageDecoder& m_images;
@@ -276,7 +290,9 @@ private:
     /// ends at once.
     AfterglowProto::UniqueFd m_stopDecode;
     int m_stopDecodeError = 0; ///< errno of its eventfd(), for start()
-    mutable std::mutex m_mutex; ///< guards m_terminal, which the reader thread feeds, m_scrolls and what follows
+    /// Guards m_terminal, which the reader thread feeds, and what follows it
+    /// up to m_reportChanged.
+    mutable std::mutex m_mutex;
     /// The lock of the feed that runs, which a decode lets go. Reader thread.
     std::unique_lock<std::mutex>* m_feedLock = nullptr;
     /// An image decodes: the terminal is the reader thread's, without m_mutex.
@@ -293,6 +309,9 @@ private:
     AfterglowVt::Terminal m_terminal;
     /// The region scrolls of the terminal for the next frame.
     AfterglowVt::RegionScrolls m_scrolls;
+    /// The shell reported a directory or a context in the feed: ptyData()
+    /// checks the directory after it, outside m_mutex.
+    bool m_reportChanged = false;
     /// After m_terminal: it goes first, and its reader thread ends before
     /// the terminal that the thread feeds.
     std::unique_ptr<AfterglowPty::Pty> m_pty;
@@ -312,7 +331,9 @@ private:
     /// Whether a call that does not fit Mux.eventQueue waits all the same:
     /// the end of a start that went, as the terminal of a window never drops
     /// it. Bells, flashes, the pointer shape, user variables and ProtocolLost
-    /// pass the limit too, through pushLocked(): one of each waits at most.
+    /// pass the limit too, through pushLocked(): one of each kind waits at
+    /// most, and one for each name of a user variable (MaxUserVars). So does
+    /// the CommandStarted that a new window gets (setWindow()).
     enum class Fit : std::uint8_t { Queue, Always };
     enum class Forward : std::uint8_t {
         Queued,
@@ -335,13 +356,24 @@ private:
     /// (Host::answerWithoutWindow), if it has one.
     void answerLocally(const Host::Call& call);
 
-    /// Guards what follows: the reader thread queues host calls, and the
-    /// daemon's thread takes them.
-    mutable std::mutex m_hostMutex;
     /// Guards m_remoteSocket alone: the reader thread asks for it while it
     /// holds m_mutex.
     std::mutex m_remoteMutex;
     AfterglowProto::Remote::Answer m_remoteSocket;
+
+    /// Guards what follows: the reader thread queues host calls and watch
+    /// events, and keeps what facts() says, and the daemon's thread takes
+    /// them.
+    mutable std::mutex m_hostMutex;
+    bool m_watched = false;
+    std::vector<WatchEvent> m_watchEvents;
+    std::size_t m_watchBytes = 0; ///< of m_watchEvents
+    /// The terminal's title and size, for facts() while an image decodes.
+    std::string m_title;
+    PaneSize m_size;
+    /// The local directory that the shell last reported, checked: empty for
+    /// none (localDirectory()).
+    std::string m_checkedDirectory;
     std::uint64_t m_window = 0;
     std::size_t m_hostLimit = 0;
     std::deque<WaitingCall> m_hostCalls;

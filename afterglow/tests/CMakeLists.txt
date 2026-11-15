@@ -79,9 +79,14 @@ if(AFTERGLOW_BUILD_AGLOW)
 endif()
 gtest_discover_tests(afterglow_remote_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
-# afterglow mux against daemons of its own, in directories of the test.
+# afterglow mux, afterglow ctl on sessions, and afterglow mux --ssh through
+# a fake ssh, against daemons of their own, in directories of the test.
+# afterglow_config: a test checks that the protocol takes every value of the
+# Mux settings (SettingsStore). It attaches to a session as a window does,
+# through phosphor-channel.
 qt_add_executable(afterglow_mux_command_tests MuxCommandTest.cpp)
-target_link_libraries(afterglow_mux_command_tests PRIVATE afterglow_config afterglow_mux_protocol GTest::gtest_main)
+target_link_libraries(afterglow_mux_command_tests PRIVATE afterglow_config afterglow_mux_protocol
+                      PhosphorChannel::PhosphorChannel GTest::gtest_main)
 target_compile_definitions(afterglow_mux_command_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>")
 add_dependencies(afterglow_mux_command_tests afterglow aglow-mux)
 gtest_discover_tests(afterglow_mux_command_tests PROPERTIES TIMEOUT 120)
@@ -123,9 +128,11 @@ target_link_libraries(afterglow_audio_tests PRIVATE afterglow_audio GTest::gtest
 gtest_discover_tests(afterglow_audio_tests)
 
 qt_add_executable(afterglow_shell_tests ShellIntegrationTest.cpp)
-target_link_libraries(afterglow_shell_tests PRIVATE afterglow_shell Afterglow::Vt GTest::gtest_main)
-target_compile_definitions(afterglow_shell_tests PRIVATE AFTERGLOW_TEST_SHELL_DIR="${PROJECT_SOURCE_DIR}/data/shell-integration"
+target_link_libraries(afterglow_shell_tests PRIVATE afterglow_shell afterglow_mux_protocol Afterglow::Vt GTest::gtest_main)
+target_compile_definitions(afterglow_shell_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>"
+                                                   AFTERGLOW_TEST_SHELL_DIR="${PROJECT_SOURCE_DIR}/data/shell-integration"
     AFTERGLOW_TEST_TERMINFO_SOURCE="${PROJECT_SOURCE_DIR}/data/terminfo/afterglow.terminfo")
+add_dependencies(afterglow_shell_tests afterglow)
 gtest_discover_tests(afterglow_shell_tests)
 
 qt_add_executable(afterglow_shader_tests ShaderControlsTest.cpp)

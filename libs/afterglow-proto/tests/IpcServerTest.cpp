@@ -59,6 +59,49 @@ bool exists(const std::string& path)
     return ::access(path.c_str(), F_OK) == 0;
 }
 
+/// A descriptor that closes with its scope, also when an ASSERT returns
+/// early.
+class ScopedFd
+{
+public:
+    explicit ScopedFd(int fd = -1)
+        : m_fd(fd)
+    {
+    }
+    ~ScopedFd() { reset(); }
+    ScopedFd(const ScopedFd&) = delete;
+    ScopedFd& operator=(const ScopedFd&) = delete;
+    int get() const { return m_fd; }
+    void reset(int fd = -1)
+    {
+        if (m_fd >= 0) ::close(m_fd);
+        m_fd = fd;
+    }
+
+private:
+    int m_fd;
+};
+
+/// The lowest descriptor that is free now. /dev/null, not a dup() of 0,
+/// which fails when 0 is closed.
+int lowestFreeDescriptor()
+{
+    const int fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) ::close(fd);
+    return fd;
+}
+
+/// A connected socket pair that does not block, as the connections of a
+/// server: @p server for an IpcServerConnection, which closes it.
+bool socketPair(int& server, ScopedFd& client)
+{
+    int fds[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds) != 0) return false;
+    server = fds[0];
+    client.reset(fds[1]);
+    return true;
+}
+
 /// A client socket connected to @p path, with a send timeout: a test whose
 /// server stops reading cannot hang in a send.
 int connectTo(const std::string& path)
@@ -207,6 +250,16 @@ TEST(IpcServer, ReadsFieldsInTheOrderAndRangeOfPhosphorIpc)
     const auto negative = parseIpcRequest(R"({"type":"call","id":-5,"target":"t","fn":"f"})", &error);
     ASSERT_TRUE(negative) << error;
     EXPECT_EQ(negative->id, -5);
+    // A subscription ID of any type comes before the fields of the type,
+    // and each missing field has its own message.
+    EXPECT_FALSE(parseIpcRequest(R"({"type":"subscribe","id":1,"subscriptionId":"x"})", &error));
+    EXPECT_EQ(error, "'subscriptionId' must be a number if present");
+    EXPECT_FALSE(parseIpcRequest(R"({"type":"subscribe","id":1,"signal":"s"})", &error));
+    EXPECT_EQ(error, "'subscribe' requires a non-empty 'target'");
+    EXPECT_FALSE(parseIpcRequest(R"({"type":"subscribe","id":1,"target":"t"})", &error));
+    EXPECT_EQ(error, "'subscribe' requires a non-empty 'signal'");
+    EXPECT_FALSE(parseIpcRequest(R"({"type":"call","id":1,"fn":"f"})", &error));
+    EXPECT_EQ(error, "'call' requires a non-empty 'target'");
 }
 
 // A subscription and its end, as PhosphorIpc reads them, and an event of it
@@ -339,8 +392,12 @@ TEST(IpcServer, ALockFileIsHeldOnTheFileSystemOfTheTests)
 {
     // /proc/locks names the device of the file system, which stat() does not
     // give on a btrfs subvolume. /tmp is often tmpfs, where the two agree:
-    // this test makes its file where ctest runs it, in the build directory.
-    std::string dir = (std::filesystem::current_path() / "lockheld-XXXXXX").string();
+    // this test makes its file beside its executable, in the build
+    // directory, and never in a source tree that it runs from by hand.
+    std::error_code noPath;
+    const std::filesystem::path executable = std::filesystem::read_symlink("/proc/self/exe", noPath);
+    ASSERT_FALSE(noPath) << noPath.message();
+    std::string dir = (executable.parent_path() / "lockheld-XXXXXX").string();
     ASSERT_NE(::mkdtemp(dir.data()), nullptr);
     const std::string lock = dir + "/s.sock.lock";
     std::string error;
@@ -371,10 +428,10 @@ TEST(IpcServer, ACloseRemovesOnlyTheFilesOfItsOwnListener)
     EXPECT_TRUE(exists(dir.socket()));
     EXPECT_TRUE(exists(dir.lock()));
     // The second still serves, and still holds its path.
-    const int client = connectTo(dir.socket());
-    ASSERT_GE(client, 0);
-    EXPECT_GE(acceptOne(second), 0);
-    ::close(client);
+    const ScopedFd client(connectTo(dir.socket()));
+    ASSERT_GE(client.get(), 0);
+    const ScopedFd accepted(acceptOne(second));
+    EXPECT_GE(accepted.get(), 0);
     IpcListener third;
     EXPECT_EQ(third.listen(dir.socket(), &error), Listen::Held);
 }
@@ -530,7 +587,7 @@ TEST(IpcServer, AStreamOfEmptyLinesDoesNotKeepTheReader)
     std::atomic<bool> stop = false;
     std::jthread writer([client, &stop] {
         const std::string chunk(65536, '\n');
-        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
         while (!stop && std::chrono::steady_clock::now() < end) {
             const ssize_t n = ::send(client, chunk.data(), chunk.size(), MSG_NOSIGNAL);
             if (n < 0 && errno != EAGAIN) break;
@@ -553,7 +610,9 @@ TEST(IpcServer, AStreamOfEmptyLinesDoesNotKeepTheReader)
     stop = true;
     writer.join();
     EXPECT_GT(lines, 0u);
-    EXPECT_LT(longest, std::chrono::milliseconds(200));
+    // A call that read until the stream ends would take the writer's 3 s.
+    // A second leaves room for a reader that the scheduler holds back.
+    EXPECT_LT(longest, std::chrono::seconds(1));
     EXPECT_TRUE(connection.open());
 }
 
@@ -599,13 +658,17 @@ TEST(IpcServer, ClosesAConnectionWhoseOutputWaitsTooLong)
     ASSERT_TRUE(pair.ready());
     IpcServerConnection& connection = *pair.server;
     const std::string line(1024 * 1024, 'r');
+    // What the kernel takes into the socket does not wait in the connection.
+    int kernel = 0;
+    socklen_t size = sizeof kernel;
+    ASSERT_EQ(::getsockopt(connection.fd(), SOL_SOCKET, SO_SNDBUF, &kernel, &size), 0);
     std::size_t sends = 0;
     while (connection.open() && sends < 64) {
         connection.send(line);
         ++sends;
     }
     EXPECT_FALSE(connection.open());
-    EXPECT_LE(sends, IpcServerConnection::MaxWaitingBytes / line.size() + 1);
+    EXPECT_LE(sends, (IpcServerConnection::MaxWaitingBytes + std::size_t(kernel)) / line.size() + 1);
 }
 
 TEST(IpcServer, WaitingOutputGoesOutWholeAndInOrder)
@@ -682,17 +745,16 @@ TEST(IpcServer, WithoutDescriptorsTheWaitingConnectionsAreClosed)
     IpcListener listener;
     std::string error;
     ASSERT_EQ(listener.listen(dir.socket(), &error), Listen::Listening) << error;
-    int clients[3];
-    for (int& client : clients) {
-        client = connectTo(dir.socket());
-        ASSERT_GE(client, 0);
+    ScopedFd clients[3];
+    for (ScopedFd& client : clients) {
+        client.reset(connectTo(dir.socket()));
+        ASSERT_GE(client.get(), 0);
     }
     rlimit saved{};
     ASSERT_EQ(::getrlimit(RLIMIT_NOFILE, &saved), 0);
     // The lowest free descriptor: with this limit, no new one opens.
-    const int lowest = ::dup(0);
+    const int lowest = lowestFreeDescriptor();
     ASSERT_GE(lowest, 0);
-    ::close(lowest);
     rlimit low = saved;
     low.rlim_cur = rlim_t(lowest);
     ASSERT_EQ(::setrlimit(RLIMIT_NOFILE, &low), 0);
@@ -703,41 +765,34 @@ TEST(IpcServer, WithoutDescriptorsTheWaitingConnectionsAreClosed)
     EXPECT_EQ(accepted, -1);
     // The queue is empty: a poll does not wake for it again.
     EXPECT_EQ(readable, 0);
-    for (const int client : clients) {
+    for (ScopedFd& client : clients) {
         char byte = 0;
-        pollfd c{client, POLLIN, 0};
+        pollfd c{client.get(), POLLIN, 0};
         EXPECT_EQ(::poll(&c, 1, 1000), 1);
-        EXPECT_EQ(::recv(client, &byte, 1, MSG_DONTWAIT), 0);
-        ::close(client);
+        EXPECT_EQ(::recv(client.get(), &byte, 1, MSG_DONTWAIT), 0);
+        client.reset();
     }
     // With descriptors again, the listener accepts as before.
-    const int client = connectTo(dir.socket());
-    ASSERT_GE(client, 0);
-    const int fd = acceptOne(listener);
-    EXPECT_GE(fd, 0);
-    if (fd >= 0) ::close(fd);
-    ::close(client);
+    const ScopedFd client(connectTo(dir.socket()));
+    ASSERT_GE(client.get(), 0);
+    const ScopedFd fd(acceptOne(listener));
+    EXPECT_GE(fd.get(), 0);
 }
 
 TEST(IpcServer, AListenerWithoutItsKeptDescriptorSaysItIsStarved)
 {
     TempDir dir;
     // Made first: connect() takes no new descriptor.
-    int clients[2];
-    for (int& client : clients) {
-        client = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-        ASSERT_GE(client, 0);
+    ScopedFd clients[2];
+    for (ScopedFd& client : clients) {
+        client.reset(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
+        ASSERT_GE(client.get(), 0);
     }
     rlimit saved{};
     ASSERT_EQ(::getrlimit(RLIMIT_NOFILE, &saved), 0);
-    const auto lowestFree = [] {
-        const int fd = ::dup(0);
-        if (fd >= 0) ::close(fd);
-        return fd;
-    };
     // Room for the lock file and the socket, and not for the kept
     // descriptor: the listener starts without it.
-    const int lowest = lowestFree();
+    const int lowest = lowestFreeDescriptor();
     ASSERT_GE(lowest, 0);
     rlimit low = saved;
     low.rlim_cur = rlim_t(lowest + 2);
@@ -749,14 +804,21 @@ TEST(IpcServer, AListenerWithoutItsKeptDescriptorSaysItIsStarved)
     a.sun_family = AF_UNIX;
     std::memcpy(a.sun_path, dir.socket().data(), dir.socket().size());
     bool connected = true;
-    for (const int client : clients) connected = connected && ::connect(client, reinterpret_cast<sockaddr*>(&a), sizeof a) == 0;
+    // The errno of the failed connect: the calls after it replace errno.
+    int connectError = 0;
+    for (const ScopedFd& client : clients) {
+        if (connected && ::connect(client.get(), reinterpret_cast<sockaddr*>(&a), sizeof a) != 0) {
+            connected = false;
+            connectError = errno;
+        }
+    }
     const int starvedAccept = listener.accept();
     const bool starved = listener.starved();
     pollfd p{listener.fd(), POLLIN, 0};
     const int readable = ::poll(&p, 1, 0);
     ASSERT_EQ(::setrlimit(RLIMIT_NOFILE, &saved), 0);
     ASSERT_EQ(listened, Listen::Listening) << error;
-    ASSERT_TRUE(connected) << std::strerror(errno);
+    ASSERT_TRUE(connected) << std::strerror(connectError);
     EXPECT_EQ(starvedAccept, -1);
     EXPECT_TRUE(starved);
     // The connection still waits, so the listener stays readable: a caller
@@ -771,7 +833,7 @@ TEST(IpcServer, AListenerWithoutItsKeptDescriptorSaysItIsStarved)
     if (fd >= 0) ::close(fd);
     // At the limit once more, the kept descriptor drains the other waiting
     // connection: the listener is not starved, and not readable.
-    const int next = lowestFree();
+    const int next = lowestFreeDescriptor();
     ASSERT_GE(next, 0);
     low.rlim_cur = rlim_t(next);
     ASSERT_EQ(::setrlimit(RLIMIT_NOFILE, &low), 0);
@@ -782,5 +844,137 @@ TEST(IpcServer, AListenerWithoutItsKeptDescriptorSaysItIsStarved)
     EXPECT_EQ(drained, -1);
     EXPECT_FALSE(starvedAgain);
     EXPECT_EQ(readableAgain, 0);
-    for (const int client : clients) ::close(client);
+}
+
+TEST(IpcServer, ReleaseHandsOverTheOutputThatDidNotGo)
+{
+    int server = -1;
+    ScopedFd client;
+    ASSERT_TRUE(socketPair(server, client));
+    IpcServerConnection connection(server);
+    // More than the socket takes at once: part of it waits.
+    const std::string answer(4 * 1024 * 1024, 'a');
+    connection.send(answer);
+    ASSERT_TRUE(connection.wantsWrite());
+    std::string unsent;
+    // The descriptor is the caller's now.
+    const ScopedFd released(connection.release(&unsent));
+    EXPECT_EQ(released.get(), server);
+    EXPECT_FALSE(connection.open());
+    EXPECT_FALSE(connection.wantsWrite());
+    std::string got;
+    char buffer[65536];
+    while (true) {
+        const ssize_t n = ::recv(client.get(), buffer, sizeof buffer, 0);
+        if (n <= 0) break;
+        got.append(buffer, std::size_t(n));
+    }
+    EXPECT_FALSE(unsent.empty());
+    EXPECT_TRUE(got + unsent == answer) << got.size() << " and " << unsent.size() << " bytes";
+    // Without a buffer for it, the unsent output is dropped.
+    int other = -1;
+    ScopedFd otherClient;
+    ASSERT_TRUE(socketPair(other, otherClient));
+    IpcServerConnection quiet(other);
+    quiet.send("ok\n");
+    const ScopedFd taken(quiet.release(nullptr));
+    EXPECT_EQ(taken.get(), other);
+}
+
+TEST(IpcServer, ReleaseRefusesWhenTheClientSentMoreOrTheConnectionClosed)
+{
+    int server = -1;
+    ScopedFd client;
+    ASSERT_TRUE(socketPair(server, client));
+    IpcServerConnection connection(server);
+    ASSERT_EQ(::send(client.get(), "a\nb", 3, 0), 3);
+    std::string line;
+    ASSERT_TRUE(connection.nextLine(line));
+    EXPECT_EQ(line, "a");
+    // "b" would be lost to the next protocol: the connection stays.
+    std::string unsent = "kept";
+    EXPECT_EQ(connection.release(&unsent), -1);
+    EXPECT_EQ(unsent, "kept");
+    EXPECT_TRUE(connection.open());
+    // A closed connection gives nothing either: open() tells the two apart.
+    connection.close();
+    EXPECT_EQ(connection.release(&unsent), -1);
+    EXPECT_FALSE(connection.open());
+}
+
+TEST(IpcServer, NextRequestGivesTheLineAsItCame)
+{
+    int server = -1;
+    ScopedFd client;
+    ASSERT_TRUE(socketPair(server, client));
+    IpcServerConnection connection(server);
+    const std::string text = R"({"type":"call","id":5,"target":"commands","fn":"run","args":[1]})";
+    const std::string sent = text + "\r\r\n";
+    ASSERT_EQ(::send(client.get(), sent.data(), sent.size(), 0), ssize_t(sent.size()));
+    IpcRequest request;
+    std::string line;
+    ASSERT_EQ(connection.nextRequest(request, &line), IpcServerConnection::Read::Request);
+    EXPECT_EQ(request.id, 5);
+    // Without its '\n' and the '\r' characters before it.
+    EXPECT_EQ(line, text);
+}
+
+TEST(IpcServer, AClientThatResetsTheConnectionStillHasItsLinesRead)
+{
+    int server = -1;
+    ScopedFd client;
+    ASSERT_TRUE(socketPair(server, client));
+    IpcServerConnection connection(server);
+    // An answer that the client never reads: its close with that answer
+    // unread gives the server's read ECONNRESET, after the lines that came.
+    connection.send("unread\n");
+    ASSERT_EQ(::send(client.get(), "a\nb\n", 4, 0), 4);
+    client.reset();
+    std::string line;
+    ASSERT_TRUE(connection.nextLine(line));
+    EXPECT_EQ(line, "a");
+    // No answer goes to a client that is gone, and the next line is read.
+    connection.send("answer\n");
+    EXPECT_FALSE(connection.wantsWrite());
+    ASSERT_TRUE(connection.nextLine(line));
+    EXPECT_EQ(line, "b");
+    EXPECT_FALSE(connection.nextLine(line));
+    EXPECT_FALSE(connection.open());
+}
+
+TEST(IpcServer, AClosedConnectionWantsNoWrite)
+{
+    int server = -1;
+    ScopedFd client;
+    ASSERT_TRUE(socketPair(server, client));
+    IpcServerConnection connection(server);
+    connection.send(std::string(4 * 1024 * 1024, 'a'));
+    ASSERT_TRUE(connection.wantsWrite());
+    connection.close();
+    EXPECT_FALSE(connection.wantsWrite());
+}
+
+TEST(IpcServer, KeepAtEndHoldsTheConnectionForALaterAnswer)
+{
+    int server = -1;
+    ScopedFd client;
+    ASSERT_TRUE(socketPair(server, client));
+    IpcServerConnection connection(server);
+    connection.keepAtEnd(true);
+    // A call, then the end of the client's side, before the answer.
+    ASSERT_EQ(::send(client.get(), "call\n", 5, 0), 5);
+    ASSERT_EQ(::shutdown(client.get(), SHUT_WR), 0);
+    std::string line;
+    ASSERT_TRUE(connection.nextLine(line));
+    EXPECT_EQ(line, "call");
+    EXPECT_FALSE(connection.nextLine(line));
+    EXPECT_FALSE(connection.wantsRead());
+    EXPECT_TRUE(connection.open());
+    // The answer comes later, and goes out.
+    connection.send("answer\n");
+    EXPECT_TRUE(connection.open());
+    EXPECT_EQ(received(client.get(), 1000), "answer\n");
+    // Let go: the client has every answer, so the connection closes.
+    connection.keepAtEnd(false);
+    EXPECT_FALSE(connection.open());
 }

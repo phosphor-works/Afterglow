@@ -9,12 +9,15 @@
 #include <AfterglowProto/Text.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstring>
-#include <limits.h>
-#include <sys/stat.h>
+#include <iterator>
+#include <utility>
 
+#include <limits.h>
 #include <sys/eventfd.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace AfterglowMux {
@@ -29,11 +32,45 @@ int pixels(int cells, int cellSize)
     return int(std::min<std::int64_t>(std::int64_t(cells) * cellSize, 65535));
 }
 
+/// The name of this host, empty when it has none.
+std::string hostName()
+{
+    std::array<char, HOST_NAME_MAX + 1> here{};
+    if (::gethostname(here.data(), here.size() - 1) != 0) return {};
+    return here.data();
+}
+
+/// Whether the shell runs on another host by its contexts (OSC 3008 and
+/// iTerm2's RemoteHost), as a window decides it (Pane::contextChanged): a
+/// plain path that it reports names a path on that host. A container or a
+/// virtual machine is no other host for this.
+bool remoteContext(const AfterglowVt::ShellContexts& contexts, std::string_view here)
+{
+    std::string_view host;
+    bool container = false;
+    for (const AfterglowVt::ShellContext& c : contexts.stack()) {
+        if (!c.hostname.empty()) host = c.hostname;
+        if (c.type == "remote" && !c.targetHost.empty()) {
+            host = c.targetHost;
+        } else if (c.type == "container" && !c.container.empty()) {
+            host = c.container;
+            container = true;
+        } else if (c.type == "vm" && !c.vm.empty()) {
+            host = c.vm;
+            container = true;
+        }
+    }
+    return !container && !host.empty() && host != here;
+}
+
 /// The local directory that a shell reported, as a window reads it
 /// (Pane::workingDirectoryChanged): OSC 7 sends file://host/path, percent
-/// encoded, and the others a plain path. Empty for a directory of another
-/// host, a path with a control byte, and a path that is no directory here:
-/// a shell in a container can report one, and a new pane cannot start in it.
+/// encoded, and the others a plain path, which the caller leaves out for a
+/// shell on another host (remoteContext()). Empty for a directory of another
+/// host, a path with a control byte, a path that is not UTF-8, which the
+/// JSON of `afterglow ctl ls` would change, and a path that is no directory
+/// here: a shell in a container can report one, and a new pane cannot start
+/// in it.
 std::string localDirectory(std::string_view reported)
 {
     std::string path;
@@ -42,18 +79,21 @@ std::string localDirectory(std::string_view reported)
         const std::size_t slash = rest.find('/');
         if (slash == std::string_view::npos) return {};
         const std::string_view host = rest.substr(0, slash);
-        std::array<char, HOST_NAME_MAX + 1> here{};
-        const bool named = ::gethostname(here.data(), here.size() - 1) == 0;
+        const std::string here = hostName();
         const auto same = [](std::string_view a, std::string_view b) {
             const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c; };
             return std::ranges::equal(a, b, [&](char x, char y) { return lower(x) == lower(y); });
         };
-        if (!host.empty() && !same(host, "localhost") && !(named && same(host, here.data()))) return {};
+        if (!host.empty() && !same(host, "localhost") && !(!here.empty() && same(host, here))) return {};
         path = AfterglowProto::dndPercentDecode(rest.substr(slash)).value_or(std::string());
     } else if (reported.starts_with('/')) {
         path = reported;
     }
     if (std::ranges::any_of(path, [](char c) { return (unsigned char)c < 0x20 || c == 0x7F; })) return {};
+    for (std::size_t i = 0; i < path.size();) {
+        char32_t cp = 0;
+        if (!AfterglowProto::nextUtf8(path, i, cp)) return {};
+    }
     struct stat st{};
     if (path.empty() || ::stat(path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return {};
     return path;
@@ -89,6 +129,7 @@ MuxPane::MuxPane(std::uint32_t id, const AfterglowVt::TerminalOptions& options, 
     // once gets the size that the client sent. No window measured it yet,
     // so that is 0 (unknown) from `afterglow mux new`.
     m_terminal.resize(size.cols, size.rows, size.cellWidth, size.cellHeight);
+    keepSizeLocked();
     // No window shows it yet: one that does says so (setVisible).
     m_terminal.setVisible(false);
 }
@@ -147,23 +188,24 @@ bool MuxPane::leads(pid_t session) const
     return m_pty && !m_exited && session > 0 && m_pty->pid() == session;
 }
 
-std::optional<MuxPane::Facts> MuxPane::facts() const
+MuxPane::Facts MuxPane::facts() const
 {
     Facts facts;
     {
-        std::lock_guard lock(m_mutex);
-        if (m_decoding) return std::nullopt;
-        facts.title = m_terminal.title();
-        facts.directory = m_terminal.workingDirectory();
-        facts.size = {m_terminal.cols(), m_terminal.rows(), m_terminal.cellWidth(), m_terminal.cellHeight()};
-    }
-    {
         std::lock_guard host(m_hostMutex);
+        facts.title = m_title;
+        facts.directory = m_checkedDirectory;
+        facts.size = m_size;
         if (m_commandRunning) facts.command = m_command;
     }
-    facts.directory = localDirectory(facts.directory);
     if (facts.directory.empty()) facts.directory = directory();
     return facts;
+}
+
+void MuxPane::keepSizeLocked()
+{
+    std::lock_guard host(m_hostMutex);
+    m_size = {m_terminal.cols(), m_terminal.rows(), m_terminal.cellWidth(), m_terminal.cellHeight()};
 }
 
 std::optional<std::string> MuxPane::text(AfterglowVt::Terminal::TextScope scope) const
@@ -449,7 +491,7 @@ void MuxPane::bell()
     {
         // One bell waits at a time, as a window rings one for a burst.
         std::lock_guard lock(m_hostMutex);
-        watched = watchLocked({WatchEvent::Kind::Bell});
+        if (m_watched) watched = watchLocked({WatchEvent::Kind::Bell});
         if (m_window && !m_bellWaiting) {
             m_bellWaiting = true;
             wake = pushLocked(WaitingCall{Host::Kind::Bell, Host::encode(Host::make(Host::Kind::Bell)), {}, 0});
@@ -505,7 +547,7 @@ void MuxPane::userVarChanged(std::string_view name, std::string_view value)
         if (it != m_userVars.end() && it->second == value) return;
         if (it == m_userVars.end() && m_userVars.size() >= MaxUserVars) return;
         m_userVars[std::string(name)] = value;
-        watched = watchLocked({WatchEvent::Kind::UserVar, std::string(name), std::string(value)});
+        if (m_watched) watched = watchLocked({WatchEvent::Kind::UserVar, std::string(name), std::string(value)});
         if (m_window && !m_userVarsWaiting.contains(std::string(name))) {
             m_userVarsWaiting.emplace(name);
             wake = pushLocked(WaitingCall{Host::Kind::UserVar, {}, std::string(name), Host::CallCost + name.size() + value.size()});
@@ -523,7 +565,7 @@ void MuxPane::commandStarted(std::string_view command)
         // With the state that a new window gets, under one lock: setWindow()
         // sends the start again.
         std::lock_guard lock(m_hostMutex);
-        watched = watchLocked({WatchEvent::Kind::CommandStarted, {}, std::string(command)});
+        if (m_watched) watched = watchLocked({WatchEvent::Kind::CommandStarted, {}, std::string(command)});
         m_command = command;
         m_commandRunning = true;
         m_commandStart = std::chrono::steady_clock::now();
@@ -543,7 +585,7 @@ void MuxPane::commandFinished(int exitCode)
         // Measured here: the window may get the start and the end together.
         call.value = std::uint64_t(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_commandStart).count());
-        watched = watchLocked({WatchEvent::Kind::CommandFinished, {}, m_command, exitCode, call.value});
+        if (m_watched) watched = watchLocked({WatchEvent::Kind::CommandFinished, {}, m_command, exitCode, call.value});
         m_commandRunning = false;
         m_command.clear();
         // An end alone would end a command that, for the window, never ran.
@@ -664,6 +706,7 @@ void MuxPane::answerLocally(const Host::Call& call)
 void MuxPane::ptyData(std::string_view bytes)
 {
     bool deferred = false;
+    std::optional<std::string> reported;
     {
         std::unique_lock lock(m_mutex);
         m_feedLock = &lock;
@@ -682,6 +725,18 @@ void MuxPane::ptyData(std::string_view bytes)
         m_changesWaiting.store(false);
         const bool frame = std::exchange(m_frameDeferred, false);
         deferred = frame || !changes.empty();
+        if (std::exchange(m_reportChanged, false)) {
+            reported = m_terminal.workingDirectory();
+            if (!reported->starts_with("file://") && remoteContext(m_terminal.contexts(), hostName())) reported->clear();
+        }
+    }
+    // Once for each report, as a window checks it (Pane::knownDirectory), and
+    // outside m_mutex, which the daemon's thread takes for each frame: a stat
+    // waits as long as its mount does.
+    if (reported) {
+        std::string checked = localDirectory(*reported);
+        std::lock_guard host(m_hostMutex);
+        m_checkedDirectory = std::move(checked);
     }
     // One wake for each burst: the daemon takes the flag when it sends. A
     // frame or a change that waited for a decode wakes it whatever the flag.
@@ -743,11 +798,27 @@ void MuxPane::change(std::function<void()> change)
 
 bool MuxPane::watchLocked(WatchEvent event)
 {
-    if (!m_watched.load()) return false;
+    if (!m_watched) return false;
     // The daemon merges the bells of a pane: one that waits stands for more.
     if (event.kind == WatchEvent::Kind::Bell && !m_watchEvents.empty() && m_watchEvents.back().kind == WatchEvent::Kind::Bell) return false;
     const std::size_t bytes = event.name.size() + event.text.size();
-    if (m_watchEvents.size() >= MaxWatchEvents || m_watchBytes + bytes > MaxWatchBytes) return false;
+    if (m_watchEvents.size() >= MaxWatchEvents || m_watchBytes + bytes > MaxWatchBytes) {
+        // Past the limits, the newest title, status or value of a variable
+        // still counts: it takes the place of the last one of its kind, at
+        // the end. Events waited already: the daemon wakes for the first.
+        using Kind = WatchEvent::Kind;
+        if (event.kind != Kind::Title && event.kind != Kind::Status && event.kind != Kind::UserVar) return false;
+        const auto same = std::find_if(m_watchEvents.rbegin(), m_watchEvents.rend(), [&event](const WatchEvent& waiting) {
+            return waiting.kind == event.kind && (event.kind != Kind::UserVar || waiting.name == event.name);
+        });
+        if (same == m_watchEvents.rend()) return false;
+        const std::size_t old = same->name.size() + same->text.size();
+        if (m_watchBytes - old + bytes > MaxWatchBytes) return false;
+        m_watchBytes = m_watchBytes - old + bytes;
+        m_watchEvents.erase(std::next(same).base());
+        m_watchEvents.push_back(std::move(event));
+        return false;
+    }
     const bool first = m_watchEvents.empty();
     m_watchBytes += bytes;
     m_watchEvents.push_back(std::move(event));
@@ -759,34 +830,48 @@ void MuxPane::titleChanged(std::string_view title)
     bool wake = false;
     {
         std::lock_guard lock(m_hostMutex);
-        wake = watchLocked({WatchEvent::Kind::Title, {}, std::string(title)});
+        m_title = title;
+        if (m_watched) wake = watchLocked({WatchEvent::Kind::Title, {}, m_title});
     }
     if (wake) m_wake();
 }
 
+void MuxPane::workingDirectoryChanged(std::string_view)
+{
+    // m_mutex held: the terminal calls it. ptyData() checks it after the feed.
+    m_reportChanged = true;
+}
+
+void MuxPane::contextChanged()
+{
+    // A plain path names another host's once the shell runs there.
+    m_reportChanged = true;
+}
+
 void MuxPane::programStatusChanged()
 {
-    // m_mutex held: the terminal calls it.
-    auto [state, text] = statusOf(m_terminal.programStatus());
+    // m_mutex held: the terminal calls it. A status walks the records: only
+    // for a watch.
     bool wake = false;
     {
         std::lock_guard lock(m_hostMutex);
+        if (!m_watched) return;
+        auto [state, text] = statusOf(m_terminal.programStatus());
         wake = watchLocked({WatchEvent::Kind::Status, std::move(state), std::move(text)});
     }
     if (wake) m_wake();
 }
 
-std::optional<std::string> MuxPane::title() const
+std::string MuxPane::title() const
 {
-    std::lock_guard lock(m_mutex);
-    if (m_decoding) return std::nullopt;
-    return m_terminal.title();
+    std::lock_guard lock(m_hostMutex);
+    return m_title;
 }
 
 void MuxPane::setWatched(bool watched)
 {
     std::lock_guard lock(m_hostMutex);
-    m_watched.store(watched);
+    m_watched = watched;
     if (!watched) {
         m_watchEvents.clear();
         m_watchBytes = 0;
@@ -824,7 +909,8 @@ std::optional<std::pair<std::string, std::string>> MuxPane::status() const
 void MuxPane::setOptions(const AfterglowVt::TerminalOptions& options)
 {
     change([this, options] {
-        // setOptions replaces the colors that the program set: only for a change.
+        // Only for a change: the same options again would redraw the whole
+        // screen and report the theme to a program that asked for reports.
         if (!(m_terminal.options() == options)) m_terminal.setOptions(options);
     });
 }
@@ -851,7 +937,9 @@ void MuxPane::resize(const PaneSize& size)
         m_terminal.resize(size.cols, size.rows, size.cellWidth, size.cellHeight);
         const int cols = m_terminal.cols();
         const int rows = m_terminal.rows();
-        if (m_pty) m_pty->resize(cols, rows, pixels(cols, size.cellWidth), pixels(rows, size.cellHeight));
+        // The cell size that the terminal took, as start() gives it.
+        if (m_pty) m_pty->resize(cols, rows, pixels(cols, m_terminal.cellWidth()), pixels(rows, m_terminal.cellHeight()));
+        keepSizeLocked();
     });
 }
 

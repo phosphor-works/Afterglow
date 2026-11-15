@@ -30,6 +30,23 @@ inline constexpr std::size_t TokenBytes = 8;
 /// query (DA1, or a status report inside tmux) ends the wait before that.
 inline constexpr int GuardTimeoutMs = 2000;
 
+/// The limits of the local sockets of ssh sessions, the same for a window
+/// (RemoteSockets) and for the mux daemon, which keeps those of session
+/// panes.
+/// ssh sessions of one pane at most: those in the background and the one in
+/// front. A client in a loop opens no more.
+inline constexpr std::size_t MaxSessionsPerPane = 16;
+/// Sessions of the process at most, each a socket and a pidfd. A window
+/// counts its endpoints here too.
+inline constexpr std::size_t MaxSessions = 256;
+/// Connections open at once on the socket of one session, at most. Each
+/// `aglow run` takes one.
+inline constexpr std::size_t MaxConnections = 64;
+/// The options of `ssh -O cancel` that a client can give, at most.
+inline constexpr std::size_t MaxOptions = 256;
+/// UTF-16 units of the host name of a session (ev.remote.host) at most.
+inline constexpr std::size_t MaxHostLength = 255;
+
 /// The part of @p osc after "24569;", where @p osc is an OSC string without
 /// its introducer and terminator. Nothing for another OSC.
 std::optional<std::string_view> oscPayload(std::string_view osc);

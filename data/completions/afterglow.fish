@@ -110,11 +110,13 @@ end
 function __afterglow_ctl
     set -l cur (commandline -ct)
     set -l options -h\t'Show the usage' --help\t'Show the usage' --session\t'Act on a mux session'
-    # --session NAME comes before the command: its name, which nothing lists.
+    # --session NAME comes before the command. afterglow mux ls lists the
+    # names, but a completion runs no program but aglow run --complete.
     if test "$argv[1]" = --session
         set -q argv[2]; or return
         set -e argv[1..2]
-        set options -h\t'Show the usage' --help\t'Show the usage'
+        # The usage only comes first: a command follows.
+        set options
     end
     if not set -q argv[1]
         if string match -q -- '-*' "$cur"
@@ -255,8 +257,8 @@ function __afterglow_ctl
             contains -- --overwrite $argv; or set -a offer --overwrite\t'Replace a project with the name'
         case open-project
             contains -- --new $argv; or set -a offer --new\t'Launch the layout again'
-            if not contains -- --session $argv; and not contains -- --no-session $argv
-                set -a offer --session\t'Open into a mux session' --no-session\t'Open into a window'
+            if not contains -- --into-session $argv; and not contains -- --no-session $argv
+                set -a offer --into-session\t'Open into a mux session' --no-session\t'Open into a window'
             end
     end
     __afterglow_print $offer
@@ -289,18 +291,24 @@ function __afterglow_mux
             case --name --cwd
                 if test $command = new
                     if test $i -eq $n
-                        # The cursor is at the option's value.
-                        test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
+                        # The cursor is at the option's value. With --ssh,
+                        # also after the cursor, it is a directory of that host.
+                        test $argv[$i] = --cwd
+                        and not contains -- --ssh (commandline -xp)
+                        and __fish_complete_directories "$cur"
                         return
                     end
                     set i (math $i + 1)
                 end
             case --ssh
-                if test $i -eq $n
-                    __fish_print_hostnames
-                    return
+                # server takes no option.
+                if contains -- $command new attach detach ls kill
+                    if test $i -eq $n
+                        __fish_print_hostnames
+                        return
+                    end
+                    set i (math $i + 1)
                 end
-                set i (math $i + 1)
         end
         set i (math $i + 1)
     end

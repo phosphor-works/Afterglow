@@ -4,9 +4,11 @@
 #include "Session.h"
 
 #include <algorithm>
+#include <exception>
 #include <map>
 #include <set>
 #include <string_view>
+#include <utility>
 
 namespace AfterglowMux {
 
@@ -48,6 +50,11 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     spawn.argv = launch.argv;
     spawn.workingDirectory = launch.workingDirectory;
     spawn.environment = paneEnvironment(m_options.environment, launch);
+    // The session's environment is the client's, which it sent whole: the
+    // daemon's own (a systemd unit's INVOCATION_ID, for one) stays out. So
+    // do the daemon's umask and its raised descriptor limit. Before the
+    // shell's name: the daemon's SHELL is not the session's.
+    spawn.inheritEnvironment = false;
     if (m_options.callerEnvironment) {
         // The environment of a command over ssh, which no login read: the
         // shell reads the login's files, as an interactive ssh login does.
@@ -59,10 +66,6 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
             }
         }
     }
-    // The session's environment is the client's, which it sent whole: the
-    // daemon's own (a systemd unit's INVOCATION_ID, for one) stays out. So
-    // do the daemon's umask and its raised descriptor limit.
-    spawn.inheritEnvironment = false;
     spawn.umask = m_options.umask;
     spawn.fileLimit = m_fileLimit;
     // The programs write kitty's temporary files in their TMPDIR, which is
@@ -71,9 +74,10 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     for (const auto& [name, value] : spawn.environment) {
         if (name == "TMPDIR" && !value.empty()) temporaryDirectory = value;
     }
-    // `afterglow ctl` and `aglow run` in a session pane reach the daemon,
-    // which answers their calls with CALL_FAILED, also while a window shows
-    // the session. The pane ID is the daemon's, whichever client sent it.
+    // `afterglow ctl` and `aglow run` in a session pane reach the daemon: it
+    // answers the control calls of the session, and passes a client of the
+    // commands target to the window that shows the session. The pane ID is
+    // the daemon's, whichever client sent it.
     AfterglowPty::setVariable(spawn, "AFTERGLOW_SOCKET", daemonSocket);
     AfterglowPty::setVariable(spawn, "AFTERGLOW_PANE_ID", std::to_string(id));
     AfterglowPty::setVariable(spawn, "AFTERGLOW_SESSION", m_name);
@@ -87,8 +91,10 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     // it joins the panes: a failure of either ends the new program and
     // leaves the session as it was, each pane in the layout.
     m_panes.reserve(m_panes.size() + 1);
-    if (!pane->start(std::move(spawn), launch.launchedProgram, error)) return false;
+    // Before the program runs too: `afterglow ctl watch` hears its first
+    // title.
     pane->setWatched(m_watched);
+    if (!pane->start(std::move(spawn), launch.launchedProgram, error)) return false;
     m_layout.addTab(id);
     m_panes.push_back(std::move(pane));
     // The next window saves the command in a project, as the client that
@@ -102,8 +108,13 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
 std::vector<std::unique_ptr<MuxPane>> Session::reap()
 {
     std::vector<std::unique_ptr<MuxPane>> closed;
+    // Room for each pane first: a failure (out of memory) leaves every pane
+    // in the session, and no null one.
+    closed.reserve(m_panes.size());
     for (auto& pane : m_panes) {
         if (pane->exited()) {
+            // The program told them before it exited: they wait whole.
+            keepLeftEvents(*pane);
             m_layout.remove(pane->id());
             closed.push_back(std::move(pane));
         }
@@ -121,16 +132,32 @@ std::unique_ptr<MuxPane> Session::take(std::uint32_t id)
     std::unique_ptr<MuxPane> pane = std::move(*it);
     m_panes.erase(it);
     m_layout.remove(id);
-    // Another session takes it, which may not be watched.
+    // Another session takes it, which may not be watched: what it told while
+    // it was here is this session's.
+    keepLeftEvents(*pane);
     pane->setWatched(false);
     return pane;
+}
+
+void Session::keepLeftEvents(MuxPane& pane) noexcept
+{
+    if (!m_watched) return;
+    try {
+        std::vector<MuxPane::WatchEvent> events = pane.takeWatchEvents();
+        if (!events.empty()) m_left.push_back({pane.id(), std::move(events)});
+    } catch (const std::exception&) {
+        // The watch misses them: the pane still leaves whole.
+    }
 }
 
 void Session::setWatched(bool watched)
 {
     if (watched == m_watched) return;
     m_watched = watched;
-    if (!watched) m_moved.clear();
+    if (!watched) {
+        m_moved.clear();
+        m_left.clear();
+    }
     for (const auto& pane : m_panes) pane->setWatched(watched);
 }
 
@@ -169,8 +196,33 @@ void Session::noteMoved(std::uint32_t pane)
 void Session::setLayout(Layout layout)
 {
     for (const std::uint32_t pane : std::exchange(layout.moved, {})) noteMoved(pane);
+    keepCommands(layout, m_layout);
+    // Those of panes that the layout does not hold go in reconcile().
     layout.reconcile(paneIds());
     m_layout = std::move(layout);
+}
+
+void Session::keepCommands(Layout& layout, const Layout& kept)
+{
+    // A window of a session of another host knows no command of its panes
+    // (PaneValues::keepsCommand): each keeps the daemon's, while the values
+    // have room, and the next window saves it in a project. A value with a
+    // command, an empty one too, and a pane without values give theirs.
+    std::size_t bytes = layout.valueBytes();
+    for (auto& [pane, values] : layout.values) {
+        if (!values.keepsCommand) continue;
+        values.keepsCommand = false;
+        const auto known = kept.values.find(pane);
+        if (known == kept.values.end()) continue;
+        std::size_t size = 0;
+        for (const std::string& arg : known->second.command) size += arg.size();
+        if (bytes + size > MaxLayoutValueBytes) continue;
+        values.command = known->second.command;
+        bytes += size;
+    }
+    // No keepsCommand stays for the next window, and an entry with no title
+    // and no command that it kept is no entry.
+    std::erase_if(layout.values, [](const auto& entry) { return entry.second.empty(); });
 }
 
 std::vector<std::uint32_t> Session::paneIds() const

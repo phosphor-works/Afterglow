@@ -31,7 +31,10 @@ public:
     /// included.
     static constexpr std::size_t MaxRequestBytes = 1024 * 1024;
     /// A longer line from the server is refused, so a broken server cannot
-    /// grow the buffer without bound. Above the router's 16 MiB output limit.
+    /// grow the buffer without bound. Above the 16 MiB output limit of the Qt
+    /// router, and equal on purpose to the output limit of aglow-mux
+    /// (IpcServerConnection::MaxWaitingBytes): a line that the daemon sends
+    /// fits.
     static constexpr std::size_t MaxFrameBytes = 32 * 1024 * 1024;
     /// The lines of the frames that come while call() waits for its answer,
     /// which then wait for next(). A server that sends more before the answer
@@ -51,6 +54,10 @@ public:
         /// connect() found no server: no socket at the path, or nobody
         /// listens there (ENOENT, ECONNREFUSED).
         bool noServer = false;
+        /// The connection closed on a line that is not a JSON object: the
+        /// other end speaks no phosphor-ipc (a login file that writes on
+        /// the standard output of a proxy command, for one).
+        bool notJson = false;
     };
 
     enum class Read {
@@ -79,9 +86,15 @@ public:
     /// server sent more than the frames that the caller took: the next
     /// protocol would lose those bytes.
     int release(Error* error);
+    /// Also after a send found that the server closed its end, until the
+    /// reads reach that end: no request goes then.
     bool connected() const { return m_fd >= 0; }
-    /// The socket, for a poll of the caller's own: readable when a frame
-    /// comes or the server closes the connection. -1 when not connected.
+    /// The socket, for a poll of the caller's own: readable when bytes come
+    /// or the server closes the connection. -1 when not connected. A read
+    /// takes all that the socket holds, and call() sets aside the frames
+    /// that are not its answer: frames can wait here while the socket has
+    /// nothing. next() with a timeout of 0, until it gives no frame, takes
+    /// them before such a poll.
     int fd() const { return m_fd; }
     /// Closes the connection and drops the frames that wait for next().
     void close();
@@ -95,31 +108,46 @@ public:
     /// Sends a call and returns its id, without waiting for the answer. A
     /// send blocks while the server reads nothing: @p wakeFd ends that wait
     /// (Error::interrupted). The connection closes when part of the request
-    /// went out.
+    /// went out. When the server closed its end, no request goes any more,
+    /// and the reads go on: next() gives what the server sent before it
+    /// closed, such as an error that says why (connectionError()).
     std::optional<std::int64_t> send(const std::string& target, const std::string& fn, Json::Array args, Error* error,
                                      int wakeFd = -1);
     /// Sends a call and waits at most @p timeoutMs for its answer, the send
     /// included. Other frames that arrive meanwhile wait for next(). @p wakeFd
-    /// ends the wait (Error::interrupted).
+    /// ends the wait (Error::interrupted). An error frame without an id is
+    /// the answer too (connectionError()), also when the server closed its
+    /// end before the request went.
     std::optional<Json::Value> call(const std::string& target, const std::string& fn, Json::Array args, int timeoutMs,
                                     Error* error, int wakeFd = -1);
     /// The next frame, the ones that waited first. @p bytes gets the size of
     /// the frame's line, '\n' included.
     Read next(Json::Value& frame, int timeoutMs, int wakeFd = -1, std::size_t* bytes = nullptr);
 
-    /// A reply or an error frame for @p id: its result, or nothing with
-    /// @p error set from the frame.
+    /// The result of a reply frame, or nothing with @p error set from an
+    /// error frame. It does not check the id: answers() tells whether the
+    /// frame answers a call.
     static std::optional<Json::Value> answer(const Json::Value& frame, Error* error);
     static std::optional<Json::Value> answer(Json::Value&& frame, Error* error);
     static bool answers(const Json::Value& frame, std::int64_t id);
+    /// An error frame without an id. The router sends one for a line that it
+    /// could not read, so it cannot name the request, and a server that
+    /// ends the connection sends one to say why (the mux daemon, when the
+    /// window of a session closes). A client that waits for one call at a
+    /// time takes it as the answer.
+    static bool connectionError(const Json::Value& frame);
 
 private:
     static std::string requestLine(std::int64_t id, const std::string& target, const std::string& fn, Json::Array args);
     std::optional<std::int64_t> sendCall(const std::string& target, const std::string& fn, Json::Array args,
                                          std::int64_t deadline, int wakeFd, Error* error);
     Read readFrame(Json::Value& frame, std::int64_t deadline, int wakeFd, std::size_t* bytes);
-    /// Closes the descriptor and keeps the frames that wait for next().
-    void disconnect(std::string reason);
+    /// Closes the descriptor. The frames that call() set aside still wait
+    /// for next(). The bytes that no frame took are dropped. @p notJson:
+    /// the reason is a line that is not a JSON object (Error::notJson).
+    void disconnect(std::string reason, bool notJson = false);
+    /// Sets @p error to why the connection closed by itself.
+    void setClosed(Error* error) const;
 
     int m_fd = -1;
     std::int64_t m_nextId = 0;
@@ -129,6 +157,10 @@ private:
     std::deque<std::pair<Json::Value, std::size_t>> m_waiting; ///< frames and their line sizes
     std::size_t m_waitingBytes = 0;
     std::string m_closeReason;
+    bool m_closedOnText = false; ///< m_closeReason is a line that is not a JSON object
+    /// Why no request goes any more: the server closed its end. The reads go
+    /// on until they reach that end. Empty while requests can go.
+    std::string m_sendClosed;
 };
 
 } // namespace AfterglowProto

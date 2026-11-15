@@ -58,8 +58,10 @@ SocketFile socketFile(const QString& path)
     return S_ISSOCK(info.st_mode) && info.st_uid == ::getuid() ? SocketFile::Ours : SocketFile::Other;
 }
 
-// A listener without the lock (an older build) still answers: only a refused
-// connection proves that none is there. A busy listener times out.
+// A listener can hold no lock file: one that something removed while the
+// listener ran (a cleaner of the runtime directory) lets the next process
+// take a new lock. It still answers: only a refused connection proves that
+// none is there. A busy listener times out.
 bool refusesConnections(const QString& path)
 {
     QLocalSocket probe;
@@ -108,7 +110,7 @@ InstanceSocket::Listen InstanceSocket::listen(const QString& path)
             QFile::remove(path);
             break;
         }
-        // A listener without the lock: an older build.
+        // A listener whose lock file went.
         unlockSocket(path, lock);
         return Listen::Held;
     case SocketFile::Other:

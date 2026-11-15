@@ -3,6 +3,7 @@
 
 #include <AfterglowVt/StateSync.h>
 
+#include <AfterglowVt/Input.h>
 #include <AfterglowVt/Terminal.h>
 
 #include "Utf8.h"
@@ -224,11 +225,31 @@ std::uint64_t fnv(std::string_view bytes, std::uint64_t h = 1469598103934665603u
     return h;
 }
 
-// The longest strings that a reader takes: the title and the directory as
-// the terminal bounds them, and an OSC 8 link. The fields of a status record
-// and of a context have the bounds of ProgramStatus and ShellContexts.
+// The longest strings that a reader takes: the title, which the writer cuts
+// at a character, the directory as the terminal bounds it, and an OSC 8
+// link. The fields of a status record and of a context have the bounds of
+// ProgramStatus and ShellContexts.
 constexpr std::size_t MaxText = 64 * 1024;
 constexpr std::size_t MaxLinkText = StyleTable::MaxLinkBytes;
+
+/// A title as the parser keeps one (cleanTitle in Terminal.cpp): UTF-8
+/// without controls, line or paragraph separators or bidirectional controls.
+bool isCleanTitle(std::string_view title)
+{
+    if (!detail::isCleanText(title)) return false;
+    for (std::size_t i = 0; i < title.size();) {
+        char32_t cp = 0;
+        if (!detail::nextUtf8(title, i, cp) || AfterglowProto::isBidiControl(cp)) return false;
+    }
+    return true;
+}
+
+/// A directory as Terminal::setWorkingDirectory takes one.
+bool isCleanDirectory(std::string_view cwd)
+{
+    return cwd.size() <= Terminal::MaxWorkingDirectory
+        && std::none_of(cwd.begin(), cwd.end(), [](char c) { return (unsigned char)c < 0x20 || c == 0x7F; });
+}
 
 // The codec carries every field of these by name, in the writer and in the
 // reader: a new field must be added to both, as for Modes below. A field
@@ -520,7 +541,12 @@ bool decodeModes(In& in, Modes& m)
     const std::uint8_t tracking = in.byte();
     const std::uint8_t format = in.byte();
     decoded.kittyKeyboard = in.byte();
-    if (!in.ok() || tracking > std::uint8_t(MouseTracking::Any) || format > std::uint8_t(MouseFormat::SgrPixels)) return false;
+    // The values that the parser makes: modifyOtherKeys 0 to 2, and the
+    // kitty flags it knows.
+    if (!in.ok() || tracking > std::uint8_t(MouseTracking::Any) || format > std::uint8_t(MouseFormat::SgrPixels)
+        || decoded.modifyOtherKeys > 2 || (decoded.kittyKeyboard & ~KittyFlag::All)) {
+        return false;
+    }
     decoded.mouseTracking = MouseTracking(tracking);
     decoded.mouseFormat = MouseFormat(format);
     m = decoded;
@@ -685,18 +711,19 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
             o.optionalRgb(t.selectionForeground());
             o.optionalRgb(t.selectionBackground());
             o.optionalRgb(t.visualBellColor());
+            // 0 none, 1 an opacity, 2 the window's opacity (a negative one).
             for (const auto& transparent : t.m_protocolColors.transparent) {
-                o.byte(transparent ? 1 : 0);
+                o.byte(!transparent ? 0 : transparent->opacity < 0 ? 2 : 1);
                 if (!transparent) continue;
                 o.rgb(transparent->color);
-                o.varint(std::uint64_t(std::lround(std::clamp(transparent->opacity, 0.0, 1.0) * 65535.0)));
+                if (transparent->opacity >= 0) o.varint(std::uint64_t(std::lround(std::min(transparent->opacity, 1.0) * 65535.0)));
             }
             o.byte(std::uint8_t(t.m_cursorShape));
         }
         sendIfChanged(out, ColorsTag, payload, m_colors, first);
 
         payload.clear();
-        Out(payload).string(std::string_view(t.m_title).substr(0, MaxText));
+        Out(payload).string(detail::truncateUtf8(t.m_title, MaxText));
         Out(payload).string(std::string_view(t.m_cwd).substr(0, MaxText));
         sendIfChanged(out, TextTag, payload, m_text, first);
 
@@ -1630,10 +1657,10 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             std::array<std::optional<Terminal::TransparentColor>, 8> transparent;
             for (auto& entry : transparent) {
                 const std::uint8_t has = p.byte();
-                if (has > 1) return fail("the state frame has bad colors");
+                if (has > 2) return fail("the state frame has bad colors");
                 if (!has) continue;
                 const Rgb c = p.rgb();
-                const double opacity = double(p.bounded(65535)) / 65535.0;
+                const double opacity = has == 2 ? -1.0 : double(p.bounded(65535)) / 65535.0;
                 entry = Terminal::TransparentColor{c, opacity};
             }
             const std::uint8_t shape = p.byte();
@@ -1662,7 +1689,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         case TextTag: {
             const std::string_view title = p.string(MaxText);
             const std::string_view cwd = p.string(MaxText);
-            if (!p.ok() || !p.done()) return fail("the state frame has bad text");
+            // What the window shows of them, as the parser would have taken them.
+            if (!p.ok() || !p.done() || !isCleanTitle(title) || !isCleanDirectory(cwd)) return fail("the state frame has bad text");
             t.m_title = title;
             t.m_cwd = cwd;
             break;

@@ -67,7 +67,8 @@ public:
         std::function<bool(const QString& action)> structuralAction;
         /// Carries out a checked effect, preserving created object identities.
         std::function<EffectResult(const QVariantMap& effect)> apply;
-        /// Owned UI/override operations. Completion is used only when deferred=true.
+        /// Owned UI/override operations, and effects whose result can come
+        /// later. Completion is used only when deferred=true.
         std::function<EffectResult(const QString& owner, const QVariantMap&, std::function<void(EffectResult)>)> applyOwned;
         std::function<void(const QString& owner)> cleanup;
         /// A handler of the owner failed: whatever it holds must not trap the user.
@@ -187,6 +188,9 @@ public:
     static constexpr qint64 MaxScriptBytes = 1024 * 1024; ///< a single-file script
     /// The highest max_bytes of read_text and read_region, which Control also takes.
     static constexpr int MaxReadTextBytes = 1024 * 1024;
+    /// The refusal of a max_bytes that is not a whole number from 1 to
+    /// MaxReadTextBytes, in the same words wherever it is checked.
+    static QString maxBytesError() { return QStringLiteral("max_bytes must be a whole number from 1 to %1").arg(MaxReadTextBytes); }
     /// The version of the terminal snapshot in ev.terminal, not of package state.
     static constexpr int SnapshotVersion = 1;
     static constexpr std::size_t MemoryCapBytes = 16u * 1024 * 1024;
@@ -273,8 +277,11 @@ private:
     void queueResult(const ScriptPtr& script, const QString& request, const QString& kind,
                      const EffectResult& result, quint32 eventPane, int timeoutMs, bool counted = true);
     /// Where a deferred effect's completion goes: counted, then queued as its result.
+    /// @p logged: whether a failure also reaches the log, as one of the window's
+    /// effects does. A task's failure (an exec that exits non-zero) is a result
+    /// that scripts expect, and only counts.
     std::function<void(EffectResult)> completion(const ScriptPtr& script, const QString& request,
-                                                 const QString& kind, quint32 eventPane);
+                                                 const QString& kind, quint32 eventPane, bool logged);
     bool withinBudget(Script& script, const QString& kind, bool structural);
     /// Counts a handler call against the script's callback budget: the one
     /// for events, or for @p task the one for its timers and watchers. An

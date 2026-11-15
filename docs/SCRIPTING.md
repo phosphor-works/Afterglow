@@ -15,6 +15,7 @@ The usual directory is `~/.config/afterglow/scripts/`.
 A script can handle terminal events and add [commands](#commands).
 Run a command with `aglow run <id> <command>`, from the command palette, from the context menu, with a key or with `afterglow ctl action`.
 A command that a script marks `remote` can also run from a remote host, with `aglow run` in an `afterglow ssh` session.
+It can also run with `aglow run` in a pane of a [mux session of another host](MUX.md#script-commands-in-a-session-pane).
 Set `Scripts.enabled=false` to disable scripting.
 See [packages](PACKAGES.md) for modules, dependencies and saved state.
 
@@ -169,7 +170,11 @@ A generic `action` runs in the pane's tab, and shows that tab first.
 `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` act on the pane's tab and do not show it, as the tab menu does.
 `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on.
 With `Mux.onClose` at `detach`, closing the last tab of a mux session asks nothing about the programs of the session (see [MUX.md](MUX.md#windows-of-a-session)).
+The same is true in a window that a project opened into its session, and while Afterglow quits.
+In these windows, `close` of the last pane and `close_tab` of the last tab leave the programs of the session running.
 `exec`, `select`, `prompt` and `overlay` deliver their results when the process or the dialog finishes.
+`open_project` for a project that opens into a mux session delivers its result when the window of the session opens.
+In the window of a mux session, `split`, `new_tab`, `detach_tab` and `move_pane` to `new-window` deliver their results when the pane shows (see [launch options](#launch-options)).
 Use direct creation helpers when you need a returned pane ID.
 
 `copy` fails when the text is longer than 4,194,304 UTF-16 units. Afterglow does not cut it.
@@ -314,9 +319,11 @@ When a program clears its last status, or the terminal resets, `ev.state` is `id
 
 | Record | Fields |
 | --- | --- |
-| Window | `id`, `focused`, `active_tab`, `active_pane`, `project`, `project_directory`, `overview`, `cols`, `rows` |
+| Window | `id`, `focused`, `active_tab`, `active_pane`, `project`, `project_directory`, `overview`, `session`, `session_host`, `cols`, `rows` |
 | Tab | `id`, `window`, `index`, `title`, `active`, `active_pane` |
 | Pane | `id`, `window`, `tab_id`, `tab`, `title`, `cwd`, `command`, `cols`, `rows`, `focused`, `context` |
+
+`session` is the mux session that the window shows, else empty. `session_host` is the ssh destination of its daemon, empty for this computer.
 
 `cwd` is the local directory that the shell reported last, or the working directory of the pane's foreground process.
 It is `""` when it is not known.
@@ -371,6 +378,15 @@ A swap or a rotation of the panes in a tab does not send it.
 A tab that moves to another place in its window sends `on_pane_moved` for each of its panes. The tabs that the move puts at another index send it for each of their panes too.
 A pane of a mux session that moves to a new window goes to a new session, and gets a new pane ID.
 The script then gets `on_pane_closed` and `on_pane_created`, not `on_pane_moved` (see [MUX.md](MUX.md#move-panes-and-tabs)).
+
+A pane of a [mux session](MUX.md) has two IDs.
+`ev.pane`, the snapshot and the effects use the pane ID of the window, as for other panes.
+`aglow run --pane N`, `afterglow ctl --session` and `AFTERGLOW_PANE_ID` use the pane ID of the daemon.
+When the window of a session closes, the script gets `on_pane_closed` for its panes, also when the session keeps running.
+The next window that shows the session gives them new pane IDs, and the script gets `on_pane_created`.
+Thus state that a script keeps by pane ID does not follow the pane to the next window.
+A window that shows a session while a command runs in a pane gets the start of the command from the daemon.
+The script then gets `on_command_started` when the window shows the pane, and `on_command_finished` when the command ends.
 
 `on_user_var` runs when a variable changes. Setting the same value again sends no event.
 A pane keeps its variables until it closes, at most 256 of them. A new variable after that is ignored.
@@ -674,8 +690,8 @@ A script with commands must have a `run_command` function.
 | `palette` | The command palette, for a command with `palette` |
 | `menu` | The Scripts submenu of the context menu, for a command with `palette` |
 | `key` | `script:<id>.<command>` in `Keybinds.bindings`, in a key table or in a key sequence (see [input](INPUT.md)) |
-| `control` | `afterglow ctl action script:<id>.<command>`, or a `SCRIPT.COMMAND` call of the `commands` target |
-| `remote` | `aglow run <id> <command> [ARGS…]` on a remote host, in an `afterglow ssh` session, for a command with `remote` |
+| `control` | `afterglow ctl action script:<id>.<command>`, or a `SCRIPT.COMMAND` call of the `commands` target. Also `afterglow ctl --session NAME action script:<id>.<command>`, only while a window shows the session. A client in a mux session of another host cannot run a command this way (see [MUX.md](MUX.md#control-of-a-session)). |
+| `remote` | `aglow run <id> <command> [ARGS…]` on a remote host, for a command with `remote`. The client runs in an `afterglow ssh` session, or in a pane of a mux session of another host. |
 
 The palette, a key, the menu and `afterglow ctl action` pass no arguments.
 The handler of a command with `palette` must work with `args` empty.
@@ -684,7 +700,7 @@ The handler of a command with `palette` must work with `args` empty.
 Treat the input of a `remote` run as untrusted.
 Any process of the remote user, and the remote root user, can start the run.
 That process gives `args`, `cwd` and `stdin`, and gets the output.
-The handler gets all the panes in `ev.terminal`, and its effects can act on any pane, not only the pane of the ssh session.
+The handler gets all the panes in `ev.terminal`. Its effects can act on any pane, not only the pane of the ssh session or of the mux session.
 An error in the handler counts toward the 5 failures that disable the script, as from any other source.
 So a remote process that sends bad input again and again can disable the script. Check the input before you use it.
 Remote runs and local runs share `Scripts.commandRunLimit`. A remote process can use all the runs of the script.
@@ -697,10 +713,10 @@ Remote runs and local runs share `Scripts.commandRunLimit`. A remote process can
 | --- | --- |
 | `args` | List of strings, at most 256, each at most 4,096 UTF-16 units |
 | `cwd` | The client's directory. Else the pane's directory. Else an empty string, for a run with neither. At most 4,096 UTF-16 units: a run with a longer directory does not start. For a `remote` run, a directory on the remote host, as text, or an empty string when the client gives none. Do not use it as a local path. An overlay with this `cwd` starts in `$HOME` when the directory does not exist on this computer |
-| `pane` | For a shell run: `--pane N`, else the pane that runs the shell, else the focused pane. For `control`, the pane that `afterglow ctl` names, else the focused pane. For `remote`, the pane that runs the ssh session. For other sources, the pane of the palette, key or menu. Only `{ id }` when the pane closed before the run started. `nil` when there is no pane |
+| `pane` | For a shell run: `--pane N`, else the pane that runs the shell, else the focused pane. For `control`, the pane that `afterglow ctl` names, else the focused pane. For `remote`, the pane that runs the ssh session, or the pane of the client in a mux session of another host. For other sources, the pane of the palette, key or menu. Only `{ id }` when the pane closed before the run started. `nil` when there is no pane |
 | `stdin` | All of the client's stdin as one string, for a command with `stdin = true` that runs from the shell or from a remote host. `nil` for another source. `nil` also when `aglow run` reads no stdin: with `-n`, or when stdin is a terminal. A run with more stdin than `Scripts.commandStdinLimit` does not start. `aglow run` refuses stdin that is not UTF-8 text and exits with status 2 |
 | `source` | `"shell"`, `"palette"`, `"key"`, `"menu"`, `"control"` or `"remote"` |
-| `remote` | For `remote`: `{ host }`, the host of the ssh session as `afterglow ssh` names it: 1 to 255 characters with no control characters. `nil` for another source |
+| `remote` | For `remote`: `{ host }`, the host of the ssh session as `afterglow ssh` names it, or the host of the mux session as `--ssh` names it. 1 to 255 characters with no control characters. `nil` for another source |
 | `run` | The run ID, for the output effects |
 | `terminal` | The terminal snapshot |
 
@@ -772,6 +788,8 @@ A run also ends when its client leaves, at a cancel, at the time limit and at th
 When its handler waits at that moment, these steps occur:
 
 1. The dialogs, selectors and [overlays](#overlays) that the handler waits for close. The program of an overlay gets `SIGHUP`.
+   An `open_project` that the handler waits for does not stop. Its session and its window still open.
+   A `split`, `new_tab`, `detach_tab` or `move_pane` to `new-window` in the window of a mux session does not stop either. The pane still opens or moves.
 2. The processes (`exec`) and file reads (`read_file`) that it waits for stop. Its sleeps stop. Their task names and sleep slots are free again.
 3. The handler resumes once, as from `afterglow.await`, with `nil` and the error code `cancelled`. The error message tells why the run ended.
 4. `afterglow.await_all` gives the results that came before the end, and `cancelled` for the others. An effect that applied, but that had no result yet, also gives `cancelled`.
@@ -1080,7 +1098,7 @@ Key releases are not reported.
 
 `overview(pane, operation)` drives the pane overview of the pane's window.
 `open` opens it from the pane. `close` closes it and keeps the focus. `choose` focuses the highlighted pane.
-`open` fails with `operation_failed` while another script holds a key mode.
+`open` fails with `busy` while another script holds a key mode.
 The default operation is `open`.
 When the chosen pane is in another tab, that tab shows as the overview closes.
 `overview_move(pane, step)` moves the highlight by `step` cards. `step` is a whole number from -32 to 32.
@@ -1109,7 +1127,7 @@ The bundled Pane Effects pack draws these effects:
 
 Numbers from 4 to 255 select effects that other packs define. Give an effect as its name, or as a number or a numeric string.
 A `pulse` without an effect causes an error in the handler.
-`options.duration_ms` sets the time, from 50 to 10,000 ms. The default is 600 ms.
+`options.duration_ms` sets the time, a whole number of ms from 50 to 10,000. The default is 600 ms.
 `options.color` is a palette index from 0 to 255. The default is 4.
 A new pulse on the same pane replaces the old one.
 The [pulse example](../data/examples/scripts/pane-pulses.luau) flashes failed commands and shakes on the bell.
@@ -1131,13 +1149,31 @@ The tab of `new_tab(pane)` opens after the tab of `pane`.
 Split directions are `left`, `right`, `up` and `down`. The default direction is `right`.
 Failed launches return errors and remove the incomplete ordinary pane.
 
+In the window of a mux session of another host, `split` and `new_tab` start the command on that host.
+They take no `cwd` and no `env` there, and an effect that gives them fails.
+The new pane starts in the directory of the program of the pane that it opens from, on the host.
+`new_window` always opens a window of this computer.
+See [sessions on another host](MUX.md#sessions-on-another-host).
+
+In the window of a mux session, the daemon starts the program of `split` and `new_tab` while the windows go on responding.
+The result comes when the pane shows.
+The pane that it opens from can close in that time, or the split can lose its room. Then the new pane opens in a tab.
+
 `move_pane(pane, target?, placement?)` moves a pane. The default placement is `right`.
 `left`, `right`, `up` and `down` place the pane beside `target`, which is required.
 `new-tab` and `new-window` take no target.
-`new-tab` is refused for a pane that is alone in its tab.
+A beside placement without a target, or `new-tab` or `new-window` with one, is refused with `invalid_effect`.
+`new-tab` is refused with `operation_failed` for a pane that is alone in its tab.
 In the window of a mux session, `new-window` and `detach_tab` move the pane or the tab to a new session.
 The pane then gets a new pane ID (see [MUX.md](MUX.md#move-panes-and-tabs)).
-Another combination is refused with `invalid_effect`.
+The result comes when the window of the new session shows the pane.
+Until then, the pane stays in its window and takes input, and another move of it fails.
+A target pane that has closed fails with `no_pane`.
+Some moves of panes of mux sessions fail with `operation_failed`.
+A pane of a session cannot move beside a pane of another window.
+A pane of another window cannot move into the window of a session.
+The only pane of a session, and a tab that holds all the panes of a session, cannot go to a new window.
+See [move panes and tabs](MUX.md#move-panes-and-tabs).
 
 Set an environment value to `false` to remove it.
 Other environment values must be strings.
