@@ -5,10 +5,10 @@
 
 namespace AfterglowMux {
 
-/// The argument of `afterglow-mux proxy`.
+/// The argument of `aglow-mux proxy`.
 inline constexpr const char* ProxyArgument = "proxy";
 
-/// `afterglow-mux proxy [--start]`: carries one connection to the daemon of
+/// `aglow-mux proxy [--start]`: carries one connection to the daemon of
 /// this host on standard input and output, for a client on another host
 /// that runs it over ssh (MuxConnect.h, Route). With @p start, it starts
 /// the daemon when none answers. Its exit status is ProxyNoDaemon when no

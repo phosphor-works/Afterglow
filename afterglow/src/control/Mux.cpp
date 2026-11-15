@@ -4,9 +4,11 @@
 #include "control/Mux.h"
 
 #include "PaneLaunch.h"
-#include "app/NotificationCenter.h"
 #include "config/Settings.h"
+#include "control/RemoteSockets.h"
 #include "shell/Aglow.h"
+#include "mux/MuxRoute.h"
+#include "mux/MuxSessions.h"
 #include "shell/Ssh.h"
 
 #include "MuxConnect.h"
@@ -31,7 +33,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -47,8 +48,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-extern char** environ;
-
 namespace Afterglow {
 
 namespace {
@@ -62,10 +61,10 @@ using AfterglowProto::IpcConnection;
 const char* const Usage = R"(Usage: afterglow mux <command> [options]
 
 Keeps terminal sessions running while no window shows them. The daemon
-(afterglow-mux) starts with the first session and ends with the last.
+(aglow-mux) starts with the first session and ends with the last.
 
 Commands:
-  server                      Run afterglow-mux in the foreground.
+  server                      Run aglow-mux in the foreground.
   new [options] [-- COMMAND]  Create a session and show it in a window. Options:
         --name NAME           The session name: 1 to 64 ASCII letters,
                               digits, '_' or '-', with a letter, a digit or
@@ -87,9 +86,10 @@ Commands:
                               Terminal.confirmClose on, it asks first when a
                               program runs. --force does not ask.
 
-detach, ls and kill take --ssh DESTINATION: the daemon of that host, through
-afterglow-mux proxy, which ssh runs there over the connection that afterglow
-ssh shares with the host.
+Each command but server takes --ssh DESTINATION: the daemon of that host,
+through aglow-mux proxy, which ssh runs there over the connection that
+afterglow ssh shares with the host. A session there runs your login shell
+with the environment of your ssh login there; --cwd is a directory there.
 )";
 
 int fail(const std::string& command, const std::string& message, int status = 1)
@@ -106,59 +106,6 @@ int usage(const std::string& message)
 }
 
 using AfterglowProto::printable;
-
-std::string daemonPath(std::string* error)
-{
-    return Aglow::siblingExecutable("afterglow-mux", error);
-}
-
-/// A connection to the daemon, which this starts when none answers: the
-/// afterglow-mux next to afterglow.
-Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, std::string* error)
-{
-    if (Reached reached = connectAny(sockets, error); reached.connection || !error->empty()) return reached;
-    const std::string daemon = daemonPath(error);
-    if (daemon.empty()) return {};
-    if (::access(daemon.c_str(), X_OK) != 0) {
-        *error = "cannot find afterglow-mux next to afterglow: " + daemon;
-        return {};
-    }
-    return AfterglowMux::connectOrStart(sockets, daemon, error);
-}
-
-/// The file mode creation mask of this process, which the programs of the
-/// session get, or -1. Read from /proc: umask() would change it to read it.
-int currentUmask()
-{
-    std::ifstream status("/proc/self/status");
-    for (std::string line; std::getline(status, line);) {
-        if (!line.starts_with("Umask:")) continue;
-        try {
-            return std::stoi(line.substr(6), nullptr, 8);
-        } catch (const std::exception&) {
-            return -1;
-        }
-    }
-    return -1;
-}
-
-/// The environment of the session: this command's. Each pane changes it with
-/// its launch, the first one with the values of this command's, and the
-/// variables that name another terminal or the shell that ran this command
-/// are among a launch's unsets (offerTerminalEnvironment). JSON carries
-/// text: a byte of a name, a value, an argument or a directory that is not
-/// UTF-8 becomes U+FFFD on the way to the daemon.
-std::vector<std::pair<std::string, std::string>> sessionEnvironment()
-{
-    std::vector<std::pair<std::string, std::string>> env;
-    for (char** e = environ; *e; ++e) {
-        const std::string_view entry(*e);
-        const auto eq = entry.find('=');
-        if (eq == std::string_view::npos || eq == 0) continue;
-        env.emplace_back(std::string(entry.substr(0, eq)), std::string(entry.substr(eq + 1)));
-    }
-    return env;
-}
 
 /// @p path as an absolute path, or nullopt when it is relative and the
 /// current directory was removed (it has no path then). Not QFileInfo: it
@@ -179,6 +126,7 @@ struct NewOptions
     QString cwd;
     bool detach = false;
     QStringList command;
+    std::optional<std::string> host; ///< --ssh
 };
 
 /// Why a window could not open here, or empty. Afterglow shows windows only
@@ -207,10 +155,14 @@ std::string displayProblem()
 /// Shows @p name in a window: afterglow runs with --mux-attach, and hands the
 /// window to the main process of the display as any launch does. Returns
 /// only on a failure.
-int openWindow(const std::string& command, const std::string& name, bool takeover)
+int openWindow(const std::string& command, const std::string& name, bool takeover, const std::optional<std::string>& host = {})
 {
     std::vector<std::string> args{"afterglow", "--mux-attach", name};
     if (!takeover) args.emplace_back("--mux-no-takeover");
+    if (host) {
+        args.emplace_back("--mux-host");
+        args.push_back(*host);
+    }
     std::vector<char*> argv;
     for (auto& arg : args) argv.push_back(arg.data());
     argv.push_back(nullptr);
@@ -218,6 +170,46 @@ int openWindow(const std::string& command, const std::string& name, bool takeove
     const int failure = errno;
     fail(command, std::string("cannot run afterglow: ") + std::strerror(failure));
     return failure == ENOENT ? 127 : 126;
+}
+
+/// The way to the daemon of @p host over the shared connection of `afterglow
+/// ssh`, or to that of this computer without one. Nothing, with @p error,
+/// when ssh cannot read the destination, or no socket path can be used.
+std::optional<AfterglowMux::Route> routeTo(const std::optional<std::string>& host, std::string* error)
+{
+    if (host) {
+        QString sshError;
+        auto route = muxRoute(QString::fromLocal8Bit(QByteArray::fromStdString(*host)), &sshError);
+        if (!route) *error = sshError.toStdString();
+        return route;
+    }
+    AfterglowMux::Route route;
+    route.sockets = AfterglowProto::muxSockets();
+    if (route.sockets.candidates.empty()) {
+        *error = route.sockets.error;
+        return std::nullopt;
+    }
+    return route;
+}
+
+/// The daemon of @p host, or of this computer without one. Nothing, with an
+/// empty @p error, when no daemon runs: none starts.
+Reached reachDaemon(const std::optional<std::string>& host, std::string* error)
+{
+    const auto route = routeTo(host, error);
+    if (!route) return {};
+    return AfterglowMux::reach(*route, false, error);
+}
+
+/// Takes `--ssh DESTINATION` at @p i of @p argv into @p host. False when the
+/// word is something else.
+bool takeSsh(int argc, char** argv, int& i, std::optional<std::string>& host, std::string* problem)
+{
+    if (std::strcmp(argv[i], "--ssh") != 0) return false;
+    if (i + 1 == argc) *problem = "--ssh needs a destination";
+    else if (host) *problem = "--ssh is given more than once";
+    else host = argv[++i];
+    return true;
 }
 
 /// `afterglow mux new`, also for `attach` when no session runs: @p command
@@ -237,8 +229,8 @@ int newSession(int argc, char** argv, const std::string& command = "new")
             else o.cwd = QString::fromLocal8Bit(argv[++i]);
         } else if (arg == "--detach") {
             o.detach = true;
-        } else if (arg == "--ssh") {
-            return fail(command, "sessions on other hosts are not available yet");
+        } else if (std::string problem; takeSsh(argc, argv, i, o.host, &problem)) {
+            if (!problem.empty()) return usage(problem);
         } else {
             return usage("unknown option of new: " + printable(arg));
         }
@@ -249,8 +241,13 @@ int newSession(int argc, char** argv, const std::string& command = "new")
     if (!o.detach) {
         if (const std::string problem = displayProblem(); !problem.empty()) return fail(command, problem + ": give --detach");
     }
-    const auto sockets = AfterglowProto::muxSockets();
-    if (sockets.candidates.empty()) return fail(command, sockets.error);
+    // A directory of another host is that host's to find.
+    if (o.host && !o.cwd.isEmpty() && !o.cwd.startsWith(QLatin1Char('/'))) {
+        return fail(command, "give an absolute directory of " + printable(*o.host) + " with --cwd");
+    }
+    std::string error;
+    const auto route = routeTo(o.host, &error);
+    if (!route) return fail(command, error);
 
     int qtArgc = 1;
     char* qtArgv[] = {argv[0], nullptr};
@@ -259,31 +256,35 @@ int newSession(int argc, char** argv, const std::string& command = "new")
     // a "dark:NAME,light:NAME" theme, whatever the desktop's scheme.
     SettingsStore store;
     const Settings& settings = store.settings();
-    const auto cwd = absolute(o.cwd);
-    if (!cwd) return fail(command, "the current directory was removed, so give an absolute directory with --cwd");
-    if (!QFileInfo(*cwd).isDir()) return fail(command, "no directory " + printable(cwd->toStdString()));
-
-    AfterglowPty::SpawnOptions launch = prepareLaunch(settings, *cwd, o.command, {});
-    offerTerminalEnvironment(launch, settings.term);
     AfterglowMux::SessionOptions session;
     session.name = o.name;
-    session.environment = sessionEnvironment();
-    session.umask = currentUmask();
-    session.launch.argv = launch.argv;
-    session.launch.workingDirectory = launch.workingDirectory;
-    session.launch.environment = launch.environment;
-    session.launch.unset = launch.unsetEnvironment;
-    session.launch.launchedProgram = launchedProgramName(o.command).toStdString();
-    // No window measured the panes: the size of a new window, in cells,
-    // which the schema keeps within what a terminal takes.
-    session.size = {settings.window.initialColumns, settings.window.initialRows, 0, 0};
-    session.terminal = settings.terminal;
-    session.notificationCapabilities = NotificationCenter::capabilities();
-    session.control = {settings.control.enabled, settings.control.allowReadText};
+    if (o.host) {
+        // The environment of the user's ssh login there, which the proxy
+        // has, and the user's login shell: none of this computer's paths.
+        // The terminal's variables go over it, with afterglow's terminfo
+        // entry installed there as afterglow ssh installs it.
+        QString term = settings.term;
+        if (term == QLatin1String("afterglow") && !Ssh::installTerminfo(QString::fromLocal8Bit(QByteArray::fromStdString(*o.host)))) {
+            term = QStringLiteral("xterm-256color");
+        }
+        AfterglowPty::SpawnOptions terminal;
+        offerTerminalEnvironment(terminal, term);
+        for (auto& [name, value] : terminal.environment) {
+            if (name != "TERMINFO_DIRS") session.environment.emplace_back(std::move(name), std::move(value));
+        }
+        session.callerEnvironment = true;
+        for (const QString& word : o.command) session.launch.argv.push_back(word.toStdString());
+        session.launch.workingDirectory = o.cwd.toStdString();
+    } else {
+        const auto cwd = absolute(o.cwd);
+        if (!cwd) return fail(command, "the current directory was removed, so give an absolute directory with --cwd");
+        if (!QFileInfo(*cwd).isDir()) return fail(command, "no directory " + printable(cwd->toStdString()));
+        session = localSessionOptions(settings, *cwd, o.command, QString::fromStdString(o.name));
+    }
+    if (o.host) sessionValues(session, settings, o.command);
 
-    std::string error;
-    Reached reached = connectOrStart(sockets, &error);
-    if (!reached.connection) return fail(command, error);
+    Reached reached = o.host ? AfterglowMux::reach(*route, true, &error) : connectOrStartDaemon(route->sockets, &error);
+    if (!reached.connection) return fail(command, error.empty() ? std::string("aglow-mux did not start") : error);
     IpcConnection::Error callError;
     const auto result = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::NewSession,
                                                  Json::Array{AfterglowMux::ProtocolVersion, AfterglowMux::toJson(session)},
@@ -295,75 +296,17 @@ int newSession(int argc, char** argv, const std::string& command = "new")
         std::printf("%s\n", name.c_str());
         return 0;
     }
-    const int status = openWindow(command, name, true);
+    // The window's afterglow takes this process: the connection and its
+    // proxy end first, and no child is left to it.
+    reached = {};
+    const int status = openWindow(command, name, true, o.host);
     // afterglow did not run, so no window will show the session: it ends
     // here. (A window that starts and then fails leaves it running.)
-    IpcConnection::Error killError;
-    (void)reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::KillSession, Json::Array{name}, CallTimeoutMs, &killError);
+    if (Reached again = o.host ? AfterglowMux::reach(*route, false, &error) : connectAny(route->sockets, &error); again.connection) {
+        IpcConnection::Error killError;
+        (void)again.connection->call(AfterglowMux::Target, AfterglowMux::Fn::KillSession, Json::Array{name}, CallTimeoutMs, &killError);
+    }
     return status;
-}
-
-/// The sessions of the daemon on @p connection, or nullopt with @p error.
-/// The daemon of @p host over the shared connection of `afterglow ssh`, or
-/// of this computer without one. Nothing, with an empty @p error, when no
-/// daemon runs: none starts.
-Reached reachDaemon(const std::optional<std::string>& host, std::string* error)
-{
-    AfterglowMux::Route route;
-    if (host) {
-        QString sshError;
-        const QByteArrayList ssh = Ssh::sharedCommand(QString::fromLocal8Bit(QByteArray::fromStdString(*host)), &sshError);
-        if (ssh.isEmpty()) {
-            *error = sshError.toStdString();
-            return {};
-        }
-        for (const QByteArray& word : ssh) route.proxy.push_back(word.toStdString());
-        // As the shell of the login finds it there.
-        route.proxy.emplace_back("afterglow-mux");
-        route.host = *host;
-    } else {
-        route.sockets = AfterglowProto::muxSockets();
-        if (route.sockets.candidates.empty()) {
-            *error = route.sockets.error;
-            return {};
-        }
-    }
-    return AfterglowMux::reach(route, false, error);
-}
-
-/// Takes `--ssh DESTINATION` at @p i of @p argv into @p host. False when the
-/// word is something else.
-bool takeSsh(int argc, char** argv, int& i, std::optional<std::string>& host, std::string* problem)
-{
-    if (std::strcmp(argv[i], "--ssh") != 0) return false;
-    if (i + 1 == argc) *problem = "--ssh needs a destination";
-    else if (host) *problem = "--ssh is given more than once";
-    else host = argv[++i];
-    return true;
-}
-
-std::optional<std::vector<AfterglowMux::SessionInfo>> sessions(IpcConnection& connection, std::string* error)
-{
-    IpcConnection::Error callError;
-    const auto result = connection.call(AfterglowMux::Target, AfterglowMux::Fn::ListSessions, {}, CallTimeoutMs, &callError);
-    if (!result) {
-        *error = printable(callError.message);
-        return std::nullopt;
-    }
-    if (!result->isArray()) {
-        *error = "the daemon's list of sessions is not a list";
-        return std::nullopt;
-    }
-    std::vector<AfterglowMux::SessionInfo> list;
-    for (const Json::Value& item : result->toArray()) {
-        auto info = AfterglowMux::sessionInfo(item);
-        if (!info || !AfterglowMux::validSessionName(info->name)) {
-            *error = "the daemon sent a session that this afterglow cannot read";
-            return std::nullopt;
-        }
-        list.push_back(std::move(*info));
-    }
-    return list;
 }
 
 int listSessions(int argc, char** argv)
@@ -382,7 +325,7 @@ int listSessions(int argc, char** argv)
     if (!reached.connection && !error.empty()) return fail("ls", error);
     std::vector<AfterglowMux::SessionInfo> list;
     if (reached.connection) {
-        auto found = sessions(*reached.connection, &error);
+        auto found = daemonSessions(*reached.connection, &error);
         if (!found) return fail("ls", error);
         list = std::move(*found);
     }
@@ -404,11 +347,14 @@ int attachSession(int argc, char** argv)
 {
     std::string name;
     bool takeover = true;
+    std::optional<std::string> host;
+    std::string problem;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--no-takeover") takeover = false;
-        else if (arg == "--ssh") return fail("attach", "sessions on other hosts are not available yet");
-        else if (name.empty() && !arg.starts_with('-')) name = arg;
+        else if (takeSsh(argc, argv, i, host, &problem)) {
+            if (!problem.empty()) return usage(problem);
+        } else if (name.empty() && !arg.starts_with('-')) name = arg;
         else return usage("unknown argument of attach: " + printable(arg));
     }
     if (!name.empty() && !AfterglowMux::validSessionName(name)) {
@@ -416,21 +362,23 @@ int attachSession(int argc, char** argv)
     }
     if (const std::string problem = displayProblem(); !problem.empty()) return fail("attach", problem);
     if (name.empty()) {
-        const auto sockets = AfterglowProto::muxSockets();
-        if (sockets.candidates.empty()) return fail("attach", sockets.error);
         std::string error;
-        Reached reached = connectAny(sockets, &error);
+        Reached reached = reachDaemon(host, &error);
         if (!reached.connection && !error.empty()) return fail("attach", error);
         std::optional<std::vector<AfterglowMux::SessionInfo>> list;
         if (reached.connection) {
-            list = sessions(*reached.connection, &error);
+            list = daemonSessions(*reached.connection, &error);
             if (!list) return fail("attach", error);
         }
         // No session: a new one, in a window.
         if (!list || list->empty()) {
-            char newArg[] = "new";
-            char* newArgv[] = {newArg, nullptr};
-            return newSession(1, newArgv, "attach");
+            reached = {};
+            std::vector<std::string> words{"new"};
+            if (host) words.insert(words.end(), {"--ssh", *host});
+            std::vector<char*> newArgv;
+            for (std::string& word : words) newArgv.push_back(word.data());
+            newArgv.push_back(nullptr);
+            return newSession(int(words.size()), newArgv.data(), "attach");
         }
         if (list->size() > 1) {
             std::string names;
@@ -439,7 +387,7 @@ int attachSession(int argc, char** argv)
         }
         name = list->front().name;
     }
-    return openWindow("attach", name, takeover);
+    return openWindow("attach", name, takeover, host);
 }
 
 int detachSession(int argc, char** argv)
@@ -508,7 +456,7 @@ int killSession(int argc, char** argv)
     // daemon running while the user answers.
     Reached reached = reachDaemon(host, &error);
     if (!reached.connection) return fail("kill", error.empty() ? std::string("no sessions") : error);
-    const auto list = sessions(*reached.connection, &error);
+    const auto list = daemonSessions(*reached.connection, &error);
     if (!list) return fail("kill", error);
     const auto found = std::find_if(list->begin(), list->end(), [&](const auto& s) { return s.name == name; });
     if (found == list->end()) return fail("kill", "no session named '" + printable(name) + "'");
@@ -539,7 +487,7 @@ int server(int argc, char**)
 {
     if (argc != 1) return usage("server takes no arguments");
     std::string error;
-    const std::string daemon = daemonPath(&error);
+    const std::string daemon = muxDaemonPath(&error);
     if (daemon.empty()) return fail("server", error, 127);
     char* const args[] = {const_cast<char*>(daemon.c_str()), nullptr};
     ::execv(daemon.c_str(), args);

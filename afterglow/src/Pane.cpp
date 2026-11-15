@@ -144,7 +144,10 @@ bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols,
 void Pane::setOptions(const AfterglowVt::TerminalOptions& options)
 {
     std::lock_guard lock(m_mutex);
-    m_terminal.setOptions(options);
+    // A session pane's colors, cursor and modes are the session's, which
+    // its frames carry once the daemon applied the options too.
+    if (m_session) m_terminal.setViewOptions(options);
+    else m_terminal.setOptions(options);
 }
 
 void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
@@ -776,12 +779,20 @@ void Pane::setSearchColors(std::uint32_t match, std::uint32_t current, std::uint
 
 void Pane::setUserTitle(const QString& title)
 {
+    bool changed = false;
     {
         std::lock_guard lock(m_mutex);
+        changed = m_userTitle != title;
         m_userTitle = title;
         m_shownTitle = m_userTitle.isEmpty() ? m_title : m_userTitle;
     }
     announceTitle();
+    if (changed) Q_EMIT userTitleChanged();
+}
+
+pid_t Pane::programPid() const
+{
+    return m_pty ? m_pty->pid() : 0;
 }
 
 void Pane::announceTitle()
@@ -1011,9 +1022,9 @@ bool Pane::writeProgram(std::string_view bytes)
     return m_pty && m_pty->write(bytes);
 }
 
-bool Pane::showsSession(const QString& name) const
+bool Pane::showsSession(const QString& name, const QString& host) const
 {
-    return m_session && !m_sessionGone && m_session->showing() && m_session->session() == name;
+    return m_session && !m_sessionGone && m_session->showing() && m_session->session() == name && m_session->host() == host;
 }
 
 void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id)

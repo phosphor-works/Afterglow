@@ -7,10 +7,10 @@
 #include <string>
 #include <string_view>
 
-// The image decoders of aglow and afterglow-mux: PNG (libpng), JPEG
+// The image decoders of aglow and aglow-mux: PNG (libpng), JPEG
 // (libjpeg-turbo), WebP (libwebp), and GIF and BMP, which this library reads
 // itself. No Qt. The three libraries are built in from pinned archives, and
-// they still parse what a remote program sends: aglow and afterglow-mux call
+// they still parse what a remote program sends: aglow and aglow-mux call
 // decode() only in a child process with limits on its memory and CPU time.
 // Call decode() from one thread: libwebp is built without threads, and
 // fills its function tables at the first decode with no lock.

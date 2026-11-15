@@ -633,6 +633,39 @@ TEST(RunClient, RefusesWhatTheTerminalWouldBeforeItConnects)
     EXPECT_FALSE(server.connectionWaits()) << outcome.err;
 }
 
+// A mux daemon passes the run of a session pane to the window that shows
+// the session, which names the pane by its own ID: a run that fits only
+// with the client's shorter ID is refused before its input goes.
+TEST(RunClient, ARunFitsWithTheLongestPaneId)
+{
+    std::vector<std::string> full(255, std::string(Run::MaxArgLength, 'x'));
+    const auto fitsWith = [&](std::int64_t pane, std::size_t last) {
+        Json::Array arguments(full.begin(), full.end());
+        arguments.emplace_back(std::string(last, 'x'));
+        return IpcConnection::fits(Run::Target, "run", Json::Array{std::string(32, '0'), "tools", "greet", std::move(arguments), "/", pane});
+    };
+    // The longest last argument that fits with pane 1.
+    ASSERT_TRUE(fitsWith(1, 0));
+    ASSERT_FALSE(fitsWith(1, Run::MaxArgLength));
+    std::size_t low = 0;
+    std::size_t high = Run::MaxArgLength;
+    while (high - low > 1) {
+        const std::size_t middle = (low + high) / 2;
+        (fitsWith(1, middle) ? low : high) = middle;
+    }
+    ASSERT_FALSE(fitsWith(0xffffffff, low));
+    std::vector<std::string> args{"--pane", "1", "tools", "greet"};
+    args.insert(args.end(), full.begin(), full.end());
+    args.push_back(std::string(low, 'x'));
+    FakeServer server;
+    Client client(server, args, {.cwd = "/"});
+    ASSERT_TRUE(client.started());
+    ASSERT_TRUE(list(server, {command("tools", "greet")}));
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, Run::UsageError) << outcome.err;
+    EXPECT_NE(outcome.err.find("over 1 MiB"), std::string::npos) << outcome.err;
+}
+
 TEST(RunClient, SendsTheWorkingDirectoryOrNoneForADeletedOne)
 {
     const auto cwdOfRun = [](Options options) {
@@ -865,6 +898,22 @@ TEST(RunClient, SaysWhyTheConnectionWasLost)
     const Outcome outcome = client.wait();
     EXPECT_EQ(outcome.status, 1);
     EXPECT_NE(outcome.err.find("lost Afterglow: the server sent a line that is not a JSON object"), std::string::npos) << outcome.err;
+}
+
+TEST(RunClient, AnErrorThatAnswersNoCallEndsTheRunWithItsMessage)
+{
+    FakeServer server;
+    Client client(server, {"tools", "greet"});
+    ASSERT_TRUE(list(server, {command("tools", "greet")}));
+    const auto run = expect(server, "run");
+    ASSERT_TRUE(run);
+    server.event("commands", "stdout", {runId(*run), "before\n"});
+    server.write(R"({"type":"error","code":"CALL_FAILED","message":"the window closed"})" "\n");
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.out, "before\n");
+    EXPECT_NE(outcome.err.find("the window closed"), std::string::npos) << outcome.err;
+    EXPECT_EQ(outcome.err.find("lost Afterglow"), std::string::npos) << outcome.err;
 }
 
 TEST(RunRemote, TheTerminalsOscPayloadIsWhatFollowsItsNumber)

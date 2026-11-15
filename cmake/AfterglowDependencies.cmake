@@ -55,7 +55,7 @@ set(AFTERGLOW_DEP_xxhash_URL "https://github.com/Cyan4973/xxHash/archive/refs/ta
 set(AFTERGLOW_DEP_xxhash_FILE "xxHash-0.8.4.tar.gz")
 set(AFTERGLOW_DEP_xxhash_SHA256 "5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32")
 
-# The image codecs of libs/afterglow-image, which aglow and afterglow-mux link
+# The image codecs of libs/afterglow-image, which aglow and aglow-mux link
 # statically. Each is the release archive of its project, and each hash
 # matches the Homebrew formula of the same version.
 #

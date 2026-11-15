@@ -42,6 +42,17 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     spawn.argv = launch.argv;
     spawn.workingDirectory = launch.workingDirectory;
     spawn.environment = paneEnvironment(m_options.environment, launch);
+    if (m_options.callerEnvironment) {
+        // The environment of a command over ssh, which no login read: the
+        // shell reads the login's files, as an interactive ssh login does.
+        if (spawn.argv.empty()) spawn.argv = {AfterglowPty::Pty::defaultShell(spawn), "-l"};
+        if (spawn.workingDirectory.empty()) {
+            spawn.workingDirectory = "/";
+            for (const auto& [name, value] : spawn.environment) {
+                if (name == "HOME" && !value.empty()) spawn.workingDirectory = value;
+            }
+        }
+    }
     // The session's environment is the client's, which it sent whole: the
     // daemon's own (a systemd unit's INVOCATION_ID, for one) stays out. So
     // do the daemon's umask and its raised descriptor limit.
@@ -64,8 +75,14 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     auto pane = std::make_unique<MuxPane>(id, m_options.terminal, size, m_options.notificationCapabilities, m_images, std::move(wake));
     pane->setTemporaryDirectory(temporaryDirectory);
     if (!pane->start(std::move(spawn), launch.launchedProgram, error)) return false;
+    pane->setWatched(m_watched);
     m_panes.push_back(std::move(pane));
     m_layout.addTab(id);
+    // The next window saves the command in a project, as the client that
+    // started the pane would: while the layout has room for it.
+    std::size_t bytes = 0;
+    for (const std::string& arg : launch.command) bytes += arg.size();
+    if (!launch.command.empty() && m_layout.valueBytes() + bytes <= MaxLayoutValueBytes) m_layout.values[id].command = launch.command;
     return true;
 }
 
@@ -100,11 +117,22 @@ std::unique_ptr<MuxPane> Session::take(std::uint32_t id)
     std::unique_ptr<MuxPane> pane = std::move(*it);
     m_panes.erase(it);
     m_layout.remove(id);
+    // Another session takes it, which may not be watched.
+    pane->setWatched(false);
     return pane;
+}
+
+void Session::setWatched(bool watched)
+{
+    if (watched == m_watched) return;
+    m_watched = watched;
+    if (!watched) m_moved.clear();
+    for (const auto& pane : m_panes) pane->setWatched(watched);
 }
 
 void Session::adopt(std::unique_ptr<MuxPane> pane)
 {
+    pane->setWatched(m_watched);
     m_layout.addTab(pane->id());
     m_panes.push_back(std::move(pane));
 }
@@ -115,8 +143,26 @@ void Session::kill()
     m_layout = {};
 }
 
+void Session::applySettings(const SessionSettings& settings)
+{
+    m_options.control = settings.control;
+    for (const auto& [name, value] : settings.environment) {
+        std::erase_if(m_options.environment, [&name](const auto& variable) { return variable.first == name; });
+        if (value) m_options.environment.emplace_back(name, *value);
+    }
+    if (m_options.terminal == settings.terminal) return;
+    m_options.terminal = settings.terminal;
+    for (const auto& pane : m_panes) pane->setOptions(settings.terminal);
+}
+
+void Session::noteMoved(std::uint32_t pane)
+{
+    if (m_watched && m_moved.size() < MaxLayoutPanes) m_moved.push_back(pane);
+}
+
 void Session::setLayout(Layout layout)
 {
+    for (const std::uint32_t pane : std::exchange(layout.moved, {})) noteMoved(pane);
     layout.reconcile(paneIds());
     m_layout = std::move(layout);
 }

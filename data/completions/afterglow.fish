@@ -255,6 +255,9 @@ function __afterglow_ctl
             contains -- --overwrite $argv; or set -a offer --overwrite\t'Replace a project with the name'
         case open-project
             contains -- --new $argv; or set -a offer --new\t'Launch the layout again'
+            if not contains -- --session $argv; and not contains -- --no-session $argv
+                set -a offer --session\t'Open into a mux session' --no-session\t'Open into a window'
+            end
     end
     __afterglow_print $offer
 end
@@ -265,7 +268,7 @@ function __afterglow_mux
         if string match -q -- '-*' "$cur"
             __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
         else
-            __afterglow_print server\t'Run afterglow-mux in the foreground' new\t'Create a session' \
+            __afterglow_print server\t'Run aglow-mux in the foreground' new\t'Create a session' \
                 attach\t'Show a session in a window' detach\t'Close the window of a session, and keep the session' \
                 ls\t'List the sessions' kill\t'End a session and its programs'
         end
@@ -292,6 +295,12 @@ function __afterglow_mux
                     end
                     set i (math $i + 1)
                 end
+            case --ssh
+                if test $i -eq $n
+                    __fish_print_hostnames
+                    return
+                end
+                set i (math $i + 1)
         end
         set i (math $i + 1)
     end
@@ -310,6 +319,13 @@ function __afterglow_mux
             string match -q -- '-*' "$cur"
             and not contains -- --force $argv
             and set -a offer --force\t'End it without a question'
+    end
+    # A session of another host. An empty word is the name of the session,
+    # or nothing for ls.
+    if contains -- $command new attach detach ls kill; and not contains -- --ssh $argv
+        if test $command = new; or string match -q -- '-*' "$cur"
+            set -a offer --ssh\t'A session of another host'
+        end
     end
     __afterglow_print $offer
 end

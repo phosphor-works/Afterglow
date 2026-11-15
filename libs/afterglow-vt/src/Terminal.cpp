@@ -435,6 +435,16 @@ void Terminal::setOptions(const TerminalOptions& options)
     }
 }
 
+void Terminal::setViewOptions(const TerminalOptions& options)
+{
+    if (options.maxScrollback != m_options.maxScrollback) m_primary->setMaxScrollback(options.maxScrollback);
+    if (options.graphicsQuota != m_options.graphicsQuota) {
+        for (GraphicsStore& store : m_graphics) store.setQuota(options.graphicsQuota);
+    }
+    m_options = options;
+    touch();
+}
+
 void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
 {
     cols = std::clamp(cols, 2, 4096);

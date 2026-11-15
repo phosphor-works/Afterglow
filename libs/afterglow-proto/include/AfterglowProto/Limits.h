@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 /// The limits of a process that decodes untrusted input: aglow's decoder and
-/// the image decoders of afterglow-mux.
+/// the image decoders of aglow-mux.
 namespace AfterglowProto {
 
 /// The address space of this process, from /proc; 0 when it cannot be read.

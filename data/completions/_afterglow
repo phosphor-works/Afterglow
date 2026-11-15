@@ -233,7 +233,7 @@ _afterglow_ctl() {
     notify) _arguments -S $pane '1:title:' '*:body:' ;;
     open-directory) _arguments '--layout[a saved layout]:layout:' '1:directory:_directories' ;;
     save-project) _arguments $pane '--overwrite[replace a project with the name]' '1:name:' ;;
-    open-project) _arguments '--new[launch the layout again]' '1:name:' ;;
+    open-project) _arguments '--new[launch the layout again]' '(--no-session)--session[open into a mux session]' '(--session)--no-session[open into a window]' '1:name:' ;;
     action) _arguments $pane '1:action:_afterglow_actions' ;;
     watch|scripts|projects) ;;
     *) _arguments $pane ;;
@@ -250,7 +250,7 @@ _afterglow_mux() {
             return
         fi
         commands=(
-            'server:run afterglow-mux in the foreground'
+            'server:run aglow-mux in the foreground'
             'new:create a session'
             'attach:show a session in a window'
             'detach:close the window of a session, and keep the session'
@@ -260,6 +260,7 @@ _afterglow_mux() {
         _describe -t commands 'mux command' commands
         return
     fi
+    local ssh='--ssh[a session of another host]:destination:_hosts'
     case $words[2] in
     new)
         shift words; (( CURRENT-- ))
@@ -273,19 +274,24 @@ _afterglow_mux() {
         _arguments \
             '--name[the session name]:name:' \
             '--cwd[start in the directory]:directory:_directories' \
-            '--detach[create the session without a window]'
+            '--detach[create the session without a window]' \
+            "$ssh"
         ;;
     kill)
         shift words; (( CURRENT-- ))
-        _arguments '--force[end it without a question]' ':session:'
+        _arguments '--force[end it without a question]' "$ssh" ':session:'
         ;;
     attach)
         shift words; (( CURRENT-- ))
-        _arguments '--no-takeover[refuse when another window shows the session]' ':session:'
+        _arguments '--no-takeover[refuse when another window shows the session]' "$ssh" ':session:'
         ;;
     detach)
         shift words; (( CURRENT-- ))
-        _arguments ':session:'
+        _arguments "$ssh" ':session:'
+        ;;
+    ls)
+        shift words; (( CURRENT-- ))
+        _arguments "$ssh"
         ;;
     esac
 }

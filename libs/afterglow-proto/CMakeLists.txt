@@ -3,7 +3,7 @@
 
 # zlib-ng and xxHash are built into the tree from the archives that
 # cmake/AfterglowDependencies.cmake pins, not taken from the system. Every
-# build (the application, afterglow-vt, afterglow-mux, the tests, the fuzz
+# build (the application, afterglow-vt, aglow-mux, the tests, the fuzz
 # targets and a static client of this library) then uses the same code.
 # zlib-ng has the SIMD paths that a distribution's zlib-ng has, chosen at run
 # time, so the terminal decodes o=z images as fast as with the system
@@ -56,7 +56,7 @@ set(AFTERGLOW_XXHASH_LICENSE "${xxhash_SOURCE_DIR}/LICENSE" PARENT_SCOPE)
 
 # Static and PIC: it links into the shared afterglow-vt, into
 # afterglow_mux_protocol, and into each executable that uses it directly (the
-# application, afterglow-mux, aglow, the tests). Each of them gets its own copy
+# application, aglow-mux, aglow, the tests). Each of them gets its own copy
 # of the code, with hidden symbols.
 add_library(AfterglowProto STATIC
     src/Clipboard.cpp
