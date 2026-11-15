@@ -6,6 +6,8 @@
 
 #include "TestDaemon.h"
 
+#include "MuxLayout.h"
+
 using namespace MuxTest;
 
 TEST(MuxDaemon, AnswersItsVersion)
@@ -192,10 +194,7 @@ TEST(MuxDaemon, SigtermEndsTheSessionsAndTheirPrograms)
     // The daemon ends with the signal, after its sessions.
     EXPECT_EQ(daemon.waitExit(), 128 + SIGTERM) << daemon.errors();
     // The hangup ended the program: it is gone, or a zombie that waits for its reaper.
-    EXPECT_TRUE(waitFor([&] {
-        const std::string stat = readFile("/proc/" + std::to_string(program) + "/stat");
-        return stat.empty() || stat.find(") Z ") != std::string::npos;
-    }));
+    EXPECT_TRUE(waitFor([&] { return !running(program); }));
 }
 
 // As under nohup: a hangup that the daemon got as ignored stays ignored, and
@@ -212,28 +211,39 @@ TEST(MuxDaemon, AnIgnoredHangupStaysIgnored)
     EXPECT_EQ(daemon.waitExit(), 128 + SIGTERM) << daemon.errors();
 }
 
-TEST(MuxDaemon, ThePaneGetsTheSessionEnvironmentOnly)
+// The variables of the client reach the pane, from the session's environment
+// and from the launch of the pane alike. The daemon sets the AFTERGLOW_
+// variables that lead to it over either, and removes AFTERGLOW_OVERLAY.
+TEST(MuxDaemon, TheDaemonSetsTheAfterglowVariablesOverTheClients)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    const std::string out = daemon.dir() + "/env";
-    SessionOptions o = daemon.options(writesEnvironment(out), "env");
-    o.launch.environment.emplace_back("FROM_CLIENT", "yes");
-    o.launch.environment.emplace_back("AFTERGLOW_PANE_ID", "999");
-    o.launch.environment.emplace_back("AFTERGLOW_OVERLAY", "1");
-    o.launch.environment.emplace_back("AFTERGLOW_SOCKET", "/elsewhere");
-    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
-    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
-    const std::string env = "\n" + readFile(out);
-    EXPECT_NE(env.find("\nFROM_CLIENT=yes\n"), std::string::npos);
-    EXPECT_NE(env.find("\nAFTERGLOW_SESSION=env\n"), std::string::npos);
-    // The daemon's runtime socket, which answers control calls with
-    // CALL_FAILED (ControlAndCommandCallsFailWithAReason).
-    EXPECT_NE(env.find("\nAFTERGLOW_SOCKET=" + daemon.socket() + "\n"), std::string::npos) << env;
-    // The daemon's own pane ID, not the client's.
-    EXPECT_EQ(env.find("\nAFTERGLOW_PANE_ID=999\n"), std::string::npos);
-    EXPECT_NE(env.find("\nAFTERGLOW_PANE_ID="), std::string::npos);
-    EXPECT_EQ(env.find("\nAFTERGLOW_OVERLAY="), std::string::npos);
+    for (const bool inLaunch : {true, false}) {
+        const std::string name = inLaunch ? "launch" : "session";
+        SCOPED_TRACE(name);
+        const std::string out = daemon.dir() + "/env-" + name;
+        SessionOptions o = daemon.options(writesEnvironment(out), name);
+        auto& variables = inLaunch ? o.launch.environment : o.environment;
+        variables.emplace_back("FROM_CLIENT", "yes");
+        variables.emplace_back("AFTERGLOW_PANE_ID", "999");
+        variables.emplace_back("AFTERGLOW_SESSION", "other");
+        variables.emplace_back("AFTERGLOW_OVERLAY", "1");
+        variables.emplace_back("AFTERGLOW_SOCKET", "/elsewhere");
+        ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+        ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+        const std::string env = "\n" + readFile(out);
+        EXPECT_NE(env.find("\nFROM_CLIENT=yes\n"), std::string::npos) << env;
+        EXPECT_NE(env.find("\nAFTERGLOW_SESSION=" + name + "\n"), std::string::npos) << env;
+        EXPECT_EQ(env.find("\nAFTERGLOW_SESSION=other\n"), std::string::npos) << env;
+        // The daemon's runtime socket, which answers control calls with
+        // CALL_FAILED (ControlAndCommandCallsFailWithAReason).
+        EXPECT_NE(env.find("\nAFTERGLOW_SOCKET=" + daemon.socket() + "\n"), std::string::npos) << env;
+        EXPECT_EQ(env.find("\nAFTERGLOW_SOCKET=/elsewhere\n"), std::string::npos) << env;
+        // The daemon's own pane ID, not the client's.
+        EXPECT_EQ(env.find("\nAFTERGLOW_PANE_ID=999\n"), std::string::npos) << env;
+        EXPECT_NE(env.find("\nAFTERGLOW_PANE_ID="), std::string::npos) << env;
+        EXPECT_EQ(env.find("\nAFTERGLOW_OVERLAY="), std::string::npos) << env;
+    }
 }
 
 TEST(MuxDaemon, ThePaneEnvironmentLeavesOutTheDaemonsOwn)
@@ -252,7 +262,8 @@ TEST(MuxDaemon, ThePaneEnvironmentLeavesOutTheDaemonsOwn)
 }
 
 // The programs get the umask of the client and the descriptor limit that the
-// daemon had before it raised its own.
+// daemon had before it raised its own: the first pane of a session, a pane
+// that a window adds, and a pane of a session that panes broke out to.
 TEST(MuxDaemon, ThePaneGetsTheUmaskOfTheClientAndTheOriginalFileLimit)
 {
     rlimit limit{};
@@ -262,18 +273,48 @@ TEST(MuxDaemon, ThePaneGetsTheUmaskOfTheClientAndTheOriginalFileLimit)
     // The daemon raises 256 to the hard limit for itself.
     daemon.startFileLimit(256);
     ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const auto writesLimits = [](const std::string& out) {
+        return std::vector<std::string>{"/bin/sh", "-c", "{ umask; ulimit -n; } > '" + out + ".part' && mv '" + out + ".part' '" + out + "'; exec sleep 60"};
+    };
+    const auto expectLimits = [](const std::string& out) {
+        ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); })) << out;
+        std::istringstream lines(readFile(out));
+        std::string mask;
+        long files = 0;
+        lines >> mask >> files;
+        EXPECT_EQ(std::strtol(mask.c_str(), nullptr, 8), 027) << out << ": " << mask;
+        EXPECT_EQ(files, 256) << out;
+    };
+    const auto newPane = [&](const std::string& session, const std::string& out) -> std::optional<std::uint32_t> {
+        Launch launch;
+        launch.argv = writesLimits(out);
+        launch.workingDirectory = daemon.dir();
+        const auto result = daemon.call(Fn::NewPane, Json::Array{ProtocolVersion, session, toJson(launch), toJson(PaneSize{})});
+        return result ? paneIdFrom((*result)["pane"]) : std::nullopt;
+    };
     const std::string out = daemon.dir() + "/limits";
-    SessionOptions o =
-        daemon.options({"/bin/sh", "-c", "{ umask; ulimit -n; } > '" + out + ".part' && mv '" + out + ".part' '" + out + "'; exec sleep 60"});
-    o.launch.umask = 027;
+    SessionOptions o = daemon.options(writesLimits(out), "s");
+    o.umask = 027;
     ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
-    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
-    std::istringstream lines(readFile(out));
-    std::string mask;
-    long files = 0;
-    lines >> mask >> files;
-    EXPECT_EQ(std::strtol(mask.c_str(), nullptr, 8), 027) << mask;
-    EXPECT_EQ(files, 256);
+    {
+        SCOPED_TRACE("the first pane");
+        expectLimits(out);
+    }
+    const auto added = newPane("s", out + "-added");
+    ASSERT_TRUE(added) << daemon.lastError();
+    {
+        SCOPED_TRACE("a pane that a window adds");
+        expectLimits(out + "-added");
+    }
+    Layout moved;
+    moved.addTab(*added);
+    const auto broke = daemon.call(Fn::BreakOut, Json::Array{ProtocolVersion, "s", toJson(moved)});
+    ASSERT_TRUE(broke) << daemon.lastError();
+    ASSERT_TRUE(newPane((*broke)["name"].toString(), out + "-moved")) << daemon.lastError();
+    {
+        SCOPED_TRACE("a pane of a session that panes broke out to");
+        expectLimits(out + "-moved");
+    }
 }
 
 TEST(MuxDaemon, ListsTheJobsOfASession)
@@ -489,6 +530,36 @@ TEST(MuxDaemon, AnswersTerminalQueriesWhileDetached)
     ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
     ASSERT_TRUE(waitFor([&] { return ::access(notifications.c_str(), F_OK) == 0; }));
     EXPECT_EQ(readFile(notifications), "\x1b]99;i=n:p=?;a=focus:p=title,body,alive\x1b\\\x1b]99;i=n:p=alive;\x1b\\");
+}
+
+// A session that panes broke out to has the terminal values of their first
+// session: its new panes answer as those of the first one.
+TEST(MuxDaemon, ASessionThatPanesBrokeOutToHasTheTerminalValuesOfTheFirst)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions o = daemon.options(Waiting, "s");
+    o.terminal.defaultBackground = {0x12, 0x34, 0x56};
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    Launch launch;
+    launch.argv = Waiting;
+    launch.workingDirectory = daemon.dir();
+    const auto added = daemon.call(Fn::NewPane, Json::Array{ProtocolVersion, "s", toJson(launch), toJson(PaneSize{})});
+    ASSERT_TRUE(added) << daemon.lastError();
+    const auto id = paneIdFrom((*added)["pane"]);
+    ASSERT_TRUE(id) << Json::write(*added);
+    Layout moved;
+    moved.addTab(*id);
+    const auto broke = daemon.call(Fn::BreakOut, Json::Array{ProtocolVersion, "s", toJson(moved)});
+    ASSERT_TRUE(broke) << daemon.lastError();
+    // The client's background color (OSC 11), which no window answers.
+    const std::string color = daemon.dir() + "/color";
+    launch.argv = ask("\\x1b]11;?\\x1b\\\\", "\\x1b\\\\", color);
+    ASSERT_TRUE(daemon.call(Fn::NewPane, Json::Array{ProtocolVersion, (*broke)["name"].toString(), toJson(launch), toJson(PaneSize{})}))
+        << daemon.lastError();
+    ASSERT_TRUE(waitFor([&] { return ::access(color.c_str(), F_OK) == 0; }));
+    EXPECT_NE(readFile(color).find("rgb:1212/3434/5656"), std::string::npos) << readFile(color);
 }
 
 TEST(MuxDaemon, RefusesClipboardDragsAndTransfersWhileDetached)

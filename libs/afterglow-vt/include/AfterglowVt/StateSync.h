@@ -26,9 +26,11 @@
 // searches the replica as it does a terminal of its own.
 //
 // A writer remembers what each frame told the replica: every frame that
-// update() returns must reach the reader, in order, or the writer must be
-// reset() for a new replica. A frame that waits for room in its channel waits
-// whole, and goes before the next one.
+// update() or updateHeld() returns must reach the reader, in order, or the
+// writer must be reset() for a new replica. A frame that waits for room in
+// its channel waits whole, and goes before the next one. A replica that
+// nobody sees can take frames without the screens (updateHeld()), which
+// catch up at the next update().
 //
 // The replica numbers its rows as the writer does: the same stable id for
 // each row, and a new layout epoch of its own whenever the writer's changes,
@@ -104,14 +106,25 @@ public:
     /// The other sections are not in the budget, and go whole: together they
     /// are under 1 MiB (the bounds of the status records, the contexts, the
     /// semantic regions, the extra cursors, the title and the scrolls).
-    /// @p scrolls: the region scrolls since the last frame, which the first
-    /// frame leaves out: a new replica keeps nothing that they move.
+    /// @p scrolls: the region scrolls since the last update(), held frames
+    /// included, which the first update() leaves out: a new replica keeps
+    /// nothing that they move.
     std::string update(const Terminal& terminal, std::size_t maxBytes, const RegionScrolls* scrolls = nullptr);
+    /// The next frame for a replica that nobody sees: update() without the
+    /// screens. It carries what a host shows of a terminal that it does not
+    /// draw, when it changed: the modes, the colors, the title and the
+    /// working directory, the OSC 133 marks, the program status, the shell
+    /// contexts and the extra cursors. The rows, the history, the cursors,
+    /// the cell size and the images wait, and so do the region scrolls: the
+    /// caller keeps them for the next update(), which sends the screens as
+    /// they are then. Empty when none of those sections changed.
+    std::string updateHeld(const Terminal& terminal);
     /// The most history rows that the replica keeps: the writer sends no
     /// older ones. 0 sends none.
     void setReplicaHistory(std::size_t rows) { m_replicaHistory = rows; }
-    /// The next frame carries everything again, as the first one does: for
-    /// a new replica.
+    /// The writer starts over, as a new one does: for a new replica. The
+    /// next frame carries everything that it carries (an updateHeld() all
+    /// but the screens), and the next update() the screens and the images.
     void reset();
     /// Visible or history rows, or the pixels, records, placements or
     /// dropped frames of images, that wait for a later frame.
@@ -120,8 +133,37 @@ public:
     /// without history and images, which a program that floods its pane
     /// keeps waiting while it writes.
     bool rowsPending() const;
+    /// The next update() takes the rows of the screens and of the history
+    /// as the terminal has them then: textMarked() says when the frames
+    /// carried them. A mark replaces the one before it.
+    void markText()
+    {
+        m_mark = TextMark();
+        m_mark.wanted = true;
+    }
+    /// The frames carried the text that markText() took: the rows of both
+    /// screens, also those that scrolled into the history since, and the
+    /// history rows of the terminal at the mark that the replica keeps
+    /// (setReplicaHistory). What a read of the replica's text needs. Rows
+    /// that scrolled in after the mark may still wait. Older history that
+    /// the replica never had (a new link's) goes only once those caught up:
+    /// a program that floods its pane faster than the frames go keeps such
+    /// a read waiting until it stops, or until its rows pass what the
+    /// replica keeps. False until an update() took the mark.
+    bool textMarked() const;
+    /// The terminal changed in an updateHeld() since the last update(), or
+    /// no update() ran yet: the screens of the replica are behind until the
+    /// next update().
+    bool screensHeld() const { return m_screensHeld || !m_screensStarted; }
 
 private:
+    /// update() and updateHeld(): @p held leaves the screens for later.
+    std::string write(const Terminal& terminal, std::size_t maxBytes, const RegionScrolls* scrolls, bool held);
+    /// Ends what the writer holds of the images that went from the
+    /// terminal: the version whose pixels go, and those whose records wait.
+    /// Also while the screens are held: their frames are free at once.
+    void releaseGoneImages(const Terminal& terminal);
+
     struct ScreenState
     {
         bool synced = false;
@@ -221,6 +263,16 @@ private:
     bool m_recordsWaiting = false; ///< a record or the placements wait for room, or a frame's pixels completed
 
     ScreenState m_screens[2];
+    /// markText(): the rows of each screen that the text needs, in stable
+    /// ids, from floor to total: the history, then the visible rows.
+    struct TextMark
+    {
+        bool wanted = false; ///< the next update() takes it
+        bool taken = false;
+        std::uint64_t total[2] = {0, 0};
+        std::uint64_t floor[2] = {0, 0};
+    };
+    TextMark m_mark;
     std::string m_modes;
     std::string m_colors;
     std::string m_text;
@@ -233,7 +285,9 @@ private:
     std::uint64_t m_generation = 0; ///< Terminal::generation() at the last frame
     std::uint64_t m_statusSerial = 0; ///< ProgramStatus::serial() at the last frame
     std::size_t m_replicaHistory = ~std::size_t(0);
-    bool m_started = false;
+    bool m_started = false; ///< a frame went
+    bool m_screensStarted = false; ///< an update() went: the screens of the replica started
+    bool m_screensHeld = false; ///< the terminal changed in an updateHeld() since the last update()
 };
 
 class AFTERGLOWVT_EXPORT StateReader
@@ -241,13 +295,14 @@ class AFTERGLOWVT_EXPORT StateReader
 public:
     /// Applies @p frame to @p replica, a terminal that only this reader
     /// changes. False with @p error for a frame that breaks the codec or does
-    /// not fit what the replica has: the replica then needs a frame from a
-    /// writer that was reset, which starts the images over. The frames of
-    /// images that the reader keeps are bounded by four times what a store
-    /// holds (GraphicsStore::MaxQuota and MaxStoreFrames): what both screens
-    /// show, and what comes for them. The replica's host hears of the scrolls, the
-    /// status and the contexts of a frame once all of it applied, and of
-    /// none for a frame that fails.
+    /// not fit what the replica has: the replica then needs the frames of a
+    /// writer that was reset, whose first update() starts the screens and
+    /// the images over (its held frames before it carry neither). The
+    /// frames of images that the reader keeps are bounded by four times what
+    /// a store holds (GraphicsStore::MaxQuota and MaxStoreFrames): what both
+    /// screens show, and what comes for them. The replica's host hears of
+    /// the scrolls, the status and the contexts of a frame once all of it
+    /// applied, and of none for a frame that fails.
     bool apply(Terminal& replica, std::string_view frame, std::string* error);
     /// The last frame that applied changed the visible rows, started a
     /// screen over, or changed the images or the placements of the screen

@@ -26,6 +26,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <fstream>
@@ -74,12 +75,11 @@ Commands:
   attach [NAME] [--no-takeover]
                               Show a session in a window. Without NAME, the
                               only session, or a new one when none runs.
-                              The pane of the session in another window
-                              closes, unless --no-takeover refuses the
-                              attach.
-  detach [NAME]               Close the pane of a session in its window, and
-                              keep the session. In a session pane, NAME
-                              defaults to that session.
+                              The window of the session elsewhere closes,
+                              unless --no-takeover refuses the attach.
+  detach [NAME]               Close the window of a session, and keep the
+                              session. In a session pane, NAME defaults to
+                              the session of that pane.
   ls                          List the sessions.
   kill NAME [--force]         End a session and its programs. With
                               Terminal.confirmClose on, it asks first when a
@@ -461,13 +461,13 @@ int currentUmask()
     return -1;
 }
 
-/// The whole environment that the session's programs get: this command's,
-/// with the values of the launch. The variables that name another terminal
-/// or the shell that ran this command are among the launch's unsets
-/// (offerTerminalEnvironment). JSON carries text: a byte of a name, a value,
-/// an argument or a directory that is not UTF-8 becomes U+FFFD on the way to
-/// the daemon.
-std::vector<std::pair<std::string, std::string>> sessionEnvironment(const AfterglowPty::SpawnOptions& opts)
+/// The environment of the session: this command's. Each pane changes it with
+/// its launch, the first one with the values of this command's, and the
+/// variables that name another terminal or the shell that ran this command
+/// are among a launch's unsets (offerTerminalEnvironment). JSON carries
+/// text: a byte of a name, a value, an argument or a directory that is not
+/// UTF-8 becomes U+FFFD on the way to the daemon.
+std::vector<std::pair<std::string, std::string>> sessionEnvironment()
 {
     std::vector<std::pair<std::string, std::string>> env;
     for (char** e = environ; *e; ++e) {
@@ -475,14 +475,6 @@ std::vector<std::pair<std::string, std::string>> sessionEnvironment(const Afterg
         const auto eq = entry.find('=');
         if (eq == std::string_view::npos || eq == 0) continue;
         env.emplace_back(std::string(entry.substr(0, eq)), std::string(entry.substr(eq + 1)));
-    }
-    const auto drop = [&env](const std::string& name) {
-        std::erase_if(env, [&](const auto& kv) { return kv.first == name; });
-    };
-    for (const auto& name : opts.unsetEnvironment) drop(name);
-    for (const auto& [name, value] : opts.environment) {
-        drop(name);
-        env.emplace_back(name, value);
     }
     return env;
 }
@@ -594,11 +586,13 @@ int newSession(int argc, char** argv, const std::string& command = "new")
     offerTerminalEnvironment(launch, settings.term);
     AfterglowMux::SessionOptions session;
     session.name = o.name;
+    session.environment = sessionEnvironment();
+    session.umask = currentUmask();
     session.launch.argv = launch.argv;
     session.launch.workingDirectory = launch.workingDirectory;
-    session.launch.environment = sessionEnvironment(launch);
+    session.launch.environment = launch.environment;
+    session.launch.unset = launch.unsetEnvironment;
     session.launch.launchedProgram = launchedProgramName(o.command).toStdString();
-    session.launch.umask = currentUmask();
     // No window measured the panes: the size of a new window, in cells,
     // which the schema keeps within what a terminal takes.
     session.size = {settings.window.initialColumns, settings.window.initialRows, 0, 0};
@@ -734,18 +728,32 @@ int detachSession(int argc, char** argv)
         if (name.empty() && !arg.starts_with('-')) name = arg;
         else return usage("unknown argument of detach: " + printable(arg));
     }
-    // In a session pane: that session.
-    if (name.empty()) {
-        if (const char* own = std::getenv("AFTERGLOW_SESSION"); own && *own) name = own;
+    // In a session pane, the session that holds the pane now: one that
+    // broke out of its window keeps the AFTERGLOW_SESSION of its first
+    // session. Its AFTERGLOW_PANE_ID is the daemon's.
+    const char* own = std::getenv("AFTERGLOW_SESSION");
+    const bool inSessionPane = own && *own;
+    if (name.empty() && !inSessionPane) return usage("detach takes the name of a session, outside a session pane");
+    if (!name.empty() && !AfterglowMux::validSessionName(name)) {
+        return fail("detach", std::string("the name must be ") + AfterglowMux::SessionNameRule, 2);
     }
-    if (name.empty()) return usage("detach takes the name of a session, outside a session pane");
-    if (!AfterglowMux::validSessionName(name)) return fail("detach", std::string("the name must be ") + AfterglowMux::SessionNameRule, 2);
     const auto sockets = AfterglowProto::muxSockets();
     if (sockets.candidates.empty()) return fail("detach", sockets.error);
     std::string error;
     Reached reached = connectAny(sockets, &error);
     if (!reached.connection) return fail("detach", error.empty() ? std::string("no sessions") : error);
     IpcConnection::Error callError;
+    if (name.empty()) {
+        const char* paneId = std::getenv("AFTERGLOW_PANE_ID");
+        char* end = nullptr;
+        const long long pane = paneId && *paneId ? std::strtoll(paneId, &end, 10) : -1;
+        if (pane <= 0 || pane > 0xffffffffLL || *end != '\0') return fail("detach", "AFTERGLOW_PANE_ID names no pane of the mux daemon");
+        const auto session = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::PaneSession, Json::Array{std::int64_t(pane)},
+                                                      CallTimeoutMs, &callError);
+        if (!session) return fail("detach", printable(callError.message));
+        name = session->toString();
+        if (!AfterglowMux::validSessionName(name)) return fail("detach", "the daemon sent a session name that is not valid");
+    }
     if (!reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::Detach, Json::Array{name}, CallTimeoutMs, &callError)) {
         return fail("detach", printable(callError.message));
     }

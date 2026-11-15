@@ -61,6 +61,22 @@ public:
     /// Input must first pass ProjectStore::validate; factory must return a pane.
     static std::unique_ptr<SplitTree> restore(const QJsonObject&, const std::function<Pane*(const QJsonObject&)>&);
 
+    /// A node of the tree in preorder: a split comes before its first side,
+    /// then its second, each a pane or a split. A mux session's layout keeps
+    /// its trees so (AfterglowMux::LayoutTab).
+    struct PreorderNode
+    {
+        Pane* pane = nullptr; ///< null for a split
+        bool vertical = false; ///< a split: the second side is below the first
+        double ratio = 0.5; ///< a split: the share of the first side
+    };
+    /// The tree in preorder. The other walks of the tree recurse as deep as
+    /// it goes, which AfterglowMux::MaxSessionPanes bounds for a session's.
+    std::vector<PreorderNode> preorder() const;
+    /// The tree that @p nodes give in preorder, else null: when they are no
+    /// single whole tree, or a split's ratio is not above 0 and below 1.
+    static std::unique_ptr<SplitTree> fromPreorder(const std::vector<PreorderNode>& nodes);
+
     /// Lays the tree out in @p area with dividers @p dividerWidth wide.
     void layout(const QRect& area, int dividerWidth);
 

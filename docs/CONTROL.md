@@ -31,7 +31,8 @@ Every pane of a window sets `AFTERGLOW_PANE_ID` to its pane ID and `AFTERGLOW_SO
 In a pane, `afterglow ctl` and `aglow run` send their requests to that process.
 Outside Afterglow, `afterglow ctl` and `aglow run` use the socket of the main process on the current Wayland display.
 
-A pane of a [mux session](MUX.md) sets `AFTERGLOW_SOCKET` to the socket of the mux daemon and `AFTERGLOW_SESSION` to the session name.
+A pane of a [mux session](MUX.md) sets `AFTERGLOW_SOCKET` to the socket of the mux daemon.
+Its `AFTERGLOW_SESSION` names the session where the pane started.
 The daemon answers each request to the `control` and `commands` targets with `CALL_FAILED` (see [control in a session pane](MUX.md#control-in-a-session-pane)).
 
 | Process | Socket |
@@ -228,7 +229,7 @@ Start Afterglow with `-o`, `--config` or `--class` when a window needs the envir
 | `title` | string | The title of the window |
 | `hold` | boolean | Keep the pane open after its program exits |
 | `activationToken` | string | The launcher's `XDG_ACTIVATION_TOKEN`, which lets the window take the focus |
-| `session` | string | Show this [mux session](MUX.md#windows-of-a-session) in place of a program. When a window of this process shows it already, that window shows the session pane and comes to the front, and the call succeeds. |
+| `session` | string | Show this [mux session](MUX.md#windows-of-a-session) in place of a program. When a window of this process shows it already, that window comes to the front, and the call succeeds. |
 | `takeover` | boolean | With `session`: take the session from a window of another process that shows it. The default is true. With false, the call fails when such a window shows the session. |
 
 When `directoryGiven` is false or missing, the `Window.workingDirectory` setting can replace the working directory.
@@ -253,12 +254,12 @@ Another number fails with `CALL_FAILED`.
 | `setTitle` | pane, title | None. An empty title gives the title back to the programs. |
 | `signal` | pane, channel, value | None. Channels are 0 to 7. |
 | `notify` | pane, title, body | None |
-| `runAction` | pane, action | None. Actions are keybind action names, or `script:ID.COMMAND`, which starts a [script command](#script-commands) with no arguments and returns before it ends. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. The call returns before the answer. A keybind action fails while its window shows a prompt or a script dialog, so that it cannot change the answer. For `script:ID.COMMAND`, a pane of 0 is the focused pane. When no pane has the focus, the command runs with no pane. |
-| `movePane` | pane, target, placement | An object: the pane after the move. See [projects](PROJECTS.md). |
-| `detachTab` | pane | An object: the pane in its new window |
+| `runAction` | pane, action | None. Actions are keybind action names, or `script:ID.COMMAND`, which starts a [script command](#script-commands) with no arguments and returns before it ends. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. With `Mux.onClose` at `detach`, closing the last tab of a mux session asks nothing about the programs of the session. They keep running. The call returns before the answer. A keybind action fails while its window shows a prompt or a script dialog, so that it cannot change the answer. For `script:ID.COMMAND`, a pane of 0 is the focused pane. When no pane has the focus, the command runs with no pane. |
+| `movePane` | pane, target, placement | An object: the pane after the move. See [projects](PROJECTS.md). A pane of a mux session that moves to a new window goes to a new session. The object then has its new pane ID (see [MUX.md](MUX.md#move-panes-and-tabs)). |
+| `detachTab` | pane | An object: the pane in its new window. For a tab of a mux session, it has the new pane ID in the new session. |
 | `openDirectory` | directory, layout | An object: the window and its pane |
 | `projects` | None | The saved project names |
-| `saveProject` | pane, name, overwrite | An object: the name and the window |
+| `saveProject` | pane, name, overwrite | An object: the name and the window. The call fails for the window of a mux session (see [MUX.md](MUX.md#tabs-and-splits)). |
 | `openProject` | name, new instance | An object: the window and its panes |
 | `scriptDiagnostics` | None | Script and package diagnostics |
 | `overlay` | pane, argv, options | An object: `exit_code`, `stdout` and `truncated`. See [overlays](#overlays). |
@@ -410,7 +411,7 @@ Thus take screenshots on a connection without subscriptions.
 | `id` | The pane ID |
 | `window` | The window ID |
 | `tab` | The tab's position in its window, from 0 |
-| `tab_id` | The tab ID. It does not change when the tab moves. |
+| `tab_id` | The tab ID. It does not change when the tab moves. A tab of a mux session that moves to a new window gets a new ID. |
 | `title` | The pane title |
 | `cwd` | The pane's working directory. Empty when it is unknown or removed. |
 | `command` | The running command (shell integration), empty at the prompt |
@@ -424,7 +425,7 @@ Thus take screenshots on a connection without subscriptions.
 | Event | Arguments |
 | --- | --- |
 | `paneCreated` | pane |
-| `paneMoved` | pane. Sent when the pane moves to another split, tab or window. Also sent for each pane of a tab that moves in its window, and of each tab that the move puts at another index. |
+| `paneMoved` | pane. Sent when the pane moves to another split, tab or window. Also sent for each pane of a tab that moves in its window, and of each tab that the move puts at another index. Not sent for a swap or a rotation of the panes in a tab. A pane of a mux session that moves to a new window sends `paneClosed`, then `paneCreated` with its new ID. |
 | `paneClosed` | pane |
 | `titleChanged` | pane, title |
 | `bell` | pane |
@@ -825,10 +826,14 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `notify` title | 256 UTF-16 units | The title is cut. |
 | `notify` body | 2048 UTF-16 units | The body is cut. |
+| Wait for the screen and the history of a pane of a mux session that you cannot see, or that shows again before its screen came, before `getText`, a screenshot or a script read of its text | 5 seconds | The read gets the text that the window has, which can be older. The window does not draw or take input while it waits. |
 
 `getText` and `screenshot` have no size limit.
 A reply with a long scrollback can take more than the 10 seconds of `afterglow ctl`.
 A screenshot of a large window also takes time: Afterglow waits for a frame and encodes the PNG.
+For a pane of a mux session that you cannot see, `getText` and `screenshot` first get the current screen and history from the daemon.
+They do this also for a pane that shows again before its screen came.
+The script effects `read_text`, `read_region` and `semantic_regions` do this too (see [session panes](MUX.md#session-panes)).
 
 Text that `afterglow ctl send-text` sends in parts arrives as separate inputs.
 Keys and other clients can type between two parts.

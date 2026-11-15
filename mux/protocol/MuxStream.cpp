@@ -23,6 +23,10 @@ std::string encode(const Event& event)
     if (event.type == EventType::Host) {
         varint(out, event.frames);
         out += event.payload;
+    } else if (event.type == EventType::Refreshed) {
+        varint(out, event.frames);
+    } else if (event.type == EventType::Layout) {
+        out += event.payload;
     }
     return out;
 }
@@ -39,8 +43,12 @@ std::optional<Event> decodeEvent(std::string_view frame)
     if (type == std::uint8_t(EventType::Host) && r.ok()) {
         event.frames = r.varint(~std::uint64_t(0));
         if (r.ok()) event.payload = std::string(r.rest());
+    } else if (type == std::uint8_t(EventType::Layout) && r.ok()) {
+        event.payload = std::string(r.rest());
+    } else if (type == std::uint8_t(EventType::Refreshed) && r.ok()) {
+        event.frames = r.varint(~std::uint64_t(0));
     }
-    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Host)) {
+    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Refreshed)) {
         return std::nullopt;
     }
     event.type = EventType(type);
@@ -52,6 +60,9 @@ std::optional<Event> decodeEvent(std::string_view frame)
     if (event.type == EventType::Host && (event.pane == 0 || event.channel != 0 || (event.status != -1 && event.status != HostPart))) {
         return std::nullopt;
     }
+    // The layout is the session's, of no pane.
+    if (event.type == EventType::Layout && (event.pane != 0 || event.channel != 0 || event.status != -1)) return std::nullopt;
+    if (event.type == EventType::Refreshed && (event.pane == 0 || event.channel != 0 || event.status != -1)) return std::nullopt;
     return event;
 }
 
@@ -59,7 +70,7 @@ std::string encode(const Input& input)
 {
     std::string out(1, char(input.type));
     varint(out, input.pane);
-    if (input.type == InputType::Bytes) {
+    if (input.type == InputType::Bytes || input.type == InputType::Layout) {
         out += input.bytes;
     } else if (input.type == InputType::Resize) {
         for (const int v : {input.size.cols, input.size.rows, input.size.cellWidth, input.size.cellHeight}) {
@@ -78,12 +89,15 @@ std::optional<Input> decodeInput(std::string_view frame)
     const std::uint8_t type = r.byte();
     input.pane = std::uint32_t(r.varint(0xffffffffu));
     if (!r.ok()) return std::nullopt;
-    if (type == std::uint8_t(InputType::Bytes)) {
-        input.type = InputType::Bytes;
+    if (type == std::uint8_t(InputType::Bytes) || type == std::uint8_t(InputType::Layout)) {
+        // The window's layout is of no pane.
+        if (type == std::uint8_t(InputType::Layout) && input.pane != 0) return std::nullopt;
+        input.type = InputType(type);
         input.bytes = std::string(r.rest());
         return input;
     }
-    if (type == std::uint8_t(InputType::Reset) || type == std::uint8_t(InputType::Clear) || type == std::uint8_t(InputType::Kill)) {
+    if (type == std::uint8_t(InputType::Reset) || type == std::uint8_t(InputType::Clear) || type == std::uint8_t(InputType::Kill)
+        || type == std::uint8_t(InputType::ClosePane) || type == std::uint8_t(InputType::Refresh)) {
         if (!r.done()) return std::nullopt;
         input.type = InputType(type);
         return input;

@@ -25,6 +25,7 @@
 #include <QLoggingCategory>
 #include <QQuickStyle>
 
+#include <algorithm>
 #include <functional>
 
 Q_LOGGING_CATEGORY(lcApp, "afterglow.app", QtInfoMsg)
@@ -58,6 +59,11 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     , m_services{m_device, m_settings, m_chromeComponent, m_shaders, m_scripts, m_audio}
     , m_launch(*this)
 {
+    // Panes that leave a session's window go to a new session, in a window of
+    // its own; the session is new, so no other window shows it.
+    m_control.setSessionWindowOpener([this](const QString& session) {
+        return openLaunch({}, {}, {{QStringLiteral("session"), session}, {QStringLiteral("takeover"), false}});
+    });
     // Some platform-theme versions leave Qt Quick at its default Fusion style.
     // Prefer the desktop bridge on Plasma, preserving explicit style choices
     // and falling back normally when the optional module is not installed.
@@ -128,6 +134,8 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
 
     // Hidden windows (a tucked-away quick terminal) still count as open.
     QGuiApplication::setQuitOnLastWindowClosed(false);
+    // A quit closes the windows: their sessions must know it first.
+    QCoreApplication::instance()->installEventFilter(this);
 
     bindShortcuts();
     // Last: from here launches that waited on the socket get their windows.
@@ -138,6 +146,7 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
 
 Application::~Application()
 {
+    QCoreApplication::instance()->removeEventFilter(this);
     // What quitting ends is no news: the script command runs without a
     // client, which the scripts end as they go, show no notice.
     m_control.endNotices();
@@ -146,14 +155,34 @@ Application::~Application()
     m_controlSocket.setRemoteSockets(nullptr);
     // A quit (logout, a signal) is not the user closing a session's window:
     // every session keeps running, whatever Mux.onClose says.
-    for (TerminalWindow* window : TerminalWindow::windows()) {
-        for (Pane* pane : window->findChildren<Pane*>()) pane->setKillSessionOnClose(false);
-    }
+    for (TerminalWindow* window : TerminalWindow::windows()) window->keepSessionOnClose();
     // Windows render on the device and the chrome uses the QML engine.
     qDeleteAll(TerminalWindow::windows());
     // The scripts go before Control: its callbacks into them must not outlive them.
     m_control.setScriptCommandRunner({});
     m_control.setScriptDiagnostics({});
+}
+
+bool Application::eventFilter(QObject* watched, QEvent* event)
+{
+    if (event->type() != QEvent::Quit || watched != QCoreApplication::instance()) return QObject::eventFilter(watched, event);
+    // A quit (QuitSignals, the end of the desktop session) is not the user
+    // closing a session's window: every session keeps running, whatever
+    // Mux.onClose says. QGuiApplication handles the Quit by closing each
+    // window, so each one learns it before its Close.
+    const QList<TerminalWindow*> windows = TerminalWindow::windows();
+    for (TerminalWindow* window : windows) window->keepSessionOnClose();
+    // Qt's own handling, here so that its outcome shows: a window that does
+    // not close (a question before the close) ignores the event and
+    // interrupts the quit.
+    watched->event(event);
+    if (!event->isAccepted()) {
+        // No quit: Mux.onClose decides again for the windows that stay open.
+        for (TerminalWindow* window : TerminalWindow::windows()) {
+            if (!window->closing()) window->keepSessionOnClose(false);
+        }
+    }
+    return true;
 }
 
 void Application::bindShortcuts()
@@ -224,16 +253,21 @@ QString Application::openLaunch(const QString& workingDirectory, const QStringLi
     if (!session.isEmpty()) {
         // A window of this process shows it already: the attach would take
         // the session from it, while this thread, the only reader of its
-        // stream, waits for the daemon. That pane comes to the front, with
-        // the launcher's token that lets it take the focus. Panes of tabs
-        // only: a closed pane waits for its delete as a child too.
+        // stream, waits for the daemon. That window comes to the front as it
+        // is, its tab and its focus kept, with the launcher's token that lets
+        // it take the focus. Panes of tabs only: a closed pane waits for its
+        // delete as a child too. A window that closes is no longer the
+        // session's: the attach goes on.
         for (TerminalWindow* shown : TerminalWindow::windows()) {
-            for (Pane* pane : shown->panes()) {
-                if (pane->showsSession(session)) {
-                    withActivationToken(options, [&] { shown->revealPane(pane); });
-                    return {};
-                }
-            }
+            if (shown->closing()) continue;
+            const QList<Pane*> panes = shown->panes();
+            if (std::none_of(panes.cbegin(), panes.cend(), [&session](const Pane* pane) { return pane->showsSession(session); })) continue;
+            withActivationToken(options, [shown] {
+                if (!shown->isVisible()) shown->show();
+                shown->raise();
+                shown->requestActivate();
+            });
+            return {};
         }
         QString error;
         window.session = MuxClient::attach(session, options.value(QStringLiteral("takeover"), true).toBool(), &error,

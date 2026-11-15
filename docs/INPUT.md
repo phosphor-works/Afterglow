@@ -222,6 +222,8 @@ It uses `Terminal.pager`, which defaults to `less -R`.
 `Terminal.lastOutputLimit` sets the output limit in KiB, from 1 to 65536. The default is 1024 (1 MiB).
 A notice identifies truncation.
 The pager reads a temporary file. Afterglow removes the file when the pane closes.
+In the window of a mux session, Afterglow removes the file when the pane or the window closes. A move to a new session also removes it.
+The pager runs in the session, and can keep running after the window closes. A pager that has the file open still shows it.
 The pager command uses arguments without shell expansion.
 Missing shell markers cause a notification.
 If the pager is not installed, or the output cannot be shown, a notification gives the reason.

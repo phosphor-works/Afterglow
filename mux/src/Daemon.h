@@ -12,8 +12,8 @@
 
 #include <cstdint>
 #include <functional>
-#include <optional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -68,7 +68,8 @@ public:
 
 private:
     void accept();
-    void read(AfterglowProto::IpcServerConnection& connection);
+    /// True when it answered a call.
+    bool read(AfterglowProto::IpcServerConnection& connection);
     /// @p caller is the process of the client, 0 when unknown.
     std::string answer(const AfterglowProto::IpcRequest& request, pid_t caller);
     std::string newSession(const AfterglowProto::IpcRequest& request);
@@ -76,6 +77,29 @@ private:
     std::string attach(const AfterglowProto::IpcRequest& request, pid_t caller);
     std::string detach(const AfterglowProto::IpcRequest& request);
     std::string paneDirectory(const AfterglowProto::IpcRequest& request);
+    std::string newPane(const AfterglowProto::IpcRequest& request, pid_t caller);
+    std::string paneJob(const AfterglowProto::IpcRequest& request, pid_t caller);
+    std::string breakOut(const AfterglowProto::IpcRequest& request, pid_t caller);
+    std::string paneSession(const AfterglowProto::IpcRequest& request);
+    /// The pane of a (name, pane) call, else nullptr with the answer that
+    /// refuses the call in @p refusal. @p usage names the arguments.
+    const MuxPane* paneOfCall(const AfterglowProto::IpcRequest& request, const char* usage, std::string& refusal);
+    /// The refusal of a call that changes the panes of session @p name from
+    /// @p caller, while a window of another process shows the session: one
+    /// that another window took the session from. Empty when it may.
+    std::string callerRefusal(const AfterglowProto::IpcRequest& request, const std::string& name, pid_t caller) const;
+    /// The pane @p id of any session, or nullptr.
+    MuxPane* findPane(std::uint32_t id) const;
+    /// The next pane ID: never 0, which marks a split, and none that a
+    /// session still holds once the numbers went round.
+    std::uint32_t nextPaneId();
+    /// Applies what the window of @p attachment, which finished, sent before
+    /// it heard (Attachment::takeLate()) to @p own, the session of its name.
+    /// The caller ends the session when that emptied it.
+    void applyLate(Attachment& attachment, Session& own);
+    /// What a pane runs when it has news for the daemon's thread: it wakes
+    /// the poll. Safe to call from any thread.
+    std::function<void()> waker() const;
     /// The error of a call whose first argument is not this daemon's
     /// protocol version.
     static std::optional<std::string> versionError(const AfterglowProto::IpcRequest& request);

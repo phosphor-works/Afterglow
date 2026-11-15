@@ -7,7 +7,8 @@
 # afterglow_imagefuzz for the image decoders of aglow and afterglow-mux
 # (libs/afterglow-image: its GIF and BMP readers, and libpng, libjpeg-turbo
 # and libwebp behind it), and
-# afterglow_muxfuzz for the readers of the attach stream of afterglow-mux.
+# afterglow_muxfuzz for the readers of the attach stream of afterglow-mux and
+# of the values of its calls.
 # afterglow_muxfuzz compiles code of mux/, which is GPL-3.0-or-later, so its
 # source is too, and no other target links it. The
 # sources of the libraries, xxHash and the decoders are compiled into them
@@ -75,8 +76,10 @@ target_link_libraries(afterglow_vtfuzz PRIVATE afterglow_fuzz_proto PkgConfig::P
 add_executable(afterglow_protofuzz protofuzz.cpp)
 target_link_libraries(afterglow_protofuzz PRIVATE afterglow_fuzz_proto)
 
-# The codecs of the attach stream, as afterglow_mux_protocol compiles them.
+# The codecs of the attach stream and the readers of the calls' values, as
+# afterglow_mux_protocol compiles them.
 add_executable(afterglow_muxfuzz muxfuzz.cpp "${PROJECT_SOURCE_DIR}/mux/protocol/MuxHost.cpp"
+    "${PROJECT_SOURCE_DIR}/mux/protocol/MuxLayout.cpp" "${PROJECT_SOURCE_DIR}/mux/protocol/MuxProtocol.cpp"
     "${PROJECT_SOURCE_DIR}/mux/protocol/MuxStream.cpp")
 target_include_directories(afterglow_muxfuzz PRIVATE "${PROJECT_SOURCE_DIR}/mux/protocol"
     $<TARGET_PROPERTY:AfterglowVt,INTERFACE_INCLUDE_DIRECTORIES>)
