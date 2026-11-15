@@ -21,10 +21,10 @@
 // A tab's split tree is a list in preorder, not nested objects: a split is
 // followed by its first side, then its second, each a pane or a split. A
 // split is ["right" or "down", ratio], a pane its ID, or [ID, title] when
-// the user gave it a title. A
-// deep tree is then no deeper JSON (Json::MaxDepth). The daemon's code walks
-// the list without recursion. The window's code that recurses over a tree
-// goes no deeper than MaxSessionPanes.
+// the user gave it a title. A deep tree is then no deeper JSON
+// (Json::MaxDepth). The daemon's code walks the list without recursion. The
+// window's code that recurses over a tree goes no deeper than
+// MaxSessionPanes.
 
 namespace AfterglowMux {
 
@@ -109,9 +109,9 @@ AfterglowProto::Json::Value toJson(const Layout& layout);
 /// "focused", "zoomed" and "title". Its tree is a whole split tree in
 /// preorder (each split ["right" or "down", a ratio above 0 and below 1],
 /// each pane its ID, or [ID, title] with a title that is not empty and of
-/// at most MaxPaneTitle bytes). The focus is a pane of the tab's tree, the zoom one
-/// too or 0, and the title a string of at most MaxTabTitle bytes. The layout
-/// names each pane once, and at most MaxSessionPanes panes.
+/// at most MaxPaneTitle bytes). The focus is a pane of the tab's tree, the
+/// zoom one too or 0, and the title a string of at most MaxTabTitle bytes.
+/// The layout names each pane once, and at most MaxSessionPanes panes.
 std::optional<Layout> layoutFrom(const AfterglowProto::Json::Value& value, std::string* error);
 
 } // namespace AfterglowMux

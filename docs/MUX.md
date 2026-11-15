@@ -112,6 +112,9 @@ Without a terminal, it refuses and names `--force`.
 The command itself is not a running program when it runs in the foreground of a session pane of that session.
 `--force` ends the session without a question.
 
+The `--ssh` option of `afterglow mux new`, `attach`, `detach`, `ls` and `kill` is not available yet.
+With it, the command stops with exit status 1 and writes `afterglow mux COMMAND: sessions on other hosts are not available yet` on standard error.
+
 ### Windows of a session
 
 `afterglow mux attach NAME` opens a window that shows session `NAME`: its tabs and its split panes.
@@ -189,7 +192,8 @@ The window sends them after each change. The next window that shows the session 
 While no window shows the session, a pane whose program exits leaves its tab, as in a window.
 
 New Window (`new_window`) in the window of a session opens a window outside the session.
-Its first pane starts in the directory of the focused pane. Its programs end with that window, as in any window outside a session.
+Its first pane starts in the directory that a new tab of the focused pane gets (see [working directory](#working-directory)).
+Its programs end with that window, as in any window outside a session.
 
 Save Project is not possible in the window of a session, because the daemon keeps its tabs and splits.
 The window shows the notice `Session NAME keeps the tabs and splits of this window. A window of a mux session cannot be saved as a project.`
@@ -252,9 +256,9 @@ A move that is not possible shows a notice. `afterglow ctl` and the script effec
 The palette does not show **Detach Tab to New Window** and **Move Pane to New Window** when they are not possible.
 The tab menu then shows **Detach Tab to New Window** as not available.
 
-The daemon can move the panes to a new session when no window can show that session.
-Then the move fails with `The pane went to session NAME, but no window can show it (REASON)`.
-For a tab, the message starts with `The tab`.
+The daemon moves the panes to the new session before a window opens for it.
+When no window can show the new session, the move fails with `the pane went to session NAME, but no window can show it (REASON)`.
+For a tab, the message starts with `the tab`.
 The new session keeps running, and `afterglow mux attach NAME` shows it.
 
 ### Session panes
@@ -279,8 +283,14 @@ A session pane differs from a pane outside a session in these ways:
 - An image shows when all of its pixels came from the daemon. The pixels of a large image come in more than one frame, so the image can show a short time after the text around it.
 - A bell, a notification or another request of the program comes after the text on the screen that the program wrote before it. It can come before history and before the pixels of an image that the program sent before it.
 - When a program sends an image again before its pixels came, the window shows each version that came whole.
-- While you cannot see a pane, the daemon sends its window only the title, the working directory, the program status, the marks of shell integration and the modes of the pane. The screen and the history come when you can see the pane again, before each bell, notification or other request of the program, and before the program exits. Thus a program that writes much output in a background tab costs the window nothing.
-- When you or a script read the text of a pane that you cannot see, the window first gets the screen and the history from the daemon. It waits at most 5 seconds for them, then reads what it has.
+- While you cannot see a pane, the daemon sends its window only these items, when they change. The screen with its cursor, the history and the images wait.
+  - The title and the working directory
+  - The modes and the colors
+  - The program status, the shell contexts and the marks of shell integration
+  - The extra cursors
+- The screen and the history of a pane that you cannot see come when you can see the pane again. They also come before each bell, notification or other request of the program, and before the program exits. Thus the window does not get the rows that a program in a background tab writes until it needs them.
+- Before a read of the text of a pane that you cannot see, the window gets its screen and history from the daemon. It waits for them for a limited time (see [limits](#limits)).
+  A read of the selection does this too. The read gets the text as it was when the window asked, also while the program writes more.
 - A pane outside a session decodes images with Qt, and a session pane with the decoders of its daemon. They show some images in a different way:
   - A pane outside a session shows a WebP image only when the Qt Image Formats plugin is installed. A session pane always shows it.
   - A pane outside a session shows a compressed BMP (run-length encoding) and a GIF whose screen has an empty side. A session pane does not show them.
@@ -288,18 +298,12 @@ A session pane differs from a pane outside a session in these ways:
   - Where the first frame of a GIF does not draw, a session pane shows nothing, as Kitty and browsers do. A pane outside a session can show the background color of the GIF there.
 - The session keeps the terminal settings and the colors of the `afterglow mux new` that started it (see [settings of a session pane](#settings-of-a-session-pane)).
 
-These commands and options are not available. Each stops with exit status 1 and writes this message on standard error:
-
-| Command | Message |
-| --- | --- |
-| `--ssh` of `afterglow mux new`, `attach`, `detach`, `ls` and `kill` | `afterglow mux COMMAND: sessions on other hosts are not available yet` |
-
 ### Exit status
 
 | Status | Meaning |
 | --- | --- |
 | 0 | The command did its work. `afterglow mux ls` without sessions also exits with 0. |
-| 1 | The command failed and wrote why on standard error. Examples: no session has the name, the daemon did not start, a command is not available. `afterglow mux kill` also exits with 1 when you do not answer `y`, `Y` or `yes` to its question. |
+| 1 | The command failed and wrote why on standard error. Examples: no session has the name, the daemon did not start, or the command has the `--ssh` option. `afterglow mux kill` also exits with 1 when you do not answer `y`, `Y` or `yes` to its question. |
 | 2 | A usage error, for example an unknown command, option or argument, or an option without its value. The command also writes the usage on standard error. |
 | 2 | A session name that is not valid, for `afterglow mux new --name`, `attach` or `detach`. The command writes only the rule for names. |
 | 126 | `afterglow mux server` found `afterglow-mux` but cannot run it. `afterglow mux new` or `attach` found `afterglow` but cannot run it. |
@@ -410,7 +414,8 @@ A session pane takes some settings from its session, and others from the window 
 | `Terminal.scrollback`, `Terminal.cursorShape`, `Terminal.cursorBlink`, `Terminal.ambiguousWide`, `Terminal.allowScreenReadback`, `Terminal.graphicsFileTransfer`, `Graphics.quota` | The session: the values of the `afterglow mux new` that started it. A new tab or split of the window gets them too. | Never for a running session |
 | `Colors.theme`, `Colors.foreground`, `Colors.background`, `Colors.cursor`, `Colors.cursorText`, `Colors.selectionForeground`, `Colors.selectionBackground`, `Colors.palette` | The session, as above | Never for a running session |
 | `Terminal.shell`, `Terminal.env`, `Terminal.term`, `Terminal.shellIntegration`, `Terminal.sshIntegration`, `Terminal.sshTerminfo` | The window, when it starts a new tab or split. The program starts in the environment of the session. | At the next new tab or split |
-| `Terminal.wordSeparators`, `Terminal.bidi`, `Colors.boldIsBright`, `Colors.minimumContrast` | The window | At once |
+| `Terminal.wordSeparators`, `Colors.boldIsBright`, `Colors.minimumContrast` | The window | At once |
+| `Terminal.bidi` | Both. The session decides which directional controls stay as visible cells, with the value of the `afterglow mux new` that started it. The window decides the order in which the text shows. | The order at once. The directional controls never for a running session. |
 | `Terminal.scrollback` of the window | The window: the number of history rows that it shows (see [limits](#limits)) | At the next attach |
 | `Terminal.bell`, `Terminal.clipboardRead` and the other settings of requests | The window (see [what a window answers](#what-a-window-answers)) | At once |
 
@@ -510,9 +515,10 @@ A pane can move to a new session while a request of its program waits for the wi
 | Waiting output to one client | 32 MiB | The daemon closes the connection to a client that does not read its answers |
 | Environment, arguments and directory of a session | UTF-8 text | `afterglow mux new` changes each byte that is not UTF-8 to U+FFFD |
 | Wait for a window to connect to its attach socket | 5 seconds | The daemon removes the socket, and `afterglow mux attach` stops with exit status 1 |
-| Input of a window that a program does not read | 32 MiB in the queue of the PTY of the pane. Then the daemon holds the input of the pane, up to 4 MiB for all the panes of the window. Then 32 MiB for each pane in the window. | While the daemon holds less than 4 MiB, the other panes still get their input. At 4 MiB, the daemon stops reading the input of the window. At 32 MiB for one pane, the window refuses more input for that pane and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
+| Input of a window that a program does not read | 32 MiB in the queue of the PTY of the pane. Then the daemon holds the input of the pane, up to 4 MiB for all the panes of the window. Then 32 MiB for each pane in the window. | While the daemon holds less than 4 MiB, the other panes still get their input. At 4 MiB, the daemon stops reading the input of the window. A window that says whether you can see a pane, or asks for its screen, is not held back by input that waits for that pane. At 32 MiB for one pane, the window refuses more input for that pane and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
 | Frames to a window | About 2 MiB of state in each frame, and at most 4 MiB, the largest frame of the stream | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. A pane that you cannot see gets frames without its screen. |
 | History rows to a window | `Terminal.scrollback` of the window when it attaches, in rows | The daemon sends no older rows |
+| Wait for the screen and the history of a pane that you cannot see, before a read of its text or when the pane shows again | 5 seconds | The read gets the text that the window has, which can be older. The pane shows its older screen until the frames come. The window does not draw or take input while it waits. |
 | Image file that the daemon decodes | The limits of a pane outside a session (see [COMPATIBILITY.md](COMPATIBILITY.md)): 320 MiB of Kitty data, and 96 MiB of iTerm2 base64 | The error of a pane outside a session: `EFBIG` for data in the command, `EBADF` for a file or shared memory. An iTerm2 image does not show. |
 | Image that the daemon decodes | 10,000 pixels on a side, and 320 MiB of pixels | A Kitty command gets an `EBADPNG` error. An iTerm2 image does not show. |
 | Time to decode an image | 30 seconds, and a CPU time of 5 seconds and 1 second more for each 16 MiB of pixels | The decoder process ends. The image does not show, as above. The daemon writes a line on its standard error, at most once a minute. |

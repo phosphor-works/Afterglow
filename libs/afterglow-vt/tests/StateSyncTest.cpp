@@ -1300,12 +1300,75 @@ TEST(StateSync, AReplicaWithLessHistoryKeepsTheNewestRows)
     EXPECT_EQ(differs(p.source.screen(), p.replica.screen(), "x").find("history"), 3u);
 }
 
+// A held frame frees the pixels of an image that the program deleted while
+// they went: a pane that nobody sees keeps no image that went.
+TEST(StateSync, AHeldFrameLetsGoOfAnImageThatWent)
+{
+    std::string error;
+    Pair p(30, 8, 100, 8192);
+    p.source.resize(30, 8, 10, 20);
+    ASSERT_TRUE(p.sync(&error)) << error;
+    // Larger than a frame: its pixels go in parts.
+    p.source.feed(apc("a=T,f=32,s=100,v=100,i=50,C=1,q=2", rgba(100, 100, 1, 2, 3)));
+    ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+    ASSERT_TRUE(p.writer.pending());
+    const auto& images = p.source.graphics(false).images();
+    ASSERT_EQ(images.size(), 1u);
+    const std::weak_ptr<const AfterglowVt::ImageFrame> frame = images.begin()->second.frames.front();
+    p.source.feed(apc("a=d,d=I,i=50,q=2"));
+    ASSERT_TRUE(p.reader.apply(p.replica, p.writer.updateHeld(p.source), &error)) << error;
+    EXPECT_TRUE(frame.expired());
+    // The replica drops its part of the frame with the next update().
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(p.reader.frames(), 0u);
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+}
+
+// A read marks the text as the terminal has it: the frames that carry it
+// mark it sent, also while the program writes more rows than they carry.
+TEST(StateSync, AMarkOfTheTextIsReachedWhileRowsKeepComing)
+{
+    std::string error;
+    Pair p(30, 6, 5000, 2048);
+    for (int i = 0; i < 50; ++i) p.source.feed("old " + std::to_string(i) + "\r\n");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    // Held: the rows that come meanwhile wait.
+    for (int i = 0; i < 300; ++i) p.source.feed("held " + std::to_string(i) + "\r\n");
+    ASSERT_TRUE(p.reader.apply(p.replica, p.writer.updateHeld(p.source), &error)) << error;
+    EXPECT_FALSE(p.writer.textMarked());
+    p.writer.markText();
+    EXPECT_FALSE(p.writer.textMarked());
+    const std::uint64_t marked = p.source.primaryScreen().rowsDropped() + p.source.primaryScreen().historySize();
+    int frames = 0;
+    for (int line = 0; !p.writer.textMarked(); ++line) {
+        ASSERT_LT(++frames, 1000) << "the mark is never reached";
+        ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+        // More rows than a frame of 2 KiB carries: the history never
+        // catches up while they come.
+        for (int i = 0; i < 200; ++i) p.source.feed("new " + std::to_string(line) + "." + std::to_string(i) + "\r\n");
+    }
+    EXPECT_TRUE(p.writer.pending());
+    // Every row that the terminal had at the mark is in the replica.
+    EXPECT_TRUE(p.reader.received(p.replica.primaryScreen().rowsDropped(), marked - 1));
+    const std::string all = p.replica.text(Terminal::TextScope::All);
+    for (int i = 0; i < 300; ++i) EXPECT_NE(all.find("held " + std::to_string(i) + "\n"), std::string::npos) << i;
+    // A new mark waits for the rows that came since.
+    p.writer.markText();
+    EXPECT_FALSE(p.writer.textMarked());
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_TRUE(p.writer.textMarked());
+    // A reset forgets the mark.
+    p.writer.reset();
+    EXPECT_FALSE(p.writer.textMarked());
+}
+
 TEST(StateSync, RandomOutputStaysEqual)
 {
     // Text, styles, links, wide and combining characters, scrolling, margins,
     // erasures, insertions, the alternate screen, modes and colors, at random.
     // Images too, with their placements, frames and animations, which those
-    // move, erase and reset.
+    // move, erase and reset. Some frames are held, as for a pane that nobody
+    // sees, and reads mark the text.
     const std::string pixels = AfterglowProto::base64Encode(rgba(2, 2, 10, 20, 30));
     // Larger than the state frames of every run: it comes in parts.
     const std::string large = AfterglowProto::base64Encode(rgba(40, 40, 40, 50, 60));
@@ -1335,19 +1398,35 @@ TEST(StateSync, RandomOutputStaysEqual)
         Pair p(20 + int(rng() % 40), 4 + int(rng() % 12), rng() % 3 ? 60 : 0, 256 + rng() % 4096);
         // A cell size, as a window measures it: images need one.
         p.source.resize(p.source.cols(), p.source.rows(), 10, 20);
+        // A run of held frames now and then, of up to 50 steps.
+        int heldSteps = 0;
+        bool marked = false;
         for (int step = 0; step < 1500; ++step) {
             std::string piece = pieces[rng() % pieces.size()];
             for (std::size_t at; (at = piece.find("%d")) != std::string::npos;) piece.replace(at, 2, std::to_string(rng() % 20));
             p.source.feed(piece);
+            if (heldSteps == 0 && rng() % 60 == 0) heldSteps = 1 + int(rng() % 50);
+            if (rng() % 40 == 0) {
+                p.writer.markText();
+                marked = true;
+            }
             if (rng() % 5 == 0) {
                 // One frame, which may leave the pixels of an image half sent
-                // when the next output replaces it.
+                // when the next output replaces it. A held one keeps the
+                // scrolls for the next update().
                 std::string error;
-                ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << "seed " << seed << " step " << step << ": " << error;
+                const std::string frame = heldSteps > 0 ? p.writer.updateHeld(p.source) : p.update();
+                ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << "seed " << seed << " step " << step << ": " << error;
+            }
+            if (heldSteps > 0) {
+                --heldSteps;
+                continue;
             }
             if (rng() % 9 == 0) {
                 std::string error;
                 ASSERT_TRUE(p.sync(&error)) << "seed " << seed << " step " << step << ": " << error;
+                // Nothing waits: the text of the last mark went.
+                ASSERT_TRUE(!marked || p.writer.textMarked()) << "seed " << seed << " step " << step;
                 const std::string d = differs(p.source, p.replica);
                 ASSERT_TRUE(d.empty()) << "seed " << seed << " step " << step << ": " << d;
                 const std::string images = imagesDiffer(p.source, p.replica);

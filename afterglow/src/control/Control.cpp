@@ -924,8 +924,8 @@ QString Control::breakOut(TerminalWindow* source, Pane* pane, bool tab, QVariant
     if (const QString error = source->breakOutOfSession(pane, tab, &session, &kept); !error.isEmpty()) return error;
     if (const QString error = m_openSessionWindow(session); !error.isEmpty()) {
         // The daemon moved them already: what is left is to show them.
-        return (tab ? QStringLiteral("The tab went to session %1, but no window can show it (%2)")
-                    : QStringLiteral("The pane went to session %1, but no window can show it (%2)"))
+        return (tab ? QStringLiteral("the tab went to session %1, but no window can show it (%2)")
+                    : QStringLiteral("the pane went to session %1, but no window can show it (%2)"))
             .arg(session, error);
     }
     // The window that shows the new session, and in it the pane that shows

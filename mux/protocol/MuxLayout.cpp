@@ -152,10 +152,10 @@ void Layout::addTab(std::uint32_t pane)
 
 namespace {
 
-/// The tab that shows once the tabs before @p kept of the old current tab
-/// stayed, and the old one stayed too or not: as when a window closes its
-/// tabs one by one, the tab that slides into the place of the current one
-/// shows, else the new last one.
+/// The tab that shows when the old current tab went, and @p keptBefore of
+/// the tabs before it stayed, of @p tabs that stay: as when a window closes
+/// its tabs one by one, the tab that slides into the place of the current
+/// one shows, else the new last one.
 std::size_t currentAfter(std::size_t keptBefore, std::size_t tabs)
 {
     return tabs == 0 ? 0 : std::min(keptBefore, tabs - 1);
@@ -215,7 +215,7 @@ void Layout::reconcile(const std::vector<std::uint32_t>& live)
     // one with none goes with its sides.
     struct Open
     {
-        std::size_t node; ///< in the new tree
+        std::size_t node; ///< its index in kept, which keep marks
         int sides = 2; ///< the sides that did not end yet
         int kept = 0; ///< the sides that keep a pane
     };

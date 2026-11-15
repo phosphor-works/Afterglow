@@ -8,6 +8,8 @@ namespace Afterglow {
 
 QVariantMap Pane::readSelection(std::size_t limit) const
 {
+    // The rows that the selection names as the program has them now.
+    refreshSession();
     std::lock_guard lock(m_mutex);
     const bool available = selectionShown();
     bool truncated = false;

@@ -171,14 +171,14 @@ Static audio shaders redraw when the spectrum changes. They do not need a contin
 
 | Component | Meaning |
 | --- | --- |
-| `.x` | This pane's retained primary-screen rows. A window pass uses the focused pane. |
+| `.x` | This pane's retained history rows of the main screen. A window pass uses the focused pane. |
 | `.y` | Combined retained rows in the current tab. |
 | `.z` | The combined count, smoothed with a 1.25-second time constant. |
 | `.w` | Reserved. Always zero. |
 
 Background tabs, other windows, visible screen rows and discarded rows do not contribute.
 Tab changes, pane closure, buffer trimming and history clearing change the total.
-Full-screen programs retain the influence of primary-screen history.
+While a full-screen program uses the alternate screen, the counts keep the history of the main screen.
 Reflow can change the count because the unit is rows.
 Afterglow reads cached counts without scanning history text.
 Static shaders redraw until the smoothed value settles. They then redraw only for changes.

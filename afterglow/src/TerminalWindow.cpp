@@ -808,6 +808,9 @@ Pane* TerminalWindow::createSessionPane(const std::shared_ptr<MuxClient>& sessio
     // daemon sends, not a Terminal.scrollback that a reload changed since.
     AfterglowVt::TerminalOptions options = m_settings.settings().terminal;
     options.maxScrollback = session->history();
+    // The daemon parses with the session's width of ambiguous characters:
+    // the replica lays its rows out alike.
+    options.ambiguousWide = session->ambiguousWide();
     auto* pane = new Pane(options, this);
     bindPane(pane);
     applySearchColors(pane);
@@ -829,6 +832,11 @@ Pane* TerminalWindow::createSessionLaunchPane(const QString& workingDirectory, c
     // the launch sets and unsets to it, so what the launch reads of the
     // inherited variables (the shell, those that shell integration saves,
     // TERMINFO_DIRS) comes from there too, not from this process.
+    if (m_closing) {
+        // Its session may show in a window that took it over already.
+        if (failure) *failure = QStringLiteral("This window of session %1 is closing").arg(m_session->session());
+        return nullptr;
+    }
     const InheritedEnvironment& inherited = m_session->environment();
     AfterglowPty::SpawnOptions opts = prepareLaunch(m_settings.settings(), workingDirectory, command, environment, &inherited);
     offerTerminalEnvironment(opts, m_settings.settings().term, &inherited);
@@ -857,7 +865,13 @@ Pane* TerminalWindow::createSessionLaunchPane(const QString& workingDirectory, c
 void TerminalWindow::restoreSession()
 {
     const AfterglowMux::Layout& layout = m_session->layout();
-    for (const AfterglowMux::LayoutTab& saved : layout.tabs) {
+    // The current tab's place among the tabs that the window keeps: a tab
+    // before it that is refused moves it down one, and one that is refused
+    // itself leaves the next.
+    std::size_t current = layout.tabs.size();
+    for (std::size_t i = 0; i < layout.tabs.size(); ++i) {
+        const AfterglowMux::LayoutTab& saved = layout.tabs[i];
+        if (i == layout.current) current = m_tabs.size();
         auto tab = std::make_unique<Tab>();
         tab->title = QString::fromStdString(saved.title);
         Pane* zoomed = nullptr;
@@ -875,7 +889,8 @@ void TerminalWindow::restoreSession()
             nodes.push_back({pane, false, 0.5});
         }
         // The client read each tree whole (MuxLayout.cpp): one that is not
-        // would be a bug, and its panes end nothing as they go.
+        // would be a bug, and its panes end nothing as they go. Nobody heard
+        // of them: the constructor runs this before Control has the window.
         tab->splits = SplitTree::fromPreorder(nodes);
         if (!tab->splits) {
             qCCritical(lcWindow) << "session" << m_session->session() << "sent a split tree that is not whole";
@@ -891,7 +906,7 @@ void TerminalWindow::restoreSession()
     }
     if (m_tabs.empty()) return;
     m_splits = nullptr;
-    switchTab(int(std::min(layout.current, m_tabs.size() - 1)));
+    switchTab(int(std::min(current, m_tabs.size() - 1)));
 }
 
 QString TerminalWindow::sessionName() const
@@ -980,6 +995,10 @@ QString TerminalWindow::breakOutError(const Pane* pane, bool wholeTab) const
 {
     const int index = tabOf(pane);
     if (!m_session || index < 0) return {};
+    // A closing window still holds its panes until its deferred delete, and
+    // a launch of the session may have taken it over meanwhile: the daemon
+    // tells the windows of one process apart by nothing but their process.
+    if (m_closing) return QStringLiteral("This window of session %1 is closing").arg(m_session->session());
     const int leaving = wholeTab ? m_tabs[std::size_t(index)]->splits->paneCount() : 1;
     // The daemon refuses it too: the session would only get another name.
     if (leaving >= int(panes().size()))
@@ -3070,6 +3089,10 @@ void TerminalWindow::updatePaneVisibility()
 {
     const std::vector<Pane*> cards = overviewCards();
     const bool shows = isExposed() && windowState() != Qt::WindowMinimized;
+    // Session panes that show again, with the screens that the daemon held
+    // while they did not: their replicas are behind until those come.
+    std::vector<Pane*> held;
+    std::vector<std::uint32_t> heldIds;
     for (std::size_t i = 0; i < m_tabs.size(); ++i) {
         const SplitTree* tree = m_tabs[i]->splits.get();
         if (!tree) continue;
@@ -3081,14 +3104,26 @@ void TerminalWindow::updatePaneVisibility()
             p->setSeen(visible || leaving);
             // A session pane's replica must not answer its program: the
             // daemon's terminal answers the program's own queries.
-            if (p->isSessionPane()) p->setSessionVisible(visible);
-            else p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
+            if (p->isSessionPane()) {
+                if (p->setSessionVisible(visible) && visible && p->sessionScreensHeld()) {
+                    held.push_back(p);
+                    heldIds.push_back(p->sessionPaneId());
+                }
+            } else {
+                p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
+            }
             // An overlay shows where its host does, on a card too.
             if (PaneOverlay* overlay = p->overlay()) {
                 overlay->pane()->setSeen(visible || leaving);
                 overlay->pane()->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
             }
         });
+    }
+    // The next frame draws them: it would show the old screens until the
+    // catch-up of each came. They come now, once, as for a capture: a
+    // refresh that fails leaves the pane to the frames that follow.
+    if (m_session && !heldIds.empty() && m_session->refresh(heldIds)) {
+        for (Pane* p : held) p->sessionRefreshed();
     }
 }
 
@@ -3238,7 +3273,8 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
         // overview's Ctrl+Shift+D as EOF, a rotation's as ESC or GS).
         constexpr std::array keepsKey{Action::PaneOverview, Action::RotatePanesClockwise, Action::RotatePanesCounterclockwise,
                                       Action::SwapLeft, Action::SwapRight, Action::SwapUp, Action::SwapDown,
-                                      Action::UsePackageShaders, Action::TogglePaneZoom, Action::MovePaneToTab};
+                                      Action::UsePackageShaders, Action::TogglePaneZoom, Action::MovePaneToTab,
+                                      Action::MovePaneToWindow, Action::DetachTab};
         return performAction(action) || std::find(keepsKey.begin(), keepsKey.end(), action) != keepsKey.end();
     }
     if (const QByteArray text = kb.matchText(e, bindingBaseKey(e)); !text.isEmpty()) {
@@ -3310,7 +3346,8 @@ bool TerminalWindow::performAction(Action action)
         if (!m_focused) return false;
         const bool wholeTab = action == Action::DetachTab;
         // What the daemon would refuse fails now, as a refused move to a
-        // tab does: afterglow ctl and scripts get the error.
+        // tab does: afterglow ctl and scripts get the error, and the key
+        // stays with the window (keepsKey).
         if (const QString refused = breakOutError(m_focused, wholeTab); !refused.isEmpty()) {
             NotificationCenter::instance().showNotice(m_focused, wholeTab ? tr("Could not detach the tab") : tr("Could not move the pane"), refused);
             return false;

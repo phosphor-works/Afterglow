@@ -51,7 +51,9 @@ class Session;
 /// a program that floods it costs the window nothing to decode. The screens
 /// catch up once the pane shows, before each of its host calls, before its
 /// exit, and when the window reads the pane's text (Attach::InputType::
-/// Refresh). A pane shows until the window says otherwise.
+/// Refresh). A pane shows until the window says otherwise, also one that
+/// links only later. Both come at once, never behind the pane's input that
+/// waits for its PTY: a program that reads nothing holds neither.
 ///
 /// What a window that does not read makes the daemon hold, for each pane:
 /// the frames that the pane's channel takes (the stream's window, 4 MiB), one
@@ -75,11 +77,6 @@ public:
     /// in bytes, with PhosphorChannel::Stream::FrameCost for each message:
     /// past it, the daemon reads no more of the window's input.
     static constexpr std::size_t MaxHeldInput = std::size_t(4) << 20;
-    /// The Refresh inputs of one pane that wait for their Refreshed events.
-    /// A window waits for one at a time, and leaves one behind only when its
-    /// wait timed out: past the bound, a Refresh gets no answer of its own,
-    /// and the window's wait for it times out.
-    static constexpr std::uint32_t MaxRefreshes = 1024;
 
     /// Listens on a new socket in @p directory for @p caller, to show
     /// @p session. Nullptr with @p error when the socket cannot be made.
@@ -149,7 +146,8 @@ public:
     /// of a pane that goes on in another session, @p moved, get the answers
     /// of a pane that no window shows: this window does not get them. The
     /// bytes that it holds for @p moved, and those that the window sends it
-    /// before it hears, still go to its program (setPaneFinder()).
+    /// before it hears, still go to its program (setPaneFinder()), also
+    /// once the attachment finished.
     void paneRemoved(std::uint32_t id, MuxPane* moved = nullptr) { panesRemoved({{id, moved}}); }
     /// paneRemoved() for each pane, with one pass over what waits.
     void panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane*>>& panes);
@@ -157,7 +155,9 @@ public:
     /// as takeLate() says, and once the panes that closed sent their last
     /// frames, @p type is the last event. A window that did not connect yet
     /// gets it when it does. The host calls that did not go yet go back to
-    /// the panes of @p session (returnHostCalls()).
+    /// the panes of @p session (returnHostCalls()). The input that waits
+    /// for a PTY goes as for a window that left: the bytes, a reset and a
+    /// clear once, without a wait, and no size.
     void finish(Attach::EventType type, Session* session = nullptr);
     /// Drops the host calls that wait for the channel. Those of the live panes
     /// of @p session get the answers of a pane that no window shows: the
@@ -176,6 +176,9 @@ public:
     void setReplicaHistory(std::size_t rows) { m_replicaHistory = rows; }
     /// A window shows the session's panes now: connected, and not finishing.
     bool showing() const { return m_stream && !m_finish && !m_failed; }
+    /// The window got the session's layout (the first event): a layout of
+    /// another window no longer changes what it shows.
+    bool layoutSent() const { return m_layoutSent; }
     /// A number that no other attachment of the daemon has: which window a
     /// pane's host calls wait for (MuxPane::setWindow).
     std::uint64_t serial() const { return m_serial; }
@@ -194,9 +197,14 @@ private:
         /// The last sendFrame() was for the screens: the history and images
         /// that wait are work for the next pass.
         bool screens = true;
-        /// The Refresh inputs that wait for their Refreshed events: the
-        /// frames carry the screens until the rows and the history went.
-        std::uint32_t refreshes = 0;
+        /// The Refresh inputs that the next frame marks the text for
+        /// (StateWriter::markText).
+        std::uint64_t refreshes = 0;
+        /// The Refresh inputs whose text the writer marked: their Refreshed
+        /// events go once the frames carried it, as many as fit the queue
+        /// (Mux.eventQueue) in each pass. The frames carry the screens
+        /// meanwhile.
+        std::uint64_t marked = 0;
         std::uint64_t frames = 0; ///< the frames written on the channel, which each host call names
         std::unique_ptr<MuxPane> closed; ///< the pane once its program exited
     };
@@ -278,6 +286,10 @@ private:
     std::function<MuxPane*(std::uint32_t)> m_findPane;
     /// The panes that went to another session while this window showed them.
     std::set<std::uint32_t> m_movedPanes;
+    /// What the window said of each pane of the session that it can see
+    /// (InputType::Visible), also before the pane's link: a link starts
+    /// with it.
+    std::map<std::uint32_t, bool> m_visible;
     std::optional<Attach::EventType> m_finish;
     bool m_finishSent = false;
     bool m_layoutSent = false; ///< the first event, before any PaneOpened

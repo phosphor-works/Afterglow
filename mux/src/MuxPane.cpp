@@ -5,12 +5,9 @@
 
 #include "ImageDecoder.h"
 
-#include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Text.h>
-#include <AfterglowProto/Transfer.h>
 
 #include <algorithm>
-#include <array>
 #include <cerrno>
 #include <cstring>
 
@@ -381,13 +378,7 @@ void MuxPane::answerWithoutWindow(std::string_view encoded)
     }
     const auto call = Host::decode(encoded);
     if (!call) return;
-    switch (call->kind) {
-    case Host::Kind::ClipboardRequest: clipboardWithoutWindow(call->clipboard); break;
-    case Host::Kind::TerminalProtocol: protocolWithoutWindow(call->number, call->text); break;
-    case Host::Kind::DesktopNotification: notificationWithoutWindow(call->notification); break;
-    case Host::Kind::Report: writeDirect(call->text); break;
-    default: break;
-    }
+    if (const std::string answer = Host::answerWithoutWindow(*call); !answer.empty()) writeDirect(answer);
 }
 
 void MuxPane::bell()
@@ -546,10 +537,9 @@ void MuxPane::desktopNotification(const AfterglowVt::NotificationRequest& reques
 
 void MuxPane::notificationWithoutWindow(const AfterglowVt::NotificationRequest& request)
 {
-    // No notification is on screen: a program that asks which are gets an
-    // empty list, in the reply of a window. The others are dropped.
-    if (request.kind != AfterglowVt::NotificationRequest::Kind::Alive) return;
-    writeDirect(request.aliveReply());
+    Host::Call call = Host::make(Host::Kind::DesktopNotification);
+    call.notification = request;
+    if (const std::string answer = Host::answerWithoutWindow(call); !answer.empty()) writeDirect(answer);
 }
 
 bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
@@ -563,9 +553,9 @@ bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
 
 void MuxPane::clipboardWithoutWindow(const AfterglowVt::ClipboardRequest& request)
 {
-    // No window has a clipboard to give: the request gets the answer of a
-    // denial.
-    if (const std::string refusal = request.refusal("EPERM"); !refusal.empty()) writeDirect(refusal);
+    Host::Call call = Host::make(Host::Kind::ClipboardRequest);
+    call.clipboard = request;
+    if (const std::string answer = Host::answerWithoutWindow(call); !answer.empty()) writeDirect(answer);
 }
 
 namespace {
@@ -611,48 +601,10 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
 
 void MuxPane::protocolWithoutWindow(int code, std::string_view payload)
 {
-    if (code == 72) {
-        // A program asks which drag and drop types the terminal supports. It
-        // gets the answer of a window: a client may attach before a drag.
-        if (const std::string reply = AfterglowProto::dndQueryReply(payload); !reply.empty()) {
-            writeDirect(reply);
-            return;
-        }
-        // A drag starts from an offer (t=o without x=1 or x=2) while the
-        // user holds the mouse button. Without a window no drag can start,
-        // so the offer gets the window's EPERM. A drop never arrives, so
-        // the other commands need no answer. A chunked offer is answered
-        // once, at its last chunk.
-        const std::string_view raw = AfterglowProto::splitDnd(payload).first;
-        const auto meta = AfterglowProto::parseDndMeta(raw);
-        if (!meta || AfterglowProto::dndMore(raw)) return;
-        const auto type = meta->find("t");
-        const auto x = meta->find("x");
-        if (type == meta->end() || type->second != "o" || (x != meta->end() && (x->second == "1" || x->second == "2"))) return;
-        AfterglowProto::DndMeta error{{"t", "E"}};
-        if (const auto id = meta->find("i"); id != meta->end()) error.emplace("i", id->second);
-        for (const std::string& packet : AfterglowProto::writeDnd(std::move(error), "EPERM")) writeDirect(packet);
-        return;
+    if (const std::string answer = Host::answerWithoutWindow(Host::make(Host::Kind::TerminalProtocol, {}, std::string(payload), code));
+        !answer.empty()) {
+        writeDirect(answer);
     }
-    if (code != 5113 || payload.size() > AfterglowProto::TransferMaxCommand) return;
-    // A transfer starts with ac=send or ac=receive and waits for the user's
-    // answer. Without a window no user answers: it is the answer of a
-    // denial. A session with q=2 asked for no status, errors included. The
-    // commands of a transfer that a window ran, which went, get none: the
-    // program learns of the end when its terminal answers it no more, as for
-    // a window that closed.
-    const auto fields = AfterglowProto::decodeTransfer(payload);
-    if (!fields) return;
-    const auto action = fields->find("ac");
-    const auto id = fields->find("id");
-    if (action == fields->end() || id == fields->end() || (action->second != "send" && action->second != "receive")) return;
-    if (const auto quiet = fields->find("q"); quiet != fields->end() && quiet->second == "2") return;
-    const std::array<std::pair<std::string_view, std::string_view>, 3> status{{
-        {"ac", "status"},
-        {"id", id->second},
-        {"st", "EPERM"},
-    }};
-    writeDirect(AfterglowProto::encodeTransfer(status));
 }
 
 void MuxPane::ptyData(std::string_view bytes)

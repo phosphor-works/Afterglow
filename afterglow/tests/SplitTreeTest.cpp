@@ -261,7 +261,7 @@ TEST(SplitTree, SplitKeepsBothSidesAtTheMinimum)
     EXPECT_LT(ratio, 1.0);
 }
 
-TEST(SplitTree, PreorderGoesBothWaysWithoutRecursion)
+TEST(SplitTree, PreorderGoesBothWays)
 {
     // 1 | (2 over 3), as a mux session's layout keeps it.
     SplitTree t(fake(1));
@@ -283,7 +283,8 @@ TEST(SplitTree, PreorderGoesBothWaysWithoutRecursion)
     t.layout(QRect(0, 0, 401, 201), 1);
     for (std::uintptr_t n = 1; n <= 3; ++n) EXPECT_EQ(back->rectOf(fake(n)), t.rectOf(fake(n)));
 
-    // A tree as deep as a session's pane limit: no stack per level.
+    // A tree as deep as a session's pane limit: each split is the first half
+    // of the one before.
     std::vector<SplitTree::PreorderNode> deep;
     for (std::uintptr_t n = 1; n < 256; ++n) deep.push_back({nullptr, n % 2 == 0, 0.5});
     for (std::uintptr_t n = 1; n <= 256; ++n) deep.push_back({fake(n), false, 0.5});

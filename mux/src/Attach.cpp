@@ -280,6 +280,7 @@ void Attachment::panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane
     }
     for (const auto& [id, pane] : panes) {
         if (pane) m_movedPanes.insert(id);
+        m_visible.erase(id);
         if (const auto held = m_heldInput.find(id); held != m_heldInput.end()) {
             // The program of a pane that went to another session runs on:
             // the bytes that the user typed still go, as its PTY takes them
@@ -313,7 +314,16 @@ void Attachment::finish(Attach::EventType type, Session* session)
     // A window that did not connect yet keeps its connect deadline.
     if (m_stream) m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FinishWaitMs);
     // The input that waits for a PTY is for a session that no longer shows
-    // here: as for a window that left, it waits for nothing.
+    // here: as for a window that left, it waits for nothing, and goes before
+    // what the window sent after it (readLate()). The bytes of a pane that
+    // went to another session too.
+    if (session) {
+        for (const auto& [id, waiting] : m_heldInput) {
+            for (const Attach::Input& message : waiting) {
+                if (message.type != Attach::InputType::Resize) deliver(*session, message, true);
+            }
+        }
+    }
     m_heldInput.clear();
     m_heldBytes = 0;
 }
@@ -352,15 +362,16 @@ bool Attachment::deliver(Session& session, const Attach::Input& message, bool wi
         // Only while this window is the pane's: one that went, or failed,
         // says nothing about what the user sees now.
         pane->setVisible(message.visible, m_serial);
-        // The screens that waited go in this pass (sendFrame).
+        // The screens that waited go in this pass (sendFrame). The window
+        // says it once: a pane that links later starts with it.
+        m_visible[message.pane] = message.visible;
         if (const auto link = m_panes.find(message.pane); link != m_panes.end()) link->second.shown = message.visible;
         break;
     case Attach::InputType::Refresh:
         // The window asks only for a pane whose frames it reads: one without
-        // a channel yet has nothing to read.
-        if (const auto link = m_panes.find(message.pane); link != m_panes.end() && !link->second.closed) {
-            link->second.refreshes = std::min(link->second.refreshes + 1, MaxRefreshes);
-        }
+        // a channel yet has nothing to read. Each gets its answer: the
+        // window counts them.
+        if (const auto link = m_panes.find(message.pane); link != m_panes.end() && !link->second.closed) ++link->second.refreshes;
         break;
     case Attach::InputType::Kill:
     case Attach::InputType::ClosePane:
@@ -459,8 +470,11 @@ void Attachment::readInput(Session& session)
             continue;
         }
         // Behind the input that waits for the pane, in order. The input of
-        // the other panes goes meanwhile.
-        if (m_heldInput.contains(message->pane) || !deliver(session, *message, windowLeft)) hold(std::move(*message));
+        // the other panes goes meanwhile. What the user sees and a read of
+        // the text are not for the program: they go at once, also for a
+        // pane whose program reads nothing.
+        const bool now = message->type == Attach::InputType::Visible || message->type == Attach::InputType::Refresh;
+        if ((m_heldInput.contains(message->pane) && !now) || !deliver(session, *message, windowLeft)) hold(std::move(*message));
     }
 }
 
@@ -585,6 +599,7 @@ Attachment::PaneLink* Attachment::link(MuxPane& pane)
         PaneLink& l = m_panes[pane.id()];
         l.channel = channel;
         l.writer = writer;
+        if (const auto visible = m_visible.find(pane.id()); visible != m_visible.end()) l.shown = visible->second;
         l.state.setReplicaHistory(m_replicaHistory);
         Attach::Event opened;
         opened.type = Attach::EventType::PaneOpened;
@@ -623,9 +638,16 @@ bool Attachment::sendFrame(PaneLink& l, MuxPane& pane)
     // its host calls, which follow the text before them, and before the
     // exit, so that the window has the screen that the program left, and
     // for a read of its text (Refresh).
-    l.screens = l.shown || l.closed || l.refreshes > 0 || pane.callsWaiting(m_serial);
+    l.screens = l.shown || l.closed || l.refreshes > 0 || l.marked > 0 || pane.callsWaiting(m_serial);
+    // A read of the text needs the rows as they are now: this frame takes
+    // them, also when nothing changed.
+    const bool marking = l.refreshes > 0;
+    if (marking) {
+        l.state.markText();
+        l.marked += std::exchange(l.refreshes, 0);
+    }
     const bool changed = pane.takeChanged();
-    if (!changed && l.started && !(l.screens && (l.state.pending() || l.state.screensHeld()))) return true;
+    if (!changed && !marking && l.started && !(l.screens && (l.state.pending() || l.state.screensHeld()))) return true;
     // History past half the window waits for later frames, and so do rows
     // past it, so that every frame fits.
     std::optional<std::string> next = pane.frame(l.state, l.writer->maxFrame() / 2, l.screens);
@@ -689,6 +711,7 @@ void Attachment::sendClosed()
         closed.pane = it->first;
         closed.status = l.closed->exitStatus();
         sendEvent(closed);
+        m_visible.erase(it->first);
         it = m_panes.erase(it);
     }
 }
@@ -734,17 +757,21 @@ void Attachment::pump(Session* session)
             // a pane before it makes a call of it. What does not fit the queue
             // waits in the pane.
             if (l->started && l->waiting.empty() && !l->deferred) {
-                const std::size_t left = m_waitingBytes < m_eventQueue ? m_eventQueue - m_waitingBytes : 0;
-                sendHostCalls(*l, pane, left / (count - i));
                 // A read of the pane's text waits for the frames that hold
-                // its rows and its history whole.
-                if (l->refreshes > 0 && !l->state.textPending()) {
+                // its rows and its history as they were at the Refresh, not
+                // for the rows that a flood adds meanwhile. Its answer goes
+                // before the calls, which could fill the queue in each pass:
+                // the answers that do not fit wait in the count.
+                if (l->marked > 0 && l->state.textMarked()) {
                     Attach::Event refreshed;
                     refreshed.type = Attach::EventType::Refreshed;
                     refreshed.pane = pane.id();
                     refreshed.frames = l->frames;
-                    for (; l->refreshes > 0 && !m_failed; --l->refreshes) sendEvent(refreshed);
+                    for (; l->marked > 0 && !m_failed && m_waitingBytes < m_eventQueue; --l->marked) sendEvent(refreshed);
+                    if (m_failed) return;
                 }
+                const std::size_t left = m_waitingBytes < m_eventQueue ? m_eventQueue - m_waitingBytes : 0;
+                sendHostCalls(*l, pane, left / (count - i));
             }
             if (m_failed) return;
         }

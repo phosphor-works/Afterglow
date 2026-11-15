@@ -107,10 +107,19 @@ AfterglowPty::SpawnOptions prepareLaunch(const Settings& settings, const QString
                                          const QVariantMap& environment, const InheritedEnvironment* inherited)
 {
     AfterglowPty::SpawnOptions opts;
-    // The child starts in its home directory rather than failing in one that is gone.
-    opts.workingDirectory =
-        QFile::encodeName(!workingDirectory.isEmpty() && QFileInfo(workingDirectory).isDir() ? workingDirectory : QDir::homePath())
-            .toStdString();
+    // The child starts in its home directory rather than failing in one that
+    // is gone: the HOME that it inherits, which a session's environment may
+    // name, else this process's.
+    if (!workingDirectory.isEmpty() && QFileInfo(workingDirectory).isDir()) {
+        opts.workingDirectory = QFile::encodeName(workingDirectory).toStdString();
+    } else {
+        opts.workingDirectory = QFile::encodeName(QDir::homePath()).toStdString();
+        if (inherited) {
+            const auto home = std::find_if(inherited->rbegin(), inherited->rend(), [](const auto& kv) { return kv.first == "HOME"; });
+            const QFileInfo dir(home != inherited->rend() ? QFile::decodeName(QByteArray::fromStdString(home->second)) : QString());
+            if (dir.isAbsolute() && dir.isDir()) opts.workingDirectory = home->second;
+        }
+    }
     opts.environment = settings.environment;
     applyLaunchEnvironment(opts, environment);
     if (!command.isEmpty()) {

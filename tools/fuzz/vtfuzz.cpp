@@ -185,8 +185,9 @@ void checkStateFrame(std::string_view frame, int cols, int rows, std::size_t scr
 
 /// A replica of the fuzzed terminal, as a window of a session keeps one:
 /// a frame of the writer after each control record, so that images are
-/// replaced and dropped while their pixels go. Each frame that a writer makes
-/// must apply.
+/// replaced and dropped while their pixels go. Some frames are held, as for
+/// a pane that nobody sees, and some mark the text, as a read does. Each
+/// frame that a writer makes must apply.
 struct Mirror
 {
     QuietHost host;
@@ -208,13 +209,20 @@ struct Mirror
         return small && smallScreen ? 4096 : std::size_t(1) << 20;
     }
 
-    void step(const AfterglowVt::Terminal& source, bool small)
+    void step(const AfterglowVt::Terminal& source, bool small, bool held, bool mark)
     {
+        if (mark) {
+            writer.markText();
+            marked = true;
+        }
         std::string error;
-        if (!reader.apply(replica, writer.update(source, budget(source, small)), &error)) {
+        const std::string frame = held ? writer.updateHeld(source) : writer.update(source, budget(source, small));
+        if (!reader.apply(replica, frame, &error)) {
             __builtin_trap();
         }
     }
+
+    bool marked = false; ///< markText() ran
 
     /// The rest, then the replica shows what the source does.
     void finish(const AfterglowVt::Terminal& source, bool small)
@@ -235,6 +243,10 @@ struct Mirror
         }
         using Scope = AfterglowVt::Terminal::TextScope;
         if (guard < 4096 && replica.text(Scope::Screen) != source.text(Scope::Screen)) {
+            __builtin_trap();
+        }
+        // Nothing waits: the text of any mark went.
+        if (guard < 4096 && marked && !writer.textMarked()) {
             __builtin_trap();
         }
         if (guard < 4096) {
@@ -419,7 +431,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             t.setViewportOffset(std::size_t(a) * 4);
             break;
         }
-        mirror.step(t, smallFrames);
+        // A quarter of the frames held, an eighth of them marking the text.
+        mirror.step(t, smallFrames, ((a + b) & 3) == 3, ((a ^ b) & 7) == 5);
         start = i + 4;
         i += 3;
     }

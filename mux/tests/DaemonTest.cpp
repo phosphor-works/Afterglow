@@ -194,10 +194,7 @@ TEST(MuxDaemon, SigtermEndsTheSessionsAndTheirPrograms)
     // The daemon ends with the signal, after its sessions.
     EXPECT_EQ(daemon.waitExit(), 128 + SIGTERM) << daemon.errors();
     // The hangup ended the program: it is gone, or a zombie that waits for its reaper.
-    EXPECT_TRUE(waitFor([&] {
-        const std::string stat = readFile("/proc/" + std::to_string(program) + "/stat");
-        return stat.empty() || stat.find(") Z ") != std::string::npos;
-    }));
+    EXPECT_TRUE(waitFor([&] { return !running(program); }));
 }
 
 // As under nohup: a hangup that the daemon got as ignored stays ignored, and

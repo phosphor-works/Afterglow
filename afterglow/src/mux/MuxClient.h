@@ -100,6 +100,9 @@ public:
     /// client that made the session (`afterglow mux new`), which a new pane's
     /// launch changes as the first pane's did. Not this process's.
     const std::vector<std::pair<std::string, std::string>>& environment() const { return m_environment; }
+    /// Terminal.ambiguousWide of the session's terminals, which parse what
+    /// the programs write: the replicas of its panes measure as they do.
+    bool ambiguousWide() const { return m_ambiguousWide; }
     /// The session's tabs and splits when the window attached: the daemon
     /// sends them first.
     const AfterglowMux::Layout& layout() const { return m_layout; }
@@ -132,7 +135,10 @@ public:
     /// keeps that layout (Fn::BreakOut): the name of the new session, or
     /// nothing with @p error. Those panes leave the link at once: no frame
     /// or exit of theirs reaches them, and the window closes them with
-    /// MuxRelease::Nothing. It calls the daemon and waits for the answer.
+    /// MuxRelease::Nothing. The calls of their terminals that reach this
+    /// window still get the answers of a pane that no window shows
+    /// (Host::answerWithoutWindow): the daemon answers those that did not
+    /// leave it. It calls the daemon and waits for the answer.
     std::optional<QString> breakOut(const AfterglowMux::Layout& layout, QString* error);
 
     /// False when the link ended, or the input of pane @p id that waits
@@ -147,7 +153,9 @@ public:
     void sendReset(std::uint32_t id);
     void sendClear(std::uint32_t id);
     /// Whether the user can see pane @p id: its terminal in the daemon
-    /// reports a change to the program (mode 2033).
+    /// reports a change to the program (mode 2033), and the daemon holds the
+    /// screens of a pane that the user cannot see (StateWriter::updateHeld)
+    /// until it shows, or until a refresh().
     void sendVisible(std::uint32_t id, bool visible);
     /// The input of pane @p id that waits for the channel, in bytes: the
     /// backlog that a file transfer or a drag of that pane holds back for.
@@ -179,7 +187,9 @@ public:
     /// window does not show, whose screens the daemon holds, and reads the
     /// stream until their frames applied, for up to @p waitMs: before a read
     /// of their text. The calls of the panes' terminals that come meanwhile
-    /// wait until after it, so that the read runs no answer of the window.
+    /// wait until after it, so that the read runs no answer of the window,
+    /// unless they would pass what the window holds of them: then the
+    /// panes answer them meanwhile, and the link stays.
     /// A pane whose frames do not come (no channel yet, or its program
     /// exited) has nothing more to wait for. True when all came.
     bool refresh(const std::vector<std::uint32_t>& ids, int waitMs = RefreshWaitMs);
@@ -189,6 +199,9 @@ private:
     void readable();
     void writable();
     void handleFrames();
+    /// Answers @p call of pane @p id, which went to another session, as a
+    /// pane that no window shows: its program still waits for an answer.
+    void answerMoved(std::uint32_t id, const AfterglowMux::Host::Call& call);
     /// Applies the frames that wait for pane @p id. False when one does not
     /// apply: the link is lost.
     bool readState(std::uint32_t id);
@@ -240,6 +253,7 @@ private:
     QSocketNotifier* m_readNotifier = nullptr;
     QSocketNotifier* m_writeNotifier = nullptr;
     std::vector<std::pair<std::string, std::string>> m_environment; ///< environment()
+    bool m_ambiguousWide = false; ///< ambiguousWide()
     AfterglowMux::Layout m_layout;
     bool m_layoutCame = false;
     std::string m_sentLayout; ///< the JSON of the last layout that went, or that came
@@ -251,7 +265,12 @@ private:
     std::set<std::uint32_t> m_unbound;
     /// The panes that the window let go while the session runs: their frames
     /// are read and dropped until their channel closes, which frees its ID.
+    /// A pane that the daemon never opened a channel for (it closed before
+    /// it had one) stays: the daemon never gives its ID again.
     std::set<std::uint32_t> m_released;
+    /// Those of m_released that went to another session (breakOut): their
+    /// calls that reach this window get answerMoved().
+    std::set<std::uint32_t> m_movedOut;
     /// The size that each pane has in the daemon: the last that went, or the
     /// one that newPane started it with.
     std::map<std::uint32_t, AfterglowMux::PaneSize> m_sentSizes;

@@ -136,11 +136,27 @@ TEST(MuxClient, ADetachLeavesThePanesWithoutAnExit)
     EXPECT_FALSE(shown.client->showing());
     EXPECT_TRUE(shown.first->leftSession());
     EXPECT_TRUE(second->leftSession());
+    // A round trip: the daemon lists the session as detached once it let the
+    // window go, and sends it nothing more. The window reads what came, and
+    // a close that it queued runs before a call queued after it.
+    ASSERT_TRUE(waitFor([&] {
+        for (const AfterglowMux::SessionInfo& s : daemon.sessions()) {
+            if (s.name == "left") return !s.attached;
+        }
+        return false;
+    }));
+    QCoreApplication::processEvents();
+    bool drained = false;
+    QMetaObject::invokeMethod(&context, [&drained] { drained = true; }, Qt::QueuedConnection);
+    ASSERT_TRUE(waitFor([&] { return drained; }));
     EXPECT_EQ(closed, 0);
 }
 
 // Panes that exit, and panes that the window closes, free their channels:
-// many more of them than the window takes at once leave room for the next.
+// more of each kind than the window takes at once leave room for the next.
+// Where a window lets a pane go between its PaneClosed and the end of its
+// channel depends on where the stream splits what it reads, which the test
+// cannot choose: the two kinds here let go after both and before both.
 TEST(MuxClient, PanesThatGoFreeTheirChannels)
 {
     MuxTest::TestDaemon daemon;
@@ -148,18 +164,18 @@ TEST(MuxClient, PanesThatGoFreeTheirChannels)
     Shown shown = show(daemon, "cycle");
     ASSERT_TRUE(shown.client && shown.first);
     for (std::size_t i = 0; i < AfterglowMux::MaxSessionPanes + 8; ++i) {
-        if (i % 2 == 0) {
-            // Its exit comes whole (its last frame and PaneClosed) before
-            // the window lets it go.
-            std::unique_ptr<Pane> pane = newPane(*shown.client, shown.client, {"/bin/sh", "-c", "exit 3"});
-            ASSERT_TRUE(pane) << i;
-            ASSERT_TRUE(waitFor([&] { return !pane->showsSession(QStringLiteral("cycle")); })) << "pane " << i << " " << daemon.errors();
-        } else {
+        {
             // The window closes it at once, maybe before its PaneOpened came:
             // its program ends, and its frames are read and dropped.
             std::unique_ptr<Pane> pane = newPane(*shown.client, shown.client, {"/bin/cat"});
             ASSERT_TRUE(pane) << i;
         }
+        // Its exit comes whole (its last frame and PaneClosed) before the
+        // window lets it go. The wait runs the stream, which reads what came
+        // of the panes before it too.
+        std::unique_ptr<Pane> pane = newPane(*shown.client, shown.client, {"/bin/sh", "-c", "exit 3"});
+        ASSERT_TRUE(pane) << i;
+        ASSERT_TRUE(waitFor([&] { return !pane->showsSession(QStringLiteral("cycle")); })) << "pane " << i << " " << daemon.errors();
         ASSERT_TRUE(shown.client->showing()) << i;
     }
     std::unique_ptr<Pane> last = newPane(*shown.client, shown.client, {"/bin/cat"});
@@ -229,6 +245,43 @@ TEST(MuxClient, AReadOfAHiddenPaneGivesItsCurrentText)
     EXPECT_FALSE(pane.sessionScreensHeld());
     ASSERT_TRUE(pane.sendInput("seen text\n"));
     EXPECT_TRUE(waitFor([&] { return replica().find("seen text") != std::string::npos; })) << replica();
+}
+
+// A window binds its panes before it shows: the daemon hears that the user
+// cannot see them, maybe before their first frame went, then that the user
+// can. The size that the window measured meanwhile reaches the replica, and a
+// read of a pane that shows waits for nothing.
+TEST(MuxClient, APaneThatShowsAfterItsFirstFramesHasTheWindowsSize)
+{
+    using AfterglowVt::Terminal;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options({"/bin/cat"}, "late"))) << daemon.lastError();
+    QString error;
+    const auto client = MuxClient::attach(QStringLiteral("late"), false, &error, daemon.sockets(), std::size_t(1) << 20, 1000);
+    ASSERT_TRUE(client) << error.toStdString();
+    ASSERT_EQ(client->layout().panes().size(), 1u);
+    Pane pane(AfterglowVt::TerminalOptions{});
+    pane.showSession(client, client->layout().panes().front());
+    pane.setSessionVisible(false);
+    pane.resize(40, 10, 8, 16);
+    ASSERT_TRUE(waitFor([&] { return pane.sessionSynced(); })) << daemon.errors();
+    pane.setSessionVisible(true);
+    pane.refreshSession();
+    EXPECT_TRUE(waitFor([&] { return pane.cols() == 40 && pane.rows() == 10; }, 5000)) << pane.cols() << "x" << pane.rows();
+    const auto replica = [&pane] { return pane.withTerminal([](Terminal& t) { return t.text(Terminal::TextScope::Screen); }); };
+    ASSERT_TRUE(pane.sendInput("first\n"));
+    EXPECT_TRUE(waitFor([&] { return replica().find("first") != std::string::npos; }, 5000)) << replica();
+
+    // A split: a new pane that the user sees from the start.
+    auto split = newPane(*client, client, {"/bin/cat"});
+    ASSERT_TRUE(split);
+    split->setSessionVisible(true);
+    ASSERT_TRUE(waitFor([&] { return split->sessionSynced(); })) << daemon.errors();
+    ASSERT_TRUE(split->sendInput("second\n"));
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_TRUE(waitFor([&] { return split->text(Terminal::TextScope::Screen).contains(QStringLiteral("second")); }, 5000));
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
 }
 
 } // namespace

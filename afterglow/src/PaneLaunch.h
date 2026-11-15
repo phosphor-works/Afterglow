@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "shell/ShellIntegration.h"
+
 #include <AfterglowPty/Pty.h>
 
 #include <QString>
@@ -17,14 +19,9 @@ namespace Afterglow {
 
 struct Settings;
 
-/// The environment that a pane's program starts from when it is not this
-/// process's: a mux session's (MuxClient::environment), to which the daemon
-/// applies what the launch sets and unsets. Null means this process's.
-using InheritedEnvironment = std::vector<std::pair<std::string, std::string>>;
-
 /// The program of a new pane and its environment, before the variables of the
 /// pane itself: @p workingDirectory, or the home directory when it is not a
-/// directory; the configured environment, then the launch's; @p command, else
+/// directory (the HOME of @p inherited when that is one); the configured environment, then the launch's; @p command, else
 /// Terminal.shell, else the user's shell; shell integration; and
 /// AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO unless the launch names
 /// them. A window's panes and a mux session's both start from it. A window

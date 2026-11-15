@@ -288,10 +288,12 @@ public:
     /// blink a program chose stay unless the configured ones changed.
     void setOptions(const TerminalOptions& options);
     /// Applies only the options of @p options that change how the screen
-    /// draws and selects, not what it holds: boldIsBright, minimumContrast,
-    /// wordBoundaries and bidi. For a replica (StateSync), whose colours,
-    /// cursor and history are its writer's: setOptions would replace them
-    /// with the configured ones.
+    /// draws and selects: boldIsBright, minimumContrast, wordBoundaries and
+    /// bidi. For a replica (StateSync), whose colours, cursor and history are
+    /// its writer's: setOptions would replace them with the configured ones.
+    /// A replica parses nothing, so these change only how it draws and
+    /// selects what it holds. On a terminal that parses, bidi also decides
+    /// whether the directional controls that come next stay as cells.
     void setViewOptions(const TerminalOptions& options);
 
     /// @param cellWidth, cellHeight cell size in pixels, reported by CSI 14/16 t.

@@ -385,6 +385,7 @@ bool Pane::selectionContains(int col, int row) const
 
 QString Pane::selectedText() const
 {
+    refreshSession();
     std::string text;
     {
         std::lock_guard lock(m_mutex);
@@ -1049,14 +1050,15 @@ bool Pane::closeEndsProgram() const
     return !m_session || m_sessionRelease != MuxRelease::Nothing;
 }
 
-void Pane::setSessionVisible(bool visible)
+bool Pane::setSessionVisible(bool visible)
 {
-    if (!m_session || m_sessionGone || m_sessionVisible == int(visible)) return;
+    if (!m_session || m_sessionGone || m_sessionVisible == int(visible)) return false;
     m_sessionVisible = int(visible);
     // Until a refresh, also once visible again: the screens that the daemon
     // held are on their way, and a read must not take the old ones.
     if (!visible) m_sessionHeld = true;
     m_session->sendVisible(m_sessionPane, visible);
+    return true;
 }
 
 void Pane::refreshSession() const

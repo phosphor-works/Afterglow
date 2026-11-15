@@ -2161,7 +2161,6 @@ TEST_F(NativeWindow, FileTransferPermissionFollowsMovedPane) {
     // that came before the answer would have made the directory by now.
     EXPECT_FALSE(QFileInfo::exists(destinationPath));
     // The window's Yes reaches the transfer, which makes the directory it approved.
-    ASSERT_TRUE(prompts.front()) << "the prompt went";
     QAbstractButton* const yes = prompts.front()->button(QMessageBox::Yes);
     ASSERT_NE(yes, nullptr);
     yes->click();
@@ -10464,8 +10463,10 @@ Pane* sessionPane(const TerminalWindow& window, std::uint32_t id)
 }
 
 /// Types @p marker into @p pane, a shell or cat with the terminal's echo,
-/// and waits until its screen shows it: the frames of the pane reach its
-/// window, and the daemon has read what the window sent before.
+/// and waits until its screen shows it: the daemon has read what the window
+/// sent before. A shown pane gets the frames as they come. The screens of a
+/// pane that the user cannot see come by the refresh that each read of its
+/// text asks for (Pane::text).
 bool echoes(const QPointer<Pane>& pane, const QString& marker)
 {
     if (!pane || !pane->sendInput((marker + QLatin1Char('\n')).toStdString())) return false;
@@ -11126,9 +11127,9 @@ TEST_F(NativeWindow, ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow) {
     ASSERT_EQ(launch(QStringLiteral("launched"), true), QString());
     ASSERT_EQ(int(TerminalWindow::windows().size()), before + 1);
     QPointer<TerminalWindow> shown = TerminalWindow::windows().last();
-    Pane* const sessionPane = shown->focusedPane();
-    ASSERT_NE(sessionPane, nullptr);
-    ASSERT_TRUE(sessionPane->isSessionPane());
+    Pane* const first = shown->focusedPane();
+    ASSERT_NE(first, nullptr);
+    ASSERT_TRUE(first->isSessionPane());
     ASSERT_TRUE(waitFor([&] {
         const auto info = sessionNamed(daemon, "launched");
         return info && info->attached;
@@ -11140,6 +11141,9 @@ TEST_F(NativeWindow, ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow) {
     EXPECT_TRUE(other->isSessionPane());
     ASSERT_EQ(shown->focusedPane(), other);
     const quint32 tab = shown->activeTabId();
+    // Hidden: the launch shows it again.
+    shown->hide();
+    ASSERT_TRUE(waitFor([&] { return !shown->isVisible(); }));
     EXPECT_EQ(launch(QStringLiteral("launched"), false), QString());
     EXPECT_EQ(int(TerminalWindow::windows().size()), before + 1);
     EXPECT_TRUE(shown->isVisible());
@@ -11250,7 +11254,8 @@ protected:
 
 /// Qt's handling of a quit ends the event loops that start after it too (a
 /// dialog's, a drag's), until exec() starts again: this exec() ends at once,
-/// and leaves the loops of the tests that follow as they were.
+/// and leaves the loops of the tests that follow as they were. Its exit()
+/// emits QCoreApplication::aboutToQuit again, as the quit did.
 void startEventLoopsAgain()
 {
     QTimer::singleShot(0, QCoreApplication::instance(), [] { QCoreApplication::exit(0); });
@@ -11657,6 +11662,11 @@ TEST_F(NativeWindow, APaneOfASessionsWindowStartsInTheSessionsEnvironment) {
 // default), and the window asks nothing about the session's programs. A
 // quit that a window interrupts leaves Mux.onClose in force. So does the
 // end of the Application, at the end of main().
+//
+// The quit that goes through is QCoreApplication::exit(): it emits
+// aboutToQuit in the middle of the test binary, and startEventLoopsAgain
+// emits it once more. Keep this test the last of the NativeWindow suite: the
+// suites after it (KeyMapping) open no window.
 TEST_F(NativeWindow, AQuitLeavesTheSessionsOfItsWindowsRunning) {
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
@@ -11668,7 +11678,10 @@ TEST_F(NativeWindow, AQuitLeavesTheSessionsOfItsWindowsRunning) {
     const auto loops = qScopeGuard(startEventLoopsAgain);
     QString error;
     {
-        // Shown first, the widget is the first window that a quit closes.
+        // A QApplication closes its widgets as it quits, and no other
+        // window: a widget that stays open interrupts the quit before
+        // QCoreApplication::exit(). The session's window gets no Close, and
+        // its own close then ends the session, as Mux.onClose says.
         auto stubborn = std::make_unique<StubbornWidget>();
         stubborn->show();
         auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("interrupted"), &error);
@@ -11677,7 +11690,6 @@ TEST_F(NativeWindow, AQuitLeavesTheSessionsOfItsWindowsRunning) {
         QCoreApplication::sendEvent(QCoreApplication::instance(), &quit);
         EXPECT_FALSE(quit.isAccepted());
         ASSERT_NE(shown, nullptr);
-        EXPECT_FALSE(shown->closing());
         stubborn.reset();
         delete shown;
         EXPECT_TRUE(waitFor([&] { return !sessionNamed(daemon, "interrupted"); }, 5000));

@@ -12,7 +12,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 - VT100 to VT500 control sequences, with conformance levels and the `afterglow` terminfo entry.
 - Scrollback with reflow on resize. Rows that still fit keep their cells, styles and graphemes.
-- Unicode graphemes, wide characters, color emoji, font shaping and optional primary-screen bidirectional layout.
+- Unicode graphemes, wide characters, color emoji, font shaping and optional bidirectional layout of the main screen.
 - Character widths from Unicode 18.0. As in Kitty, VS15 shows a wide emoji as text in one cell, and VS16 shows a text emoji in two cells.
 - A grapheme cluster takes the cells that glibc's `wcwidth` gives its characters, within two cells. Shells and editors that measure text with it then put the cursor in the right place. A spacing mark, a consonant after a virama (Hindi क्र) and Thai SARA AM make a one-cell cluster two cells wide. A prepended mark such as U+0600 ARABIC NUMBER SIGN takes a cell.
 - Afterglow draws box drawing, block elements, Braille and the Powerline separators to fill the cell, with no font. It draws the block shapes of Symbols for Legacy Computing (sextants, octants, smooth mosaics, diagonals) the same way.

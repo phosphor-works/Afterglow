@@ -255,7 +255,12 @@ Daemon::Exit Daemon::run()
             // What a window that no longer shows the session sent before it
             // heard.
             if (finishing) {
-                applyLate(*attachment, session);
+                // As the window's own input: a failure (out of memory) costs
+                // that window's late input, not the daemon.
+                guarded(*attachment, [&] {
+                    applyLate(*attachment, session);
+                    return true;
+                });
                 continue;
             }
             // The window closed and Mux.onClose is kill. Its own window
@@ -484,9 +489,12 @@ std::string Daemon::attach(const IpcRequest& request, pid_t caller)
     if (!attachment) return ipcError(request.id, IpcErrorCode::CallFailed, error);
     // Made before the takeover too: the answer that cannot be made leaves
     // the session where it is.
+    // The window's replicas measure what the program writes as the
+    // session's terminal does (Terminal.ambiguousWide).
     std::string reply = ipcReply(request.id.value_or(0), Json::Object{{"name", name},
                                                                        {"socket", attachment->path()},
-                                                                       {"environment", environmentJson((*session)->options().environment)}});
+                                                                       {"environment", environmentJson((*session)->options().environment)},
+                                                                       {"ambiguousWide", (*session)->options().terminal.ambiguousWide}});
     m_attachments.reserve(m_attachments.size() + 1);
     if (previous) {
         guarded(*previous, [&] {
@@ -524,6 +532,10 @@ std::string Daemon::detach(const IpcRequest& request)
         attachment->finish(Attach::EventType::Detached, session->get());
         return true;
     });
+    // The window closed the last pane before the call: the session ends, as
+    // when its last program exits. Its late input (applyLate) would end it
+    // too, but an attachment that failed meanwhile has none.
+    if ((*session)->empty()) endSession(session);
     return ipcReply(request.id.value_or(0), nullptr);
 }
 
@@ -702,11 +714,12 @@ void Daemon::applyLate(Attachment& attachment, std::vector<std::unique_ptr<Sessi
             });
         }
     }
-    // Its last layout is the next window's, unless a window shows the
-    // session already and sends its own. A layout of a session that ended,
-    // whose name a new session took, names none of its panes: pane IDs are
-    // not used again.
-    if (late.layout && !shown(own.name())) {
+    // Its last layout is the next window's, unless a window that shows the
+    // session got its layout already: that window shows its own, and sends
+    // it when it changes. A layout of a session that ended, whose name a new
+    // session took, names none of its panes: pane IDs are not used again.
+    const Attachment* now = shown(own.name());
+    if (late.layout && (!now || !now->layoutSent())) {
         const std::vector<std::uint32_t> named = late.layout->panes();
         if (std::any_of(named.begin(), named.end(), [&own](std::uint32_t id) { return own.pane(id) != nullptr; })) own.setLayout(std::move(*late.layout));
     }

@@ -259,7 +259,7 @@ Another number fails with `CALL_FAILED`.
 | `detachTab` | pane | An object: the pane in its new window. For a tab of a mux session, it has the new pane ID in the new session. |
 | `openDirectory` | directory, layout | An object: the window and its pane |
 | `projects` | None | The saved project names |
-| `saveProject` | pane, name, overwrite | An object: the name and the window |
+| `saveProject` | pane, name, overwrite | An object: the name and the window. The call fails for the window of a mux session (see [MUX.md](MUX.md#tabs-and-splits)). |
 | `openProject` | name, new instance | An object: the window and its panes |
 | `scriptDiagnostics` | None | Script and package diagnostics |
 | `overlay` | pane, argv, options | An object: `exit_code`, `stdout` and `truncated`. See [overlays](#overlays). |
@@ -826,12 +826,13 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `notify` title | 256 UTF-16 units | The title is cut. |
 | `notify` body | 2048 UTF-16 units | The body is cut. |
+| Wait for the screen and history of a mux session pane that you cannot see, before `getText` or a script read of its text | 5 seconds | The read gets the text that the window has, which can be older. The window does not draw or take input while it waits. |
 
 `getText` and `screenshot` have no size limit.
 A reply with a long scrollback can take more than the 10 seconds of `afterglow ctl`.
 A screenshot of a large window also takes time: Afterglow waits for a frame and encodes the PNG.
 For a pane of a mux session that you cannot see, `getText` first gets the current screen and history from the daemon.
-It waits at most 5 seconds for them (see [session panes](MUX.md#session-panes)).
+The script reads `read_text`, `read_region` and `semantic_regions` do this too (see [session panes](MUX.md#session-panes)).
 
 Text that `afterglow ctl send-text` sends in parts arrives as separate inputs.
 Keys and other clients can type between two parts.

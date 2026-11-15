@@ -70,8 +70,8 @@ public:
         bool vertical = false; ///< a split: the second side is below the first
         double ratio = 0.5; ///< a split: the share of the first side
     };
-    /// The tree in preorder, with no recursion: a session's tree can be as
-    /// deep as it has panes.
+    /// The tree in preorder. The other walks of the tree recurse as deep as
+    /// it goes, which AfterglowMux::MaxSessionPanes bounds for a session's.
     std::vector<PreorderNode> preorder() const;
     /// The tree that @p nodes give in preorder, else null: when they are no
     /// single whole tree, or a split's ratio is not above 0 and below 1.

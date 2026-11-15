@@ -9,10 +9,9 @@
 
 namespace Afterglow::ShellIntegration {
 namespace {
-using Environment = std::vector<std::pair<std::string, std::string>>;
 /// The value of @p name in the child: what @p o sets, else nothing when it
 /// unsets it, else what the child inherits.
-std::optional<std::string> env(const AfterglowPty::SpawnOptions& o, const std::string& name, const Environment* inherited)
+std::optional<std::string> env(const AfterglowPty::SpawnOptions& o, const std::string& name, const InheritedEnvironment* inherited)
 {
     for (auto it = o.environment.rbegin(); it != o.environment.rend(); ++it)
         if (it->first == name) return it->second;
@@ -27,7 +26,7 @@ std::optional<std::string> env(const AfterglowPty::SpawnOptions& o, const std::s
 }
 /// The shell that the child gets without a command (Pty::defaultShell),
 /// with SHELL from what it inherits.
-std::string defaultShell(const AfterglowPty::SpawnOptions& o, const Environment* inherited)
+std::string defaultShell(const AfterglowPty::SpawnOptions& o, const InheritedEnvironment* inherited)
 {
     if (!inherited) return AfterglowPty::Pty::defaultShell(o);
     AfterglowPty::SpawnOptions child;
@@ -40,14 +39,14 @@ void put(AfterglowPty::SpawnOptions& o, const std::string& name, const std::stri
     std::erase_if(o.environment, [&](const auto& e) { return e.first == name; });
     o.environment.emplace_back(name, value);
 }
-void save(AfterglowPty::SpawnOptions& o, const std::string& name, const Environment* inherited)
+void save(AfterglowPty::SpawnOptions& o, const std::string& name, const InheritedEnvironment* inherited)
 {
     const auto value = env(o, name, inherited);
     put(o, "AFTERGLOW_ORIGINAL_" + name + "_SET", value ? "1" : "0");
     put(o, "AFTERGLOW_ORIGINAL_" + name, value.value_or(""));
 }
 }
-bool prepare(AfterglowPty::SpawnOptions& o, bool enabled, const QString& root, const Environment* inherited)
+bool prepare(AfterglowPty::SpawnOptions& o, bool enabled, const QString& root, const InheritedEnvironment* inherited)
 {
     if (!enabled || env(o, "AFTERGLOW_SHELL_INTEGRATION", inherited) == "0") return false;
     auto args = o.argv;
