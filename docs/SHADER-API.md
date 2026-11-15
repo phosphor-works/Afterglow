@@ -436,14 +436,14 @@ Both progress values are linear over `Animation.paneEffectDuration`. The pack ea
 At progress 1, draw the input unchanged.
 `paneContext(i)` is where the pane's shell runs: 0 here, 1 remote, 2 elevated or 3 a container.
 `paneContextChange(i)` runs from 0, just changed, to 1, settled. It follows OSC 3008 contexts, such as those `afterglow ssh` reports.
-`paneContextChange(i)` also runs linearly over `Animation.paneEffectDuration`.
+`paneContextChange(i)` runs linearly over `Animation.contextDuration`.
 `panePreviousContext(i)` is the context before that change, with the same numbers. Blend from it while the change runs.
 A pane that returns here can then fade its mark out in the color it had.
 Scripts play pulses with `afterglow.pulse`. `panePulse(i)` runs from 0 to 1, linearly over the script's duration. It is 1 when no pulse runs.
 `panePulseEffect(i)` is 0 for none, 1 for a portal, 2 for a flash or 3 for a shake. A pack can define its own numbers from 4 to 255.
 `panePulseColor(i)` is the palette color the script chose.
 While any pane is away from here, the pack also runs on each frame Afterglow draws. Those frames come only from changes, so a static mark costs no extra frames.
-[Pane Effects](../data/shaders/pane-effects/effect.frag) shows a hinge and a picture tube.
+[Pane Effects](../data/shaders/pane-effects/effect.frag) shows a hinge and a picture tube, and a ring and a vortex for the context change.
 
 Input does not reach the panes while the overview is open.
 The highlighted pane is the one the user chooses, so a pack needs no hit testing.

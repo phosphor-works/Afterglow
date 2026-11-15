@@ -38,9 +38,10 @@
 // place, while it closes: read it with closingPaneTexel(). The progress of
 // both is linear over Animation.paneEffectDuration; shaders ease it.
 // A pane whose shell moves to another host, user or container (OSC 3008,
-// such as afterglow ssh) changes context; the shader also runs on frames drawn
-// while any pane is away from here, so it can mark those panes. Scripts play
-// effects over a pane with afterglow.pulse(), read through panePulse().
+// such as afterglow ssh) changes context, linearly over
+// Animation.contextDuration; the shader also runs on frames drawn while any
+// pane is away from here, so it can mark those panes. Scripts play effects
+// over a pane with afterglow.pulse(), read through panePulse().
 
 #ifndef AFTERGLOW_TERMINAL_PANES_GLSL
 #define AFTERGLOW_TERMINAL_PANES_GLSL

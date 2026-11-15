@@ -2,7 +2,7 @@
     "id": "pane-effects",
     "name": "Pane Effects",
     "category": "Transition",
-    "description": "Panes swing in on a hinge or switch on like a picture tube when they split open, and leave the same way when they close. A pane that moves to another host passes through a portal and keeps a colored frame.",
+    "description": "Panes swing in on a hinge or switch on like a picture tube when they split open, and leave the same way when they close. A pane that moves to another host spirals through a black hole, or a ring sweeps across it, and it keeps a colored frame.",
     "author": "afterglow",
     "version": "1.0",
     "fragmentShader": "effect.frag",
@@ -11,6 +11,8 @@
         {"id": "shading", "name": "Shading", "group": "Panes", "type": "float", "default": 0.6, "min": 0.0, "max": 1.0},
         {"id": "glow", "name": "Tube glow", "group": "Panes", "type": "float", "default": 1.0, "min": 0.0, "max": 2.0},
         {"id": "portal", "name": "Portal when a pane changes host", "group": "Context", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0},
+        {"id": "portalStyle", "name": "Portal style (0 ring, 1 vortex)", "group": "Context", "type": "int", "default": 1, "min": 0, "max": 1},
+        {"id": "swirl", "name": "Vortex swirl", "group": "Context", "type": "float", "default": 1.0, "min": 0.0, "max": 2.0},
         {"id": "frame", "name": "Frame while away from here", "group": "Context", "type": "float", "default": 0.45, "min": 0.0, "max": 1.0}
     ],
     "presets": {

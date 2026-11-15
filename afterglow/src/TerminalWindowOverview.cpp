@@ -18,6 +18,13 @@ namespace Afterglow {
 
 namespace {
 
+/// How far an effect of @p durationMs that started at @p at has run, 0 to 1.
+float progressSince(std::chrono::steady_clock::time_point at, int durationMs)
+{
+    const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - at).count();
+    return std::clamp(seconds * 1000.0f / float(std::max(1, durationMs)), 0.0f, 1.0f);
+}
+
 /// Where the deck heads for card @p index of @p count from @p now, the short
 /// way round: the position counts on past the last card.
 qreal shortWay(qreal now, int index, int count)
@@ -168,7 +175,7 @@ void TerminalWindow::applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuil
     }
     params.context = context;
     params.previousContext = known->previous;
-    params.contextProgress = paneEffectProgress(known->at);
+    params.contextProgress = contextChangeProgress(known->at);
     m_anyPaneAway |= context != 0;
     animating |= params.contextProgress < 1.0f;
 }
@@ -239,8 +246,12 @@ bool TerminalWindow::paneEffectsAllowed() const
 
 float TerminalWindow::paneEffectProgress(std::chrono::steady_clock::time_point at) const
 {
-    const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - at).count();
-    return std::clamp(seconds * 1000.0f / float(std::max(1, m_settings.settings().animation.paneEffectDuration)), 0.0f, 1.0f);
+    return progressSince(at, m_settings.settings().animation.paneEffectDuration);
+}
+
+float TerminalWindow::contextChangeProgress(std::chrono::steady_clock::time_point at) const
+{
+    return progressSince(at, m_settings.settings().animation.contextDuration);
 }
 
 void TerminalWindow::advancePaneEffects(bool& animating)
@@ -264,7 +275,7 @@ void TerminalWindow::advancePaneEffects(bool& animating)
     }
     // Context changes animate, and panes away from here keep their mark.
     for (const auto& context : std::as_const(m_paneContext)) {
-        if (paneEffectProgress(context.at) < 1.0f) effects.active = effects.moving = true;
+        if (contextChangeProgress(context.at) < 1.0f) effects.active = effects.moving = true;
     }
     // The frame that marks a pane away is part of the effects that
     // Animation.splits=false turns off.
