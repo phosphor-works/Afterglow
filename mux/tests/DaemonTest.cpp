@@ -22,10 +22,16 @@ TEST(MuxDaemon, CreatesListsAndKillsSessions)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // The answer names the session and its first pane, a new one each time.
+    std::int64_t lastPane = 0;
     for (const char* expected : {"1", "2"}) {
         const auto created = daemon.newSession(daemon.options(Waiting));
         ASSERT_TRUE(created) << daemon.lastError();
         EXPECT_EQ((*created)["name"].toString(), expected);
+        const auto pane = (*created)["pane"].toInteger();
+        ASSERT_TRUE(pane) << Json::write(*created);
+        EXPECT_GT(*pane, lastPane);
+        lastPane = *pane;
     }
     ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "work"))) << daemon.lastError();
     IpcConnection::Error error;
@@ -98,7 +104,7 @@ TEST(MuxDaemon, ControlAndCommandCallsFailWithAReason)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     for (const auto& [target, message] : std::vector<std::pair<std::string, std::string>>{
              {"control", "no session is selected: afterglow ctl --session NAME, or afterglow ctl in a session pane, selects one"},
-             {AfterglowProto::Run::Target, "a session pane takes no script commands: the mux daemon runs no scripts"}}) {
+             {AfterglowProto::Run::Target, "only a client in a session pane reaches the mux daemon for the commands of scripts"}}) {
         SCOPED_TRACE(target);
         IpcConnection::Error error;
         EXPECT_FALSE(daemon.call("listPanes", {}, &error, target));

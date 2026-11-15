@@ -47,6 +47,15 @@ bool lockHeldElsewhere(const AfterglowProto::MuxSockets& sockets)
                        [](const AfterglowProto::MuxSocket& socket) { return AfterglowProto::lockFileHeld(socket.path + ".lock"); });
 }
 
+/// The value of @p name in @p environment, or nullptr.
+const char* lookup(const Environment& environment, std::string_view name)
+{
+    for (const std::string& entry : environment) {
+        if (entry.size() > name.size() && entry.starts_with(name) && entry[name.size()] == '=') return entry.c_str() + name.size() + 1;
+    }
+    return nullptr;
+}
+
 std::string userName()
 {
     passwd entry{};
@@ -64,26 +73,30 @@ std::string userName()
 /// from a graphical login, which a user ends on purpose. The manager of an
 /// SSH login without lingering stops its units at the logout, which would end
 /// the sessions.
-bool userManager()
+bool userManager(const Environment& environment)
 {
-    const char* runtime = std::getenv("XDG_RUNTIME_DIR");
+    const char* runtime = lookup(environment, "XDG_RUNTIME_DIR");
     if (!runtime || std::string(runtime) != "/run/user/" + std::to_string(::getuid())) return false;
     struct stat info{};
     if (::stat((std::string(runtime) + "/systemd/private").c_str(), &info) != 0 || !S_ISSOCK(info.st_mode)) return false;
     if (const std::string user = userName(); !user.empty() && ::access(("/var/lib/systemd/linger/" + user).c_str(), F_OK) == 0) {
         return true;
     }
-    const char* session = std::getenv("XDG_SESSION_TYPE");
+    const char* session = lookup(environment, "XDG_SESSION_TYPE");
     return session && (std::strcmp(session, "wayland") == 0 || std::strcmp(session, "x11") == 0);
 }
 
-/// Runs @p argv with its standard streams at /dev/null, or its standard
-/// output in @p output, and waits for it. Its exit status, or -1.
-int run(const std::vector<std::string>& argv, std::string* output = nullptr)
+/// Runs @p argv in @p environment with its standard streams at /dev/null,
+/// or its standard output in @p output, and waits for it. Its exit status,
+/// or -1.
+int run(const std::vector<std::string>& argv, const Environment& environment, std::string* output = nullptr)
 {
     std::vector<char*> args;
     for (const auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
     args.push_back(nullptr);
+    std::vector<char*> envp;
+    for (const auto& entry : environment) envp.push_back(const_cast<char*>(entry.c_str()));
+    envp.push_back(nullptr);
     int pipe[2] = {-1, -1};
     if (output && ::pipe2(pipe, O_CLOEXEC) != 0) return -1;
     posix_spawn_file_actions_t actions;
@@ -91,7 +104,8 @@ int run(const std::vector<std::string>& argv, std::string* output = nullptr)
     for (int fd : {0, 1, 2}) posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd ? O_WRONLY : O_RDONLY, 0);
     if (output) posix_spawn_file_actions_adddup2(&actions, pipe[1], 1);
     pid_t pid = 0;
-    const int spawned = posix_spawnp(&pid, args[0], &actions, nullptr, args.data(), environ);
+    // posix_spawnp finds the program on this process's PATH.
+    const int spawned = posix_spawnp(&pid, args[0], &actions, nullptr, args.data(), envp.data());
     posix_spawn_file_actions_destroy(&actions);
     if (output) {
         ::close(pipe[1]);
@@ -114,10 +128,12 @@ int run(const std::vector<std::string>& argv, std::string* output = nullptr)
 
 /// The value of @p property of the daemon's unit in the user manager, or
 /// empty when systemctl cannot say.
-std::string unitProperty(const char* property)
+std::string unitProperty(const char* property, const Environment& environment)
 {
     std::string value;
-    if (run({"systemctl", "--user", "show", std::string("--property=") + property, "--value", std::string(Unit) + ".service"}, &value) != 0) {
+    if (run({"systemctl", "--user", "show", std::string("--property=") + property, "--value", std::string(Unit) + ".service"}, environment,
+            &value)
+        != 0) {
         return {};
     }
     while (value.ends_with('\n')) value.pop_back();
@@ -127,22 +143,22 @@ std::string unitProperty(const char* property)
 /// Whether the user manager has the daemon's unit, in any state: then
 /// systemd-run fails for its name, and the daemon of that unit starts or
 /// ends.
-bool unitLoaded()
+bool unitLoaded(const Environment& environment)
 {
-    return unitProperty("LoadState") == "loaded";
+    return unitProperty("LoadState", environment) == "loaded";
 }
 
 /// Starts @p daemon in a session of its own, outside the process group and
 /// the terminal of this command: it stays when they end. Its standard
 /// streams go to /dev/null, so it reports on @p reportFd
 /// (AfterglowMux::ReportFdVariable) that it listens, or why it cannot start.
-bool startDetached(const std::string& daemon, int reportFd, std::string* error)
+bool startDetached(const std::string& daemon, const Environment& environment, int reportFd, std::string* error)
 {
     // Made before the fork: the child calls only what is safe after one.
     std::vector<std::string> store;
     const std::string reportVariable = std::string(AfterglowMux::ReportFdVariable) + "=";
-    for (char** e = environ; *e; ++e) {
-        if (!std::string_view(*e).starts_with(reportVariable)) store.emplace_back(*e);
+    for (const std::string& entry : environment) {
+        if (!entry.starts_with(reportVariable)) store.push_back(entry);
     }
     store.emplace_back(reportVariable + "3");
     std::vector<char*> envp;
@@ -268,25 +284,38 @@ Reached waitForDaemon(const AfterglowProto::MuxSockets& sockets, std::chrono::st
 
 } // namespace
 
+Environment currentEnvironment()
+{
+    Environment environment;
+    for (char** e = environ; *e; ++e) environment.emplace_back(*e);
+    return environment;
+}
+
 Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon, std::string* error)
+{
+    return connectOrStart(sockets, daemon, currentEnvironment(), error);
+}
+
+Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon, const Environment& environment,
+                       std::string* error)
 {
     if (Reached reached = connectAny(sockets, error); reached.connection || !error->empty()) return reached;
     const auto deadline = std::chrono::steady_clock::now() + StartWait;
-    if (userManager()) {
+    if (userManager(environment)) {
         std::vector<std::string> start = {"systemd-run", "--user", "--quiet", "--collect",
                                           std::string("--unit=") + Unit, "--description=Afterglow terminal sessions"};
         // The daemon runs in the user manager's environment, and finds its
         // state directory's socket from these: the one that this command and
         // later clients look for.
         for (const char* name : {"XDG_STATE_HOME", "HOME"}) {
-            if (const char* value = std::getenv(name); value && *value) start.push_back(std::string("--setenv=") + name + "=" + value);
+            if (const char* value = lookup(environment, name); value && *value) start.push_back(std::string("--setenv=") + name + "=" + value);
         }
         start.push_back(daemon);
         // systemd-run fails too when the unit exists: another command
         // started the daemon at the same time, or the daemon of the unit
         // ends. Then a second daemon would run outside the user manager.
-        bool ours = run(start) == 0;
-        if (ours || unitLoaded()) {
+        bool ours = run(start, environment) == 0;
+        if (ours || unitLoaded(environment)) {
             // A unit that ends keeps its name until its daemon is gone, and
             // then --collect unloads it. Nothing starts a daemon after that,
             // so this command starts it once more. A unit that this command
@@ -305,10 +334,10 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
                 if (now >= deadline) break;
                 if (now >= nextLook) {
                     nextLook = now + std::chrono::milliseconds(250);
-                    if (!unitLoaded()) {
+                    if (!unitLoaded(environment)) {
                         if (!ours && !retried) {
                             retried = true;
-                            ours = run(start) == 0;
+                            ours = run(start, environment) == 0;
                         } else if (!lockHeldElsewhere(sockets)) {
                             break;
                         }
@@ -318,9 +347,9 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
             }
             // The daemon of a unit that this command started and that still
             // runs holds its own locks: its error is in the journal.
-            if (!(ours && unitLoaded()) && lockHeldElsewhere(sockets)) {
+            if (!(ours && unitLoaded(environment)) && lockHeldElsewhere(sockets)) {
                 *error = "aglow-mux did not start: another aglow-mux holds a socket and does not answer";
-            } else if (unitProperty("ActiveState") == "deactivating") {
+            } else if (unitProperty("ActiveState", environment) == "deactivating") {
                 *error = std::string("aglow-mux did not start: the daemon of ") + Unit
                     + ".service is ending. Try again when it has ended";
             } else {
@@ -334,7 +363,7 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
         *error = std::string("cannot create a pipe: ") + std::strerror(errno);
         return {};
     }
-    const bool started = startDetached(daemon, report[1], error);
+    const bool started = startDetached(daemon, environment, report[1], error);
     ::close(report[1]);
     Report reported;
     if (started) reported = readReport(report[0], deadline);

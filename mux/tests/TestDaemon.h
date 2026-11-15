@@ -173,7 +173,8 @@ public:
     /// The soft RLIMIT_NOFILE that the daemon starts with, below the hard one.
     void startFileLimit(rlim_t soft) { m_startFileLimit = soft; }
 
-    /// A variable that the daemon has and the sessions have not.
+    /// A variable that the daemon has and the sessions have not, in place
+    /// of one of the same name.
     void daemonOnly(std::string name, std::string value) { m_daemonOnly.emplace_back(std::move(name), std::move(value)); }
 
     /// Starts a daemon that this test kills at its end whatever happens: the
@@ -187,7 +188,10 @@ public:
     pid_t spawnDaemon(bool ignoreHangup = false, bool other = false, int report = -1)
     {
         std::vector<std::string> store;
-        for (const auto& [name, value] : m_environment) store.push_back(name + "=" + value);
+        for (const auto& [name, value] : m_environment) {
+            const bool replaced = std::any_of(m_daemonOnly.begin(), m_daemonOnly.end(), [&](const auto& only) { return only.first == name; });
+            if (!replaced) store.push_back(name + "=" + value);
+        }
         for (const auto& [name, value] : m_daemonOnly) store.push_back(name + "=" + value);
         if (report >= 0) store.push_back(std::string(AfterglowMux::ReportFdVariable) + "=3");
         std::vector<char*> envp;

@@ -5,7 +5,7 @@
 
 Afterglow requires Linux, Wayland and a Vulkan driver.
 These instructions use the current source layout.
-To build `aglow` alone, without Qt and the Phosphor libraries, see [build aglow alone](#build-aglow-alone).
+To build `aglow` and `aglow-mux` alone, without Qt, see [build aglow and aglow-mux alone](#build-aglow-and-aglow-mux-alone).
 
 ## Required software
 
@@ -173,14 +173,25 @@ To use another Phosphor checkout, add this option to the configuration command:
 
 The build compiles the Phosphor libraries with Afterglow.
 
-## Build aglow alone
+## Build aglow and aglow-mux alone
 
-Build `aglow` alone on a computer that does not run Afterglow, for example a remote host.
-A distribution can also package `aglow` on its own from this build.
+Build `aglow` and the [mux daemon](MUX.md) `aglow-mux` alone on a computer that does not run Afterglow, for example a remote host.
+`afterglow mux --ssh` runs the `aglow-mux` of the remote host.
+A distribution can also package `aglow` and `aglow-mux` on their own from this build.
 This build needs CMake 3.21 or later, a C compiler, a C++20 compiler and the static C and C++ runtime libraries.
 NASM is optional, as in the full build.
-It does not need Qt, the other libraries of Afterglow or a PlasmaZones checkout.
+It does not need Qt.
 It compiles zlib-ng, xxHash, libpng, libjpeg-turbo and libwebp from their [source archives](#source-archives), as the full build does.
+
+`aglow-mux` also needs:
+
+| Dependency | Use |
+| --- | --- |
+| PCRE2 with 32-bit code units (`libpcre2-32`), and `pkg-config` | The terminal core, which `aglow-mux` uses, links it for regular expression search |
+| A PlasmaZones checkout, as in the [build steps](#build) | Gives phosphor-channel, which carries the frames of a session to its window. The build uses no other library of the checkout. |
+
+To build `aglow` without `aglow-mux`, add `-DAFTERGLOW_BUILD_MUX=OFF` to the configuration command.
+That build does not need PCRE2 or a PlasmaZones checkout.
 It downloads only CPM.cmake and the archives of `cmake/AfterglowDependencies.cmake`.
 By default, the CPM cache is `.cache/cpm` in the Afterglow directory.
 `-DCPM_SOURCE_CACHE` and the `CPM_SOURCE_CACHE` environment variable change it.
@@ -201,9 +212,10 @@ cd Afterglow
 cmake -B build-aglow -DAFTERGLOW_AGLOW_ONLY=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 ```
 
+When the PlasmaZones checkout is not next to the Afterglow directory, add `-DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/PlasmaZones/phosphor-libs` to the command.
 Without GTest, add `-DBUILD_TESTING=OFF` to the command, and skip step 4.
 
-3. Build `aglow`:
+3. Build `aglow` and `aglow-mux`:
 
 ```sh
 cmake --build build-aglow
@@ -215,7 +227,7 @@ cmake --build build-aglow
 ctest --test-dir build-aglow --output-on-failure
 ```
 
-5. Install `aglow`:
+5. Install `aglow` and `aglow-mux`:
 
 ```sh
 sudo cmake --install build-aglow
@@ -226,7 +238,12 @@ The license notices are those of zlib-ng, xxHash, libpng, libjpeg-turbo (with `R
 A static `aglow` also has the notices of glibc and libstdc++.
 The texts of the licenses that they name are also installed. These are `LGPL-2.1-or-later.txt`, and `GPL-3.0-or-later.txt` for a static `aglow`.
 The completions go in the directories of the full build (see [install](#install)), and `AFTERGLOW_ZSH_COMPLETION_DIR` also applies.
-It contains no other part of Afterglow.
+
+The installation also contains `bin/aglow-mux` and its license notices in `share/licenses/aglow-mux`.
+These are the notices of `aglow`, without those of glibc and libstdc++, and the texts of `GPL-3.0-or-later.txt` and `LGPL-2.1-or-later.txt`.
+`aglow-mux` is not static. It uses the C and C++ runtime libraries and PCRE2 of the system.
+Its private libraries `libAfterglowVt`, `libAfterglowPty` and `libPhosphorChannel` go in the `afterglow` directory of the library directory, as in the full build.
+The installation contains no other part of Afterglow.
 
 ## Install
 
@@ -267,7 +284,7 @@ A static `aglow` contains parts of glibc, which is LGPL-2.1-or-later.
 The build installs `LICENSE.glibc` and `LICENSE.libstdc++` only when the C library is glibc and the C++ library is libstdc++. With another library, the configuration writes a warning, and its notice is the packager's to add.
 A static `aglow` loads at a random address when the C library supports it (`-static-pie`).
 To link `aglow` again with a changed C library, build the `aglow` target from the Afterglow source of the same version (`cmake --build build --target aglow`).
-A [build of aglow alone](#build-aglow-alone) also does this, without Qt and the Phosphor libraries.
+A [build of aglow and aglow-mux alone](#build-aglow-and-aglow-mux-alone) also does this, without Qt.
 When `readelf` is installed, the build of a static `aglow` prints the oldest Linux kernel that it needs, and on x86-64 the processor level.
 When the compiler or linker flags contain `-fsanitize`, such as in the `debug` preset, `aglow` links dynamically.
 A static program cannot use the sanitizer runtimes.

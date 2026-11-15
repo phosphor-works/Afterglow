@@ -34,13 +34,33 @@ if(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR STREQUAL "")
     set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
 endif()
 
-# aglow alone, for a computer that runs no Afterglow: a remote host, or a
-# package of its own. It needs CMake, the C and C++20 compilers and the static
-# C and C++ runtime libraries, but no Qt and no Phosphor checkout. zlib-ng,
-# xxHash and the image codecs come from their pinned archives, as in the whole
-# build. It installs aglow, its completions and its license notices, nothing
-# of the application.
-option(AFTERGLOW_AGLOW_ONLY "Build only aglow and the two libraries that it uses (protocol and image): no Qt and no Phosphor libraries" OFF)
+# Installed layout: the executables in bin/; afterglow's libraries, its own
+# copies of the phosphor libraries and their layer-shell plugin in a private
+# lib/afterglow/, so a system install of phosphor is never touched. The
+# executables find that directory; the libraries in it and the plugin set their
+# own run paths where they are installed (afterglow/CMakeLists.txt, and
+# mux/CMakeLists.txt for aglow-mux alone).
+set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
+# The path from the executables to it, also for an absolute LIBDIR or a
+# BINDIR deeper than bin/.
+file(RELATIVE_PATH AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}/afterglow")
+set(CMAKE_INSTALL_RPATH "$ORIGIN/${AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN}")
+
+# aglow and aglow-mux alone, for a computer that runs no Afterglow: a remote
+# host, where afterglow mux --ssh runs aglow-mux proxy, or packages of their
+# own. It needs CMake, the C and C++20 compilers and the static C and C++
+# runtime libraries, but no Qt. zlib-ng, xxHash and the image codecs come from
+# their pinned archives, as in the whole build. aglow-mux needs PCRE2 and
+# phosphor-channel, the one Phosphor library with no Qt, from the Phosphor
+# checkout; without AFTERGLOW_BUILD_MUX the build reads no checkout. It
+# installs the two programs, their completions and their license notices,
+# nothing of the application.
+option(AFTERGLOW_AGLOW_ONLY "Build only aglow and aglow-mux, with the libraries that they use: no Qt, and of the Phosphor libraries only phosphor-channel" OFF)
+option(AFTERGLOW_BUILD_MUX "With AFTERGLOW_AGLOW_ONLY, build aglow-mux too. It needs PCRE2 and the Phosphor checkout. The whole build always builds it" ON)
+if(NOT AFTERGLOW_AGLOW_ONLY AND NOT AFTERGLOW_BUILD_MUX)
+    message(FATAL_ERROR "afterglow runs aglow-mux for afterglow mux, so the whole build always builds it. "
+                        "Turn AFTERGLOW_BUILD_MUX on, or AFTERGLOW_AGLOW_ONLY on.")
+endif()
 if(AFTERGLOW_AGLOW_ONLY)
     if(DEFINED AFTERGLOW_BUILD_AGLOW AND NOT AFTERGLOW_BUILD_AGLOW)
         message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds aglow. Turn AFTERGLOW_BUILD_AGLOW on, or AFTERGLOW_AGLOW_ONLY off.")
@@ -49,13 +69,21 @@ if(AFTERGLOW_AGLOW_ONLY)
     # this build leaves out. Asked for, they would be missing without a word.
     foreach(option AFTERGLOW_BUILD_TOOLS AFTERGLOW_BUILD_FUZZERS AFTERGLOW_BUILD_VTDIFF)
         if(${option})
-            message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds only aglow, not ${option}. Turn one of them off.")
+            message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds only aglow and aglow-mux, not ${option}. Turn one of them off.")
         endif()
     endforeach()
+    if(AFTERGLOW_BUILD_MUX)
+        include(cmake/AfterglowPhosphor.cmake)
+    endif()
     include(cmake/AfterglowDependencies.cmake)
     add_subdirectory(libs/afterglow-proto)
     add_subdirectory(libs/afterglow-image)
     add_subdirectory(tools/aglow)
+    if(AFTERGLOW_BUILD_MUX)
+        add_subdirectory(libs/afterglow-vt)
+        add_subdirectory(libs/afterglow-pty)
+        add_subdirectory(mux)
+    endif()
     return()
 endif()
 
@@ -73,17 +101,6 @@ qt_standard_project_setup()
 # Qt's signals/slots/emit keywords collide with ordinary identifiers (the
 # phosphor libraries name variables `slots`); use Q_SIGNALS / Q_EMIT instead.
 add_compile_definitions(QT_NO_KEYWORDS)
-
-# Installed layout: the executable in bin/; afterglow's libraries, its own
-# copies of the phosphor libraries and their layer-shell plugin in a private
-# lib/afterglow/, so a system install of phosphor is never touched. The
-# executable finds that directory; the libraries in it and the plugin set their
-# own run paths where they are installed (afterglow/CMakeLists.txt).
-set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
-# The path from the executables to it, also for an absolute LIBDIR or a
-# BINDIR deeper than bin/.
-file(RELATIVE_PATH AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}/afterglow")
-set(CMAKE_INSTALL_RPATH "$ORIGIN/${AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN}")
 
 include(cmake/AfterglowPhosphor.cmake)
 # The pins of zlib-ng and xxHash (libs/afterglow-proto) and of the image

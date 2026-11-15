@@ -694,7 +694,7 @@ See [native test dependencies](#native-test-dependencies).
 Run the tests of the control socket, `afterglow ctl`, the `commands` target and `aglow run`:
 
 ```sh
-ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest|CtlOverlayTest|CtlScreenshotTest|CommandSocketTest|RunBinaryTest|AfterglowRunWithoutAglowTest|RemoteCommandsTest|Proto\.RunClient|Proto\.RunInput|Proto\.RunRemote|Proto\.Socket|Proto\.Remote|Proto\.Ipc)\.|RemoteSocket|aglow_run_pty|aglow_tmux_pty'
+ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest|CtlOverlayTest|CtlScreenshotTest|CommandSocketTest|RunBinaryTest|AfterglowRunWithoutAglowTest|RemoteCommandsTest|MuxCommandsLine|Proto\.RunClient|Proto\.RunInput|Proto\.RunRemote|Proto\.Socket|Proto\.Remote|Proto\.Ipc)\.|RemoteSocket|aglow_run_pty|aglow_tmux_pty'
 ```
 
 | Tests | Binary | What they run |
@@ -702,13 +702,14 @@ ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest
 | `ControlSocketTest.*` | `afterglow_control_tests` | The `control` target: calls and errors, `overlay` and its `overlayInput` parts, and the refusals of `screenshot`. The socket lookup, stale sockets and merged events. |
 | `CtlBinaryTest.*`, `CtlOverlayTest.*` and `CtlScreenshotTest.*` | `afterglow_command_tests` | `afterglow ctl` against a socket that the test makes: usage errors, `afterglow ctl overlay` with its options and standard input, and `afterglow ctl screenshot` with a `FILE`, `-`, a pipe, a FIFO that a program reads, a socket, a terminal and a directory that takes no new file |
 | `CommandSocketTest.*` | `afterglow_command_tests` | The `commands` target of the socket: the list, runs, standard input, flow control, cancel and the limits |
+| `MuxCommandsLine.*` | `afterglow_command_tests` | How a window passes the lines of a client of a mux session to its Afterglow: the pane IDs of runs, the target, and the lines that it refuses |
 | `RunBinaryTest.*` | `afterglow_command_tests` | `aglow run` against a socket that the test makes. They check the exit status, the output, standard input, the pane, signals and the socket lookup. |
 | `AfterglowRunWithoutAglowTest.*` | `afterglow_command_tests` | `afterglow run` in a build without `aglow`. The test checks the error and exit status 127. |
 | `Proto.RunClient.*` and `Proto.RunInput.*` | `afterglow_proto_tests` | The client of `aglow run` against a server that the test plays, and the parts of standard input that it sends |
 | `Proto.RunRemote.*` | `afterglow_proto_tests` | How the client of `aglow run` uses the answer of the terminal to OSC 24569, and its messages when there is no socket |
 | `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run`, and the sockets of the mux daemon: their order and the name of the state socket |
 | `Proto.Remote.*` | `afterglow_proto_tests` | OSC 24569, the remote directory and `aglow remote-prune` |
-| `RemoteCommandsTest.*` | `afterglow_remote_tests` | The sockets of remote commands, the probe of `afterglow ssh` with a fake `ssh`, and an acceptance test with `sshd` |
+| `RemoteCommandsTest.*` | `afterglow_remote_tests` | The sockets of remote commands, also the sockets that a window gives the clients of a mux session, the probe of `afterglow ssh` with a fake `ssh`, and an acceptance test with `sshd` |
 | `Proto.Ipc.*` | `afterglow_proto_tests` | The phosphor-ipc client of the protocol library |
 | `Extensions.*RemoteSocket*` | `afterglow_vt_tests` | The answer of the pane to OSC 24569: the path or the reason, and the order of the answer before DA1 |
 | `aglow_run_pty` and `aglow_tmux_pty` | Python scripts | The OSC 24569 query of `aglow run` in a pseudo-terminal, also in a private tmux server. See [aglow tests](#aglow-tests) |
@@ -860,6 +861,11 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.MuxOnCloseAppliesToAnOpenSessionPane` | A change of `Mux.onClose` reaches an open pane |
 | `NativeWindow.ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow` | A launch of a session that a window shows brings that window to the front and shows the session pane. A launch of an unknown session fails with the reason. |
 | `NativeWindow.ALargePasteReachesTheProgramOfASessionWhole` | Input larger than a frame goes in parts, in order |
+| `NativeWindow.AglowRunInASessionPaneRunsTheCommandsOfItsWindow` | `aglow run` in a session pane runs a command of the window's scripts on the window's pane, with its arguments, input, exit status and 6 MiB of output, also under `setsid -w`. A detach while a command runs ends it with the reason. A session that no window shows refuses the command. The test makes the socket of the test process listen in a directory of its own, and closes it at the end. |
+| `NativeWindow.AglowRunInASessionOfAnotherHostGetsOnlyRemoteCommands` | `aglow run` in a pane of a session of another host, through a fake ssh, runs a command that a script marks remote, with the host as `ev.remote.host`. A command that is not marked remote fails with status 2. |
+| `NativeWindow.AProjectOpensIntoASessionAndAgainIntoTheSameOne` | A project with `"session": true` opens into a session of the test's daemon with its tabs, splits and commands. The open answers after the daemon starts, and a second open meanwhile gets the same window. The window saves the project again with `"session": true`. After its window closed, the project shows the same session, whose new window saves the same commands and titles. `--no-session` opens it into a window. |
+| `NativeWindow.RemoteSocketsOpenOnlyForTheProcessesOfTheirPane` | The window tells the processes of a pane by their terminal session, and refuses `openRemoteSocket` from a process of no pane |
+| `NativeWindow.AnSshSessionInASessionPaneRunsRemoteCommandsThroughTheDaemon` | `afterglow ssh` in a session pane, with a fake ssh whose forward is a link: the daemon keeps the socket and answers the query of `aglow run`, whose remote command runs in the window. At the end the daemon cancels the forward. |
 
 Not every test starts a daemon. A test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.
 The `Mux.*` tests and the native tests above do this with `mux/tests/TestDaemon.h`, and the `MuxCommandTest.*` tests in their `SetUp`.
@@ -904,7 +910,7 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service, also with `--confirm-paths` answered with y and n | Python 3 |
 | `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |
 | `aglow_static` | Checks that `readelf -d` lists no shared library for `aglow` | `readelf`, and a static `aglow` |
-| `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY`), with `find_package(Qt6)` disabled and no Phosphor directory. Builds it and installs it into the build directory. Checks that the installation holds only `bin/aglow`, its license notices and its completions. Uses the compilers, the build type and the flags of the build, also the flags of each build type. Has the label `slow` | A full build, and the source archives of `cmake/AfterglowDependencies.cmake` or a network connection |
+| `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY` without `AFTERGLOW_BUILD_MUX`), with `find_package(Qt6)` disabled and no Phosphor directory, and checks that the configuration reads neither. Then configures `aglow` and `aglow-mux` alone with `find_package(Qt6)` disabled and the PlasmaZones checkout of the build. Builds them and installs them into the build directory. Checks that the installation holds only the two programs, the private libraries of `aglow-mux`, the completions of `aglow` and the license notices, and that the installed programs run. Uses the compilers, the build type and the flags of the build, also the flags of each build type. Has the label `slow` | A full build, and the source archives of `cmake/AfterglowDependencies.cmake` or a network connection |
 | `aglow_clipboard_pty` | Plays a terminal for `aglow clipboard` in a pseudo-terminal | Python 3.9 or later |
 | `aglow_run_pty` | Plays a terminal and a terminal socket for the OSC 24569 query of `aglow run`. Checks when `aglow run` does not ask, the modes of the terminal after signals and `Ctrl+C`, and what `aglow remote-prune` removes | Python 3.9 or later |
 | `aglow_tmux_pty` | Runs `aglow icat` and `aglow run` in a private tmux server (`tmux -L`, its own configuration and socket directory) in a pseudo-terminal, with `allow-passthrough` on and off | Python 3.9 or later and tmux 3.3 or later. With no tmux, or a tmux older than 3.3, it reports Skipped |
@@ -920,13 +926,14 @@ Run the suite without it:
 ctest --test-dir build --output-on-failure -LE slow
 ```
 
-A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` and `Image.*` tests and these tests of the table:
+A [build of aglow and aglow-mux alone](BUILD.md#build-aglow-and-aglow-mux-alone) has the `Proto.*` and `Image.*` tests, the terminal core tests of `afterglow_vt_tests`, the `PtyLib.*` and `Mux.*` tests, and these tests of the table:
 
 - `aglow_version`, `aglow_run_usage`, `aglow_no_command`, `aglow_unknown_command` and `aglow_help_unknown_command`
 - The three `aglow_remote_prune_*` tests, and `Aglow.*`
 - `aglow_static`, `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_tmux_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`
 
 It has no test that runs `afterglow`.
+With `AFTERGLOW_BUILD_MUX` off, it has no test of the terminal core, `PtyLib.*` or `Mux.*`.
 
 The Python test scripts need Python 3.9 or later.
 Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skipped.
