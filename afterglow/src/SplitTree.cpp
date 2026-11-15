@@ -417,4 +417,57 @@ std::unique_ptr<SplitTree> SplitTree::restore(const QJsonObject& tree, const std
     return result;
 }
 
+std::vector<SplitTree::PreorderNode> SplitTree::preorder() const
+{
+    std::vector<PreorderNode> nodes;
+    std::vector<const Node*> pending;
+    if (m_root) pending.push_back(m_root.get());
+    while (!pending.empty()) {
+        const Node* node = pending.back();
+        pending.pop_back();
+        nodes.push_back({node->pane, node->vertical, node->ratio});
+        if (node->pane) continue;
+        // The first side comes out next.
+        pending.push_back(node->second.get());
+        pending.push_back(node->first.get());
+    }
+    return nodes;
+}
+
+std::unique_ptr<SplitTree> SplitTree::fromPreorder(const std::vector<PreorderNode>& nodes)
+{
+    auto result = std::make_unique<SplitTree>(nullptr);
+    result->m_root.reset();
+    // The splits that still wait for a side: the last one takes the next node.
+    std::vector<Node*> open;
+    for (const PreorderNode& given : nodes) {
+        if (!given.pane && !(given.ratio > 0 && given.ratio < 1)) return nullptr;
+        auto node = std::make_unique<Node>();
+        Node* const raw = node.get();
+        node->pane = given.pane;
+        if (!given.pane) {
+            node->vertical = given.vertical;
+            node->ratio = given.ratio;
+            node->serial = result->m_nextSerial++;
+        }
+        if (!result->m_root) {
+            result->m_root = std::move(node);
+        } else {
+            // A node after the tree is whole.
+            if (open.empty()) return nullptr;
+            Node* const parent = open.back();
+            node->parent = parent;
+            if (!parent->first) {
+                parent->first = std::move(node);
+            } else {
+                parent->second = std::move(node);
+                open.pop_back();
+            }
+        }
+        if (!given.pane) open.push_back(raw);
+    }
+    if (!result->m_root || !open.empty()) return nullptr;
+    return result;
+}
+
 } // namespace Afterglow

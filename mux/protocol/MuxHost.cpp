@@ -6,8 +6,11 @@
 #include "MuxCodec.h"
 
 #include <AfterglowProto/Clipboard.h>
+#include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Text.h>
+#include <AfterglowProto/Transfer.h>
 
+#include <array>
 #include <vector>
 
 namespace AfterglowMux::Host {
@@ -289,6 +292,74 @@ std::optional<Call> decode(std::string_view bytes)
         return std::nullopt;
     }
     return call;
+}
+
+namespace {
+
+std::string protocolWithoutWindow(int code, std::string_view payload)
+{
+    if (code == 72) {
+        // A program asks which drag and drop types the terminal supports. It
+        // gets the answer of a window: a client may attach before a drag.
+        if (std::string reply = AfterglowProto::dndQueryReply(payload); !reply.empty()) return reply;
+        // A drag starts from an offer (t=o without x=1 or x=2) while the
+        // user holds the mouse button. Without a window no drag can start,
+        // so the offer gets the window's EPERM. A drop never arrives, so
+        // the other commands need no answer. A chunked offer is answered
+        // once, at its last chunk.
+        const std::string_view raw = AfterglowProto::splitDnd(payload).first;
+        const auto meta = AfterglowProto::parseDndMeta(raw);
+        if (!meta || AfterglowProto::dndMore(raw)) return {};
+        const auto type = meta->find("t");
+        const auto x = meta->find("x");
+        if (type == meta->end() || type->second != "o" || (x != meta->end() && (x->second == "1" || x->second == "2"))) return {};
+        AfterglowProto::DndMeta error{{"t", "E"}};
+        if (const auto id = meta->find("i"); id != meta->end()) error.emplace("i", id->second);
+        std::string out;
+        for (const std::string& packet : AfterglowProto::writeDnd(std::move(error), "EPERM")) out += packet;
+        return out;
+    }
+    if (code != 5113 || payload.size() > AfterglowProto::TransferMaxCommand) return {};
+    // A transfer starts with ac=send or ac=receive and waits for the user's
+    // answer. Without a window no user answers: it is the answer of a
+    // denial. A session with q=2 asked for no status, errors included. The
+    // commands of a transfer that a window ran, which went, get none: the
+    // program learns of the end when its terminal answers it no more, as for
+    // a window that closed.
+    const auto fields = AfterglowProto::decodeTransfer(payload);
+    if (!fields) return {};
+    const auto action = fields->find("ac");
+    const auto id = fields->find("id");
+    if (action == fields->end() || id == fields->end() || (action->second != "send" && action->second != "receive")) return {};
+    if (const auto quiet = fields->find("q"); quiet != fields->end() && quiet->second == "2") return {};
+    const std::array<std::pair<std::string_view, std::string_view>, 3> status{{
+        {"ac", "status"},
+        {"id", id->second},
+        {"st", "EPERM"},
+    }};
+    return AfterglowProto::encodeTransfer(status);
+}
+
+} // namespace
+
+std::string answerWithoutWindow(const Call& call)
+{
+    switch (call.kind) {
+    case Kind::ClipboardRequest:
+        // No window has a clipboard to give: the request gets the answer of
+        // a denial.
+        return call.clipboard.refusal("EPERM");
+    case Kind::TerminalProtocol:
+        return protocolWithoutWindow(call.number, call.text);
+    case Kind::DesktopNotification:
+        // No notification is on screen: a program that asks which are gets
+        // an empty list, in the reply of a window. The others are dropped.
+        return call.notification.kind == AfterglowVt::NotificationRequest::Kind::Alive ? call.notification.aliveReply() : std::string();
+    case Kind::Report:
+        return call.text;
+    default:
+        return {};
+    }
 }
 
 } // namespace AfterglowMux::Host

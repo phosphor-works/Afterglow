@@ -12,6 +12,7 @@
 
 #include "MuxProtocol.h"
 
+#include <AfterglowProto/Ipc.h>
 #include <AfterglowProto/IpcServer.h>
 
 #include <gtest/gtest.h>
@@ -36,7 +37,9 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -295,6 +298,55 @@ protected:
         return (directory / "afterglow").string();
     }
 
+    /// What `afterglow mux ls` says of session @p name: "attached",
+    /// "detached", or empty for a session that it does not list.
+    std::string stateOf(const std::string& name) const
+    {
+        std::istringstream lines(mux({"ls"}).out);
+        for (std::string line; std::getline(lines, line);) {
+            std::istringstream words(line);
+            std::string first, second;
+            words >> first >> second;
+            if (first == name) return second;
+        }
+        return {};
+    }
+
+    /// A window of session @p name, as the daemon sees one: the attach call
+    /// and a connection to its socket, which shows the session until the
+    /// daemon ends it. The connection, or -1.
+    int attachWindow(const std::string& name) const
+    {
+        AfterglowProto::IpcConnection connection;
+        AfterglowProto::IpcConnection::Error error;
+        if (!connection.connect(runtime() + "/afterglow-mux/socket", &error, 2000)) {
+            ADD_FAILURE() << "no daemon: " << error.message;
+            return -1;
+        }
+        const auto result = connection.call(AfterglowMux::Target, AfterglowMux::Fn::Attach,
+                                            Json::Array{AfterglowMux::ProtocolVersion, name, Json::Object{}}, 5000, &error);
+        if (!result) {
+            ADD_FAILURE() << "attach failed: " << error.code << " " << error.message;
+            return -1;
+        }
+        const std::string path = (*result)["socket"].toString();
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        if (fd < 0 || path.size() >= sizeof address.sun_path) {
+            ADD_FAILURE() << "no socket for " << path;
+            if (fd >= 0) ::close(fd);
+            return -1;
+        }
+        std::memcpy(address.sun_path, path.data(), path.size());
+        if (::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof address) != 0) {
+            ADD_FAILURE() << "cannot connect to " << path << ": " << std::strerror(errno);
+            ::close(fd);
+            return -1;
+        }
+        return fd;
+    }
+
     /// The directories of afterglowWithDaemon() whose test process is gone:
     /// a ctest timeout kills a test before its TearDown. One of a test that
     /// still runs, in parallel, stays.
@@ -483,6 +535,53 @@ TEST_F(MuxCommandTest, CtlActsOnASessionWithoutAWindow)
     EXPECT_EQ(closed.status, 0) << closed.err;
     const Result one = ctl({"--session", "work", "ls", "--json"});
     EXPECT_EQ(one.out.find("\"id\": 2"), std::string::npos) << one.out;
+}
+
+// detach ends the window of a session: of the session that it names, else in
+// a session pane of the session that holds the pane. A connection of the test
+// plays the window. A name goes before the pane, and a pane ID without the
+// name of its session is no session pane.
+TEST_F(MuxCommandTest, DetachEndsTheWindowOfTheNamedSessionOrOfThePane)
+{
+    for (const char* name : {"now", "other"}) {
+        std::vector<std::string> args{"new", "--detach", "--name", name};
+        for (const std::string& arg : waitsForTheTest()) args.push_back(arg);
+        const Result created = mux(args);
+        ASSERT_EQ(created.status, 0) << created.err;
+    }
+    int window = attachWindow("now");
+    ASSERT_GE(window, 0);
+    EXPECT_TRUE(waitFor([this] { return stateOf("now") == "attached"; }));
+    // In the first pane of the daemon (ID 1), which session "now" holds.
+    m_environment.push_back("AFTERGLOW_SESSION=now");
+    m_environment.push_back("AFTERGLOW_PANE_ID=1");
+    const Result named = mux({"detach", "other"});
+    EXPECT_EQ(named.status, 1);
+    EXPECT_EQ(named.err, "afterglow mux detach: no window shows session 'other'\n");
+    EXPECT_EQ(stateOf("now"), "attached");
+    const Result ofPane = mux({"detach"});
+    EXPECT_EQ(ofPane.status, 0) << ofPane.err;
+    EXPECT_TRUE(ofPane.err.empty()) << ofPane.err;
+    EXPECT_EQ(stateOf("now"), "detached");
+    const Result again = mux({"detach"});
+    EXPECT_EQ(again.status, 1);
+    EXPECT_EQ(again.err, "afterglow mux detach: no window shows session 'now'\n");
+    ::close(window);
+    // The pane ID alone.
+    m_environment.erase(m_environment.end() - 2);
+    const Result usage = mux({"detach"});
+    EXPECT_EQ(usage.status, 2);
+    // The usage text follows the message.
+    EXPECT_TRUE(usage.err.starts_with("afterglow mux: detach takes the name of a session, outside a session pane\n\nUsage:")) << usage.err;
+    // By name, outside a session pane.
+    m_environment.pop_back();
+    window = attachWindow("now");
+    ASSERT_GE(window, 0);
+    EXPECT_TRUE(waitFor([this] { return stateOf("now") == "attached"; }));
+    const Result byName = mux({"detach", "now"});
+    EXPECT_EQ(byName.status, 0) << byName.err;
+    EXPECT_EQ(stateOf("now"), "detached");
+    ::close(window);
 }
 
 // A platform other than Wayland, which afterglow would refuse after the

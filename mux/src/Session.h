@@ -17,8 +17,10 @@ namespace AfterglowMux {
 
 /// The panes of one session, their running programs, and their tabs and
 /// splits (Layout). The window that shows the session changes the layout and
-/// sends it; the daemon keeps it for the next window, and takes out the panes
-/// whose programs end.
+/// sends it; the daemon keeps it for the next window. The daemon changes it
+/// too: a pane that it starts is a tab of its own, and a pane whose program
+/// ends, that the window closes or that leaves for another session leaves
+/// it. Each pane of the session is in the layout once, and no other.
 class Session
 {
 public:
@@ -34,9 +36,11 @@ public:
     /// umask, at @p size, and the variables that name the session, the pane
     /// and the daemon socket: a tab of its own after the others. False when
     /// its program cannot start: @p error says why. @p wake is the pane's
-    /// (MuxPane), safe to call from any thread.
+    /// (MuxPane), safe to call from any thread. @p window and @p windowQueue
+    /// name the window that shows the session (MuxPane::setWindow), 0 for
+    /// none: the program's first calls to its host already wait for it.
     bool addPane(std::uint32_t id, const Launch& launch, const PaneSize& size, const std::string& daemonSocket,
-                 std::function<void()> wake, std::string* error);
+                 std::uint64_t window, std::size_t windowQueue, std::function<void()> wake, std::string* error);
     /// The launch and the size of the session's first pane.
     const Launch& firstLaunch() const { return m_options.launch; }
     const PaneSize& firstSize() const { return m_options.size; }
@@ -45,10 +49,11 @@ public:
     /// a pane left, the last program of the session ended, and so does the
     /// session.
     std::vector<std::unique_ptr<MuxPane>> reap();
-    /// Ends the program of pane @p id: the user closed the pane in the window,
-    /// which stays. The pane leaves the session and the layout at once. False
-    /// when the session has no such pane.
-    bool closePane(std::uint32_t id);
+    /// Ends the program of pane @p id: the user closed the pane in the window.
+    /// The pane leaves the session and the layout at once. When it was the
+    /// last pane, the session is empty(), and the daemon ends it. False when
+    /// the session has no such pane.
+    bool closePane(std::uint32_t id) { return take(id) != nullptr; }
     bool empty() const { return m_panes.empty(); }
     const std::vector<std::unique_ptr<MuxPane>>& panes() const { return m_panes; }
     MuxPane* pane(std::uint32_t id) const
@@ -62,9 +67,12 @@ public:
     void kill();
     /// Takes pane @p id out of the session and its layout, with its program
     /// running: for another session (adopt()). Nullptr when there is none.
+    /// Allocates nothing, so a pane that leaves is never lost on the way.
     std::unique_ptr<MuxPane> take(std::uint32_t id);
-    /// A pane that another session gave up (take()), as a tab of its own.
-    void adopt(std::unique_ptr<MuxPane> pane);
+    /// The panes that another session gave up (take()), with their layout,
+    /// which names each of them once and no other pane: the panes of a
+    /// session that has none yet. Allocates nothing.
+    void adopt(std::vector<std::unique_ptr<MuxPane>> panes, Layout layout) noexcept;
 
     const Layout& layout() const { return m_layout; }
     /// For the calls of `afterglow ctl` that change the layout while no

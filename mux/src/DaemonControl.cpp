@@ -193,6 +193,12 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         }
         const auto side = split ? sideOf(args[1]) : std::optional<Side>(Side::Right);
         if (!side) return failed(request, "direction is left, right, up or down");
+        // The window reads the channels of at most that many panes, and the
+        // daemon takes no layout with more.
+        if (session.panes().size() >= MaxSessionPanes) {
+            return ipcError(request.id, Error::TooManyPanes,
+                            "session '" + session.name() + "' has " + std::to_string(MaxSessionPanes) + " panes, the most that a session can have");
+        }
         // The program that `afterglow ctl` prepared with its settings, as
         // `afterglow mux new` does. A client that prepares none gets the
         // program of the session's first pane, its shell.
@@ -215,9 +221,12 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         PaneSize size = facts ? facts->size : session.firstSize();
         if (*side == Side::Right || *side == Side::Left) size.cols = std::max(2, size.cols / (split ? 2 : 1));
         else size.rows = std::max(1, size.rows / 2);
-        const std::uint32_t id = m_nextPane++;
+        // The pane's calls wait for the window that shows the session from
+        // the start, as those of a pane that the window asked for.
+        const std::uint32_t id = nextPaneId();
         std::string error;
-        if (!session.addPane(id, launch, size, paneSocket(), waker(), &error)) {
+        if (!session.addPane(id, launch, size, paneSocket(), showing ? window->serial() : 0, showing ? window->eventQueue() : 0, waker(),
+                             &error)) {
             return ipcError(request.id, Error::SpawnFailed, "cannot start the program of a pane of session '" + session.name() + "': " + error);
         }
         // addPane made it a tab of its own at the end.

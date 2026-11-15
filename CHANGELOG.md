@@ -12,7 +12,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 - VT100 to VT500 control sequences, with conformance levels and the `afterglow` terminfo entry.
 - Scrollback with reflow on resize. Rows that still fit keep their cells, styles and graphemes.
-- Unicode graphemes, wide characters, color emoji, font shaping and optional primary-screen bidirectional layout.
+- Unicode graphemes, wide characters, color emoji, font shaping and optional bidirectional layout of the main screen.
 - Character widths from Unicode 18.0. As in Kitty, VS15 shows a wide emoji as text in one cell, and VS16 shows a text emoji in two cells.
 - A grapheme cluster takes the cells that glibc's `wcwidth` gives its characters, within two cells. Shells and editors that measure text with it then put the cursor in the right place. A spacing mark, a consonant after a virama (Hindi क्र) and Thai SARA AM make a one-cell cluster two cells wide. A prepended mark such as U+0600 ARABIC NUMBER SIGN takes a cell.
 - Afterglow draws box drawing, block elements, Braille and the Powerline separators to fill the cell, with no font. It draws the block shapes of Symbols for Legacy Computing (sextants, octants, smooth mosaics, diagonals) the same way.
@@ -30,6 +30,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - The Kitty keyboard protocol, with a flag stack for each screen, and xterm `modifyOtherKeys`.
 - Mouse reporting in X10, normal, button-event and any-event modes, with UTF-8, SGR, urxvt and SGR-pixel encodings.
 - Focus reports, bracketed paste and alternate-scroll mode.
+- `Keybinds.remapModifiers`, which makes one modifier act as another in Afterglow, as `remap_modifiers` does in Kitty. Bindings, the link modifier, mouse selection and programs get the modifier that a key becomes.
 - Keypad keys with Num Lock off, which the Kitty protocol reports as keypad keys, and the function keys F13 to F35.
 - The Kitty mouse-pointer protocol (OSC 22), with separate shape stacks for the main and alternate screens.
 - Pastes keep tab, carriage return and line feed, and drop all other control characters.
@@ -46,7 +47,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Kitty images sent as a file, a temporary file or shared memory, unless `Terminal.graphicsFileTransfer` is `deny`.
 - An image memory limit for the main and the alternate screen of each pane (`Graphics.quota`, 320 MiB each by default). Images without a placement go first: those sent with the transient hint (`N=1`), then the oldest.
 - Sixel images.
-- iTerm2 inline images and file downloads (OSC 1337), with a native Save dialog. The dialog moves with its pane to another window.
+- iTerm2 inline images and file downloads (OSC 1337), with a native Save dialog. The dialog moves with its pane to another window. It closes when its pane of a mux session moves to a new session.
 - Kitty text sizing (OSC 66).
 - The Kitty multiple-cursors protocol, with mixed block and beam layering.
 
@@ -105,8 +106,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - A portal across a pane whose shell moves to another host, user or container, and a colored frame while it is away.
 - Pane and tab moves between tabs and windows. A drag outside the tab bar detaches a tab into a new window.
 - Saved projects that store a window's tabs, splits, directories and launch arguments.
-- Terminal sessions that keep running without a window, in the `afterglow-mux` daemon. `afterglow mux new` starts a session with one pane and shows it in a window. `afterglow mux attach` shows a session in a window, and `afterglow mux detach` closes that window. One window at a time shows a session, and a second one takes it over. `Mux.onClose` decides whether closing that window ends the session. `afterglow mux ls` and `afterglow mux kill` list and end the sessions.
-- The tabs and splits of a session's window are panes of the session. The daemon keeps them, with their ratios, focus, zoom and titles, and the next window shows them again. Closing one pane or tab ends only its programs. A tab that you drag out of the window goes on as a new session in a new window.
+- Terminal sessions that keep running without a window, in the `afterglow-mux` daemon. `afterglow mux new` starts a session with one pane and shows it in a window. `afterglow mux attach` shows a session in a window, and `afterglow mux detach` closes that window. One window at a time shows a session, and a second one takes it over. `Mux.onClose` decides whether closing that window, or its last tab or pane, ends the session. `afterglow mux ls` and `afterglow mux kill` list and end the sessions.
+- A new tab or split in the window of a session starts a new pane of the session. The daemon keeps the tabs and splits, with their ratios, focus, zoom and the titles of tabs and panes. The next window shows them again. Closing one pane or tab ends only its programs. A pane or a tab that moves to a new window goes on as a new session in a new window.
 - `afterglow ctl --session NAME` acts on a session through the daemon, also while no window shows it, and `afterglow ctl` in a session pane acts on its session. The daemon lists panes, sends and reads their text, and splits, opens, focuses, moves and closes them. It passes the commands that only a window can do to the window that shows the session.
 - The window that shows a session answers the requests of its programs, as for its own panes. These are bells, notifications, the clipboard, file transfers, drag and drop, downloads, pointer shapes, user variables and the commands of shell integration. The window asks its usual questions first. `Mux.eventQueue` sets how much waits for a slow window.
 - A session pane shows the marks of shell integration, program status, shell contexts, extra cursors and images. Each image decodes in a process of its own, so a decoder that crashes cannot end your sessions. The daemon decodes PNG and iTerm2 images (PNG, JPEG, GIF, WebP and BMP). A selection moves with its text in a region that a program scrolls. The program hears whether you can see the pane (mode 2033).
@@ -150,10 +151,10 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Script packages that ship their own shader packs, suggest shader settings and name pulse effects.
 - Script effects for panes, tabs, windows, shader parameters and presets, with results and tasks.
 - `afterglow.await`, `await_all` and `sleep`, so a handler waits for results in place instead of in callbacks.
-- Docked areas: a script puts lines of styled text at an edge of a window, and the panes shrink to fit. An area can take the place of the tab bar. An area can also go at an edge of one pane. It then moves with the pane, also to another tab or window, shows on its overview card and closes with it. Its script gets clicks, drags, the item under the pointer, the mouse wheel and the cells that the area has.
+- Docked areas: a script puts lines of styled text at an edge of a window, and the panes shrink to fit. An area can take the place of the tab bar. An area can also go at an edge of one pane. It then moves with the pane, also to another tab or window, shows on its overview card and closes with it. It also closes when a pane of a mux session moves to a new session. Its script gets clicks, drags, the item under the pointer, the mouse wheel and the cells that the area has.
 - Scripts can open the menu of a tab and move a tab to a position in its window. A pane's actions that close, rename, move or detach its tab do not show that tab first.
 - The tab line example package draws the tab bar in the terminal font. Its tabs show a hover state, close on a middle click and open their menu on a right click. A `+` button opens a new tab, the wheel moves through the tabs, and a drag moves a tab.
-- Script key modes that take the window's keys. Ctrl+Shift+Escape (`end_script_key_mode`) always ends one.
+- Script key modes that take the window's keys. The `end_script_key_mode` binding, Ctrl+Shift+Escape by default, always ends one.
 - A script key mode that starts while the pane overview is open ends when the overview closes.
 - `new_tab(pane)` starts in the directory of that pane and opens its tab after the tab of that pane.
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
@@ -171,7 +172,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - A script command that runs for a client, such as `aglow run`, reads pane text only when `Control.allowReadText` and `Scripts.allowReadText` are on.
 - A keybind action from `afterglow ctl action` or `afterglow.action` is refused while a prompt or a script dialog is open.
 - Overlays: `afterglow.overlay` runs a program, such as fzf, over a pane and returns its exit status and its output to the script. The program takes the input focus while it runs. It can read a list on standard input, draw on the terminal and answer on standard output or in the file that `AFTERGLOW_RESULT` names. The overlay fades in and out through the `Shaders.overlayTransition` pack, Overlay Fade by default. The pack blends the pane and the program, and both have the pane's layer and pane shaders. `Animation.overlayCurve` and `Animation.overlayDuration` time the fade.
-- An overlay closes before its program exits when its pane closes or its script stops. It also closes when the command run or the `afterglow ctl` client that waits for it ends. An overlay that a control client opened also closes when `Control.enabled` goes off. The `cancel_overlay` action, Ctrl+Shift+Alt+Escape by default, closes the overlay of the focused pane. In each case, the program gets `SIGHUP`.
+- An overlay closes before its program exits when its pane closes or its script stops. It also closes when its pane of a mux session moves to a new session. It also closes when the command run or the `afterglow ctl` client that waits for it ends. An overlay that a control client opened also closes when `Control.enabled` goes off. The `cancel_overlay` action, Ctrl+Shift+Alt+Escape by default, closes the overlay of the focused pane. In each case, the program gets `SIGHUP`.
 - Popup overlays: the `width` and `height` options make an overlay a popup over a part of its pane. Each is a number of cells or a percentage of the pane. `position` puts the popup at one of nine positions, and `border` adds or removes its border. The pane stays visible and keeps running around the popup, darker by `Colors.popupDim`. A border in the popup border color shows the title in its top edge, in the text color. `Window.popupCorners` makes its corners rounded or square. The mouse acts in the popup only. A click on the pane around it gives that pane the focus and reaches no program.
 - `afterglow ctl overlay -- CMD` runs a program over a pane from a shell script. It uses the `overlay` call of the control socket. It sends standard input of up to 4 MiB to the program, in parts before the call. It prints the program's output and exits with its status. Without `Control.allowReadText`, a control client gets the exit status but not the output, and `afterglow ctl overlay` prints nothing on standard output. `-w`, `-h` or `--border` makes it a popup, at `--position`. `--no-border` removes the border of a popup.
 - The fzf picker example package picks a saved project or a file with fzf in a popup overlay. Without fzf, it uses the select dialog.

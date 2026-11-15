@@ -4,6 +4,7 @@
 #include "MuxProtocol.h"
 
 #include <AfterglowProto/Text.h>
+#include <AfterglowVt/Screen.h>
 
 #include <algorithm>
 #include <cmath>
@@ -99,11 +100,15 @@ public:
     }
 
     /// A key of another protocol version, or of none, is an error: an end
-    /// that dropped it would run the session without it.
+    /// that dropped it would run the session without it. The key comes from
+    /// the other end: the error holds its start, safe to print.
     bool noOtherKeys()
     {
+        constexpr std::size_t Shown = 64;
         for (const auto& [key, value] : m_object.toObject()) {
-            if (std::find(m_seen.begin(), m_seen.end(), key) == m_seen.end()) return fail(key, "is not a key of this protocol");
+            if (std::find(m_seen.begin(), m_seen.end(), key) != m_seen.end()) continue;
+            return fail(AfterglowProto::printable(std::string_view(key).substr(0, Shown)) + (key.size() > Shown ? "..." : ""),
+                        "is not a key of this protocol");
         }
         return true;
     }
@@ -257,25 +262,23 @@ bool validVariableName(std::string_view name)
     return !name.empty() && name.find_first_of(std::string_view("=\0", 2)) == std::string_view::npos;
 }
 
-/// [name, value] pairs.
-bool readEnvironment(Reader& r, std::string_view key, std::vector<std::pair<std::string, std::string>>& out)
+/// The [name, value] pairs of the array @p environment, the value of @p key.
+bool readPairs(Reader& r, std::string_view key, const Json::Value& environment, std::vector<std::pair<std::string, std::string>>& out)
 {
-    const Json::Value* environment = r.get(key, Json::Value::Type::Array);
-    if (!environment) return false;
-    for (const Json::Value& entry : environment->toArray()) {
+    for (const Json::Value& entry : environment.toArray()) {
         const bool pair = entry.isArray() && entry.toArray().size() == 2 && entry.toArray()[0].isString()
             && entry.toArray()[1].isString();
-        if (!pair || !validVariableName(entry.toArray()[0].toString())) return r.fail(key, "has an item that is not a [name, value] pair");
+        if (!pair) return r.fail(key, "has an item that is not a [name, value] pair");
+        if (!validVariableName(entry.toArray()[0].toString())) return r.fail(key, "has a variable name that is empty or holds '=' or NUL");
         out.emplace_back(entry.toArray()[0].toString(), entry.toArray()[1].toString());
     }
     return true;
 }
 
-Json::Value environmentJson(const std::vector<std::pair<std::string, std::string>>& environment)
+bool readEnvironment(Reader& r, std::string_view key, std::vector<std::pair<std::string, std::string>>& out)
 {
-    Json::Array out;
-    for (const auto& [name, value] : environment) out.push_back(Json::Array{name, value});
-    return out;
+    const Json::Value* environment = r.get(key, Json::Value::Type::Array);
+    return environment && readPairs(r, key, *environment, out);
 }
 
 bool readLaunch(Reader& outer, const Json::Value& object, Launch& launch)
@@ -302,23 +305,30 @@ bool readSize(Reader& outer, const Json::Value& object, PaneSize& size)
 {
     if (!object.isObject()) return outer.fail("size", "is not an object");
     Reader r = outer.nested(object, "size");
-    if (const auto n = r.integer("cols", 2, 4096)) size.cols = int(*n);
-    if (const auto n = r.integer("rows", 1, 1048576 / 2)) size.rows = int(*n);
-    if (const auto n = r.integer("cellWidth", 0, 65535)) size.cellWidth = int(*n);
-    if (const auto n = r.integer("cellHeight", 0, 65535)) size.cellHeight = int(*n);
+    // Below the smallest terminal is no size that a window measures. Past
+    // the largest, the window's pane is that large: the terminal is as large
+    // as it can be, as Terminal::resize() clamps a Resize.
+    constexpr std::int64_t Most = 0x7fffffff;
+    if (const auto n = r.integer("cols", 2, Most)) size.cols = int(std::min<std::int64_t>(*n, AfterglowVt::Screen::MaxColumns));
+    if (const auto n = r.integer("rows", 1, Most)) {
+        size.rows = int(std::min<std::int64_t>(*n, std::int64_t(AfterglowVt::Screen::MaxCells) / std::max(size.cols, 2)));
+    }
+    if (const auto n = r.integer("cellWidth", 0, Most)) size.cellWidth = int(std::min<std::int64_t>(*n, 65535));
+    if (const auto n = r.integer("cellHeight", 0, Most)) size.cellHeight = int(std::min<std::int64_t>(*n, 65535));
     r.noOtherKeys();
     return outer.absorb(r);
 }
 
-/// Reads the object @p value whole with @p read, as the one key of an outer
-/// reader: the errors name the keys inside it.
+/// Reads the object @p value whole with @p read, which names its key in the
+/// errors, as the keys inside it. The outer reader looks up no key, so it
+/// needs no object that holds a copy of @p value.
 template<typename T, typename Read>
-std::optional<T> readWhole(const Json::Value& value, std::string_view key, std::string* error, Read read)
+std::optional<T> readWhole(const Json::Value& value, std::string* error, Read read)
 {
+    static const Json::Value none = Json::Object{};
     T out;
-    const Json::Value holder = Json::Object{{std::string(key), value}};
-    Reader r(holder, error);
-    read(r, *holder.find(key), out);
+    Reader r(none, error);
+    read(r, value, out);
     if (r.failed()) return std::nullopt;
     return out;
 }
@@ -346,7 +356,7 @@ Json::Value toJson(const Launch& launch)
 
 std::optional<Launch> launchFrom(const Json::Value& value, std::string* error)
 {
-    return readWhole<Launch>(value, "launch", error, readLaunch);
+    return readWhole<Launch>(value, error, readLaunch);
 }
 
 Json::Value toJson(const PaneSize& size)
@@ -356,7 +366,25 @@ Json::Value toJson(const PaneSize& size)
 
 std::optional<PaneSize> paneSizeFrom(const Json::Value& value, std::string* error)
 {
-    return readWhole<PaneSize>(value, "size", error, readSize);
+    return readWhole<PaneSize>(value, error, readSize);
+}
+
+Json::Value environmentJson(const std::vector<std::pair<std::string, std::string>>& environment)
+{
+    Json::Array out;
+    for (const auto& [name, value] : environment) out.push_back(Json::Array{name, value});
+    return out;
+}
+
+std::optional<std::vector<std::pair<std::string, std::string>>> environmentFrom(const Json::Value& value, std::string* error)
+{
+    static const Json::Value none = Json::Object{};
+    Reader r(none, error);
+    std::vector<std::pair<std::string, std::string>> out;
+    if (!value.isArray()) r.fail("environment", "has the wrong type");
+    else readPairs(r, "environment", value, out);
+    if (r.failed()) return std::nullopt;
+    return out;
 }
 
 Json::Value toJson(const SessionOptions& o)

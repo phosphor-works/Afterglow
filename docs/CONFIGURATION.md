@@ -49,22 +49,22 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `background` | `"#1c1c1c"` |  | Default background color. An empty value uses the default. |
+| `background` | `"#1c1c1c"` |  | Default background color. An empty value uses the default. A mux session keeps the color that it started with. |
 | `boldIsBright` | `false` |  | Use bright colors 8–15 for bold text with colors 0–7. |
-| `cursor` | `""` |  | Cursor color. An empty value uses the foreground. |
-| `cursorText` | `""` |  | Text color under a block cursor. An empty value uses the background. |
+| `cursor` | `""` |  | Cursor color. An empty value uses the foreground. A mux session keeps the color that it started with. |
+| `cursorText` | `""` |  | Text color under a block cursor. An empty value uses the background. A mux session keeps the color that it started with. |
 | `divider` | `""` |  | Color of the dividers between panes. An empty value uses the color a fifth of the way from the background color to the text color. A theme replaces it. A theme without a divider color gets the color a fifth of the way from its background color to its text color. |
-| `foreground` | `"#d8d8d8"` |  | Default text color. An empty value uses the default. |
+| `foreground` | `"#d8d8d8"` |  | Default text color. An empty value uses the default. A mux session keeps the color that it started with. |
 | `minimumContrast` | `1` | 1–21 | Minimum contrast ratio between text and its background. Afterglow changes the color of text with less contrast. A value of 1 keeps every color. A value of 4.5 is the WCAG AA level for normal text. |
-| `palette` | `["#1c1c1c", "#cc5555", "#55cc55", "#cdcd55", "#5455cb", "#cc55cc", "#7acaca", "#cccccc", "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"]` |  | The 16 ANSI colors, from black to bright white. With fewer than 16, the others use the default. With more, Afterglow uses the first 16. An entry that is not a color uses the default. |
+| `palette` | `["#1c1c1c", "#cc5555", "#55cc55", "#cdcd55", "#5455cb", "#cc55cc", "#7acaca", "#cccccc", "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"]` |  | The 16 ANSI colors, from black to bright white. With fewer than 16, the others use the default. With more, Afterglow uses the first 16. An entry that is not a color uses the default. A mux session keeps the colors that it started with. |
 | `popupBorder` | `""` |  | Color of the border around a popup overlay. An empty value uses the color halfway from the background color to the text color. A theme replaces it. A theme without a popup border color gets the color halfway from its background color to its text color. |
 | `popupDim` | `0.35` | 0–1 | Opacity of a black layer over the pane around a popup overlay. The popup and its border stay as they are. A value of 0 turns the darkening off. |
 | `searchCurrentMatch` | `"#ff8c42"` |  | Background color of the current search match. An empty value uses the default. |
 | `searchMatch` | `"#e5c07b"` |  | Background color of search matches. An empty value uses the default. |
 | `searchMatchText` | `"#101010"` |  | Text color of search matches. An empty value uses the default. |
-| `selectionBackground` | `""` |  | Selection background color. An empty value reverses the cell colors. |
-| `selectionForeground` | `""` |  | Selected text color. An empty value reverses the cell colors. |
-| `theme` | `""` |  | Theme name or file path. An empty value uses no theme. Afterglow searches the themes directory beside the config file (~/.config/afterglow/themes), then afterglow/themes in each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A mux session runs without the desktop. It takes the dark NAME, and plasma takes only the colors that the color scheme file sets. A theme replaces each color and the visual bell intensity that it sets. It also replaces the divider and popup border colors. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with a slash is a file path. A path can start with ~/ for the home directory. A relative path starts at the directory of the config file. |
+| `selectionBackground` | `""` |  | Selection background color. An empty value reverses the cell colors. A mux session keeps the color that it started with. |
+| `selectionForeground` | `""` |  | Selected text color. An empty value reverses the cell colors. A mux session keeps the color that it started with. |
+| `theme` | `""` |  | Theme name or file path. An empty value uses no theme. Afterglow searches the themes directory beside the config file (~/.config/afterglow/themes), then afterglow/themes in each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A mux session runs without the desktop. It takes the dark NAME, and plasma takes only the colors that the color scheme file sets. It keeps the colors that it started with. A theme replaces each color and the visual bell intensity that it sets. It also replaces the divider and popup border colors. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with a slash is a file path. A path can start with ~/ for the home directory. A relative path starts at the directory of the config file. |
 | `unfocusedDim` | `0.19` | 0–1 | Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off. |
 | `visualBell` | `"#ffffff"` |  | Color of the visual bell flash. An empty value uses the default. A color that a program sets with OSC 21 replaces it. |
 | `visualBellIntensity` | `0.18` | 0–1 | Opacity of the visual bell flash when it starts. A value of 0 hides the flash. A theme that sets it replaces it. |
@@ -75,7 +75,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | --- | --- | --- | --- |
 | `allowReadText` | `false` |  | Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands that run and the values of user variables. It also allows screenshots of panes, tabs and windows. A script command that runs for a client, such as aglow run or afterglow run, reads pane text only when Scripts.allowReadText is on too. |
 | `allowRemoteReadText` | `false` |  | Allow a script command that runs from a remote host, with aglow run in an afterglow ssh session, to read pane text. Any process of the remote user, and the remote root user, can run such a command and read its output. Scripts.allowReadText and Control.allowReadText must be on too. While this is off, only the handler of the run writes to its output. |
-| `enabled` | `true` |  | Allow other programs, such as afterglow ctl and aglow run, to control Afterglow through its socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the socket also when this is off. A value that is not true or false turns it off. |
+| `enabled` | `true` |  | Allow other programs, such as afterglow ctl and aglow run, to control Afterglow through its socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the socket also when this is off. A value other than true, false, yes, no, on, off, 1 or 0 turns it off. In a pane of a mux session, afterglow ctl and aglow run reach the mux daemon, which refuses them. |
 | `eventInterval` | `100` | 0–10000 | Shortest time in milliseconds between two events of one kind for one pane, for titles, status, context, bells and each user variable. A newer event replaces one that waits, and the bells in between become one. A value of 0 sends every event. |
 
 ## Font
@@ -105,7 +105,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `quota` | `320` | 16–4096 | Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images without a placement go first: those sent with the transient hint (N=1), then the oldest. |
+| `quota` | `320` | 16–4096 | Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images without a placement go first: those sent with the transient hint (N=1), then the oldest. A mux session keeps the value that it started with. |
 
 ## Hints
 
@@ -120,6 +120,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | --- | --- | --- | --- |
 | `bindings` | [default bindings](#default-bindings) |  | Map each action to a key combination or a list of them. An empty string removes the binding. Besides actions, the map can bind script:ID.COMMAND to run a script command, text:BYTES to send text and table:NAME to open a key table. |
 | `leader` | `""` |  | Key that Leader stands for in sequences. With an empty value, a binding that uses Leader is an error. |
+| `remapModifiers` | `""` |  | Modifiers that act as other modifiers, as in Kitty. Each rule is a modifier, a colon and one or more modifiers joined by +, from shift, ctrl, alt and super. Spaces separate the rules. For example, ctrl:super super:ctrl swaps Ctrl and Super. Key bindings, the link modifier, mouse selection and programs see the modifier that a key becomes. Key bindings write super as Meta. QuickTerminal.shortcut and the desktop keep the modifiers of the keys. An empty value remaps nothing, and so does a value with an error. |
 | `sequenceTimeout` | `1000` | 100–10000 | Milliseconds before Afterglow cancels an incomplete sequence. |
 | `tableTimeout` | `5000` | 100–60000 | Idle milliseconds before leaving a key table. |
 | `tables` | `{}` |  | Named key tables, each a map of actions to keys as in bindings. A binding to table:NAME opens one. Its actions keep it open. The pop_key_table action leaves every open table, and so does Keybinds.tableTimeout. |
@@ -129,7 +130,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `detectUrls` | `true` |  | Detect plain-text URLs in addition to application-provided OSC 8 links. |
-| `modifier` | `"ctrl"` | `"ctrl"`, `"shift"`, `"alt"`, `"none"` | Modifier for link highlighting and activation. With none, a plain click opens the link. |
+| `modifier` | `"ctrl"` | `"ctrl"`, `"shift"`, `"alt"`, `"super"`, `"none"` | Modifier for link highlighting and activation. With none, a plain click opens the link. super is the key that key bindings call Meta. |
 | `openWith` | `""` |  | Command for opening links. Afterglow splits it into words, adds the URL as the last argument and runs it without a shell. Quotes keep spaces in one word. An empty value uses the desktop browser. |
 | `schemes` | `["http", "https", "mailto", "ftp", "file"]` |  | URL schemes that open without a prompt. Links with other schemes ask first. |
 
@@ -150,7 +151,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `eventQueue` | `4` | 1–64 | Most mebibytes of requests, such as bells, notifications and clipboard requests, that wait while the window of a session is slow. The session keeps one queue of this size, and each pane keeps another. A request that does not fit gets the answer of a session that no window shows. A request that finds the queue of its pane empty always fits. A change applies when Afterglow next attaches to a session. |
-| `onClose` | `"kill"` | `"kill"`, `"detach"` | What closing the window of a mux session, or its last tab or pane, does. With kill, the session and its programs end, as in a window outside a session. With detach, the session keeps running with its tabs, and afterglow mux attach shows it again. Closing another tab or pane of the window ends its programs. The session also keeps running after afterglow mux detach, a takeover by another window, a quit of Afterglow, a crash and a lost connection. |
+| `onClose` | `"kill"` | `"kill"`, `"detach"` | What closing the window of a mux session, or its last tab or pane, does. With kill, the session and its programs end, as in a window outside a session. With detach, the session keeps running with its tabs and splits, and afterglow mux attach shows it again. Closing another tab or pane of the window ends only the programs of that tab or pane. With either value, the session keeps running after afterglow mux detach, a takeover by another window, a quit of Afterglow, a crash and a lost connection. |
 
 ## Notifications
 
@@ -183,7 +184,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `commandStdinLimit` | `1024` | 0–4096 | Kibibytes of standard input that a script command can get from aglow run. A run with more input fails, and aglow run exits with status 2. A value of 0 refuses any input that is not empty. |
 | `commandTimeout` | `600000` | 1000–3600000 | Longest time in milliseconds that one run of a script command can take. This includes runs from a key, a menu or the palette. The time that the run waits for a task, a dialog, an overlay or a slow reader of its output counts. The wait for standard input before the run starts does not count. At the limit the run ends, and aglow run exits with status 124. A change applies to the runs that start after it. |
 | `cpuBudget` | `250` | 10–1000 | Milliseconds of handler time that one script can use in each second. Past it, Afterglow drops the script's events, and delays its results, timers, keys and command runs. Each second in which a call of the script waits counts. After 5 such seconds, each less than 3 seconds after the one before, Afterglow disables the script. Dropped events do not count. |
-| `enabled` | `true` |  | Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in each XDG data directory. The aglow run command also needs Control.enabled. A value that is not true or false turns it off. |
+| `enabled` | `true` |  | Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in each XDG data directory. The aglow run command also needs Control.enabled. A value other than true, false, yes, no, on, off, 1 or 0 turns it off. |
 
 ## Shaders
 
@@ -204,38 +205,38 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `allowScreenReadback` | `false` |  | Answer DECRQCRA checksum requests. These let any program in the pane read the screen back. |
-| `ambiguousWide` | `false` |  | Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols. |
+| `allowScreenReadback` | `false` |  | Answer DECRQCRA checksum requests. These let any program in the pane read the screen back. A mux session keeps the value that it started with. |
+| `ambiguousWide` | `false` |  | Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols. A mux session keeps the value that it started with. |
 | `bell` | `"attention"` | `"none"`, `"attention"`, `"visual"`, `"both"` | Response to the bell. The none value does nothing. The attention value marks the window urgent while it is not active. The visual value flashes the pane. The both value does both. Each value but none also plays Terminal.bellSound. |
 | `bellSound` | `""` |  | Bell sound. An empty value turns the bell sound off, and so does Terminal.bell none. The value "default" plays the bell of the desktop sound theme with canberra-gtk-play. Any other value is a sound file that pw-play plays, or paplay when pw-play is missing. Give an absolute path or a path that starts with ~/. |
 | `bellSoundInterval` | `250` | 0–10000 | Shortest time in milliseconds between two bell sounds. Bells in between make no sound. A value of 0 plays every bell. |
-| `bidi` | `"off"` | `"off"`, `"auto"`, `"ltr"`, `"rtl"` | Bidirectional layout of the primary screen. The off value keeps text in logical order. The auto value finds the direction of each paragraph. The ltr and rtl values set it. Application grids keep logical order. |
+| `bidi` | `"off"` | `"off"`, `"auto"`, `"ltr"`, `"rtl"` | Bidirectional layout of the main screen. The off value keeps text in logical order. The auto value finds the direction of each paragraph. The ltr and rtl values set it. The alternate screen keeps logical order, and so does a screen while a program reads the mouse. |
 | `clipboardRead` | `"ask"` | `"allow"`, `"ask"`, `"deny"` | Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read. |
 | `clipboardWrite` | `"allow"` | `"allow"`, `"ask"`, `"deny"` | Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write. |
-| `confirmClose` | `true` |  | Ask before closing a pane, tab or window where a program is running. The command afterglow mux kill asks too, before it ends a session where a program is running. |
+| `confirmClose` | `true` |  | Ask before closing a pane, tab or window where a program is running. The command afterglow mux kill asks too, before it ends a session where a program is running. With Mux.onClose detach, closing the window of a mux session or its last tab or pane asks nothing about the programs of the session. They keep running. |
 | `confirmUnsafePaste` | `true` |  | Ask before pasting or dropping text that holds a line break, unless the program uses bracketed paste. A line break could run a command. |
 | `copyOnSelect` | `"primary"` | `"primary"`, `"clipboard"`, `"off"` | Where Afterglow copies a new selection. The primary value copies it to the primary selection. The clipboard value copies it to the clipboard too. The off value does not copy it. |
-| `cursorBlink` | `true` |  | Make the cursor blink. |
+| `cursorBlink` | `true` |  | Make the cursor blink. A mux session keeps the value that it started with. |
 | `cursorBlinkInterval` | `530` | 100–5000 | Duration in milliseconds for each visible and hidden cursor phase. |
-| `cursorShape` | `"block"` | `"block"`, `"underline"`, `"bar"` | Shape of the cursor until a program sets another one with DECSCUSR. |
+| `cursorShape` | `"block"` | `"block"`, `"underline"`, `"bar"` | Shape of the cursor until a program sets another one with DECSCUSR. A mux session keeps the value that it started with. |
 | `dragAnswerWait` | `100` | 0–1000 | Milliseconds that Afterglow waits for the answer of a program that uses Kitty drag and drop. It waits when a drag over the pane shows the program new types. The window does not draw while it waits. A value of 0 does not wait. |
 | `dragTreeLifetime` | `10` | 1–1440 | Minutes that Afterglow keeps the files of a Kitty drag from another host after the drop. A drop target such as a file manager can copy them after the drag ends. A change applies to the drops that come after it. |
-| `env` | `{}` |  | Variables added to the shell's environment, such as { "EDITOR": "nvim" }. Each value must be a string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow ignores TERM, AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO here. Terminal.term, Terminal.sshIntegration and Terminal.sshTerminfo set them. Afterglow also ignores AFTERGLOW_PANE_ID, AFTERGLOW_SOCKET, AFTERGLOW_OVERLAY, AFTERGLOW_SESSION and AFTERGLOW_RESULT, which it sets or removes for each pane. New panes and new mux sessions use this value. |
+| `env` | `{}` |  | Variables that Afterglow adds to the environment of the shell, such as { "EDITOR": "nvim" }. Each value must be a string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow ignores TERM, AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO here. Terminal.term, Terminal.sshIntegration and Terminal.sshTerminfo set them. Afterglow also ignores AFTERGLOW_PANE_ID, AFTERGLOW_SOCKET, AFTERGLOW_OVERLAY, AFTERGLOW_SESSION and AFTERGLOW_RESULT, which it sets or removes for each pane. New panes and new mux sessions use this value. |
 | `fileTransferDeltaLimit` | `64` | 0–1048576 | Gibibytes that a Kitty delta or compressed file transfer can write when the program does not give the file size. A larger file fails with EFBIG. A value of 0 sets no limit. |
 | `fileTransferPassword` | `""` |  | Shared secret for Kitty file-transfer approval. An empty value always asks for approval. |
-| `graphicsFileTransfer` | `"allow"` | `"allow"`, `"deny"` | Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared memory. Images sent inline always work. |
+| `graphicsFileTransfer` | `"allow"` | `"allow"`, `"deny"` | Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared memory. Images sent inline always work. A mux session keeps the value that it started with. |
 | `hideMouseWhileTyping` | `false` |  | Hide the pointer while typing. Pointer movement shows it again. |
 | `lastOutputLimit` | `1024` | 1–65536 | Kibibytes of the last command output that the pager gets. For longer output, the pager gets the start and a note. |
 | `pager` | `"less -R"` |  | Command for viewing the last command output. Afterglow splits it into words and runs it without a shell. An empty value turns the pager off. |
 | `pasteReadTimeout` | `10` | 1–600 | Seconds after a paste in which the program can read the clipboard with the password of the paste event (OSC 5522). |
-| `scrollLines` | `3` | 1–50 | Number of rows scrolled for each mouse-wheel notch. |
+| `scrollLines` | `3` | 1–50 | Rows that each notch of the mouse wheel scrolls. |
 | `scrollOnInput` | `true` |  | Scroll to the bottom on typing or paste. |
 | `scrollOnOutput` | `false` |  | Scroll to the bottom when new output arrives. |
-| `scrollback` | `10000` | 0–1000000 | Lines of history that each pane keeps. A value of 0 keeps no history. |
+| `scrollback` | `10000` | 0–1000000 | Lines of history that each pane keeps. A value of 0 keeps no history. A mux session keeps the value that it started with. Its window shows at most as many lines as this value had at the attach. |
 | `shell` | `""` |  | Program that new panes and new mux sessions run, as a name or a path. It gets no arguments. An empty value starts your login shell. |
 | `shellIntegration` | `true` |  | Integrate Bash, Zsh and Fish prompts in new panes and new mux sessions automatically. |
-| `sshIntegration` | `true` |  | Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and the session offers COLORTERM and TERM_PROGRAM to the server. New panes and new mux sessions use this value. |
-| `sshRemoteCommands` | `false` |  | Allow the script commands that are marked remote to run from aglow run on the hosts that afterglow ssh connects to. Every process of the remote user, and the remote root user, can then run those commands. It needs Control.enabled and Scripts.enabled. A change to on applies to the ssh sessions that start after it. A change to off closes the sockets of the running sessions. |
+| `sshIntegration` | `true` |  | Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and afterglow ssh offers COLORTERM and TERM_PROGRAM to the server. New panes and new mux sessions use this value. |
+| `sshRemoteCommands` | `false` |  | Allow the script commands that are marked remote to run from aglow run on the hosts that afterglow ssh connects to. Every process of the remote user, and the remote root user, can then run those commands. It needs Control.enabled and Scripts.enabled. A change to on applies to the ssh sessions that start after it. A change to off closes the sockets of the running ssh sessions. In a pane of a mux session, afterglow ssh connects without remote commands. |
 | `sshTerminfo` | `"install"` | `"install"`, `"fallback"` | What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use xterm-256color there instead. New panes and new mux sessions use this value. |
 | `term` | `"xterm-256color"` |  | Value of TERM for the programs in the panes. An empty value uses the default. New panes and new mux sessions use this value. |
 | `textBlinkInterval` | `500` | 100–5000 | Duration in milliseconds for each visible and hidden phase of blinking text (SGR 5). |
@@ -260,7 +261,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `startMode` | `"normal"` | `"normal"`, `"maximized"`, `"fullscreen"` | How new windows open. The normal value opens them at Window.initialColumns and Window.initialRows. The maximized value fills the screen beside the panels. The fullscreen value covers the whole screen. |
 | `tabBar` | `"auto"` | `"auto"`, `"always"`, `"never"` | When the tab bar shows. The auto value shows it while there are two or more tabs. |
 | `tabBarHeight` | `30` | 20–64 | Height of the tab bar, in logical pixels. |
-| `workingDirectory` | `"inherit"` |  | Starting directory for new tabs, panes and windows. Use inherit, home or a path. The inherit value, or an empty value, uses the focused pane's directory or the launcher's directory. A path must be absolute, ~, or start with ~/. A path that is not a directory uses inherit. The afterglow -d option overrides this setting. A session of afterglow mux new starts in its --cwd or in the current directory. |
+| `workingDirectory` | `"inherit"` |  | Starting directory for new tabs, panes and windows. Use inherit, home or a path. The inherit value, or an empty value, uses the focused pane's directory, or for a launch the directory of the launcher. When the pane's directory is not known, it uses the home directory. A path must be absolute, ~, or start with ~/. A path that is not a directory uses inherit. The afterglow -d option overrides this setting. A session of afterglow mux new starts in its --cwd or in the current directory. |
 
 ## Default bindings
 

@@ -89,6 +89,15 @@ qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp PaneSelectionTest.cp
 target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# A window's link to a session (MuxClient), with panes and no window, against
+# a daemon of its own (mux/tests/TestDaemon.h).
+qt_add_executable(afterglow_mux_client_tests MuxClientTest.cpp)
+target_link_libraries(afterglow_mux_client_tests PRIVATE afterglow_app GTest::gtest)
+target_include_directories(afterglow_mux_client_tests PRIVATE ${PROJECT_SOURCE_DIR}/mux/tests)
+target_compile_definitions(afterglow_mux_client_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:afterglow-mux>")
+add_dependencies(afterglow_mux_client_tests afterglow-mux)
+gtest_discover_tests(afterglow_mux_client_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
 # A popup as the window's settings make it look, rendered offscreen.
 qt_add_executable(afterglow_popup_tests PopupLookTest.cpp)
 # The device of the renderer's tests (GpuTestDevice.h).

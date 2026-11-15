@@ -181,8 +181,16 @@ bool TerminalWindow::scriptKeyModeKey(QKeyEvent* e, bool& shortcut)
 {
     if (!m_scriptKeyMode) return false;
     // The user's ways out, which no script can take. An overlay under the
-    // mode is the same script's; without one, the key is the script's.
-    const Action action = m_settings.settings().keybinds.match(e, bindingBaseKey(e));
+    // mode is the same script's; without one, the key is the script's. They
+    // match the keys as they are too: a remap that leaves no key for one of
+    // their modifiers (ctrl:super alone) must not leave the user no way out.
+    const Keybinds& keybinds = m_settings.settings().keybinds;
+    Action action = keybinds.match(e, bindingBaseKey(e));
+    if (action != Action::EndScriptKeyMode && action != Action::CancelOverlay && m_physicalKeyEvent) {
+        if (const Action physical = keybinds.match(m_physicalKeyEvent, bindingBaseKey(m_physicalKeyEvent));
+            physical == Action::EndScriptKeyMode || physical == Action::CancelOverlay)
+            action = physical;
+    }
     if (action == Action::EndScriptKeyMode) {
         performAction(action);
         return true;
@@ -193,13 +201,8 @@ bool TerminalWindow::scriptKeyModeKey(QKeyEvent* e, bool& shortcut)
         return true;
     }
     // A modifier on its own is not a key for on_key: it comes with the key it changes.
-    switch (e->key()) {
-    case Qt::Key_Shift: case Qt::Key_Control: case Qt::Key_Alt: case Qt::Key_Meta:
-    case Qt::Key_AltGr: case Qt::Key_CapsLock: case Qt::Key_NumLock: case Qt::Key_Super_L: case Qt::Key_Super_R:
+    if (isModifierKey(e->key()) || e->key() == Qt::Key_AltGr || e->key() == Qt::Key_CapsLock || e->key() == Qt::Key_NumLock)
         return true;
-    default:
-        break;
-    }
     Pane* pane = m_scriptKeyMode->pane ? m_scriptKeyMode->pane.data() : m_focused.data();
     Q_EMIT scriptKey(m_scriptKeyMode->owner, pane ? pane->id() : 0, scriptKeyEvent(e));
     return true;
