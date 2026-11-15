@@ -134,7 +134,7 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
     Session& session = **it;
     // As the control target of a window that Control.enabled turns off.
     if (!session.options().control.enabled) return ipcError(request.id, IpcErrorCode::NoSuchTarget, "no target 'control'");
-    if (request.type == "subscribe") return failed(request, "afterglow ctl watch is not available for a session yet");
+    if (request.type == "subscribe") return subscribe(request, connection, session);
     if (request.type != "call") return ipcError(request.id, IpcErrorCode::MalformedRequest, "the control target answers calls, not '" + request.type + "'");
     // As a window refuses one: first, also for a pane that does not exist.
     if (fn == "screenshot" && !session.options().control.allowReadText) {
@@ -200,8 +200,10 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         if (!side) return failed(request, "direction is left, right, up or down");
         // The program that `afterglow ctl` prepared with its settings, as
         // `afterglow mux new` does. A client that prepares none gets the
-        // program of the session's first pane, its shell.
+        // program of the session's first pane, its shell, but not its
+        // directory: the pane's own comes first, as in a window.
         Launch launch = session.firstLaunch();
+        launch.workingDirectory.clear();
         if (args.size() == 4) {
             std::string error;
             auto prepared = launchFrom(args[3], &error);
@@ -318,6 +320,8 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             layout.remove(id);
             layout.split(*target, id, *side);
         }
+        // With no window: `afterglow ctl watch` hears of it here.
+        session.noteMoved(id);
         return ipcReply(request.id.value_or(0), paneMap(session, *pane, readText));
     }
     if (windowCall(fn)) {
@@ -413,6 +417,7 @@ void Daemon::forget(const IpcServerConnection* connection)
     }
     m_clients.erase(connection);
     m_selected.erase(connection);
+    forgetWatches(connection);
     std::erase_if(m_forwards, [this, connection](const auto& forward) {
         if (forward.second.connection != connection) return false;
         m_abandonedForwards.emplace(forward.first, forward.second.window);

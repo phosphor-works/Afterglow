@@ -1370,6 +1370,8 @@ private:
     /// The mux session that the window shows, else null (WindowOptions::session).
     std::shared_ptr<MuxClient> m_session;
     QTimer m_sessionLayoutTimer;
+    /// The session panes that moved since the last layout went (paneMoved).
+    std::vector<std::uint32_t> m_movedSessionPanes;
     /// Panes close because they went to another session: their programs
     /// run on (breakOutOfSession).
     bool m_breakingOut = false;

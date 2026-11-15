@@ -425,6 +425,12 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         // Tabs that open, close, move or take a title, and the focus.
         connect(this, &TerminalWindow::tabsChanged, this, &TerminalWindow::scheduleSessionLayout);
         connect(this, &TerminalWindow::focusedPaneChanged, this, &TerminalWindow::scheduleSessionLayout);
+        // A move goes with the next layout, for `afterglow ctl watch` of the session.
+        connect(this, &TerminalWindow::paneMoved, this, [this](Pane* pane) {
+            if (!pane || !pane->isSessionPane() || m_movedSessionPanes.size() >= AfterglowMux::MaxLayoutPanes) return;
+            m_movedSessionPanes.push_back(pane->sessionPaneId());
+            scheduleSessionLayout();
+        });
         // The session follows the settings of the window that shows it, and
         // one of this computer takes its variables.
         m_session->sendSettings(sessionSettings(m_settings.settings(), !m_session->remote()));
@@ -1068,6 +1074,10 @@ void TerminalWindow::sendSessionLayout()
             qCWarning(lcWindow) << "a pane of the window of session" << m_session->session() << "is not the session's";
             return;
         }
+    }
+    // The moves of panes that are still in the layout, in their order.
+    for (const std::uint32_t id : std::exchange(m_movedSessionPanes, {})) {
+        if (layout.contains(id)) layout.moved.push_back(id);
     }
     m_session->sendLayout(layout);
 }

@@ -405,11 +405,25 @@ A window that answers a command follows its own settings too.
 | `get-text --selection` | Empty: only a window has a selection | The window answers |
 | `set-title`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
 | `overlay`, `screenshot` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window runs the overlay or takes the picture, and answers when it is done |
-| `watch` | Refused with `afterglow ctl watch is not available for a session yet` | Refused the same way |
+| `watch` | The daemon sends the events of the session | The daemon sends the events of the session |
 
 The overlay of `afterglow ctl overlay` runs on the computer of the window, over the pane, as an overlay of the window's own pane does: its program and its `--cwd` are of that computer.
 It belongs to the client that asked for it: it closes when that client goes. The standard input of `afterglow ctl overlay` goes to the window in parts.
 `screenshot` needs `Control.allowReadText`, of the session and of the window.
+
+`afterglow ctl watch` gets the [events](CONTROL.md#events) of the panes of the session from the daemon, also while no window shows it.
+
+| Event | For a session |
+| --- | --- |
+| `paneCreated`, `paneClosed` | When a pane of the session starts or ends |
+| `paneMoved` | When the window that shows the session moves a pane, as for a pane of its own, and when `afterglow ctl move-pane` moves one while no window shows the session |
+| `focusChanged` | When another pane has the focus in the tab that shows |
+| `titleChanged`, `statusChanged`, `bell`, `userVarChanged`, `commandStarted`, `commandFinished` | As in a window |
+| `contextChanged` | Never: the daemon knows no context of a pane, and `ls` gives it as empty |
+
+The daemon merges the events as a window does, with `Control.eventInterval` of the window that showed the session last, else of the `afterglow` that started the session.
+It sends the command of `commandStarted` and `commandFinished`, and the value of `userVarChanged`, only with `Control.allowReadText`.
+When the session ends, the daemon sends `paneClosed` for its panes, then ends each subscription with the error `NO_SUCH_SESSION`. When `Control.enabled` goes off, it does the same with `NO_SUCH_TARGET`, as a window does. `afterglow ctl watch` then exits with status 1 and says why.
 
 A session of another host reaches only what its programs could reach over ssh: no program of this computer runs for it.
 
