@@ -48,6 +48,9 @@ Q_LOGGING_CATEGORY(lcPane, "afterglow.pane", QtInfoMsg)
 
 namespace Afterglow {
 
+// Pane.h declares MuxRelease without its values: m_sessionRelease{} is this one.
+static_assert(MuxRelease{} == MuxRelease::Pane);
+
 namespace {
 constexpr int InitialCols = 80;
 constexpr int InitialRows = 24;
@@ -157,10 +160,8 @@ void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
     if (m_session && !m_sessionGone) {
         // The daemon resizes the session's terminal and its PTY. The replica
         // takes the new size with the next frame, so it never shows rows
-        // that the program has not drawn for that size.
-        const std::array<int, 4> size{cols, rows, cellWidth, cellHeight};
-        if (size == m_sentSize) return;
-        m_sentSize = size;
+        // that the program has not drawn for that size. A size that the
+        // daemon has already does not go (MuxClient::sendResize).
         m_session->sendResize(m_sessionPane, AfterglowMux::PaneSize{cols, rows, cellWidth, cellHeight});
         return;
     }
@@ -381,6 +382,7 @@ bool Pane::selectionContains(int col, int row) const
 
 QString Pane::selectedText() const
 {
+    refreshSession();
     std::string text;
     {
         std::lock_guard lock(m_mutex);
@@ -809,6 +811,7 @@ void Pane::announceTitle()
 
 QString Pane::text(AfterglowVt::Terminal::TextScope scope)
 {
+    refreshSession();
     std::string text;
     {
         std::lock_guard lock(m_mutex);
@@ -820,6 +823,7 @@ QString Pane::text(AfterglowVt::Terminal::TextScope scope)
 
 QVariantMap Pane::readText(AfterglowVt::Terminal::TextScope scope, std::size_t limit)
 {
+    refreshSession();
     std::string text;
     bool truncated = false;
     bool available = true;
@@ -892,7 +896,10 @@ void Pane::finishCommand(int exitCode, qint64 ms)
 
 QString Pane::foregroundJob() const
 {
-    if (m_session) return m_sessionGone || m_held.load() ? QString() : m_session->paneJob(m_sessionPane);
+    if (m_session) {
+        const auto id = sessionJobPane();
+        return id ? m_session->paneJob(*id) : QString();
+    }
     if (!m_pty || m_held.load()) {
         return {};
     }
@@ -900,6 +907,12 @@ QString Pane::foregroundJob() const
         return QString::fromStdString(job);
     }
     return m_launchedProgram;
+}
+
+std::optional<std::uint32_t> Pane::sessionJobPane() const
+{
+    if (!m_session || m_sessionGone || m_held.load()) return std::nullopt;
+    return m_sessionPane;
 }
 
 QString Pane::knownDirectory() const
@@ -1031,7 +1044,7 @@ void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id)
 {
     m_session = std::move(session);
     m_sessionPane = id;
-    m_session->bind(id, this);
+    m_session->bind(id, *this);
 }
 
 bool Pane::closeEndsProgram() const
@@ -1039,11 +1052,42 @@ bool Pane::closeEndsProgram() const
     return !m_session || m_sessionRelease != MuxRelease::Nothing;
 }
 
-void Pane::setSessionVisible(bool visible)
+bool Pane::setSessionVisible(bool visible)
 {
-    if (!m_session || m_sessionGone || m_sessionVisible == int(visible)) return;
+    if (!m_session || m_sessionGone || m_sessionVisible == int(visible)) return false;
     m_sessionVisible = int(visible);
+    // Until a refresh, also once visible again: the screens that the daemon
+    // held are on their way, and a read must not take the old ones. The
+    // answer to a Refresh asked before this change lacks the screens that
+    // the daemon holds after it: its ticket goes.
+    if (!visible) m_sessionHeld = true;
+    m_sessionRefresh = 0;
     m_session->sendVisible(m_sessionPane, visible);
+    return true;
+}
+
+std::uint64_t Pane::askSessionRefresh() const
+{
+    if (!sessionScreensHeld()) return 0;
+    if (m_sessionRefresh != 0 && m_sessionVisible == 1) return m_sessionRefresh;
+    m_sessionRefresh = m_session->askRefresh(m_sessionPane);
+    // Nothing comes: the replica has all that it gets.
+    if (m_sessionRefresh == 0) m_sessionHeld = m_sessionVisible == 0;
+    return m_sessionRefresh;
+}
+
+void Pane::refreshSession() const
+{
+    if (const std::uint64_t ticket = askSessionRefresh()) m_session->waitRefreshed({{m_sessionPane, ticket}});
+}
+
+void Pane::sessionRefreshed(std::uint64_t ticket) const
+{
+    // The answer to a Refresh asked before the pane's sight changed.
+    if (m_sessionRefresh == 0 || ticket < m_sessionRefresh) return;
+    m_sessionRefresh = 0;
+    // A pane that the user cannot see gets held frames again.
+    m_sessionHeld = m_sessionVisible == 0;
 }
 
 bool Pane::applySessionFrame(std::string_view frame)
@@ -1128,9 +1172,9 @@ void Pane::sessionPaneExited(int status)
     ptyClosed(status);
 }
 
-void Pane::sessionLost(MuxLoss loss, bool notice)
+bool Pane::sessionLost(MuxLoss loss, bool notice)
 {
-    if (m_sessionGone.exchange(true)) return;
+    if (m_sessionGone.exchange(true)) return false;
     // A detach or a kill that the user asked for closes the pane as asked.
     // The others close it without a word from the user: say why, once for
     // the window.
@@ -1138,10 +1182,14 @@ void Pane::sessionLost(MuxLoss loss, bool notice)
     if (notice && loss == MuxLoss::TakenOver) {
         NotificationCenter::instance().showNotice(this, tr("Session %1 moved").arg(name), tr("Another window shows session %1 now.").arg(name));
     } else if (notice && loss == MuxLoss::Broken) {
+        // The daemon ended, or the window let the session go (a frame that
+        // did not apply, a full queue of calls): the session can run on.
         NotificationCenter::instance().showNotice(this, tr("Session %1 is gone from this window").arg(name),
-                                                  tr("The connection to the mux daemon ended. Run afterglow mux ls to see whether the session still runs."));
+                                                  tr("This window lost its link to session %1. Run afterglow mux ls to see whether the session still runs.").arg(name));
     }
-    QMetaObject::invokeMethod(this, [this] { Q_EMIT closed(); }, Qt::QueuedConnection);
+    m_leftSession = true;
+    QMetaObject::invokeMethod(this, [this] { Q_EMIT sessionLeft(); }, Qt::QueuedConnection);
+    return true;
 }
 
 void Pane::clearScreen()
@@ -1799,7 +1847,7 @@ FileTransfer* Pane::fileTransfers()
         // A program that reads slowly holds the transfer back before the
         // input queue fills and a refused reply ends it.
         m_fileTransfers->setInputBacklog([this] {
-            return m_session ? m_session->pendingInput() : m_pty ? m_pty->pendingInput() : std::size_t(0);
+            return m_session ? m_session->pendingInput(m_sessionPane) : m_pty ? m_pty->pendingInput() : std::size_t(0);
         });
         connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
         // The worker writes the replies of a command after its command
@@ -1831,7 +1879,7 @@ DragDrop* Pane::dragDrop()
     if (!m_dragDrop) {
         m_dragDrop = std::make_unique<DragDrop>();
         m_dragDrop->setInputBacklog([this] {
-            return m_session ? m_session->pendingInput() : m_pty ? m_pty->pendingInput() : std::size_t(0);
+            return m_session ? m_session->pendingInput(m_sessionPane) : m_pty ? m_pty->pendingInput() : std::size_t(0);
         });
         m_dragDrop->setCommandDelivery([this](int waitMs) { deliverProtocolCommands(waitMs); });
         m_dragDrop->setAnswerWait(m_dragAnswerWait);

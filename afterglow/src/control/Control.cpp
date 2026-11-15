@@ -76,9 +76,14 @@ void Control::attachWindow(TerminalWindow* window)
     connect(window, &TerminalWindow::projectRequested, this, &Control::projectDialog);
     connect(window, &TerminalWindow::paneMoved, this, [this](Pane* p) { Q_EMIT paneMoved(p->id()); });
     connect(window, &TerminalWindow::transferRequested, this, [this](Pane* pane, bool tab) {
+        const QPointer<Pane> guard(pane);
+        const quint32 id = pane->id();
         QVariantMap result;
-        const auto error = tab ? detachTab(pane->id(), result) : movePane(pane->id(), 0, QStringLiteral("new-window"), result);
-        if (!error.isEmpty()) notify(pane->id(), QStringLiteral("Move failed"), error);
+        const auto error = tab ? detachTab(id, result) : movePane(id, 0, QStringLiteral("new-window"), result);
+        // A move out of a session that failed after the daemon took the
+        // panes left the pane in no window: the notice names none.
+        if (!error.isEmpty())
+            NotificationCenter::instance().showNotice(guard && find(id) ? guard.data() : nullptr, QStringLiteral("Move failed"), textPrefix(error, 2048));
     });
     connect(window, &TerminalWindow::paneCreated, this, &Control::attachPane);
     // The window of a session: what its clients left goes with it, as no
@@ -980,14 +985,22 @@ QString Control::breakOut(TerminalWindow* source, Pane* pane, bool tab, QVariant
     // The new session is on the host of the one that the panes leave.
     const QString host = pane->session() ? pane->session()->host() : QString();
     QString session;
-    if (const QString error = source->breakOutOfSession(pane, tab, &session); !error.isEmpty()) return error;
+    std::shared_ptr<const TerminalWindow::BreakOut> kept;
+    if (const QString error = source->breakOutOfSession(pane, tab, &session, &kept); !error.isEmpty()) return error;
     if (const QString error = m_openSessionWindow(session, host); !error.isEmpty()) {
-        return QStringLiteral("the panes run on in session %1, which no window shows: %2").arg(session, error);
+        // The daemon moved them already: what is left is to show them.
+        return (tab ? QStringLiteral("the tab went to session %1, but no window can show it (%2)")
+                    : QStringLiteral("the pane went to session %1, but no window can show it (%2)"))
+            .arg(session, error);
     }
-    // The pane in the new window that shows the same program.
+    // The window that shows the new session, and in it the pane that shows
+    // the same program.
     for (TerminalWindow* window : TerminalWindow::windows()) {
-        for (Pane* p : window->panes()) {
-            if (p->showsSession(session, host) && p->sessionPaneId() == daemonPane) {
+        const QList<Pane*> shown = window->panes();
+        if (std::none_of(shown.cbegin(), shown.cend(), [&](const Pane* p) { return p->showsSession(session, host); })) continue;
+        window->adoptBreakOut(kept);
+        for (Pane* p : shown) {
+            if (p->sessionPaneId() == daemonPane) {
                 if (const auto info = paneInfo(p->id())) result = paneMap(*info);
             }
         }

@@ -3,7 +3,7 @@
 
 # Bidirectional text
 
-Afterglow supports optional bidirectional layout on the primary terminal screen.
+Afterglow supports optional bidirectional layout on the main terminal screen.
 Set `Terminal.bidi` in configuration:
 
 ```json
@@ -42,7 +42,7 @@ Longer paragraphs retain logical order, including their visible continuation row
 Large scrollback does not cause an unlimited paragraph scan.
 Layout remains limited to terminal rows and cells.
 
-On eligible primary screens, directional controls occupy one cell and appear as a diamond.
+On eligible main screens, directional controls occupy one cell and appear as a diamond.
 These controls are `U+061C`, `U+200E–U+200F`, `U+202A–U+202E` and `U+2066–U+2069`.
 Their original codepoints remain in copied text and participate in direction resolution.
 This makes direction changes visible in source listings.
@@ -56,7 +56,7 @@ Terminal tests cover directional-control retention and logical copy.
 These tests do not cover every shell, editor, font or IME combination.
 
 1. Set `Terminal.bidi` to `auto`.
-2. Run these commands on the primary screen.
+2. Run these commands on the main screen.
 
 ```sh
 printf 'English: abc | Hebrew: שלום עולם | Arabic: مرحبا بالعالم | 123 (test)\n'

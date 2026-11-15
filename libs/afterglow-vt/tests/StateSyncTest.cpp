@@ -369,6 +369,44 @@ TEST(StateSync, TextStylesLinksAndText)
     EXPECT_EQ(p.replica.title(), "the title");
 }
 
+TEST(StateSync, ViewOptionsLeaveTheReplicaAsItsWriter)
+{
+    Pair p(20, 4, 10);
+    p.source.feed("\x1b[5 q\x1b]4;3;rgb:12/34/56\x1b\\\x1b]11;rgb:01/02/03\x1b\\\x1b]12;rgb:aa/bb/cc\x1b\\x");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    // A reload of the window: other colours and cursor too, which stay the
+    // writer's. The history that the replica keeps follows the window, as the
+    // writer's daemon sends as much as the window keeps.
+    TerminalOptions o = withScrollback(2);
+    o.basePalette[3] = {1, 1, 1};
+    o.defaultBackground = {9, 9, 9};
+    o.cursorColor = Rgb{7, 7, 7};
+    o.cursorShape = CursorShape::Underline;
+    o.boldIsBright = true;
+    o.minimumContrast = 4.5;
+    o.wordBoundaries = U"-";
+    o.bidi = BidiMode::Auto;
+    const std::uint64_t before = p.replica.generation();
+    p.replica.setViewOptions(o);
+    EXPECT_GT(p.replica.generation(), before);
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    EXPECT_TRUE(p.replica.options().boldIsBright);
+    EXPECT_DOUBLE_EQ(p.replica.options().minimumContrast, 4.5);
+    EXPECT_TRUE(p.replica.options().wordBoundaries == U"-");
+    EXPECT_EQ(p.replica.options().bidi, BidiMode::Auto);
+    EXPECT_EQ(p.replica.options().maxScrollback, 2u);
+    EXPECT_FALSE(p.replica.options().cursorColor.has_value());
+    // The same options again draw nothing new.
+    const std::uint64_t applied = p.replica.generation();
+    p.replica.setViewOptions(o);
+    EXPECT_EQ(p.replica.generation(), applied);
+    // Frames still apply over them.
+    p.source.feed("\x1b]4;3;rgb:65/43/21\x1b\\y");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+}
+
 TEST(StateSync, ShellIntegrationMarksAndRegions)
 {
     Pair p(30, 8, 100);
@@ -1263,12 +1301,75 @@ TEST(StateSync, AReplicaWithLessHistoryKeepsTheNewestRows)
     EXPECT_EQ(differs(p.source.screen(), p.replica.screen(), "x").find("history"), 3u);
 }
 
+// A held frame frees the pixels of an image that the program deleted while
+// they went: a pane that nobody sees keeps no image that went.
+TEST(StateSync, AHeldFrameLetsGoOfAnImageThatWent)
+{
+    std::string error;
+    Pair p(30, 8, 100, 8192);
+    p.source.resize(30, 8, 10, 20);
+    ASSERT_TRUE(p.sync(&error)) << error;
+    // Larger than a frame: its pixels go in parts.
+    p.source.feed(apc("a=T,f=32,s=100,v=100,i=50,C=1,q=2", rgba(100, 100, 1, 2, 3)));
+    ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+    ASSERT_TRUE(p.writer.pending());
+    const auto& images = p.source.graphics(false).images();
+    ASSERT_EQ(images.size(), 1u);
+    const std::weak_ptr<const AfterglowVt::ImageFrame> frame = images.begin()->second.frames.front();
+    p.source.feed(apc("a=d,d=I,i=50,q=2"));
+    ASSERT_TRUE(p.reader.apply(p.replica, p.writer.updateHeld(p.source), &error)) << error;
+    EXPECT_TRUE(frame.expired());
+    // The replica drops its part of the frame with the next update().
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(p.reader.frames(), 0u);
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+}
+
+// A read marks the text as the terminal has it: the frames that carry it
+// mark it sent, also while the program writes more rows than they carry.
+TEST(StateSync, AMarkOfTheTextIsReachedWhileRowsKeepComing)
+{
+    std::string error;
+    Pair p(30, 6, 5000, 2048);
+    for (int i = 0; i < 50; ++i) p.source.feed("old " + std::to_string(i) + "\r\n");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    // Held: the rows that come meanwhile wait.
+    for (int i = 0; i < 300; ++i) p.source.feed("held " + std::to_string(i) + "\r\n");
+    ASSERT_TRUE(p.reader.apply(p.replica, p.writer.updateHeld(p.source), &error)) << error;
+    EXPECT_FALSE(p.writer.textMarked());
+    p.writer.markText();
+    EXPECT_FALSE(p.writer.textMarked());
+    const std::uint64_t marked = p.source.primaryScreen().rowsDropped() + p.source.primaryScreen().historySize();
+    int frames = 0;
+    for (int line = 0; !p.writer.textMarked(); ++line) {
+        ASSERT_LT(++frames, 1000) << "the mark is never reached";
+        ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+        // More rows than a frame of 2 KiB carries: the history never
+        // catches up while they come.
+        for (int i = 0; i < 200; ++i) p.source.feed("new " + std::to_string(line) + "." + std::to_string(i) + "\r\n");
+    }
+    EXPECT_TRUE(p.writer.pending());
+    // Every row that the terminal had at the mark is in the replica.
+    EXPECT_TRUE(p.reader.received(p.replica.primaryScreen().rowsDropped(), marked - 1));
+    const std::string all = p.replica.text(Terminal::TextScope::All);
+    for (int i = 0; i < 300; ++i) EXPECT_NE(all.find("held " + std::to_string(i) + "\n"), std::string::npos) << i;
+    // A new mark waits for the rows that came since.
+    p.writer.markText();
+    EXPECT_FALSE(p.writer.textMarked());
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_TRUE(p.writer.textMarked());
+    // A reset forgets the mark.
+    p.writer.reset();
+    EXPECT_FALSE(p.writer.textMarked());
+}
+
 TEST(StateSync, RandomOutputStaysEqual)
 {
     // Text, styles, links, wide and combining characters, scrolling, margins,
     // erasures, insertions, the alternate screen, modes and colors, at random.
     // Images too, with their placements, frames and animations, which those
-    // move, erase and reset.
+    // move, erase and reset. Some frames are held, as for a pane that nobody
+    // sees, and reads mark the text.
     const std::string pixels = AfterglowProto::base64Encode(rgba(2, 2, 10, 20, 30));
     // Larger than the state frames of every run: it comes in parts.
     const std::string large = AfterglowProto::base64Encode(rgba(40, 40, 40, 50, 60));
@@ -1298,25 +1399,78 @@ TEST(StateSync, RandomOutputStaysEqual)
         Pair p(20 + int(rng() % 40), 4 + int(rng() % 12), rng() % 3 ? 60 : 0, 256 + rng() % 4096);
         // A cell size, as a window measures it: images need one.
         p.source.resize(p.source.cols(), p.source.rows(), 10, 20);
+        // A run of held frames now and then, of up to 50 steps.
+        int heldSteps = 0;
+        bool marked = false;
+        // The rows of the main screen that the mark took at the next
+        // update(): its history from the floor, and the rows that were
+        // visible then, in stable ids. Checked once, when textMarked() turns
+        // true, while newer rows may still wait.
+        bool markWanted = false;
+        bool markChecked = true;
+        std::uint64_t markFloor = 0;
+        std::uint64_t markLast = 0;
+        std::uint64_t markEpoch = 0;
+        const auto takeMark = [&] {
+            if (!markWanted) return;
+            markWanted = false;
+            markChecked = false;
+            const AfterglowVt::Screen& s = p.source.primaryScreen();
+            markFloor = s.rowsDropped();
+            markLast = s.rowsDropped() + s.historySize() + std::uint64_t(s.rows()) - 1;
+            markEpoch = s.layoutEpoch();
+        };
+        // A read takes the text that the mark took: the replica has every
+        // row of it, unless a reflow or a reset numbered the rows anew since,
+        // or the replica's history let them go.
+        const auto checkMark = [&] {
+            if (markChecked || !p.writer.textMarked()) return std::string();
+            markChecked = true;
+            if (p.source.primaryScreen().layoutEpoch() != markEpoch) return std::string();
+            const std::uint64_t first = std::max(markFloor, p.replica.primaryScreen().rowsDropped());
+            if (first > markLast || p.reader.received(first, markLast)) return std::string();
+            return "rows " + std::to_string(first) + " to " + std::to_string(markLast) + " of the mark did not come";
+        };
         for (int step = 0; step < 1500; ++step) {
             std::string piece = pieces[rng() % pieces.size()];
             for (std::size_t at; (at = piece.find("%d")) != std::string::npos;) piece.replace(at, 2, std::to_string(rng() % 20));
             p.source.feed(piece);
+            if (heldSteps == 0 && rng() % 60 == 0) heldSteps = 1 + int(rng() % 50);
+            if (rng() % 40 == 0) {
+                p.writer.markText();
+                marked = true;
+                markWanted = true;
+            }
             if (rng() % 5 == 0) {
                 // One frame, which may leave the pixels of an image half sent
-                // when the next output replaces it.
+                // when the next output replaces it. A held one keeps the
+                // scrolls for the next update().
                 std::string error;
-                ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << "seed " << seed << " step " << step << ": " << error;
+                if (heldSteps == 0) takeMark();
+                const std::string frame = heldSteps > 0 ? p.writer.updateHeld(p.source) : p.update();
+                ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << "seed " << seed << " step " << step << ": " << error;
+                const std::string mark = checkMark();
+                ASSERT_TRUE(mark.empty()) << "seed " << seed << " step " << step << ": " << mark;
+            }
+            // Also in a run of held frames: the next update() takes the size.
+            if (step == 700) p.source.resize(15 + int(rng() % 40), 3 + int(rng() % 10), 10, 20);
+            if (heldSteps > 0) {
+                --heldSteps;
+                continue;
             }
             if (rng() % 9 == 0) {
                 std::string error;
+                takeMark();
                 ASSERT_TRUE(p.sync(&error)) << "seed " << seed << " step " << step << ": " << error;
+                // Nothing waits: the text of the last mark went.
+                ASSERT_TRUE(!marked || p.writer.textMarked()) << "seed " << seed << " step " << step;
+                const std::string mark = checkMark();
+                ASSERT_TRUE(mark.empty()) << "seed " << seed << " step " << step << ": " << mark;
                 const std::string d = differs(p.source, p.replica);
                 ASSERT_TRUE(d.empty()) << "seed " << seed << " step " << step << ": " << d;
                 const std::string images = imagesDiffer(p.source, p.replica);
                 ASSERT_TRUE(images.empty()) << "seed " << seed << " step " << step << ": " << images;
             }
-            if (step == 700) p.source.resize(15 + int(rng() % 40), 3 + int(rng() % 10), 10, 20);
         }
     }
 }
@@ -1798,4 +1952,63 @@ TEST(StateSync, RowsPendingLeavesOutHistoryAndImages)
         EXPECT_TRUE(p.writer.pending());
         EXPECT_FALSE(p.writer.rowsPending());
     }
+}
+
+// A replica that nobody sees takes what its host shows of a pane that it does
+// not draw (the title, the directory, the status, the shell's marks) as it
+// changes, and no rows. The screens, the history, the images and the region
+// scrolls catch up at the next update(), as the terminal has them then.
+TEST(StateSync, AHeldFrameLeavesTheScreensForTheNextUpdate)
+{
+    std::string error;
+    Pair p(30, 6, 100);
+    p.source.resize(30, 6, 10, 20);
+    p.source.feed("before");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_FALSE(p.writer.screensHeld());
+    p.replicaHost.scrolls.clear();
+    p.source.feed("\x1b[2;4r\x1b[S\x1b[r\x1b[6;1H");
+    for (int i = 0; i < 20; ++i) p.source.feed("\r\nflood " + std::to_string(i));
+    p.source.feed(apc("a=T,f=32,s=2,v=2,i=7,q=2", rgba(2, 2, 255, 0, 0)));
+    p.source.feed("\x1b]2;building\x07\x1b]7;file:///tmp\x07\x1b]7501;state=working:progress=40\x1b\\\x1b]133;A\x07");
+    const std::string held = p.writer.updateHeld(p.source);
+    ASSERT_FALSE(held.empty());
+    ASSERT_TRUE(p.reader.apply(p.replica, held, &error)) << error;
+    EXPECT_FALSE(p.reader.screenChanged());
+    EXPECT_TRUE(p.writer.screensHeld());
+    EXPECT_EQ(p.replica.title(), "building");
+    EXPECT_EQ(p.replica.workingDirectory(), "file:///tmp");
+    EXPECT_EQ(statusDiffers(p.source, p.replica), "");
+    EXPECT_EQ(p.replica.semanticRegions().size(), p.source.semanticRegions().size());
+    // The screen as it was, without the image and the scroll.
+    EXPECT_EQ(rowText(p.replica, 0), "before");
+    EXPECT_EQ(p.replica.primaryScreen().historySize(), 0u);
+    EXPECT_TRUE(p.replica.graphics().images().empty());
+    EXPECT_TRUE(p.replicaHost.scrolls.empty());
+    // Output that changes nothing of those sections makes no held frame.
+    p.source.feed("\r\nmore");
+    EXPECT_EQ(p.writer.updateHeld(p.source), "");
+    // The next update() sends the screens as they are, with the scrolls
+    // that the caller kept.
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_FALSE(p.writer.screensHeld());
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+    EXPECT_EQ(p.replicaHost.scrolls.size(), 1u);
+
+    // A writer whose first frame is held: the screens and the images start at
+    // its first update(), which leaves out the scrolls before it, as for any
+    // new replica.
+    Pair q(30, 6, 100);
+    q.source.resize(30, 6, 10, 20);
+    q.source.feed("text" + apc("a=T,f=32,s=2,v=2,i=9,q=2", rgba(2, 2, 0, 0, 255)) + "\x1b]2;first\x07\x1b[2;4r\x1b[S\x1b[r");
+    EXPECT_TRUE(q.writer.screensHeld());
+    ASSERT_TRUE(q.reader.apply(q.replica, q.writer.updateHeld(q.source), &error)) << error;
+    EXPECT_EQ(q.replica.title(), "first");
+    EXPECT_EQ(q.replica.cols(), 20);
+    EXPECT_TRUE(q.writer.screensHeld());
+    ASSERT_TRUE(q.sync(&error)) << error;
+    EXPECT_EQ(differs(q.source, q.replica), "");
+    EXPECT_EQ(imagesDiffer(q.source, q.replica), "");
+    EXPECT_TRUE(q.replicaHost.scrolls.empty());
 }

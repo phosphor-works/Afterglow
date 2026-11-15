@@ -36,8 +36,10 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                 const auto error = kind == QLatin1String("move_pane")
                     ? control.movePane(pane, e.value(QStringLiteral("target")).toUInt(), s("placement"), moved)
                     : control.detachTab(pane, moved);
+                // A pane of a mux session leaves in a new session, and a new
+                // pane of the window that shows it has another id.
                 if (error.isEmpty()) data = {{QStringLiteral("pane"), moved},
-                    {QStringLiteral("pane_id"), pane}, {QStringLiteral("tab_id"), moved.value(QStringLiteral("tab_id"))},
+                    {QStringLiteral("pane_id"), moved.value(QStringLiteral("id"), pane)}, {QStringLiteral("tab_id"), moved.value(QStringLiteral("tab_id"))},
                     {QStringLiteral("window_id"), moved.value(QStringLiteral("window"))}};
                 return error;
             }

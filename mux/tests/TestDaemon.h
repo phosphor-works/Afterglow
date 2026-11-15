@@ -292,11 +292,17 @@ public:
         return call(Fn::NewSession, Json::Array{ProtocolVersion, toJson(o)}, error);
     }
 
+    /// The sessions of the daemon. A call that fails is a failure of the
+    /// test: a daemon that crashed has no sessions either, and a check that
+    /// a session went would pass.
     std::vector<SessionInfo> sessions()
     {
         std::vector<SessionInfo> list;
         const auto result = call(Fn::ListSessions, {});
-        if (!result) return list;
+        if (!result) {
+            ADD_FAILURE() << "listSessions failed: " << lastError();
+            return list;
+        }
         for (const Json::Value& item : result->toArray()) {
             auto info = sessionInfo(item);
             EXPECT_TRUE(info) << Json::write(item);
@@ -406,6 +412,27 @@ inline std::optional<SessionInfo> sessionNamed(TestDaemon& daemon, const std::st
         if (s.name == name) return std::move(s);
     }
     return std::nullopt;
+}
+
+/// The lowest ID of a pane that session @p name holds, as the daemon's
+/// paneSession call says, up to @p last; 0 for none. The daemon numbers its
+/// panes from 1, so a test needs no guess of which ID a session's pane got.
+inline std::uint32_t firstPaneOf(TestDaemon& daemon, const std::string& name, std::uint32_t last = 64)
+{
+    for (std::uint32_t id = 1; id <= last; ++id) {
+        IpcConnection::Error error;
+        const auto session = daemon.call(Fn::PaneSession, Json::Array{std::int64_t(id)}, &error);
+        if (session && session->toString() == name) return id;
+    }
+    return 0;
+}
+
+/// Whether process @p pid runs: neither gone nor a zombie, which kill(pid, 0)
+/// still finds.
+inline bool running(pid_t pid)
+{
+    const std::string stat = readFile("/proc/" + std::to_string(pid) + "/stat");
+    return !stat.empty() && stat.find(") Z ") == std::string::npos;
 }
 
 /// A Python program that puts the terminal in raw mode, writes @p query

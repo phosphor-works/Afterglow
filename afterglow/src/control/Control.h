@@ -82,8 +82,9 @@ public:
     /// Drops the calls to the mux daemon that did not start, and has those
     /// that run end the sessions that they start.
     ~Control() override;
-    /// For a drag of panes out of a session's window: they go to a new
-    /// session, which a new window shows.
+    /// For a pane or a tab that moves to a new window from a session's
+    /// window (a drag, a key, the menu, a script or afterglow ctl): it goes
+    /// to a new session, which a new window shows.
     void setSessionWindowOpener(SessionWindowOpener opener) { m_openSessionWindow = std::move(opener); }
     /// For a project that opens into a session, whose attach waited for the
     /// daemon off the GUI thread.
@@ -313,14 +314,16 @@ private:
     static PaneInfo describe(TerminalWindow* window, Pane* pane);
     /// Shows a window made by m_newWindow as Window.startMode asks.
     void showNew(TerminalWindow* window) const;
+    /// Moves @p pane of @p source, or its tab with @p tab, out of the session
+    /// that @p source shows, to a new session in a new window, which takes
+    /// what @p source kept for the panes. @p result describes the pane in
+    /// the new window, which has another ID.
+    QString breakOut(TerminalWindow* source, Pane* pane, bool tab, QVariantMap& result);
 
     SettingsStore& m_settings;
     WindowFactory m_newWindow;
     SessionWindowOpener m_openSessionWindow;
     SessionLinkShower m_showSessionLink;
-    /// Moves @p pane of @p source, or its tab with @p tab, out of the session
-    /// that @p source shows, to a new session in a new window.
-    QString breakOut(TerminalWindow* source, Pane* pane, bool tab, QVariantMap& result);
     ScriptCommandRunner m_scriptCommands;
     std::function<QVariantList()> m_scriptDiagnostics;
     bool m_noticesEnded = false;

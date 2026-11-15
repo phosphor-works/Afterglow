@@ -287,11 +287,15 @@ public:
     /// replaced and the XTPUSHCOLORS stack is emptied. The cursor shape and
     /// blink a program chose stay unless the configured ones changed.
     void setOptions(const TerminalOptions& options);
-    /// The options of a replica, whose colors, cursor and modes come with
-    /// the frames of another terminal (StateReader): what a window reads of
-    /// them (word boundaries, bold as bright, contrast, bidi), its
-    /// scrollback and its image quota. No color resets, and no report to
-    /// the program, as setOptions makes.
+    /// Applies only the options of @p options that change how the screen
+    /// draws and selects (boldIsBright, minimumContrast, wordBoundaries and
+    /// bidi), its scrollback and its image quota. For a replica (StateSync),
+    /// whose colours, cursor, modes and character widths are its writer's:
+    /// setOptions would replace them with the configured ones, reset colors
+    /// and report to the program. A replica parses nothing, so these change
+    /// only how it draws and selects what it holds. On a terminal that
+    /// parses, bidi also decides whether the directional controls that come
+    /// next stay as cells. Nothing when none of them changed.
     void setViewOptions(const TerminalOptions& options);
 
     /// @param cellWidth, cellHeight cell size in pixels, reported by CSI 14/16 t.

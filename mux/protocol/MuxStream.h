@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "MuxLayout.h"
 #include "MuxProtocol.h"
 
 #include <cstddef>
@@ -15,12 +16,14 @@
 // connection of the attach call, after its answer (Fn::Attach). The daemon writes the session's events
 // on channel 0 and the state of each pane on a channel of its own
 // (AfterglowVt::StateCodec), which PaneOpened names. Its first event is the
-// session's Layout, before any PaneOpened. The window writes its input and
-// its layout on channel 0, its Kill and ClosePane on ActionChannel, and the
-// bytes of the command clients that the daemon passes it on
-// CommandsChannel. The ids of each direction are apart, so a pane's state
-// channel and the action channel can both be 1. Integers are LEB128 varints
-// in their shortest form.
+// session's Layout, before any PaneOpened. An attachment that finished
+// before the window connected sends only its last event (TakenOver,
+// Detached or SessionEnded). The window writes its input and its layout on
+// channel 0, on ActionChannel what is not for a program (its Kill,
+// ClosePane, Visible and Refresh), and the bytes of the command clients
+// that the daemon passes it on CommandsChannel. The ids of each direction
+// are apart, so a pane's state channel and the action channel can both be
+// 1. Integers are LEB128 varints in their shortest form.
 //
 // A pane's channel closes after its last frame, and then PaneClosed follows
 // on channel 0. The window learns that a pane's program exited once it has
@@ -31,8 +34,9 @@ namespace AfterglowMux::Attach {
 /// The channel of the events (from the daemon) and of the input (from the
 /// window). The state channels of panes start at 1.
 inline constexpr std::uint32_t ControlChannel = 0;
-/// The window's channel for Kill and ClosePane: the daemon reads it also
-/// while input waits for a full PTY and the control channel gets no credit.
+/// The window's channel for Kill, ClosePane, Visible and Refresh: the daemon
+/// reads it also while input waits for a full PTY and the control channel
+/// gets no credit.
 inline constexpr std::uint32_t ActionChannel = 1;
 inline constexpr const char* ActionCodec = "afterglow.mux.actions.v1";
 /// The window's channel for the bytes of its command connections
@@ -43,7 +47,11 @@ inline constexpr const char* CommandsCodec = "afterglow.mux.commands.v1";
 /// The ids of the state channels, which the window reads, are below this, so
 /// that a daemon that has run many panes still fits the window's stream: the
 /// daemon gives a pane the lowest channel id that is free.
-inline constexpr std::uint32_t MaxChannelId = 4096;
+/// The ids of the state channels, which the window reads, are below this:
+/// the daemon gives a pane the lowest channel id that is free. The window
+/// takes MaxSessionPanes channels and the events at once, closing ones
+/// included, so a free id is never above MaxSessionPanes.
+inline constexpr std::uint32_t MaxChannelId = std::uint32_t(MaxSessionPanes) + 1;
 inline constexpr const char* EventCodec = "afterglow.mux.events.v1";
 inline constexpr const char* InputCodec = "afterglow.mux.input.v1";
 
@@ -53,19 +61,25 @@ inline constexpr int ConnectWaitMs = 5000;
 
 enum class EventType : std::uint8_t {
     PaneOpened = 1, ///< a pane exists, and its state comes on `channel`
-    PaneClosed = 2, ///< the program of a pane exited, with its status
+    /// the program of a pane exited, with its status; or the pane left the
+    /// window, with -1: the window closed it (ClosePane), or it went to
+    /// another session (Fn::BreakOut)
+    PaneClosed = 2,
     SessionEnded = 3, ///< the last program ended, or `afterglow mux kill` ended it
     TakenOver = 4, ///< another window attached: this one detaches
     Detached = 5, ///< `afterglow mux detach`: the window closes, the session runs on
     Host = 6, ///< a call of a pane's terminal to its host, or a part of one, in `payload` (MuxHost.h)
     Layout = 7, ///< the session's tabs and splits, as JSON in `payload` (MuxLayout.h): the first event
+    /// the answer to a Refresh of the pane, one for each: its screens and
+    /// history are whole in its first `frames` frames
+    Refreshed = 8,
     /// A call of the control target that the window answers (`afterglow ctl`
     /// for the session): {"id", "fn", "args"} as JSON in `payload`, with the
     /// daemon's pane IDs. The window answers with ControlReply.
-    Control = 8,
+    Control = 9,
     /// A part of a command connection that the window serves: an encoded
     /// RelayFrame in `payload`.
-    Commands = 9,
+    Commands = 10,
 };
 
 /// The status of a Host event that holds a part of a call, not its end.
@@ -80,14 +94,16 @@ struct Event
     std::uint32_t pane = 0;
     /// PaneOpened: the channel of the pane's state.
     std::uint32_t channel = 0;
-    /// PaneClosed: the status as waitpid gives it, or -1 when it is unknown.
+    /// PaneClosed: the status as waitpid gives it, or -1 when it is unknown
+    /// or the pane left the window with its program running.
     /// Host: HostPart when the call goes on in the next Host event of the
     /// pane, else -1.
     int status = -1;
     /// Host: the frames of the pane's state that the daemon wrote before the
     /// call. The window makes the call once it read as many: a frame larger
     /// than a fragment of the stream can still be on its way when the call
-    /// comes, and a bell goes after the text that rang it.
+    /// comes, and a bell goes after the text that rang it. Refreshed: the
+    /// frames that hold the screens that the Refresh asked for.
     std::uint64_t frames = 0;
     /// Host: the call, encoded, or its next part. A call larger than one
     /// frame comes in parts of at most HostPartBytes. Layout and Control:
@@ -103,19 +119,25 @@ enum class InputType : std::uint8_t {
     Resize = 2, ///< the size that the window measured for the pane
     Reset = 3, ///< the user reset the pane's terminal (Action::ResetTerminal)
     Clear = 4, ///< the user cleared the pane's screen and history (Action::ClearScreen)
-    Kill = 5, ///< the user closed the window, and Mux.onClose is kill: the session ends (ActionChannel only)
-    Visible = 6, ///< whether the user can see the pane (mode 2033), in `visible`
-    Layout = 7, ///< the window's tabs and splits, as JSON in `bytes` (MuxLayout.h), after each change
+    /// the user closed the window, or its last tab or pane, and Mux.onClose
+    /// is kill: the session ends (ActionChannel only)
+    Kill = 5,
+    Visible = 6, ///< whether the user can see the pane (mode 2033), in `visible` (ActionChannel only)
+    Layout = 7, ///< the window's tabs and splits, as JSON in `bytes` (MuxLayout.h), after each change; pane 0
     ClosePane = 8, ///< the user closed the pane and the window stays: its program ends (ActionChannel only)
+    /// the window reads the pane's text, or draws it for a capture: the
+    /// daemon sends its screens and history as they are now, also while the
+    /// pane does not show, and then a Refreshed event (ActionChannel only)
+    Refresh = 9,
     /// The answer to a Control event: {"id", "result"} or {"id", "error"} as
     /// JSON in `bytes`, with the daemon's pane IDs.
-    ControlReply = 9,
+    ControlReply = 10,
     /// The window's settings (SessionSettings), as JSON in `bytes`, after
     /// the attach and after each change of them.
-    Settings = 10,
+    Settings = 11,
     /// A part of a ControlReply larger than one frame, such as a screenshot:
     /// the parts, then the ControlReply with the rest, make its JSON.
-    ControlReplyPart = 11,
+    ControlReplyPart = 12,
 };
 
 /// The bytes of a ControlReply in each ControlReplyPart, when the reply does
@@ -134,6 +156,12 @@ struct Input
     PaneSize size;
     bool visible = false;
 };
+
+/// The inputs that come on ActionChannel, and never on the control channel.
+constexpr bool isAction(InputType type)
+{
+    return type == InputType::Kill || type == InputType::ClosePane || type == InputType::Visible || type == InputType::Refresh;
+}
 
 std::string encode(const Input& input);
 std::optional<Input> decodeInput(std::string_view frame);

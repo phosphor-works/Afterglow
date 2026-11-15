@@ -35,6 +35,8 @@ Its actions are the command palette actions that act on that pane or start from 
 | Move and open | Move Pane to New Tab, Move Pane to New Window, New Tab, New Window |
 
 New Tab and New Window start in the directory of the pane, as the `Window.workingDirectory` setting permits.
+In the window of a mux session, Move Pane to New Window moves the pane to a new session in a new window (see [MUX.md](MUX.md#move-panes-and-tabs)).
+New Window opens a window outside the session.
 
 The other palette actions act the same from every pane.
 They switch, move, detach and close tabs, close the window, change the font and switch to fullscreen.
@@ -118,7 +120,7 @@ Afterglow does not request a Latin language preference.
 Predictive text and automatic capitalization remain disabled.
 Context contains only displayed cells. Afterglow does not synthesize password contents.
 
-`Terminal.bidi` enables optional bidirectional layout on eligible primary screens.
+`Terminal.bidi` enables optional bidirectional layout on eligible main screens.
 Selection, pointer targeting and accessible geometry follow visual cell order.
 See [bidirectional text](BIDI.md) for choices and limits.
 

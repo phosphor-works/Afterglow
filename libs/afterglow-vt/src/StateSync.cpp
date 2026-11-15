@@ -587,11 +587,37 @@ bool StateWriter::rowsPending() const
     return m_screens[0].rowsPending || m_screens[1].rowsPending;
 }
 
+bool StateWriter::textMarked() const
+{
+    if (!m_mark.taken || rowsPending()) return false;
+    for (int which = 0; which < 2; ++which) {
+        const ScreenState& st = m_screens[which];
+        // The rows of the mark that are history now went: those that were
+        // history then, and those that were visible then and that scrolled
+        // in since. The rows of the mark that are still visible went with
+        // the screen (rowsPending). Then the older ones down to the mark's
+        // floor, or to the replica's floor now, which rose past it.
+        // totalSent and oldestSent are of the last frame.
+        if (st.to < std::min(m_mark.total[which], st.totalSent) || st.from > std::max(m_mark.floor[which], st.oldestSent)) return false;
+    }
+    return true;
+}
+
 namespace {
 bool sendable(const Image& image);
 } // namespace
 
 std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const RegionScrolls* scrolls)
+{
+    return write(t, maxBytes, scrolls, false);
+}
+
+std::string StateWriter::updateHeld(const Terminal& t)
+{
+    return write(t, 0, nullptr, true);
+}
+
+std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const RegionScrolls* scrolls, bool held)
 {
     std::string out(1, char(Version));
     const bool first = !m_started;
@@ -600,11 +626,22 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
     // rows that the last frames left out can go.
     const bool changed = first || t.generation() != m_generation;
     m_generation = t.generation();
+    // The screens of the first update(), and of one after held frames that
+    // saw a change, go as the terminal has them now: a change that a held
+    // frame took is still theirs.
+    const bool screensFirst = !held && !m_screensStarted;
+    const bool screensChanged = changed || screensFirst || (!held && m_screensHeld);
+    if (held) {
+        m_screensHeld = m_screensHeld || changed;
+    } else {
+        m_screensStarted = true;
+        m_screensHeld = false;
+    }
 
     std::string payload;
     // The scrolls go first: the reader keeps them for its host until the
-    // frame applied.
-    if (!first && scrolls && !scrolls->empty()) {
+    // frame applied. A new replica's screens keep nothing that they move.
+    if (!held && !screensFirst && scrolls && !scrolls->empty()) {
         Out o(payload);
         o.byte(scrolls->m_lost ? 1 : 0);
         o.varint(scrolls->m_entries.size());
@@ -744,6 +781,13 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
         }
         sendIfChanged(out, ExtraCursorsTag, payload, m_extraCursors, first);
     }
+    if (held) {
+        // The images wait, but the frames of those that went need not: the
+        // next update() sends the drops of the parts that the replica has.
+        releaseGoneImages(t);
+        m_imagesPending = m_imagesPending || !m_drops.empty();
+        return out.size() == 1 ? std::string() : out;
+    }
 
     payload.clear();
     for (const Screen* s : {t.m_primary.get(), t.m_alternate.get()}) {
@@ -755,8 +799,21 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
     // The visible rows of both screens first, then their history in the
     // bytes that are left.
     Budget budget{maxBytes};
-    bool reset = writeRows(out, t, 0, m_screens[0], budget, changed);
-    reset = writeRows(out, t, 1, m_screens[1], budget, changed) || reset;
+    bool reset = writeRows(out, t, 0, m_screens[0], budget, screensChanged);
+    reset = writeRows(out, t, 1, m_screens[1], budget, screensChanged) || reset;
+    // After the rows: a screen that started over numbers its rows anew.
+    if (m_mark.wanted) {
+        m_mark.wanted = false;
+        m_mark.taken = true;
+        for (int which = 0; which < 2; ++which) {
+            const Screen& s = which == 0 ? *t.m_primary : *t.m_alternate;
+            const std::uint64_t history = s.rowsDropped() + s.historySize();
+            // The visible rows too: a flood can scroll them into the history
+            // before they went, and they come back there as appends only.
+            m_mark.total[which] = history + std::uint64_t(s.rows());
+            m_mark.floor[which] = history - std::min<std::uint64_t>(s.historySize(), m_replicaHistory);
+        }
+    }
     // The cell size that the program's images were laid out at: the window
     // measured it, and the replica draws them at it. Before the images.
     {
@@ -764,7 +821,7 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
         Out o(cells);
         o.varint(std::uint64_t(std::max(t.m_cellWidth, 0)));
         o.varint(std::uint64_t(std::max(t.m_cellHeight, 0)));
-        if (first || cells != m_cellSize) {
+        if (screensFirst || cells != m_cellSize) {
             section(out, CellSizeTag, cells);
             m_cellSize = std::move(cells);
         }
@@ -772,7 +829,7 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
     // The images that show go before the history, the others after it. The
     // records of the versions whose pixels went go first: pixels that come
     // after them take the room of each frame.
-    const bool images = prepareImages(out, t, first);
+    const bool images = prepareImages(out, t, screensFirst);
     if (images) {
         writeDrops(out, budget);
         writeRecords(out, t, budget);
@@ -794,7 +851,7 @@ std::string StateWriter::update(const Terminal& t, std::size_t maxBytes, const R
     }
     // The cursors go after the rows, which the reader checks them against.
     // A screen that started over lost its cursor on the replica.
-    if (first || reset || payload != m_cursor) {
+    if (screensFirst || reset || payload != m_cursor) {
         section(out, CursorTag, payload);
         m_cursor = std::move(payload);
     }
@@ -826,6 +883,12 @@ bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, Scre
         section(out, ResetTag, payload);
         st.totalSent = total;
         reset = true;
+        // The replica lost the rows of the mark: it needs all of them again,
+        // in the new numbering, down to the floor, with the visible ones.
+        if (m_mark.taken) {
+            m_mark.total[which] = total + std::uint64_t(s.rows());
+            m_mark.floor[which] = 0;
+        }
     }
     // Nothing changed since the frame that sent every row that changed.
     if (!changed && !reset && !st.rowsPending) return reset;
@@ -1083,15 +1146,7 @@ bool StateWriter::prepareImages(std::string& out, const Terminal& t, bool first)
     m_storeChanges[1] = t.m_graphics[1].changes();
     m_storesChanged = changed;
     m_imagesPending = false;
-    // A version whose image went, or whose id names another image now (a
-    // clear, then a new image), is of no use: a transfer of it ends.
-    const auto gone = [&t](const ImageVersion& v) {
-        const auto& images = t.m_graphics[v.which].images();
-        const auto it = images.find(v.image.id);
-        return it == images.end() || it->second.order != v.image.order;
-    };
-    if (m_transfer && gone(*m_transfer)) endTransfer();
-    std::erase_if(m_done, gone);
+    releaseGoneImages(t);
     // The frames that went: no image and no version holds them. The
     // replica drops those that it got pixels of. Only the transfer's frames
     // are ever in part on the replica, and the transfer holds them.
@@ -1115,6 +1170,19 @@ bool StateWriter::prepareImages(std::string& out, const Terminal& t, bool first)
     const int active = t.m_modes.altScreen ? 1 : 0;
     m_shown = t.m_graphics[active].shownImages(*t.m_active, t.m_cellWidth, t.m_cellHeight);
     return true;
+}
+
+void StateWriter::releaseGoneImages(const Terminal& t)
+{
+    // A version whose image went, or whose id names another image now (a
+    // clear, then a new image), is of no use: a transfer of it ends.
+    const auto gone = [&t](const ImageVersion& v) {
+        const auto& images = t.m_graphics[v.which].images();
+        const auto it = images.find(v.image.id);
+        return it == images.end() || it->second.order != v.image.order;
+    };
+    if (m_transfer && gone(*m_transfer)) endTransfer();
+    std::erase_if(m_done, gone);
 }
 
 void StateWriter::endTransfer()

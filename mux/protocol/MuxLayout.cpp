@@ -3,26 +3,19 @@
 
 #include "MuxLayout.h"
 
+#include <AfterglowProto/Text.h>
+
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <string_view>
+#include <unordered_set>
 
 namespace AfterglowMux {
 
 namespace Json = AfterglowProto::Json;
 
 namespace {
-
-/// The end of the subtree that starts at @p at: a split's two sides follow it.
-std::size_t subtreeEnd(const std::vector<LayoutNode>& tree, std::size_t at)
-{
-    std::size_t need = 1;
-    while (at < tree.size() && need > 0) {
-        need = need - 1 + (tree[at].pane == 0 ? 2 : 0);
-        ++at;
-    }
-    return at;
-}
 
 std::uint32_t firstPane(const std::vector<LayoutNode>& tree)
 {
@@ -38,11 +31,12 @@ bool fail(std::string* error, std::string text)
     return false;
 }
 
-std::optional<std::uint32_t> paneId(const Json::Value& value)
+/// A key of the wire in an error, which the daemon writes on its stderr:
+/// safe to print, and short.
+std::string keyText(std::string_view key)
 {
-    const auto id = value.toInteger();
-    if (!id || *id <= 0 || *id > 0xffffffffLL) return std::nullopt;
-    return std::uint32_t(*id);
+    constexpr std::size_t Shown = 64;
+    return "'" + AfterglowProto::printable(key.substr(0, Shown)) + (key.size() > Shown ? "...'" : "'");
 }
 
 /// Reads one tab, and adds its panes to @p seen.
@@ -50,10 +44,17 @@ bool readTab(const Json::Value& value, LayoutTab& tab, std::set<std::uint32_t>& 
 {
     if (!value.isObject()) return fail(error, "a tab is not an object");
     for (const auto& [key, item] : value.toObject()) {
-        if (key != "tree" && key != "focused" && key != "zoomed" && key != "title") return fail(error, "'" + key + "' is not a key of a tab");
+        if (key != "tree" && key != "focused" && key != "zoomed" && key != "title") return fail(error, keyText(key) + " is not a key of a tab");
     }
     const Json::Value* tree = value.find("tree");
-    if (!tree || !tree->isArray() || tree->toArray().empty()) return fail(error, "a tab has no tree");
+    if (!tree) return fail(error, "a tab has no 'tree'");
+    if (!tree->isArray()) return fail(error, "the 'tree' of a tab is not an array");
+    if (tree->toArray().empty()) return fail(error, "the 'tree' of a tab is empty");
+    // A tree of n panes has n - 1 splits: one with more than the panes of a
+    // session can have is refused before its nodes are read.
+    if (tree->toArray().size() > 2 * MaxSessionPanes - 1) {
+        return fail(error, "a tab's tree has more panes than the " + std::to_string(MaxSessionPanes) + " of a session");
+    }
     // Each split needs two sides: the tree ends where nothing more is needed,
     // and only there.
     std::size_t need = 1;
@@ -72,15 +73,15 @@ bool readTab(const Json::Value& value, LayoutTab& tab, std::set<std::uint32_t>& 
             if (!std::isfinite(node.ratio) || node.ratio <= 0 || node.ratio >= 1) return fail(error, "a split's ratio is not between 0 and 1");
             need += 1;
         } else {
-            const auto id = paneId(item);
+            const auto id = paneIdFrom(item);
             if (!id) return fail(error, "a pane of a tree is not a pane ID");
             if (!seen.insert(*id).second) return fail(error, "pane " + std::to_string(*id) + " is in the layout more than once");
-            if (seen.size() > MaxLayoutPanes) return fail(error, "the layout has more than " + std::to_string(MaxLayoutPanes) + " panes");
+            if (seen.size() > MaxSessionPanes) return fail(error, "the layout has more than " + std::to_string(MaxSessionPanes) + " panes");
             panes.insert(*id);
             node.pane = *id;
             need -= 1;
         }
-        tab.tree.push_back(node);
+        tab.tree.push_back(std::move(node));
     }
     if (need != 0) return fail(error, "a split of a tree lacks a side");
     const auto paneOfTab = [&](const char* key, std::uint32_t& out, bool optional) {
@@ -90,14 +91,15 @@ bool readTab(const Json::Value& value, LayoutTab& tab, std::set<std::uint32_t>& 
             out = 0;
             return true;
         }
-        const auto id = paneId(*v);
+        const auto id = paneIdFrom(*v);
         if (!id || !panes.contains(*id)) return fail(error, std::string("the '") + key + "' pane of a tab is not in its tree");
         out = *id;
         return true;
     };
     if (!paneOfTab("focused", tab.focused, false) || !paneOfTab("zoomed", tab.zoomed, true)) return false;
     const Json::Value* title = value.find("title");
-    if (!title || !title->isString()) return fail(error, "a tab has no 'title'");
+    if (!title) return fail(error, "a tab has no 'title'");
+    if (!title->isString()) return fail(error, "the 'title' of a tab is not a string");
     if (title->toString().size() > MaxTabTitle) return fail(error, "a tab's title is longer than " + std::to_string(MaxTabTitle) + " bytes");
     tab.title = title->toString();
     return true;
@@ -110,10 +112,10 @@ bool readValues(const Json::Value& value, Layout& layout, const std::set<std::ui
     for (const Json::Value& item : value.toArray()) {
         if (!item.isObject()) return fail(error, "the values of a pane are not an object");
         for (const auto& [key, field] : item.toObject()) {
-            if (key != "id" && key != "title" && key != "command") return fail(error, "'" + key + "' is not a value of a pane");
+            if (key != "id" && key != "title" && key != "command") return fail(error, keyText(key) + " is not a value of a pane");
         }
         const Json::Value* id = item.find("id");
-        const auto pane = id ? paneId(*id) : std::nullopt;
+        const auto pane = id ? paneIdFrom(*id) : std::nullopt;
         if (!pane || !panes.contains(*pane)) return fail(error, "values name a pane that is not in the layout");
         if (layout.values.contains(*pane)) return fail(error, "pane " + std::to_string(*pane) + " has values more than once");
         PaneValues values;
@@ -161,6 +163,13 @@ bool validPaneCommand(const std::vector<std::string>& command)
         && std::none_of(command.begin(), command.end(), [](const std::string& arg) { return arg.size() > MaxPaneCommandArg; });
 }
 
+std::optional<std::uint32_t> paneIdFrom(const Json::Value& value)
+{
+    const auto id = value.toInteger();
+    if (!id || *id <= 0 || *id > 0xffffffffLL) return std::nullopt;
+    return std::uint32_t(*id);
+}
+
 std::vector<std::uint32_t> Layout::panes() const
 {
     std::vector<std::uint32_t> out;
@@ -174,6 +183,7 @@ std::vector<std::uint32_t> Layout::panes() const
 
 bool Layout::contains(std::uint32_t pane) const
 {
+    if (pane == 0) return false;
     return std::any_of(tabs.begin(), tabs.end(), [pane](const LayoutTab& tab) {
         return std::any_of(tab.tree.begin(), tab.tree.end(), [pane](const LayoutNode& node) { return node.pane == pane; });
     });
@@ -181,14 +191,29 @@ bool Layout::contains(std::uint32_t pane) const
 
 void Layout::addTab(std::uint32_t pane)
 {
+    if (pane == 0) return;
     LayoutTab tab;
     tab.tree.push_back(LayoutNode{pane, false, 0.5});
     tab.focused = pane;
     tabs.push_back(std::move(tab));
 }
 
+namespace {
+
+/// The tab that shows when the old current tab went, and @p keptBefore of
+/// the tabs before it stayed, of @p tabs that stay: as when a window closes
+/// its tabs one by one, the tab that slides into the place of the current
+/// one shows, else the new last one.
+std::size_t currentAfter(std::size_t keptBefore, std::size_t tabs)
+{
+    return tabs == 0 ? 0 : std::min(keptBefore, tabs - 1);
+}
+
+} // namespace
+
 bool Layout::remove(std::uint32_t pane)
 {
+    if (pane == 0) return false;
     values.erase(pane);
     for (std::size_t t = 0; t < tabs.size(); ++t) {
         std::vector<LayoutNode>& tree = tabs[t].tree;
@@ -197,23 +222,31 @@ bool Layout::remove(std::uint32_t pane)
         const std::size_t at = std::size_t(leaf - tree.begin());
         if (tree.size() == 1) {
             tabs.erase(tabs.begin() + std::ptrdiff_t(t));
-            // The tab that slides into its place shows, or the new last one,
-            // as in a window.
-            if (t < current || (t == current && current > 0 && current >= tabs.size())) --current;
+            if (t < current) --current;
+            else if (t == current) current = currentAfter(t, tabs.size());
             return true;
         }
-        // Its split: the closest one before it whose first or second side
-        // starts at it. That split's place goes to the other side.
-        for (std::size_t split = at; split-- > 0;) {
-            if (tree[split].pane != 0) continue;
-            const std::size_t second = subtreeEnd(tree, split + 1);
-            if (split + 1 != at && second != at) continue;
-            const std::size_t end = subtreeEnd(tree, second);
-            std::vector<LayoutNode> other = split + 1 == at ? std::vector<LayoutNode>(tree.begin() + std::ptrdiff_t(second), tree.begin() + std::ptrdiff_t(end))
-                                                            : std::vector<LayoutNode>(tree.begin() + std::ptrdiff_t(split + 1), tree.begin() + std::ptrdiff_t(second));
-            tree.erase(tree.begin() + std::ptrdiff_t(split), tree.begin() + std::ptrdiff_t(end));
-            tree.insert(tree.begin() + std::ptrdiff_t(split), other.begin(), other.end());
-            break;
+        // Its split, in one walk back: the subtrees that end before the pane
+        // and after the split count. A split joins two of them into one; the
+        // first split with fewer than two is the pane's own. With none, the
+        // pane is its first side, else its second.
+        std::size_t whole = 0;
+        std::size_t split = at;
+        bool found = false;
+        while (!found && split > 0) {
+            --split;
+            if (tree[split].pane != 0) ++whole;
+            else if (whole < 2) found = true;
+            else --whole;
+        }
+        // Only a tree that is not one (never one of layoutFrom()).
+        if (!found) return false;
+        if (whole == 0) {
+            // The split and its first side go: the second side is in place.
+            tree.erase(tree.begin() + std::ptrdiff_t(split), tree.begin() + std::ptrdiff_t(at + 1));
+        } else {
+            tree.erase(tree.begin() + std::ptrdiff_t(at));
+            tree.erase(tree.begin() + std::ptrdiff_t(split));
         }
         if (tabs[t].focused == pane) tabs[t].focused = firstPane(tree);
         if (tabs[t].zoomed == pane) tabs[t].zoomed = 0;
@@ -224,13 +257,73 @@ bool Layout::remove(std::uint32_t pane)
 
 void Layout::reconcile(const std::vector<std::uint32_t>& live)
 {
-    for (const std::uint32_t pane : panes()) {
-        if (std::find(live.begin(), live.end(), pane) == live.end()) remove(pane);
+    const std::unordered_set<std::uint32_t> alive(live.begin(), live.end());
+    std::unordered_set<std::uint32_t> present;
+    // Each tree in one pass: a split whose two sides keep a pane stays, one
+    // with one such side gives its place to that side, as remove() does, and
+    // one with none goes with its sides.
+    struct Open
+    {
+        std::size_t node; ///< its index in kept, which keep marks
+        int sides = 2; ///< the sides that did not end yet
+        int kept = 0; ///< the sides that keep a pane
+    };
+    std::vector<Open> open;
+    std::vector<LayoutNode> kept;
+    std::vector<bool> keep;
+    std::size_t tabsBefore = 0; ///< the tabs that stay before the current one
+    bool currentStays = false;
+    std::vector<LayoutTab> out;
+    for (std::size_t t = 0; t < tabs.size(); ++t) {
+        LayoutTab& tab = tabs[t];
+        open.clear();
+        kept.clear();
+        keep.clear();
+        for (const LayoutNode& node : tab.tree) {
+            if (node.pane == 0) {
+                kept.push_back(node);
+                keep.push_back(false);
+                open.push_back({kept.size() - 1});
+                continue;
+            }
+            bool hasPane = alive.contains(node.pane) && present.insert(node.pane).second;
+            if (hasPane) {
+                kept.push_back(node);
+                keep.push_back(true);
+            }
+            // The sides that end here, up to the first split that waits for
+            // its second.
+            while (!open.empty()) {
+                Open& split = open.back();
+                split.kept += hasPane ? 1 : 0;
+                if (--split.sides > 0) break;
+                keep[split.node] = split.kept == 2;
+                hasPane = split.kept > 0;
+                open.pop_back();
+            }
+        }
+        tab.tree.clear();
+        for (std::size_t i = 0; i < kept.size(); ++i) {
+            if (keep[i]) tab.tree.push_back(kept[i]);
+        }
+        if (t == current) currentStays = !tab.tree.empty();
+        if (tab.tree.empty()) continue;
+        if (t < current) ++tabsBefore;
+        const auto has = [&tab](std::uint32_t pane) {
+            return std::any_of(tab.tree.begin(), tab.tree.end(), [pane](const LayoutNode& node) { return node.pane == pane; });
+        };
+        if (!has(tab.focused)) tab.focused = firstPane(tab.tree);
+        if (tab.zoomed != 0 && !has(tab.zoomed)) tab.zoomed = 0;
+        out.push_back(std::move(tab));
     }
+    current = currentStays ? tabsBefore : currentAfter(tabsBefore, out.size());
+    tabs = std::move(out);
     for (const std::uint32_t pane : live) {
-        if (!contains(pane)) addTab(pane);
+        if (pane != 0 && present.insert(pane).second) addTab(pane);
     }
     if (current >= tabs.size()) current = tabs.empty() ? 0 : tabs.size() - 1;
+    // The values of the panes that went go with them.
+    std::erase_if(values, [&alive](const auto& value) { return !alive.contains(value.first); });
 }
 
 std::optional<std::size_t> Layout::tabOf(std::uint32_t pane) const
@@ -322,14 +415,22 @@ std::optional<Layout> layoutFrom(const Json::Value& value, std::string* error)
     }
     for (const auto& [key, item] : value.toObject()) {
         if (key != "tabs" && key != "current" && key != "values" && key != "moved") {
-            fail(error, "'" + key + "' is not a key of a layout");
+            fail(error, keyText(key) + " is not a key of a layout");
             return std::nullopt;
         }
     }
     const Json::Value* tabs = value.find("tabs");
     const Json::Value* current = value.find("current");
-    if (!tabs || !tabs->isArray() || tabs->toArray().empty() || !current) {
-        fail(error, "the layout has no tabs, or no current tab");
+    if (!tabs || !tabs->isArray()) {
+        fail(error, "the layout has no 'tabs' array");
+        return std::nullopt;
+    }
+    if (tabs->toArray().empty()) {
+        fail(error, "the layout has no tab");
+        return std::nullopt;
+    }
+    if (!current) {
+        fail(error, "the layout has no 'current'");
         return std::nullopt;
     }
     Layout layout;
@@ -348,12 +449,12 @@ std::optional<Layout> layoutFrom(const Json::Value& value, std::string* error)
     // A layout of panes without values has none.
     if (const Json::Value* values = value.find("values"); values && !readValues(*values, layout, seen, error)) return std::nullopt;
     if (const Json::Value* moved = value.find("moved")) {
-        if (!moved->isArray() || moved->toArray().size() > MaxLayoutPanes) {
+        if (!moved->isArray() || moved->toArray().size() > MaxSessionPanes) {
             fail(error, "the moved panes are not a list of the layout's panes");
             return std::nullopt;
         }
         for (const Json::Value& item : moved->toArray()) {
-            const auto pane = paneId(item);
+            const auto pane = paneIdFrom(item);
             if (!pane || !seen.contains(*pane)) {
                 fail(error, "the moved panes are not a list of the layout's panes");
                 return std::nullopt;

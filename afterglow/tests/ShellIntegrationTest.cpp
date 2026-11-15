@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/ShellIntegration.h"
+#include "SavedEnvironment.h"
 #include "shell/Ssh.h"
 #include <gtest/gtest.h>
 #include <AfterglowVt/Terminal.h>
@@ -86,6 +87,34 @@ TEST(ShellIntegration, PreservesEnvironmentOverrides)
     ASSERT_TRUE(prepare(o, true, root()));
     EXPECT_NE(std::find(o.environment.begin(), o.environment.end(), std::pair<std::string,std::string>{"AFTERGLOW_ORIGINAL_ZDOTDIR", "/custom rc"}), o.environment.end());
     EXPECT_EQ(std::count_if(o.environment.begin(), o.environment.end(), [](const auto& e) { return e.first == "ZDOTDIR"; }), 1);
+}
+TEST(ShellIntegration, ReadsTheInheritedEnvironmentWhenGiven)
+{
+    // A pane of a mux session: the session's environment, not this
+    // process's, names the shell, the opt-out and what the integration saves.
+    const Afterglow::Test::Saved zdotdir("ZDOTDIR", "/window rc");
+    const Afterglow::Test::Saved optOut("AFTERGLOW_SHELL_INTEGRATION", "0");
+    const Afterglow::Test::Saved shell("SHELL", "/bin/sh");
+    const std::vector<std::pair<std::string, std::string>> session{{"SHELL", "/usr/bin/zsh"}, {"ZDOTDIR", "/session rc"}};
+    SpawnOptions o;
+    ASSERT_TRUE(prepare(o, true, root(), &session));
+    ASSERT_FALSE(o.argv.empty());
+    EXPECT_EQ(o.argv.front(), "/usr/bin/zsh");
+    const auto has = [&o](const std::string& name, const std::string& value) {
+        return std::find(o.environment.begin(), o.environment.end(), std::pair{name, value}) != o.environment.end();
+    };
+    EXPECT_TRUE(has("AFTERGLOW_ORIGINAL_ZDOTDIR", "/session rc"));
+    EXPECT_TRUE(has("AFTERGLOW_ORIGINAL_ZDOTDIR_SET", "1"));
+    // A session without ZDOTDIR has none to restore, whatever this process has.
+    const std::vector<std::pair<std::string, std::string>> bare{{"SHELL", "/usr/bin/zsh"}};
+    SpawnOptions unset;
+    ASSERT_TRUE(prepare(unset, true, root(), &bare));
+    EXPECT_NE(std::find(unset.environment.begin(), unset.environment.end(), std::pair<std::string, std::string>{"AFTERGLOW_ORIGINAL_ZDOTDIR_SET", "0"}),
+              unset.environment.end());
+    // The session's own opt-out holds.
+    const std::vector<std::pair<std::string, std::string>> off{{"SHELL", "/usr/bin/zsh"}, {"AFTERGLOW_SHELL_INTEGRATION", "0"}};
+    SpawnOptions none;
+    EXPECT_FALSE(prepare(none, true, root(), &off));
 }
 class InteractiveShell : public testing::TestWithParam<std::pair<std::string, bool>> {};
 TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)

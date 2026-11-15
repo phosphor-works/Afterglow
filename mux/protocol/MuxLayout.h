@@ -15,22 +15,30 @@
 // The tabs and splits of a session. The daemon keeps them while no window
 // shows the session, and gives them to the next window. While a window shows
 // the session, the window changes them and sends them back after each change
-// (Attach::InputType::Layout).
+// (Attach::InputType::Layout). The daemon changes them too: a pane that it
+// starts (Fn::NewPane) is a tab of its own until the window sends its
+// layout, and a pane that ends or leaves the session leaves the layout.
 //
 // A tab's split tree is a list in preorder, not nested objects: a split is
 // followed by its first side, then its second, each a pane or a split. A
-// deep tree is then no deeper JSON (Json::MaxDepth), and no code recurses
-// over it.
+// split is ["right" or "down", ratio], a pane its ID. A deep tree is then
+// no deeper JSON
+// (Json::MaxDepth). The daemon's code walks the list without recursion. The
+// window's code that recurses over a tree goes no deeper than
+// MaxSessionPanes.
 
 namespace AfterglowMux {
 
-/// The most panes in a layout: a window's stream reads no more state channels
-/// (Attach::MaxChannelId).
-inline constexpr std::size_t MaxLayoutPanes = 4096;
-/// The longest tab title, in bytes.
-inline constexpr std::size_t MaxTabTitle = 4096;
+/// The most panes of a session: the daemon starts no more (Fn::NewPane), and
+/// takes no layout with more. A window's stream reads the state channels of
+/// that many panes and the channel of the events at once.
+inline constexpr std::size_t MaxSessionPanes = 256;
+/// The longest tab title, in bytes. A layout of MaxSessionPanes tabs with
+/// such titles and with the most values (MaxLayoutValueBytes) still fits
+/// one frame of the attach stream (MuxLayoutTest).
+inline constexpr std::size_t MaxTabTitle = 1024;
 /// The longest title that the user gives a pane, in bytes.
-inline constexpr std::size_t MaxPaneTitle = 4096;
+inline constexpr std::size_t MaxPaneTitle = 1024;
 /// The most arguments of a pane's command, and the longest one, in bytes:
 /// a project keeps 64 of at most 4096 characters, so it keeps each command
 /// that fits.
@@ -42,6 +50,7 @@ inline constexpr std::size_t MaxPaneCommandArg = 4096;
 /// default window (4 MiB), as one pane's command in a placePane call does.
 inline constexpr std::size_t MaxLayoutValueBytes = std::size_t(256) << 10;
 static_assert(MaxPaneCommandArgs * MaxPaneCommandArg <= MaxLayoutValueBytes);
+static_assert(MaxSessionPanes * MaxPaneTitle <= MaxLayoutValueBytes);
 
 /// A node of a split tree.
 struct LayoutNode
@@ -113,16 +122,20 @@ struct Layout
 
     /// The panes, tab by tab, each tree in preorder.
     std::vector<std::uint32_t> panes() const;
+    /// False for 0, which marks a split and is no pane.
     bool contains(std::uint32_t pane) const;
-    /// Adds a tab with @p pane alone, after the last tab.
+    /// Adds a tab with @p pane alone, after the last tab. Nothing for 0.
     void addTab(std::uint32_t pane);
-    /// Removes @p pane, with its values: the other side of its split takes
-    /// its place, and a tab without panes goes. The tab's focus goes to its
-    /// first pane. False when the layout has no such pane.
+    /// Removes @p pane, with its values: the other side of its split takes its place, and a
+    /// tab without panes goes. When the pane had the focus of its tab, the
+    /// tab's first pane gets it. When the tab showed the pane alone, the
+    /// zoom ends. False when the layout has no such pane. Allocates nothing:
+    /// a pane that leaves a session (Session::take) is never lost on the way.
     bool remove(std::uint32_t pane);
     /// Keeps only the panes of @p live, and adds each pane of @p live that it
     /// lacks as a tab of its own: a window's layout that a pane's exit
-    /// passed, or that came before a new pane.
+    /// passed, or that came before a new pane. The focus and the zoom follow
+    /// the rules of remove(). Linear in the panes of both.
     void reconcile(const std::vector<std::uint32_t>& live);
 
     /// The tab that holds @p pane.
@@ -139,11 +152,22 @@ struct Layout
     bool focus(std::uint32_t pane);
 };
 
+/// The ID of a pane in a value of the wire: a whole number from 1 to
+/// 2^32 - 1. 0 marks a split.
+std::optional<std::uint32_t> paneIdFrom(const AfterglowProto::Json::Value& value);
+
 AfterglowProto::Json::Value toJson(const Layout& layout);
 /// nullopt for a value that is not a valid layout: @p error says why. A
-/// valid layout names each pane once, has a tab for each tree, names panes
-/// of their own tab as the focus and the zoom, and gives values only to its
-/// panes, within their limits.
+/// valid layout is an object with the keys "tabs" and "current", and
+/// optionally "values" and "moved": at least one tab, and the index of one
+/// of them. Each tab has only "tree", "focused", "zoomed" and "title". Its
+/// tree is a whole split tree in preorder (each split ["right" or "down", a
+/// ratio above 0 and below 1], each pane its ID). The focus is a pane of the
+/// tab's tree, the zoom one too or 0, and the title a string of at most
+/// MaxTabTitle bytes. The values give a pane of the layout a title of at
+/// most MaxPaneTitle bytes and a command (validPaneCommand), each pane once
+/// and MaxLayoutValueBytes in all. The moved panes are panes of the layout.
+/// The layout names each pane once, and at most MaxSessionPanes panes.
 std::optional<Layout> layoutFrom(const AfterglowProto::Json::Value& value, std::string* error);
 
 } // namespace AfterglowMux

@@ -89,6 +89,10 @@ public:
     /// The control of the windows, as `afterglow ctl` reaches it. A test hook.
     Control& control() { return m_control; }
 
+protected:
+    /// Sees the application's QEvent::Quit before Qt closes the windows.
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
     void bindShortcuts();
     void quitWhenNoWindowsRemain();

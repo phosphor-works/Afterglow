@@ -227,7 +227,7 @@ In a mux session, a download goes to the window that shows the session, with the
 OSC 1337 downloads are not resumable, and they do not upload files.
 Afterglow supports the Kitty file-transfer protocol separately. See [Kitty file transfer](DESKTOP.md#kitty-file-transfer).
 IME context does not permit arbitrary surrounding-text edits.
-Optional primary-screen bidirectional layout has application-grid exclusions and bounded paragraph processing.
+Optional bidirectional layout of the main screen has application-grid exclusions and bounded paragraph processing.
 See [bidirectional text](BIDI.md).
 
 ## Character widths

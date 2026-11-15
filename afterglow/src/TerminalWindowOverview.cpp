@@ -431,6 +431,7 @@ void TerminalWindow::restoreOverviewZooms(Pane* target)
             // The panes that the zoom hides again hide their docks too.
             m_tabs[std::size_t(tab)]->splits->setZoomedPane(pane);
             placeTabDocks(tab);
+            scheduleSessionLayout();
         }
     }
 }

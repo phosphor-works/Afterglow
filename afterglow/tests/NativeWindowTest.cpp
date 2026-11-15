@@ -10,12 +10,12 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QMessageBox>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <QScopeGuard>
 #include <atomic>
 #include <optional>
-#include <set>
 #include <vector>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -25,15 +25,20 @@
 #include "chrome/ChromeLayer.h"
 #include "config/Keybinds.h"
 #include "KeyMapping.h"
+#include "XkbKeyboard.h"
+#include <xkbcommon/xkbcommon-keysyms.h>
 #include "DockArea.h"
 #include "control/Control.h"
 #include "control/ControlSocket.h"
 #include "scripting/ScriptControl.h"
 #include "TerminalWindow.h"
+#include "config/ModifierRemap.h"
 #include "config/Settings.h"
 #include <AfterglowRender/FontSet.h>
 #include <AfterglowRender/Snapshot.h>
 #include <QApplication>
+#include <QCloseEvent>
+#include <QWidget>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFutureWatcher>
@@ -97,7 +102,11 @@ using Afterglow::Test::Saved;
 namespace {
 
 /// The tests' Applications share a socket that listens nowhere: they take no
-/// launches, and never touch the sockets of the user's display.
+/// launches, and never touch the sockets of the user's display. The mux
+/// daemon is another matter: the runner keeps the user's XDG_RUNTIME_DIR
+/// (KWin makes its socket there), where the user's daemon listens. The
+/// session tests use a daemon of their own (MuxTest::TestDaemon), and a
+/// path that finds the daemon by the environment runs under DaemonLookup.
 InstanceSocket& testSocket()
 {
     static InstanceSocket socket;
@@ -312,6 +321,14 @@ const DockArea* shownDock(const TerminalWindow* window, const char* id, quint32 
         if (dock->id() == QLatin1String(id) && dock->pane() == pane) return dock;
     return nullptr;
 }
+// The accessible area of a script dock whose name contains @p text: a
+// child of the window's root with no object of its own.
+QAccessibleInterface* dockAreaNamed(TerminalWindow* window, const char* text) {
+    QAccessibleInterface* root = window->accessibleRoot();
+    for (int i = 0; root && i < root->childCount(); ++i)
+        if (auto* c = root->child(i); c && c->object() == nullptr && c->text(QAccessible::Name).contains(QLatin1String(text))) return c;
+    return nullptr;
+}
 const DockArea* paneDock(const Pane* pane, const char* id) {
     for (const auto& dock : pane->docks())
         if (dock->id() == QLatin1String(id)) return dock.get();
@@ -322,6 +339,22 @@ void sendKey(TerminalWindow* window, int key, Qt::KeyboardModifiers modifiers = 
     QKeyEvent down(QEvent::KeyPress, key, modifiers, text, autoRepeat);
     QCoreApplication::sendEvent(window, &down);
     QKeyEvent up(QEvent::KeyRelease, key, modifiers, text, autoRepeat);
+    QCoreApplication::sendEvent(window, &up);
+}
+// A key with its xkb keycode (evdev code + 8), as the compositor's keyboard
+// sends one: the layout gives a remapped key its new key and text.
+void sendKeyCode(TerminalWindow* window, int key, quint32 keycode, Qt::KeyboardModifiers modifiers, const QString& text = {}) {
+    QKeyEvent down(QEvent::KeyPress, key, modifiers, keycode, 0, 0, text);
+    QCoreApplication::sendEvent(window, &down);
+    QKeyEvent up(QEvent::KeyRelease, key, modifiers, keycode, 0, 0, text);
+    QCoreApplication::sendEvent(window, &up);
+}
+// The press and release of a modifier key with the state that Qt stores for
+// each, the one before the key: QKeyEvent::modifiers() reports the one after.
+void sendModifierKey(TerminalWindow* window, int key, Qt::KeyboardModifier modifier, quint32 keycode = 0) {
+    QKeyEvent down(QEvent::KeyPress, key, Qt::NoModifier, keycode, 0, 0, {});
+    QCoreApplication::sendEvent(window, &down);
+    QKeyEvent up(QEvent::KeyRelease, key, modifier, keycode, 0, 0, {});
     QCoreApplication::sendEvent(window, &up);
 }
 // As sendKey, then runs the calls that the key queued. False when they did
@@ -422,8 +455,13 @@ private:
 // tests: a test that needs scripts turns them on. A pane with no command
 // runs /bin/sh, not the developer's login shell with its startup files.
 QJsonObject testSettings(const QJsonObject& overrides = {}) {
+    // The rows of a wheel notch and the hold that starts a touch selection
+    // are values that tests count on: a new default does not change them.
+    // These are overrides, which a test's edit of the file does not change.
     QJsonObject settings{{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("cursorBlink"), false},
-                                                                  {QStringLiteral("shell"), QStringLiteral("/bin/sh")}}},
+                                                                  {QStringLiteral("shell"), QStringLiteral("/bin/sh")},
+                                                                  {QStringLiteral("scrollLines"), 3}}},
+                         {QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("touchSelectHold"), 400}}},
                          {QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), false}}}};
     for (auto group = overrides.begin(); group != overrides.end(); ++group) {
         QJsonObject merged = settings.value(group.key()).toObject();
@@ -478,6 +516,14 @@ protected:
         drainDeferredDeletes();
         application = std::make_unique<Application>(testSocket(), directory.filePath(config), settings);
         openWindow(command);
+    }
+    // The fixture's window again, with the coast of kitty's 0.96 each 8 ms
+    // (Mouse.momentumScroll), for the tests that count its rows.
+    void restartWithKittysCoast() {
+        restartApplication(QStringLiteral("coast.conf"),
+            testSettings({{QStringLiteral("Window"), QJsonObject{{QStringLiteral("paneTitles"), true}}},
+                          {QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("momentumScroll"), 0.96}}}}),
+            {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
     }
     // The fixture's settings with Mouse.dragSelection on, and @p overrides
     // over them by group, in a new application whose window runs @p command.
@@ -914,7 +960,8 @@ TEST_F(NativeWindow, LaunchOptionsAndClosedIdentity) {
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     EXPECT_EQ(closed, (QVariantList{created, tab, win}));
     const int count = window->panes().size();
-    EXPECT_FALSE(control.split(original->id(), QStringLiteral("up"), {}, {{QStringLiteral("size"), 1.0}}, created).isEmpty());
+    EXPECT_EQ(control.split(original->id(), QStringLiteral("up"), {}, {{QStringLiteral("size"), 1.0}}, created),
+              QStringLiteral("size must be a fraction between 0 and 1"));
     EXPECT_EQ(window->panes().size(), count);
 }
 TEST_F(NativeWindow, ZoomedPaneTitlesRenderEveryPanePosition) {
@@ -925,17 +972,19 @@ TEST_F(NativeWindow, ZoomedPaneTitlesRenderEveryPanePosition) {
     ASSERT_NE(second, nullptr);
     first->setUserTitle(QStringLiteral("first title"));
     second->setUserTitle(QStringLiteral("second title"));
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     for (auto* pane : {first, second}) {
+        // A label that fails for the first pane does not hide the second's.
+        SCOPED_TRACE(pane->title().toStdString());
         window->revealPane(pane);
         ASSERT_TRUE(window->runAction(pane, Action::TogglePaneZoom));
-        auto* chrome = window->findChild<ChromeController*>();
-        ASSERT_NE(chrome, nullptr);
         // The zoom animates, stretched in wall time on a loaded machine:
         // wait for the label to reach the zoomed size. The zoomed pane fills
         // the window, the label's rectangle with it.
         // The labels change at the next frame: until then they are the last
         // zoom's, which also had one label as wide as the window.
-        ASSERT_TRUE(waitFor([&] {
+        EXPECT_TRUE(waitFor([&] {
             return chrome->paneTitles().size() == 1
                 && chrome->paneTitles().front().toMap().value(QStringLiteral("title")).toString() == pane->title()
                 && chrome->paneTitles().front().toMap().value(QStringLiteral("width")).toDouble() > window->width() * 0.9;
@@ -1077,6 +1126,7 @@ TEST_F(NativeWindow, FocusUpdatesTabTitleAndRetiresPreviousSearch) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     window->revealPane(first);
+    ASSERT_FALSE(chrome->tabTitles().isEmpty());
     EXPECT_EQ(chrome->tabTitles().front(), QStringLiteral("first"));
     // Finish split layout before capturing a search epoch.
     ASSERT_TRUE(waitFor([&] { return !window->accessiblePaneRect(second).isEmpty(); }));
@@ -1692,12 +1742,7 @@ TEST_F(NativeWindow, AWindowWhoseOnlyPaneClosesGoesAfterThePaneAndItsDock) {
         {dockRun(QStringLiteral("OnlyTitle"), QStringLiteral("t"))}, QStringLiteral("pane")), pane).isEmpty());
     QAccessible::Id area = 0;
     ASSERT_TRUE(waitFor([&] {
-        QAccessibleInterface* root = window->accessibleRoot();
-        for (int i = 0; root && i < root->childCount(); ++i) {
-            QAccessibleInterface* child = root->child(i);
-            if (child && child->object() == nullptr && child->text(QAccessible::Name).contains(QLatin1String("OnlyTitle")))
-                area = QAccessible::uniqueId(child);
-        }
+        if (QAccessibleInterface* child = dockAreaNamed(window, "OnlyTitle")) area = QAccessible::uniqueId(child);
         return area != 0;
     }));
     QPointer<TerminalWindow> closing = window;
@@ -1889,11 +1934,7 @@ TEST_F(NativeWindow, AccessibleDockItemsAreButtonsThatSendTheirClick) {
                       dockRun(QStringLiteral(" | ")), dockRun(QStringLiteral("Deploy"), QStringLiteral("deploy"))}).isEmpty());
     auto* root = window->accessibleRoot();
     ASSERT_NE(root, nullptr);
-    auto findDock = [&]() -> QAccessibleInterface* {
-        for (int i = 0; i < root->childCount(); ++i)
-            if (auto* c = root->child(i); c && c->object() == nullptr && c->text(QAccessible::Name).contains(QLatin1String("Deploy"))) return c;
-        return nullptr;
-    };
+    auto findDock = [&] { return dockAreaNamed(window, "Deploy"); };
     // The dock shows from the next frame's layout.
     ASSERT_TRUE(waitFor([&] { return findDock() != nullptr; }));
     QAccessibleInterface* area = findDock();
@@ -2151,11 +2192,13 @@ TEST_F(NativeWindow, FileTransferPermissionFollowsMovedPane) {
     ASSERT_NE(prompts.front()->windowHandle(), nullptr);
     EXPECT_EQ(prompts.front()->windowHandle()->transientParent(), destination);
     EXPECT_TRUE(prompts.front()->text().contains(destinationPath)) << qPrintable(prompts.front()->text());
-    drain(50);
+    // The prompt shows, so the transfer read both commands: an approval
+    // that came before the answer would have made the directory by now.
     EXPECT_FALSE(QFileInfo::exists(destinationPath));
     // The window's Yes reaches the transfer, which makes the directory it approved.
-    ASSERT_TRUE(prompts.front()) << "the prompt went";
-    prompts.front()->button(QMessageBox::Yes)->click();
+    QAbstractButton* const yes = prompts.front()->button(QMessageBox::Yes);
+    ASSERT_NE(yes, nullptr);
+    yes->click();
     EXPECT_TRUE(waitFor([&] { return QFileInfo(destinationPath).isDir(); }));
 }
 
@@ -2825,8 +2868,14 @@ void pressLeftWith(QWindow* window, const QPointF& at, Qt::KeyboardModifiers mod
     QMouseEvent event(QEvent::MouseButtonPress, at, at, window->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, modifiers, source);
     QCoreApplication::sendEvent(window, &event);
 }
+// A left release with @p modifiers.
+void releaseLeftWith(QWindow* window, const QPointF& at, Qt::KeyboardModifiers modifiers) {
+    QMouseEvent event(QEvent::MouseButtonRelease, at, at, window->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, modifiers);
+    QCoreApplication::sendEvent(window, &event);
+}
 // A distance that starts a drag, in logical pixels.
 qreal dragDistance() { return 4 * QGuiApplication::styleHints()->startDragDistance(); }
+
 // Fails the test when @p window starts a drag, which it cancels so that the
 // test goes on. A drag that ended leaves its QDrag: its deleteLater came from
 // no event loop, so only an explicit send of the deferred deletes takes it.
@@ -2934,7 +2983,177 @@ QStringList alternateScreenReader(const QString& file) {
 // Up keys in @p bytes, in either cursor key mode.
 qsizetype upKeys(const QByteArray& bytes) { return bytes.count("\x1b[A") + bytes.count("\x1bOA"); }
 
+// Keybinds.remapModifiers in a window, as kitty's remap_modifiers: the keys,
+// the mouse, the wheel and a tap reach the program with the modifiers that
+// the keys become, and bindings fire from the keys that give their modifiers.
+// The keys carry their keycodes, so the layout gives their text.
+TEST_F(NativeWindow, RemappedModifiersReachProgramsTheMouseAndBindings) {
+    const QString received = directory.filePath(QStringLiteral("received"));
+    const QString config = directory.filePath(QStringLiteral("remap.conf"));
+    // In the file, not in the overrides, so that an edit of the file changes it.
+    QFile file(config);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write(R"({"Keybinds": {"remapModifiers": "ctrl:super super:ctrl"}})");
+    file.close();
+    restartApplication(QStringLiteral("remap.conf"),
+        testSettings({{QStringLiteral("Keybinds"),
+                       QJsonObject{{QStringLiteral("bindings"), QJsonObject{{QStringLiteral("new_tab"), QStringLiteral("Ctrl+Shift+T")}}}}}}),
+        mouseReporter(received));
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received) && reportsMouse(pane); }));
+    QByteArray expected;
+    const auto gets = [&](const QByteArray& bytes) {
+        expected += bytes;
+        return waitFor([&] { return fileContent(received) == expected; });
+    };
+    // Super+C is Ctrl+C: ^C. Ctrl+C is Super+C, which types c. Super+1 is
+    // Ctrl+1, which types 1 as a Ctrl+1 does.
+    sendKeyCode(window, Qt::Key_C, 54, Qt::MetaModifier, QStringLiteral("c"));
+    sendKeyCode(window, Qt::Key_C, 54, Qt::ControlModifier, QStringLiteral("\x03"));
+    sendKeyCode(window, Qt::Key_1, 10, Qt::MetaModifier, QStringLiteral("1"));
+    ASSERT_TRUE(gets("\x03" "c1")) << fileContent(received).toStdString();
+    // A press and release with Super are reported with the Ctrl bit (16), and with Ctrl without it.
+    const QPointF at = cellCentre(window, pane, 2, 1);
+    pressLeftWith(window, at, Qt::MetaModifier);
+    releaseLeftWith(window, at, Qt::MetaModifier);
+    ASSERT_TRUE(gets("\x1b[<16;3;2M\x1b[<16;3;2m")) << fileContent(received).toStdString();
+    pressLeftWith(window, at, Qt::ControlModifier);
+    releaseLeftWith(window, at, Qt::ControlModifier);
+    ASSERT_TRUE(gets("\x1b[<0;3;2M\x1b[<0;3;2m")) << fileContent(received).toStdString();
+    // The wheel too (64 is a notch up).
+    QWheelEvent wheel(at, window->mapToGlobal(at), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::MetaModifier, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(window, &wheel);
+    ASSERT_TRUE(gets("\x1b[<80;3;2M")) << fileContent(received).toStdString();
+    // A tap with Super is a click with Ctrl: the remap acts once on the
+    // mouse events that the window makes of a touch.
+    for (const auto& [type, state] : {std::pair{QEvent::TouchBegin, QEventPoint::Pressed}, std::pair{QEvent::TouchEnd, QEventPoint::Released}}) {
+        QTouchEvent touch(type, touchscreen(), Qt::MetaModifier, {QEventPoint(1, state, at, window->mapToGlobal(at))});
+        QCoreApplication::sendEvent(window, &touch);
+    }
+    ASSERT_TRUE(gets("\x1b[<16;3;2M\x1b[<16;3;2m")) << fileContent(received).toStdString();
+    // New Tab is on Ctrl+Shift+T: the Ctrl key gives Super now, and Super+Shift+T types T.
+    const auto tabs = window->tabs().size();
+    sendKeyCode(window, Qt::Key_T, 28, Qt::ControlModifier | Qt::ShiftModifier, QStringLiteral("\x14"));
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(window->tabs().size(), tabs);
+    ASSERT_TRUE(gets("T")) << fileContent(received).toStdString();
+    sendKeyCode(window, Qt::Key_T, 28, Qt::MetaModifier | Qt::ShiftModifier, QStringLiteral("T"));
+    ASSERT_TRUE(waitFor([&] { return window->tabs().size() == tabs + 1; }));
+    ASSERT_TRUE(window->runAction(window->focusedPane(), Action::PreviousTab));
+    ASSERT_TRUE(settleQueued());
+    ASSERT_EQ(window->focusedPane(), pane);
+    // Kitty's report of all keys names the Ctrl keys as the Super keys, on
+    // their sides (57444 left, 57450 right; 9 is Super, 1:3 a release).
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[>11u"); });
+    sendModifierKey(window, Qt::Key_Control, Qt::ControlModifier, 37);
+    sendModifierKey(window, Qt::Key_Control, Qt::ControlModifier, 105);
+    ASSERT_TRUE(gets("\x1b[57444;9u\x1b[57444;1:3u\x1b[57450;9u\x1b[57450;1:3u")) << fileContent(received).toStdString();
+    // A Ctrl key held while the remap goes keeps its name for its release.
+    QKeyEvent held(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier, 37, 0, 0, {});
+    QCoreApplication::sendEvent(window, &held);
+    ASSERT_TRUE(gets("\x1b[57444;9u")) << fileContent(received).toStdString();
+    setLive(window, config, QStringLiteral("Keybinds"), QStringLiteral("remapModifiers"), QString());
+    if (HasFatalFailure()) return;
+    QKeyEvent let(QEvent::KeyRelease, Qt::Key_Control, Qt::ControlModifier, 37, 0, 0, {});
+    QCoreApplication::sendEvent(window, &let);
+    ASSERT_TRUE(gets("\x1b[57444;1:3u")) << fileContent(received).toStdString();
+    // Without the remap the Ctrl key is Ctrl again.
+    sendModifierKey(window, Qt::Key_Control, Qt::ControlModifier, 37);
+    ASSERT_TRUE(gets("\x1b[57442;5u\x1b[57442;1:3u")) << fileContent(received).toStdString();
+}
+
+// Links.modifier is the modifier that a key becomes: a Super key that gives
+// Ctrl, alone or with Shift, shows the link under a still pointer, and its
+// release hides it again.
+TEST_F(NativeWindow, ARemappedKeyHoldsTheLinkModifier) {
+    for (const char* rule : {"super:ctrl", "super:ctrl+shift"}) {
+        SCOPED_TRACE(rule);
+        restartApplication(QStringLiteral("links.conf"),
+            testSettings({{QStringLiteral("Keybinds"), QJsonObject{{QStringLiteral("remapModifiers"), QString::fromLatin1(rule)}}},
+                          {QStringLiteral("Links"), QJsonObject{{QStringLiteral("modifier"), QStringLiteral("ctrl")}}}}),
+            {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+        if (HasFatalFailure()) return;
+        Pane* pane = window->focusedPane();
+        pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b]8;;https://example.com/x\x1b\\link\x1b]8;;\x1b\\"); });
+        EXPECT_TRUE(nextFrame(window));
+        hoverAt(window, cellCentre(window, pane, 1, 0));
+        EXPECT_NE(window->cursor().shape(), Qt::PointingHandCursor);
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Meta, Qt::NoModifier, 133, 0, 0, {});
+        QCoreApplication::sendEvent(window, &down);
+        EXPECT_EQ(window->cursor().shape(), Qt::PointingHandCursor);
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Meta, Qt::MetaModifier, 133, 0, 0, {});
+        QCoreApplication::sendEvent(window, &up);
+        EXPECT_NE(window->cursor().shape(), Qt::PointingHandCursor);
+    }
+}
+
+// Without a remap: the link stays while one Ctrl key of two is pressed, and
+// a modifier key let go over the overview shows no link.
+TEST_F(NativeWindow, TheLinkHoverFollowsBothCtrlKeysAndStaysOutOfTheOverview) {
+    Pane* pane = window->focusedPane();
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b]8;;https://example.com/x\x1b\\link\x1b]8;;\x1b\\"); });
+    ASSERT_TRUE(nextFrame(window));
+    const QPointF at = cellCentre(window, pane, 1, 0);
+    hoverAt(window, at);
+    QKeyEvent left(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier, 37, 0, 0, {});
+    QCoreApplication::sendEvent(window, &left);
+    EXPECT_EQ(window->linkHoverPane(), pane);
+    // Qt reports the right Ctrl key's press without Ctrl: Ctrl was down.
+    QKeyEvent right(QEvent::KeyPress, Qt::Key_Control, Qt::ControlModifier, 105, 0, 0, {});
+    QCoreApplication::sendEvent(window, &right);
+    EXPECT_EQ(window->linkHoverPane(), pane);
+    for (const quint32 keycode : {105u, 37u}) {
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Control, Qt::ControlModifier, keycode, 0, 0, {});
+        QCoreApplication::sendEvent(window, &up);
+    }
+    EXPECT_EQ(window->linkHoverPane(), nullptr);
+    // Over the overview's cards: Ctrl held, and Shift let go.
+    ASSERT_TRUE(window->runAction(pane, Action::PaneOverview));
+    hoverAt(window, at);
+    QKeyEvent ctrl(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier, 37, 0, 0, {});
+    QCoreApplication::sendEvent(window, &ctrl);
+    QKeyEvent shift(QEvent::KeyPress, Qt::Key_Shift, Qt::ControlModifier, 50, 0, 0, {});
+    QCoreApplication::sendEvent(window, &shift);
+    QKeyEvent shiftUp(QEvent::KeyRelease, Qt::Key_Shift, Qt::ControlModifier | Qt::ShiftModifier, 50, 0, 0, {});
+    QCoreApplication::sendEvent(window, &shiftUp);
+    EXPECT_EQ(window->linkHoverPane(), nullptr);
+    QKeyEvent ctrlUp(QEvent::KeyRelease, Qt::Key_Control, Qt::ControlModifier, 37, 0, 0, {});
+    QCoreApplication::sendEvent(window, &ctrlUp);
+}
+
+// A script's key mode ends with end_script_key_mode on the keys as they are
+// too: a remap that leaves no key for Ctrl does not take the way out.
+TEST_F(NativeWindow, ARemapLeavesTheWayOutOfAScriptKeyMode) {
+    restartApplication(QStringLiteral("remap.conf"),
+        testSettings({{QStringLiteral("Keybinds"),
+                       QJsonObject{{QStringLiteral("remapModifiers"), QStringLiteral("ctrl:super")},
+                                   {QStringLiteral("bindings"),
+                                    QJsonObject{{QStringLiteral("end_script_key_mode"), QStringLiteral("Ctrl+Shift+Escape")}}}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    if (HasFatalFailure()) return;
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    QList<QVariantMap> keys;
+    QObject listener;
+    QObject::connect(window, &TerminalWindow::scriptKey, &listener,
+                     [&](const QString&, quint32, const QVariantMap& key) { keys.append(key); });
+    ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), window->focusedPane(), QStringLiteral("Script keys")).isEmpty());
+    // The script gets the Ctrl key's chords as Super's.
+    sendKeyCode(window, Qt::Key_A, 38, Qt::ControlModifier, QStringLiteral("\x01"));
+    ASSERT_EQ(keys.size(), 1);
+    EXPECT_TRUE(keys[0].value(QStringLiteral("meta")).toBool());
+    EXPECT_FALSE(keys[0].value(QStringLiteral("ctrl")).toBool());
+    EXPECT_FALSE(chrome->keyMode().isEmpty());
+    // Ctrl+Shift+Escape on the keys still ends the mode.
+    sendKeyCode(window, Qt::Key_Escape, 9, Qt::ControlModifier | Qt::ShiftModifier, QStringLiteral("\x1b"));
+    EXPECT_EQ(keys.size(), 1);
+    EXPECT_TRUE(chrome->keyMode().isEmpty());
+}
+
 TEST_F(NativeWindow, AFingerScrollCoastsAfterTheFingersLiftUntilAPressStopsIt) {
+    restartWithKittysCoast();
+    if (HasFatalFailure()) return;
     Pane* pane = window->focusedPane();
     fillHistory(pane, 400);
     waitIdle(window);
@@ -2983,10 +3202,7 @@ TEST_F(NativeWindow, ACoastEndsWithTheHistoryAKeyTheFocusATouchOrAnActionAndAWhe
         EXPECT_LE(std::abs(double(settledOffset(window, pane)) - double(stopped)), 1.0) << stopped;
     };
     stops("a key", [&] {
-        QKeyEvent shift(QEvent::KeyPress, Qt::Key_Shift, Qt::ShiftModifier);
-        QCoreApplication::sendEvent(window, &shift);
-        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Shift, Qt::NoModifier);
-        QCoreApplication::sendEvent(window, &up);
+        sendModifierKey(window, Qt::Key_Shift, Qt::ShiftModifier);
     });
     stops("the focus", [&] {
         QFocusEvent out(QEvent::FocusOut, Qt::ActiveWindowFocusReason);
@@ -3009,9 +3225,11 @@ TEST_F(NativeWindow, ACoastEndsWithTheHistoryAKeyTheFocusATouchOrAnActionAndAWhe
         EXPECT_EQ(settledOffset(window, pane), 0u);
     }
     // As in kitty, a wheel turn scrolls on top of the coast and does not
-    // end it.
+    // end it. The view is where the action above left it: the coast moves
+    // it on from there.
+    const std::size_t before = viewportOffset(pane);
     fingerScroll(window, at, 30, 6);
-    ASSERT_TRUE(waitFor([&] { return viewportOffset(pane) > 20; })) << "no coast";
+    ASSERT_TRUE(waitFor([&] { return viewportOffset(pane) > before + 20; })) << "no coast";
     wheelAt(window, at);
     const std::size_t wheeled = viewportOffset(pane);
     EXPECT_TRUE(waitFor([&] { return viewportOffset(pane) > wheeled + 20; })) << "the wheel ended the coast";
@@ -3021,12 +3239,17 @@ TEST_F(NativeWindow, ACoastEndsWithTheHistoryAKeyTheFocusATouchOrAnActionAndAWhe
 
 TEST_F(NativeWindow, AFingerScrollGivesAProgramOneWheelReportOrKeyForEachRow) {
     // No coast: the fingers' distance only. 300 pixels of travel.
-    const auto scrollIn = [&](const QStringList& command, const QString& file) {
+    // The program makes its file after it printed its modes, which the
+    // terminal may not have parsed yet: @p parsed says when it has.
+    const auto scrollIn = [&](const QStringList& command, const QString& file, const std::function<bool(const AfterglowVt::Modes&)>& parsed) {
         restartApplication(QStringLiteral("program.conf"),
             testSettings({{QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("momentumScroll"), 0}}}}), command);
         if (HasFatalFailure()) return 0.0;
         Pane* pane = window->focusedPane();
-        EXPECT_TRUE(waitFor([&] { return QFileInfo::exists(file) && !gridOf(window, pane).isEmpty(); }));
+        EXPECT_TRUE(waitFor([&] {
+            return QFileInfo::exists(file) && !gridOf(window, pane).isEmpty()
+                && pane->withTerminal([&](AfterglowVt::Terminal& t) { return parsed(t.modes()); });
+        }));
         waitIdle(window);
         fingerScroll(window, gridOf(window, pane).center(), 30, 10);
         return rowsOf(window, pane, 300);
@@ -3038,20 +3261,22 @@ TEST_F(NativeWindow, AFingerScrollGivesAProgramOneWheelReportOrKeyForEachRow) {
         return waitFor([&] { return fileContent(file).endsWith("@m@"); });
     };
     const QString reports = directory.filePath(QStringLiteral("reports"));
-    const double rows = scrollIn(mouseReporter(reports), reports);
+    const double rows = scrollIn(mouseReporter(reports), reports, [](const AfterglowVt::Modes& m) {
+        return m.mouseTracking != AfterglowVt::MouseTracking::None && m.mouseFormat == AfterglowVt::MouseFormat::Sgr;
+    });
     if (HasFatalFailure()) return;
     ASSERT_TRUE(allIn(reports)) << fileContent(reports).toStdString();
     EXPECT_LE(std::abs(double(fileContent(reports).count("\x1b[<64;")) - rows), 1.0) << fileContent(reports).toStdString();
     // On the alternate screen with alternate scroll, a row is one Up key.
     // A wheel notch is Terminal.scrollLines of them.
     const QString keys = directory.filePath(QStringLiteral("keys"));
-    const double keyRows = scrollIn(alternateScreenReader(keys), keys);
+    const double keyRows = scrollIn(alternateScreenReader(keys), keys, [](const AfterglowVt::Modes& m) { return m.altScreen && m.altScroll; });
     if (HasFatalFailure()) return;
     ASSERT_TRUE(allIn(keys)) << fileContent(keys).toStdString();
     const qsizetype fromFinger = upKeys(fileContent(keys));
     EXPECT_LE(std::abs(double(fromFinger) - keyRows), 1.0) << fromFinger;
     wheelAt(window, gridOf(window, window->focusedPane()).center());
-    EXPECT_TRUE(waitFor([&] { return upKeys(fileContent(keys)) == fromFinger + 3; })) << upKeys(fileContent(keys));
+    EXPECT_TRUE(waitFor([&] { return upKeys(fileContent(keys)) == fromFinger + Settings{}.scrollLines; })) << upKeys(fileContent(keys));
 }
 
 TEST_F(NativeWindow, ACoastEndsWhenItsPaneGoesToTheAlternateScreen) {
@@ -3069,6 +3294,10 @@ TEST_F(NativeWindow, ACoastEndsWhenItsPaneGoesToTheAlternateScreen) {
     // rest of a coast through the history is no arrow keys for it.
     feedFromReader(pane, "\x1b[?1049h\x1b[?1007h");
     waitIdle(window);
+    // Keys and the pane's input share the PTY's write queue: once a marker
+    // sent now is in the file, every key that the coast sent is too.
+    ASSERT_TRUE(pane->sendInput("@m@"));
+    ASSERT_TRUE(waitFor([&] { return fileContent(keys).endsWith("@m@"); })) << fileContent(keys).toStdString();
     EXPECT_EQ(upKeys(fileContent(keys)), 0) << fileContent(keys).toStdString();
 }
 
@@ -3109,11 +3338,13 @@ TEST_F(NativeWindow, ASelectionBeingDraggedTakesInTheRowsThatTheWheelScrolls) {
     // which stays still: the selection reaches them.
     wheelAt(window, at);
     waitIdle(window);
-    EXPECT_EQ(pane->selectedText().count(QLatin1Char('\n')), 3) << pane->selectedText().toStdString();
+    EXPECT_EQ(pane->selectedText().count(QLatin1Char('\n')), Settings{}.scrollLines) << pane->selectedText().toStdString();
     releaseLeft(window, cellCentre(window, pane, 6, 5));
 }
 
 TEST_F(NativeWindow, AFingerOnATouchscreenTapsScrollsAndSelects) {
+    restartWithKittysCoast();
+    if (HasFatalFailure()) return;
     Pane* pane = window->focusedPane();
     fillHistory(pane, 400);
     waitIdle(window);
@@ -3133,12 +3364,13 @@ TEST_F(NativeWindow, AFingerOnATouchscreenTapsScrollsAndSelects) {
     const std::size_t scrolled = settledOffset(window, pane);
     EXPECT_GT(double(scrolled), rowsOf(window, pane, 200) + 5);
     EXPECT_FALSE(pane->hasSelection());
-    // Held still for Mouse.touchSelectHold (400 ms), then moved: a selection
-    // from where it landed, from column 1 to column 6 of a "line NNN" row.
-    // The button is down meanwhile, for a program's drag that reads it.
+    // Held still for Mouse.touchSelectHold (the fixture keeps the default),
+    // then moved: a selection from where it landed, from column 1 to column
+    // 6 of a "line NNN" row. The button is down meanwhile, for a program's
+    // drag that reads it.
     const QPointF from = cellCentre(window, pane, 1, 3);
     finger.down(from);
-    drain(450);
+    drain(MouseSettings{}.touchSelectHold + 50);
     finger.move(cellCentre(window, pane, 6, 3));
     EXPECT_EQ(QGuiApplication::mouseButtons(), Qt::LeftButton);
     finger.up(cellCentre(window, pane, 6, 3));
@@ -3172,6 +3404,8 @@ TEST_F(NativeWindow, AFingerOnATouchscreenTapsScrollsAndSelects) {
 }
 
 TEST_F(NativeWindow, ACancelledTouchNeitherCoastsNorHoldsItsButton) {
+    restartWithKittysCoast();
+    if (HasFatalFailure()) return;
     Pane* pane = window->focusedPane();
     fillHistory(pane, 400);
     waitIdle(window);
@@ -3189,15 +3423,20 @@ TEST_F(NativeWindow, ACancelledTouchNeitherCoastsNorHoldsItsButton) {
     // And a selection: its button goes up.
     const QPointF from = cellCentre(window, pane, 1, 3);
     finger.down(from);
-    drain(450);
+    drain(MouseSettings{}.touchSelectHold + 50);
     finger.move(cellCentre(window, pane, 6, 3));
-    ASSERT_EQ(QGuiApplication::mouseButtons(), Qt::LeftButton);
+    // Checked before the cancel, which runs whatever it finds: a touch
+    // point left down would hold the shared device for the next tests.
+    const Qt::MouseButtons held = QGuiApplication::mouseButtons();
     finger.cancel();
+    ASSERT_EQ(held, Qt::LeftButton);
     EXPECT_EQ(QGuiApplication::mouseButtons(), Qt::NoButton);
     EXPECT_TRUE(pane->hasSelection());
 }
 
 TEST_F(NativeWindow, AFlickThatEndsOverAnotherPaneCoastsInItsOwn) {
+    restartWithKittysCoast();
+    if (HasFatalFailure()) return;
     Pane* top = window->focusedPane();
     PaneLaunchOptions launch;
     launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
@@ -3358,7 +3597,10 @@ TEST_F(NativeWindow, ClicksInsideTheSelectionSelectAWordALineOrABlock) {
     const QPointF block = cellCentre(window, pane, 2, 3);
     pressLeftWith(window, block, Qt::AltModifier);
     EXPECT_FALSE(pane->hasSelection());
-    releaseLeft(window, block);
+    // A block: the same columns on each row.
+    dragLeft(window, cellCentre(window, pane, 4, 4));
+    releaseLeft(window, cellCentre(window, pane, 4, 4));
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("lec\nlec"));
     selectWholeScreen(pane);
     const QPointF touch = cellCentre(window, pane, 5, 4);
     pressLeftWith(window, touch, Qt::NoModifier, Qt::MouseEventSynthesizedByQt);
@@ -3632,12 +3874,20 @@ TEST_F(NativeWindow, DroppedLinesAskBeforeTheyPaste) {
     auto* layer = window->findChild<ChromeLayer*>();
     ASSERT_NE(layer, nullptr);
     ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
-    EXPECT_TRUE(fileContent(received).isEmpty());
+    // The pane's input goes through one queue, in order: once a marker sent
+    // now is in the file, a paste that went before the answer would be too.
+    ASSERT_TRUE(right->sendInput("@before@"));
+    ASSERT_TRUE(waitFor([&] { return fileContent(received).endsWith("@before@"); })) << fileContent(received).toStdString();
+    EXPECT_EQ(fileContent(received), QByteArray("@before@"));
     QKeyEvent accept(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
     QCoreApplication::sendEvent(window, &accept);
     EXPECT_FALSE(chrome->pasteConfirmOpen());
-    // A paste sends line feeds as carriage returns, as Enter does.
-    EXPECT_TRUE(waitFor([&] { return fileContent(received) == "one\rtwo\r"; })) << fileContent(received).toStdString();
+    // A paste sends line feeds as carriage returns, as Enter does. It goes
+    // once: a marker after it ends the file.
+    ASSERT_TRUE(waitFor([&] { return fileContent(received).contains("one\rtwo\r"); })) << fileContent(received).toStdString();
+    ASSERT_TRUE(right->sendInput("@after@"));
+    EXPECT_TRUE(waitFor([&] { return fileContent(received).endsWith("@after@"); })) << fileContent(received).toStdString();
+    EXPECT_EQ(fileContent(received), QByteArray("@before@one\rtwo\r@after@"));
 }
 TEST_F(NativeWindow, DropsThatAPaneRefusesPasteNothing) {
     const QString received = directory.filePath(QStringLiteral("received.txt"));
@@ -3862,24 +4112,24 @@ TEST_F(NativeWindow, ScriptQueriesAreBoundedAndRespectTextPolicy) {
 }
 
 TEST_F(NativeWindow, BidiPointerSelectionAndAccessibleGeometryUseVisualCells) {
-    auto* pane=window->focusedPane();
-    auto options=pane->withTerminal([](AfterglowVt::Terminal& terminal){return terminal.options();});
-    options.bidi=AfterglowVt::BidiMode::Auto; pane->setOptions(options);
-    pane->withTerminal([](AfterglowVt::Terminal& terminal){terminal.feed("\x1b[2J\x1b[Hאבג");});
+    auto* pane = window->focusedPane();
+    auto options = pane->withTerminal([](AfterglowVt::Terminal& terminal) { return terminal.options(); });
+    options.bidi = AfterglowVt::BidiMode::Auto;
+    pane->setOptions(options);
+    pane->withTerminal([](AfterglowVt::Terminal& terminal) { terminal.feed("\x1b[2J\x1b[Hאבג"); });
     pane->refreshSnapshot();
-    const auto first=pane->selectionPointAt(0,0), second=pane->selectionPointAt(1,0);
-    const auto firstRect=window->accessibleCellRect(pane,first), secondRect=window->accessibleCellRect(pane,second);
-    EXPECT_GT(firstRect.x(),secondRect.x());
-    const QPointF a=window->mapFromGlobal(firstRect.center()), b=window->mapFromGlobal(secondRect.center());
-    QMouseEvent press(QEvent::MouseButtonPress,a,QPointF(firstRect.center()),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
-    QCoreApplication::sendEvent(window,&press);
-    QMouseEvent move(QEvent::MouseMove,b,QPointF(secondRect.center()),Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
-    QCoreApplication::sendEvent(window,&move);
-    QMouseEvent release(QEvent::MouseButtonRelease,b,QPointF(secondRect.center()),Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
-    QCoreApplication::sendEvent(window,&release);
-    EXPECT_EQ(pane->selectedText(),QString::fromUtf8("אב"));
+    const auto first = pane->selectionPointAt(0, 0), second = pane->selectionPointAt(1, 0);
+    const auto firstRect = window->accessibleCellRect(pane, first), secondRect = window->accessibleCellRect(pane, second);
+    EXPECT_GT(firstRect.x(), secondRect.x());
+    const QPointF a = window->mapFromGlobal(firstRect.center()), b = window->mapFromGlobal(secondRect.center());
+    QMouseEvent press(QEvent::MouseButtonPress, a, QPointF(firstRect.center()), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &press);
+    QMouseEvent move(QEvent::MouseMove, b, QPointF(secondRect.center()), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &move);
+    QMouseEvent release(QEvent::MouseButtonRelease, b, QPointF(secondRect.center()), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &release);
+    EXPECT_EQ(pane->selectedText(), QString::fromUtf8("אב"));
 }
-
 
 TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom) {
     auto* first = window->focusedPane();
@@ -4437,8 +4687,135 @@ TEST_F(NativeWindow, PaneCoalescesBellsAndRepeatedTitlesAndUserVars) {
     EXPECT_EQ(titles, QStringList{QStringLiteral("t999")});
 }
 
+// Keybinds.remapModifiers, as kitty's remap_modifiers: the event that the
+// window reads, and the terminal's name of a modifier key. The keycodes are
+// xkb's (evdev + 8) on the compositor's US layout, which gives the new key
+// and text.
+TEST(KeyMapping, RemapsTheModifiersKeyAndTextOfKeyEvents) {
+    const auto remap = ModifierRemap::parse(QStringLiteral("ctrl:super super:ctrl alt:ctrl+shift"));
+    ASSERT_TRUE(remap);
+    // Super+C becomes Ctrl+C, with the control character that Ctrl+C has.
+    const QKeyEvent superC(QEvent::KeyPress, Qt::Key_C, Qt::MetaModifier, 54, 0, 0, QStringLiteral("c"));
+    auto event = remappedKeyEvent(superC, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::ControlModifier));
+    EXPECT_EQ(event->key(), int(Qt::Key_C));
+    EXPECT_EQ(event->text(), QStringLiteral("\x03"));
+    // Ctrl+C becomes Super+C, which types c.
+    const QKeyEvent ctrlC(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier, 54, 0, 0, QStringLiteral("\x03"));
+    event = remappedKeyEvent(ctrlC, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::MetaModifier));
+    EXPECT_EQ(event->text(), QStringLiteral("c"));
+    // Super+1 becomes Ctrl+1, which types 1: Ctrl has no control character for it.
+    const QKeyEvent superOne(QEvent::KeyPress, Qt::Key_1, Qt::MetaModifier, 10, 0, 0, QStringLiteral("1"));
+    event = remappedKeyEvent(superOne, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::ControlModifier));
+    EXPECT_EQ(event->text(), QStringLiteral("1"));
+    // Alt+5 becomes Ctrl+Shift+5: the key and the text of Shift's level.
+    const QKeyEvent altFive(QEvent::KeyPress, Qt::Key_5, Qt::AltModifier, 14, 0, 0, QStringLiteral("5"));
+    event = remappedKeyEvent(altFive, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->modifiers(), Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(event->key(), int(Qt::Key_Percent));
+    EXPECT_EQ(event->text(), QStringLiteral("%"));
+    // The Ctrl key is the Super key now, as in kitty, which Qt calls Meta.
+    // Qt stores the state before a modifier key and reports the one after it.
+    const QKeyEvent ctrlDown(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier, 37, 0, 0, {});
+    event = remappedKeyEvent(ctrlDown, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Meta));
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::MetaModifier));
+    const QKeyEvent ctrlUp(QEvent::KeyRelease, Qt::Key_Control, Qt::ControlModifier, 37, 0, 0, {});
+    event = remappedKeyEvent(ctrlUp, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Meta));
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::NoModifier));
+    // The Super key, by Qt's Wayland name and by its X11 one, which Qt does
+    // not flip: its press reports Ctrl, and its release none.
+    for (const int name : {int(Qt::Key_Meta), int(Qt::Key_Super_L)}) {
+        const QKeyEvent down(QEvent::KeyPress, name, Qt::NoModifier, 133, 0, 0, {});
+        const QKeyEvent up(QEvent::KeyRelease, name, Qt::MetaModifier, 133, 0, 0, {});
+        const auto pressed = remappedKeyEvent(down, *remap);
+        const auto released = remappedKeyEvent(up, *remap);
+        if (!pressed || !released) {
+            ADD_FAILURE() << "not remapped: " << name;
+            continue;
+        }
+        EXPECT_EQ(pressed->key(), int(Qt::Key_Control)) << name;
+        EXPECT_EQ(pressed->modifiers(), Qt::KeyboardModifiers(Qt::ControlModifier)) << name;
+        EXPECT_EQ(released->key(), int(Qt::Key_Control)) << name;
+        EXPECT_EQ(released->modifiers(), Qt::KeyboardModifiers(Qt::NoModifier)) << name;
+    }
+    // Alt becomes two modifiers: its key stays Alt.
+    const QKeyEvent alt(QEvent::KeyPress, Qt::Key_Alt, Qt::NoModifier, 64, 0, 0, {});
+    event = remappedKeyEvent(alt, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Alt));
+    EXPECT_EQ(event->modifiers(), Qt::ControlModifier | Qt::ShiftModifier);
+    // A key with no remapped modifier is not made again, and with an empty remap no key is.
+    const QKeyEvent shiftA(QEvent::KeyPress, Qt::Key_A, Qt::ShiftModifier, 38, 0, 0, QStringLiteral("A"));
+    EXPECT_FALSE(remappedKeyEvent(shiftA, *remap));
+    EXPECT_FALSE(remappedKeyEvent(superC, ModifierRemap{}));
+    // The terminal's modifier keys keep their side. A key that becomes
+    // several modifiers, or none, keeps its name.
+    using AfterglowVt::Key;
+    EXPECT_EQ(remappedModifierKey(ctrlDown, Key::LeftControl, *remap), Key::LeftSuper);
+    const QKeyEvent rightCtrl(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier, 105, 0, 0, {});
+    EXPECT_EQ(remappedModifierKey(rightCtrl, Key::RightControl, *remap), Key::RightSuper);
+    const QKeyEvent rightSuper(QEvent::KeyPress, Qt::Key_Meta, Qt::NoModifier, 134, 0, 0, {});
+    EXPECT_EQ(remappedModifierKey(rightSuper, Key::RightSuper, *remap), Key::RightControl);
+    EXPECT_EQ(remappedModifierKey(alt, Key::LeftAlt, *remap), Key::LeftAlt);
+    const QKeyEvent shift(QEvent::KeyPress, Qt::Key_Shift, Qt::NoModifier, 50, 0, 0, {});
+    EXPECT_EQ(remappedModifierKey(shift, Key::LeftShift, *remap), Key::LeftShift);
+    EXPECT_EQ(remappedModifierKey(superC, Key::Text, *remap), Key::Text);
+}
+
+// A remap that takes Shift away or adds it gives the key of the new level.
+TEST(KeyMapping, ARemapOfShiftGivesTheKeyOfTheNewLevel) {
+    const auto remap = ModifierRemap::parse(QStringLiteral("shift:alt alt:shift"));
+    ASSERT_TRUE(remap);
+    // Shift+Tab is Backtab: as Alt+Tab it is Tab.
+    const QKeyEvent backtab(QEvent::KeyPress, Qt::Key_Backtab, Qt::ShiftModifier, 23, 0, 0, QStringLiteral("\t"));
+    auto event = remappedKeyEvent(backtab, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Tab));
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::AltModifier));
+    // Shift+5 types %: as Alt+5 it is 5, and Alt+5 is Shift+5.
+    const QKeyEvent percent(QEvent::KeyPress, Qt::Key_Percent, Qt::ShiftModifier, 14, 0, 0, QStringLiteral("%"));
+    event = remappedKeyEvent(percent, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_5));
+    EXPECT_EQ(event->text(), QStringLiteral("5"));
+    const QKeyEvent five(QEvent::KeyPress, Qt::Key_5, Qt::AltModifier, 14, 0, 0, QStringLiteral("5"));
+    event = remappedKeyEvent(five, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Percent));
+    EXPECT_EQ(event->text(), QStringLiteral("%"));
+}
+
+// A key without a keycode gives the layout no keysym: the remap changes only
+// its modifiers, and a modifier key keeps its name.
+TEST(KeyMapping, WithoutAKeycodeARemapChangesOnlyTheModifiers) {
+    const auto remap = ModifierRemap::parse(QStringLiteral("ctrl:super super:ctrl"));
+    ASSERT_TRUE(remap);
+    const QKeyEvent superC(QEvent::KeyPress, Qt::Key_C, Qt::MetaModifier, QStringLiteral("c"));
+    auto event = remappedKeyEvent(superC, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::ControlModifier));
+    EXPECT_EQ(event->key(), int(Qt::Key_C));
+    EXPECT_EQ(event->text(), QStringLiteral("c"));
+    const QKeyEvent ctrl(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier);
+    event = remappedKeyEvent(ctrl, *remap);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->key(), int(Qt::Key_Control));
+    EXPECT_EQ(event->modifiers(), Qt::KeyboardModifiers(Qt::MetaModifier));
+    EXPECT_EQ(remappedModifierKey(ctrl, AfterglowVt::Key::LeftControl, *remap), AfterglowVt::Key::LeftControl);
+}
+
 // In this suite, not an offscreen one: the keys map through the keymap of the
-// compositor's seat. Without a seat, mapKeyEvent takes its keycode table.
+// compositor's seat, which main() waits for.
 TEST(KeyMapping, KeepsKeypadAndShiftedKeysUnderCtrl) {
     QByteArray storage;
     // Ctrl turns keypad 2 into NUL: it is still keypad 2 (xkb keycode 88).
@@ -4733,7 +5110,7 @@ TEST_F(NativeWindow, ScriptKeyModeEndsWithItsReservedChord) {
     QObject::connect(window, &TerminalWindow::scriptKey, &listener, [&](const QString&, quint32, const QVariantMap&) { ++keys; });
     ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), window->focusedPane(), QStringLiteral("Script keys")).isEmpty());
     // A modifier on its own is not a key for the script.
-    sendKey(window, Qt::Key_Shift, Qt::ShiftModifier);
+    sendModifierKey(window, Qt::Key_Shift, Qt::ShiftModifier);
     EXPECT_EQ(keys, 0);
     sendKey(window, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier);
     EXPECT_EQ(keys, 0);
@@ -5992,12 +6369,7 @@ TEST_F(NativeWindow, AccessiblePaneDocksAreKeptApartByPaneAndGoWithIt) {
     auto dock = [&](Pane* pane, const QString& text) {
         return window->setScriptDock(QStringLiteral("a@1"), dockEffect(QStringLiteral("title"), QStringLiteral("top"), 1, {dockRun(text, QStringLiteral("t"))}, QStringLiteral("pane")), pane);
     };
-    auto areaOf = [](TerminalWindow* in, const char* text) -> QAccessibleInterface* {
-        QAccessibleInterface* root = in->accessibleRoot();
-        for (int i = 0; root && i < root->childCount(); ++i)
-            if (auto* c = root->child(i); c && c->object() == nullptr && c->text(QAccessible::Name).contains(QLatin1String(text))) return c;
-        return nullptr;
-    };
+    const auto areaOf = dockAreaNamed;
     // The same id at two panes is two areas.
     ASSERT_TRUE(dock(first, QStringLiteral("FirstTitle")).isEmpty());
     ASSERT_TRUE(dock(second, QStringLiteral("SecondTitle")).isEmpty());
@@ -7430,7 +7802,6 @@ TEST_F(NativeWindow, AnOverlayTransitionThatDoesNotLoadSwitchesAtOnce) {
 
 // --- overlays: where their input, prompts and effects go ---
 
-
 TEST_F(NativeWindow, AFileDroppedOnAnOverlayFocusesItsHostAndReachesItsProgram) {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
@@ -8008,10 +8379,12 @@ TEST_F(NativeWindow, ClosingAFocusedHostSendsItNoFocusAndLeavesNoFade) {
 }
 
 TEST_F(NativeWindow, ClosingAWindowAsksAboutTheProgramOfAnOverlay) {
-    // An idle shell, which asks nothing on its own.
+    // An idle shell, which asks nothing on its own, in the test's directory:
+    // no program of a test starts in the user's home.
     restartApplication(QStringLiteral("close-asks.conf"),
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("shell"), QStringLiteral("/bin/sh")},
-                                                               {QStringLiteral("confirmClose"), true}}}}),
+                                                               {QStringLiteral("confirmClose"), true}}},
+                      {QStringLiteral("Window"), QJsonObject{{QStringLiteral("workingDirectory"), directory.path()}}}}),
         {});
     if (HasFatalFailure()) return;
     Pane* pane = window->focusedPane();
@@ -8843,8 +9216,7 @@ TEST_F(NativeWindow, HintsThatOpenWhileTheViewEasesSitOnTheRowsWhereItStops) {
     ASSERT_TRUE(nextFrame(window));
     EXPECT_EQ(viewportOffset(pane), page);
     // The label of the top row copies that row's URL.
-    for (const QChar letter : highest.value(QStringLiteral("label")).toString())
-        sendKey(window, Qt::Key_A + (letter.toLower().unicode() - u'a'), Qt::NoModifier, QString(letter));
+    typeText(window, highest.value(QStringLiteral("label")).toString());
     EXPECT_TRUE(waitFor([&] { return QGuiApplication::clipboard()->text() == url; }))
         << QGuiApplication::clipboard()->text().toStdString() << " " << url.toStdString();
 }
@@ -8867,8 +9239,7 @@ TEST_F(NativeWindow, LinkLabelsOnAHeldFrameStayUntilTheHoldEnds) {
     // The labels sit on the text drawn: a letter takes its link, and does
     // not close the labels because the terminal went on behind the frame.
     const QString label = chrome->urlHints().front().toMap().value(QStringLiteral("label")).toString();
-    for (const QChar letter : label)
-        sendKey(window, Qt::Key_A + (letter.toLower().unicode() - u'a'), Qt::NoModifier, QString(letter));
+    typeText(window, label);
     EXPECT_TRUE(waitFor([&] { return QGuiApplication::clipboard()->text() == QLatin1String("https://example.com/drawn"); }))
         << QGuiApplication::clipboard()->text().toStdString();
     EXPECT_TRUE(chrome->urlHints().isEmpty());
@@ -9434,15 +9805,15 @@ QPointer<QFileDialog> openDownloadDialog(Application& application, QPointer<Term
     });
 }
 
-// Closes @p window and waits until it is gone.
+// Closes @p window and waits until it is gone, and until the calls that
+// its delete queued (a dialog that follows its pane) have run.
 bool closeAndWait(QPointer<TerminalWindow> window) {
     if (window) window->close();
     const bool gone = waitFor([&] {
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         return window.isNull();
     });
-    drain(50);
-    return gone;
+    return settleQueued() && gone;
 }
 
 TEST_F(NativeWindow, ADownloadsSaveDialogMovesWithItsPaneWhenItsWindowCloses) {
@@ -10028,10 +10399,13 @@ TEST_F(NativeWindow, AHeldChordSplitsOpensAndClosesOnce) {
     int markers = 0;
     const auto noKeyReached = [&] {
         const QString marker = QStringLiteral("@marker%1@").arg(++markers);
+        // Every pane, also after one that failed.
         for (Pane* pane : window->panes()) {
-            ASSERT_TRUE(pane->sendInput(marker.toStdString()));
-            ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(marker); })) << screenOf(pane).toStdString();
-            EXPECT_FALSE(screenOf(pane).contains(QLatin1Char('^'))) << screenOf(pane).toStdString();
+            const bool reached = pane->sendInput(marker.toStdString()) && waitFor([&] { return screenOf(pane).contains(marker); });
+            EXPECT_TRUE(reached) << screenOf(pane).toStdString();
+            if (reached) {
+                EXPECT_FALSE(screenOf(pane).contains(QLatin1Char('^'))) << screenOf(pane).toStdString();
+            }
         }
     };
     ASSERT_TRUE(ready());
@@ -10353,6 +10727,91 @@ ShownSession showSessionAtPrompt(Application& application, MuxTest::TestDaemon& 
     return shown;
 }
 
+/// Points this process's lookup of the mux daemon (XDG_RUNTIME_DIR,
+/// XDG_STATE_HOME) at @p daemon until it goes. The runner keeps the user's
+/// XDG_RUNTIME_DIR, where KWin makes its socket and where the user's daemon
+/// listens: a path that finds the daemon by the environment
+/// (Application::openLaunch, the window of a pane that leaves a session)
+/// runs only under this guard.
+struct DaemonLookup
+{
+    explicit DaemonLookup(const MuxTest::TestDaemon& daemon)
+        : runtime("XDG_RUNTIME_DIR", QByteArray::fromStdString(daemon.runtime()))
+        , state("XDG_STATE_HOME", QByteArray::fromStdString(daemon.stateHome()))
+    {
+    }
+    const Saved runtime;
+    const Saved state;
+};
+
+/// The panes of session @p name, -1 when the daemon has no such session.
+int sessionPaneCount(MuxTest::TestDaemon& daemon, const std::string& name)
+{
+    const auto info = sessionNamed(daemon, name);
+    return info ? info->panes : -1;
+}
+
+/// The session @p name runs, and no window shows it.
+bool sessionDetached(MuxTest::TestDaemon& daemon, const std::string& name)
+{
+    const auto info = sessionNamed(daemon, name);
+    return info && !info->attached;
+}
+
+/// A launch of @p command in @p directory: no program of a test starts in
+/// the user's home, and none is the user's login shell.
+PaneLaunchOptions launchIn(const std::string& directory, const QStringList& command)
+{
+    PaneLaunchOptions launch;
+    launch.cwd = QString::fromStdString(directory);
+    launch.command = command;
+    return launch;
+}
+
+/// The bodies of the notices that @p notices got since the last call, once
+/// all that were sent are in: they arrive in the order sent.
+QStringList noticeBodies(RegisteredNotificationServer& notices)
+{
+    const QString barrier = QStringLiteral("the notices before this one are in");
+    NotificationCenter::instance().showNotice(nullptr, QStringLiteral("Test"), barrier);
+    if (!waitFor([&] { return notices.server.bodies.contains(barrier); })) return {QStringLiteral("no barrier notice")};
+    const QStringList bodies = notices.server.bodies.mid(0, notices.server.bodies.indexOf(barrier));
+    notices.server.bodies.clear();
+    return bodies;
+}
+
+/// The daemon's IDs of the panes of @p window, tab by tab, each tab's in
+/// the order of its splits.
+std::vector<std::vector<std::uint32_t>> sessionTabs(const TerminalWindow& window)
+{
+    std::vector<std::vector<std::uint32_t>> tabs(std::size_t(window.tabs().size()));
+    for (Pane* pane : window.panes()) {
+        const int tab = window.tabIndexOf(pane);
+        if (tab >= 0 && std::size_t(tab) < tabs.size()) tabs[std::size_t(tab)].push_back(pane->sessionPaneId());
+    }
+    return tabs;
+}
+
+/// The pane of @p window that shows pane @p id of the daemon, else null.
+Pane* sessionPane(const TerminalWindow& window, std::uint32_t id)
+{
+    for (Pane* pane : window.panes()) {
+        if (pane->sessionPaneId() == id) return pane;
+    }
+    return nullptr;
+}
+
+/// Types @p marker into @p pane, a shell or cat with the terminal's echo,
+/// and waits until its screen shows it: the daemon has read what the window
+/// sent before. A shown pane gets the frames as they come. The screens of a
+/// pane that the user cannot see come by the refresh that each read of its
+/// text asks for (Pane::text).
+bool echoes(const QPointer<Pane>& pane, const QString& marker)
+{
+    if (!pane || !pane->sendInput((marker + QLatin1Char('\n')).toStdString())) return false;
+    return waitFor([&] { return pane && screenOf(pane).contains(marker); }, 5000);
+}
+
 } // namespace
 
 // A window shows a session of a daemon of the test's own (never the user's):
@@ -10374,7 +10833,9 @@ TEST_F(NativeWindow, AMuxSessionShowsInAWindowAndEndsWithIt) {
     EXPECT_TRUE(pane->isSessionPane());
     ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
     // The window measured the pane, and the program got that size.
-    ASSERT_LT(pane->cols(), 60);
+    // The screens that show the new size can come after the prompt: the
+    // window asks for them as it shows the pane, before its first layout.
+    ASSERT_TRUE(waitFor([&] { return pane->cols() < 60; })) << pane->cols();
     ASSERT_TRUE(pane->sendInput("stty size\n"));
     ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("%1 %2").arg(pane->rows()).arg(pane->cols())); }, 5000))
         << screenOf(pane).toStdString();
@@ -10530,7 +10991,11 @@ TEST_F(NativeWindow, AMuxSessionsAnimationRunsInTheWindow) {
     // switch ends, the window tells the pane.
     ASSERT_TRUE(shown->runAction(pane, Action::NewTab));
     ASSERT_TRUE(waitFor([&] { return !shown->tabSwitching(); }));
-    drain(100);
+    ASSERT_TRUE(settleQueued());
+    // The window's word goes to the daemon on the stream of the pane's
+    // input: once input sent after it echoes, the daemon has read it, and
+    // no frame that it sent before is still on the way.
+    ASSERT_TRUE(echoes(pane, QStringLiteral(": hidden")));
     const std::optional<std::size_t> hidden = frame();
     // Polled: its frames step every 50 ms, so two samples could meet on the
     // same frame of a running loop.
@@ -10985,16 +11450,21 @@ namespace {
 
 /// One case of AWindowThatLosesItsSessionLeavesItRunning: a failed check
 /// ends this case only.
-void loseSession(Application& application, MuxTest::TestDaemon& daemon, bool takeover) {
+void loseSession(Application& application, MuxTest::TestDaemon& daemon, RegisteredNotificationServer& notices, bool takeover) {
     const std::string name = takeover ? "taken" : "detached";
+    const QString session = QString::fromStdString(name);
     ASSERT_TRUE(shellSession(daemon, name)) << daemon.lastError();
     QString error;
-    QPointer<TerminalWindow> shown = showSession(application, daemon, QString::fromStdString(name), &error);
-    ASSERT_NE(shown, nullptr) << error.toStdString();
-    Pane* pane = shown->focusedPane();
-    ASSERT_NE(pane, nullptr);
-    ASSERT_TRUE(pane->closeEndsProgram());
-    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    auto [shown, pane] = showSessionAtPrompt(application, daemon, session, &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    ASSERT_TRUE(pane->isSessionPane());
+    // Two panes: the window says why it closes once, not once for each.
+    const QPointer<Pane> split = shown->splitPane(pane, SplitTree::Direction::Right, launchIn(daemon.dir(), {QStringLiteral("/bin/cat")}), &error);
+    ASSERT_NE(split, nullptr) << error.toStdString();
+    ASSERT_TRUE(split->isSessionPane());
+    ASSERT_TRUE(echoes(split, QStringLiteral("second")));
+    ASSERT_EQ(sessionPaneCount(daemon, name), 2);
+    ASSERT_EQ(noticeBodies(notices), QStringList());
     if (takeover) {
         // This process asks for the session as another window would.
         ASSERT_TRUE(daemon.call(AfterglowMux::Fn::Attach,
@@ -11003,22 +11473,57 @@ void loseSession(Application& application, MuxTest::TestDaemon& daemon, bool tak
     } else {
         ASSERT_TRUE(daemon.call(AfterglowMux::Fn::Detach, MuxTest::Json::Array{name})) << daemon.lastError();
     }
-    ASSERT_TRUE(waitFor([&] { return !shown; }, 5000));
-    ASSERT_TRUE(settleQueued());
-    EXPECT_TRUE(sessionNamed(daemon, name));
+    ASSERT_TRUE(waitDeleting([&] { return !shown; }, 5000));
+    // The user asked for a detach, and hears nothing of it. Another
+    // window's attach is news, told once.
+    const QStringList moved{QStringLiteral("Another window shows session %1 now.").arg(session)};
+    EXPECT_EQ(noticeBodies(notices), takeover ? moved : QStringList());
+    // The session runs on with both its programs.
+    EXPECT_EQ(sessionPaneCount(daemon, name), 2);
 }
 
 } // namespace
 
-// A window that loses its session (a detach, another window's attach) closes
-// its pane and kills nothing, also with Mux.onClose kill.
+// A window that loses its session (a detach, another window's attach)
+// closes, and kills nothing, also with Mux.onClose kill.
 TEST_F(NativeWindow, AWindowThatLosesItsSessionLeavesItRunning) {
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
+    RegisteredNotificationServer notices;
+    ASSERT_TRUE(notices.registered);
     for (const bool takeover : {false, true}) {
         SCOPED_TRACE(takeover ? "a takeover" : "a detach");
-        loseSession(*application, daemon, takeover);
+        loseSession(*application, daemon, notices, takeover);
     }
+}
+
+// One program of a session's window exits: its pane closes, with its
+// status, and the window and the other pane go on.
+TEST_F(NativeWindow, AnExitInASessionsWindowClosesOnlyThatPane) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "exits")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("exits"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    const QPointer<Pane> split = shown->splitPane(pane, SplitTree::Direction::Right, launchIn(daemon.dir(), {QStringLiteral("/bin/cat")}), &error);
+    ASSERT_NE(split, nullptr) << error.toStdString();
+    ASSERT_TRUE(echoes(split, QStringLiteral("second")));
+    int status = -100;
+    // The context ends with these locals, also when an ASSERT returns early
+    // and the pane closes later.
+    QObject context;
+    QObject::connect(pane, &Pane::closed, &context, [&, raw = pane.data()] { status = raw->exitCode(); });
+    ASSERT_TRUE(pane->sendInput("exit 3\n"));
+    ASSERT_TRUE(waitDeleting([&] { return !pane; }, 5000));
+    EXPECT_EQ(status, 3);
+    ASSERT_NE(shown, nullptr);
+    EXPECT_EQ(shown->panes().size(), 1);
+    EXPECT_EQ(shown->focusedPane(), split.data());
+    EXPECT_TRUE(waitFor([&] { return sessionPaneCount(daemon, "exits") == 1; }, 5000));
+    EXPECT_TRUE(echoes(split, QStringLiteral("still here")));
+    delete shown;
+    EXPECT_TRUE(waitFor([&] { return !sessionNamed(daemon, "exits"); }, 5000));
 }
 
 // A launch of a session passes Mux.eventQueue of the configuration, in bytes.
@@ -11029,8 +11534,7 @@ TEST_F(NativeWindow, ALaunchOfASessionPassesItsEventQueue) {
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "queue")) << daemon.lastError();
-    const Saved runtime("XDG_RUNTIME_DIR", QByteArray::fromStdString(daemon.runtime()));
-    const Saved state("XDG_STATE_HOME", QByteArray::fromStdString(daemon.stateHome()));
+    const DaemonLookup lookup(daemon);
     const int before = int(TerminalWindow::windows().size());
     // In the test's directory: no program of a test starts in the user's home.
     ASSERT_EQ(application->openLaunch(directory.path(), {}, {{QStringLiteral("session"), QStringLiteral("queue")}}), QString());
@@ -11046,13 +11550,13 @@ TEST_F(NativeWindow, ALaunchOfASessionPassesItsEventQueue) {
 // A launch with --mux-attach (Application::openLaunch) finds the daemon in
 // its environment: the test points that at its own daemon, never the user's.
 // A second launch of a session that a window of this process shows brings
-// that window to the front, and opens no other.
+// that window to the front as it is, with its tab and its focus, and opens
+// no other.
 TEST_F(NativeWindow, ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow) {
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "launched")) << daemon.lastError();
-    const Saved runtime("XDG_RUNTIME_DIR", QByteArray::fromStdString(daemon.runtime()));
-    const Saved state("XDG_STATE_HOME", QByteArray::fromStdString(daemon.stateHome()));
+    const DaemonLookup lookup(daemon);
     // In the test's directory: no program of a test starts in the user's home.
     const auto launch = [&](const QString& name, bool takeover) {
         return application->openLaunch(directory.path(), {}, {{QStringLiteral("session"), name}, {QStringLiteral("takeover"), takeover}});
@@ -11061,21 +11565,28 @@ TEST_F(NativeWindow, ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow) {
     ASSERT_EQ(launch(QStringLiteral("launched"), true), QString());
     ASSERT_EQ(int(TerminalWindow::windows().size()), before + 1);
     QPointer<TerminalWindow> shown = TerminalWindow::windows().last();
-    Pane* const sessionPane = shown->focusedPane();
-    ASSERT_NE(sessionPane, nullptr);
-    ASSERT_TRUE(sessionPane->isSessionPane());
+    Pane* const first = shown->focusedPane();
+    ASSERT_NE(first, nullptr);
+    ASSERT_TRUE(first->isSessionPane());
     ASSERT_TRUE(waitFor([&] {
         const auto info = sessionNamed(daemon, "launched");
         return info && info->attached;
     }, 5000));
-    // Another tab in front: the launch brings the session's pane back.
-    PaneLaunchOptions other;
-    other.command = {QStringLiteral("/bin/cat")};
-    ASSERT_NE(shown->openTab(other, nullptr), nullptr);
-    ASSERT_NE(shown->focusedPane(), sessionPane);
+    // Another tab of the session in front: the launch keeps it there.
+    QString error;
+    Pane* const other = shown->openTab(launchIn(daemon.dir(), {QStringLiteral("/bin/cat")}), &error);
+    ASSERT_NE(other, nullptr) << error.toStdString();
+    EXPECT_TRUE(other->isSessionPane());
+    ASSERT_EQ(shown->focusedPane(), other);
+    const quint32 tab = shown->activeTabId();
+    // Hidden: the launch shows it again.
+    shown->hide();
+    ASSERT_TRUE(waitFor([&] { return !shown->isVisible(); }));
     EXPECT_EQ(launch(QStringLiteral("launched"), false), QString());
     EXPECT_EQ(int(TerminalWindow::windows().size()), before + 1);
-    EXPECT_EQ(shown->focusedPane(), sessionPane);
+    EXPECT_TRUE(shown->isVisible());
+    EXPECT_EQ(shown->activeTabId(), tab);
+    EXPECT_EQ(shown->focusedPane(), other);
     // A session that does not run: the launch fails, and says why.
     EXPECT_TRUE(launch(QStringLiteral("none"), true).contains(QStringLiteral("no session named 'none'")));
     EXPECT_EQ(int(TerminalWindow::windows().size()), before + 1);
@@ -11133,9 +11644,9 @@ TEST_F(NativeWindow, AMuxSessionCanOutliveItsWindow) {
     }, 5000));
 }
 
-// Mux.onClose applies live: a window that opened with kill detaches once the
-// configuration says detach.
-TEST_F(NativeWindow, MuxOnCloseAppliesToAnOpenSessionPane) {
+// Mux.onClose applies live: a session's window that opened with kill
+// detaches once the configuration says detach.
+TEST_F(NativeWindow, MuxOnCloseAppliesLiveToAnOpenSessionsWindow) {
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "live")) << daemon.lastError();
@@ -11149,8 +11660,8 @@ TEST_F(NativeWindow, MuxOnCloseAppliesToAnOpenSessionPane) {
     ASSERT_TRUE(config.open(QIODevice::WriteOnly | QIODevice::Truncate));
     config.write(R"({"Mux": {"onClose": "detach"}})");
     config.close();
+    // The reload applies before the action returns.
     ASSERT_TRUE(shown->runAction(pane, Action::ReloadConfig));
-    ASSERT_TRUE(settleQueued());
     delete shown;
     ASSERT_TRUE(waitFor([&] {
         const auto info = sessionNamed(daemon, "live");
@@ -11171,18 +11682,29 @@ TerminalWindow* windowOfSession(const QString& name)
     return nullptr;
 }
 
-/// The daemon's IDs of the panes of @p window.
-std::set<std::uint32_t> sessionPaneIds(const TerminalWindow& window)
+/// A top-level widget that refuses to close, as a window that asks a
+/// question first does: a quit that reaches it is interrupted.
+class StubbornWidget : public QWidget
 {
-    std::set<std::uint32_t> ids;
-    for (Pane* pane : window.panes()) ids.insert(pane->sessionPaneId());
-    return ids;
+protected:
+    void closeEvent(QCloseEvent* event) override { event->ignore(); }
+};
+
+/// Qt's handling of a quit ends the event loops that start after it too (a
+/// dialog's, a drag's), until exec() starts again: this exec() ends at once,
+/// and leaves the loops of the tests that follow as they were. Its exit()
+/// emits QCoreApplication::aboutToQuit again, as the quit did.
+void startEventLoopsAgain()
+{
+    QTimer::singleShot(0, QCoreApplication::instance(), [] { QCoreApplication::exit(0); });
+    QCoreApplication::exec();
 }
 
 } // namespace
 
-// A new tab and a split of a session's window are panes of the session: they
-// run under the daemon, and the next window shows the same tabs and splits.
+// New tabs and splits of a session's window are panes of the session: they
+// run under the daemon, and the next window shows the same tabs, with their
+// splits, sides and ratios, titles, focus and zoom, and the same programs.
 TEST_F(NativeWindow, ASessionsTabsAndSplitsComeBackWithTheNextWindow) {
     restartApplication(QStringLiteral("mux.conf"),
                        testSettings({{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("onClose"), QStringLiteral("detach")}}}}),
@@ -11192,38 +11714,134 @@ TEST_F(NativeWindow, ASessionsTabsAndSplitsComeBackWithTheNextWindow) {
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "tabs")) << daemon.lastError();
     QString error;
-    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("tabs"), &error);
-    ASSERT_NE(pane, nullptr) << error.toStdString();
-    SettingsStore settings(directory.filePath(QStringLiteral("mux.conf")));
-    Control control(settings, {});
-    control.attachWindow(shown);
-    quint32 split = 0, tab = 0;
-    ASSERT_EQ(control.split(pane->id(), QStringLiteral("down"), {}, {}, split), QString());
-    ASSERT_EQ(control.newTab(pane->id(), {}, {}, tab), QString());
+    auto [shown, top] = showSessionAtPrompt(*application, daemon, QStringLiteral("tabs"), &error);
+    ASSERT_NE(top, nullptr) << error.toStdString();
+    auto* chrome = shown->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("/bin/cat")});
+    // The first tab: the shell above, and a pane below it, of less height.
+    PaneLaunchOptions smaller = cat;
+    smaller.fraction = 0.3;
+    const QPointer<Pane> bottom = shown->splitPane(top, SplitTree::Direction::Down, smaller, &error);
+    ASSERT_NE(bottom, nullptr) << error.toStdString();
+    // The second tab: two panes side by side.
+    const QPointer<Pane> left = shown->openTab(cat, &error);
+    ASSERT_NE(left, nullptr) << error.toStdString();
+    const QPointer<Pane> right = shown->splitPane(left, SplitTree::Direction::Right, cat, &error);
+    ASSERT_NE(right, nullptr) << error.toStdString();
     for (Pane* p : shown->panes()) EXPECT_TRUE(p->isSessionPane());
-    ASSERT_TRUE(waitFor([&] { return sessionNamed(daemon, "tabs")->panes == 3; }, 5000));
-    const std::set<std::uint32_t> ids = sessionPaneIds(*shown);
-    ASSERT_EQ(ids.size(), 3u);
-    const std::uint32_t focused = shown->focusedPane()->sessionPaneId();
+    // The window shows the output of each program before the changes below.
+    for (const QPointer<Pane>& p : {bottom, left, right}) ASSERT_TRUE(echoes(p, QStringLiteral("first window")));
+    ASSERT_EQ(sessionPaneCount(daemon, "tabs"), 4);
+    // The second tab: a title longer than the daemon keeps, the left pane
+    // zoomed and focused, and a title of the right pane's own.
+    shown->revealPane(left);
+    ASSERT_TRUE(shown->runAction(left, Action::RenameTab));
+    ASSERT_TRUE(chrome->titlePromptOpen());
+    chrome->answerTitle(QString(1100, QChar(0xe9)));
+    right->setUserTitle(QStringLiteral("right of the second tab"));
+    shown->revealPane(left);
+    ASSERT_TRUE(shown->runAction(left, Action::TogglePaneZoom));
+    // The first tab shows, with its lower pane focused: neither the last
+    // tab, nor the pane that the window focused first.
+    shown->revealPane(bottom);
+    ASSERT_EQ(shown->focusedPane(), bottom.data());
+    // The window's own layout, not the replicas' sizes, which follow the
+    // daemon's frames. The next window opens with its tab bar, so it
+    // compares the share of each side, not the rows.
+    const auto topShare = [](TerminalWindow* window, Pane* upper, Pane* lower) -> double {
+        const QRect a = window->accessiblePaneRect(upper), b = window->accessiblePaneRect(lower);
+        if (a.isEmpty() || b.isEmpty() || a.bottom() >= b.top()) return -1;
+        return double(a.height()) / double(a.height() + b.height());
+    };
+    ASSERT_TRUE(waitFor([&] { return top && bottom && topShare(shown, top, bottom) > 0.5; }));
+    const double share = topShare(shown, top, bottom);
+    const std::vector<std::vector<std::uint32_t>> tabs = sessionTabs(*shown);
+    const std::uint32_t topId = top->sessionPaneId(), bottomId = bottom->sessionPaneId();
+    const std::uint32_t leftId = left->sessionPaneId(), rightId = right->sessionPaneId();
     // Mux.onClose detach: the session runs on, with its tabs.
     delete shown;
-    ASSERT_TRUE(waitFor([&] {
-        const auto info = sessionNamed(daemon, "tabs");
-        return info && !info->attached && info->panes == 3;
-    }, 5000));
+    ASSERT_TRUE(waitFor([&] { return sessionDetached(daemon, "tabs") && sessionPaneCount(daemon, "tabs") == 4; }, 5000));
     QPointer<TerminalWindow> again = showSession(*application, daemon, QStringLiteral("tabs"), &error);
     ASSERT_NE(again, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return again && again->isExposed() && again->submittedFrames() > 0; }));
+    // The same panes in the same tabs, each tab's in the same order.
     ASSERT_EQ(again->tabs().size(), 2);
-    EXPECT_EQ(sessionPaneIds(*again), ids);
-    // The new tab, which showed, shows again.
-    EXPECT_EQ(again->activeTabId(), again->tabs()[1].id);
-    EXPECT_EQ(again->focusedPane()->sessionPaneId(), focused);
-    EXPECT_EQ(again->tabs()[0].index, 0);
+    EXPECT_EQ(sessionTabs(*again), tabs);
+    // The first tab shows, with its lower pane focused, on the same sides
+    // and at the same ratio.
+    EXPECT_EQ(again->activeTabId(), again->tabs()[0].id);
+    ASSERT_NE(again->focusedPane(), nullptr);
+    EXPECT_EQ(again->focusedPane()->sessionPaneId(), bottomId);
+    const QPointer<Pane> topAgain = sessionPane(*again, topId), bottomAgain = sessionPane(*again, bottomId);
+    const QPointer<Pane> leftAgain = sessionPane(*again, leftId), rightAgain = sessionPane(*again, rightId);
+    ASSERT_TRUE(topAgain && bottomAgain && leftAgain && rightAgain);
+    // At the same ratio, up to a row of rounding, with the shell above.
+    EXPECT_TRUE(waitFor([&] { return topAgain && bottomAgain && std::abs(topShare(again, topAgain, bottomAgain) - share) < 0.03; }))
+        << (topAgain && bottomAgain ? topShare(again, topAgain, bottomAgain) : -1) << ", before " << share;
+    // The second tab: its title cut at a character, at the 1024 bytes that
+    // the daemon keeps, the right pane's title, and the focus and the zoom
+    // of the left pane.
+    EXPECT_EQ(again->tabs()[1].title, QString(512, QChar(0xe9)));
+    EXPECT_EQ(rightAgain->userTitle(), QStringLiteral("right of the second tab"));
+    EXPECT_EQ(again->tabs()[1].activePane, leftAgain->id());
+    again->revealPane(leftAgain);
+    EXPECT_TRUE(waitFor([&] { return again && leftAgain && !again->accessiblePaneRect(leftAgain).isEmpty(); }));
+    EXPECT_TRUE(again->accessiblePaneRect(rightAgain).isEmpty());
+    // The programs that ran, each in its own pane.
+    for (const QPointer<Pane>& p : {topAgain, bottomAgain, leftAgain, rightAgain})
+        EXPECT_TRUE(echoes(p, QStringLiteral("second window %1").arg(p ? p->sessionPaneId() : 0)));
     delete again;
 }
 
-// The user closes one pane of a session's window: its program ends, and the
-// window and the session go on.
+// The window sends its layout a while after a change (scheduleSessionLayout),
+// not only as it closes: a new order of the tabs and a pane moved to a tab of
+// its own reach the daemon, and the next window shows them after a detach
+// that the daemon makes, which leaves the window nothing to send.
+TEST_F(NativeWindow, ASessionKeepsTheTabOrderAndTheMovedPanesOfItsWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "order")) << daemon.lastError();
+    QString error;
+    auto [shown, first] = showSessionAtPrompt(*application, daemon, QStringLiteral("order"), &error);
+    ASSERT_NE(first, nullptr) << error.toStdString();
+    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("/bin/cat")});
+    // The first tab: the shell and a pane beside it. The second tab: one pane.
+    const QPointer<Pane> beside = shown->splitPane(first, SplitTree::Direction::Right, cat, &error);
+    ASSERT_NE(beside, nullptr) << error.toStdString();
+    const QPointer<Pane> second = shown->openTab(cat, &error);
+    ASSERT_NE(second, nullptr) << error.toStdString();
+    for (const QPointer<Pane>& p : {beside, second}) ASSERT_TRUE(echoes(p, QStringLiteral("before")));
+    ASSERT_TRUE(waitFor([&] { return shown && !shown->sessionLayoutPending(); }));
+    // The second tab goes first, and the pane beside the shell to a tab of
+    // its own.
+    ASSERT_TRUE(shown->moveTabOf(second, 0).isEmpty());
+    shown->revealPane(beside);
+    ASSERT_TRUE(shown->runAction(beside, Action::MovePaneToTab));
+    const std::vector<std::vector<std::uint32_t>> tabs = sessionTabs(*shown);
+    const std::uint32_t firstId = first->sessionPaneId(), besideId = beside->sessionPaneId(), secondId = second->sessionPaneId();
+    ASSERT_EQ(tabs.size(), 3u);
+    EXPECT_EQ(tabs[0], std::vector<std::uint32_t>{secondId});
+    EXPECT_NE(std::find(tabs.begin(), tabs.end(), std::vector<std::uint32_t>{firstId}), tabs.end());
+    EXPECT_NE(std::find(tabs.begin(), tabs.end(), std::vector<std::uint32_t>{besideId}), tabs.end());
+    EXPECT_TRUE(shown->sessionLayoutPending());
+    ASSERT_TRUE(waitFor([&] { return shown && !shown->sessionLayoutPending(); }));
+    // Input after the layout: once it echoes, the daemon read the layout.
+    ASSERT_TRUE(echoes(second, QStringLiteral("after")));
+    ASSERT_TRUE(daemon.call(AfterglowMux::Fn::Detach, MuxTest::Json::Array{"order"})) << daemon.lastError();
+    ASSERT_TRUE(waitDeleting([&] { return !shown; }, 5000));
+    ASSERT_TRUE(waitFor([&] { return sessionDetached(daemon, "order") && sessionPaneCount(daemon, "order") == 3; }, 5000));
+    QPointer<TerminalWindow> again = showSession(*application, daemon, QStringLiteral("order"), &error);
+    ASSERT_NE(again, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return again && again->isExposed() && again->submittedFrames() > 0; }));
+    EXPECT_EQ(sessionTabs(*again), tabs);
+    delete again;
+}
+
+// The user closes panes and tabs of a session's window: the window asks
+// about their programs, which the daemon names, and the close ends those
+// programs only. The window and the session go on, and a new pane works.
+// The window's own close ends the session (Mux.onClose kill).
 TEST_F(NativeWindow, ClosingAPaneOfASessionsWindowEndsOnlyItsProgram) {
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
@@ -11231,74 +11849,175 @@ TEST_F(NativeWindow, ClosingAPaneOfASessionsWindowEndsOnlyItsProgram) {
     QString error;
     auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("close"), &error);
     ASSERT_NE(pane, nullptr) << error.toStdString();
-    SettingsStore settings(directory.filePath(QStringLiteral("afterglow.conf")));
-    Control control(settings, {});
-    control.attachWindow(shown);
-    quint32 split = 0;
-    ASSERT_EQ(control.split(pane->id(), QStringLiteral("right"), {}, {}, split), QString());
-    ASSERT_TRUE(waitFor([&] { return sessionNamed(daemon, "close")->panes == 2; }, 5000));
-    ASSERT_EQ(control.close(split), QString());
-    // The pane goes at its deferred delete, as the event loop runs it.
-    drainDeferredDeletes();
-    ASSERT_TRUE(waitFor([&] { return sessionNamed(daemon, "close")->panes == 1; }, 5000));
-    ASSERT_TRUE(settleQueued());
+    QPointer<ChromeController> chrome = shown->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    // Its PID in a file: the close must end it.
+    const QString pidFile = QString::fromStdString(daemon.dir()) + QStringLiteral("/pid");
+    const QPointer<Pane> split = shown->splitPane(pane, SplitTree::Direction::Right,
+        launchIn(daemon.dir(), {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("echo $$ > pid.part && mv pid.part pid; exec cat")}),
+        &error);
+    ASSERT_NE(split, nullptr) << error.toStdString();
+    EXPECT_TRUE(split->isSessionPane());
+    ASSERT_TRUE(echoes(split, QStringLiteral("split")));
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(pidFile); }));
+    const pid_t pid = pid_t(fileContent(pidFile).trimmed().toInt());
+    ASSERT_GT(pid, 0);
+    ASSERT_EQ(sessionPaneCount(daemon, "close"), 2);
+    const auto answerClose = [&](const QString& heading, const QString& body) {
+        ASSERT_TRUE(waitFor([&] { return chrome && chrome->confirmPromptOpen(); }));
+        EXPECT_EQ(chrome->confirmPrompt().value(QStringLiteral("heading")).toString(), heading);
+        EXPECT_EQ(chrome->confirmPrompt().value(QStringLiteral("body")).toString(), body);
+        chrome->answerConfirm(true);
+    };
+    // The daemon names the program that the close ends.
+    ASSERT_TRUE(shown->runAction(split, Action::ClosePane));
+    answerClose(QStringLiteral("Close this split?"), QStringLiteral("sh is still running, and closing ends it."));
+    if (HasFatalFailure()) return;
+    ASSERT_TRUE(waitDeleting([&] { return !split; }, 5000));
+    EXPECT_TRUE(waitFor([&] { return ::kill(pid, 0) != 0 && errno == ESRCH; }, 5000));
+    ASSERT_TRUE(waitFor([&] { return sessionPaneCount(daemon, "close") == 1; }, 5000));
     ASSERT_NE(shown, nullptr);
     EXPECT_EQ(shown->panes().size(), 1);
-    EXPECT_TRUE(sessionNamed(daemon, "close")->attached);
-    // The window's own close ends the session (Mux.onClose kill).
-    delete shown;
+    {
+        const auto info = sessionNamed(daemon, "close");
+        EXPECT_TRUE(info && info->attached);
+    }
+    // A tab that is not the window's last closes as a tab.
+    const QPointer<Pane> tab = shown->openTab(launchIn(daemon.dir(), {QStringLiteral("/bin/cat")}), &error);
+    ASSERT_NE(tab, nullptr) << error.toStdString();
+    EXPECT_TRUE(tab->isSessionPane());
+    ASSERT_TRUE(echoes(tab, QStringLiteral("tab")));
+    ASSERT_TRUE(shown->runAction(tab, Action::CloseTab));
+    answerClose(QStringLiteral("Close this tab?"), QStringLiteral("cat is still running, and closing ends it."));
+    if (HasFatalFailure()) return;
+    ASSERT_TRUE(waitDeleting([&] { return !tab; }, 5000));
+    ASSERT_TRUE(waitFor([&] { return sessionPaneCount(daemon, "close") == 1; }, 5000));
+    EXPECT_EQ(shown->tabs().size(), 1);
+    // The pane that stays still works, and so does a new one, which can get
+    // the channel of a pane that closed.
+    EXPECT_TRUE(echoes(pane, QStringLiteral("echo st''ill")));
+    const QPointer<Pane> fresh = shown->splitPane(pane, SplitTree::Direction::Down, launchIn(daemon.dir(), {QStringLiteral("/bin/cat")}), &error);
+    ASSERT_NE(fresh, nullptr) << error.toStdString();
+    EXPECT_TRUE(echoes(fresh, QStringLiteral("fresh")));
+    // The window's own close asks about the programs that it ends.
+    shown->close();
+    answerClose(QStringLiteral("Close this window?"), QStringLiteral("cat is still running, and closing ends it."));
+    if (HasFatalFailure()) return;
+    ASSERT_TRUE(waitDeleting([&] { return !shown; }, 5000));
     EXPECT_TRUE(waitFor([&] { return !sessionNamed(daemon, "close"); }, 5000));
 }
 
-// A tab dragged out of a session's window goes to a new session, in a new
-// window: its programs run on. A pane of another window does not join a
-// session's window.
-TEST_F(NativeWindow, ATabDraggedOutOfASessionsWindowBecomesANewSession) {
+// A tab that leaves a session's window (a drag, a key, the menu) goes to a
+// new session, which the Application shows in a new window: its programs
+// run on, with what the old window kept for them. So does one pane. The new
+// window finds the daemon by the environment: the test's, never the user's.
+// A pane moves within a session's window as in any other, but not into it
+// nor out of it.
+TEST_F(NativeWindow, ATabDetachedFromASessionsWindowBecomesANewSession) {
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "drag")) << daemon.lastError();
+    const DaemonLookup lookup(daemon);
+    RegisteredNotificationServer notices;
+    ASSERT_TRUE(notices.registered);
     QString error;
     auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("drag"), &error);
     ASSERT_NE(pane, nullptr) << error.toStdString();
-    SettingsStore settings(directory.filePath(QStringLiteral("afterglow.conf")));
-    Control control(settings, {});
-    control.attachWindow(shown);
-    control.setSessionWindowOpener([&](const QString& name, const QString&) {
-        QString failure;
-        QPointer<TerminalWindow> opened = showSession(*application, daemon, name, &failure);
-        if (opened) control.attachWindow(opened);
-        return failure;
-    });
-    // Its only tab holds every pane of the session: it stays.
-    QVariantMap result;
-    EXPECT_NE(control.detachTab(pane->id(), result), QString());
-    quint32 tab = 0, split = 0;
-    ASSERT_EQ(control.newTab(pane->id(), {}, {}, tab), QString());
-    ASSERT_EQ(control.split(tab, QStringLiteral("right"), {}, {}, split), QString());
-    ASSERT_TRUE(waitFor([&] { return sessionNamed(daemon, "drag")->panes == 3; }, 5000));
-    ASSERT_EQ(control.detachTab(split, result), QString());
-    ASSERT_TRUE(settleQueued());
-    // The tab left the window, and a new session holds its two panes.
+    // Its only tab holds every pane of the session: it stays, and the user
+    // hears why.
+    EXPECT_FALSE(shown->runAction(pane, Action::DetachTab));
+    EXPECT_FALSE(shown->runAction(pane, Action::MovePaneToWindow));
+    EXPECT_EQ(noticeBodies(notices), (QStringList{QStringLiteral("This tab holds all the panes of session drag, and they stay in its window"),
+                                                  QStringLiteral("This pane is the only pane of session drag, and it stays in its window")}));
+    // Moves within the window: to a tab of its own, and beside a pane of
+    // another tab.
+    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("/bin/cat")});
+    const QPointer<Pane> left = shown->splitPane(pane, SplitTree::Direction::Right, cat, &error);
+    ASSERT_NE(left, nullptr) << error.toStdString();
+    ASSERT_TRUE(shown->runAction(left, Action::MovePaneToTab));
+    ASSERT_EQ(shown->tabs().size(), 2);
+    ASSERT_NE(shown->tabIndexOf(left), shown->tabIndexOf(pane));
+    const QPointer<Pane> right = shown->splitPane(left, SplitTree::Direction::Right, cat, &error);
+    ASSERT_NE(right, nullptr) << error.toStdString();
+    const QPointer<Pane> below = shown->splitPane(pane, SplitTree::Direction::Down, cat, &error);
+    ASSERT_NE(below, nullptr) << error.toStdString();
+    EXPECT_EQ(shown->movePaneTo(below, shown, right, SplitTree::Direction::Down), QString());
+    ASSERT_EQ(shown->tabIndexOf(below), shown->tabIndexOf(left));
+    for (const QPointer<Pane>& p : {left, right, below}) ASSERT_TRUE(echoes(p, QStringLiteral("before")));
+    ASSERT_EQ(sessionPaneCount(daemon, "drag"), 4);
+    left->setUserTitle(QStringLiteral("carried"));
+    const std::vector<std::uint32_t> movedIds = sessionTabs(*shown)[std::size_t(shown->tabIndexOf(left))];
+    ASSERT_EQ(movedIds.size(), 3u);
+    const std::uint32_t leftId = left->sessionPaneId();
+    // The tab goes, from the event loop, as after a drag of it.
+    const int windows = int(TerminalWindow::windows().size());
+    ASSERT_TRUE(shown->runAction(right, Action::DetachTab));
+    ASSERT_TRUE(waitFor([&] { return int(TerminalWindow::windows().size()) == windows + 1; }, 5000));
+    // Its panes leave the old window, and their delete ends no program.
+    ASSERT_TRUE(waitDeleting([&] { return !left && !right && !below; }, 5000));
+    ASSERT_NE(shown, nullptr);
     EXPECT_EQ(shown->panes().size(), 1);
-    EXPECT_EQ(sessionNamed(daemon, "drag")->panes, 1);
+    // The daemon read what the old window sent before this.
+    ASSERT_TRUE(echoes(pane, QStringLiteral("echo dr''ag")));
+    const auto sessions = daemon.sessions();
+    ASSERT_EQ(sessions.size(), 3u);
     std::string fresh;
-    for (const auto& info : daemon.sessions()) {
+    for (const auto& info : sessions) {
         if (info.name != "drag" && info.name != "keep") fresh = info.name;
     }
     ASSERT_FALSE(fresh.empty());
-    EXPECT_EQ(sessionNamed(daemon, fresh)->panes, 2);
+    EXPECT_EQ(sessionPaneCount(daemon, "drag"), 1);
+    EXPECT_EQ(sessionPaneCount(daemon, fresh), 3);
+    // The new window shows the tab as it was, with what the old one kept,
+    // and the programs in it.
     QPointer<TerminalWindow> moved = windowOfSession(QString::fromStdString(fresh));
     ASSERT_NE(moved, nullptr);
-    EXPECT_EQ(moved->panes().size(), 2);
-    EXPECT_EQ(result.value(QStringLiteral("window")).toUInt(), moved->id());
-    // A pane of a window of its own cannot join the session's window.
-    QPointer<TerminalWindow> plain = application->newWindow({});
-    ASSERT_NE(plain, nullptr);
-    control.attachWindow(plain);
-    ASSERT_NE(plain->focusedPane(), nullptr);
-    EXPECT_NE(control.movePane(plain->focusedPane()->id(), pane->id(), QStringLiteral("right"), result), QString());
+    ASSERT_EQ(moved->tabs().size(), 1);
+    EXPECT_EQ(sessionTabs(*moved), std::vector<std::vector<std::uint32_t>>{movedIds});
+    const QPointer<Pane> carried = sessionPane(*moved, leftId);
+    ASSERT_NE(carried, nullptr);
+    EXPECT_EQ(carried->userTitle(), QStringLiteral("carried"));
+    for (Pane* p : moved->panes()) EXPECT_TRUE(echoes(p, QStringLiteral("after %1").arg(p->sessionPaneId())));
+    // One pane moves to a window of its own.
+    const QPointer<Pane> alone = shown->splitPane(pane, SplitTree::Direction::Down, cat, &error);
+    ASSERT_NE(alone, nullptr) << error.toStdString();
+    ASSERT_TRUE(echoes(alone, QStringLiteral("alone")));
+    const std::uint32_t aloneId = alone->sessionPaneId();
+    ASSERT_TRUE(shown->runAction(alone, Action::MovePaneToWindow));
+    ASSERT_TRUE(waitFor([&] { return int(TerminalWindow::windows().size()) == windows + 2; }, 5000));
+    ASSERT_TRUE(waitDeleting([&] { return !alone; }, 5000));
     EXPECT_EQ(shown->panes().size(), 1);
+    ASSERT_TRUE(echoes(pane, QStringLiteral("echo al''one")));
+    ASSERT_EQ(daemon.sessions().size(), 4u);
+    std::string single;
+    for (const auto& info : daemon.sessions()) {
+        if (info.name != "drag" && info.name != "keep" && info.name != fresh) single = info.name;
+    }
+    ASSERT_FALSE(single.empty());
+    EXPECT_EQ(sessionPaneCount(daemon, single), 1);
+    QPointer<TerminalWindow> movedAlone = windowOfSession(QString::fromStdString(single));
+    ASSERT_NE(movedAlone, nullptr);
+    ASSERT_EQ(movedAlone->panes().size(), 1);
+    EXPECT_EQ(movedAlone->panes().constFirst()->sessionPaneId(), aloneId);
+    EXPECT_TRUE(echoes(movedAlone->panes().constFirst(), QStringLiteral("moved alone")));
+    // Nothing failed on the way.
+    EXPECT_EQ(noticeBodies(notices), QStringList());
+    // A pane of a window of its own does not join the session's window, and
+    // no pane of the session leaves it but as above.
+    WindowOptions options;
+    options.workingDirectory = directory.path();
+    options.command = {QStringLiteral("/bin/cat")};
+    QPointer<TerminalWindow> plain = application->newWindow(options);
+    ASSERT_NE(plain, nullptr);
+    ASSERT_NE(plain->focusedPane(), nullptr);
+    EXPECT_EQ(plain->movePaneTo(plain->focusedPane(), shown, pane, SplitTree::Direction::Right),
+              QStringLiteral("A pane cannot move into the window of session drag"));
+    EXPECT_EQ(shown->movePaneTo(pane, plain, plain->focusedPane(), SplitTree::Direction::Right),
+              QStringLiteral("A pane of session drag cannot leave its window"));
+    EXPECT_EQ(shown->panes().size(), 1);
+    EXPECT_EQ(plain->panes().size(), 1);
     delete plain;
+    delete movedAlone;
     delete moved;
     delete shown;
     EXPECT_TRUE(waitFor([&] { return MuxTest::names(daemon.sessions()) == std::vector<std::string>{"keep"}; }, 5000));
@@ -11899,6 +12618,118 @@ TEST_F(NativeWindow, CtlForASessionReachesItsWindow) {
     delete shown;
 }
 
+// A pane that a session's window opens starts in the session's environment,
+// not this process's: the daemon starts it, and what the launch reads of the
+// inherited variables (TERMINFO_DIRS here) comes from the session too. It
+// starts at the size that the window shows it at.
+TEST_F(NativeWindow, APaneOfASessionsWindowStartsInTheSessionsEnvironment) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    auto session = daemon.options({"/bin/sh"}, "environment");
+    session.launch.environment.emplace_back("PS1", "$ ");
+    session.launch.environment.emplace_back("ENV", "/dev/null");
+    std::erase_if(session.environment, [](const auto& variable) { return variable.first == "TERMINFO_DIRS"; });
+    session.environment.emplace_back("TERMINFO_DIRS", "/session/terminfo");
+    session.environment.emplace_back("SESSION_ONLY_VALUE", "from the session");
+    ASSERT_TRUE(daemon.newSession(session)) << daemon.lastError();
+    const Saved windowOnly("WINDOW_ONLY_VALUE", "from the window");
+    const Saved terminfo("TERMINFO_DIRS", "/window/terminfo");
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("environment"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    // stty first: the size that the program starts at.
+    const QPointer<Pane> split = shown->splitPane(pane, SplitTree::Direction::Right,
+        launchIn(daemon.dir(), {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                QStringLiteral("{ stty size; printf '%s|%s|%s|%s' \"$SESSION_ONLY_VALUE\" \"${WINDOW_ONLY_VALUE-unset}\" \"$HOME\" "
+                                               "\"$TERMINFO_DIRS\"; } > environment.part && mv environment.part environment; exec cat")}),
+        &error);
+    ASSERT_NE(split, nullptr) << error.toStdString();
+    const QString report = QString::fromStdString(daemon.dir()) + QStringLiteral("/environment");
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(report); }, 5000));
+    const QStringList lines = QString::fromUtf8(fileContent(report)).split(QLatin1Char('\n'));
+    ASSERT_EQ(lines.size(), 2) << lines.join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(waitFor([&] { return split && lines[0] == QStringLiteral("%1 %2").arg(split->rows()).arg(split->cols()); }))
+        << lines[0].toStdString() << " for " << (split ? split->rows() : 0) << " " << (split ? split->cols() : 0);
+    const QStringList values = lines[1].split(QLatin1Char('|'));
+    ASSERT_EQ(values.size(), 4) << lines[1].toStdString();
+    EXPECT_EQ(values[0], QStringLiteral("from the session"));
+    EXPECT_EQ(values[1], QStringLiteral("unset"));
+    EXPECT_EQ(values[2], QString::fromStdString(daemon.dir()) + QStringLiteral("/home"));
+    EXPECT_TRUE(values[3].split(QLatin1Char(':')).contains(QStringLiteral("/session/terminfo"))) << values[3].toStdString();
+    EXPECT_FALSE(values[3].contains(QStringLiteral("/window/terminfo"))) << values[3].toStdString();
+    delete shown;
+}
+
+// A quit (a signal, the end of the desktop session) is not the user closing
+// a session's window: the session runs on, also with Mux.onClose kill (the
+// default), and the window asks nothing about the session's programs. A
+// quit that a window interrupts leaves Mux.onClose in force. So does the
+// end of the Application, at the end of main().
+//
+// The quit that goes through is QCoreApplication::exit(): it emits
+// aboutToQuit in the middle of the test binary, and startEventLoopsAgain
+// emits it once more. Keep this test the last of the NativeWindow suite: the
+// suites after it (KeyMapping) open no window.
+TEST_F(NativeWindow, AQuitLeavesTheSessionsOfItsWindowsRunning) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    for (const char* name : {"interrupted", "quit", "destroyed"}) ASSERT_TRUE(shellSession(daemon, name)) << daemon.lastError();
+    // The fixture's window runs a program that a close asks about: only the
+    // windows of this test take part in its quits.
+    delete window;
+    window = nullptr;
+    const auto loops = qScopeGuard(startEventLoopsAgain);
+    QString error;
+    {
+        // A QApplication closes its widgets as it quits, and no other
+        // window: a widget that stays open interrupts the quit before
+        // QCoreApplication::exit(). The session's window gets no Close, and
+        // its own close then ends the session, as Mux.onClose says.
+        auto stubborn = std::make_unique<StubbornWidget>();
+        stubborn->show();
+        auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("interrupted"), &error);
+        ASSERT_NE(pane, nullptr) << error.toStdString();
+        QEvent quit(QEvent::Quit);
+        QCoreApplication::sendEvent(QCoreApplication::instance(), &quit);
+        EXPECT_FALSE(quit.isAccepted());
+        ASSERT_NE(shown, nullptr);
+        stubborn.reset();
+        delete shown;
+        EXPECT_TRUE(waitFor([&] { return !sessionNamed(daemon, "interrupted"); }, 5000));
+    }
+    {
+        auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("quit"), &error);
+        ASSERT_NE(pane, nullptr) << error.toStdString();
+        const QPointer<ChromeController> chrome = shown->findChild<ChromeController*>();
+        ASSERT_NE(chrome, nullptr);
+        // A program in the foreground, which the user's close would ask about.
+        ASSERT_TRUE(pane->sendInput("sleep 30\n"));
+        ASSERT_TRUE(waitFor([&] { return pane && pane->foregroundJob() == QLatin1String("sleep"); }, 5000));
+        QEvent quit(QEvent::Quit);
+        QCoreApplication::sendEvent(QCoreApplication::instance(), &quit);
+        EXPECT_TRUE(quit.isAccepted());
+        // Qt closes the windows of a QGuiApplication as it quits, and only
+        // the widgets of a QApplication: the Close that the window would
+        // get, if it did not.
+        if (shown && !shown->closing()) {
+            QCloseEvent close;
+            QCoreApplication::sendEvent(shown, &close);
+            EXPECT_TRUE(close.isAccepted());
+        }
+        EXPECT_FALSE(chrome && chrome->confirmPromptOpen());
+        ASSERT_TRUE(waitDeleting([&] { return !shown; }, 5000));
+        EXPECT_TRUE(waitFor([&] { return sessionDetached(daemon, "quit") && sessionPaneCount(daemon, "quit") == 1; }, 5000));
+    }
+    {
+        auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("destroyed"), &error);
+        ASSERT_NE(pane, nullptr) << error.toStdString();
+        application.reset();
+        drainDeferredDeletes();
+        EXPECT_EQ(shown, nullptr);
+        EXPECT_TRUE(waitFor([&] { return sessionDetached(daemon, "destroyed"); }, 5000));
+    }
+}
+
 int main(int argc, char** argv)
 {
     // These tests open windows and send desktop-wide D-Bus signals (the
@@ -11920,6 +12751,19 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
     if (argc > 1 && QByteArray(argv[1]) == "--drop-target") return runDropTarget(QCoreApplication::arguments());
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+    // As afterglow does at start: follow the compositor's keymap, here before
+    // the first test, so that every key maps through it.
+    XkbKeyboard::instance();
+    if (!waitFor([] { return XkbKeyboard::instance().keysym(37) != 0; }, 5000)) {
+        std::fprintf(stderr, "The compositor sent no keymap in 5 seconds. The key tests map keys through it.\n");
+        return 1;
+    }
+    // The key tests name keys by their keycodes on a US layout.
+    const XkbKeyboard& keyboard = XkbKeyboard::instance();
+    if (keyboard.keysym(38) != XKB_KEY_a || keyboard.keysym(10) != XKB_KEY_1 || keyboard.keysym(54) != XKB_KEY_c) {
+        std::fprintf(stderr, "The compositor's keymap is not a US layout, which the key tests expect.\n");
+        return 1;
+    }
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }

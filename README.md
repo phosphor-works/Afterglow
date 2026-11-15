@@ -8,6 +8,7 @@ Afterglow is a terminal for Linux and Wayland. It uses Qt and Vulkan to render t
 ## Main features
 
 - Tabs, split panes, pane zoom and saved project layouts.
+- Terminal sessions that keep running without a window, with `afterglow mux`.
 - Automatic shell integration for Bash, Zsh and Fish.
 - Search, keyboard selection, command output and text hints.
 - Configurable fonts, colors, keybindings and desktop-themed controls.
@@ -32,6 +33,7 @@ Start with the [documentation index](docs/README.md).
 - [Shader effects](docs/SHADERS.md)
 - [Desktop integration](docs/DESKTOP.md)
 - [External control](docs/CONTROL.md)
+- [Mux sessions](docs/MUX.md)
 - [Supported protocols and limits](docs/COMPATIBILITY.md)
 
 See the [Phosphor scene](data/examples/phosphor/README.md) for an audio-responsive example.

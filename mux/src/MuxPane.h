@@ -113,7 +113,11 @@ public:
     /// The next frame of @p writer (StateWriter::update), with the region
     /// scrolls since the frame before it. None while an image decodes: the
     /// pane is changed again, and @p wake runs when the decode's feed ends.
-    std::optional<std::string> frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes);
+    /// Without @p screens, for a pane that its window does not show, the
+    /// frame leaves the screens and the scrolls for a later one
+    /// (StateWriter::updateHeld), and the host calls wait for that one: a
+    /// call follows the text before it.
+    std::optional<std::string> frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes, bool screens = true);
     /// Whether the user can see the pane in its window: mode 2033 reports a
     /// change to the program. A pane that no window shows cannot be seen, and
     /// a change of window (setWindow) makes it unseen until the new window
@@ -204,6 +208,8 @@ public:
     /// window, which the pane's program left as it exited, never go: they do
     /// not count.
     bool hasHostCalls(std::uint64_t window) const;
+    /// Calls wait for @p window, also those that wait for a frame.
+    bool callsWaiting(std::uint64_t window) const;
     /// Answers @p encoded, a call that its window did not get, as a pane that
     /// no window shows: a request gets its denial, a report goes to the
     /// program, the others go.
@@ -325,10 +331,9 @@ private:
     std::string encodeLocked(const WaitingCall& waiting) const;
     /// Bytes for the program, past the window.
     void writeDirect(std::string_view bytes);
-    /// The answers of a pane that no window shows.
-    void clipboardWithoutWindow(const AfterglowVt::ClipboardRequest& request);
-    void protocolWithoutWindow(int code, std::string_view payload);
-    void notificationWithoutWindow(const AfterglowVt::NotificationRequest& request);
+    /// Writes the answer of a pane that no window shows to @p call
+    /// (Host::answerWithoutWindow), if it has one.
+    void answerLocally(const Host::Call& call);
 
     /// Guards what follows: the reader thread queues host calls, and the
     /// daemon's thread takes them.

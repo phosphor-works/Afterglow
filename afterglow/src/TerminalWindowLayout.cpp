@@ -262,6 +262,7 @@ bool TerminalWindow::swapPane(Pane* pane, SplitTree::Neighbour direction)
     settleRearrangement(zoomed);
     updateChrome();
     m_layoutSize = {};
+    scheduleSessionLayout();
     scheduleRender();
     return true;
 }
@@ -274,6 +275,7 @@ bool TerminalWindow::rotatePanes(bool clockwise)
     settleRearrangement(zoomed);
     updateChrome();
     m_layoutSize = {};
+    scheduleSessionLayout();
     scheduleRender();
     return true;
 }

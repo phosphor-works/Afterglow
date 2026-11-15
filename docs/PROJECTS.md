@@ -63,6 +63,13 @@ Luau supplies matching `move_pane` and `detach_tab` effects.
 Their results contain the pane snapshot and destination IDs.
 `on_pane_moved` reports the new location. A move does not cause creation or closure events.
 
+In the window of a [mux session](MUX.md#move-panes-and-tabs), a pane or a tab that moves to a new window goes to a new session.
+A new window shows that session, and the programs keep running.
+The pane gets a new pane ID, and the tab gets a new tab ID.
+Control clients and scripts get a closure event and then a creation event, not a move event.
+Afterglow refuses a move of the last panes of a session out of its window.
+It also refuses a move of a session pane into another window, and a move of another pane into the window of a session.
+
 ## Save and open projects
 
 1. Open the command palette.
@@ -71,6 +78,7 @@ Their results contain the pane snapshot and destination IDs.
 
 A project stores one window's tabs, split trees, ratios, focus, titles, directories and explicit launch arguments.
 Replacing an existing project requires confirmation.
+Afterglow refuses to save the window of a mux session as a project, because the mux daemon keeps its tabs and splits.
 **Switch Project** searches saved names.
 It focuses an open instance or starts the saved layout in a new window.
 Other windows remain open.

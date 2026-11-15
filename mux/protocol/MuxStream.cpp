@@ -23,6 +23,8 @@ std::string encode(const Event& event)
     if (event.type == EventType::Host) {
         varint(out, event.frames);
         out += event.payload;
+    } else if (event.type == EventType::Refreshed) {
+        varint(out, event.frames);
     } else if (event.type == EventType::Layout || event.type == EventType::Control || event.type == EventType::Commands) {
         out += event.payload;
     }
@@ -45,6 +47,8 @@ std::optional<Event> decodeEvent(std::string_view frame)
                 || type == std::uint8_t(EventType::Commands))
                && r.ok()) {
         event.payload = std::string(r.rest());
+    } else if (type == std::uint8_t(EventType::Refreshed) && r.ok()) {
+        event.frames = r.varint(~std::uint64_t(0));
     }
     if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Commands)) {
         return std::nullopt;
@@ -58,6 +62,13 @@ std::optional<Event> decodeEvent(std::string_view frame)
     if (event.type == EventType::Host && (event.pane == 0 || event.channel != 0 || (event.status != -1 && event.status != HostPart))) {
         return std::nullopt;
     }
+    // The layout, a control call and the bytes of a command client are the
+    // session's: of no pane.
+    if ((event.type == EventType::Layout || event.type == EventType::Control || event.type == EventType::Commands)
+        && (event.pane != 0 || event.channel != 0 || event.status != -1)) {
+        return std::nullopt;
+    }
+    if (event.type == EventType::Refreshed && (event.pane == 0 || event.channel != 0 || event.status != -1)) return std::nullopt;
     return event;
 }
 
@@ -87,12 +98,15 @@ std::optional<Input> decodeInput(std::string_view frame)
     if (!r.ok()) return std::nullopt;
     if (type == std::uint8_t(InputType::Bytes) || type == std::uint8_t(InputType::Layout) || type == std::uint8_t(InputType::ControlReply)
         || type == std::uint8_t(InputType::Settings) || type == std::uint8_t(InputType::ControlReplyPart)) {
+        // Only the bytes for a program name a pane: the window's layout, its
+        // settings and its answers to control calls are the session's.
+        if (type != std::uint8_t(InputType::Bytes) && input.pane != 0) return std::nullopt;
         input.type = InputType(type);
         input.bytes = std::string(r.rest());
         return input;
     }
     if (type == std::uint8_t(InputType::Reset) || type == std::uint8_t(InputType::Clear) || type == std::uint8_t(InputType::Kill)
-        || type == std::uint8_t(InputType::ClosePane)) {
+        || type == std::uint8_t(InputType::ClosePane) || type == std::uint8_t(InputType::Refresh)) {
         if (!r.done()) return std::nullopt;
         input.type = InputType(type);
         return input;

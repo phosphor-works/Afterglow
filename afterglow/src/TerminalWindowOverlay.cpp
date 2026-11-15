@@ -54,9 +54,14 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
     launch.terminal = settings.terminal;
     launch.spawn.environment = settings.environment;
     launch.term = settings.term;
-    // The host's grid: the overlay shows where it does.
-    launch.cols = pane->cols();
-    launch.rows = pane->rows();
+    // The host's grid: the overlay shows where it does. As the window last
+    // laid it out (layoutPane): a session pane's replica takes a new size
+    // only with the daemon's next frame. A pane that a zoom hides, or whose
+    // tab never showed, has no layout: it keeps its own grid.
+    const QRect drawn = m_tabs[std::size_t(tabOf(pane))]->splits->rectOf(pane);
+    const QRect content = drawn.isEmpty() ? QRect() : contentRect(pane, drawn);
+    launch.cols = content.isEmpty() ? pane->cols() : std::max(2, content.width() / metrics.cellWidth);
+    launch.rows = content.isEmpty() ? pane->rows() : std::max(1, content.height() / metrics.cellHeight);
     launch.cellWidth = metrics.cellWidth;
     launch.cellHeight = metrics.cellHeight;
     QString error;

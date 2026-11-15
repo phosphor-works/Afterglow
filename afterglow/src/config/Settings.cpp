@@ -125,6 +125,7 @@ const Choice<MouseSettings::MiddleClick> MiddleClickChoices[] = {{"primary", Mou
 const Choice<Qt::KeyboardModifiers> ModifierChoices[] = {{"ctrl", Qt::ControlModifier},
                                                          {"shift", Qt::ShiftModifier},
                                                          {"alt", Qt::AltModifier},
+                                                         {"super", Qt::MetaModifier},
                                                          {"none", Qt::NoModifier}};
 const Choice<QuickTerminalSettings::Position> QuickPositionChoices[] = {{"top", QuickTerminalSettings::Position::Top},
                                                                         {"bottom", QuickTerminalSettings::Position::Bottom}};
@@ -321,11 +322,10 @@ std::pair<QString, double> desktopFixedFont()
                                             : AfterglowRender::FontSpec{}.sizePoints};
 }
 
-QVariantList defaultPalette()
+QVariantList defaultPalette(const AfterglowVt::TerminalOptions& term)
 {
-    AfterglowVt::TerminalOptions o;
     QVariantList out;
-    for (const AfterglowVt::Rgb& c : o.basePalette) {
+    for (const AfterglowVt::Rgb& c : term.basePalette) {
         out.append(QColor(c.r, c.g, c.b).name());
     }
     return out;
@@ -421,11 +421,15 @@ PhosphorConfig::Schema buildSchema()
                  QStringLiteral("Default text color. An empty value uses the default.")),
         colorKey(QStringLiteral("background"), hex(term.defaultBackground),
                  QStringLiteral("Default background color. An empty value uses the default.")),
-        colorKey(QStringLiteral("cursor"), {}, QStringLiteral("Cursor color. An empty value uses the foreground.")),
-        colorKey(QStringLiteral("cursorText"), {}, QStringLiteral("Text color under a block cursor. An empty value uses the background.")),
-        colorKey(QStringLiteral("selectionForeground"), {}, QStringLiteral("Selected text color. An empty value reverses the cell colors.")),
-        colorKey(QStringLiteral("selectionBackground"), {}, QStringLiteral("Selection background color. An empty value reverses the cell colors.")),
-        {QStringLiteral("palette"), defaultPalette(), QMetaType::QVariantList,
+        colorKey(QStringLiteral("cursor"), {},
+                 QStringLiteral("Cursor color. An empty value uses the foreground.")),
+        colorKey(QStringLiteral("cursorText"), {},
+                 QStringLiteral("Text color under a block cursor. An empty value uses the background.")),
+        colorKey(QStringLiteral("selectionForeground"), {},
+                 QStringLiteral("Selected text color. An empty value reverses the cell colors.")),
+        colorKey(QStringLiteral("selectionBackground"), {},
+                 QStringLiteral("Selection background color. An empty value reverses the cell colors.")),
+        {QStringLiteral("palette"), defaultPalette(term), QMetaType::QVariantList,
          QStringLiteral("The 16 ANSI colors, from black to bright white. With fewer than 16, the others use the default. "
                         "With more, Afterglow uses the first 16. An entry that is not a color uses the default.")},
         colorKey(QStringLiteral("divider"), {},
@@ -462,15 +466,15 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[Terminal] = {
         enumKey(QStringLiteral("bidi"), BidiChoices, term.bidi,
-                QStringLiteral("Bidirectional layout of the primary screen. The off value keeps text in logical order. The auto value "
-                               "finds the direction of each paragraph. The ltr and rtl values set it. Application grids keep "
-                               "logical order.")),
+                QStringLiteral("Bidirectional layout of the main screen. The off value keeps text in logical order. The auto value "
+                               "finds the direction of each paragraph. The ltr and rtl values set it. The alternate screen "
+                               "keeps logical order, and so does a screen while a program reads the mouse.")),
         intKey(QStringLiteral("scrollback"), int(term.maxScrollback), 0, 1000000,
                QStringLiteral("Lines of history that each pane keeps. A value of 0 keeps no history.")),
         {QStringLiteral("shellIntegration"), d.shellIntegration, QMetaType::Bool,
          QStringLiteral("Integrate Bash, Zsh and Fish prompts in new panes and new mux sessions automatically.")},
         {QStringLiteral("sshIntegration"), d.sshIntegration, QMetaType::Bool,
-         QStringLiteral("Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and the session "
+         QStringLiteral("Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and afterglow ssh "
                         "offers COLORTERM and TERM_PROGRAM to the server. New panes and new mux sessions use this value.")},
         enumKey(QStringLiteral("sshTerminfo"), d.sshTerminfo,
                 QStringLiteral("What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use "
@@ -480,7 +484,8 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Allow the script commands that are marked remote to run from aglow run on the hosts that "
                         "afterglow ssh connects to. Every process of the remote user, and the remote root user, can then run "
                         "those commands. It needs Control.enabled and Scripts.enabled. A change to on applies to the ssh "
-                        "sessions that start after it. A change to off closes the sockets of the running sessions.")},
+                        "sessions that start after it. A change to off closes the sockets of the running ssh sessions. In a "
+                        "pane of a mux session, afterglow ssh connects without remote commands.")},
         stringKey(QStringLiteral("pager"), d.pager,
                   QStringLiteral("Command for viewing the last command output. Afterglow splits it into words and runs it "
                                  "without a shell. An empty value turns the pager off.")),
@@ -495,7 +500,8 @@ PhosphorConfig::Schema buildSchema()
                                  "and new mux sessions use this value.")),
         enumKey(QStringLiteral("cursorShape"), CursorShapeChoices, term.cursorShape,
                 QStringLiteral("Shape of the cursor until a program sets another one with DECSCUSR.")),
-        {QStringLiteral("cursorBlink"), term.cursorBlink, QMetaType::Bool, QStringLiteral("Make the cursor blink.")},
+        {QStringLiteral("cursorBlink"), term.cursorBlink, QMetaType::Bool,
+         QStringLiteral("Make the cursor blink.")},
         enumKey(QStringLiteral("copyOnSelect"), CopyOnSelectChoices, d.copyOnSelect,
                 QStringLiteral("Where Afterglow copies a new selection. The primary value copies it to the primary selection. "
                                "The clipboard value copies it to the clipboard too. The off value does not copy it.")),
@@ -505,10 +511,12 @@ PhosphorConfig::Schema buildSchema()
                                "value but none also plays Terminal.bellSound.")),
         {QStringLiteral("confirmClose"), d.confirmClose, QMetaType::Bool,
          QStringLiteral("Ask before closing a pane, tab or window where a program is running. The command afterglow mux "
-                        "kill asks too, before it ends a session where a program is running.")},
+                        "kill asks too, before it ends a session where a program is running. With Mux.onClose detach, "
+                        "closing the window of a mux session or its last tab or pane asks nothing about the programs "
+                        "of the session. They keep running.")},
         {QStringLiteral("hideMouseWhileTyping"), d.hideMouseWhileTyping, QMetaType::Bool,
          QStringLiteral("Hide the pointer while typing. Pointer movement shows it again.")},
-        intKey(QStringLiteral("scrollLines"), d.scrollLines, 1, 50, QStringLiteral("Number of rows scrolled for each mouse-wheel notch.")),
+        intKey(QStringLiteral("scrollLines"), d.scrollLines, 1, 50, QStringLiteral("Rows that each notch of the mouse wheel scrolls.")),
         intKey(QStringLiteral("cursorBlinkInterval"), d.cursorBlinkInterval, 100, 5000,
                QStringLiteral("Duration in milliseconds for each visible and hidden cursor phase.")),
         intKey(QStringLiteral("textBlinkInterval"), d.textBlinkInterval, 100, 5000,
@@ -530,8 +538,8 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Characters that end a word for double-click selection, besides spaces. With an empty value, "
                                  "only spaces end a word.")),
         {QStringLiteral("env"), QVariantMap{}, QMetaType::QVariantMap,
-         QStringLiteral("Variables added to the shell's environment, such as { \"EDITOR\": \"nvim\" }. Each value must be a "
-                        "string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow "
+         QStringLiteral("Variables that Afterglow adds to the environment of the shell, such as { \"EDITOR\": \"nvim\" }. Each "
+                        "value must be a string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow "
                         "ignores TERM, AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO here. Terminal.term, "
                         "Terminal.sshIntegration and Terminal.sshTerminfo set them. Afterglow also ignores AFTERGLOW_PANE_ID, "
                         "AFTERGLOW_SOCKET, AFTERGLOW_OVERLAY, AFTERGLOW_SESSION and AFTERGLOW_RESULT, which it sets or "
@@ -583,8 +591,9 @@ PhosphorConfig::Schema buildSchema()
                                "value makes each corner a right angle.")),
         stringKey(QStringLiteral("workingDirectory"), d.window.workingDirectory,
                   QStringLiteral("Starting directory for new tabs, panes and windows. Use inherit, home or a path. The inherit "
-                                 "value, or an empty value, uses the focused pane's directory or the launcher's directory. A "
-                                 "path must be absolute, ~, or start with ~/. A path that is not a directory uses inherit. The "
+                                 "value, or an empty value, uses the focused pane's directory, or for a launch the directory of "
+                                 "the launcher. When the pane's directory is not known, it uses the home directory. A path "
+                                 "must be absolute, ~, or start with ~/. A path that is not a directory uses inherit. The "
                                  "afterglow -d option overrides this setting. A session of afterglow mux new starts in its "
                                  "--cwd or in the current directory.")),
         enumKey(QStringLiteral("startMode"), StartModeChoices, d.window.startMode,
@@ -644,7 +653,8 @@ PhosphorConfig::Schema buildSchema()
                                  "argument and runs it without a shell. Quotes keep spaces in one word. An empty value uses the "
                                  "desktop browser.")),
         enumKey(QStringLiteral("modifier"), ModifierChoices, d.links.modifier,
-                QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link.")),
+                QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link. "
+                               "super is the key that key bindings call Meta.")),
         {QStringLiteral("schemes"), stringList(d.links.schemes), QMetaType::QVariantList,
          QStringLiteral("URL schemes that open without a prompt. Links with other schemes ask first.")},
     };
@@ -669,10 +679,11 @@ PhosphorConfig::Schema buildSchema()
         enumKey(QStringLiteral("onClose"), MuxCloseChoices, d.mux.onClose,
                 QStringLiteral("What closing the window of a mux session, or its last tab or pane, does. With kill, the "
                                "session and its programs end, as in a window outside a session. With detach, the session "
-                               "keeps running with its tabs, and afterglow mux attach shows it again. Closing another tab "
-                               "or pane of the window ends its programs. The session also keeps running after "
-                               "afterglow mux detach, a takeover by another window, a quit of Afterglow, a crash and a lost "
-                               "connection. The window of a project that opens into a session always keeps its session.")),
+                               "keeps running with its tabs and splits, and afterglow mux attach shows it again. Closing "
+                               "another tab or pane of the window ends only the programs of that tab or pane. With either "
+                               "value, the session keeps running after afterglow mux detach, a takeover by another window, "
+                               "a quit of Afterglow, a crash and a lost connection. The window of a project that opens into a "
+                               "session always keeps its session.")),
         intKey(QStringLiteral("eventQueue"), int(d.mux.eventQueue >> 20), int(AfterglowMux::MinEventQueue >> 20),
                int(AfterglowMux::MaxEventQueue >> 20),
                QStringLiteral("Most mebibytes of requests, such as bells, notifications and clipboard requests, that "
@@ -691,7 +702,7 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
          QStringLiteral("Allow other programs, such as afterglow ctl and aglow run, to control Afterglow through its "
                         "socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the "
-                        "socket also when this is off. A value that is not true or false turns it off.")},
+                        "socket also when this is off. A value other than true, false, yes, no, on, off, 1 or 0 turns it off.")},
         {QStringLiteral("allowReadText"), d.control.allowReadText, QMetaType::Bool,
          QStringLiteral("Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands "
                         "that run and the values of user variables. It also allows screenshots of panes, tabs and windows. A "
@@ -714,8 +725,8 @@ PhosphorConfig::Schema buildSchema()
                         "read_text, read_region and semantic_regions also need Control.allowReadText.")},
         {QStringLiteral("enabled"), d.scripts, QMetaType::Bool,
          QStringLiteral("Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in "
-                        "each XDG data directory. The aglow run command also needs Control.enabled. A value that is not "
-                        "true or false turns it off.")},
+                        "each XDG data directory. The aglow run command also needs Control.enabled. A value other than true, "
+                        "false, yes, no, on, off, 1 or 0 turns it off.")},
         intKey(QStringLiteral("commandTimeout"), d.scriptCommandTimeout, 1000, 3600000,
                QStringLiteral("Longest time in milliseconds that one run of a script command can take. This includes runs "
                               "from a key, a menu or the palette. The time that the run waits for a task, a dialog, an "
@@ -888,6 +899,13 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Named key tables, each a map of actions to keys as in bindings. A binding to table:NAME opens one. "
                         "Its actions keep it open. The pop_key_table action leaves every open table, and so does "
                         "Keybinds.tableTimeout.")},
+        stringKey(QStringLiteral("remapModifiers"), {},
+                  QStringLiteral("Modifiers that act as other modifiers, as in Kitty. Each rule is a modifier, a colon and "
+                                 "one or more modifiers joined by +, from shift, ctrl, alt and super. Spaces separate the "
+                                 "rules. For example, ctrl:super super:ctrl swaps Ctrl and Super. Key bindings, the link "
+                                 "modifier, mouse selection and programs see the modifier that a key becomes. Key bindings "
+                                 "write super as Meta. QuickTerminal.shortcut and the desktop keep the modifiers of the "
+                                 "keys. An empty value remaps nothing, and so does a value with an error.")),
         {QStringLiteral("bindings"), Keybinds::defaultMap(), QMetaType::QVariantMap,
          QStringLiteral("Map each action to a key combination or a list of them. An empty string removes the binding. "
                         "Besides actions, the map can bind script:ID.COMMAND to run a script command, text:BYTES to send "
@@ -1217,7 +1235,7 @@ bool SettingsStore::write(const QString& group, const QString& key, const QVaria
     // file saved half-written is not replaced by an older copy.
     if (!loadFile()) {
         qCWarning(lcConfig).noquote() << "not writing" << group + QLatin1Char('.') + key << "until" << m_path
-                                      << "can be read as a JSON object";
+                                      << "can be read and holds a JSON object";
         apply();
         return false;
     }
@@ -2013,6 +2031,12 @@ Settings SettingsStore::read()
         st.read<int>(Keys, QStringLiteral("tableTimeout")), s.keybinds, &errors);
     for (const QString& e : std::as_const(errors)) {
         problem(QStringLiteral("Keybinds: ") + e);
+    }
+    QString remapError;
+    if (const auto remap = ModifierRemap::parse(st.read<QString>(Keys, QStringLiteral("remapModifiers")), &remapError)) {
+        s.modifierRemap = *remap;
+    } else {
+        problem(QStringLiteral("Keybinds.remapModifiers: %1. Remapping no modifier").arg(remapError));
     }
 
     // Logged when it starts: a reload or a theme change that keeps a problem

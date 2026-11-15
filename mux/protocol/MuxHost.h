@@ -96,4 +96,13 @@ std::string encode(const Call& call);
 /// with what it decodes.
 std::optional<Call> decode(std::string_view bytes);
 
+/// What a pane that no window shows writes to its program for @p call, as a
+/// terminal with no user: a report goes as it is, a clipboard request (an
+/// OSC 52 read, an OSC 5522 read or write) and the start of a transfer or a
+/// drag get a denial, the queries of drag and drop types and of the
+/// notifications on screen get their answers. Empty for the others, which
+/// need none. The daemon answers so, and a window answers so
+/// the calls of a pane that went to another session before it heard.
+std::string answerWithoutWindow(const Call& call);
+
 } // namespace AfterglowMux::Host
