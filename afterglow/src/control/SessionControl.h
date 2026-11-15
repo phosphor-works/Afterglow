@@ -19,8 +19,9 @@ struct Settings;
 /// calls that only a window can do, and the panes that the daemon started to
 /// place. Its arguments and its result name panes by the daemon's IDs. The
 /// answer goes to @p reply, at once, or later for a project that opens into
-/// a session.
+/// a session, an overlay and a screenshot. The overlays and the overlay
+/// inputs of @p client, the daemon's number of the client, are its own.
 void answerSessionCall(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn, const QJsonArray& args,
-                       MuxClient::ControlReply reply);
+                       qint64 client, MuxClient::ControlReply reply);
 
 } // namespace Afterglow

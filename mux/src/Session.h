@@ -28,6 +28,18 @@ public:
     Session(std::string name, SessionOptions options, long fileLimit, ImageDecoder& images);
 
     const std::string& name() const { return m_name; }
+    /// The daemon's number of the session: a later session of the same name
+    /// has another.
+    std::uint64_t serial() const { return m_serial; }
+    void setSerial(std::uint64_t serial) { m_serial = serial; }
+    /// Whether `afterglow ctl watch` watches the session: its panes, and
+    /// those that start or come later, keep what their terminals tell for it.
+    void setWatched(bool watched);
+    bool watched() const { return m_watched; }
+    /// A pane moved, by a window's layout or by `afterglow ctl`: kept for
+    /// `afterglow ctl watch` while the session is watched.
+    void noteMoved(std::uint32_t pane);
+    std::vector<std::uint32_t> takeMoved() { return std::exchange(m_moved, {}); }
     const SessionOptions& options() const { return m_options; }
 
     /// Starts a pane with @p launch over the session's environment and
@@ -75,8 +87,9 @@ public:
     /// does not name yet is a tab of its own (Layout::reconcile).
     void setLayout(Layout layout);
     /// The settings of the window that shows the session: its panes, and
-    /// those that start later, take the terminal values, and the calls of
-    /// `afterglow ctl` and `afterglow ssh` follow the control values.
+    /// those that start later, take the terminal values, the calls of
+    /// `afterglow ctl` and `afterglow ssh` follow the control values, and
+    /// the panes that start later get the variables.
     void applySettings(const SessionSettings& settings);
 
     /// What listSessions says of the session to @p caller, the process of
@@ -88,6 +101,9 @@ private:
 
     std::string m_name;
     SessionOptions m_options;
+    std::uint64_t m_serial = 0;
+    bool m_watched = false;
+    std::vector<std::uint32_t> m_moved;
     long m_fileLimit;
     ImageDecoder& m_images;
     std::vector<std::unique_ptr<MuxPane>> m_panes;

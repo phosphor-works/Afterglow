@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Capture.h"
+#include "OverlayInputs.h"
 #include "../scripting/OverlaySpec.h"
 
 #include <AfterglowProto/Remote.h>
@@ -114,6 +115,38 @@ public:
     QVariantList scriptDiagnostics() const { return m_scriptDiagnostics ? m_scriptDiagnostics() : QVariantList{}; }
     QStringList projectNames() const;
     QString saveProject(quint32 pane, const QString& name, bool overwrite, QVariantMap& result);
+    /// Who owns the overlays and the inputs of @p client of session @p name
+    /// of @p host (empty: this computer): the client numbers are each
+    /// daemon's. Without @p client, the start of the owners of the session.
+    static QString sessionClientOwner(const QString& host, const QString& name, std::optional<qint64> client = std::nullopt)
+    {
+        const QString prefix = QStringLiteral("session:%1:%2:").arg(host, name);
+        return client ? prefix + QString::number(*client) : prefix;
+    }
+    /// The overlays and their inputs of the clients of sessions that the mux
+    /// daemon passes to the windows of this process (`afterglow ctl
+    /// --session NAME overlay`), as the control socket keeps them for its
+    /// own clients: @p owner is the client's (SessionControl).
+    QString addSessionOverlayInput(const QString& owner, const QString& name, const QString& chunk, bool eof)
+    {
+        return m_sessionInputs.add(owner, name, chunk, eof);
+    }
+    QString takeSessionOverlayInput(const QString& owner, QVariantMap& options) { return m_sessionInputs.resolve(owner, options); }
+    void sessionOverlayOpened(const QString& owner) { m_sessionOverlayOwners.insert(owner); }
+    /// The client @p owner of a session went: its overlays close with
+    /// @p message, and its inputs go.
+    void endSessionClient(const QString& owner, const QString& message);
+    /// The same for every client of a session: Control.enabled went off.
+    void endSessionClients(const QString& message);
+    /// Starts one of the screenshots for clients of sessions, from the call
+    /// to the answer: false while MaxSessionScreenshots are under way, as
+    /// the control socket limits its own.
+    bool startSessionScreenshot() { return m_sessionScreenshots < MaxSessionScreenshots && ++m_sessionScreenshots; }
+    void endSessionScreenshot() { --m_sessionScreenshots; }
+    static constexpr int MaxSessionScreenshots = 4;
+    /// Encodes @p image as a PNG off the GUI thread, then gives its base64 to
+    /// @p done on this thread: empty when the PNG could not be written.
+    void encodePng(QImage image, std::function<void(const QString& base64)> done);
     /// Whether process @p process runs in pane @p pane, or in its overlay with
     /// @p overlay: the program leads the terminal session of the process, or
     /// of the nearest process above it (a shell in an editor's terminal has
@@ -269,7 +302,7 @@ private:
     /// openProject() into a mux session named @p name: its window, or a new
     /// window of the session that runs, or a new session.
     void openProjectSession(const QString& name, const QJsonObject& document, bool newInstance, ProjectOpened done);
-    /// Runs @p work on a thread of m_daemonCalls, then @p then with its
+    /// Runs @p work on a thread of m_background, then @p then with its
     /// result on this object's thread.
     template<typename Result>
     void offThread(std::function<Result()> work, std::function<void(Result)> then);
@@ -312,12 +345,31 @@ private:
     QHash<QString, QList<std::function<void()>>> m_projectOpens;
     /// The session names that opens ask the daemon for, until it answers.
     QSet<QString> m_namingSessions;
+    /// The inputs of the overlays of clients of sessions, by their owners.
+    OverlayInputs m_sessionInputs;
+    /// The clients of sessions that opened an overlay.
+    QSet<QString> m_sessionOverlayOwners;
+    int m_sessionScreenshots = 0;
     /// Set as this object goes: a session that a call to the daemon starts
     /// then has no window to lay it out.
     std::shared_ptr<std::atomic<bool>> m_closing = std::make_shared<std::atomic<bool>>(false);
-    /// The calls to the mux daemon of this computer. Last: it waits for its
-    /// calls as it goes, while the rest of this object is still there.
-    QThreadPool m_daemonCalls;
+    /// The work that runs off the GUI thread: the calls to the mux daemon of
+    /// this computer, and the PNGs of screenshots for sessions. Last: it
+    /// waits for its work as it goes, while the rest of this object is still
+    /// there.
+    QThreadPool m_background;
 };
+
+template<typename Result>
+void Control::offThread(std::function<Result()> work, std::function<void(Result)> then)
+{
+    // The answer is posted to this object: an object that went first drops
+    // it, and m_background waits for the work before then.
+    m_background.start([this, work = std::move(work), then = std::move(then)]() mutable {
+        Result result = work();
+        QMetaObject::invokeMethod(
+            this, [then = std::move(then), result = std::move(result)]() mutable { then(std::move(result)); }, Qt::QueuedConnection);
+    });
+}
 
 } // namespace Afterglow
