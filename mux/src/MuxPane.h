@@ -104,6 +104,9 @@ public:
     /// What the window's Reset and Clear actions do to a terminal of its
     /// own: the window shows the result with the next frame.
     void reset();
+    /// New terminal values (Terminal::setOptions), when they differ: the
+    /// window shows the result with the next frame.
+    void setOptions(const AfterglowVt::TerminalOptions& options);
     void clear();
     /// The program exited, or start() failed.
     bool exited() const { return m_exited.load(); }
@@ -125,6 +128,14 @@ public:
     /// `afterglow mux kill` typed at its prompt): the caller is no job to ask
     /// about. 0 for no caller.
     std::string foregroundJob(pid_t caller) const;
+    /// The answer to the query of `aglow run` for the socket of the ssh
+    /// session that runs in the pane (OSC 24569): the daemon keeps that
+    /// socket. Safe from any thread: the reader thread reads it.
+    void setRemoteSocket(AfterglowProto::Remote::Answer answer)
+    {
+        std::lock_guard lock(m_remoteMutex);
+        m_remoteSocket = std::move(answer);
+    }
     /// Whether the pane's program, which runs while the pane does, leads
     /// terminal session @p session: the processes of that session run in
     /// this pane.
@@ -139,13 +150,39 @@ public:
     struct Facts
     {
         std::string title;
-        /// The directory that the shell reported, else directory().
+        /// The directory of this machine that the shell reported, else directory().
         std::string directory;
         std::string command; ///< the running command (OSC 133), empty at the prompt
         PaneSize size;
     };
     /// Nothing while an image decodes: the reader thread has the terminal.
     std::optional<Facts> facts() const;
+    /// The state and text of the newest program status record (OSC 7501),
+    /// as the control target names them (idle, working, done, blocked,
+    /// error): idle and empty without one. Nothing while an image decodes.
+    std::optional<std::pair<std::string, std::string>> status() const;
+    /// The title of the terminal. Nothing while an image decodes.
+    std::optional<std::string> title() const;
+
+    /// What the terminal tells its host that `afterglow ctl watch` hears of
+    /// the pane, while the daemon watches it (setWatched): the daemon need
+    /// not look at the panes to find what changed.
+    struct WatchEvent
+    {
+        enum class Kind { Bell, UserVar, CommandStarted, CommandFinished, Title, Status };
+        Kind kind = Kind::Bell;
+        std::string name{}; ///< UserVar: its name. Status: the state.
+        std::string text{}; ///< UserVar: its value. A command, a title, a status: its text.
+        int exitCode = 0; ///< CommandFinished
+        std::uint64_t milliseconds = 0; ///< CommandFinished: how long it ran
+    };
+    /// The most events, and bytes of them, that wait for the daemon: past
+    /// them, new ones go.
+    static constexpr std::size_t MaxWatchEvents = 1024;
+    static constexpr std::size_t MaxWatchBytes = std::size_t(4) << 20;
+    void setWatched(bool watched);
+    /// The events since the last take, oldest first.
+    std::vector<WatchEvent> takeWatchEvents();
     /// The text of @p scope, for `afterglow ctl get-text`. Nothing while an
     /// image decodes.
     std::optional<std::string> text(AfterglowVt::Terminal::TextScope scope) const;
@@ -180,6 +217,8 @@ public:
     void terminalProtocol(int code, std::string_view payload) override;
     void bell() override;
     void flash() override;
+    void titleChanged(std::string_view title) override;
+    void programStatusChanged() override;
     void notify(std::string_view title, std::string_view body) override;
     void clipboardWrite(std::string_view selection, std::string_view data) override;
     void pointerShapeChanged(std::string_view shape) override;
@@ -192,10 +231,14 @@ public:
                    std::vector<std::uint8_t>& rgba) override;
     bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
                      std::vector<std::uint8_t>& rgba) override;
-    /// A session pane forwards no socket of an ssh session (afterglow ssh
-    /// runs in windows only): `aglow run` hears that it is off, not that the
-    /// terminal does not know the query.
-    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override { return AfterglowProto::Remote::Answer{}; }
+    /// The answer that the daemon gave the pane for its ssh sessions
+    /// (setRemoteSocket): without one, `aglow run` hears that it is off, not
+    /// that the terminal does not know the query.
+    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override
+    {
+        std::lock_guard lock(m_remoteMutex);
+        return m_remoteSocket;
+    }
 
     // IPtyListener
     void ptyData(std::string_view bytes) override;
@@ -213,6 +256,13 @@ private:
     const std::uint32_t m_id;
     std::function<void()> m_wake;
     std::atomic<bool> m_changed{false};
+    static std::pair<std::string, std::string> statusOf(const AfterglowVt::ProgramStatus& status);
+    /// Keeps @p event for the daemon while it watches: true when the daemon
+    /// must wake for it, as nothing waited before. Under m_hostMutex.
+    bool watchLocked(WatchEvent event);
+    std::atomic<bool> m_watched{false};
+    std::vector<WatchEvent> m_watchEvents; ///< under m_hostMutex
+    std::size_t m_watchBytes = 0; ///< of m_watchEvents
     std::atomic<int> m_exitStatus{0};
     const std::string m_notificationCapabilities;
     ImageDecoder& m_images;
@@ -283,6 +333,10 @@ private:
     /// Guards what follows: the reader thread queues host calls, and the
     /// daemon's thread takes them.
     mutable std::mutex m_hostMutex;
+    /// Guards m_remoteSocket alone: the reader thread asks for it while it
+    /// holds m_mutex.
+    std::mutex m_remoteMutex;
+    AfterglowProto::Remote::Answer m_remoteSocket;
     std::uint64_t m_window = 0;
     std::size_t m_hostLimit = 0;
     std::deque<WaitingCall> m_hostCalls;

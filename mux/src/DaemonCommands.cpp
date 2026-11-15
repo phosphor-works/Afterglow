@@ -11,8 +11,6 @@
 
 #include "Daemon.h"
 
-#include <AfterglowPty/Pty.h>
-
 #include <algorithm>
 
 namespace AfterglowMux {
@@ -25,35 +23,18 @@ namespace IpcErrorCode = AfterglowProto::IpcErrorCode;
 std::string Daemon::startRelay(const IpcRequest& request, std::string line, pid_t caller, IpcServerConnection& connection)
 {
     const auto failed = [&request](const std::string& message) { return ipcError(request.id, IpcErrorCode::CallFailed, message); };
-    // The session of the pane whose terminal the client runs in: a pane's
-    // program leads the terminal session of the client, or of the nearest
-    // process above it (a shell in an editor's terminal has a session of
-    // its own). By the processes, not by an AFTERGLOW_PANE_ID that a
-    // process of another terminal can carry.
-    Session* session = nullptr;
     std::uint32_t pane = 0;
-    pid_t process = caller;
-    for (int up = 0; !session && process > 1 && up < MaxAncestors; ++up) {
-        const auto stat = AfterglowPty::processStat(process);
-        if (!stat) break;
-        for (const auto& s : m_sessions) {
-            for (const auto& p : s->panes()) {
-                if (p->leads(pid_t(stat->session))) {
-                    session = s.get();
-                    pane = p->id();
-                }
-            }
-        }
-        process = pid_t(stat->parent);
-    }
+    Session* const session = sessionOfProcess(caller, &pane);
     if (!session) return failed("only a client in a session pane reaches the mux daemon for the commands of scripts");
     Attachment* const window = shown(session->name());
     if (!window || !window->showing()) {
         return failed("no window shows session '" + session->name() + "', and only a window runs the commands of scripts");
     }
     // Each takes a connection in the window, and its first line waits in the
-    // window's queue whatever its room.
-    const auto clients = std::count_if(m_relays.begin(), m_relays.end(), [&](const auto& r) { return r.second.session == session->name(); });
+    // window's queue whatever its room. The clients of ssh sessions have
+    // their own limit.
+    const auto clients = std::count_if(m_relays.begin(), m_relays.end(),
+                                       [&](const auto& r) { return r.second.session == session->name() && r.second.sshToken.empty(); });
     if (std::size_t(clients) >= MaxRelaysPerSession) {
         return failed("session '" + session->name() + "' has " + std::to_string(MaxRelaysPerSession) + " command clients already");
     }
@@ -65,7 +46,7 @@ std::string Daemon::startRelay(const IpcRequest& request, std::string line, pid_
         return true;
     });
     if (!sent) return failed("the window of session '" + session->name() + "' failed");
-    m_relays[id] = Relay{&connection, window->serial(), session->name(), {}};
+    m_relays[id] = Relay{&connection, window->serial(), session->name(), {}, {}};
     m_relayOf[&connection] = id;
     return {};
 }
@@ -105,6 +86,8 @@ void Daemon::endRelay(std::uint64_t id, bool tellWindow)
             });
         }
     }
+    // An ssh session's socket that refused clients takes them again.
+    if (const auto ssh = m_sshSessions.find(relay->second.sshToken); ssh != m_sshSessions.end()) ssh->second->full = false;
     // What the window sent still goes to the client, and then the
     // connection closes.
     m_closing.insert(relay->second.connection);

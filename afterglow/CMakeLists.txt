@@ -19,6 +19,8 @@ qt_add_library(afterglow_app STATIC
     src/mux/MuxClient.h
     src/mux/MuxCommands.cpp
     src/mux/MuxCommands.h
+    src/mux/MuxSessions.cpp
+    src/mux/MuxSessions.h
     src/mux/MuxRoute.cpp
     src/mux/MuxRoute.h
     src/PaneDialog.cpp
@@ -72,6 +74,8 @@ qt_add_library(afterglow_app STATIC
     src/control/CommandSocket.h
     src/control/ControlSocket.cpp
     src/control/ControlSocket.h
+    src/control/OverlayInputs.cpp
+    src/control/OverlayInputs.h
     src/control/RemoteSockets.cpp
     src/control/RemoteSockets.h
     src/control/SessionControl.cpp
@@ -140,7 +144,7 @@ target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Rende
 # names are read as the escape codes read them (AfterglowProto/Color.h).
 target_link_libraries(afterglow_config PRIVATE afterglow_mux_protocol Afterglow::Proto)
 
-qt_add_library(afterglow_shell STATIC src/shell/ShellIntegration.cpp src/shell/ShellIntegration.h
+qt_add_library(afterglow_shell STATIC src/shell/Sibling.cpp src/shell/ShellIntegration.cpp src/shell/ShellIntegration.h
     src/shell/Ssh.cpp src/shell/Ssh.h)
 target_include_directories(afterglow_shell PUBLIC src)
 target_link_libraries(afterglow_shell PUBLIC Afterglow::Pty Qt6::Core PRIVATE Afterglow::Proto)
@@ -220,7 +224,8 @@ if(BUILD_TESTING)
     target_link_libraries(afterglow_native_tests PRIVATE afterglow_app GTest::gtest)
     # The mux tests run a daemon of their own (mux/tests/TestDaemon.h).
     target_include_directories(afterglow_native_tests PRIVATE ${PROJECT_SOURCE_DIR}/mux/tests)
-    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:aglow-mux>")
+    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:aglow-mux>"
+                                                              AFTERGLOW_FAKE_SSH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fake-ssh.sh")
     add_dependencies(afterglow_native_tests aglow-mux)
     # The aglow dnd twins of the kitten dnd tests run the aglow of this build.
     if(AFTERGLOW_BUILD_AGLOW)

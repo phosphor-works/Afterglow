@@ -233,7 +233,7 @@ _afterglow_ctl() {
     notify) _arguments -S $pane '1:title:' '*:body:' ;;
     open-directory) _arguments '--layout[a saved layout]:layout:' '1:directory:_directories' ;;
     save-project) _arguments $pane '--overwrite[replace a project with the name]' '1:name:' ;;
-    open-project) _arguments '--new[launch the layout again]' '1:name:' ;;
+    open-project) _arguments '--new[launch the layout again]' '(--no-session)--session[open into a mux session]' '(--session)--no-session[open into a window]' '1:name:' ;;
     action) _arguments $pane '1:action:_afterglow_actions' ;;
     watch|scripts|projects) ;;
     *) _arguments $pane ;;

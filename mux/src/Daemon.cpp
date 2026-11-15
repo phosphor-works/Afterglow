@@ -102,6 +102,13 @@ Daemon::Daemon(long fileLimit)
 
 Daemon::~Daemon()
 {
+    // Their forwards are cancelled, and their clients hear why. Nothing may
+    // leave a destructor, which may run as an exception unwinds.
+    try {
+        endAllSsh();
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "aglow-mux: cannot end the ssh sessions: %s\n", e.what());
+    }
     // Each pane closes its terminal, which hangs up its programs, and the
     // PTY's reaper kills those still there after a grace time; nothing waits
     // for them to exit. The listeners close after that: until then their
@@ -156,6 +163,9 @@ Daemon::Listen Daemon::listen(const std::vector<AfterglowProto::MuxSocket>& sock
         if (error) *error = "no socket to listen on: " + reasons;
         return Listen::Failed;
     }
+    // This daemon owns its directories now: the sockets of ssh sessions that
+    // a daemon left when it was killed go.
+    for (const AfterglowProto::MuxSocket& socket : sockets) removeStaleSshSockets(socket.directory);
     return Listen::Listening;
 }
 
@@ -166,6 +176,7 @@ Daemon::Exit Daemon::run()
     const std::size_t signalIndex = wakeIndex + 1;
     const std::size_t firstConnection = signalIndex + 1;
     std::vector<pollfd> fds;
+    std::vector<SshWatch> sshWatches;
     while (true) {
         fds.clear();
         // A starved listener stays readable, and would wake every poll: it
@@ -191,6 +202,8 @@ Daemon::Exit Daemon::run()
                 connectWait = left;
             }
         }
+        const std::size_t firstSsh = fds.size();
+        addSshFds(fds, sshWatches);
         // Lines that wait in a buffer get their turn at once. Until the
         // first session, the start wait bounds the poll: then an idle daemon
         // ends even when nothing wakes it. After the wait, only a connection
@@ -205,6 +218,8 @@ Daemon::Exit Daemon::run()
         // A window that does not connect to its attach socket in time loses
         // it, and a finished one that cannot send what waits is let go.
         if (connectWait >= 0 && (timeout < 0 || connectWait + 1 < timeout)) timeout = connectWait + 1;
+        // An event of `afterglow ctl watch` that waits for its interval.
+        if (const int due = watchDueMs(); due >= 0 && (timeout < 0 || due < timeout)) timeout = due;
         const int ready = ::poll(fds.data(), fds.size(), timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
@@ -256,6 +271,9 @@ Daemon::Exit Daemon::run()
             });
         }
         std::erase_if(m_attachments, [&over](const auto& a) { return std::find(over.begin(), over.end(), a.get()) != over.end(); });
+        // The ssh sessions before the windows' answers: a client that came
+        // goes to its window with them.
+        handleSshFds(fds.data() + firstSsh, sshWatches);
         // Before the reads below, whose calls may wait for these windows.
         answerForwarded();
         answerRelays();
@@ -282,6 +300,11 @@ Daemon::Exit Daemon::run()
         // shows the session hears of it now, not at the next wake, which a
         // program that prints nothing never gives.
         pumpAttachments();
+        // A pane that closed, or a window that turned remote commands off,
+        // ends ssh sessions.
+        pruneSsh();
+        // The events of `afterglow ctl watch` of what changed.
+        pumpWatch();
         syncAttached();
         // Whether the poll saw it or not: a client that connected since the
         // poll waits in a backlog, and an idle daemon would close its
@@ -357,6 +380,7 @@ void Daemon::read(IpcServerConnection& connection)
 
 std::string Daemon::answer(const IpcRequest& request, pid_t caller, IpcServerConnection& connection)
 {
+    if (request.type == "unsubscribe") return unsubscribe(request, connection);
     if (request.target == ControlTarget) return control(request, connection, caller);
     if (request.type != "call") {
         return ipcError(request.id, IpcErrorCode::MalformedRequest, "the mux daemon answers only calls, not '" + request.type + "'");
@@ -419,6 +443,7 @@ std::string Daemon::newSession(const IpcRequest& request, pid_t caller)
     std::string name = options->name.empty() ? freeName() : options->name;
     if (find(name) != m_sessions.end()) return ipcError(request.id, Error::SessionExists, "a session named '" + name + "' exists");
     auto session = std::make_unique<Session>(name, std::move(*options), m_fileLimit, m_images);
+    session->setSerial(++m_lastSessionSerial);
     // The spawn waits for the exec of the program, up to the PTY's exec wait
     // (2 s), and the other connections wait with it. Only a program or a
     // directory on a mount that does not answer takes that long; past the
@@ -426,9 +451,10 @@ std::string Daemon::newSession(const IpcRequest& request, pid_t caller)
     if (!session->addPane(m_nextPane++, session->firstLaunch(), session->firstSize(), paneSocket(), waker(), &error)) {
         return ipcError(request.id, Error::SpawnFailed, "cannot start the program of session '" + name + "': " + error);
     }
+    const std::uint32_t first = session->panes().front()->id();
     m_sessions.push_back(std::move(session));
     m_hadSession = true;
-    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}});
+    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}, {"pane", std::int64_t(first)}});
 }
 
 std::string Daemon::listSessions(const IpcRequest& request, pid_t caller)
@@ -621,6 +647,7 @@ std::optional<std::string> Daemon::breakOutPanes(Session& from, Layout layout, s
     }
     const std::string fresh = freeName();
     auto session = std::make_unique<Session>(fresh, from.options(), m_fileLimit, m_images);
+    session->setSerial(++m_lastSessionSerial);
     Attachment* const attachment = shown(from.name());
     for (const std::uint32_t id : ids) {
         std::unique_ptr<MuxPane> pane = from.take(id);
