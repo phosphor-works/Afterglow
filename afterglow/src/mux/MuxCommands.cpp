@@ -6,6 +6,7 @@
 #include <AfterglowProto/Ipc.h>
 #include <AfterglowProto/IpcServer.h>
 #include <AfterglowProto/Json.h>
+#include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Run.h>
 
 #include <PhosphorChannel/Stream.h>
@@ -44,19 +45,20 @@ MuxCommands::~MuxCommands()
     closeAll();
 }
 
-std::optional<std::string> MuxCommands::forWindow(const std::string& line, const std::function<std::optional<quint32>(std::uint32_t)>& pane,
+std::optional<std::string> MuxCommands::forWindow(const std::string& line, std::string_view target,
+                                                  const std::function<std::optional<quint32>(std::uint32_t)>& pane,
                                                   const QString& session, std::string* error)
 {
-    // What is not a run of the commands target goes as it came: the
-    // Afterglow answers it, a malformed line included.
+    // What is not a run of the target goes as it came: the Afterglow
+    // answers it, a malformed line included.
     auto request = Json::parse(line);
     if (!request || !request->isObject()) return line;
-    // Only the commands target: the Afterglow's other targets act on all its
-    // windows, by its own pane IDs.
-    if (const Json::Value* target = request->find("target"); target && target->toString() != AfterglowProto::Run::Target) {
+    // Only the client's target: the Afterglow's other targets act on all
+    // its windows, by its own pane IDs.
+    if (const Json::Value* named = request->find("target"); named && named->toString() != target) {
         *error = AfterglowProto::ipcError((*request)["id"].toInteger(), AfterglowProto::IpcErrorCode::NoSuchTarget,
                                           "a client of session '" + session.toStdString() + "' reaches only the target '"
-                                              + AfterglowProto::Run::Target + "' of its window");
+                                              + std::string(target) + "' of its window");
         return std::nullopt;
     }
     if ((*request)["type"].toString() != "call" || (*request)["fn"].toString() != "run") return line;
@@ -65,7 +67,8 @@ std::optional<std::string> MuxCommands::forWindow(const std::string& line, const
     Json::Array changed = args->toArray();
     const auto id = changed[5].toInteger();
     // The Afterglow refuses an ID that is not one, with its own message, and
-    // pane 0 is its focused pane, as for any client.
+    // pane 0 is its focused pane, as for any client, or the pane of a
+    // remote client.
     if (!id || *id <= 0 || *id > 0xffffffffLL) return line;
     const auto windowPane = pane ? pane(std::uint32_t(*id)) : std::nullopt;
     if (!windowPane) {
@@ -91,9 +94,9 @@ std::optional<std::string> MuxCommands::forWindow(const std::string& line, const
 void MuxCommands::setHost(Host host)
 {
     m_host = std::move(host);
-    for (auto& [id, lines] : std::exchange(m_early, {})) {
-        open(id);
-        for (std::string& line : lines) bytes(id, std::move(line));
+    for (auto& [id, early] : std::exchange(m_early, {})) {
+        open(early.first);
+        for (std::string& line : early.second) bytes(id, std::move(line));
     }
 }
 
@@ -103,11 +106,11 @@ bool MuxCommands::frame(Attach::RelayFrame frame)
     case Attach::RelayPart::Open:
         if (m_relays.contains(frame.relay) || m_early.contains(frame.relay)) return false;
         // Before the window gave its host: the connection waits for it.
-        if (m_refusal.isEmpty() && !m_host.socket) m_early[frame.relay] = {};
-        else open(frame.relay);
+        if (!m_host.socket) m_early[frame.relay] = {std::move(frame), {}};
+        else open(frame);
         return true;
     case Attach::RelayPart::Bytes:
-        if (const auto early = m_early.find(frame.relay); early != m_early.end()) early->second.push_back(std::move(frame.bytes));
+        if (const auto early = m_early.find(frame.relay); early != m_early.end()) early->second.second.push_back(std::move(frame.bytes));
         else bytes(frame.relay, std::move(frame.bytes));
         return true;
     case Attach::RelayPart::End:
@@ -118,10 +121,22 @@ bool MuxCommands::frame(Attach::RelayFrame frame)
     return false;
 }
 
-void MuxCommands::open(std::uint64_t id)
+void MuxCommands::open(const Attach::RelayFrame& open)
 {
-    QString error = m_refusal;
-    const QString path = error.isEmpty() && m_host.socket ? m_host.socket(&error) : QString();
+    const std::uint64_t id = open.relay;
+    const bool ssh = open.kind == Attach::RelayKind::Remote;
+    QString error;
+    QString path;
+    if (!ssh && m_remoteHost.isEmpty()) {
+        path = m_host.socket ? m_host.socket(&error) : QString();
+    } else {
+        // A client of another host gets what an ssh session of that host
+        // gets: the commands marked remote, on its own pane.
+        const QString host = ssh ? QString::fromStdString(open.host) : m_remoteHost;
+        const auto pane = m_host.pane ? m_host.pane(open.pane) : std::nullopt;
+        if (!pane) error = QStringLiteral("no pane %1 of session '%2' shows in its window").arg(open.pane).arg(m_session);
+        else if (m_host.remote) path = m_host.remote(*pane, host, !ssh, &error);
+    }
     if (path.isEmpty()) {
         if (error.isEmpty()) error = QStringLiteral("the window of session '%1' runs no commands of scripts").arg(m_session);
         // Not in m_relays: the bytes that follow are dropped.
@@ -134,7 +149,7 @@ void MuxCommands::open(std::uint64_t id)
     // A client that reads slowly holds this much here, then the Afterglow's
     // socket fills.
     socket->setReadBufferSize(ReadBytes);
-    m_relays[id] = Relay{socket, {}};
+    m_relays[id] = Relay{socket, ssh ? AfterglowProto::Remote::Target : AfterglowProto::Run::Target, {}};
     connect(socket, &QLocalSocket::connected, this, [this, id] {
         const auto relay = m_relays.find(id);
         if (relay == m_relays.end()) return;
@@ -165,7 +180,7 @@ void MuxCommands::bytes(std::uint64_t id, std::string bytes)
     // The daemon sends whole lines, one in each frame.
     if (bytes.ends_with('\n')) bytes.pop_back();
     std::string error;
-    const auto line = forWindow(bytes, m_host.pane, m_session, &error);
+    const auto line = forWindow(bytes, relay->second.target, m_host.pane, m_session, &error);
     if (!line) {
         send({id, Attach::RelayPart::Bytes, std::move(error)});
         return;

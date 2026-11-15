@@ -687,9 +687,10 @@ RemoteResult forwardRemote(const QByteArrayList& args, const Arguments& parsed, 
     const std::string local = (*opened)["socket"].toString();
     const std::string remote = (*opened)["path"].toString();
     // Only the pair that this session asked for goes into ssh's -R, which
-    // splits it at ':'.
+    // splits it at ':'. The socket of an Afterglow, or of the mux daemon
+    // for a session pane (aglow-mux/remote-TOKEN.sock).
     const std::string name = token + ".sock";
-    const bool localOk = local.starts_with('/') && local.ends_with("/afterglow-remote-" + name)
+    const bool localOk = local.starts_with('/') && (local.ends_with("/afterglow-remote-" + name) || local.ends_with("/remote-" + name))
         && local.find_first_of(":\\") == std::string::npos && AfterglowProto::isCleanText(local);
     const bool remoteOk = !token.empty() && AfterglowProto::Remote::validPath(remote)
         && remote == AfterglowProto::Remote::socketPath(found.directory.toStdString(), token);

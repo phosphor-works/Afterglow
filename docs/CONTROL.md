@@ -260,7 +260,7 @@ Another number fails with `CALL_FAILED`.
 | `openDirectory` | directory, layout | An object: the window and its pane |
 | `projects` | None | The saved project names |
 | `saveProject` | pane, name, overwrite | An object: the name and the window |
-| `openProject` | name, new instance | An object: the window and its panes |
+| `openProject` | name, new instance, mode | An object: the window and its panes. The mode is `session`, `window`, or empty for what the project says. Into a session, the object also has `session`, its name, and the answer comes when the window of the session opens. |
 | `scriptDiagnostics` | None | Script and package diagnostics |
 | `overlay` | pane, argv, options | An object: `exit_code`, `stdout` and `truncated`. See [overlays](#overlays). |
 | `screenshot` | pane, scope | An object: `png` (the PNG image in base64), `width` and `height` in device pixels. See [screenshots](#screenshots). |
@@ -600,7 +600,7 @@ When a connection closes, Afterglow cancels its runs and drops its input.
 ### Remote commands
 
 A command that a script marks `remote` can also run from a remote host.
-Run `aglow run` there, in a session of `afterglow ssh`.
+Run `aglow run` there, in a session of `afterglow ssh`, or in a pane of a [mux session](MUX.md#script-commands-in-a-session-pane) of that host.
 The run acts on the pane of the ssh session, and its `ev.source` is `remote`.
 The handler still gets all the panes in `ev.terminal`, and its effects can act on any pane, as for a local run.
 `Terminal.sshRemoteCommands` is off by default.
@@ -610,12 +610,14 @@ Remote commands need all of these:
 
 - `Terminal.sshRemoteCommands`, `Control.enabled` and `Scripts.enabled`. `Terminal.sshIntegration` does not count: you can also run `afterglow ssh` yourself.
 - `AFTERGLOW_SOCKET` and `AFTERGLOW_PANE_ID` in the environment of `afterglow ssh`, as a pane of Afterglow sets them. `afterglow ssh` calls that socket for the pane.
+- `afterglow ssh` runs in that pane, or below a program of that pane. Afterglow finds the pane of a process from the processes, not from `AFTERGLOW_PANE_ID`. It refuses a process of another terminal with `` only `afterglow ssh` in pane N opens a remote socket for it ``. A terminal that a program of the pane started, such as `konsole &`, counts as the pane.
 - A terminal on the remote host: no remote command on the ssh command line, or `-t`.
 - A shared ssh connection. `afterglow ssh` makes one in `XDG_RUNTIME_DIR`, or uses the `ControlPath` of your SSH configuration. `XDG_RUNTIME_DIR` must be an absolute path of letters, digits, `/`, `.`, `_` and `-`, which ssh reads as a path and nothing more. Afterglow does not check that only you can enter it: keep it private, as systemd makes it.
 - No `ControlPath none` and no `ControlMaster no`, on the command line or in your SSH configuration. Afterglow keeps that choice and forwards no socket for the session.
 - With your own `ControlPath` and a `ControlMaster` other than `auto` or `autoask`: a master that runs already.
 - With `-M` on the command line: your own `ControlPath`, and a master that runs already on it. `-M` sets `ControlMaster yes`, and ssh with `-M` does not join a master. The forward goes on the master that runs, and the session authenticates on its own. A master that `afterglow ssh` made would hold the forward with no session, and end after its `ControlPersist`.
 - No tmux around `afterglow ssh` on this computer. In tmux, `AFTERGLOW_PANE_ID` can name another pane.
+- In a pane of a mux session, the mux daemon keeps the socket. See [remote commands of an ssh session in a session pane](MUX.md#remote-commands-of-an-ssh-session-in-a-session-pane).
 - `aglow` on the remote host, with the protocol of this Afterglow. `aglow --version` shows the protocol.
 - `aglow` on the `PATH` that the login shell of the remote user gets without a terminal. The probe below runs there.
 - `AllowStreamLocalForwarding` on the ssh server. Its default is `yes`.
@@ -807,7 +809,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Screenshots in progress | 4, for all clients | The `screenshot` call fails with the code `busy`. |
 | `afterglow ctl overlay` standard input | 4 MiB | `afterglow ctl` exits with status 2 and opens nothing. It checks the input before it connects. |
 | One part of `overlayInput` from `afterglow ctl` | 512 KiB, written as a JSON string | `afterglow ctl` cuts the input there. JSON writes most C0 control characters, such as U+0001, as 6 bytes, and a part with them holds fewer bytes of input. |
-| Inputs of `overlayInput` that wait for `overlay` | 4 for each connection, 64 MiB for all connections | The `overlayInput` call fails. At the limit of 64 MiB, the parts that came before stay and wait. They go when `overlay` takes them, the connection closes or `Control.enabled` goes off. An input over 4 MiB fails, and Afterglow drops it. |
+| Inputs of `overlayInput` that wait for `overlay` | 4 for each connection, 64 MiB for all connections, and as much again for the clients of [mux sessions](MUX.md#control-of-a-session) | The `overlayInput` call fails. At the limit of 64 MiB, the parts that came before stay and wait. They go when `overlay` takes them, the connection closes or `Control.enabled` goes off. An input over 4 MiB fails, and Afterglow drops it. |
 | `afterglow ctl overlay --title` | 512 UTF-16 units | `afterglow ctl` exits with status 2 before it connects. |
 | `stdin` of the `overlay` call | The request line of 1 MiB | The socket closes the connection. |
 | `stdout` of an overlay's result | 1 MiB of UTF-8 | The text is cut, and `truncated` is true. |

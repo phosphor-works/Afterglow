@@ -66,6 +66,7 @@
 #include <QKeyEvent>
 #include <QTemporaryDir>
 #include <AfterglowProto/Clipboard.h>
+#include <AfterglowProto/Version.h>
 #include <limits>
 #include <QThread>
 #include <QThreadPool>
@@ -11306,43 +11307,65 @@ TEST_F(NativeWindow, ATabDraggedOutOfASessionsWindowBecomesANewSession) {
 // A window shows a session of another host through `aglow-mux proxy`,
 // which a fake ssh runs here against the test's own daemon, and a new tab of
 // that window starts there.
+namespace {
+
+/// An ssh in @p bin, first on PATH until the guard that it returns goes,
+/// which runs the command of `ssh ... -- HOST COMMAND` on this computer with
+/// the directories of @p daemon: the daemon of the host is the test's own.
+/// `ssh -G HOST` names HOST.
+[[nodiscard]] std::optional<QScopeGuard<std::function<void()>>> fakeSshTo(MuxTest::TestDaemon& daemon, const QString& bin)
+{
+    if (!QDir().mkpath(bin)) return std::nullopt;
+    QFile ssh(bin + QStringLiteral("/ssh"));
+    if (!ssh.open(QIODevice::WriteOnly)) return std::nullopt;
+    const QString script = QStringLiteral(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = -G ]; then printf 'host %s\\nhostname %s\\nuser me\\nport 22\\n' \"$3\" \"$3\"; exit 0; fi\n"
+        "while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
+        "shift 2\n"
+        "XDG_RUNTIME_DIR='%1' XDG_STATE_HOME='%2' PATH='%3:/usr/bin:/bin' exec /bin/sh -c \"$*\"\n")
+        .arg(QString::fromStdString(daemon.runtime()), QString::fromStdString(daemon.stateHome()), QCoreApplication::applicationDirPath());
+    ssh.write(script.toUtf8());
+    ssh.close();
+    if (!QFile::setPermissions(bin + QStringLiteral("/ssh"), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner))
+        return std::nullopt;
+    const QByteArray path = qgetenv("PATH");
+    qputenv("PATH", bin.toUtf8() + ':' + path);
+    return QScopeGuard<std::function<void()>>([path] { qputenv("PATH", path); });
+}
+
+/// Session @p name of host @p host, through fakeSshTo(), in a new window of
+/// @p application, and its pane once the shell showed its prompt.
+ShownSession showSessionOfHost(Application& application, const QString& name, const QString& host, QString* error) {
+    const auto route = muxRoute(host, error);
+    if (!route) return {};
+    WindowOptions options;
+    options.session = MuxClient::attach(name, true, error, *route, MuxSettings{}.eventQueue, AfterglowVt::TerminalOptions{}.maxScrollback);
+    if (!options.session) return {};
+    ShownSession shown{application.newWindow(options), nullptr};
+    if (!shown.window) return shown;
+    shown.window->show();
+    if (waitFor([&] { return shown.window && shown.window->isExposed() && shown.window->submittedFrames() > 0; }))
+        shown.pane = shown.window->focusedPane();
+    if (!shown.pane || !waitFor([&] { return shown.pane && screenOf(shown.pane).startsWith(QLatin1Char('$')); }, 5000)) {
+        *error = shown.pane ? QStringLiteral("no prompt: ") + screenOf(shown.pane) : QStringLiteral("the window shows no pane");
+        delete shown.window;
+        return {};
+    }
+    return shown;
+}
+
+} // namespace
+
 TEST_F(NativeWindow, AWindowShowsASessionOfAnotherHost) {
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "far")) << daemon.lastError();
-    const QString bin = directory.filePath(QStringLiteral("ssh-bin"));
-    ASSERT_TRUE(QDir().mkpath(bin));
-    {
-        QFile ssh(bin + QStringLiteral("/ssh"));
-        ASSERT_TRUE(ssh.open(QIODevice::WriteOnly));
-        const QString script = QStringLiteral(
-            "#!/bin/sh\n"
-            "if [ \"$1\" = -G ]; then printf 'host %s\\nhostname %s\\nuser me\\nport 22\\n' \"$3\" \"$3\"; exit 0; fi\n"
-            "while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
-            "shift 2\n"
-            "XDG_RUNTIME_DIR='%1' XDG_STATE_HOME='%2' PATH='%3:/usr/bin:/bin' exec /bin/sh -c \"$*\"\n")
-            .arg(QString::fromStdString(daemon.runtime()), QString::fromStdString(daemon.stateHome()), QCoreApplication::applicationDirPath());
-        ssh.write(script.toUtf8());
-    }
-    ASSERT_TRUE(QFile::setPermissions(bin + QStringLiteral("/ssh"), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
-    const QByteArray path = qgetenv("PATH");
-    qputenv("PATH", bin.toUtf8() + ':' + path);
-    const auto restorePath = qScopeGuard([&path] { qputenv("PATH", path); });
+    const auto ssh = fakeSshTo(daemon, directory.filePath(QStringLiteral("ssh-bin")));
+    ASSERT_TRUE(ssh);
     QString error;
-    const auto route = muxRoute(QStringLiteral("far"), &error);
-    ASSERT_TRUE(route) << error.toStdString();
-    WindowOptions options;
-    options.session = MuxClient::attach(QStringLiteral("far"), true, &error, *route, MuxSettings{}.eventQueue,
-                                        AfterglowVt::TerminalOptions{}.maxScrollback);
-    ASSERT_NE(options.session, nullptr) << error.toStdString();
-    EXPECT_TRUE(options.session->remote());
-    QPointer<TerminalWindow> shown = application->newWindow(options);
-    ASSERT_NE(shown, nullptr);
-    shown->show();
-    ASSERT_TRUE(waitFor([&] { return shown->isExposed() && shown->submittedFrames() > 0; }));
-    Pane* pane = shown->focusedPane();
-    ASSERT_NE(pane, nullptr);
-    ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
+    auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("far"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
     EXPECT_TRUE(pane->showsSession(QStringLiteral("far"), QStringLiteral("far")));
     EXPECT_FALSE(pane->showsSession(QStringLiteral("far")));
     // A new tab starts there, through another proxy call.
@@ -11353,6 +11376,482 @@ TEST_F(NativeWindow, AWindowShowsASessionOfAnotherHost) {
     ASSERT_EQ(control.newTab(pane->id(), {}, {}, tab), QString());
     EXPECT_TRUE(waitFor([&] { return sessionNamed(daemon, "far")->panes == 2; }, 5000));
     EXPECT_EQ(shown->tabs().size(), 2);
+    delete shown;
+}
+
+// `aglow run` in a pane of a session of another host gets what an ssh
+// session of that host gets: the commands that a script marks remote, on
+// its own pane, with the host as ev.remote.host.
+TEST_F(NativeWindow, AglowRunInASessionOfAnotherHostGetsOnlyRemoteCommands) {
+    REQUIRE_AGLOW(aglow);
+    ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("scripts"))));
+    QFile script(directory.filePath(QStringLiteral("scripts/far.luau")));
+    ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+    script.write(R"(
+return {
+    metadata = { commands = {
+        there = { summary = "Say where", remote = true },
+        here = { summary = "Only for this computer" },
+    } },
+    run_command = function(command, ev)
+        return afterglow.output(ev, command .. " " .. ev.source .. " " .. ev.remote.host .. " " .. ev.pane.id .. "\n")
+    end,
+}
+)");
+    script.close();
+    restartApplication(QStringLiteral("remote-run.conf"),
+        testSettings({{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("sshRemoteCommands"), true}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "far")) << daemon.lastError();
+    const auto ssh = fakeSshTo(daemon, directory.filePath(QStringLiteral("ssh-bin")));
+    ASSERT_TRUE(ssh);
+    QString error;
+    auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("far"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    const QString run = aglow + QStringLiteral(" run far ");
+    ASSERT_TRUE(pane->sendInput((run + QStringLiteral("there; echo status=$?\n")).toStdString()));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("there remote far %1\nstatus=0").arg(pane->id())); }, 5000))
+        << screenOf(pane).toStdString();
+    // A command for this computer only does not exist there: a usage error.
+    ASSERT_TRUE(pane->sendInput((run + QStringLiteral("here; echo status=$?\n")).toStdString()));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("status=2")); }, 5000)) << screenOf(pane).toStdString();
+    EXPECT_FALSE(screenOf(pane).contains(QStringLiteral("\nhere remote"))) << screenOf(pane).toStdString();
+    delete shown;
+}
+
+// `afterglow ssh` in a session pane: the daemon keeps the socket that ssh
+// forwards, and the pane's answer to the query of `aglow run`. A remote
+// command that `aglow run` runs in the ssh session reaches the window that
+// shows the session. The fake ssh's forward links the remote path to the
+// daemon's socket, and its session runs `aglow run`.
+TEST_F(NativeWindow, AnSshSessionInASessionPaneRunsRemoteCommandsThroughTheDaemon) {
+    REQUIRE_AGLOW(aglow);
+    ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("scripts"))));
+    QFile script(directory.filePath(QStringLiteral("scripts/far.luau")));
+    ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+    script.write(R"(
+return {
+    metadata = { commands = { there = { summary = "Say where", remote = true } } },
+    run_command = function(command, ev)
+        return afterglow.output(ev, command .. " " .. ev.source .. " " .. ev.remote.host .. " " .. ev.pane.id .. "\n")
+    end,
+}
+)");
+    script.close();
+    restartApplication(QStringLiteral("ssh-session.conf"),
+        testSettings({{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("sshRemoteCommands"), true}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    const QString bin = directory.filePath(QStringLiteral("ssh-bin"));
+    ASSERT_TRUE(QDir().mkpath(bin));
+    // afterglow/tests/fake-ssh.sh says what it does.
+    ASSERT_TRUE(QFile::copy(QStringLiteral(AFTERGLOW_FAKE_SSH), bin + QStringLiteral("/ssh")));
+    ASSERT_TRUE(QFile::setPermissions(bin + QStringLiteral("/ssh"), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    // The remote directory of the sockets, where the forward's link goes.
+    const QString remote = directory.filePath(QStringLiteral("remote"));
+    ASSERT_TRUE(QDir().mkpath(remote));
+    const QString log = directory.filePath(QStringLiteral("ssh.log"));
+    MuxTest::TestDaemon daemon;
+    // The daemon cancels the forward with the fake ssh, which removes the link.
+    daemon.daemonOnly("PATH", bin.toStdString() + ":" + qgetenv("PATH").toStdString());
+    daemon.daemonOnly("FAKE_SSH_LOG", log.toStdString());
+    daemon.daemonOnly("FAKE_FORWARD_LINK", "1");
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "ssh")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("ssh"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+
+    const QString command = QStringLiteral("PATH='%1':\"$PATH\" FAKE_SSH_LOG='%2' FAKE_PROTOCOL=%3 FAKE_DIR='%4' FAKE_FORWARD_LINK=1 "
+                                           "FAKE_RELEASE='%5' FAKE_SESSION='env -u AFTERGLOW_SOCKET -u AFTERGLOW_PANE_ID %6 run far there; echo status=$?' "
+                                           "'%7' ssh -v far; echo ssh=$?\n")
+                                .arg(bin, log)
+                                .arg(AfterglowProto::ProtocolVersion)
+                                .arg(remote, directory.filePath(QStringLiteral("release")), aglow,
+                                     QCoreApplication::applicationDirPath() + QStringLiteral("/afterglow"));
+    ASSERT_TRUE(pane->sendInput(command.toStdString()));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("\nssh=")); }, 15000)) << screenOf(pane).toStdString();
+    // The window's pane, of a host that the ssh session names.
+    const QString screen = screenOf(pane);
+    EXPECT_TRUE(screen.contains(QStringLiteral("\nthere remote "))) << screen.toStdString();
+    EXPECT_TRUE(screen.contains(QStringLiteral(" %1\nstatus=0").arg(pane->id()))) << screen.toStdString();
+    // The session ended with its `afterglow ssh`: the daemon cancelled the
+    // forward, and the link went with it.
+    EXPECT_TRUE(waitFor([&] { return QDir(remote).entryList(QDir::System | QDir::Files).isEmpty(); }, 5000))
+        << QDir(remote).entryList(QDir::System | QDir::Files).join(QLatin1Char(' ')).toStdString();
+    QFile logged(log);
+    ASSERT_TRUE(logged.open(QIODevice::ReadOnly));
+    const QByteArray runs = logged.readAll();
+    EXPECT_TRUE(runs.contains("cancel")) << runs.toStdString();
+    delete shown;
+}
+
+// A session follows the settings of the window that shows it: a change of
+// Colors.background reaches the daemon's terminal, which answers a query of
+// the background color (OSC 11) with it, and whose frames bring it to the
+// pane: the pane takes no colors of its own.
+TEST_F(NativeWindow, ASessionFollowsTheSettingsOfItsWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "set")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("set"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    // The query's answer comes as input: the script reads it up to the ST's
+    // backslash, and prints the color without its ESC. From a file: the
+    // shell's line editor would take the escape sequences of a typed one.
+    const QString script = directory.filePath(QStringLiteral("ask-background.sh"));
+    {
+        QFile file(script);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write(R"(stty -echo
+printf '\033]11;?\033\\'
+IFS= read -r -t 3 -d '\' a
+stty echo
+a=${a%?}
+echo "bg=${a#*rgb:}"
+)");
+    }
+    const std::string ask = "bash '" + script.toStdString() + "'\n";
+    setLive(shown, directory.filePath(QStringLiteral("afterglow.conf")), QStringLiteral("Colors"), QStringLiteral("background"),
+            QStringLiteral("#010203"));
+    if (HasFatalFailure()) return;
+    ASSERT_TRUE(pane->sendInput(ask));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("bg=0101/0202/0303")); }, 10000)) << screenOf(pane).toStdString();
+    EXPECT_TRUE(pane->withTerminal([](AfterglowVt::Terminal& t) { return t.defaultBackground() == AfterglowVt::Rgb{1, 2, 3}; }));
+    // Mux.onClose at its default: the session ends with its window.
+    delete shown;
+}
+
+// A session of this computer takes the variables of Mux.updateEnvironment
+// from the Afterglow that shows it: a pane that starts after the window
+// attached has Afterglow's value, which the session did not have.
+TEST_F(NativeWindow, ASessionTakesTheVariablesOfTheAfterglowThatShowsIt) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "env")) << daemon.lastError();
+    const Afterglow::Test::Saved updated("TEST_UPDATED", "from-afterglow");
+    restartApplication(QStringLiteral("update-environment.conf"),
+                       testSettings({{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("updateEnvironment"), QJsonArray{QStringLiteral("TEST_UPDATED")}}}}}),
+                       {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("env"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    // The first pane started before: it keeps its environment.
+    ASSERT_TRUE(pane->sendInput("echo \"[${TEST_UPDATED-unset}]\"\n"));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("\n[unset]")); }, 5000)) << screenOf(pane).toStdString();
+    quint32 created = 0;
+    ASSERT_EQ(application->control().split(pane->id(), QStringLiteral("right"),
+                                           {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("echo \"[${TEST_UPDATED-unset}]\"; exec cat")},
+                                           {}, created),
+              QString());
+    Pane* later = nullptr;
+    for (Pane* p : shown->panes()) {
+        if (p->id() == created) later = p;
+    }
+    ASSERT_NE(later, nullptr);
+    EXPECT_TRUE(waitFor([&] { return screenOf(later).contains(QStringLiteral("[from-afterglow]")); }, 5000)) << screenOf(later).toStdString();
+    delete shown;
+}
+
+// `afterglow ssh` gets a remote socket only for the pane that it runs in: the
+// window tells the processes of a pane by their terminal session, and
+// refuses a call of another process, or of none.
+TEST_F(NativeWindow, RemoteSocketsOpenOnlyForTheProcessesOfTheirPane) {
+    const QString pidFile = directory.filePath(QStringLiteral("child.pid"));
+    restartApplication(QStringLiteral("remote-pane.conf"),
+        testSettings({{QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("sshRemoteCommands"), true}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("sleep 300 & echo $! > '%1'; wait").arg(pidFile)});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    qint64 child = 0;
+    ASSERT_TRUE(waitFor([&] {
+        QFile file(pidFile);
+        child = file.open(QIODevice::ReadOnly) ? file.readAll().trimmed().toLongLong() : 0;
+        return child > 0;
+    }, 5000));
+    Control& control = application->control();
+    // A child of the pane's program, and the program itself.
+    EXPECT_TRUE(control.runsIn(pane->id(), child, false));
+    EXPECT_TRUE(control.runsIn(pane->id(), pane->programPid(), false));
+    // Not this test, nor another pane, nor an overlay that the pane lacks.
+    EXPECT_FALSE(control.runsIn(pane->id(), QCoreApplication::applicationPid(), false));
+    EXPECT_FALSE(control.runsIn(pane->id() + 1000, child, false));
+    EXPECT_FALSE(control.runsIn(pane->id(), child, true));
+    EXPECT_FALSE(control.runsIn(pane->id(), 1, false));
+    // A call from no connection names no process.
+    PhosphorIpc::IpcRouter::InvokeOutcome outcome{};
+    QString message;
+    testSocket().router().invoke(QStringLiteral("control"), QStringLiteral("openRemoteSocket"),
+                                 {double(pane->id()), double(child), QStringLiteral("box"), QStringLiteral("/run/user/1000/afterglow"),
+                                  double(AfterglowProto::ProtocolVersion), QStringList{}, QStringLiteral("prod"), false},
+                                 &outcome, &message);
+    EXPECT_EQ(outcome, PhosphorIpc::IpcRouter::InvokeOutcome::CallFailed);
+    EXPECT_EQ(message, QStringLiteral("only `afterglow ssh` in pane %1 opens a remote socket for it").arg(pane->id()));
+    ::kill(pid_t(child), SIGKILL);
+}
+
+// A project that says "session": true opens into a mux session: its panes
+// are the session's, in the project's tabs and splits, with their commands.
+// The daemon starts off the GUI thread, and an open that comes meanwhile
+// gets the same window. Opening it again shows that session, also after its
+// window closed, with the commands and titles that the project saves, and
+// --no-session opens it into a window of its own.
+TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // The application finds the daemon by the environment: the test's own.
+    Afterglow::Test::Saved runtime("XDG_RUNTIME_DIR", QByteArray::fromStdString(daemon.runtime()));
+    Afterglow::Test::Saved state("XDG_STATE_HOME", QByteArray::fromStdString(daemon.stateHome()));
+    // Mux.onClose at its default: a project's session runs on all the same.
+    restartApplication(QStringLiteral("project-session.conf"), testSettings(), {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("projects"))));
+    QFile project(directory.filePath(QStringLiteral("projects/dev.json")));
+    ASSERT_TRUE(project.open(QIODevice::WriteOnly));
+    project.write(R"({"version": 1, "active_tab": "t1", "session": true, "tabs": [
+        {"id": "t1", "title": "work", "active_pane": "b", "tree": {"direction": "right", "ratio": 0.5,
+            "first": {"pane": {"id": "a", "cwd": "/tmp", "title": "", "command": []}},
+            "second": {"pane": {"id": "b", "cwd": "~", "title": "editor", "command": []}}}},
+        {"id": "t2", "title": "logs", "active_pane": "c", "tree": {"pane": {"id": "c", "cwd": "/", "title": "", "command": ["sleep", "300"]}}},
+        {"id": "t3", "title": "done", "active_pane": "d", "tree": {"pane": {"id": "d", "cwd": "/", "title": "", "command": ["true"]}}}]})");
+    project.close();
+    const auto windowOf = [](const QVariantMap& result) -> TerminalWindow* {
+        for (TerminalWindow* w : TerminalWindow::windows()) {
+            if (w->id() == result.value(QStringLiteral("window_id")).toUInt()) return w;
+        }
+        return nullptr;
+    };
+    const auto allSessionPanes = [](TerminalWindow* w) {
+        const auto panes = w->panes();
+        return !panes.isEmpty() && std::all_of(panes.begin(), panes.end(), [](Pane* p) { return p->isSessionPane(); });
+    };
+    /// The outcome of an open, which can come after openProject returns.
+    struct Outcome
+    {
+        bool done = false;
+        QString error;
+        QVariantMap result;
+    };
+    const auto start = [&](bool newInstance, const QString& mode) {
+        auto outcome = std::make_shared<Outcome>();
+        application->control().openProject(QStringLiteral("dev"), newInstance, mode, [outcome](const QString& error, const QVariantMap& result) {
+            *outcome = {true, error, result};
+        });
+        return outcome;
+    };
+    const auto open = [&](bool newInstance, const QString& mode, QVariantMap& result) {
+        const auto outcome = start(newInstance, mode);
+        if (!waitFor([&] { return outcome->done; }, 15000)) return QStringLiteral("no outcome");
+        result = outcome->result;
+        return outcome->error;
+    };
+    /// The saved pane of @p tab's tree at @p path ("first", "second").
+    const auto savedPane = [](const QJsonObject& document, int tab, const QStringList& path) {
+        QJsonObject node = document.value(QStringLiteral("tabs")).toArray().at(tab).toObject().value(QStringLiteral("tree")).toObject();
+        for (const QString& side : path) node = node.value(side).toObject();
+        return node.value(QStringLiteral("pane")).toObject();
+    };
+
+    // The daemon starts the session off the GUI thread: the open answers
+    // later. A second open meanwhile waits for it, and finds its window.
+    const auto first = start(false, {});
+    EXPECT_FALSE(first->done);
+    const auto second = start(false, {});
+    ASSERT_TRUE(waitFor([&] { return first->done && second->done; }, 15000));
+    ASSERT_EQ(first->error, QString());
+    ASSERT_EQ(second->error, QString());
+    const QVariantMap result = first->result;
+    EXPECT_TRUE(second->result.value(QStringLiteral("reused")).toBool());
+    EXPECT_EQ(second->result.value(QStringLiteral("window_id")), result.value(QStringLiteral("window_id")));
+    EXPECT_EQ(result.value(QStringLiteral("session")).toString(), QStringLiteral("dev"));
+    EXPECT_FALSE(result.value(QStringLiteral("reused")).toBool());
+    QPointer<TerminalWindow> window = windowOf(result);
+    ASSERT_NE(window, nullptr);
+    ASSERT_TRUE(waitFor([&] { return window->panes().size() == 3; }, 5000)) << window->panes().size();
+    EXPECT_TRUE(allSessionPanes(window));
+    EXPECT_EQ(window->tabs().size(), 2);
+    EXPECT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "dev");
+        return info && info->panes == 3 && info->attached;
+    }, 5000));
+    // The window saves the project as it opened: into its session, with the
+    // command of its pane.
+    const QJsonObject saved = window->projectLayout();
+    EXPECT_TRUE(saved.value(QStringLiteral("session")).toBool());
+    const QJsonArray tabs = saved.value(QStringLiteral("tabs")).toArray();
+    ASSERT_EQ(tabs.size(), 2);
+    EXPECT_EQ(tabs[0].toObject().value(QStringLiteral("tree")).toObject().value(QStringLiteral("direction")).toString(), QStringLiteral("right"));
+    EXPECT_EQ(tabs[1].toObject().value(QStringLiteral("tree")).toObject().value(QStringLiteral("pane")).toObject().value(QStringLiteral("command")),
+              QJsonValue(QJsonArray{QStringLiteral("sleep"), QStringLiteral("300")}));
+    EXPECT_EQ(tabs[1].toObject().value(QStringLiteral("title")).toString(), QStringLiteral("logs"));
+    // Each leaf has the pane that the daemon started for it: the directory
+    // that the daemon reads of its program. The pane of "true", which ended
+    // before or after the window opened, left no tab.
+    EXPECT_EQ(savedPane(saved, 0, {QStringLiteral("first")}).value(QStringLiteral("cwd")).toString(), QStringLiteral("/tmp"));
+    EXPECT_EQ(savedPane(saved, 1, {}).value(QStringLiteral("cwd")).toString(), QStringLiteral("/"));
+
+    // Again: the window that shows it.
+    QVariantMap again;
+    ASSERT_EQ(open(false, {}, again), QString());
+    EXPECT_TRUE(again.value(QStringLiteral("reused")).toBool());
+    EXPECT_EQ(again.value(QStringLiteral("window_id")), result.value(QStringLiteral("window_id")));
+
+    // The window closes, and the session runs on, whatever Mux.onClose says:
+    // the project shows it again.
+    delete window;
+    ASSERT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "dev");
+        return info && !info->attached && info->panes == 3;
+    }, 5000));
+    QVariantMap back;
+    ASSERT_EQ(open(false, {}, back), QString());
+    EXPECT_TRUE(back.value(QStringLiteral("reused")).toBool());
+    QPointer<TerminalWindow> reattached = windowOf(back);
+    ASSERT_NE(reattached, nullptr);
+    ASSERT_TRUE(waitFor([&] { return reattached->panes().size() == 3; }, 5000)) << reattached->panes().size();
+    EXPECT_TRUE(allSessionPanes(reattached));
+    EXPECT_EQ(reattached->tabs().size(), 2);
+    EXPECT_EQ(reattached->projectName(), QStringLiteral("dev"));
+    // The daemon kept what the first window knew: this window saves the
+    // command and the title, as that one did.
+    const QJsonObject resaved = reattached->projectLayout();
+    EXPECT_EQ(savedPane(resaved, 1, {}).value(QStringLiteral("command")), QJsonValue(QJsonArray{QStringLiteral("sleep"), QStringLiteral("300")}))
+        << QJsonDocument(resaved).toJson().toStdString();
+    EXPECT_EQ(savedPane(resaved, 0, {QStringLiteral("second")}).value(QStringLiteral("title")).toString(), QStringLiteral("editor"))
+        << QJsonDocument(resaved).toJson().toStdString();
+    EXPECT_EQ(savedPane(resaved, 0, {QStringLiteral("first")}).value(QStringLiteral("command")).toArray(), QJsonArray());
+
+    // --no-session: a window of its own, outside any session, which holds
+    // the pane of "true" once it ended, as for any project.
+    QVariantMap local;
+    ASSERT_EQ(open(true, QStringLiteral("window"), local), QString());
+    QPointer<TerminalWindow> plain = windowOf(local);
+    ASSERT_NE(plain, nullptr);
+    EXPECT_EQ(plain->panes().size(), 4);
+    for (Pane* pane : plain->panes()) EXPECT_FALSE(pane->isSessionPane());
+    delete plain;
+    delete reattached;
+    EXPECT_TRUE(daemon.call(AfterglowMux::Fn::KillSession, AfterglowProto::Json::Array{"dev"})) << daemon.lastError();
+}
+
+// `afterglow ctl --session overlay` and `screenshot` while a window shows the
+// session: the daemon passes them to the window, which runs the overlay over
+// the session pane with the client's input, takes the picture, and answers
+// when it is done. The overlay of a client that goes closes.
+TEST_F(NativeWindow, ASessionsWindowRunsOverlaysAndTakesScreenshotsForCtl) {
+    restartApplication(QStringLiteral("session-frames.conf"),
+                       testSettings({{QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}, {QStringLiteral("allowReadText"), true}}}}),
+                       {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "frames")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("frames"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    auto ctl = std::make_unique<AfterglowProto::IpcConnection>();
+    AfterglowProto::IpcConnection::Error failure;
+    ASSERT_TRUE(ctl->connect(daemon.socket(), &failure, 2000)) << failure.message;
+    ASSERT_TRUE(ctl->call(AfterglowMux::Target, AfterglowMux::Fn::SelectSession, MuxTest::Json::Array{AfterglowMux::ProtocolVersion, "frames"},
+                          5000, &failure))
+        << failure.message;
+    const std::int64_t id = pane->sessionPaneId();
+    /// A call of the control target that the window answers while this
+    /// test's event loop runs: the call waits on a thread of its own.
+    const auto call = [&](const char* fn, MuxTest::Json::Array args) {
+        std::optional<MuxTest::Json::Value> result;
+        std::atomic<bool> answered{false};
+        std::thread caller([&] {
+            result = ctl->call("control", fn, std::move(args), 15000, &failure);
+            answered = true;
+        });
+        waitFor([&] { return answered.load(); }, 20000);
+        caller.join();
+        return result;
+    };
+
+    // The client's input, then the overlay that takes it.
+    ASSERT_TRUE(call("overlayInput", MuxTest::Json::Array{"in", "from the client", true})) << failure.message;
+    const auto ran = call("overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"cat"}, MuxTest::Json::Object{{"input", "in"}}});
+    ASSERT_TRUE(ran) << failure.message;
+    EXPECT_EQ((*ran)["exit_code"].toInteger(), 0);
+    EXPECT_EQ((*ran)["stdout"].toString(), "from the client");
+    // An answer larger than a frame of the stream goes in parts: a MiB of
+    // quotes is two in JSON.
+    const auto large = call("overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"sh", "-c", "head -c 1048576 /dev/zero | tr '\\0' '\"'"},
+                                                          MuxTest::Json::Object{}});
+    ASSERT_TRUE(large) << failure.message;
+    EXPECT_EQ((*large)["stdout"].toString(), std::string(1048576, '"'));
+    // A picture of the session pane, as the window draws it.
+    const auto shot = call("screenshot", MuxTest::Json::Array{id, "pane"});
+    ASSERT_TRUE(shot) << failure.message;
+    EXPECT_GT((*shot)["width"].toInteger().value_or(0), 0);
+    QImage image;
+    ASSERT_TRUE(image.loadFromData(QByteArray::fromBase64(QByteArray::fromStdString((*shot)["png"].toString())), "PNG"));
+    EXPECT_EQ(image.width(), (*shot)["width"].toInteger().value_or(0));
+
+    // An overlay that runs when its client goes closes.
+    std::thread lasting([&] { ctl->call("control", "overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"sleep", "30"}, MuxTest::Json::Object{}}, 2000, &failure); });
+    const bool opened = waitFor([&] { return pane->overlay() != nullptr; }, 5000);
+    lasting.join();
+    ASSERT_TRUE(opened);
+    ctl.reset();
+    EXPECT_TRUE(waitFor([&] { return pane->overlay() == nullptr; }, 5000));
+    delete shown;
+}
+
+// A session of another host reaches only what its programs could reach over
+// ssh: its window runs no overlay, no window with a command, and no script
+// command for it, which `aglow run` runs when a script marks it remote.
+TEST_F(NativeWindow, ASessionOfAnotherHostRunsNoProgramHere) {
+    restartApplication(QStringLiteral("far-frames.conf"),
+                       testSettings({{QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}, {QStringLiteral("allowReadText"), true}}}}),
+                       {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const auto ssh = fakeSshTo(daemon, directory.filePath(QStringLiteral("ssh-bin")));
+    ASSERT_TRUE(ssh);
+    ASSERT_TRUE(shellSession(daemon, "far")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("box"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    AfterglowProto::IpcConnection ctl;
+    AfterglowProto::IpcConnection::Error failure;
+    ASSERT_TRUE(ctl.connect(daemon.socket(), &failure, 2000)) << failure.message;
+    ASSERT_TRUE(ctl.call(AfterglowMux::Target, AfterglowMux::Fn::SelectSession, MuxTest::Json::Array{AfterglowMux::ProtocolVersion, "far"}, 5000,
+                         &failure))
+        << failure.message;
+    const std::int64_t id = pane->sessionPaneId();
+    const auto refused = [&](const char* fn, MuxTest::Json::Array args) {
+        std::optional<MuxTest::Json::Value> result;
+        std::atomic<bool> answered{false};
+        std::thread caller([&] {
+            result = ctl.call("control", fn, std::move(args), 10000, &failure);
+            answered = true;
+        });
+        waitFor([&] { return answered.load(); }, 15000);
+        caller.join();
+        return result ? std::string("answered") : failure.message;
+    };
+    const std::string none = "a session of another host runs no program on this computer";
+    EXPECT_EQ(refused("overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"true"}, MuxTest::Json::Object{}}), none);
+    EXPECT_EQ(refused("overlayInput", MuxTest::Json::Array{"in", "x", true}), none);
+    EXPECT_EQ(refused("newWindow", MuxTest::Json::Array{"", MuxTest::Json::Array{"true"}}), none);
+    EXPECT_NE(refused("runAction", MuxTest::Json::Array{id, "script:far.there"}).find("only the script commands that a script marks remote"),
+              std::string::npos);
+    EXPECT_EQ(pane->overlay(), nullptr);
     delete shown;
 }
 

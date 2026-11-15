@@ -25,6 +25,7 @@
 #include <AfterglowProto/Ipc.h>
 #include <AfterglowProto/IpcServer.h>
 #include <AfterglowProto/Json.h>
+#include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Run.h>
 
 #include <PhosphorIpc/IpcProtocol.h>
@@ -2091,7 +2092,7 @@ std::string runLine(Json::Value pane, std::string padding = {})
 TEST(MuxCommandsLine, ARunNamesTheWindowsIdOfItsPane)
 {
     std::string error;
-    const auto line = MuxCommands::forWindow(runLine(3), windowPane, QStringLiteral("s"), &error);
+    const auto line = MuxCommands::forWindow(runLine(3), AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error);
     ASSERT_TRUE(line) << error;
     const auto request = Json::parse(*line);
     ASSERT_TRUE(request);
@@ -2109,16 +2110,28 @@ TEST(MuxCommandsLine, OtherLinesOfTheCommandsTargetStayAsTheyCame)
     // answers a pane ID that is not one, and a line that is not JSON.
     for (const std::string& line : {list, ack, subscribe, runLine(0), runLine(-1), runLine("x"), std::string("garbage")}) {
         std::string error;
-        EXPECT_EQ(MuxCommands::forWindow(line, windowPane, QStringLiteral("s"), &error), line);
+        EXPECT_EQ(MuxCommands::forWindow(line, AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error), line);
         EXPECT_TRUE(error.empty()) << error;
     }
+}
+
+TEST(MuxCommandsLine, AClientOfAnSshSessionReachesOnlyTheRemoteTarget)
+{
+    const std::string remoteRun = R"({"type":"call","id":7,"target":"remote","fn":"run","args":["r","tools","greet",[],"/",3]})";
+    std::string error;
+    const auto line = MuxCommands::forWindow(remoteRun, AfterglowProto::Remote::Target, windowPane, QStringLiteral("s"), &error);
+    ASSERT_TRUE(line) << error;
+    EXPECT_EQ((*Json::parse(*line))["args"].toArray().at(5).toInteger(), 41);
+    // The commands target, which a client of an ssh session does not have.
+    EXPECT_FALSE(MuxCommands::forWindow(runLine(3), AfterglowProto::Remote::Target, windowPane, QStringLiteral("s"), &error));
+    EXPECT_EQ((*Json::parse(error))["code"].toString(), AfterglowProto::IpcErrorCode::NoSuchTarget);
 }
 
 TEST(MuxCommandsLine, TheWindowRefusesWhatItCannotPassOn)
 {
     const auto refused = [](const std::string& line) {
         std::string error;
-        EXPECT_FALSE(MuxCommands::forWindow(line, windowPane, QStringLiteral("s"), &error)) << line;
+        EXPECT_FALSE(MuxCommands::forWindow(line, AfterglowProto::Run::Target, windowPane, QStringLiteral("s"), &error)) << line;
         return Json::parse(error).value_or(Json::Value());
     };
     // A pane of the session that the window does not show.
