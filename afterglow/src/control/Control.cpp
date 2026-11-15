@@ -4,6 +4,7 @@
 #include "Control.h"
 
 #include "../Pane.h"
+#include "../PaneOverlay.h"
 #include "../TerminalWindow.h"
 #include "../app/NotificationCenter.h"
 #include "../app/WindowStart.h"
@@ -12,13 +13,17 @@
 #include "../mux/MuxClient.h"
 #include "../scripting/ScriptHost.h"
 
+#include <QBuffer>
 #include <QDir>
+#include <QImage>
 #include <QFileInfo>
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QGuiApplication>
 #include <QSet>
 #include <QUrl>
+
+#include <AfterglowPty/Pty.h>
 
 #include <algorithm>
 #include <chrono>
@@ -76,6 +81,14 @@ void Control::attachWindow(TerminalWindow* window)
         if (!error.isEmpty()) notify(pane->id(), QStringLiteral("Move failed"), error);
     });
     connect(window, &TerminalWindow::paneCreated, this, &Control::attachPane);
+    // The window of a session: what its clients left goes with it, as no
+    // daemon tells it of them any more. Its overlays close with it.
+    if (window->showsSession()) {
+        connect(window, &QObject::destroyed, this, [this, prefix = sessionClientOwner(window->sessionHost(), window->sessionName())] {
+            m_sessionInputs.dropPrefix(prefix);
+            m_sessionOverlayOwners.removeIf([&prefix](const QString& owner) { return owner.startsWith(prefix); });
+        });
+    }
     connect(window, &TerminalWindow::scriptKey, this, &Control::scriptKey);
     connect(window, &TerminalWindow::scriptDockEvent, this, &Control::scriptDockEvent);
     connect(window, &TerminalWindow::tabSwitched, this, [this, window](quint32 from, quint32 to, int direction) {
@@ -206,6 +219,55 @@ std::optional<PaneInfo> Control::paneInfo(quint32 id) const
     TerminalWindow* window = nullptr;
     Pane* pane = find(id, &window);
     return pane ? std::optional(describe(window, pane)) : std::nullopt;
+}
+
+bool Control::runsIn(quint32 id, qint64 process, bool overlay) const
+{
+    // A terminal in a terminal (tmux, an editor) and a shell's nesting are
+    // far fewer.
+    constexpr int MaxAncestors = 64;
+    const Pane* pane = find(id);
+    if (pane && overlay) pane = pane->overlay() ? pane->overlay()->pane() : nullptr;
+    const pid_t leader = pane ? pane->programPid() : 0;
+    if (leader <= 0 || process <= 1 || process > std::numeric_limits<pid_t>::max()) return false;
+    pid_t at = pid_t(process);
+    for (int up = 0; at > 1 && up < MaxAncestors; ++up) {
+        const auto stat = AfterglowPty::processStat(at);
+        if (!stat) return false;
+        if (stat->session == leader) return true;
+        at = pid_t(stat->parent);
+    }
+    return false;
+}
+
+void Control::endSessionClient(const QString& owner, const QString& message)
+{
+    m_sessionInputs.drop(owner);
+    if (m_sessionOverlayOwners.remove(owner)) closeOverlays(owner, message);
+}
+
+void Control::endSessionClients(const QString& message)
+{
+    m_sessionInputs.clear();
+    for (const QString& owner : std::exchange(m_sessionOverlayOwners, {})) closeOverlays(owner, message);
+}
+
+void Control::encodePng(QImage image, std::function<void(const QString& base64)> done)
+{
+    offThread<QString>(
+        [image = std::move(image)]() {
+            QByteArray png;
+            QBuffer buffer(&png);
+            buffer.open(QIODevice::WriteOnly);
+            return image.save(&buffer, "PNG") ? QString::fromLatin1(png.toBase64()) : QString();
+        },
+        std::move(done));
+}
+
+Control::~Control()
+{
+    m_closing->store(true);
+    m_background.clear();
 }
 
 std::optional<quint32> Control::focusedPane() const

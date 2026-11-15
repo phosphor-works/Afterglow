@@ -159,7 +159,9 @@ This is true for the keys, the menu, scripts and `afterglow ctl`.
 Their programs run under the daemon, with the environment of the session (see [environment](#environment)).
 The window prepares them with its own settings, such as `Terminal.shell` and `Terminal.env`.
 
-The daemon keeps the tabs and splits of the session: their order, the ratio of each split, the pane that has the focus in each tab, a zoomed pane, the titles that you gave the tabs, and the tab that shows.
+The daemon keeps the tabs and splits of the session: their order, the ratio of each split, the pane that has the focus in each tab, a zoomed pane, the titles that you gave the tabs and the panes, and the tab that shows.
+It also keeps the command of each pane that a [project](PROJECTS.md#projects-and-mux-sessions) saves: the command that started the pane, or none for the shell.
+A window of a session of another host keeps no commands, because a project runs its commands on this computer.
 The window sends them after each change.
 The next window that shows the session shows them again.
 While no window shows the session, a pane whose program exits leaves its tab, as in a window.
@@ -204,7 +206,7 @@ A session pane differs from a pane outside a session in these ways:
 
 - The window of a session shows only the panes of that session (see [tabs and splits](#tabs-and-splits)).
 
-- A Sixel or iTerm2 image does not show when the program prints it before any window shows the session. A Kitty image that the program places then does not move the cursor. The daemon places images in cells, and only a window measures a cell.
+- Before any window shows the session, its cells have the size of the font of your settings (`Font`), at the scale of the primary screen when Afterglow starts the session, else at a scale of 1. The daemon places images in cells with that size. A window then measures its own cells, and an image that the program placed before keeps its cells. When the font does not load, the cells have no size: a Sixel or iTerm2 image does not show, and a Kitty image does not move the cursor, until a window shows the session.
 - An image shows when all of its pixels came from the daemon. The pixels of a large image come in more than one frame, so the image can show a short time after the text around it.
 - A bell, a notification or another request of the program comes after the text on the screen that the program wrote before it. It can come before history and before the pixels of an image that the program sent before it.
 - When a program sends an image again before its pixels came, the window shows each version that came whole.
@@ -213,7 +215,7 @@ A session pane differs from a pane outside a session in these ways:
   - A pane outside a session shows a compressed BMP (run-length encoding) and a GIF whose screen has an empty side. A session pane does not show them.
   - A session pane shows a BMP with a header of 52 or 56 bytes, or with its masks after the header (compression 6). A pane outside a session does not show it.
   - Where the first frame of a GIF does not draw, a session pane shows nothing, as Kitty and browsers do. A pane outside a session can show the background color of the GIF there.
-- The session keeps the terminal settings and the colors of the `afterglow mux new` that started it (see [environment](#environment)).
+- The session follows the terminal settings and the colors of the window that shows it, and keeps those of its last window while no window shows it (see [environment](#environment)).
 
 ### Exit status
 
@@ -327,6 +329,18 @@ It adds shell integration, `TERM`, `COLORTERM`, `TERM_PROGRAM` and the values of
 The programs of the session get the umask of `afterglow mux new`.
 They get the soft limit of open files that the daemon had before it raised its own (see [limits](#limits)).
 
+Each time a window shows a session of this computer, the session takes the variables of `Mux.updateEnvironment` from that Afterglow, as tmux does with `update-environment`.
+By default these are `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `SSH_AUTH_SOCK`, `SSH_AGENT_PID`, `SSH_CONNECTION`, `SSH_ASKPASS` and `KRB5CCNAME`.
+Thus a session that you show again after you log in again gets the new `SSH_AUTH_SOCK`.
+
+| Afterglow has the variable | The session |
+| --- | --- |
+| Yes | Takes Afterglow's value |
+| No | Removes it |
+
+Only the panes that start after that get the new values: a program that runs keeps its environment.
+A session of another host keeps its own values, because the values of this computer do not apply there.
+
 A new pane leaves out the variables that name another terminal or the shell instance that started the command.
 A window, an overlay and a session do this the same way.
 A variable that `Terminal.env` sets stays.
@@ -356,11 +370,16 @@ The daemon removes `AFTERGLOW_OVERLAY`.
 An `afterglow` that starts from a session pane does not give `AFTERGLOW_SESSION` to its own panes.
 
 `afterglow mux new` also sends the terminal settings of your configuration, such as `Terminal.scrollback` and the theme colors.
-The session keeps these values. A later change of them does not change a running session.
+From then on, the session follows the settings of the window that shows it.
+The window sends them when it shows the session, and again after each change, such as an edit of the configuration file.
+The daemon gives them to each pane of the session, also to a pane that starts later.
+While no window shows the session, it keeps the settings of its last window.
+A change of the terminal settings replaces the colors that the programs set (OSC 4, 10, 11), as in a window.
+So does a window with other terminal settings that shows the session, such as an Afterglow with another configuration.
 The requests that reach a window follow the settings of that window, such as `Terminal.bell` and `Terminal.clipboardRead` (see [what a window answers](#what-a-window-answers)).
 A change of these settings applies at once.
 `afterglow mux new` reads no colors from the application palette.
-When `Colors.theme` names a dark and a light theme, the session gets the dark theme.
+When `Colors.theme` names a dark and a light theme, `afterglow mux new` gives the session the dark theme, and a window gives it the theme that the window shows.
 With a `plasma` theme, the session gets only the colors that `kdeglobals` sets, over the theme.
 When `kdeglobals` sets no background, `plasma` alone takes `afterglow-dark`.
 
@@ -374,8 +393,7 @@ Without `--pane`, a command acts on the pane that has the focus in the tab that 
 The control socket of a window that shows a session also lists the session panes, with the pane IDs of that window, and acts on them as on the panes of other windows.
 A pane ID in the daemon and a pane ID in a window can have the same value.
 
-The daemon follows `Control.enabled` and `Control.allowReadText` as `afterglow mux new` found them.
-A later change of them does not change a running session.
+The daemon follows `Control.enabled` and `Control.allowReadText` of the window that showed the session last, else as `afterglow mux new` found them.
 A window that answers a command follows its own settings too.
 
 | Command | No window shows the session | A window shows the session |
@@ -386,7 +404,40 @@ A window that answers a command follows its own settings too.
 | `move-pane`, `detach-tab` | The daemon moves the pane in its layout. A move to a new window makes a new session, as a [drag out](#tabs-and-splits) does, which no window shows. | The window moves the pane, as a drag in the window does |
 | `get-text --selection` | Empty: only a window has a selection | The window answers |
 | `set-title`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
-| `overlay`, `screenshot`, `watch` | Refused with `CALL is not available for a session yet` | Refused the same way |
+| `overlay`, `screenshot` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window runs the overlay or takes the picture, and answers when it is done |
+| `watch` | The daemon sends the events of the session | The daemon sends the events of the session |
+
+The overlay of `afterglow ctl overlay` runs on the computer of the window, over the pane, as an overlay of the window's own pane does: its program and its `--cwd` are of that computer.
+It belongs to the client that asked for it: it closes when that client goes. The standard input of `afterglow ctl overlay` goes to the window in parts.
+`screenshot` needs `Control.allowReadText`, of the session and of the window.
+
+`afterglow ctl watch` gets the [events](CONTROL.md#events) of the panes of the session from the daemon, also while no window shows it.
+
+| Event | For a session |
+| --- | --- |
+| `paneCreated`, `paneClosed` | When a pane of the session starts or ends |
+| `paneMoved` | When the window that shows the session moves a pane, as for a pane of its own, and when `afterglow ctl move-pane` moves one while no window shows the session |
+| `focusChanged` | When another pane has the focus in the tab that shows |
+| `titleChanged`, `statusChanged`, `bell`, `userVarChanged`, `commandStarted`, `commandFinished` | As in a window |
+| `contextChanged` | Never: the daemon knows no context of a pane, and `ls` gives it as empty |
+
+The daemon merges the events as a window does, with `Control.eventInterval` of the window that showed the session last, else of the `afterglow` that started the session.
+It sends the command of `commandStarted` and `commandFinished`, and the value of `userVarChanged`, only with `Control.allowReadText`.
+When the session ends, the daemon sends `paneClosed` for its panes, then ends each subscription with the error `NO_SUCH_SESSION`. When `Control.enabled` goes off, it does the same with `NO_SUCH_TARGET`, as a window does. `afterglow ctl watch` then exits with status 1 and says why.
+
+A session of another host reaches only what its programs could reach over ssh: no program of this computer runs for it.
+
+| Call from a session of another host | The window |
+| --- | --- |
+| `overlay` | Refuses it: `a session of another host runs no program on this computer` |
+| `new-window` with a command | Refuses it the same way. Without a command, it opens a window with your shell. |
+| `action script:ID.COMMAND` | Refuses it. `aglow run` in the session runs the script commands that a script marks remote. |
+
+| Limit of the calls that a window answers | Value | At the limit |
+| --- | --- | --- |
+| Answer of the window | 24 MiB of JSON, which the window sends in parts of 1 MiB | The call fails with the code `failed`: `the answer is larger than 24 MiB` |
+| Screenshots in progress for the clients of sessions | 4, for all clients | The call fails with the code `busy` |
+| Inputs of `overlayInput` that wait for `overlay` | 4 for each client, 64 MiB for all the clients of sessions | The `overlayInput` call fails |
 
 For `split` and `new-tab`, `afterglow ctl` prepares the program with your settings, as `afterglow mux new` does: `Terminal.shell`, shell integration and `Terminal.env`, over the environment of the session.
 Without `--cwd`, a new tab or split starts in the directory of its pane, or where `Window.workingDirectory` says.
@@ -429,11 +480,13 @@ The daemon also gives the pane its answer to the query of `aglow run` (OSC 24569
 | Item | Value |
 | --- | --- |
 | Local socket | `remote-TOKEN.sock` with mode 0600, in the directory of the socket that session panes name in `AFTERGLOW_SOCKET`: `$XDG_RUNTIME_DIR/aglow-mux`, else `$XDG_STATE_HOME/aglow-mux` (see [sockets](#sockets)). A daemon that starts removes those that a daemon left when it was killed. |
-| Settings | `Terminal.sshRemoteCommands`, `Control.enabled` and `Scripts.enabled` as `afterglow mux new` found them, and the same settings of the window that runs the command |
+| Settings | `Terminal.sshRemoteCommands`, `Control.enabled` and `Scripts.enabled` of the window that showed the session last, else as `afterglow mux new` found them, and the same settings of the window that runs the command. When a window turns remote commands off, the sockets of the session close. |
 | End | When the `afterglow ssh` process ends, when its pane closes, and when the daemon ends. The daemon then cancels the forward with `ssh -O cancel`, with the `ssh` on its own `PATH` |
 | Limits | 16 sessions for each pane, 256 for the daemon, and 64 connections for each socket, as in a window |
 
-A pane of a session has no overlay, so `afterglow ssh` in an overlay gets no socket there.
+The daemon gives a session pane no overlay. An overlay over a session pane runs in the window, on the computer of the window, so `afterglow ssh` in it gets no socket of the daemon.
+The daemon gives a socket only to an `afterglow ssh` that runs in the pane that it names, or below a program of that pane, by its processes.
+A process of another terminal that names the pane gets `CALL_FAILED`: `` only `afterglow ssh` in pane N opens a remote socket for it ``.
 When no window shows the session, a client of the remote host gets `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts`.
 
 ## What the daemon answers
@@ -518,6 +571,8 @@ When a session pane closes in the window, a file transfer that the window ran ge
 | Waiting output to one client | 32 MiB | The daemon closes the connection to a client that does not read its answers |
 | Environment, arguments and directory of a session | UTF-8 text | `afterglow mux new` changes each byte that is not UTF-8 to U+FFFD |
 | Wait for a window to start its stream after the answer to its attach call | 5 seconds | The session is free for another window, and the window does not show it |
+| Command of a pane that the daemon keeps for a project | 64 arguments of at most 4096 bytes | The pane saves as a shell |
+| Titles and commands of the panes that the daemon keeps, together | 256 KiB in a session | The panes past it save as shells, with the titles of their programs |
 | Input of a window that the program does not read | 32 MiB in the queue of the PTY, 4 MiB in the daemon, then 32 MiB in the window | The window refuses more input and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
 | Frames to a window | About 2 MiB of state in each frame, and at most 4 MiB, the largest frame of the stream | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. |
 | History rows to a window | `Terminal.scrollback` of the window, in rows | The daemon sends no older rows |

@@ -177,8 +177,10 @@ public:
         if (frame) return frame;
         // The target also goes when afterglow quits, which then closes the
         // connection: only a socket that still answers had control turned off.
+        // The daemon ends the subscriptions of a session itself, and lists no
+        // targets: its error says why.
         IpcClient::Error closed;
-        if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget) && !m_client.targets(ReplyTimeoutMs, &closed)) {
+        if (!m_daemon && error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget) && !m_client.targets(ReplyTimeoutMs, &closed)) {
             fail(QStringLiteral("Afterglow quit"));
         } else {
             report(error);
@@ -273,7 +275,7 @@ private:
         // The socket stays open for launches: the control target is what
         // Control.enabled takes away, also from a running watch.
         if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) {
-            fail(QStringLiteral("Control.enabled is off in %1").arg(m_own ? owner() : QStringLiteral("the running Afterglow")));
+            fail(QStringLiteral("Control.enabled is off in %1").arg(m_own || m_daemon ? owner() : QStringLiteral("the running Afterglow")));
         } else if (error.tooLong) {
             fail(QStringLiteral("the request is over what one call carries (%1 MiB)").arg(IpcClient::MaxLineBytes >> 20));
         } else if (error.timedOut) {
@@ -319,6 +321,7 @@ QJsonValue sessionLaunch(QString directory, const QStringList& command)
     launch.environment = std::move(opts.environment);
     launch.unset = std::move(opts.unsetEnvironment);
     launch.launchedProgram = launchedProgramName(command).toStdString();
+    launch.command = sessionCommand(command);
     return QJsonDocument::fromJson(QByteArray::fromStdString(AfterglowProto::Json::write(AfterglowMux::toJson(launch)))).object();
 }
 
@@ -674,8 +677,8 @@ int runCtl(int argc, char** argv)
         std::printf("%lld\n", result->toInteger());
         return 0;
     };
-    auto printObject = [&client](const QString& fn, const QJsonArray& callArgs) {
-        const auto result = client.call(fn, callArgs);
+    auto printObject = [&client](const QString& fn, const QJsonArray& callArgs, int timeoutMs = ReplyTimeoutMs) {
+        const auto result = client.call(fn, callArgs, timeoutMs);
         if (!result) return 1;
         printJson(QJsonDocument(result->toObject()), QJsonDocument::Compact);
         return 0;
@@ -753,7 +756,9 @@ int runCtl(int argc, char** argv)
         if (const auto error = extra(1)) return usage(*error);
         if (args.size() != 1) return usage(QStringLiteral("open-project takes NAME [--new] [--session | --no-session]"));
         const QString mode = session ? QStringLiteral("session") : window ? QStringLiteral("window") : QString();
-        return printObject(QStringLiteral("openProject"), {args.first(), fresh, mode});
+        // A session can wait for the daemon to start, and for another open
+        // of the project.
+        return printObject(QStringLiteral("openProject"), {args.first(), fresh, mode}, 3 * ReplyTimeoutMs);
     }
     if (command == QLatin1String("new-window")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());

@@ -24,6 +24,8 @@
 #include <charconv>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -737,4 +739,74 @@ TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
         std::string error;
         EXPECT_TRUE(AfterglowMux::sessionOptions(AfterglowMux::toJson(options), &error)) << json << ": " << error;
     }
+}
+
+// A session that no window shows has the cell size of the font of the
+// settings: its terminal answers a program's query of it (CSI 16 t), and
+// places Sixel and iTerm2 images, which it drops without one.
+TEST_F(MuxCommandTest, ADetachedSessionHasTheCellSizeOfTheFont)
+{
+    if (std::system("command -v python3 >/dev/null 2>&1") != 0) GTEST_SKIP() << "python3 is not installed";
+    const std::string out = m_dir + "/cell";
+    const std::string script = R"(import os, sys, time, tty
+tty.setraw(0)
+os.write(1, b'\x1b[16t')
+r = b''
+while not r.endswith(b't'):
+    r += os.read(0, 1)
+with open(sys.argv[1] + '.part', 'wb') as f:
+    f.write(r)
+os.rename(sys.argv[1] + '.part', sys.argv[1])
+while True:
+    try:
+        os.kill(int(sys.argv[2]), 0)
+    except OSError:
+        break
+    time.sleep(0.2)
+)";
+    ASSERT_EQ(mux({"new", "--detach", "--", "python3", "-I", "-c", script, out, std::to_string(::getpid())}).status, 0);
+    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+    // ESC [ 6 ; height ; width t
+    const std::string reply = readFile(out);
+    int height = 0;
+    int width = 0;
+    ASSERT_EQ(std::sscanf(reply.c_str(), "\x1b[6;%d;%dt", &height, &width), 2) << reply;
+    EXPECT_GT(width, 0);
+    EXPECT_GT(height, width);
+}
+
+// `afterglow ctl --session NAME watch` subscribes to the events of the session
+// in the daemon, also while no window shows it, and prints them.
+TEST_F(MuxCommandTest, CtlWatchPrintsTheEventsOfASession)
+{
+    std::vector<std::string> args{"new", "--detach", "--name", "seen"};
+    const auto command = waitsForTheTest();
+    args.insert(args.end(), command.begin(), command.end());
+    ASSERT_EQ(mux(args).status, 0);
+    // New tabs while the watch runs, however long it takes to subscribe: the
+    // watch prints those that come after.
+    std::atomic<bool> stop{false};
+    std::thread splits([this, &stop] {
+        for (int i = 0; i < 10 && !stop; ++i) {
+            std::this_thread::sleep_for(500ms);
+            EXPECT_EQ(ctl({"--session", "seen", "new-tab"}).status, 0);
+        }
+    });
+    const Result watched = run({"-c", std::string("exec timeout 6 '") + AFTERGLOW_BINARY + "' ctl --session seen watch"}, "/bin/sh");
+    stop = true;
+    splits.join();
+    EXPECT_NE(watched.out.find(R"(,"event":"paneCreated"})"), std::string::npos) << watched.out << watched.err;
+    EXPECT_NE(watched.out.find(R"(,"event":"focusChanged"})"), std::string::npos) << watched.out << watched.err;
+    // The session ends: the watch ends with status 1 and says why, where it
+    // once waited for ever (timeout's 124). A watch that comes after the end
+    // finds no session.
+    std::thread ending([this] {
+        std::this_thread::sleep_for(2000ms);
+        EXPECT_EQ(mux({"kill", "--force", "seen"}).status, 0);
+    });
+    const Result ended = run({"-c", std::string("exec timeout 8 '") + AFTERGLOW_BINARY + "' ctl --session seen watch"}, "/bin/sh");
+    ending.join();
+    EXPECT_EQ(ended.status, 1) << ended.out << ended.err;
+    EXPECT_TRUE(ended.err.find("session 'seen' ended") != std::string::npos || ended.err.find("no session named 'seen'") != std::string::npos)
+        << ended.err;
 }

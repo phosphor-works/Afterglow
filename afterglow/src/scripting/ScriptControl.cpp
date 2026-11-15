@@ -5,6 +5,8 @@
 
 #include "../control/Control.h"
 #include <cmath>
+#include <memory>
+#include <optional>
 
 namespace Afterglow {
 
@@ -28,7 +30,6 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         const QString error = [&]() -> QString {
             if (kind == QLatin1String("open_directory")) return control.openDirectory(s("cwd"), s("layout"), data);
             if (kind == QLatin1String("save_project")) return control.saveProject(pane, s("name"), e.value(QStringLiteral("overwrite")).toBool(), data);
-            if (kind == QLatin1String("open_project")) return control.openProject(s("name"), e.value(QStringLiteral("new_instance")).toBool(), {}, data);
             if (kind == QLatin1String("list_projects")) { data.insert(QStringLiteral("names"), control.projectNames()); return {}; }
             if (kind == QLatin1String("move_pane") || kind == QLatin1String("detach_tab")) {
                 QVariantMap moved;
@@ -150,6 +151,25 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                     complete({message, data, code});
                 }, refusalCode);
             return {error, {}, error.isEmpty() ? QString() : refusalCode, error.isEmpty()};
+        }
+        if (kind == QLatin1String("open_project")) {
+            // A window opens before openProject returns. A session waits for
+            // the mux daemon off the GUI thread: the result comes then.
+            struct Outcome
+            {
+                bool returned = false;
+                std::optional<ScriptHost::EffectResult> now;
+            };
+            const auto outcome = std::make_shared<Outcome>();
+            control.openProject(e.value(QStringLiteral("name")).toString(), e.value(QStringLiteral("new_instance")).toBool(), {},
+                                [outcome, complete = std::move(complete)](const QString& error, const QVariantMap& data) {
+                                    ScriptHost::EffectResult result{error, data, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
+                                    if (outcome->returned) complete(std::move(result));
+                                    else outcome->now = std::move(result);
+                                });
+            outcome->returned = true;
+            if (outcome->now) return *outcome->now;
+            return {{}, {}, {}, true};
         }
         if (kind == QLatin1String("overview")) {
             // The window knows which script's overview it shows.

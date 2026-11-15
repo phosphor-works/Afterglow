@@ -12,6 +12,7 @@
 #include <QSet>
 #include <QStandardPaths>
 #include <cmath>
+#include <functional>
 
 namespace Afterglow {
 namespace {
@@ -122,9 +123,24 @@ ProjectStore::Launch ProjectStore::launchOf(const QJsonObject& pane, QStringList
 
 QJsonObject ProjectStore::firstPane(const QJsonObject& document)
 {
-    QJsonObject node = document.value(QStringLiteral("tabs")).toArray().at(0).toObject().value(QStringLiteral("tree")).toObject();
-    while (!node.contains(QStringLiteral("pane")) && node.contains(QStringLiteral("first"))) node = node.value(QStringLiteral("first")).toObject();
-    return node.value(QStringLiteral("pane")).toObject();
+    return panes(document).value(0);
+}
+
+QList<QJsonObject> ProjectStore::panes(const QJsonObject& document)
+{
+    QList<QJsonObject> out;
+    // A valid tree nests no deeper than validate allows.
+    std::function<void(const QJsonObject&)> walk = [&](const QJsonObject& node) {
+        if (node.contains(QStringLiteral("pane"))) {
+            out.append(node.value(QStringLiteral("pane")).toObject());
+            return;
+        }
+        if (!node.contains(QStringLiteral("first"))) return;
+        walk(node.value(QStringLiteral("first")).toObject());
+        walk(node.value(QStringLiteral("second")).toObject());
+    };
+    for (const QJsonValue& tab : document.value(QStringLiteral("tabs")).toArray()) walk(tab.toObject().value(QStringLiteral("tree")).toObject());
+    return out;
 }
 
 bool ProjectStore::opensSession(const QJsonObject& document)
