@@ -172,8 +172,8 @@ Static audio shaders redraw when the spectrum changes. They do not need a contin
 | Component | Meaning |
 | --- | --- |
 | `.x` | This pane's retained history rows of the main screen. A window pass uses the focused pane. |
-| `.y` | Combined retained rows in the current tab. |
-| `.z` | The combined count, smoothed with a 1.25-second time constant. |
+| `.y` | The retained history rows of the main screen of all panes in the current tab, added together. |
+| `.z` | The `.y` count, smoothed with a 1.25-second time constant. |
 | `.w` | Reserved. Always zero. |
 
 Background tabs, other windows, visible screen rows and discarded rows do not contribute.

@@ -94,9 +94,9 @@ private:
     /// session still holds once the numbers went round.
     std::uint32_t nextPaneId();
     /// Applies what the window of @p attachment, which finished, sent before
-    /// it heard (Attachment::takeLate()) to @p session, the session of its
-    /// name. An empty session ends.
-    void applyLate(Attachment& attachment, std::vector<std::unique_ptr<Session>>::iterator session);
+    /// it heard (Attachment::takeLate()) to @p own, the session of its name.
+    /// The caller ends the session when that emptied it.
+    void applyLate(Attachment& attachment, Session& own);
     /// What a pane runs when it has news for the daemon's thread: it wakes
     /// the poll. Safe to call from any thread.
     std::function<void()> waker() const;

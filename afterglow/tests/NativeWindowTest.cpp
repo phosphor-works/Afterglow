@@ -10494,7 +10494,9 @@ TEST_F(NativeWindow, AMuxSessionShowsInAWindowAndEndsWithIt) {
     EXPECT_TRUE(pane->isSessionPane());
     ASSERT_TRUE(waitFor([&] { return screenOf(pane).startsWith(QLatin1Char('$')); }, 5000)) << screenOf(pane).toStdString();
     // The window measured the pane, and the program got that size.
-    ASSERT_LT(pane->cols(), 60);
+    // The screens that show the new size can come after the prompt: the
+    // window asks for them as it shows the pane, before its first layout.
+    ASSERT_TRUE(waitFor([&] { return pane->cols() < 60; })) << pane->cols();
     ASSERT_TRUE(pane->sendInput("stty size\n"));
     ASSERT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("%1 %2").arg(pane->rows()).arg(pane->cols())); }, 5000))
         << screenOf(pane).toStdString();

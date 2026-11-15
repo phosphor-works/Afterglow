@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -158,6 +159,27 @@ TEST(PaneLaunch, ASessionsPaneReadsTheSessionsEnvironment)
     SpawnOptions plain;
     Afterglow::offerTerminalEnvironment(plain, QStringLiteral("afterglow"), &bare);
     EXPECT_EQ(valueOf(plain, "TERMINFO_DIRS").value_or("(none)").find("/window/terminfo"), std::string::npos);
+}
+
+TEST(PaneLaunch, APaneWhoseDirectoryIsGoneStartsInTheHomeThatItGets)
+{
+    const QString gone = QDir::tempPath() + QStringLiteral("/afterglow-gone-%1").arg(QCoreApplication::applicationPid());
+    ASSERT_FALSE(QFileInfo::exists(gone));
+    const std::string launchHome = QDir::tempPath().toStdString();
+    const std::string sessionHome = QDir::rootPath().toStdString();
+    const Afterglow::InheritedEnvironment session{{"HOME", sessionHome}};
+    // The HOME of the launch, which the child gets.
+    const SpawnOptions launched = Afterglow::prepareLaunch(plainSettings(), gone, {QStringLiteral("/bin/true")},
+                                                           {{QStringLiteral("HOME"), QDir::tempPath()}}, &session);
+    EXPECT_EQ(launched.workingDirectory, launchHome);
+    // A HOME of the launch that is no directory: the inherited one.
+    const SpawnOptions inheritedHome = Afterglow::prepareLaunch(plainSettings(), gone, {QStringLiteral("/bin/true")},
+                                                                {{QStringLiteral("HOME"), gone}}, &session);
+    EXPECT_EQ(inheritedHome.workingDirectory, sessionHome);
+    // Neither: this process's home.
+    const Afterglow::InheritedEnvironment none;
+    const SpawnOptions own = Afterglow::prepareLaunch(plainSettings(), gone, {QStringLiteral("/bin/true")}, {}, &none);
+    EXPECT_EQ(own.workingDirectory, QFile::encodeName(QDir::homePath()).toStdString());
 }
 
 TEST(PaneLaunch, TheLaunchsVariablesWinOverTheConfiguredOnes)

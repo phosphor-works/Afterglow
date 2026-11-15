@@ -262,10 +262,9 @@ private:
     std::string encodeLocked(const WaitingCall& waiting) const;
     /// Bytes for the program, past the window.
     void writeDirect(std::string_view bytes);
-    /// The answers of a pane that no window shows.
-    void clipboardWithoutWindow(const AfterglowVt::ClipboardRequest& request);
-    void protocolWithoutWindow(int code, std::string_view payload);
-    void notificationWithoutWindow(const AfterglowVt::NotificationRequest& request);
+    /// Writes the answer of a pane that no window shows to @p call
+    /// (Host::answerWithoutWindow), if it has one.
+    void answerLocally(const Host::Call& call);
 
     /// Guards what follows: the reader thread queues host calls, and the
     /// daemon's thread takes them.

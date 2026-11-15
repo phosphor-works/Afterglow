@@ -52,8 +52,10 @@ class Session;
 /// catch up once the pane shows, before each of its host calls, before its
 /// exit, and when the window reads the pane's text (Attach::InputType::
 /// Refresh). A pane shows until the window says otherwise, also one that
-/// links only later. Both come at once, never behind the pane's input that
-/// waits for its PTY: a program that reads nothing holds neither.
+/// links only later. Both come on the action channel, never behind the
+/// pane's input that waits for its PTY, nor behind the control channel that
+/// held input past MaxHeldInput stops: a program that reads nothing holds
+/// neither.
 ///
 /// What a window that does not read makes the daemon hold, for each pane:
 /// the frames that the pane's channel takes (the stream's window, 4 MiB), one
@@ -157,7 +159,8 @@ public:
     /// gets it when it does. The host calls that did not go yet go back to
     /// the panes of @p session (returnHostCalls()). The input that waits
     /// for a PTY goes as for a window that left: the bytes, a reset and a
-    /// clear once, without a wait, and no size.
+    /// clear once, without a wait, and no size. Without @p session (it
+    /// ended), only the bytes of the panes that went to another session.
     void finish(Attach::EventType type, Session* session = nullptr);
     /// Drops the host calls that wait for the channel. Those of the live panes
     /// of @p session get the answers of a pane that no window shows: the
@@ -201,7 +204,8 @@ private:
         /// (StateWriter::markText).
         std::uint64_t refreshes = 0;
         /// The Refresh inputs whose text the writer marked: their Refreshed
-        /// events go once the frames carried it, as many as fit the queue
+        /// events go once the frames that it made carry it, also one that
+        /// waits for the channel (waiting), as many as fit the queue
         /// (Mux.eventQueue) in each pass. The frames carry the screens
         /// meanwhile.
         std::uint64_t marked = 0;
@@ -212,11 +216,15 @@ private:
     Attachment() = default;
     void accept();
     void readInput(Session& session);
-    /// readInput() once finishing(): what counts goes to m_late.
-    void readLate(Session& session);
-    /// Gives @p message to its pane. False when the pane's PTY has no room
-    /// for its bytes and @p windowLeft is not: then it waits.
-    bool deliver(Session& session, const Attach::Input& message, bool windowLeft);
+    /// readInput() once finishing(): what counts goes to m_late. Without
+    /// @p session (it ended), the bytes of the panes that went to another
+    /// session still go.
+    void readLate(Session* session);
+    /// Gives @p message to its pane: one of @p session, or for its bytes one
+    /// that went to another session. Without @p session (it ended), only
+    /// the latter. False when the pane's PTY has no room for its bytes and
+    /// @p windowLeft is not: then it waits.
+    bool deliver(Session* session, const Attach::Input& message, bool windowLeft);
     /// Holds @p message behind the input that waits for its pane.
     void hold(Attach::Input message);
     /// Sends the input that waits for room in each PTY, as far as it goes;

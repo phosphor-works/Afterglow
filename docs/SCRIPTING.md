@@ -367,6 +367,7 @@ A split's `on_pane_created` also contains `split_from`, the pane it split from, 
 `on_tab_switch` contains `from_tab`, `to_tab` and `direction`, 1 toward a tab on the right and -1 toward one on the left.
 Its pane is the new tab's focused pane.
 `on_pane_moved` runs when a pane moves to another split, tab or window.
+A swap or a rotation of the panes in a tab does not send it.
 A tab that moves to another place in its window sends `on_pane_moved` for each of its panes. The tabs that the move puts at another index send it for each of their panes too.
 A pane of a mux session that moves to a new window goes to a new session, and gets a new pane ID.
 The script then gets `on_pane_closed` and `on_pane_created`, not `on_pane_moved` (see [MUX.md](MUX.md#move-panes-and-tabs)).
@@ -1157,6 +1158,7 @@ Another value is refused with `invalid_effect`.
 A missing selection or unavailable region returns `available=false`.
 So does the last output of a session pane while its rows still come from the mux daemon, right after a window shows the session.
 For a session pane that you cannot see, `read_text`, `read_region` and `semantic_regions` first get the screen and the history from the mux daemon.
+They do this also for a pane that shows again before its screen came.
 They wait at most 5 seconds for them (see [MUX.md](MUX.md#limits)).
 
 `semantic_regions` returns up to 1,024 retained shell regions in chronological order.

@@ -361,7 +361,6 @@ bool MuxPane::callsWaiting(std::uint64_t window) const
     return m_window == window && !m_hostCalls.empty();
 }
 
-
 void MuxPane::answerWithoutWindow(std::string_view encoded)
 {
     // Only these get an answer: the others go undecoded, a clipboard write
@@ -376,9 +375,7 @@ void MuxPane::answerWithoutWindow(std::string_view encoded)
     default:
         return;
     }
-    const auto call = Host::decode(encoded);
-    if (!call) return;
-    if (const std::string answer = Host::answerWithoutWindow(*call); !answer.empty()) writeDirect(answer);
+    if (const auto call = Host::decode(encoded)) answerLocally(*call);
 }
 
 void MuxPane::bell()
@@ -532,14 +529,7 @@ void MuxPane::desktopNotification(const AfterglowVt::NotificationRequest& reques
 {
     Host::Call call = Host::make(Host::Kind::DesktopNotification);
     call.notification = request;
-    if (forward(call) != Forward::Queued) notificationWithoutWindow(request);
-}
-
-void MuxPane::notificationWithoutWindow(const AfterglowVt::NotificationRequest& request)
-{
-    Host::Call call = Host::make(Host::Kind::DesktopNotification);
-    call.notification = request;
-    if (const std::string answer = Host::answerWithoutWindow(call); !answer.empty()) writeDirect(answer);
+    if (forward(call) != Forward::Queued) answerLocally(call);
 }
 
 bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
@@ -547,15 +537,8 @@ bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
     // The window asks the user and answers, as for a terminal of its own.
     Host::Call call = Host::make(Host::Kind::ClipboardRequest);
     call.clipboard = request;
-    if (forward(call) != Forward::Queued) clipboardWithoutWindow(request);
+    if (forward(call) != Forward::Queued) answerLocally(call);
     return true;
-}
-
-void MuxPane::clipboardWithoutWindow(const AfterglowVt::ClipboardRequest& request)
-{
-    Host::Call call = Host::make(Host::Kind::ClipboardRequest);
-    call.clipboard = request;
-    if (const std::string answer = Host::answerWithoutWindow(call); !answer.empty()) writeDirect(answer);
 }
 
 namespace {
@@ -596,15 +579,12 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
         }
     }
     if (wake) m_wake();
-    if (noWindow) protocolWithoutWindow(code, payload);
+    if (noWindow) answerLocally(Host::make(Host::Kind::TerminalProtocol, {}, std::string(payload), code));
 }
 
-void MuxPane::protocolWithoutWindow(int code, std::string_view payload)
+void MuxPane::answerLocally(const Host::Call& call)
 {
-    if (const std::string answer = Host::answerWithoutWindow(Host::make(Host::Kind::TerminalProtocol, {}, std::string(payload), code));
-        !answer.empty()) {
-        writeDirect(answer);
-    }
+    if (const std::string answer = Host::answerWithoutWindow(call); !answer.empty()) writeDirect(answer);
 }
 
 void MuxPane::ptyData(std::string_view bytes)

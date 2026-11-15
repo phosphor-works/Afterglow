@@ -11,7 +11,6 @@
 #include <AfterglowProto/Transfer.h>
 
 #include <array>
-
 #include <vector>
 
 namespace AfterglowMux::Host {

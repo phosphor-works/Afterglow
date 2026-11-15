@@ -137,8 +137,9 @@ public:
     /// or exit of theirs reaches them, and the window closes them with
     /// MuxRelease::Nothing. The calls of their terminals that reach this
     /// window still get the answers of a pane that no window shows
-    /// (Host::answerWithoutWindow): the daemon answers those that did not
-    /// leave it. It calls the daemon and waits for the answer.
+    /// (Host::answerWithoutWindow), in their order: the daemon answers those
+    /// that did not leave it at once, so those answers can come first. It
+    /// calls the daemon and waits for the answer.
     std::optional<QString> breakOut(const AfterglowMux::Layout& layout, QString* error);
 
     /// False when the link ended, or the input of pane @p id that waits
@@ -155,7 +156,8 @@ public:
     /// Whether the user can see pane @p id: its terminal in the daemon
     /// reports a change to the program (mode 2033), and the daemon holds the
     /// screens of a pane that the user cannot see (StateWriter::updateHeld)
-    /// until it shows, or until a refresh().
+    /// until it shows, or until a Refresh (askRefresh()). It goes on the
+    /// action channel, past the input that waits for a program.
     void sendVisible(std::uint32_t id, bool visible);
     /// The input of pane @p id that waits for the channel, in bytes: the
     /// backlog that a file transfer or a drag of that pane holds back for.
@@ -182,17 +184,25 @@ public:
     /// How long a refresh waits: as long as a call of the daemon, which a
     /// daemon that does not answer one does not answer either.
     static constexpr int RefreshWaitMs = AfterglowMux::CallTimeoutMs;
-    /// Asks the daemon for the screens and the history of panes @p ids as
-    /// they are now (Attach::InputType::Refresh), also of panes that the
-    /// window does not show, whose screens the daemon holds, and reads the
-    /// stream until their frames applied, for up to @p waitMs: before a read
-    /// of their text. The calls of the panes' terminals that come meanwhile
-    /// wait until after it, so that the read runs no answer of the window,
-    /// unless they would pass what the window holds of them: then the
-    /// panes answer them meanwhile, and the link stays.
-    /// A pane whose frames do not come (no channel yet, or its program
-    /// exited) has nothing more to wait for. True when all came.
-    bool refresh(const std::vector<std::uint32_t>& ids, int waitMs = RefreshWaitMs);
+    /// Asks the daemon for the screens and the history of pane @p id as they
+    /// are now (Attach::InputType::Refresh), also of a pane that the window
+    /// does not show, whose screens the daemon holds, and waits for nothing.
+    /// Once the answer came and the frames that it names applied, the pane
+    /// hears it (Pane::sessionRefreshed), with the ticket that this returns.
+    /// 0 when nothing comes to wait for: the pane has no channel yet, its
+    /// last frame came, or the session no longer shows.
+    std::uint64_t askRefresh(std::uint32_t id);
+    /// Reads the stream until the answers of @p tickets (pane, ticket of
+    /// askRefresh()) came and their frames applied, for up to @p waitMs:
+    /// before a read of the panes' text, or a capture. An answer to a later
+    /// Refresh of the pane counts too. The calls of the panes' terminals
+    /// that come meanwhile wait until after it, so that the read runs no
+    /// answer of the window, unless they would pass what the window holds of
+    /// them: then the panes answer them meanwhile, and the link stays. A
+    /// pane whose last frame came has nothing more to wait for. Each pane
+    /// hears of its own answer, also when another one does not come in
+    /// time. True when all came.
+    bool waitRefreshed(const std::map<std::uint32_t, std::uint64_t>& tickets, int waitMs = RefreshWaitMs);
 
 private:
     MuxClient() = default;
@@ -232,6 +242,11 @@ private:
     /// Queues @p input for pane @p id after the input that waits, while the
     /// session shows.
     void sendPaneInput(std::uint32_t id, AfterglowMux::Attach::Input& input);
+    /// Queues @p input, an action (Attach::isAction), for the action channel.
+    void sendAction(const AfterglowMux::Attach::Input& input);
+    /// Tells each pane whose Refresh got its answer, and whose frames that
+    /// the answer names applied, its newest ticket (Pane::sessionRefreshed).
+    void tellRefreshed();
     /// One call of the daemon's on a connection of its own, while the session
     /// shows: the GUI thread waits for the answer. A failure is logged and
     /// gives nothing, with the daemon's words in @p error.
@@ -248,7 +263,9 @@ private:
     AfterglowProto::MuxSockets m_sockets; ///< the daemon's, for callDaemon
     std::unique_ptr<PhosphorChannel::Stream> m_stream;
     PhosphorChannel::StreamWriter* m_input = nullptr;
-    /// Attach::ActionChannel: the kill and the panes that the user closed
+    /// Attach::ActionChannel: the kill, the panes that the user closed, what
+    /// the user sees of each pane (Visible) and the reads of a pane's text
+    /// (Refresh)
     PhosphorChannel::StreamWriter* m_actions = nullptr;
     QSocketNotifier* m_readNotifier = nullptr;
     QSocketNotifier* m_writeNotifier = nullptr;
@@ -296,9 +313,10 @@ private:
         std::uint64_t asked = 0;
         std::uint64_t answered = 0;
         std::uint64_t frames = 0; ///< of the newest Refreshed
+        std::uint64_t told = 0; ///< the newest answer that the pane heard of (tellRefreshed)
     };
     std::map<std::uint32_t, Refreshes> m_refreshes;
-    /// refresh() reads the stream: the calls of the panes wait (releaseHostCalls).
+    /// waitRefreshed() reads the stream: the calls of the panes wait (releaseHostCalls).
     bool m_holdingCalls = false;
     std::map<std::uint32_t, WaitingHostCalls> m_waitingHostCalls;
     std::size_t m_waitingHostBytes = 0;
@@ -319,7 +337,7 @@ private:
     /// One queue for the control channel: the daemon reads it in order. At
     /// most one layout waits, the newest.
     std::deque<WaitingInput> m_waitingInput;
-    std::deque<std::string> m_waitingActions; ///< ClosePane frames that wait for the action channel
+    std::deque<std::string> m_waitingActions; ///< the frames of actions that wait for the action channel
     /// Where m_waitingInput holds the newest size of a pane, while nothing
     /// follows it: a later size takes its place.
     std::optional<std::uint32_t> m_waitingResizeOf;

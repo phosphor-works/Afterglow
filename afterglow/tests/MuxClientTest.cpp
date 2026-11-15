@@ -249,8 +249,10 @@ TEST(MuxClient, AReadOfAHiddenPaneGivesItsCurrentText)
 
 // A window binds its panes before it shows: the daemon hears that the user
 // cannot see them, maybe before their first frame went, then that the user
-// can. The size that the window measured meanwhile reaches the replica, and a
-// read of a pane that shows waits for nothing.
+// can. The size that the window measured meanwhile reaches the replica with
+// the screens that the Visible brings, without a read of the text. A pane
+// that the user saw from the start holds nothing, so its reads ask the daemon
+// for nothing.
 TEST(MuxClient, APaneThatShowsAfterItsFirstFramesHasTheWindowsSize)
 {
     using AfterglowVt::Terminal;
@@ -267,7 +269,6 @@ TEST(MuxClient, APaneThatShowsAfterItsFirstFramesHasTheWindowsSize)
     pane.resize(40, 10, 8, 16);
     ASSERT_TRUE(waitFor([&] { return pane.sessionSynced(); })) << daemon.errors();
     pane.setSessionVisible(true);
-    pane.refreshSession();
     EXPECT_TRUE(waitFor([&] { return pane.cols() == 40 && pane.rows() == 10; }, 5000)) << pane.cols() << "x" << pane.rows();
     const auto replica = [&pane] { return pane.withTerminal([](Terminal& t) { return t.text(Terminal::TextScope::Screen); }); };
     ASSERT_TRUE(pane.sendInput("first\n"));
@@ -278,10 +279,75 @@ TEST(MuxClient, APaneThatShowsAfterItsFirstFramesHasTheWindowsSize)
     ASSERT_TRUE(split);
     split->setSessionVisible(true);
     ASSERT_TRUE(waitFor([&] { return split->sessionSynced(); })) << daemon.errors();
+    EXPECT_FALSE(split->sessionScreensHeld());
     ASSERT_TRUE(split->sendInput("second\n"));
-    const auto start = std::chrono::steady_clock::now();
     EXPECT_TRUE(waitFor([&] { return split->text(Terminal::TextScope::Screen).contains(QStringLiteral("second")); }, 5000));
-    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+}
+
+// A pane that shows again asks for the screens that the daemon held, as the
+// window does on a tab switch, and waits for nothing: the answer comes with
+// the stream, and the pane holds nothing from then on. An answer to a
+// Refresh asked before the pane hid again leaves it held.
+TEST(MuxClient, APaneThatShowsAgainAsksForItsScreensWithoutAWait)
+{
+    using AfterglowVt::Terminal;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    Shown shown = show(daemon, "again");
+    ASSERT_TRUE(shown.client && shown.first);
+    Pane& pane = *shown.first;
+    const auto replica = [&pane] { return pane.withTerminal([](Terminal& t) { return t.text(Terminal::TextScope::Screen); }); };
+    pane.setSessionVisible(false);
+    ASSERT_TRUE(pane.sendInput("hidden text\n\x1b]2;one\x07\n"));
+    ASSERT_TRUE(waitFor([&] { return pane.title() == QStringLiteral("one"); })) << daemon.errors();
+    EXPECT_EQ(replica().find("hidden text"), std::string::npos) << replica();
+
+    pane.setSessionVisible(true);
+    const std::uint64_t ticket = pane.askSessionRefresh();
+    EXPECT_NE(ticket, 0u);
+    // Nothing read the stream yet: the pane still holds the older screens.
+    EXPECT_TRUE(pane.sessionScreensHeld());
+    // A read meanwhile waits for the same Refresh.
+    EXPECT_EQ(pane.askSessionRefresh(), ticket);
+    ASSERT_TRUE(waitFor([&] { return !pane.sessionScreensHeld(); })) << daemon.errors();
+    EXPECT_NE(replica().find("hidden text"), std::string::npos) << replica();
+    EXPECT_EQ(pane.askSessionRefresh(), 0u);
+
+    // Asked while hidden, then shown before the answer came: that answer
+    // lacks the screens that the daemon holds until it heard of the sight,
+    // so the pane stays held for the answer to a Refresh asked since.
+    pane.setSessionVisible(false);
+    const std::uint64_t before = pane.askSessionRefresh();
+    ASSERT_NE(before, 0u);
+    pane.setSessionVisible(true);
+    ASSERT_TRUE(shown.client->waitRefreshed({{pane.sessionPaneId(), before}}));
+    EXPECT_TRUE(pane.sessionScreensHeld());
+}
+
+// Each pane hears of the answer to its own Refresh: one whose answer does
+// not come in time leaves the others refreshed.
+TEST(MuxClient, EachPaneHearsOfItsOwnRefresh)
+{
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    Shown shown = show(daemon, "each");
+    ASSERT_TRUE(shown.client && shown.first);
+    std::unique_ptr<Pane> other = newPane(*shown.client, shown.client, {"/bin/cat"});
+    ASSERT_TRUE(other);
+    ASSERT_TRUE(waitFor([&] { return other->sessionSynced(); })) << daemon.errors();
+    for (Pane* p : {shown.first.get(), other.get()}) {
+        p->setSessionVisible(false);
+        p->setSessionVisible(true);
+        EXPECT_TRUE(p->sessionScreensHeld());
+    }
+    const std::uint64_t ticket = shown.first->askSessionRefresh();
+    ASSERT_NE(ticket, 0u);
+    // A ticket of the other pane that the daemon never answers: nobody asked.
+    EXPECT_FALSE(shown.client->waitRefreshed({{shown.first->sessionPaneId(), ticket}, {other->sessionPaneId(), 1000}}, 500));
+    // The first pane hears of its answer when the window reads it, whether
+    // or not it came inside that wait.
+    EXPECT_TRUE(waitFor([&] { return !shown.first->sessionScreensHeld(); })) << daemon.errors();
+    EXPECT_TRUE(other->sessionScreensHeld());
 }
 
 } // namespace

@@ -18,10 +18,11 @@
 // (AfterglowVt::StateCodec), which PaneOpened names. Its first event is the
 // session's Layout, before any PaneOpened. An attachment that finished
 // before the window connected sends only its last event (TakenOver,
-// Detached or SessionEnded). The window writes its input and
-// its layout on channel 0, and its Kill and ClosePane on ActionChannel. The
-// ids of each direction are apart, so a pane's state channel and the action
-// channel can both be 1. Integers are LEB128 varints in their shortest form.
+// Detached or SessionEnded). The window writes its input and its layout on
+// channel 0, and on ActionChannel what is not for a program: its Kill,
+// ClosePane, Visible and Refresh. The ids of each direction are apart, so a
+// pane's state channel and the action channel can both be 1. Integers are
+// LEB128 varints in their shortest form.
 //
 // A pane's channel closes after its last frame, and then PaneClosed follows
 // on channel 0. The window learns that a pane's program exited once it has
@@ -32,8 +33,9 @@ namespace AfterglowMux::Attach {
 /// The channel of the events (from the daemon) and of the input (from the
 /// window). The state channels of panes start at 1.
 inline constexpr std::uint32_t ControlChannel = 0;
-/// The window's channel for Kill and ClosePane: the daemon reads it also
-/// while input waits for a full PTY and the control channel gets no credit.
+/// The window's channel for Kill, ClosePane, Visible and Refresh: the daemon
+/// reads it also while input waits for a full PTY and the control channel
+/// gets no credit.
 inline constexpr std::uint32_t ActionChannel = 1;
 inline constexpr const char* ActionCodec = "afterglow.mux.actions.v1";
 /// The ids of the state channels, which the window reads, are below this:
@@ -103,12 +105,12 @@ enum class InputType : std::uint8_t {
     /// the user closed the window, or its last tab or pane, and Mux.onClose
     /// is kill: the session ends (ActionChannel only)
     Kill = 5,
-    Visible = 6, ///< whether the user can see the pane (mode 2033), in `visible`
+    Visible = 6, ///< whether the user can see the pane (mode 2033), in `visible` (ActionChannel only)
     Layout = 7, ///< the window's tabs and splits, as JSON in `bytes` (MuxLayout.h), after each change; pane 0
     ClosePane = 8, ///< the user closed the pane and the window stays: its program ends (ActionChannel only)
     /// the window reads the pane's text, or draws it for a capture: the
     /// daemon sends its screens and history as they are now, also while the
-    /// pane does not show, and then a Refreshed event
+    /// pane does not show, and then a Refreshed event (ActionChannel only)
     Refresh = 9,
 };
 
@@ -120,6 +122,12 @@ struct Input
     PaneSize size;
     bool visible = false;
 };
+
+/// The inputs that come on ActionChannel, and never on the control channel.
+constexpr bool isAction(InputType type)
+{
+    return type == InputType::Kill || type == InputType::ClosePane || type == InputType::Visible || type == InputType::Refresh;
+}
 
 std::string encode(const Input& input);
 std::optional<Input> decodeInput(std::string_view frame);

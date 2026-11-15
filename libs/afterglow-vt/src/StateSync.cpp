@@ -592,11 +592,12 @@ bool StateWriter::textMarked() const
     if (!m_mark.taken || rowsPending()) return false;
     for (int which = 0; which < 2; ++which) {
         const ScreenState& st = m_screens[which];
-        // The rows that scrolled in up to the mark went, or up to the newest
-        // history row now, when the history shrank since (a screen that grew
-        // took rows back), and the older ones down to the mark's floor, or
-        // to the replica's floor now, which rose past it. totalSent and
-        // oldestSent are of the last frame.
+        // The rows of the mark that are history now went: those that were
+        // history then, and those that were visible then and that scrolled
+        // in since. The rows of the mark that are still visible went with
+        // the screen (rowsPending). Then the older ones down to the mark's
+        // floor, or to the replica's floor now, which rose past it.
+        // totalSent and oldestSent are of the last frame.
         if (st.to < std::min(m_mark.total[which], st.totalSent) || st.from > std::max(m_mark.floor[which], st.oldestSent)) return false;
     }
     return true;
@@ -806,8 +807,11 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
         m_mark.taken = true;
         for (int which = 0; which < 2; ++which) {
             const Screen& s = which == 0 ? *t.m_primary : *t.m_alternate;
-            m_mark.total[which] = s.rowsDropped() + s.historySize();
-            m_mark.floor[which] = m_mark.total[which] - std::min<std::uint64_t>(s.historySize(), m_replicaHistory);
+            const std::uint64_t history = s.rowsDropped() + s.historySize();
+            // The visible rows too: a flood can scroll them into the history
+            // before they went, and they come back there as appends only.
+            m_mark.total[which] = history + std::uint64_t(s.rows());
+            m_mark.floor[which] = history - std::min<std::uint64_t>(s.historySize(), m_replicaHistory);
         }
     }
     // The cell size that the program's images were laid out at: the window
@@ -880,9 +884,9 @@ bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, Scre
         st.totalSent = total;
         reset = true;
         // The replica lost the rows of the mark: it needs all of them again,
-        // in the new numbering, down to the floor.
+        // in the new numbering, down to the floor, with the visible ones.
         if (m_mark.taken) {
-            m_mark.total[which] = total;
+            m_mark.total[which] = total + std::uint64_t(s.rows());
             m_mark.floor[which] = 0;
         }
     }

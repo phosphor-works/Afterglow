@@ -1401,6 +1401,35 @@ TEST(StateSync, RandomOutputStaysEqual)
         // A run of held frames now and then, of up to 50 steps.
         int heldSteps = 0;
         bool marked = false;
+        // The rows of the main screen that the mark took at the next
+        // update(): its history from the floor, and the rows that were
+        // visible then, in stable ids. Checked once, when textMarked() turns
+        // true, while newer rows may still wait.
+        bool markWanted = false;
+        bool markChecked = true;
+        std::uint64_t markFloor = 0;
+        std::uint64_t markLast = 0;
+        std::uint64_t markEpoch = 0;
+        const auto takeMark = [&] {
+            if (!markWanted) return;
+            markWanted = false;
+            markChecked = false;
+            const AfterglowVt::Screen& s = p.source.primaryScreen();
+            markFloor = s.rowsDropped();
+            markLast = s.rowsDropped() + s.historySize() + std::uint64_t(s.rows()) - 1;
+            markEpoch = s.layoutEpoch();
+        };
+        // A read takes the text that the mark took: the replica has every
+        // row of it, unless a reflow or a reset numbered the rows anew since,
+        // or the replica's history let them go.
+        const auto checkMark = [&] {
+            if (markChecked || !p.writer.textMarked()) return std::string();
+            markChecked = true;
+            if (p.source.primaryScreen().layoutEpoch() != markEpoch) return std::string();
+            const std::uint64_t first = std::max(markFloor, p.replica.primaryScreen().rowsDropped());
+            if (first > markLast || p.reader.received(first, markLast)) return std::string();
+            return "rows " + std::to_string(first) + " to " + std::to_string(markLast) + " of the mark did not come";
+        };
         for (int step = 0; step < 1500; ++step) {
             std::string piece = pieces[rng() % pieces.size()];
             for (std::size_t at; (at = piece.find("%d")) != std::string::npos;) piece.replace(at, 2, std::to_string(rng() % 20));
@@ -1409,30 +1438,38 @@ TEST(StateSync, RandomOutputStaysEqual)
             if (rng() % 40 == 0) {
                 p.writer.markText();
                 marked = true;
+                markWanted = true;
             }
             if (rng() % 5 == 0) {
                 // One frame, which may leave the pixels of an image half sent
                 // when the next output replaces it. A held one keeps the
                 // scrolls for the next update().
                 std::string error;
+                if (heldSteps == 0) takeMark();
                 const std::string frame = heldSteps > 0 ? p.writer.updateHeld(p.source) : p.update();
                 ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << "seed " << seed << " step " << step << ": " << error;
+                const std::string mark = checkMark();
+                ASSERT_TRUE(mark.empty()) << "seed " << seed << " step " << step << ": " << mark;
             }
+            // Also in a run of held frames: the next update() takes the size.
+            if (step == 700) p.source.resize(15 + int(rng() % 40), 3 + int(rng() % 10), 10, 20);
             if (heldSteps > 0) {
                 --heldSteps;
                 continue;
             }
             if (rng() % 9 == 0) {
                 std::string error;
+                takeMark();
                 ASSERT_TRUE(p.sync(&error)) << "seed " << seed << " step " << step << ": " << error;
                 // Nothing waits: the text of the last mark went.
                 ASSERT_TRUE(!marked || p.writer.textMarked()) << "seed " << seed << " step " << step;
+                const std::string mark = checkMark();
+                ASSERT_TRUE(mark.empty()) << "seed " << seed << " step " << step << ": " << mark;
                 const std::string d = differs(p.source, p.replica);
                 ASSERT_TRUE(d.empty()) << "seed " << seed << " step " << step << ": " << d;
                 const std::string images = imagesDiffer(p.source, p.replica);
                 ASSERT_TRUE(images.empty()) << "seed " << seed << " step " << step << ": " << images;
             }
-            if (step == 700) p.source.resize(15 + int(rng() % 40), 3 + int(rng() % 10), 10, 20);
         }
     }
 }

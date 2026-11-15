@@ -1055,20 +1055,35 @@ bool Pane::setSessionVisible(bool visible)
     if (!m_session || m_sessionGone || m_sessionVisible == int(visible)) return false;
     m_sessionVisible = int(visible);
     // Until a refresh, also once visible again: the screens that the daemon
-    // held are on their way, and a read must not take the old ones.
+    // held are on their way, and a read must not take the old ones. The
+    // answer to a Refresh asked before this change lacks the screens that
+    // the daemon holds after it: its ticket goes.
     if (!visible) m_sessionHeld = true;
+    m_sessionRefresh = 0;
     m_session->sendVisible(m_sessionPane, visible);
     return true;
 }
 
-void Pane::refreshSession() const
+std::uint64_t Pane::askSessionRefresh() const
 {
-    if (!sessionScreensHeld()) return;
-    if (m_session->refresh({m_sessionPane})) sessionRefreshed();
+    if (!sessionScreensHeld()) return 0;
+    if (m_sessionRefresh != 0 && m_sessionVisible == 1) return m_sessionRefresh;
+    m_sessionRefresh = m_session->askRefresh(m_sessionPane);
+    // Nothing comes: the replica has all that it gets.
+    if (m_sessionRefresh == 0) m_sessionHeld = m_sessionVisible == 0;
+    return m_sessionRefresh;
 }
 
-void Pane::sessionRefreshed() const
+void Pane::refreshSession() const
 {
+    if (const std::uint64_t ticket = askSessionRefresh()) m_session->waitRefreshed({{m_sessionPane, ticket}});
+}
+
+void Pane::sessionRefreshed(std::uint64_t ticket) const
+{
+    // The answer to a Refresh asked before the pane's sight changed.
+    if (m_sessionRefresh == 0 || ticket < m_sessionRefresh) return;
+    m_sessionRefresh = 0;
     // A pane that the user cannot see gets held frames again.
     m_sessionHeld = m_sessionVisible == 0;
 }

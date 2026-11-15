@@ -129,7 +129,7 @@ void Attachment::accept()
         ::unlink(m_path.c_str());
         m_listenFd = -1;
         // The window writes its input and its layout on the control channel,
-        // and its Kill and ClosePane on the action channel.
+        // and its actions on the action channel (Attach::isAction).
         PhosphorChannel::Stream::Options options;
         options.maxChannels = 2;
         options.maxChannelId = Attach::ActionChannel + 1;
@@ -316,12 +316,10 @@ void Attachment::finish(Attach::EventType type, Session* session)
     // The input that waits for a PTY is for a session that no longer shows
     // here: as for a window that left, it waits for nothing, and goes before
     // what the window sent after it (readLate()). The bytes of a pane that
-    // went to another session too.
-    if (session) {
-        for (const auto& [id, waiting] : m_heldInput) {
-            for (const Attach::Input& message : waiting) {
-                if (message.type != Attach::InputType::Resize) deliver(*session, message, true);
-            }
+    // went to another session too, also when this session ended.
+    for (const auto& [id, waiting] : m_heldInput) {
+        for (const Attach::Input& message : waiting) {
+            if (message.type != Attach::InputType::Resize) deliver(session, message, true);
         }
     }
     m_heldInput.clear();
@@ -333,9 +331,9 @@ bool Attachment::finished() const
     return m_finishSent && m_waitingEvents.empty() && !m_stream->wantsWrite();
 }
 
-bool Attachment::deliver(Session& session, const Attach::Input& message, bool windowLeft)
+bool Attachment::deliver(Session* session, const Attach::Input& message, bool windowLeft)
 {
-    MuxPane* pane = session.pane(message.pane);
+    MuxPane* pane = session ? session->pane(message.pane) : nullptr;
     // A pane that went to another session since the window wrote: its
     // answers to the calls that the window took, and what the user typed,
     // still reach its program. Not its size, which its next window measures.
@@ -393,7 +391,7 @@ bool Attachment::sendHeldInput(Session& session, bool windowLeft)
     bool went = false;
     for (auto it = m_heldInput.begin(); it != m_heldInput.end();) {
         std::deque<Attach::Input>& waiting = it->second;
-        while (!waiting.empty() && deliver(session, waiting.front(), windowLeft)) {
+        while (!waiting.empty() && deliver(&session, waiting.front(), windowLeft)) {
             m_heldBytes -= waiting.front().bytes.size() + PhosphorChannel::Stream::FrameCost;
             waiting.pop_front();
             went = true;
@@ -406,11 +404,24 @@ bool Attachment::sendHeldInput(Session& session, bool windowLeft)
 void Attachment::readInput(Session& session)
 {
     if (m_finish) {
-        readLate(session);
+        readLate(&session);
         return;
     }
     std::string frame;
-    // First, and whatever input waits: a Kill does not queue behind it.
+    // A window that left waits for nothing: the input that the PTY has no
+    // room for, or the pane's waiting input past its bound, is lost, and
+    // what came after it still counts (a resize, the end of the session).
+    const bool windowLeft = !m_stream->open();
+    // First, and whatever input waits: a Kill does not queue behind it. What
+    // the user sees and a read of the text are not for the program: they go
+    // at once, also for a pane whose program reads nothing, and also once
+    // the input that waits holds the control channel (MaxHeldInput). A
+    // Refresh so goes ahead of a Clear, Reset or Resize that the window
+    // sent before it and that waits behind the pane's input, or on its
+    // way: the read gets the text that the program has now, which they
+    // change only once they reach the terminal. A Visible likewise goes
+    // ahead of a Resize on its way: the screens that it shows have the size
+    // that the terminal has then, and the next frame has the new size.
     if (PhosphorChannel::StreamReader* actions = m_stream->reader(Attach::ActionChannel)) {
         if (actions->codec() != Attach::ActionCodec) {
             m_failed = true;
@@ -418,12 +429,16 @@ void Attachment::readInput(Session& session)
         }
         while (actions->read(frame) == PhosphorChannel::ReadResult::Frame) {
             const auto action = Attach::decodeInput(frame);
-            if (!action || (action->type != Attach::InputType::Kill && action->type != Attach::InputType::ClosePane)) {
+            if (!action || !Attach::isAction(action->type)) {
                 m_failed = true;
                 return;
             }
             if (action->type == Attach::InputType::Kill) {
                 m_kill = true;
+                continue;
+            }
+            if (action->type != Attach::InputType::ClosePane) {
+                deliver(&session, *action, windowLeft);
                 continue;
             }
             // A pane whose program exited since the window closed it is gone
@@ -438,10 +453,6 @@ void Attachment::readInput(Session& session)
         m_failed = true;
         return;
     }
-    // A window that left waits for nothing: the input that the PTY has no
-    // room for, or the pane's waiting input past its bound, is lost, and
-    // what came after it still counts (a resize, the end of the session).
-    const bool windowLeft = !m_stream->open();
     sendHeldInput(session, windowLeft);
     // Past its bound, the input that waits holds the channel: the window's
     // input waits in the window, which refuses more past its own bound.
@@ -451,8 +462,8 @@ void Attachment::readInput(Session& session)
             m_failed = true;
             return;
         }
-        // A Kill and a ClosePane come on the action channel only.
-        if (message->type == Attach::InputType::Kill || message->type == Attach::InputType::ClosePane) {
+        // The actions come on the action channel only.
+        if (Attach::isAction(message->type)) {
             m_failed = true;
             return;
         }
@@ -470,15 +481,12 @@ void Attachment::readInput(Session& session)
             continue;
         }
         // Behind the input that waits for the pane, in order. The input of
-        // the other panes goes meanwhile. What the user sees and a read of
-        // the text are not for the program: they go at once, also for a
-        // pane whose program reads nothing.
-        const bool now = message->type == Attach::InputType::Visible || message->type == Attach::InputType::Refresh;
-        if ((m_heldInput.contains(message->pane) && !now) || !deliver(session, *message, windowLeft)) hold(std::move(*message));
+        // the other panes goes meanwhile.
+        if (m_heldInput.contains(message->pane) || !deliver(&session, *message, windowLeft)) hold(std::move(*message));
     }
 }
 
-void Attachment::readLate(Session& session)
+void Attachment::readLate(Session* session)
 {
     std::string frame;
     if (PhosphorChannel::StreamReader* actions = m_stream->reader(Attach::ActionChannel)) {
@@ -488,12 +496,13 @@ void Attachment::readLate(Session& session)
         }
         while (actions->read(frame) == PhosphorChannel::ReadResult::Frame) {
             const auto action = Attach::decodeInput(frame);
-            if (!action || (action->type != Attach::InputType::Kill && action->type != Attach::InputType::ClosePane)) {
+            if (!action || !Attach::isAction(action->type)) {
                 m_failed = true;
                 return;
             }
             // A window that no longer shows the session cannot end it, and
             // the daemon closes the pane for the window that shows it now.
+            // The sight and the reads of a window that went are nothing.
             if (action->type == Attach::InputType::ClosePane) m_late.closedPanes.push_back(action->pane);
         }
     }
@@ -505,7 +514,7 @@ void Attachment::readLate(Session& session)
     }
     while (input->read(frame) == PhosphorChannel::ReadResult::Frame) {
         auto message = Attach::decodeInput(frame);
-        if (!message || message->type == Attach::InputType::Kill || message->type == Attach::InputType::ClosePane) {
+        if (!message || Attach::isAction(message->type)) {
             m_failed = true;
             return;
         }
@@ -521,6 +530,7 @@ void Attachment::readLate(Session& session)
         case Attach::InputType::Clear:
             // The answers of the calls that the window got, and what the user
             // typed, before it heard: nothing waits for a window that went.
+            // Without the session, only for a pane that went to another one.
             deliver(session, *message, true);
             break;
         case Attach::InputType::Resize:
@@ -528,7 +538,7 @@ void Attachment::readLate(Session& session)
         case Attach::InputType::Refresh:
         case Attach::InputType::Kill:
         case Attach::InputType::ClosePane:
-            break; // the size, the sight and the reads of a window that went
+            break; // the size of a window that went, and the actions (refused above)
         }
     }
 }
@@ -552,7 +562,13 @@ bool Attachment::handle(short revents, Session* session)
         if (revents & POLLOUT) m_stream->writable();
     }
     m_inputDue = false;
-    if (session && m_stream->ready()) readInput(*session);
+    // A finished attachment of a session that ended still reads what the
+    // window sent before it heard: the bytes of the panes that went to
+    // another session reach their programs.
+    if (m_stream->ready()) {
+        if (session) readInput(*session);
+        else if (m_finish) readLate(nullptr);
+    }
     if (m_failed || !m_stream->open()) return false;
     pump(m_finish ? nullptr : session);
     if (m_failed || !m_stream->open()) return false;
@@ -752,26 +768,32 @@ void Attachment::pump(Session* session)
             if (!l) continue;
             sendFrame(*l, pane);
             if (m_failed) return;
-            // The calls of the pane's terminal follow its frame, which went: a
-            // bell after the text that rang it. The window reads the frames of
-            // a pane before it makes a call of it. What does not fit the queue
-            // waits in the pane.
-            if (l->started && l->waiting.empty() && !l->deferred) {
+            if (l->started && !l->deferred) {
                 // A read of the pane's text waits for the frames that hold
                 // its rows and its history as they were at the Refresh, not
-                // for the rows that a flood adds meanwhile. Its answer goes
-                // before the calls, which could fill the queue in each pass:
-                // the answers that do not fit wait in the count.
+                // for the rows that a flood adds meanwhile. The frame that
+                // the channel refused counts: it goes before any newer one,
+                // and the window waits for the frames that the answer names.
+                // A flood that fills the channel in each pass, which leaves
+                // a frame waiting after each, so keeps no read waiting. The
+                // answer goes before the calls, which could fill the queue
+                // in each pass: the answers that do not fit wait in the count.
                 if (l->marked > 0 && l->state.textMarked()) {
                     Attach::Event refreshed;
                     refreshed.type = Attach::EventType::Refreshed;
                     refreshed.pane = pane.id();
-                    refreshed.frames = l->frames;
+                    refreshed.frames = l->frames + (l->waiting.empty() ? 0 : 1);
                     for (; l->marked > 0 && !m_failed && m_waitingBytes < m_eventQueue; --l->marked) sendEvent(refreshed);
                     if (m_failed) return;
                 }
-                const std::size_t left = m_waitingBytes < m_eventQueue ? m_eventQueue - m_waitingBytes : 0;
-                sendHostCalls(*l, pane, left / (count - i));
+                // The calls of the pane's terminal follow its frame, which
+                // went: a bell after the text that rang it. The window reads
+                // the frames of a pane before it makes a call of it. What
+                // does not fit the queue waits in the pane.
+                if (l->waiting.empty()) {
+                    const std::size_t left = m_waitingBytes < m_eventQueue ? m_eventQueue - m_waitingBytes : 0;
+                    sendHostCalls(*l, pane, left / (count - i));
+                }
             }
             if (m_failed) return;
         }

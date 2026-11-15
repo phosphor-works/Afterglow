@@ -131,6 +131,10 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
         return fail(QStringLiteral("the mux daemon named no environment of session '%1': %2")
                         .arg(name, QString::fromStdString(AfterglowProto::printable(environmentError))));
     }
+    const AfterglowProto::Json::Value& ambiguous = (*result)["ambiguousWide"];
+    if (!ambiguous.isBool()) return fail(QStringLiteral("the mux daemon did not say how session '%1' measures ambiguous characters").arg(name));
+    // The connection last: a refusal after it would leak it, and the stream
+    // that closes it takes it at once.
     QString connectError;
     const int fd = connectTo((*result)["socket"].toString(), sockets, &connectError);
     if (fd < 0) return fail(QStringLiteral("cannot show session '%1': %2").arg(name, connectError));
@@ -141,8 +145,6 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
     client->m_history = history;
     client->m_sockets = sockets;
     client->m_environment = std::move(*environment);
-    const AfterglowProto::Json::Value& ambiguous = (*result)["ambiguousWide"];
-    if (!ambiguous.isBool()) return fail(QStringLiteral("the mux daemon did not say how session '%1' measures ambiguous characters").arg(name));
     client->m_ambiguousWide = ambiguous.toBool();
     PhosphorChannel::Stream::Options options;
     options.maxChannelId = Attach::MaxChannelId;
@@ -342,8 +344,7 @@ void MuxClient::release(std::uint32_t id, MuxRelease release)
         Attach::Input input;
         input.type = Attach::InputType::ClosePane;
         input.pane = id;
-        m_waitingActions.push_back(Attach::encode(input));
-        sendWaitingInput();
+        sendAction(input);
     }
     m_killOnEnd = m_killOnEnd || release == MuxRelease::Session;
     if (!m_panes.empty() || !m_stream) return;
@@ -447,7 +448,10 @@ std::optional<QString> MuxClient::breakOut(const AfterglowMux::Layout& layout, Q
     // PaneClosed comes, which is no exit of their programs. Their window
     // closes them, after the stream ran again. The calls of theirs that
     // left the daemon before it moved them wait for no frame here: their
-    // programs get the answers of a pane that no window shows, in order.
+    // programs get the answers of a pane that no window shows, in the
+    // order of these calls. The daemon answered the later calls, which did
+    // not leave it, at the move: those answers can reach a program before
+    // these, which go through the window's input.
     for (const std::uint32_t id : layout.panes()) {
         m_sentSizes.erase(id);
         if (m_panes.erase(id) == 0) continue;
@@ -579,8 +583,9 @@ void MuxClient::sendVisible(std::uint32_t id, bool visible)
 {
     Attach::Input input;
     input.type = Attach::InputType::Visible;
+    input.pane = id;
     input.visible = visible;
-    sendPaneInput(id, input);
+    sendAction(input);
 }
 
 void MuxClient::sendPaneInput(std::uint32_t id, Attach::Input& input)
@@ -588,6 +593,13 @@ void MuxClient::sendPaneInput(std::uint32_t id, Attach::Input& input)
     if (!showing()) return;
     input.pane = id;
     queueInput(Attach::encode(input), id);
+    sendWaitingInput();
+}
+
+void MuxClient::sendAction(const Attach::Input& input)
+{
+    if (!showing()) return;
+    m_waitingActions.push_back(Attach::encode(input));
     sendWaitingInput();
 }
 
@@ -697,17 +709,19 @@ bool MuxClient::waitForHostCalls(int waitMs, const std::function<bool()>& done)
     return done();
 }
 
-bool MuxClient::refresh(const std::vector<std::uint32_t>& ids, int waitMs)
+std::uint64_t MuxClient::askRefresh(std::uint32_t id)
+{
+    if (!showing() || !m_panes.contains(id) || !m_channels.contains(id) || m_closedChannels.contains(id)) return 0;
+    Attach::Input input;
+    input.type = Attach::InputType::Refresh;
+    input.pane = id;
+    sendAction(input);
+    return ++m_refreshes[id].asked;
+}
+
+bool MuxClient::waitRefreshed(const std::map<std::uint32_t, std::uint64_t>& tickets, int waitMs)
 {
     if (!showing()) return false;
-    std::map<std::uint32_t, std::uint64_t> tickets;
-    for (const std::uint32_t id : ids) {
-        if (tickets.contains(id) || !m_panes.contains(id) || !m_channels.contains(id) || m_closedChannels.contains(id)) continue;
-        Attach::Input input;
-        input.type = Attach::InputType::Refresh;
-        sendPaneInput(id, input);
-        tickets[id] = ++m_refreshes[id].asked;
-    }
     const auto done = [&] {
         for (const auto& [id, ticket] : tickets) {
             // Its last frame came: nothing newer comes.
@@ -745,6 +759,17 @@ bool MuxClient::refresh(const std::vector<std::uint32_t>& ids, int waitMs)
         }, Qt::QueuedConnection);
     }
     return refreshed;
+}
+
+void MuxClient::tellRefreshed()
+{
+    for (auto& [id, refreshes] : m_refreshes) {
+        if (refreshes.told == refreshes.answered) continue;
+        const auto read = m_framesRead.find(id);
+        if ((read == m_framesRead.end() ? 0 : read->second) < refreshes.frames) continue;
+        refreshes.told = refreshes.answered;
+        if (const auto pane = m_panes.find(id); pane != m_panes.end() && pane->second) pane->second->sessionRefreshed(refreshes.told);
+    }
 }
 
 void MuxClient::readable()
@@ -823,8 +848,7 @@ void MuxClient::handleFrames()
                         Attach::Input close;
                         close.type = Attach::InputType::ClosePane;
                         close.pane = event->pane;
-                        m_waitingActions.push_back(Attach::encode(close));
-                        sendWaitingInput();
+                        sendAction(close);
                     }
                 }
             } else if (event && event->type == Attach::EventType::PaneClosed) {
@@ -867,6 +891,7 @@ void MuxClient::handleFrames()
         if ((m_panes.contains(id) || m_released.contains(id)) && !readState(id)) return;
         it = m_channels.upper_bound(id);
     }
+    tellRefreshed();
     if (ending) end(*ending);
     // The input ended or the stream failed, also in a write of the window's
     // own: what it read before was handled, and nothing more comes.
@@ -935,8 +960,11 @@ void MuxClient::paneExited(std::uint32_t id)
     m_hostParts.erase(id);
     if (auto waiting = m_waitingHostCalls.extract(id); !waiting.empty()) m_waitingHostBytes -= waiting.mapped().bytes;
     m_framesRead.erase(id);
-    m_refreshes.erase(id);
     const auto it = m_panes.find(id);
+    // Its last frame came: a Refresh that waits has all that it gets.
+    if (const auto refreshes = m_refreshes.extract(id); !refreshes.empty() && it != m_panes.end() && it->second) {
+        if (refreshes.mapped().asked != refreshes.mapped().told) it->second->sessionRefreshed(refreshes.mapped().asked);
+    }
     // A pane that the window let go is forgotten. A bound one keeps its
     // closed channel until the window lets it go (letGo).
     if (it == m_panes.end()) {

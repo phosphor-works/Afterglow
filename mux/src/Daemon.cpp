@@ -258,9 +258,13 @@ Daemon::Exit Daemon::run()
                 // As the window's own input: a failure (out of memory) costs
                 // that window's late input, not the daemon.
                 guarded(*attachment, [&] {
-                    applyLate(*attachment, session);
+                    applyLate(*attachment, *own);
                     return true;
                 });
+                // As when its last program exits. Outside the guard: late
+                // input that failed after it closed the last pane leaves no
+                // empty session behind.
+                if (own->empty()) endSession(session);
                 continue;
             }
             // The window closed and Mux.onClose is kill. Its own window
@@ -699,9 +703,8 @@ std::uint32_t Daemon::nextPaneId()
     }
 }
 
-void Daemon::applyLate(Attachment& attachment, std::vector<std::unique_ptr<Session>>::iterator session)
+void Daemon::applyLate(Attachment& attachment, Session& own)
 {
-    Session& own = **session;
     Attachment::Late late = attachment.takeLate();
     // The user closed these panes before the window heard: their programs
     // end, and the window that shows the session now no longer shows them.
@@ -723,8 +726,6 @@ void Daemon::applyLate(Attachment& attachment, std::vector<std::unique_ptr<Sessi
         const std::vector<std::uint32_t> named = late.layout->panes();
         if (std::any_of(named.begin(), named.end(), [&own](std::uint32_t id) { return own.pane(id) != nullptr; })) own.setLayout(std::move(*late.layout));
     }
-    // As when its last program exits.
-    if (own.empty()) endSession(session);
 }
 
 std::function<void()> Daemon::waker() const

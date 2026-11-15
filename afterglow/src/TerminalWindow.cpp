@@ -2146,19 +2146,16 @@ void TerminalWindow::captureFrame(Pane* pane, CaptureScope scope, CaptureReply r
         return;
     }
     // The session panes that the capture draws, with the screens that the
-    // daemon held while they did not show (Pane::refreshSession).
+    // daemon held while they did not show: the capture waits for them, as a
+    // read of the text does (Pane::refreshSession). One wait for all.
     if (m_session) {
         const std::vector<Pane*> cards = overviewCards();
-        std::vector<Pane*> held;
-        std::vector<std::uint32_t> ids;
+        std::map<std::uint32_t, std::uint64_t> tickets;
         for (Pane* p : panes()) {
-            if (!p->sessionScreensHeld() || !paneSeen(p, cards)) continue;
-            held.push_back(p);
-            ids.push_back(p->sessionPaneId());
+            if (!paneSeen(p, cards)) continue;
+            if (const std::uint64_t ticket = p->askSessionRefresh()) tickets[p->sessionPaneId()] = ticket;
         }
-        if (!ids.empty() && m_session->refresh(ids)) {
-            for (Pane* p : held) p->sessionRefreshed();
-        }
+        if (!tickets.empty()) m_session->waitRefreshed(tickets);
     }
     auto capture = std::make_shared<PendingCapture>();
     capture->scope = scope;
@@ -3057,6 +3054,9 @@ void TerminalWindow::exposeEvent(QExposeEvent*)
         m_effectsApplied = true;
         applyWindowEffects();
     }
+    // Before the frame: it draws the panes that show now, with the screens
+    // that the daemon held asked for.
+    updatePaneVisibility();
     if (isExposed()) {
         renderNow();
     } else {
@@ -3068,7 +3068,6 @@ void TerminalWindow::exposeEvent(QExposeEvent*)
             m_textBlinkOn = true;
         }
     }
-    updatePaneVisibility();
 }
 
 std::vector<Pane*> TerminalWindow::overviewCards() const
@@ -3089,10 +3088,6 @@ void TerminalWindow::updatePaneVisibility()
 {
     const std::vector<Pane*> cards = overviewCards();
     const bool shows = isExposed() && windowState() != Qt::WindowMinimized;
-    // Session panes that show again, with the screens that the daemon held
-    // while they did not: their replicas are behind until those come.
-    std::vector<Pane*> held;
-    std::vector<std::uint32_t> heldIds;
     for (std::size_t i = 0; i < m_tabs.size(); ++i) {
         const SplitTree* tree = m_tabs[i]->splits.get();
         if (!tree) continue;
@@ -3105,10 +3100,13 @@ void TerminalWindow::updatePaneVisibility()
             // A session pane's replica must not answer its program: the
             // daemon's terminal answers the program's own queries.
             if (p->isSessionPane()) {
-                if (p->setSessionVisible(visible) && visible && p->sessionScreensHeld()) {
-                    held.push_back(p);
-                    heldIds.push_back(p->sessionPaneId());
-                }
+                // A pane that shows again asks for the screens and the
+                // history that the daemon held while it did not. The GUI
+                // thread waits for no daemon on a tab switch, an overview
+                // or an un-minimize: the pane shows its older screens for
+                // about one round trip, until the new ones come. Once the
+                // answer came, a read of its text waits for nothing.
+                if (p->setSessionVisible(visible) && visible) p->askSessionRefresh();
             } else {
                 p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
             }
@@ -3118,12 +3116,6 @@ void TerminalWindow::updatePaneVisibility()
                 overlay->pane()->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
             }
         });
-    }
-    // The next frame draws them: it would show the old screens until the
-    // catch-up of each came. They come now, once, as for a capture: a
-    // refresh that fails leaves the pane to the frames that follow.
-    if (m_session && !heldIds.empty() && m_session->refresh(heldIds)) {
-        for (Pane* p : held) p->sessionRefreshed();
     }
 }
 

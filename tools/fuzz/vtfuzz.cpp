@@ -21,6 +21,7 @@
 #include <AfterglowVt/Terminal.h>
 #include <AfterglowVt/TextSearch.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -214,27 +215,73 @@ struct Mirror
         if (mark) {
             writer.markText();
             marked = true;
+            markWanted = true;
+        }
+        // A held frame leaves the mark for the next update().
+        if (!held) {
+            takeMark(source);
         }
         std::string error;
         const std::string frame = held ? writer.updateHeld(source) : writer.update(source, budget(source, small));
         if (!reader.apply(replica, frame, &error)) {
             __builtin_trap();
         }
+        checkMark(source);
+    }
+
+    /// The rows of the main screen that the next update() marks: its history
+    /// and the rows that are visible then, in stable ids.
+    void takeMark(const AfterglowVt::Terminal& source)
+    {
+        if (!markWanted) {
+            return;
+        }
+        markWanted = false;
+        markChecked = false;
+        const AfterglowVt::Screen& s = source.primaryScreen();
+        markFloor = s.rowsDropped();
+        markLast = s.rowsDropped() + s.historySize() + std::uint64_t(s.rows()) - 1;
+        markEpoch = s.layoutEpoch();
+    }
+
+    /// Once textMarked() turns true, also while newer rows wait: the replica
+    /// has every row of the mark, unless a reflow or a reset numbered the
+    /// rows anew since, or the replica's history let them go.
+    void checkMark(const AfterglowVt::Terminal& source)
+    {
+        if (markChecked || !writer.textMarked()) {
+            return;
+        }
+        markChecked = true;
+        if (source.primaryScreen().layoutEpoch() != markEpoch) {
+            return;
+        }
+        const std::uint64_t first = std::max(markFloor, replica.primaryScreen().rowsDropped());
+        if (first <= markLast && !reader.received(first, markLast)) {
+            __builtin_trap();
+        }
     }
 
     bool marked = false; ///< markText() ran
+    bool markWanted = false; ///< the next update() takes the mark
+    bool markChecked = true;
+    std::uint64_t markFloor = 0;
+    std::uint64_t markLast = 0;
+    std::uint64_t markEpoch = 0;
 
     /// The rest, then the replica shows what the source does.
     void finish(const AfterglowVt::Terminal& source, bool small)
     {
         int guard = 0;
         for (; guard < 4096; ++guard) {
+            takeMark(source);
             const std::string frame = writer.update(source, budget(source, small));
             if (frame.empty() && !writer.pending()) break;
             std::string error;
             if (!reader.apply(replica, frame, &error)) {
                 __builtin_trap();
             }
+            checkMark(source);
         }
         // A writer that never catches up, at a budget that its content fits
         // many times over, is stuck.
@@ -431,8 +478,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             t.setViewportOffset(std::size_t(a) * 4);
             break;
         }
-        // A quarter of the frames held, an eighth of them marking the text.
-        mirror.step(t, smallFrames, ((a + b) & 3) == 3, ((a ^ b) & 7) == 5);
+        // A quarter of the frames held, and an eighth marking the text, from
+        // bits of different bytes: a mark can come with a held frame, and
+        // wait for the update() after it.
+        mirror.step(t, smallFrames, (b >> 6) == 3, (a >> 5) == 5);
         start = i + 4;
         i += 3;
     }

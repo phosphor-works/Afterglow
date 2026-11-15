@@ -101,6 +101,13 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     refreshed.pane = 3;
     refreshed.frames = 300;
     EXPECT_EQ(Attach::encode(refreshed), std::string("\x08\x03\x00\x00\xac\x02", 6));
+    // And it moved the Visible input to the action channel, with the
+    // Refresh: neither waits behind the input of a program any more.
+    for (const auto type : {Attach::InputType::Kill, Attach::InputType::ClosePane, Attach::InputType::Visible, Attach::InputType::Refresh})
+        EXPECT_TRUE(Attach::isAction(type)) << int(type);
+    for (const auto type : {Attach::InputType::Bytes, Attach::InputType::Resize, Attach::InputType::Reset, Attach::InputType::Clear,
+                            Attach::InputType::Layout})
+        EXPECT_FALSE(Attach::isAction(type)) << int(type);
     Layout layout;
     layout.addTab(4);
     EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current"}));

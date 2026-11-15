@@ -425,7 +425,7 @@ Thus take screenshots on a connection without subscriptions.
 | Event | Arguments |
 | --- | --- |
 | `paneCreated` | pane |
-| `paneMoved` | pane. Sent when the pane moves to another split, tab or window. Also sent for each pane of a tab that moves in its window, and of each tab that the move puts at another index. A pane of a mux session that moves to a new window sends `paneClosed`, then `paneCreated` with its new ID. |
+| `paneMoved` | pane. Sent when the pane moves to another split, tab or window. Also sent for each pane of a tab that moves in its window, and of each tab that the move puts at another index. Not sent for a swap or a rotation of the panes in a tab. A pane of a mux session that moves to a new window sends `paneClosed`, then `paneCreated` with its new ID. |
 | `paneClosed` | pane |
 | `titleChanged` | pane, title |
 | `bell` | pane |
@@ -826,13 +826,14 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `notify` title | 256 UTF-16 units | The title is cut. |
 | `notify` body | 2048 UTF-16 units | The body is cut. |
-| Wait for the screen and history of a mux session pane that you cannot see, before `getText` or a script read of its text | 5 seconds | The read gets the text that the window has, which can be older. The window does not draw or take input while it waits. |
+| Wait for the screen and the history of a pane of a mux session that you cannot see, or that shows again before its screen came, before `getText`, a screenshot or a script read of its text | 5 seconds | The read gets the text that the window has, which can be older. The window does not draw or take input while it waits. |
 
 `getText` and `screenshot` have no size limit.
 A reply with a long scrollback can take more than the 10 seconds of `afterglow ctl`.
 A screenshot of a large window also takes time: Afterglow waits for a frame and encodes the PNG.
-For a pane of a mux session that you cannot see, `getText` first gets the current screen and history from the daemon.
-The script reads `read_text`, `read_region` and `semantic_regions` do this too (see [session panes](MUX.md#session-panes)).
+For a pane of a mux session that you cannot see, `getText` and `screenshot` first get the current screen and history from the daemon.
+They do this also for a pane that shows again before its screen came.
+The script effects `read_text`, `read_region` and `semantic_regions` do this too (see [session panes](MUX.md#session-panes)).
 
 Text that `afterglow ctl send-text` sends in parts arrives as separate inputs.
 Keys and other clients can type between two parts.

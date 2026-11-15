@@ -142,11 +142,14 @@ public:
         m_mark.wanted = true;
     }
     /// The frames carried the text that markText() took: the rows of both
-    /// screens, and the history rows of the terminal at the mark that the
-    /// replica keeps (setReplicaHistory). What a read of the replica's text
-    /// needs. Rows newer than the mark may still wait: a program that
-    /// floods its pane faster than the frames go keeps no read waiting.
-    /// False until an update() took the mark.
+    /// screens, also those that scrolled into the history since, and the
+    /// history rows of the terminal at the mark that the replica keeps
+    /// (setReplicaHistory). What a read of the replica's text needs. Rows
+    /// that scrolled in after the mark may still wait. Older history that
+    /// the replica never had (a new link's) goes only once those caught up:
+    /// a program that floods its pane faster than the frames go keeps such
+    /// a read waiting until it stops, or until its rows pass what the
+    /// replica keeps. False until an update() took the mark.
     bool textMarked() const;
     /// The terminal changed in an updateHeld() since the last update(), or
     /// no update() ran yet: the screens of the replica are behind until the
@@ -261,7 +264,7 @@ private:
 
     ScreenState m_screens[2];
     /// markText(): the rows of each screen that the text needs, in stable
-    /// ids. The history from floor to total, then the visible rows.
+    /// ids, from floor to total: the history, then the visible rows.
     struct TextMark
     {
         bool wanted = false; ///< the next update() takes it

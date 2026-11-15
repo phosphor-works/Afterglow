@@ -20,6 +20,7 @@
 #include <PhosphorChannel/Stream.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -253,9 +254,30 @@ public:
         return text;
     }
 
+    /// As a window sends: what is not for a program (Attach::isAction) on
+    /// the action channel, the rest with the input.
     [[nodiscard]] bool send(const Attach::Input& message)
     {
-        return input->tryWrite(Attach::encode(message)) == PhosphorChannel::WriteResult::Written;
+        return (Attach::isAction(message.type) ? actions : input)->tryWrite(Attach::encode(message)) == PhosphorChannel::WriteResult::Written;
+    }
+
+    /// Says whether the user can see pane @p id.
+    [[nodiscard]] bool show(std::uint32_t id, bool visible)
+    {
+        Attach::Input message;
+        message.type = Attach::InputType::Visible;
+        message.pane = id;
+        message.visible = visible;
+        return send(message);
+    }
+
+    /// Asks for the screens of pane @p id, as a read of its text does.
+    [[nodiscard]] bool refresh(std::uint32_t id)
+    {
+        Attach::Input message;
+        message.type = Attach::InputType::Refresh;
+        message.pane = id;
+        return send(message);
     }
 
     [[nodiscard]] bool type(std::string_view bytes)
@@ -289,7 +311,7 @@ public:
         Attach::Input message;
         message.type = Attach::InputType::ClosePane;
         message.pane = id;
-        return actions->tryWrite(Attach::encode(message)) == PhosphorChannel::WriteResult::Written;
+        return send(message);
     }
 
     bool closedPane(std::uint32_t id) const { return std::find(closed.begin(), closed.end(), id) != closed.end(); }
@@ -299,8 +321,6 @@ public:
         Attach::Input message;
         message.type = type;
         message.pane = pane;
-        // A Kill goes on the action channel, the others with the input.
-        if (type == Attach::InputType::Kill) return actions->tryWrite(Attach::encode(message)) == PhosphorChannel::WriteResult::Written;
         return send(message);
     }
 
@@ -994,8 +1014,9 @@ TEST(MuxAttach, APaneThatTheWindowDoesNotShowGetsNoScreens)
     EXPECT_EQ(w.refreshes[0].pane, w.pane);
     EXPECT_GT(w.refreshes[0].frames, std::uint64_t(before));
     EXPECT_TRUE(contains(w.screen(), "\nagain 499 ")) << w.screen();
-    // With the history that scrolled meanwhile.
-    const std::string all = w.replica.text(AfterglowVt::Terminal::TextScope::All);
+    // With the history that scrolled meanwhile. The read can come before
+    // the shell's prompt, and then the last line ends the text.
+    const std::string all = w.replica.text(AfterglowVt::Terminal::TextScope::All) + "\n";
     for (int i = 0; i < 500; ++i) EXPECT_TRUE(contains(all, "again " + std::to_string(i) + "\n")) << i;
     const std::string refreshed = w.screen();
     const int screenFrames2 = w.screenFrames;
@@ -2367,9 +2388,9 @@ TEST(MuxAttach, APaneThatStartsWhileDetachedIsANewTabOfTheNextWindow)
     EXPECT_EQ(layout.current, 0u);
 }
 
-// A Kill and a ClosePane come on the action channel, a Layout with the input:
-// one on the other channel ends the window's stream, and the session runs on
-// with its panes for the next window.
+// The actions (a Kill, a ClosePane, a Visible, a Refresh) come on the action
+// channel, a Layout with the input: one on the other channel ends the
+// window's stream, and the session runs on with its panes for the next window.
 TEST(MuxAttach, AnInputOnTheWrongChannelLosesTheSession)
 {
     TestDaemon daemon;
@@ -2383,17 +2404,18 @@ TEST(MuxAttach, AnInputOnTheWrongChannelLosesTheSession)
         const auto info = sessionNamed(daemon, "s");
         return info && !info->attached;
     };
-    {
-        SCOPED_TRACE("a ClosePane with the input");
+    for (const auto type : {Attach::InputType::ClosePane, Attach::InputType::Visible, Attach::InputType::Refresh}) {
+        SCOPED_TRACE(int(type));
         Window w;
         ASSERT_EQ(w.attach(daemon, "s"), "");
         ASSERT_TRUE(w.until([&] { return w.opened.size() == 2; }));
-        Attach::Input close;
-        close.type = Attach::InputType::ClosePane;
-        close.pane = *second;
-        ASSERT_TRUE(w.send(close));
+        Attach::Input action;
+        action.type = type;
+        action.pane = *second;
+        ASSERT_EQ(w.input->tryWrite(Attach::encode(action)), PhosphorChannel::WriteResult::Written);
         ASSERT_TRUE(w.until([&] { return w.ended; }));
         EXPECT_FALSE(w.closedPane(*second));
+        EXPECT_TRUE(w.refreshes.empty());
         ASSERT_TRUE(waitFor(detached));
         EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 2);
     }
@@ -2463,39 +2485,47 @@ TEST(MuxAttach, RequestsThatWaitWhenTheirPaneBreaksOutGetTheAnswerWithoutAWindow
 }
 
 // What the user sees of a pane, and a read of its text, are not input for
-// its program: they go at once, also while the pane's input waits for a
-// program that reads nothing.
+// its program: they go at once on the action channel, also while the pane's
+// input waits for a program that reads nothing and holds the control
+// channel.
 TEST(MuxAttach, ASightAndARefreshGoPastInputThatWaitsForAFullPty)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     const std::string ready = daemon.dir() + "/ready";
     const std::string mark = daemon.dir() + "/mark";
-    // Reads nothing, and prints a word when the test asks.
+    // Reads nothing, and prints a word when the test asks, with a title
+    // that counts the words: held frames carry the title, not the screen.
     SessionOptions o = daemon.options({"/bin/sh", "-c",
-                                       "stty raw -echo; : > '" + ready + "'; while :; do if [ -e '" + mark + "' ]; then printf 'mar''ked'; rm '"
-                                           + mark + "'; fi; sleep 0.1; done"});
+                                       "stty raw -echo; : > '" + ready + "'; n=0; while :; do if [ -e '" + mark
+                                           + "' ]; then n=$((n+1)); printf 'mar''ked\\033]2;t%d\\007' $n; rm '" + mark
+                                           + "'; fi; sleep 0.1; done"});
     o.name = "stuck";
     ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
     ASSERT_TRUE(waitFor([&] { return exists(ready); }));
     Window w;
     ASSERT_EQ(w.attach(daemon, "stuck"), "");
     ASSERT_TRUE(w.until([&] { return w.pane != 0 && w.frames > 0; }));
-    // Past the 32 MiB that the PTY queues, and below what makes the daemon
-    // read the channel no more (Attachment::MaxHeldInput): input waits.
-    const std::string part(60000, 'x');
-    std::size_t sent = 0;
-    for (int stuck = 0; sent < (std::size_t(34) << 20) && stuck < 200;) {
+    // Until the daemon reads the control channel no more. Parts of 2 MiB:
+    // the PTY queues 16 of them (its 32 MiB, as the kernel holds less than
+    // one part), the daemon holds the next two (Attachment::MaxHeldInput)
+    // and then stops, and the channel's window of 4 MiB takes one more.
+    // So once 19 went, the daemon read 18 and stopped: the 20th never goes.
+    constexpr std::size_t PartBytes = std::size_t(2) << 20;
+    static_assert(PartBytes < Attachment::MaxHeldInput && 2 * PartBytes >= Attachment::MaxHeldInput);
+    const std::string part(PartBytes, 'x');
+    int sent = 0;
+    const auto deadline = std::chrono::steady_clock::now() + 30s;
+    while (sent < 19 && std::chrono::steady_clock::now() < deadline) {
         if (w.type(part)) {
-            sent += part.size();
-            stuck = 0;
+            ++sent;
         } else {
-            ++stuck;
             w.stream->pump(20);
             w.read();
         }
     }
-    ASSERT_GE(sent, std::size_t(34) << 20);
+    ASSERT_EQ(sent, 19);
+    ASSERT_FALSE(w.type(part));
     Attach::Input message;
     message.type = Attach::InputType::Visible;
     message.pane = w.pane;
@@ -2513,12 +2543,13 @@ TEST(MuxAttach, ASightAndARefreshGoPastInputThatWaitsForAFullPty)
         marked = contains(w.screen(), "marked");
     }
     EXPECT_TRUE(marked) << w.screen();
-    // Hidden: a word now changes no screen of the window.
+    // Hidden: a word now changes no screen of the window. The frame that
+    // brings its title came after the daemon parsed the word.
     const int screenFrames = w.screenFrames;
     std::ofstream(mark).put('x');
-    ASSERT_TRUE(waitFor([&] { return !exists(mark); }));
-    w.until([] { return false; }, 500ms);
+    ASSERT_TRUE(w.until([&] { return w.replica.title() == "t2"; }, 10s)) << w.replica.title();
     EXPECT_EQ(w.screenFrames, screenFrames);
+    EXPECT_FALSE(contains(w.screen(), "markedmarked")) << w.screen();
     // Seen again: the screen comes.
     message.type = Attach::InputType::Visible;
     message.visible = true;
@@ -2546,24 +2577,305 @@ TEST(MuxAttach, APaneThatLinksLaterStartsAsTheWindowSaid)
         if (std::find(w.opened.begin(), w.opened.end(), id) == w.opened.end()) late = id;
     }
     ASSERT_NE(late, 0u);
-    Attach::Input hidden;
-    hidden.type = Attach::InputType::Visible;
-    hidden.pane = late;
-    hidden.visible = false;
-    ASSERT_TRUE(w.send(hidden));
-    // A round trip: the daemon read the Visible before the close below.
-    ASSERT_TRUE(w.resize(30, 8));
-    ASSERT_TRUE(w.until([&] { return w.replica.cols() == 30; })) << w.replica.cols();
+    // On the action channel, which the close below takes too: the daemon
+    // reads the Visible first.
+    ASSERT_TRUE(w.show(late, false));
     // A pane that goes frees a channel for it.
     const std::uint32_t other = w.opened.back();
     ASSERT_NE(other, w.pane);
     ASSERT_TRUE(w.closePane(other));
     ASSERT_TRUE(w.until([&] { return w.framesOf(late) > 0; }, 10s));
-    // Its frames carry no screens: the replica keeps the size it started
-    // with, not the pane's.
-    w.until([] { return false; }, 300ms);
+    // Its first frame carried no screens, which a link that started shown
+    // sends at once: the replica keeps the size it started with, not the
+    // pane's.
     EXPECT_EQ(w.others.at(late)->replica.cols(), 20);
-    hidden.visible = true;
-    ASSERT_TRUE(w.send(hidden));
+    ASSERT_TRUE(w.show(late, true));
     EXPECT_TRUE(w.until([&] { return w.others.at(late)->replica.cols() != 20; }));
+}
+
+// A read of a pane whose program floods it gets its answer once the frames
+// carry the text as it was at the read: the rows that the flood adds
+// meanwhile keep no read waiting, also when they fill the pane's channel in
+// each pass.
+TEST(MuxAttach, AReadOfAPaneThatFloodsGetsItsAnswer)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string go = daemon.dir() + "/go";
+    const std::string count = daemon.dir() + "/count";
+    // Once the test says: numbered lines without an end, of 1024 cells that
+    // a repeat (REP) makes of a few bytes. The daemon parses rows faster
+    // than the frames carry them, so its frames never catch up. Each 100
+    // lines, the number of the last one goes to a file.
+    SessionOptions o = daemon.options({"/bin/sh", "-c",
+                                       "while [ ! -e '" + go + "' ]; do sleep 0.05; done; exec awk -v count='" + count
+                                           + "' 'BEGIN { for (i = 1; ; i++) { printf \"n %d x\\033[1023b\\r\\n\", i; "
+                                             "if (i % 100 == 0) { print i > count; close(count) } } }'"});
+    o.name = "flood";
+    // History of 40000 rows, some 8 MiB of frames: at each read, what the
+    // hidden pane's frames left out takes several frames, and the flood adds
+    // more meanwhile. A read waits for the rows up to it (StateWriter::
+    // textMarked), never for the frames to catch up with the flood.
+    o.terminal.maxScrollback = 40000;
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    // The window keeps all the history that the daemon sends.
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "flood"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && w.frames > 0; }));
+    ASSERT_TRUE(w.show(w.pane, false));
+    std::ofstream(go).put('x');
+    // awk rewrites the file in place: a read can find it empty, or with a
+    // part of the number. The highest number read so far.
+    std::uint64_t last = 0;
+    const auto written = [&] {
+        const std::string n = readFile(count);
+        if (!n.empty() && std::isdigit(static_cast<unsigned char>(n[0]))) last = std::max<std::uint64_t>(last, std::stoull(n));
+        return last;
+    };
+    // The highest line number on the replica's screen.
+    const auto shown = [&] {
+        const std::string screen = w.screen();
+        std::uint64_t highest = 0;
+        for (std::size_t at = 0; (at = screen.find("n ", at)) != std::string::npos; at += 2) {
+            if (at + 2 < screen.size() && std::isdigit(static_cast<unsigned char>(screen[at + 2]))) {
+                highest = std::max<std::uint64_t>(highest, std::stoull(screen.substr(at + 2)));
+            }
+        }
+        return highest;
+    };
+    for (std::size_t reads = 1; reads <= 3; ++reads) {
+        ASSERT_TRUE(w.until([&] { return written() > 0; }, 10s));
+        const std::uint64_t line = written();
+        // Two megabytes after it (lines of some 20 bytes), more than the PTY
+        // holds: the daemon parsed that line.
+        ASSERT_TRUE(w.until([&] { return written() >= line + 120000; }, 30s)) << written();
+        ASSERT_TRUE(w.refresh(w.pane));
+        ASSERT_TRUE(w.until([&] { return w.refreshes.size() == reads && w.frames >= int(w.refreshes.back().frames); }, 10s))
+            << "read " << reads << " got no answer while the program floods";
+        EXPECT_GE(shown(), line) << w.screen();
+    }
+}
+
+// Each read gets its answer, also when more of them wait than the events
+// channel and the queue behind it (Mux.eventQueue) take: the answers that
+// do not fit wait in the daemon as a count.
+TEST(MuxAttach, EveryReadGetsItsAnswerAlsoPastTheEventQueue)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s", true, std::size_t(MinEventQueue)), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && w.frames > 0; }));
+    // The window reads no events: their channel fills, then the queue.
+    w.readEvents = false;
+    const std::size_t reads =
+        (PhosphorChannel::Stream::Options{}.window + std::size_t(MinEventQueue)) / PhosphorChannel::Stream::FrameCost + 1000;
+    std::size_t sent = 0;
+    for (int stuck = 0; sent < reads && stuck < 500;) {
+        if (w.refresh(w.pane)) {
+            ++sent;
+            stuck = 0;
+        } else {
+            ++stuck;
+            w.stream->pump(20);
+            w.read();
+        }
+    }
+    ASSERT_EQ(sent, reads);
+    w.readEvents = true;
+    ASSERT_TRUE(w.until([&] { return w.refreshes.size() >= reads; }, 40s)) << w.refreshes.size() << " of " << reads;
+    EXPECT_EQ(w.refreshes.size(), reads);
+    // Each of the pane, in order: after the frames of the reads before it.
+    std::uint64_t frames = 0;
+    std::size_t wrong = 0;
+    for (const Window::Refreshed& r : w.refreshes) {
+        if (r.pane != w.pane || r.frames < frames) ++wrong;
+        frames = r.frames;
+    }
+    EXPECT_EQ(wrong, 0u);
+    EXPECT_FALSE(w.ended);
+}
+
+// What the window sent before it heard of a takeover counts for the window
+// that took the session, until that one got its first layout: the late
+// layout of the old window is the new one's.
+TEST(MuxAttach, ALateLayoutReachesTheWindowThatTookTheSessionBeforeItsFirst)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    Window old;
+    ASSERT_EQ(old.attach(daemon, "s"), "");
+    ASSERT_TRUE(old.until([&] { return old.pane != 0; }));
+    const auto second = newPane(daemon, "s", launchOf(Waiting, daemon));
+    ASSERT_TRUE(second) << daemon.lastError();
+    ASSERT_TRUE(old.until([&] { return old.opened.size() == 2; }));
+    // The new window's call takes the session: the old window's attachment
+    // finishes, and reads what it sends from now on as late input.
+    Window taker;
+    ASSERT_EQ(taker.call(daemon, "s"), "");
+    Layout sent;
+    sent.tabs.push_back(LayoutTab{{LayoutNode{0, true, 0.5}, LayoutNode{old.pane}, LayoutNode{*second}}, *second, 0, "late"});
+    ASSERT_TRUE(old.sendLayout(sent));
+    ASSERT_TRUE(old.stream->flush(2000));
+    // The layout is in the socket before the new window connects: the
+    // daemon reads it in the pass that sees the connection, or before, and
+    // handles the old attachment first.
+    ASSERT_EQ(taker.connect(), "");
+    ASSERT_TRUE(taker.until([&] { return taker.opened.size() == 2; }));
+    ASSERT_EQ(taker.layouts.size(), 1u);
+    EXPECT_TRUE(taker.layouts[0] == sent) << Json::write(toJson(taker.layouts[0]));
+    EXPECT_TRUE(old.until([&] { return old.got(Attach::EventType::TakenOver); }));
+}
+
+// A detach right after the window closed the last pane: the session ends,
+// as when its last program exits, whether the daemon read the close before
+// the call or with it (Attachment::catchUp).
+TEST(MuxAttach, ADetachRightAfterTheLastPaneClosedEndsTheSession)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    ASSERT_TRUE(w.closePane(w.pane));
+    ASSERT_TRUE(w.stream->flush(2000));
+    IpcConnection::Error error;
+    const bool detached = daemon.call(Fn::Detach, Json::Array{"s"}, &error).has_value();
+    EXPECT_TRUE(detached || error.code == Error::NoSuchSession) << error.code << ": " << error.message;
+    EXPECT_TRUE(waitFor([&] { return !sessionNamed(daemon, "s"); }));
+    EXPECT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached) || w.got(Attach::EventType::SessionEnded); }));
+}
+
+// Input that waits for a full PTY goes once when the window detaches, as for
+// a window that left: the bytes that the PTY has no room for are lost, and a
+// clear behind them reaches the terminal (Attachment::finish).
+TEST(MuxAttach, AClearThatWaitsForAFullPtyGoesWhenTheWindowDetaches)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string ready = daemon.dir() + "/ready";
+    // Reads nothing.
+    SessionOptions o = daemon.options({"/bin/sh", "-c", "stty raw -echo; printf 'bef''ore'; : > '" + ready + "'; exec sleep 60"});
+    o.name = "s";
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    ASSERT_TRUE(waitFor([&] { return exists(ready); }));
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "before"); })) << w.screen();
+    // A second pane, whose echo says that the daemon read what came before it.
+    const auto echo = newPane(daemon, "s", launchOf({"/bin/cat"}, daemon));
+    ASSERT_TRUE(echo) << daemon.lastError();
+    ASSERT_TRUE(w.until([&] { return w.others.contains(*echo); }));
+    // Past the 32 MiB that the PTY queues, and below the bound of held
+    // input (Attachment::MaxHeldInput): the daemon holds the rest, and the
+    // clear behind it.
+    const std::string part(60000, 'x');
+    std::size_t sent = 0;
+    for (int stuck = 0; sent < (std::size_t(34) << 20) && stuck < 200;) {
+        if (w.type(part)) {
+            sent += part.size();
+            stuck = 0;
+        } else {
+            ++stuck;
+            w.stream->pump(20);
+            w.read();
+        }
+    }
+    ASSERT_GE(sent, std::size_t(34) << 20);
+    ASSERT_TRUE(w.action(Attach::InputType::Clear));
+    Attach::Input ping;
+    ping.pane = *echo;
+    ping.bytes = "ping\n";
+    ASSERT_TRUE(w.send(ping));
+    const auto echoed = [&] { return w.others.at(*echo)->replica.text(AfterglowVt::Terminal::TextScope::Screen); };
+    ASSERT_TRUE(w.until([&] { return contains(echoed(), "ping"); }, 10s)) << echoed();
+    // Still held: the screen of the stuck pane did not change.
+    ASSERT_TRUE(contains(w.screen(), "before")) << w.screen();
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"s"})) << daemon.lastError();
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
+    // The next window shows the cleared screen.
+    Window again;
+    ASSERT_EQ(again.attach(daemon, "s"), "");
+    ASSERT_TRUE(again.until([&] { return again.pane != 0 && again.replica.cols() != 20; })) << again.replica.cols();
+    EXPECT_FALSE(contains(again.screen(), "before")) << again.screen();
+}
+
+// The input that the daemon holds for a pane that went to another session
+// still reaches its program when the old session ends (Attachment::finish),
+// and so does what the window sends before it hears of the end (Attachment::
+// readLate): as far as the program's PTY has room, as for a window that left.
+TEST(MuxAttach, TheInputOfAPaneThatBrokeOutGoesWhenItsOldSessionEnds)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string ready = daemon.dir() + "/ready";
+    const std::string go = daemon.dir() + "/go";
+    const std::string out = daemon.dir() + "/out";
+    // Reads nothing until the test says, then writes what it reads to a file.
+    SessionOptions o = daemon.options({"/bin/sh", "-c",
+                                       "stty raw -echo; : > '" + ready + "'; while [ ! -e '" + go + "' ]; do sleep 0.05; done; exec cat > '" + out
+                                           + "'"});
+    o.name = "s";
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    ASSERT_TRUE(waitFor([&] { return exists(ready); }));
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    // A second pane keeps the session, and its echo says that the daemon read
+    // what came before it.
+    const auto echo = newPane(daemon, "s", launchOf({"/bin/cat"}, daemon));
+    ASSERT_TRUE(echo) << daemon.lastError();
+    ASSERT_TRUE(w.until([&] { return w.others.contains(*echo); }));
+    // Parts of 2 MiB: the PTY queues 16 of them (its 32 MiB, as the kernel
+    // holds less than one part), and the daemon holds the 17th and the end
+    // behind it, below Attachment::MaxHeldInput. The PTY's queue has room
+    // for what the kernel took of it: less than a part, more than the end.
+    constexpr std::size_t PartBytes = std::size_t(2) << 20;
+    static_assert(PartBytes + 2 * PhosphorChannel::Stream::FrameCost + 4 < Attachment::MaxHeldInput);
+    const std::string part(PartBytes, 'x');
+    int sent = 0;
+    const auto deadline = std::chrono::steady_clock::now() + 30s;
+    while (sent < 17 && std::chrono::steady_clock::now() < deadline) {
+        if (w.type(part)) {
+            ++sent;
+        } else {
+            w.stream->pump(20);
+            w.read();
+        }
+    }
+    ASSERT_EQ(sent, 17);
+    ASSERT_TRUE(w.until([&] { return w.type("END\n"); }, 10s));
+    Attach::Input ping;
+    ping.pane = *echo;
+    ping.bytes = "ping\n";
+    ASSERT_TRUE(w.until([&] { return w.send(ping); }, 10s));
+    const auto echoed = [&] { return w.others.at(*echo)->replica.text(AfterglowVt::Terminal::TextScope::Screen); };
+    ASSERT_TRUE(w.until([&] { return contains(echoed(), "ping"); }, 10s)) << echoed();
+    Layout moved;
+    moved.addTab(w.pane);
+    const auto fresh = daemon.call(Fn::BreakOut, Json::Array{ProtocolVersion, "s", toJson(moved)});
+    ASSERT_TRUE(fresh) << daemon.lastError();
+    // The old session ends: the part is lost, and the end goes.
+    ASSERT_TRUE(daemon.call(Fn::KillSession, Json::Array{"s"})) << daemon.lastError();
+    // The window has not heard of the end yet.
+    ASSERT_TRUE(w.until([&] { return w.type("LATE\n"); }, 10s));
+    ASSERT_TRUE(w.stream->flush(2000));
+    std::ofstream(go).put('x');
+    // The last bytes that the program read.
+    const auto ending = [&] {
+        constexpr std::streamoff Bytes = 9;
+        std::ifstream in(out, std::ios::binary | std::ios::ate);
+        const std::streamoff size = in ? std::streamoff(in.tellg()) : 0;
+        std::string end;
+        if (size < Bytes) return end;
+        end.resize(std::size_t(Bytes));
+        in.seekg(size - Bytes);
+        in.read(end.data(), Bytes);
+        return end;
+    };
+    EXPECT_TRUE(waitFor([&] { return ending() == "END\nLATE\n"; }, 30s)) << ending();
+    EXPECT_TRUE(sessionNamed(daemon, (*fresh)["name"].toString()));
 }

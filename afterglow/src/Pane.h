@@ -124,22 +124,33 @@ public:
     /// does not apply: the replica no longer matches the daemon's terminal.
     bool applySessionFrame(std::string_view frame);
     /// Whether the user can see this session pane: the daemon's terminal
-    /// reports a change to the program (mode 2033). Sends a change only.
-    /// The daemon holds the screens of a pane that the user cannot see.
-    /// True when it sent a change.
+    /// reports a change to the program (mode 2033). The daemon holds the
+    /// screens of a pane that the user cannot see. True when the state
+    /// changed, and so went to the daemon: the same state again sends
+    /// nothing.
     bool setSessionVisible(bool visible);
     /// The daemon may hold the screens of this session pane: it was not
-    /// visible at some time since the last refreshSession(). GUI thread.
+    /// visible at some time since the answer to a Refresh that it asked
+    /// after its last change of sight (sessionRefreshed()). GUI thread.
     bool sessionScreensHeld() const { return m_session && !m_sessionGone && m_sessionHeld; }
-    /// For a read of the text, or a capture: the screens and the history of
-    /// a session pane whose screens the daemon may hold come now, and the
-    /// pane waits for them (MuxClient::refresh). The reads of the pane's
-    /// text (text, readText, semanticRegions, readRegion, selectedText,
-    /// readSelection) call it. GUI thread, without m_mutex.
+    /// Asks for the screens and the history that the daemon may hold of this
+    /// session pane (MuxClient::askRefresh), and waits for nothing: the
+    /// window does so when the pane shows again, and it shows the older
+    /// screens until they come, one round trip. A pane that shows uses the
+    /// Refresh that it asked since it showed: from its answer on, the
+    /// daemon sends the screens as they change. The ticket to wait for
+    /// (MuxClient::waitRefreshed), 0 for none. GUI thread.
+    std::uint64_t askSessionRefresh() const;
+    /// For a read of the text: askSessionRefresh(), and the pane waits for
+    /// the answer, for up to MuxClient::RefreshWaitMs. The reads of the
+    /// pane's text (text, readText, semanticRegions, readRegion,
+    /// selectedText, readSelection) call it. GUI thread, without m_mutex.
     void refreshSession() const;
-    /// MuxClient::refresh brought this pane's screens: a pane that the user
-    /// can see keeps them up to date from now on.
-    void sessionRefreshed() const;
+    /// MuxClient: the answer to Refresh @p ticket of this pane came, and the
+    /// frames that it names applied. When it answers the Refresh that the
+    /// pane waits for, or a later one, a pane that the user can see keeps
+    /// its screens up to date from now on.
+    void sessionRefreshed(std::uint64_t ticket) const;
     /// Whether the window draws the pane where the user can see it, as
     /// TerminalWindow::paneSeen decides, or as the tab that a switch leaves.
     /// A pane that nobody sees asks for no frames of its animated images.
@@ -696,6 +707,10 @@ private:
     /// GUI thread: sessionScreensHeld(). A read refreshes the replica, so
     /// the reads that are const change it.
     mutable bool m_sessionHeld = false;
+    /// GUI thread: the ticket of the Refresh that brings the screens that
+    /// the daemon held, asked since the last change of setSessionVisible().
+    /// 0 for none.
+    mutable std::uint64_t m_sessionRefresh = 0;
     bool m_sessionSynced = false; ///< GUI thread: a frame of the session applied (sessionSynced)
     bool m_snapshotSynced = false; ///< GUI thread: m_snapshot is of a frame of the session
     /// GUI thread: the last reported directory that knownDirectory checked,

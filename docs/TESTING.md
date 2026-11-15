@@ -281,7 +281,7 @@ The targets compile these parts with the sanitizers:
 
 - the terminal core and the protocol library, with zlib-ng and xxHash
 - the image decoders that `aglow` and `afterglow-mux` share, with libpng, libjpeg-turbo and libwebp
-- the codecs of the attach stream of `afterglow-mux`
+- the codecs of the attach stream of `afterglow-mux`, and the JSON values of its calls
 
 Build only the fuzz targets in a fuzz build directory.
 The commands below turn off the tests and build the four targets by name.
@@ -290,7 +290,7 @@ A fuzz build does not build `aglow`.
 
 | Target | Input |
 | --- | --- |
-| `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. One control record sends the rest of the input as a state frame to the reader of a replica terminal. A second replica (the mirror) gets a frame of a writer after each control record. At the end, at the 1 MiB budget, the writer must catch up within 4,096 frames. The mirror must then show the text of the terminal, and the same images with the same frame counts. |
+| `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. One control record sends the rest of the input as a state frame to the reader of a replica terminal. A second replica (the mirror) gets a frame of a writer after each control record. About a quarter of these frames leave out the screens, as for a pane that you cannot see. About an eighth of the records mark the text, as a read does. When the writer says that the frames carried a mark, the mirror must have the rows of that mark. At the end, at the 1 MiB budget, the writer must catch up within 4,096 frames. The mirror must then show the text of the terminal, and the same images with the same frame counts. The writer must say that the frames carried the last mark. |
 | `afterglow_protofuzz` | The protocol readers for remote input. The first byte selects the reader. |
 | `afterglow_imagefuzz` | An image file to the image decoders of `aglow` and `afterglow-mux` (`libs/afterglow-image`). These are its GIF and BMP readers, and libpng, libjpeg-turbo and libwebp. It also stops at a result that breaks what `Decode.h` promises. |
 | `afterglow_muxfuzz` | The readers of the attach stream of `afterglow-mux`, and of the JSON values of its calls. The first byte selects the reader. The stream readers take host calls, events and input. The JSON readers take layouts, launches and pane sizes. A host call or a JSON value that reads must read the same after it is written again. A layout must stay a valid layout while its panes leave it. The state frames of panes are in `afterglow_vtfuzz`. |
@@ -755,7 +755,7 @@ ctest --test-dir build --output-on-failure -j4 -R '^((Proto\.(IpcServer|Socket)|
 | `WindowImageDecode.*` | `afterglow_imagedecode_tests` | The decoder of a pane outside a session (Qt), with the files of `Image.ImageDecode.*`. It applies the gAMA chunk of a PNG, as Kitty does. It counts the gAMA, sRGB and cICP chunks as libpng does. It reads a top-down BMP. |
 | `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`). A replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are listed below the table. |
 | `MuxCommandTest.*` | `afterglow_mux_command_tests` | The commands of `afterglow mux`. The cases are listed below the table. |
-| `MuxClient.*` | `afterglow_mux_client_tests` | The link of a window to a session (`MuxClient`), with panes and no window, against a daemon of its own. A window shows more panes than the 64 channels of a stream by default. Panes that exit or close free their channels. The jobs of many panes come in one call. A window that loses its session hears it of each pane, not as the exit of its program. A read of a pane that the window does not show gives its current text. |
+| `MuxClient.*` | `afterglow_mux_client_tests` | The link of a window to a session (`MuxClient`), with panes and no window, against a daemon of its own. A window shows more panes than the 64 channels of a stream by default. Panes that exit or close free their channels. The jobs of many panes come in one call. A window that loses its session hears it of each pane, not as the exit of its program. A read of a pane that the window does not show gives its current text. A pane that the window binds while you cannot see it, then shows, gets the size of the window with the screens that come. The daemon holds no screens of a pane that you could see from the start, so a read of it asks the daemon for nothing. A pane that shows again asks for its screens and does not wait for them. Each pane hears of the answer to its own request. |
 | `PaneLaunch.ASessionsPaneReadsTheSessionsEnvironment` | `afterglow_pane_tests` | A new pane of a session's window reads `TERMINFO_DIRS` from the environment of the session, not from the environment of Afterglow |
 | `ShellIntegration.ReadsTheInheritedEnvironmentWhenGiven` | `afterglow_shell_tests` | Shell integration of a session pane reads `SHELL`, `ZDOTDIR` and `AFTERGLOW_SHELL_INTEGRATION` from the environment of the session |
 | `SplitTree.PreorderGoesBothWays` | `afterglow_app_tests` | The split tree of a tab goes to the preorder list of a session layout and back |
@@ -806,6 +806,9 @@ The `StateSync.*` tests cover these cases:
 - The rows of either screen that wait for a later frame count as rows that wait, and history and image pixels do not
 - A reload of the window changes only the view options of the replica: word separators, bidirectional layout, bold as bright and minimum contrast. The colors, the cursor and the history stay those of the writer.
 - A held frame brings the title, the directory, the status and the marks. The screens, the history, the images and the region scrolls wait for the next update, which matches the terminal.
+- A held frame frees the pixels of an image that the program deleted while they went
+- A mark of the text is reached while the program writes more rows than the frames carry. The replica then has every row of the mark. A new mark waits for the rows that came since, and a reset forgets the mark.
+- The random runs hold some frames, as for a pane that you cannot see, and mark the text, as a read does. When a mark is reached, the replica has its history rows and the rows that were visible at the mark. A resize in a run of held frames comes with the next update.
 
 The `Mux.MuxAttach.*` tests cover these cases:
 
@@ -850,6 +853,13 @@ The `Mux.MuxAttach.*` tests cover these cases:
 - A window changes no pane of another session, and only the process of the window that shows a session changes its panes
 - `newPane`, `paneJob` and `paneSession` refuse bad calls
 - A pane that the window does not show gets no screens while it floods, but its title, its bell, its report and its exit. A refresh brings its current screen and history, and the window shows it again on Visible.
+- What the window says about which panes you can see, and its reads of the text of a pane, go past input that waits for a full PTY. Each read gets its answer.
+- A pane that links only when a channel is free starts as the window said: it gets no screens while you cannot see it
+- A read of a pane whose program floods it gets its answer, with the screen of the time of the read or newer
+- Each read gets its answer, also when more answers wait than the events channel and the queue of `Mux.eventQueue` take
+- The layout that a window sends before it hears of a takeover is the layout of the window that took the session, while that window has no layout yet
+- A detach right after the window closed the last pane ends the session
+- A clear that waits behind input for a full PTY reaches the terminal when the window detaches
 
 The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow mux new` starts in a session of its own:
 
