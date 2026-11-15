@@ -228,3 +228,24 @@ TEST(ProjectStore, EachLimitNamesItselfInTheError)
     auto tab = tabs[0].toObject(); tab["active_pane"] = "elsewhere"; tabs[0] = tab; doc["tabs"] = tabs;
     EXPECT_TRUE(ProjectStore::validate(doc).contains("active pane"));
 }
+
+// The panes of a project in the order that a window lays them out: tab by
+// tab, each tree's first side before its second. A session starts them in
+// this order before its window shows them.
+TEST(ProjectStore, ThePanesComeInTheOrderOfTheLayout)
+{
+    const QJsonObject inner{{"direction", "right"}, {"ratio", 0.5}, {"first", pane("b")}, {"second", pane("c")}};
+    const QJsonObject outer{{"direction", "down"}, {"ratio", 0.5}, {"first", pane("a")}, {"second", inner}};
+    auto doc = project(outer);
+    QJsonArray tabs = doc["tabs"].toArray();
+    QJsonObject main = tabs[0].toObject();
+    main["active_pane"] = "a";
+    tabs[0] = main;
+    tabs.append(QJsonObject{{"id", "logs"}, {"title", ""}, {"active_pane", "d"}, {"tree", pane("d")}});
+    doc["tabs"] = tabs;
+    ASSERT_TRUE(ProjectStore::validate(doc).isEmpty()) << qPrintable(ProjectStore::validate(doc));
+    QStringList ids;
+    for (const QJsonObject& leaf : ProjectStore::panes(doc)) ids << leaf.value(QStringLiteral("id")).toString();
+    EXPECT_EQ(ids, (QStringList{QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"), QStringLiteral("d")}));
+    EXPECT_EQ(ProjectStore::firstPane(doc).value(QStringLiteral("id")).toString(), QStringLiteral("a"));
+}

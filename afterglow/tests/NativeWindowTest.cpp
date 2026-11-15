@@ -11530,6 +11530,38 @@ echo "bg=${a#*rgb:}"
     delete shown;
 }
 
+// A session of this computer takes the variables of Mux.updateEnvironment
+// from the Afterglow that shows it: a pane that starts after the window
+// attached has Afterglow's value, which the session did not have.
+TEST_F(NativeWindow, ASessionTakesTheVariablesOfTheAfterglowThatShowsIt) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "env")) << daemon.lastError();
+    const Afterglow::Test::Saved updated("TEST_UPDATED", "from-afterglow");
+    restartApplication(QStringLiteral("update-environment.conf"),
+                       testSettings({{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("updateEnvironment"), QJsonArray{QStringLiteral("TEST_UPDATED")}}}}}),
+                       {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("env"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    // The first pane started before: it keeps its environment.
+    ASSERT_TRUE(pane->sendInput("echo \"[${TEST_UPDATED-unset}]\"\n"));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("\n[unset]")); }, 5000)) << screenOf(pane).toStdString();
+    quint32 created = 0;
+    ASSERT_EQ(application->control().split(pane->id(), QStringLiteral("right"),
+                                           {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("echo \"[${TEST_UPDATED-unset}]\"; exec cat")},
+                                           {}, created),
+              QString());
+    Pane* later = nullptr;
+    for (Pane* p : shown->panes()) {
+        if (p->id() == created) later = p;
+    }
+    ASSERT_NE(later, nullptr);
+    EXPECT_TRUE(waitFor([&] { return screenOf(later).contains(QStringLiteral("[from-afterglow]")); }, 5000)) << screenOf(later).toStdString();
+    delete shown;
+}
+
 // `afterglow ssh` gets a remote socket only for the pane that it runs in: the
 // window tells the processes of a pane by their terminal session, and
 // refuses a call of another process, or of none.
@@ -11591,7 +11623,8 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
         {"id": "t1", "title": "work", "active_pane": "b", "tree": {"direction": "right", "ratio": 0.5,
             "first": {"pane": {"id": "a", "cwd": "/tmp", "title": "", "command": []}},
             "second": {"pane": {"id": "b", "cwd": "~", "title": "editor", "command": []}}}},
-        {"id": "t2", "title": "logs", "active_pane": "c", "tree": {"pane": {"id": "c", "cwd": "/", "title": "", "command": ["sleep", "300"]}}}]})");
+        {"id": "t2", "title": "logs", "active_pane": "c", "tree": {"pane": {"id": "c", "cwd": "/", "title": "", "command": ["sleep", "300"]}}},
+        {"id": "t3", "title": "done", "active_pane": "d", "tree": {"pane": {"id": "d", "cwd": "/", "title": "", "command": ["true"]}}}]})");
     project.close();
     const auto windowOf = [](const QVariantMap& result) -> TerminalWindow* {
         for (TerminalWindow* w : TerminalWindow::windows()) {
@@ -11662,6 +11695,11 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
     EXPECT_EQ(tabs[1].toObject().value(QStringLiteral("tree")).toObject().value(QStringLiteral("pane")).toObject().value(QStringLiteral("command")),
               QJsonValue(QJsonArray{QStringLiteral("sleep"), QStringLiteral("300")}));
     EXPECT_EQ(tabs[1].toObject().value(QStringLiteral("title")).toString(), QStringLiteral("logs"));
+    // Each leaf has the pane that the daemon started for it: the directory
+    // that the daemon reads of its program. The pane of "true", which ended
+    // before or after the window opened, left no tab.
+    EXPECT_EQ(savedPane(saved, 0, {QStringLiteral("first")}).value(QStringLiteral("cwd")).toString(), QStringLiteral("/tmp"));
+    EXPECT_EQ(savedPane(saved, 1, {}).value(QStringLiteral("cwd")).toString(), QStringLiteral("/"));
 
     // Again: the window that shows it.
     QVariantMap again;
@@ -11694,16 +11732,127 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
         << QJsonDocument(resaved).toJson().toStdString();
     EXPECT_EQ(savedPane(resaved, 0, {QStringLiteral("first")}).value(QStringLiteral("command")).toArray(), QJsonArray());
 
-    // --no-session: a window of its own, outside any session.
+    // --no-session: a window of its own, outside any session, which holds
+    // the pane of "true" once it ended, as for any project.
     QVariantMap local;
     ASSERT_EQ(open(true, QStringLiteral("window"), local), QString());
     QPointer<TerminalWindow> plain = windowOf(local);
     ASSERT_NE(plain, nullptr);
-    EXPECT_EQ(plain->panes().size(), 3);
+    EXPECT_EQ(plain->panes().size(), 4);
     for (Pane* pane : plain->panes()) EXPECT_FALSE(pane->isSessionPane());
     delete plain;
     delete reattached;
     EXPECT_TRUE(daemon.call(AfterglowMux::Fn::KillSession, AfterglowProto::Json::Array{"dev"})) << daemon.lastError();
+}
+
+// `afterglow ctl --session overlay` and `screenshot` while a window shows the
+// session: the daemon passes them to the window, which runs the overlay over
+// the session pane with the client's input, takes the picture, and answers
+// when it is done. The overlay of a client that goes closes.
+TEST_F(NativeWindow, ASessionsWindowRunsOverlaysAndTakesScreenshotsForCtl) {
+    restartApplication(QStringLiteral("session-frames.conf"),
+                       testSettings({{QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}, {QStringLiteral("allowReadText"), true}}}}),
+                       {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "frames")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("frames"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    auto ctl = std::make_unique<AfterglowProto::IpcConnection>();
+    AfterglowProto::IpcConnection::Error failure;
+    ASSERT_TRUE(ctl->connect(daemon.socket(), &failure, 2000)) << failure.message;
+    ASSERT_TRUE(ctl->call(AfterglowMux::Target, AfterglowMux::Fn::SelectSession, MuxTest::Json::Array{AfterglowMux::ProtocolVersion, "frames"},
+                          5000, &failure))
+        << failure.message;
+    const std::int64_t id = pane->sessionPaneId();
+    /// A call of the control target that the window answers while this
+    /// test's event loop runs: the call waits on a thread of its own.
+    const auto call = [&](const char* fn, MuxTest::Json::Array args) {
+        std::optional<MuxTest::Json::Value> result;
+        std::atomic<bool> answered{false};
+        std::thread caller([&] {
+            result = ctl->call("control", fn, std::move(args), 15000, &failure);
+            answered = true;
+        });
+        waitFor([&] { return answered.load(); }, 20000);
+        caller.join();
+        return result;
+    };
+
+    // The client's input, then the overlay that takes it.
+    ASSERT_TRUE(call("overlayInput", MuxTest::Json::Array{"in", "from the client", true})) << failure.message;
+    const auto ran = call("overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"cat"}, MuxTest::Json::Object{{"input", "in"}}});
+    ASSERT_TRUE(ran) << failure.message;
+    EXPECT_EQ((*ran)["exit_code"].toInteger(), 0);
+    EXPECT_EQ((*ran)["stdout"].toString(), "from the client");
+    // An answer larger than a frame of the stream goes in parts: a MiB of
+    // quotes is two in JSON.
+    const auto large = call("overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"sh", "-c", "head -c 1048576 /dev/zero | tr '\\0' '\"'"},
+                                                          MuxTest::Json::Object{}});
+    ASSERT_TRUE(large) << failure.message;
+    EXPECT_EQ((*large)["stdout"].toString(), std::string(1048576, '"'));
+    // A picture of the session pane, as the window draws it.
+    const auto shot = call("screenshot", MuxTest::Json::Array{id, "pane"});
+    ASSERT_TRUE(shot) << failure.message;
+    EXPECT_GT((*shot)["width"].toInteger().value_or(0), 0);
+    QImage image;
+    ASSERT_TRUE(image.loadFromData(QByteArray::fromBase64(QByteArray::fromStdString((*shot)["png"].toString())), "PNG"));
+    EXPECT_EQ(image.width(), (*shot)["width"].toInteger().value_or(0));
+
+    // An overlay that runs when its client goes closes.
+    std::thread lasting([&] { ctl->call("control", "overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"sleep", "30"}, MuxTest::Json::Object{}}, 2000, &failure); });
+    const bool opened = waitFor([&] { return pane->overlay() != nullptr; }, 5000);
+    lasting.join();
+    ASSERT_TRUE(opened);
+    ctl.reset();
+    EXPECT_TRUE(waitFor([&] { return pane->overlay() == nullptr; }, 5000));
+    delete shown;
+}
+
+// A session of another host reaches only what its programs could reach over
+// ssh: its window runs no overlay, no window with a command, and no script
+// command for it, which `aglow run` runs when a script marks it remote.
+TEST_F(NativeWindow, ASessionOfAnotherHostRunsNoProgramHere) {
+    restartApplication(QStringLiteral("far-frames.conf"),
+                       testSettings({{QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}, {QStringLiteral("allowReadText"), true}}}}),
+                       {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const auto ssh = fakeSshTo(daemon, directory.filePath(QStringLiteral("ssh-bin")));
+    ASSERT_TRUE(ssh);
+    ASSERT_TRUE(shellSession(daemon, "far")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("box"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    AfterglowProto::IpcConnection ctl;
+    AfterglowProto::IpcConnection::Error failure;
+    ASSERT_TRUE(ctl.connect(daemon.socket(), &failure, 2000)) << failure.message;
+    ASSERT_TRUE(ctl.call(AfterglowMux::Target, AfterglowMux::Fn::SelectSession, MuxTest::Json::Array{AfterglowMux::ProtocolVersion, "far"}, 5000,
+                         &failure))
+        << failure.message;
+    const std::int64_t id = pane->sessionPaneId();
+    const auto refused = [&](const char* fn, MuxTest::Json::Array args) {
+        std::optional<MuxTest::Json::Value> result;
+        std::atomic<bool> answered{false};
+        std::thread caller([&] {
+            result = ctl.call("control", fn, std::move(args), 10000, &failure);
+            answered = true;
+        });
+        waitFor([&] { return answered.load(); }, 15000);
+        caller.join();
+        return result ? std::string("answered") : failure.message;
+    };
+    const std::string none = "a session of another host runs no program on this computer";
+    EXPECT_EQ(refused("overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"true"}, MuxTest::Json::Object{}}), none);
+    EXPECT_EQ(refused("overlayInput", MuxTest::Json::Array{"in", "x", true}), none);
+    EXPECT_EQ(refused("newWindow", MuxTest::Json::Array{"", MuxTest::Json::Array{"true"}}), none);
+    EXPECT_NE(refused("runAction", MuxTest::Json::Array{id, "script:far.there"}).find("only the script commands that a script marks remote"),
+              std::string::npos);
+    EXPECT_EQ(pane->overlay(), nullptr);
+    delete shown;
 }
 
 // `afterglow ctl --session` while a window shows the session: the window

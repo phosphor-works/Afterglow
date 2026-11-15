@@ -151,12 +151,12 @@ To end the session, run `afterglow mux kill NAME`, or end its programs.
 | --- | --- |
 | A window shows it | Focuses that window |
 | It runs, and no window shows it | A new window shows it again, with its programs as they are |
-| It does not run | Starts it with the first pane of the first tab, and the window starts the other panes in it |
+| It does not run | Starts it with all the panes of the project, and a new window lays them out. A pane whose program ended before the window opened is left out, with a warning. |
 | It runs, with `--new` | Starts another session, whose name the daemon gives |
 
 A save of the window of a session of this computer writes `"session": true`.
 The daemon keeps the command and the title of each pane, so a window that shows the session again saves them too.
-Afterglow starts the daemon and the session in the background: the windows go on responding while the daemon starts.
+Afterglow starts the daemon, the session and the panes of the project in the background, and connects to the session there. The windows go on responding while the session starts.
 The `afterglow ctl open-project` call, and the result of the `open_project` effect, come when the window of the session opens.
 While the session of a project starts, a second open of the project waits for it, and then focuses its window.
 A pane of a session closes when its program exits: the project does not hold it, as it holds a pane outside a session.

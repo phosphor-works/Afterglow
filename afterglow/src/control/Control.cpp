@@ -13,7 +13,9 @@
 #include "../mux/MuxClient.h"
 #include "../scripting/ScriptHost.h"
 
+#include <QBuffer>
 #include <QDir>
+#include <QImage>
 #include <QFileInfo>
 #include <QClipboard>
 #include <QDesktopServices>
@@ -79,6 +81,14 @@ void Control::attachWindow(TerminalWindow* window)
         if (!error.isEmpty()) notify(pane->id(), QStringLiteral("Move failed"), error);
     });
     connect(window, &TerminalWindow::paneCreated, this, &Control::attachPane);
+    // The window of a session: what its clients left goes with it, as no
+    // daemon tells it of them any more. Its overlays close with it.
+    if (window->showsSession()) {
+        connect(window, &QObject::destroyed, this, [this, prefix = sessionClientOwner(window->sessionHost(), window->sessionName())] {
+            m_sessionInputs.dropPrefix(prefix);
+            m_sessionOverlayOwners.removeIf([&prefix](const QString& owner) { return owner.startsWith(prefix); });
+        });
+    }
     connect(window, &TerminalWindow::scriptKey, this, &Control::scriptKey);
     connect(window, &TerminalWindow::scriptDockEvent, this, &Control::scriptDockEvent);
     connect(window, &TerminalWindow::tabSwitched, this, [this, window](quint32 from, quint32 to, int direction) {
@@ -230,10 +240,34 @@ bool Control::runsIn(quint32 id, qint64 process, bool overlay) const
     return false;
 }
 
+void Control::endSessionClient(const QString& owner, const QString& message)
+{
+    m_sessionInputs.drop(owner);
+    if (m_sessionOverlayOwners.remove(owner)) closeOverlays(owner, message);
+}
+
+void Control::endSessionClients(const QString& message)
+{
+    m_sessionInputs.clear();
+    for (const QString& owner : std::exchange(m_sessionOverlayOwners, {})) closeOverlays(owner, message);
+}
+
+void Control::encodePng(QImage image, std::function<void(const QString& base64)> done)
+{
+    offThread<QString>(
+        [image = std::move(image)]() {
+            QByteArray png;
+            QBuffer buffer(&png);
+            buffer.open(QIODevice::WriteOnly);
+            return image.save(&buffer, "PNG") ? QString::fromLatin1(png.toBase64()) : QString();
+        },
+        std::move(done));
+}
+
 Control::~Control()
 {
     m_closing->store(true);
-    m_daemonCalls.clear();
+    m_background.clear();
 }
 
 std::optional<quint32> Control::focusedPane() const

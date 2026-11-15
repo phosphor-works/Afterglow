@@ -150,13 +150,39 @@ public:
     struct Facts
     {
         std::string title;
-        /// The directory that the shell reported, else directory().
+        /// The directory of this machine that the shell reported, else directory().
         std::string directory;
         std::string command; ///< the running command (OSC 133), empty at the prompt
         PaneSize size;
     };
     /// Nothing while an image decodes: the reader thread has the terminal.
     std::optional<Facts> facts() const;
+    /// The state and text of the newest program status record (OSC 7501),
+    /// as the control target names them (idle, working, done, blocked,
+    /// error): idle and empty without one. Nothing while an image decodes.
+    std::optional<std::pair<std::string, std::string>> status() const;
+    /// The title of the terminal. Nothing while an image decodes.
+    std::optional<std::string> title() const;
+
+    /// What the terminal tells its host that `afterglow ctl watch` hears of
+    /// the pane, while the daemon watches it (setWatched): the daemon need
+    /// not look at the panes to find what changed.
+    struct WatchEvent
+    {
+        enum class Kind { Bell, UserVar, CommandStarted, CommandFinished, Title, Status };
+        Kind kind = Kind::Bell;
+        std::string name{}; ///< UserVar: its name. Status: the state.
+        std::string text{}; ///< UserVar: its value. A command, a title, a status: its text.
+        int exitCode = 0; ///< CommandFinished
+        std::uint64_t milliseconds = 0; ///< CommandFinished: how long it ran
+    };
+    /// The most events, and bytes of them, that wait for the daemon: past
+    /// them, new ones go.
+    static constexpr std::size_t MaxWatchEvents = 1024;
+    static constexpr std::size_t MaxWatchBytes = std::size_t(4) << 20;
+    void setWatched(bool watched);
+    /// The events since the last take, oldest first.
+    std::vector<WatchEvent> takeWatchEvents();
     /// The text of @p scope, for `afterglow ctl get-text`. Nothing while an
     /// image decodes.
     std::optional<std::string> text(AfterglowVt::Terminal::TextScope scope) const;
@@ -191,6 +217,8 @@ public:
     void terminalProtocol(int code, std::string_view payload) override;
     void bell() override;
     void flash() override;
+    void titleChanged(std::string_view title) override;
+    void programStatusChanged() override;
     void notify(std::string_view title, std::string_view body) override;
     void clipboardWrite(std::string_view selection, std::string_view data) override;
     void pointerShapeChanged(std::string_view shape) override;
@@ -228,6 +256,13 @@ private:
     const std::uint32_t m_id;
     std::function<void()> m_wake;
     std::atomic<bool> m_changed{false};
+    static std::pair<std::string, std::string> statusOf(const AfterglowVt::ProgramStatus& status);
+    /// Keeps @p event for the daemon while it watches: true when the daemon
+    /// must wake for it, as nothing waited before. Under m_hostMutex.
+    bool watchLocked(WatchEvent event);
+    std::atomic<bool> m_watched{false};
+    std::vector<WatchEvent> m_watchEvents; ///< under m_hostMutex
+    std::size_t m_watchBytes = 0; ///< of m_watchEvents
     std::atomic<int> m_exitStatus{0};
     const std::string m_notificationCapabilities;
     ImageDecoder& m_images;

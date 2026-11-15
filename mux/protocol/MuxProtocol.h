@@ -6,6 +6,7 @@
 #include <AfterglowProto/Json.h>
 #include <AfterglowVt/Terminal.h>
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -27,14 +28,21 @@ namespace AfterglowMux {
 /// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
 /// MuxProtocolTest pins the keys of the options to this number, so that a new
 /// key changes it too.
-inline constexpr int ProtocolVersion = 17;
+inline constexpr int ProtocolVersion = 21;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
 
+/// The events of the control target, of a window (ControlApi's signals) and
+/// of a session in the daemon, to which `afterglow ctl watch` subscribes.
+/// The application's ControlSocketTest checks that they are ControlApi's.
+inline constexpr std::array<std::string_view, 11> ControlEvents{
+    "paneCreated", "paneMoved",    "paneClosed",   "titleChanged",   "bell",          "commandStarted",
+    "commandFinished", "statusChanged", "focusChanged", "userVarChanged", "contextChanged"};
+
 namespace Fn {
 inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
-inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name}
+inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name, pane}: pane is its first pane's ID
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
 /// (protocol, name, {takeover, eventQueue, history}) -> {name}: after the
@@ -132,6 +140,9 @@ inline constexpr const char* SessionNameRule =
 /// kill`.
 bool validSessionName(std::string_view name);
 
+/// The longest Control.eventInterval, in milliseconds.
+inline constexpr std::int64_t MaxEventInterval = 10000;
+
 /// The bounds that the daemon takes for the terminal values of a session.
 /// They hold every value of the settings that they come from
 /// (Terminal.scrollback, Colors.minimumContrast, Graphics.quota): the
@@ -195,6 +206,10 @@ struct ControlOptions
     /// of a call says it ("remote commands are off (SETTING)"), or empty:
     /// whether `afterglow ssh` in a session pane gets a socket.
     std::string remoteCommandsOff{};
+    /// Control.eventInterval: the shortest time in milliseconds between two
+    /// events of one kind for one pane of `afterglow ctl watch`, 0 to
+    /// MaxEventInterval.
+    int eventInterval = 100;
     bool operator==(const ControlOptions&) const = default;
 };
 
@@ -245,8 +260,14 @@ struct SessionSettings
 {
     AfterglowVt::TerminalOptions terminal;
     ControlOptions control;
+    /// The variables of Mux.updateEnvironment as the window's process has
+    /// them: a value replaces the session's, and none removes it. The
+    /// panes that start later get them.
+    std::vector<std::pair<std::string, std::optional<std::string>>> environment{};
     bool operator==(const SessionSettings&) const = default;
 };
+/// The most variables that the settings of a window name.
+inline constexpr std::size_t MaxUpdatedVariables = 256;
 
 AfterglowProto::Json::Value toJson(const SessionSettings& settings);
 /// nullopt for a value that is not a valid settings object, by the rules of

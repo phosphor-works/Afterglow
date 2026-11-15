@@ -6,6 +6,7 @@
 #include "PaneLaunch.h"
 #include "app/NotificationCenter.h"
 #include "config/Settings.h"
+#include "config/Theme.h"
 #include "control/RemoteSockets.h"
 #include "shell/Aglow.h"
 
@@ -13,6 +14,10 @@
 #include "MuxStart.h"
 
 #include <AfterglowProto/Socket.h>
+#include <AfterglowRender/FontSet.h>
+
+#include <QGuiApplication>
+#include <QScreen>
 #include <AfterglowProto/Text.h>
 
 #include <algorithm>
@@ -85,6 +90,25 @@ std::vector<std::pair<std::string, std::string>> sessionEnvironment()
     return env;
 }
 
+AfterglowMux::PaneSize initialPaneSize(const Settings& settings)
+{
+    AfterglowMux::PaneSize size{settings.window.initialColumns, settings.window.initialRows, 0, 0};
+    // Without a cell size, the daemon places no Sixel or iTerm2 image, and a
+    // Kitty image moves no cursor: the font's, as a window measures it.
+    double ratio = 1.0;
+    if (hasGuiApplication()) {
+        if (const QScreen* screen = QGuiApplication::primaryScreen()) ratio = screen->devicePixelRatio();
+    }
+    try {
+        const AfterglowRender::FontSet fonts(settings.font, ratio);
+        size.cellWidth = fonts.metrics().cellWidth;
+        size.cellHeight = fonts.metrics().cellHeight;
+    } catch (const std::exception&) {
+        // No font: no cell size, as before.
+    }
+    return size;
+}
+
 /// What a session takes from @p settings whatever its host: the program's
 /// name for `afterglow mux kill`, the size, the terminal and the Control
 /// settings.
@@ -92,18 +116,29 @@ void sessionValues(AfterglowMux::SessionOptions& session, const Settings& settin
 {
     session.launch.launchedProgram = launchedProgramName(command).toStdString();
     session.launch.command = sessionCommand(command);
-    // No window measured the panes: the size of a new window, in cells,
-    // which the schema keeps within what a terminal takes.
-    session.size = {settings.window.initialColumns, settings.window.initialRows, 0, 0};
+    // No window measured the panes: the size of a new window, which the
+    // schema keeps within what a terminal takes.
+    session.size = initialPaneSize(settings);
     const AfterglowMux::SessionSettings followed = sessionSettings(settings);
     session.terminal = followed.terminal;
     session.notificationCapabilities = NotificationCenter::capabilities();
     session.control = followed.control;
 }
 
-AfterglowMux::SessionSettings sessionSettings(const Settings& settings)
+AfterglowMux::SessionSettings sessionSettings(const Settings& settings, bool environment)
 {
-    return {settings.terminal, {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString()}};
+    AfterglowMux::SessionSettings out{settings.terminal,
+                                      {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString(),
+                                       settings.control.eventInterval}};
+    if (!environment) return out;
+    for (const QString& name : settings.mux.updateEnvironment) {
+        const QByteArray encoded = name.toLocal8Bit();
+        // A value that is not UTF-8 becomes U+FFFD in JSON, as the session's
+        // environment does (sessionEnvironment).
+        if (qEnvironmentVariableIsSet(encoded.constData())) out.environment.emplace_back(name.toStdString(), qgetenv(encoded.constData()).toStdString());
+        else out.environment.emplace_back(name.toStdString(), std::nullopt);
+    }
+    return out;
 }
 
 /// The sessions of the daemon on @p connection, or nullopt with @p error.
@@ -131,21 +166,63 @@ std::optional<std::vector<AfterglowMux::SessionInfo>> daemonSessions(IpcConnecti
     return list;
 }
 
+AfterglowMux::Launch localLaunch(const Settings& settings, const QString& cwd, const QStringList& command)
+{
+    AfterglowPty::SpawnOptions prepared = prepareLaunch(settings, cwd, command, {});
+    offerTerminalEnvironment(prepared, settings.term);
+    AfterglowMux::Launch launch;
+    launch.argv = std::move(prepared.argv);
+    launch.workingDirectory = std::move(prepared.workingDirectory);
+    launch.environment = std::move(prepared.environment);
+    launch.unset = std::move(prepared.unsetEnvironment);
+    launch.launchedProgram = launchedProgramName(command).toStdString();
+    launch.command = sessionCommand(command);
+    return launch;
+}
+
 AfterglowMux::SessionOptions localSessionOptions(const Settings& settings, const QString& cwd, const QStringList& command,
                                                  const QString& name)
 {
     AfterglowMux::SessionOptions session;
     session.name = name.toStdString();
-    AfterglowPty::SpawnOptions launch = prepareLaunch(settings, cwd, command, {});
-    offerTerminalEnvironment(launch, settings.term);
     session.environment = sessionEnvironment();
     session.umask = currentUmask();
-    session.launch.argv = launch.argv;
-    session.launch.workingDirectory = launch.workingDirectory;
-    session.launch.environment = launch.environment;
-    session.launch.unset = launch.unsetEnvironment;
+    session.launch = localLaunch(settings, cwd, command);
     sessionValues(session, settings, command);
     return session;
+}
+
+std::optional<std::vector<std::uint32_t>> startLocalPanes(const LocalDaemon& daemon, const QString& session,
+                                                          const std::vector<AfterglowMux::Launch>& launches,
+                                                          const AfterglowMux::PaneSize& size, const std::atomic<bool>& stop,
+                                                          QString* error)
+{
+    std::vector<std::uint32_t> ids;
+    if (launches.empty()) return ids;
+    std::string reason;
+    AfterglowMux::Reached reached = connectAny(daemon.sockets, &reason);
+    if (!reached.connection) {
+        *error = reason.empty() ? QStringLiteral("no mux daemon runs") : QString::fromStdString(printable(reason));
+        return std::nullopt;
+    }
+    for (const AfterglowMux::Launch& launch : launches) {
+        if (stop.load()) {
+            *error = QStringLiteral("Afterglow quits");
+            return std::nullopt;
+        }
+        IpcConnection::Error callError;
+        const auto result = reached.connection->call(
+            AfterglowMux::Target, AfterglowMux::Fn::NewPane,
+            Json::Array{AfterglowMux::ProtocolVersion, session.toStdString(), AfterglowMux::toJson(launch), AfterglowMux::toJson(size)},
+            CallTimeoutMs, &callError);
+        const auto id = result ? (*result)["pane"].toInteger() : std::nullopt;
+        if (!id || *id <= 0 || *id > 0xffffffffLL) {
+            *error = result ? QStringLiteral("the mux daemon gave no pane") : QString::fromStdString(printable(callError.message));
+            return std::nullopt;
+        }
+        ids.push_back(std::uint32_t(*id));
+    }
+    return ids;
 }
 
 LocalDaemon localDaemon()
@@ -153,7 +230,7 @@ LocalDaemon localDaemon()
     return {AfterglowProto::muxSockets(), AfterglowMux::currentEnvironment()};
 }
 
-QString newLocalSession(const LocalDaemon& daemon, const AfterglowMux::SessionOptions& options, QString* error)
+QString newLocalSession(const LocalDaemon& daemon, const AfterglowMux::SessionOptions& options, QString* error, std::uint32_t* firstPane)
 {
     std::string reason;
     AfterglowMux::Reached reached = connectOrStartDaemon(daemon.sockets, &reason, daemon.environment);
@@ -174,6 +251,8 @@ QString newLocalSession(const LocalDaemon& daemon, const AfterglowMux::SessionOp
         *error = QStringLiteral("the daemon sent a session name that is not valid");
         return {};
     }
+    const auto pane = (*result)["pane"].toInteger();
+    if (firstPane) *firstPane = pane && *pane > 0 && *pane <= 0xffffffffLL ? std::uint32_t(*pane) : 0;
     return QString::fromStdString(name);
 }
 
