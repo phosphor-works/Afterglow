@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// The image decoder of the daemon: the server afterglow-mux --decode-images,
+// The image decoder of the daemon: the server aglow-mux --decode-images,
 // and a process that it forks for each PNG and iTerm2 image.
 
 #include "ImageDecoder.h"
@@ -314,7 +314,7 @@ TEST(MuxImageDecoder, ADecodeThatWaitsForAnotherEndsWhenItsPaneCloses)
 
 TEST(MuxImageDecoder, TheServerTakesOnlyItsDaemon)
 {
-    // afterglow-mux --decode-images runs only as the child of the daemon
+    // aglow-mux --decode-images runs only as the child of the daemon
     // whose process id it gets: pid 1 is not its parent.
     pid_t pid = 0;
     posix_spawn_file_actions_t actions;

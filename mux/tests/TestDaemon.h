@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// The test daemon of the mux tests: each test runs its own afterglow-mux, with
+// The test daemon of the mux tests: each test runs its own aglow-mux, with
 // a runtime and a state directory of its own under /tmp and no AFTERGLOW_*
 // variables, so no test reaches the daemon of the user.
 
@@ -99,7 +99,7 @@ public:
     TestDaemon()
     {
         // Under /tmp: TMPDIR can be too long for a socket path.
-        char dir[] = "/tmp/afterglow-mux-XXXXXX";
+        char dir[] = "/tmp/aglow-mux-XXXXXX";
         if (!::mkdtemp(dir)) {
             ADD_FAILURE() << "cannot create a directory under /tmp: " << std::strerror(errno);
             return;
@@ -124,10 +124,10 @@ public:
 
     const std::string& dir() const { return m_dir; }
     std::string runtime() const { return m_dir + "/run"; }
-    std::string socket() const { return runtime() + "/afterglow-mux/socket"; }
+    std::string socket() const { return runtime() + "/aglow-mux/socket"; }
     /// XDG_STATE_HOME of the daemon and of the clients that find it.
     std::string stateHome() const { return m_dir + "/state"; }
-    std::string stateDirectory() const { return stateHome() + "/afterglow-mux"; }
+    std::string stateDirectory() const { return stateHome() + "/aglow-mux"; }
     std::string stateSocket() const { return stateDirectory() + "/" + AfterglowProto::muxStateSocketName(); }
     pid_t pid() const { return m_pid; }
     /// The socket that call() connects to.
@@ -173,7 +173,8 @@ public:
     /// The soft RLIMIT_NOFILE that the daemon starts with, below the hard one.
     void startFileLimit(rlim_t soft) { m_startFileLimit = soft; }
 
-    /// A variable that the daemon has and the sessions have not.
+    /// A variable that the daemon has and the sessions have not, in place
+    /// of one of the same name.
     void daemonOnly(std::string name, std::string value) { m_daemonOnly.emplace_back(std::move(name), std::move(value)); }
 
     /// Starts a daemon that this test kills at its end whatever happens: the
@@ -187,7 +188,10 @@ public:
     pid_t spawnDaemon(bool ignoreHangup = false, bool other = false, int report = -1)
     {
         std::vector<std::string> store;
-        for (const auto& [name, value] : m_environment) store.push_back(name + "=" + value);
+        for (const auto& [name, value] : m_environment) {
+            const bool replaced = std::any_of(m_daemonOnly.begin(), m_daemonOnly.end(), [&](const auto& only) { return only.first == name; });
+            if (!replaced) store.push_back(name + "=" + value);
+        }
         for (const auto& [name, value] : m_daemonOnly) store.push_back(name + "=" + value);
         if (report >= 0) store.push_back(std::string(AfterglowMux::ReportFdVariable) + "=3");
         std::vector<char*> envp;
@@ -440,7 +444,7 @@ struct TempDir
     std::filesystem::path path;
     TempDir()
     {
-        std::string pattern = (std::filesystem::temp_directory_path() / "afterglow-mux-test-XXXXXX").string();
+        std::string pattern = (std::filesystem::temp_directory_path() / "aglow-mux-test-XXXXXX").string();
         if (::mkdtemp(pattern.data())) path = pattern;
     }
     ~TempDir()

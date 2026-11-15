@@ -6,7 +6,7 @@
 #include <string>
 
 // The lock file that decides which server owns a socket path: IpcListener
-// (afterglow-mux) and the terminal's InstanceSocket take the same lock, in
+// (aglow-mux) and the terminal's InstanceSocket take the same lock, in
 // the same way.
 
 namespace AfterglowProto {

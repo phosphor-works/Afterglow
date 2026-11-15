@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Each test runs its own afterglow-mux (TestDaemon.h), so no test reaches the
+// Each test runs its own aglow-mux (TestDaemon.h), so no test reaches the
 // daemon of the user.
 
 #include "TestDaemon.h"
@@ -22,10 +22,16 @@ TEST(MuxDaemon, CreatesListsAndKillsSessions)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // The answer names the session and its first pane, a new one each time.
+    std::int64_t lastPane = 0;
     for (const char* expected : {"1", "2"}) {
         const auto created = daemon.newSession(daemon.options(Waiting));
         ASSERT_TRUE(created) << daemon.lastError();
         EXPECT_EQ((*created)["name"].toString(), expected);
+        const auto pane = (*created)["pane"].toInteger();
+        ASSERT_TRUE(pane) << Json::write(*created);
+        EXPECT_GT(*pane, lastPane);
+        lastPane = *pane;
     }
     ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "work"))) << daemon.lastError();
     IpcConnection::Error error;
@@ -98,7 +104,7 @@ TEST(MuxDaemon, ControlAndCommandCallsFailWithAReason)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     for (const auto& [target, message] : std::vector<std::pair<std::string, std::string>>{
              {"control", "no session is selected: afterglow ctl --session NAME, or afterglow ctl in a session pane, selects one"},
-             {AfterglowProto::Run::Target, "a session pane takes no script commands: the mux daemon runs no scripts"}}) {
+             {AfterglowProto::Run::Target, "only a client in a session pane reaches the mux daemon for the commands of scripts"}}) {
         SCOPED_TRACE(target);
         IpcConnection::Error error;
         EXPECT_FALSE(daemon.call("listPanes", {}, &error, target));
@@ -173,8 +179,8 @@ TEST(MuxDaemon, ASecondDaemonRefusesToStart)
     ASSERT_GT(second, 0);
     ASSERT_TRUE(status) << "the second daemon still runs " << daemon.errors();
     EXPECT_EQ(*status, 1) << daemon.errors();
-    EXPECT_EQ(reported, std::string(1, AfterglowMux::ReportHeld) + "afterglow-mux: another afterglow-mux listens on " + daemon.socket() + "\n");
-    EXPECT_NE(daemon.errors().find("another afterglow-mux listens on " + daemon.socket()), std::string::npos) << daemon.errors();
+    EXPECT_EQ(reported, std::string(1, AfterglowMux::ReportHeld) + "aglow-mux: another aglow-mux listens on " + daemon.socket() + "\n");
+    EXPECT_NE(daemon.errors().find("another aglow-mux listens on " + daemon.socket()), std::string::npos) << daemon.errors();
     // The first one still serves, on both sockets.
     EXPECT_EQ(names(daemon.sessions()), std::vector<std::string>{"keep"});
     daemon.callOn(daemon.stateSocket());
@@ -371,7 +377,7 @@ TEST(MuxDaemon, ListensOnTheStateDirectoryToo)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    for (const std::string& directory : {daemon.runtime() + "/afterglow-mux", daemon.stateDirectory(), daemon.stateHome()}) {
+    for (const std::string& directory : {daemon.runtime() + "/aglow-mux", daemon.stateDirectory(), daemon.stateHome()}) {
         struct stat info{};
         if (::lstat(directory.c_str(), &info) != 0) {
             ADD_FAILURE() << "no " << directory;
@@ -400,7 +406,7 @@ void skipsDirectory(bool link)
 {
     {
         TestDaemon daemon;
-        const std::string directory = daemon.runtime() + "/afterglow-mux";
+        const std::string directory = daemon.runtime() + "/aglow-mux";
         if (link) {
             ASSERT_EQ(::mkdir((daemon.dir() + "/elsewhere").c_str(), 0700), 0);
             ASSERT_EQ(::symlink((daemon.dir() + "/elsewhere").c_str(), directory.c_str()), 0);

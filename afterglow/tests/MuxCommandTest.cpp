@@ -24,6 +24,8 @@
 #include <charconv>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -93,7 +95,7 @@ protected:
     {
         removeAbandonedAfterglows();
         // Under /tmp: TMPDIR can be too long for a socket path.
-        char dir[] = "/tmp/afterglow-muxcommand-XXXXXX";
+        char dir[] = "/tmp/aglow-muxcommand-XXXXXX";
         ASSERT_TRUE(::mkdtemp(dir)) << std::strerror(errno);
         m_dir = dir;
         for (const char* sub : {"/run", "/home", "/config"}) ASSERT_EQ(::mkdir((m_dir + sub).c_str(), 0700), 0);
@@ -175,7 +177,7 @@ protected:
         std::vector<pid_t> found;
         for (const pid_t pid : processes()) {
             std::error_code error;
-            if (std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/exe", error).filename() == "afterglow-mux") found.push_back(pid);
+            if (std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/exe", error).filename() == "aglow-mux") found.push_back(pid);
         }
         return found;
     }
@@ -281,8 +283,8 @@ protected:
     /// now on: `ssh -G -- HOST` prints a configuration, and any other run
     /// runs its command here, after "--" and the destination. So the proxy
     /// runs on this computer, in the test's environment and REMOTE_MARK, and
-    /// reaches its daemon. With @p mux, the build's afterglow-mux is on its
-    /// PATH; without, no afterglow-mux is.
+    /// reaches its daemon. With @p mux, the build's aglow-mux is on its
+    /// PATH; without, no aglow-mux is.
     void fakeSsh(bool mux)
     {
         const std::string directory = m_dir + "/ssh-bin";
@@ -300,7 +302,7 @@ protected:
         }
     }
 
-    /// An afterglow whose afterglow-mux is @p script: a link to the build's
+    /// An afterglow whose aglow-mux is @p script: a link to the build's
     /// afterglow in a directory next to it (the same file system), with a
     /// script of that name. afterglow finds the daemon next to its own path.
     /// The directory goes with the test; its name holds the pid of this
@@ -322,8 +324,8 @@ protected:
             ADD_FAILURE() << error.message();
             return {};
         }
-        std::ofstream(directory / "afterglow-mux") << script;
-        if (::chmod((directory / "afterglow-mux").c_str(), 0700) != 0) {
+        std::ofstream(directory / "aglow-mux") << script;
+        if (::chmod((directory / "aglow-mux").c_str(), 0700) != 0) {
             ADD_FAILURE() << std::strerror(errno);
             return {};
         }
@@ -473,7 +475,7 @@ TEST_F(MuxCommandTest, DetachInASessionPaneFindsTheSessionOfThePane)
 }
 
 // afterglow mux --ssh reaches the daemon of another host through
-// `afterglow-mux proxy`, which ssh runs there. A fake ssh runs it here.
+// `aglow-mux proxy`, which ssh runs there. A fake ssh runs it here.
 TEST_F(MuxCommandTest, ListsDetachesAndKillsTheSessionsOfAnotherHost)
 {
     fakeSsh(true);
@@ -534,14 +536,14 @@ TEST_F(MuxCommandTest, AHostWithoutAfterglowMuxSaysSo)
     fakeSsh(false);
     const Result r = mux({"ls", "--ssh", "far"});
     EXPECT_EQ(r.status, 1);
-    EXPECT_EQ(r.err, "afterglow mux ls: far has no afterglow-mux (afterglow-mux): install it there\n");
+    EXPECT_EQ(r.err, "afterglow mux ls: far has no aglow-mux (aglow-mux): install it there\n");
 }
 
 // The proxy carries one connection to the daemon of its host on its
 // standard streams, and starts that daemon with --start.
 TEST_F(MuxCommandTest, TheProxyStartsTheDaemonAndCarriesAConnection)
 {
-    const std::string proxy = (std::filesystem::path(AFTERGLOW_BINARY).parent_path() / "afterglow-mux").string();
+    const std::string proxy = (std::filesystem::path(AFTERGLOW_BINARY).parent_path() / "aglow-mux").string();
     const std::string version = R"({"type":"call","id":1,"target":"mux","fn":"version","args":[]})" "\n";
     const Result none = run({"proxy"}, proxy, version);
     EXPECT_EQ(none.status, AfterglowMux::ProxyNoDaemon) << none.err;
@@ -589,7 +591,7 @@ TEST_F(MuxCommandTest, CtlActsOnASessionWithoutAWindow)
 
     // In a pane of the session: its AFTERGLOW_SOCKET names the daemon, and a
     // stale AFTERGLOW_SESSION changes nothing.
-    m_environment.push_back("AFTERGLOW_SOCKET=" + runtime() + "/afterglow-mux/socket");
+    m_environment.push_back("AFTERGLOW_SOCKET=" + runtime() + "/aglow-mux/socket");
     m_environment.push_back("AFTERGLOW_SESSION=before");
     m_environment.push_back("AFTERGLOW_PANE_ID=2");
     const Result inPane = ctl({"ls", "--json"});
@@ -617,15 +619,15 @@ TEST_F(MuxCommandTest, AWindowNeedsTheWaylandPlatform)
 // why it cannot start through a pipe, and `afterglow mux new` prints that.
 TEST_F(MuxCommandTest, SaysWhyTheDaemonDidNotStart)
 {
-    for (const std::string& directory : {runtime() + "/afterglow-mux", state() + "/afterglow-mux"}) {
+    for (const std::string& directory : {runtime() + "/aglow-mux", state() + "/aglow-mux"}) {
         std::filesystem::create_directories(directory);
         ASSERT_EQ(::chmod(directory.c_str(), 0755), 0);
     }
     const Result r = mux(newWaiting());
     EXPECT_EQ(r.status, 1);
-    EXPECT_EQ(r.err, "afterglow mux new: afterglow-mux: no socket to listen on: " + runtime()
-                         + "/afterglow-mux must be a directory of this user with mode 0700 and " + state()
-                         + "/afterglow-mux must be a directory of this user with mode 0700\n");
+    EXPECT_EQ(r.err, "afterglow mux new: aglow-mux: no socket to listen on: " + runtime()
+                         + "/aglow-mux must be a directory of this user with mode 0700 and " + state()
+                         + "/aglow-mux must be a directory of this user with mode 0700\n");
     EXPECT_TRUE(waitFor([this] { return daemons().empty(); }));
 }
 
@@ -634,13 +636,13 @@ TEST_F(MuxCommandTest, SaysWhyTheDaemonDidNotStart)
 // client fails at once, and does not wait out its start time for a socket.
 TEST_F(MuxCommandTest, ADaemonThatEndsBeforeItListensFailsAtOnce)
 {
-    // An afterglow whose afterglow-mux ends at once.
+    // An afterglow whose aglow-mux ends at once.
     const std::string afterglow = afterglowWithDaemon("#!/bin/sh\nkill -KILL $$\n");
     ASSERT_FALSE(afterglow.empty());
     const auto before = std::chrono::steady_clock::now();
     const Result r = mux(newWaiting(), afterglow);
     EXPECT_EQ(r.status, 1) << r.err;
-    EXPECT_EQ(r.err, "afterglow mux new: afterglow-mux ended before it listened\n");
+    EXPECT_EQ(r.err, "afterglow mux new: aglow-mux ended before it listened\n");
     // At once, not after the start wait of five seconds: a second of it
     // left is room for a slow test computer.
     EXPECT_LT(std::chrono::steady_clock::now() - before, 4s);
@@ -651,12 +653,12 @@ TEST_F(MuxCommandTest, ADaemonThatEndsBeforeItListensFailsAtOnce)
 // held, and its client waits for the first daemon, not only one look.
 TEST_F(MuxCommandTest, ADaemonThatFindsTheSocketHeldLeavesTheClientToWaitForTheHolder)
 {
-    // Its afterglow-mux reports the held socket and ends; the daemon of the
+    // Its aglow-mux reports the held socket and ends; the daemon of the
     // build listens a second later, as the holder that was slow to bind.
-    const std::string daemon = (std::filesystem::path(AFTERGLOW_BINARY).parent_path() / "afterglow-mux").string();
+    const std::string daemon = (std::filesystem::path(AFTERGLOW_BINARY).parent_path() / "aglow-mux").string();
     const std::string afterglow = afterglowWithDaemon(
-        "#!/bin/sh\nprintf '\\001afterglow-mux: another afterglow-mux listens on %s\\n' \"$XDG_RUNTIME_DIR/afterglow-mux/socket\" >&3\n"
-        "exec 3>&-\n(sleep 1; unset AFTERGLOW_MUX_REPORT_FD; exec '" + daemon + "') &\nexit 1\n");
+        "#!/bin/sh\nprintf '\\001aglow-mux: another aglow-mux listens on %s\\n' \"$XDG_RUNTIME_DIR/aglow-mux/socket\" >&3\n"
+        "exec 3>&-\n(sleep 1; unset AGLOW_MUX_REPORT_FD; exec '" + daemon + "') &\nexit 1\n");
     ASSERT_FALSE(afterglow.empty());
     const Result r = mux(newWaiting(), afterglow);
     EXPECT_EQ(r.status, 0) << r.err;
@@ -668,7 +670,7 @@ TEST_F(MuxCommandTest, ADaemonThatFindsTheSocketHeldLeavesTheClientToWaitForTheH
 // does not start a second daemon.
 TEST_F(MuxCommandTest, RefusesADaemonOfAnotherProtocol)
 {
-    const std::string directory = runtime() + "/afterglow-mux";
+    const std::string directory = runtime() + "/aglow-mux";
     ASSERT_EQ(::mkdir(directory.c_str(), 0700), 0);
     AfterglowProto::IpcListener listener;
     std::string error;
@@ -695,7 +697,7 @@ TEST_F(MuxCommandTest, RefusesADaemonOfAnotherProtocol)
                                                  std::vector<std::string>{"new", "--detach"}}) {
         const Result r = mux(args);
         EXPECT_EQ(r.status, 1) << args.front();
-        EXPECT_NE(r.err.find("afterglow-mux speaks protocol 99 and this afterglow speaks " + std::to_string(AfterglowMux::ProtocolVersion)
+        EXPECT_NE(r.err.find("aglow-mux speaks protocol 99 and this afterglow speaks " + std::to_string(AfterglowMux::ProtocolVersion)
                              + ": end its sessions with the afterglow that started it, or wait until they end\n"),
                   std::string::npos)
             << r.err;
@@ -737,4 +739,74 @@ TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
         std::string error;
         EXPECT_TRUE(AfterglowMux::sessionOptions(AfterglowMux::toJson(options), &error)) << json << ": " << error;
     }
+}
+
+// A session that no window shows has the cell size of the font of the
+// settings: its terminal answers a program's query of it (CSI 16 t), and
+// places Sixel and iTerm2 images, which it drops without one.
+TEST_F(MuxCommandTest, ADetachedSessionHasTheCellSizeOfTheFont)
+{
+    if (std::system("command -v python3 >/dev/null 2>&1") != 0) GTEST_SKIP() << "python3 is not installed";
+    const std::string out = m_dir + "/cell";
+    const std::string script = R"(import os, sys, time, tty
+tty.setraw(0)
+os.write(1, b'\x1b[16t')
+r = b''
+while not r.endswith(b't'):
+    r += os.read(0, 1)
+with open(sys.argv[1] + '.part', 'wb') as f:
+    f.write(r)
+os.rename(sys.argv[1] + '.part', sys.argv[1])
+while True:
+    try:
+        os.kill(int(sys.argv[2]), 0)
+    except OSError:
+        break
+    time.sleep(0.2)
+)";
+    ASSERT_EQ(mux({"new", "--detach", "--", "python3", "-I", "-c", script, out, std::to_string(::getpid())}).status, 0);
+    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+    // ESC [ 6 ; height ; width t
+    const std::string reply = readFile(out);
+    int height = 0;
+    int width = 0;
+    ASSERT_EQ(std::sscanf(reply.c_str(), "\x1b[6;%d;%dt", &height, &width), 2) << reply;
+    EXPECT_GT(width, 0);
+    EXPECT_GT(height, width);
+}
+
+// `afterglow ctl --session NAME watch` subscribes to the events of the session
+// in the daemon, also while no window shows it, and prints them.
+TEST_F(MuxCommandTest, CtlWatchPrintsTheEventsOfASession)
+{
+    std::vector<std::string> args{"new", "--detach", "--name", "seen"};
+    const auto command = waitsForTheTest();
+    args.insert(args.end(), command.begin(), command.end());
+    ASSERT_EQ(mux(args).status, 0);
+    // New tabs while the watch runs, however long it takes to subscribe: the
+    // watch prints those that come after.
+    std::atomic<bool> stop{false};
+    std::thread splits([this, &stop] {
+        for (int i = 0; i < 10 && !stop; ++i) {
+            std::this_thread::sleep_for(500ms);
+            EXPECT_EQ(ctl({"--session", "seen", "new-tab"}).status, 0);
+        }
+    });
+    const Result watched = run({"-c", std::string("exec timeout 6 '") + AFTERGLOW_BINARY + "' ctl --session seen watch"}, "/bin/sh");
+    stop = true;
+    splits.join();
+    EXPECT_NE(watched.out.find(R"(,"event":"paneCreated"})"), std::string::npos) << watched.out << watched.err;
+    EXPECT_NE(watched.out.find(R"(,"event":"focusChanged"})"), std::string::npos) << watched.out << watched.err;
+    // The session ends: the watch ends with status 1 and says why, where it
+    // once waited for ever (timeout's 124). A watch that comes after the end
+    // finds no session.
+    std::thread ending([this] {
+        std::this_thread::sleep_for(2000ms);
+        EXPECT_EQ(mux({"kill", "--force", "seen"}).status, 0);
+    });
+    const Result ended = run({"-c", std::string("exec timeout 8 '") + AFTERGLOW_BINARY + "' ctl --session seen watch"}, "/bin/sh");
+    ending.join();
+    EXPECT_EQ(ended.status, 1) << ended.out << ended.err;
+    EXPECT_TRUE(ended.err.find("session 'seen' ended") != std::string::npos || ended.err.find("no session named 'seen'") != std::string::npos)
+        << ended.err;
 }

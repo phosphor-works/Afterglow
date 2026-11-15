@@ -14,7 +14,7 @@ std::optional<AfterglowMux::Route> muxRoute(const QString& host, QString* error)
     AfterglowMux::Route route;
     for (const QByteArray& word : ssh) route.proxy.push_back(word.toStdString());
     // As the shell of the login finds it there.
-    route.proxy.emplace_back("afterglow-mux");
+    route.proxy.emplace_back("aglow-mux");
     route.host = host.toStdString();
     return route;
 }

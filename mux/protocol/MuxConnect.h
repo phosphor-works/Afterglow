@@ -25,14 +25,14 @@ inline constexpr int CallTimeoutMs = 5000;
 /// another session's.
 inline constexpr int NewSessionTimeoutMs = 10000;
 
-/// The exit status of `afterglow-mux proxy` without --start when no daemon
+/// The exit status of `aglow-mux proxy` without --start when no daemon
 /// runs: no daemon, so no sessions, and none starts.
 inline constexpr int ProxyNoDaemon = 3;
 /// How long the first call through a proxy command waits: ssh may ask for a
 /// password or a passphrase first.
 inline constexpr int ProxyCallTimeoutMs = 120000;
 
-/// The process of a proxy command (ssh that runs `afterglow-mux proxy` on
+/// The process of a proxy command (ssh that runs `aglow-mux proxy` on
 /// another host), which carries a connection to the daemon there on its
 /// standard input and output. It ends with the connection: its owner closes
 /// the connection first, and then this reaps it.
@@ -71,14 +71,14 @@ struct Reached
 };
 
 /// How a client reaches a daemon: its sockets on this computer, or a command
-/// that runs `afterglow-mux proxy` on another host and carries the
+/// that runs `aglow-mux proxy` on another host and carries the
 /// connection on its standard input and output (ssh over the shared
 /// connection of `afterglow ssh`).
 struct Route
 {
     AfterglowProto::MuxSockets sockets;
     /// The command without "proxy": ssh, its options, the destination and
-    /// the path of afterglow-mux there. Empty for this computer.
+    /// the path of aglow-mux there. Empty for this computer.
     std::vector<std::string> proxy;
     /// The destination, for messages.
     std::string host;
@@ -93,7 +93,7 @@ Reached connectAny(const AfterglowProto::MuxSockets& sockets, std::string* error
 /// The daemon of @p route. On this computer, connectAny(). Elsewhere, the
 /// proxy command, which with @p start starts the daemon there when none
 /// answers. Without a connection, @p error is empty when no daemon runs, and
-/// says why otherwise: the command failed, the host has no afterglow-mux, or
+/// says why otherwise: the command failed, the host has no aglow-mux, or
 /// the daemon speaks another protocol.
 Reached reach(const Route& route, bool start, std::string* error);
 

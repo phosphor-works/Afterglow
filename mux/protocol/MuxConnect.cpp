@@ -38,7 +38,7 @@ std::string checkVersion(IpcConnection& connection, int timeoutMs, bool* ended)
     }
     const auto protocol = (*version)["protocol"].toInteger();
     if (protocol != AfterglowMux::ProtocolVersion) {
-        return "afterglow-mux speaks protocol " + (protocol ? std::to_string(*protocol) : std::string("?")) + " and this afterglow speaks "
+        return "aglow-mux speaks protocol " + (protocol ? std::to_string(*protocol) : std::string("?")) + " and this afterglow speaks "
             + std::to_string(AfterglowMux::ProtocolVersion) + ": end its sessions with the afterglow that started it, or wait until they end";
     }
     return {};
@@ -150,7 +150,7 @@ Reached reach(const Route& route, bool start, std::string* error)
     const int status = proxy->wait(ended ? 5000 : 0);
     if (status == ProxyNoDaemon) return {};
     if (status == 127) {
-        *error = route.host + " has no afterglow-mux (" + route.proxy.back() + "): install it there";
+        *error = route.host + " has no aglow-mux (" + route.proxy.back() + "): install it there";
     } else if (ended && !proxy->errorOutput().empty()) {
         *error = proxy->errorOutput();
     } else {

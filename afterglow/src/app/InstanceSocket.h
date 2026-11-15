@@ -38,6 +38,9 @@ public:
     };
     /// Listens on @p path. On Held or Failed the router has no socket.
     Listen listen(const QString& path);
+    /// Stops listening, and removes the socket file and its lock. The
+    /// targets stay registered, for a later listen().
+    void close();
     bool listening() const { return !m_path.isEmpty(); }
     PhosphorIpc::IpcRouter& router() { return *m_router; }
 

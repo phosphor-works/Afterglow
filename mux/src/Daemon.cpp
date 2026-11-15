@@ -50,11 +50,6 @@ std::string readAll(const std::string& path)
     return bytes;
 }
 
-// The lines of one connection that one pass of the loop answers, empty ones
-// included: a client that pipelines calls cannot keep the others, the
-// signals and the reaping of programs waiting.
-constexpr int MaxLinesPerRead = 64;
-
 // ControlSocket::Target of the application. `afterglow ctl` in a session
 // pane calls it here, and `aglow run` calls AfterglowProto::Run::Target:
 // AFTERGLOW_SOCKET of the pane names this daemon.
@@ -107,6 +102,13 @@ Daemon::Daemon(long fileLimit)
 
 Daemon::~Daemon()
 {
+    // Their forwards are cancelled, and their clients hear why. Nothing may
+    // leave a destructor, which may run as an exception unwinds.
+    try {
+        endAllSsh();
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "aglow-mux: cannot end the ssh sessions: %s\n", e.what());
+    }
     // Each pane closes its terminal, which hangs up its programs, and the
     // PTY's reaper kills those still there after a grace time; nothing waits
     // for them to exit. The listeners close after that: until then their
@@ -132,7 +134,7 @@ Daemon::Listen Daemon::listen(const std::vector<AfterglowProto::MuxSocket>& sock
     // is left, for a client that sees no stderr of the daemon.
     std::string reasons;
     const auto skip = [&reasons](const std::string& reason) {
-        std::fprintf(stderr, "afterglow-mux: %s\n", reason.c_str());
+        std::fprintf(stderr, "aglow-mux: %s\n", reason.c_str());
         reasons += (reasons.empty() ? "" : " and ") + reason;
     };
     for (const AfterglowProto::MuxSocket& socket : sockets) {
@@ -149,7 +151,7 @@ Daemon::Listen Daemon::listen(const std::vector<AfterglowProto::MuxSocket>& sock
         case AfterglowProto::IpcListener::Listen::Held:
             // Its sessions are there: a client that reached this daemon on
             // another socket would not see them.
-            if (error) *error = "another afterglow-mux listens on " + socket.path;
+            if (error) *error = "another aglow-mux listens on " + socket.path;
             m_listeners.clear();
             return Listen::Held;
         case AfterglowProto::IpcListener::Listen::Failed:
@@ -161,6 +163,9 @@ Daemon::Listen Daemon::listen(const std::vector<AfterglowProto::MuxSocket>& sock
         if (error) *error = "no socket to listen on: " + reasons;
         return Listen::Failed;
     }
+    // This daemon owns its directories now: the sockets of ssh sessions that
+    // a daemon left when it was killed go.
+    for (const AfterglowProto::MuxSocket& socket : sockets) removeStaleSshSockets(socket.directory);
     return Listen::Listening;
 }
 
@@ -171,6 +176,7 @@ Daemon::Exit Daemon::run()
     const std::size_t signalIndex = wakeIndex + 1;
     const std::size_t firstConnection = signalIndex + 1;
     std::vector<pollfd> fds;
+    std::vector<SshWatch> sshWatches;
     while (true) {
         fds.clear();
         // A starved listener stays readable, and would wake every poll: it
@@ -182,9 +188,10 @@ Daemon::Exit Daemon::run()
         fds.push_back({m_signalFd, POLLIN, 0});
         bool pending = false;
         for (const auto& connection : m_connections) {
-            const short events = short((connection->wantsRead() ? POLLIN : 0) | (connection->wantsWrite() ? POLLOUT : 0));
+            const bool reading = reads(*connection);
+            const short events = short((reading && connection->wantsRead() ? POLLIN : 0) | (connection->wantsWrite() ? POLLOUT : 0));
             fds.push_back({connection->fd(), events, 0});
-            pending = pending || connection->pending();
+            pending = pending || (reading && connection->pending());
         }
         const std::size_t firstAttachment = fds.size();
         int connectWait = -1;
@@ -195,6 +202,8 @@ Daemon::Exit Daemon::run()
                 connectWait = left;
             }
         }
+        const std::size_t firstSsh = fds.size();
+        addSshFds(fds, sshWatches);
         // Lines that wait in a buffer get their turn at once. Until the
         // first session, the start wait bounds the poll: then an idle daemon
         // ends even when nothing wakes it. After the wait, only a connection
@@ -209,10 +218,12 @@ Daemon::Exit Daemon::run()
         // A window that does not connect to its attach socket in time loses
         // it, and a finished one that cannot send what waits is let go.
         if (connectWait >= 0 && (timeout < 0 || connectWait + 1 < timeout)) timeout = connectWait + 1;
+        // An event of `afterglow ctl watch` that waits for its interval.
+        if (const int due = watchDueMs(); due >= 0 && (timeout < 0 || due < timeout)) timeout = due;
         const int ready = ::poll(fds.data(), fds.size(), timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
-            std::fprintf(stderr, "afterglow-mux: poll failed: %s\n", std::strerror(errno));
+            std::fprintf(stderr, "aglow-mux: poll failed: %s\n", std::strerror(errno));
             return {1, 0};
         }
         // Paired with what the poll saw before anything below adds, finishes
@@ -248,6 +259,9 @@ Daemon::Exit Daemon::run()
             if ((attachment->takeKill() || (shown && shown->empty())) && shown) endSession(session);
         }
         for (Attachment* attachment : over) {
+            // What the window sent its command clients before it went, the
+            // end of a run, still reaches them.
+            deliverRelayFrames(*attachment);
             // The calls that the window did not get get the answers of a
             // session that no window shows.
             const auto session = find(attachment->session());
@@ -257,13 +271,25 @@ Daemon::Exit Daemon::run()
             });
         }
         std::erase_if(m_attachments, [&over](const auto& a) { return std::find(over.begin(), over.end(), a.get()) != over.end(); });
+        // The ssh sessions before the windows' answers: a client that came
+        // goes to its window with them.
+        handleSshFds(fds.data() + firstSsh, sshWatches);
         // Before the reads below, whose calls may wait for these windows.
         answerForwarded();
+        answerRelays();
         pumpAttachments();
         syncAttached();
         for (std::size_t i = firstConnection; i < firstAttachment; ++i) {
             auto& connection = *m_connections[i - firstConnection];
             if (fds[i].revents & POLLOUT) connection.flush();
+            if (!reads(connection)) {
+                // A client that hung up while its window had no room, or
+                // while its connection closes, has nothing more to say:
+                // its next poll would not wait.
+                if (fds[i].revents & (POLLHUP | POLLERR)) connection.close();
+                else if (m_closing.contains(&connection) && !connection.wantsWrite()) connection.close();
+                continue;
+            }
             if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) || connection.pending()) read(connection);
         }
         for (const auto& connection : m_connections) {
@@ -274,6 +300,11 @@ Daemon::Exit Daemon::run()
         // shows the session hears of it now, not at the next wake, which a
         // program that prints nothing never gives.
         pumpAttachments();
+        // A pane that closed, or a window that turned remote commands off,
+        // ends ssh sessions.
+        pruneSsh();
+        // The events of `afterglow ctl watch` of what changed.
+        pumpWatch();
         syncAttached();
         // Whether the poll saw it or not: a client that connected since the
         // poll waits in a backlog, and an idle daemon would close its
@@ -297,14 +328,23 @@ void Daemon::read(IpcServerConnection& connection)
     ucred peer{};
     socklen_t size = sizeof peer;
     const pid_t caller = ::getsockopt(connection.fd(), SOL_SOCKET, SO_PEERCRED, &peer, &size) == 0 ? peer.pid : 0;
+    if (m_relayOf.contains(&connection)) {
+        readRelay(connection);
+        return;
+    }
     IpcRequest request;
+    std::string line;
     for (int lines = 0; lines < MaxLinesPerRead; ++lines) {
-        const IpcServerConnection::Read next = connection.nextRequest(request);
+        const IpcServerConnection::Read next = connection.nextRequest(request, &line);
         if (next == IpcServerConnection::Read::None) return;
         if (next == IpcServerConnection::Read::Skipped) continue;
         std::string reply;
         try {
-            reply = answer(request, caller, connection);
+            // Before the type: a client of the commands target hears from
+            // the window whatever it sends (`aglow run` subscribes to its
+            // output, for one).
+            if (request.target == AfterglowProto::Run::Target) reply = startRelay(request, std::move(line), caller, connection);
+            else reply = answer(request, caller, connection);
         } catch (const std::exception& e) {
             // One call that fails (out of memory, no thread for a PTY) must
             // not end the sessions of all the others.
@@ -312,6 +352,12 @@ void Daemon::read(IpcServerConnection& connection)
         }
         // A window answers it later.
         if (!reply.empty()) connection.send(std::move(reply));
+        // The connection is the window's now: its other lines go there as
+        // they are.
+        if (m_relayOf.contains(&connection)) {
+            readRelay(connection);
+            return;
+        }
         if (m_attaching) {
             // The attach call made this connection the window's stream: it
             // is the attachment's now, and reads no more lines here.
@@ -320,7 +366,7 @@ void Daemon::read(IpcServerConnection& connection)
             const int fd = connection.release(&unsent);
             if (fd < 0) {
                 // It sent more after its call, which the stream would lose.
-                std::fprintf(stderr, "afterglow-mux: the window of session %s sent its stream before the answer to its attach\n",
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent its stream before the answer to its attach\n",
                              attachment->session().c_str());
                 connection.close();
                 return;
@@ -334,11 +380,7 @@ void Daemon::read(IpcServerConnection& connection)
 
 std::string Daemon::answer(const IpcRequest& request, pid_t caller, IpcServerConnection& connection)
 {
-    // Before the type: a client of a session pane hears why, whatever it
-    // sends (`aglow run` subscribes to its output, for one).
-    if (request.target == AfterglowProto::Run::Target) {
-        return ipcError(request.id, IpcErrorCode::CallFailed, "a session pane takes no script commands: the mux daemon runs no scripts");
-    }
+    if (request.type == "unsubscribe") return unsubscribe(request, connection);
     if (request.target == ControlTarget) return control(request, connection, caller);
     if (request.type != "call") {
         return ipcError(request.id, IpcErrorCode::MalformedRequest, "the mux daemon answers only calls, not '" + request.type + "'");
@@ -401,6 +443,7 @@ std::string Daemon::newSession(const IpcRequest& request, pid_t caller)
     std::string name = options->name.empty() ? freeName() : options->name;
     if (find(name) != m_sessions.end()) return ipcError(request.id, Error::SessionExists, "a session named '" + name + "' exists");
     auto session = std::make_unique<Session>(name, std::move(*options), m_fileLimit, m_images);
+    session->setSerial(++m_lastSessionSerial);
     // The spawn waits for the exec of the program, up to the PTY's exec wait
     // (2 s), and the other connections wait with it. Only a program or a
     // directory on a mount that does not answer takes that long; past the
@@ -408,9 +451,10 @@ std::string Daemon::newSession(const IpcRequest& request, pid_t caller)
     if (!session->addPane(m_nextPane++, session->firstLaunch(), session->firstSize(), paneSocket(), waker(), &error)) {
         return ipcError(request.id, Error::SpawnFailed, "cannot start the program of session '" + name + "': " + error);
     }
+    const std::uint32_t first = session->panes().front()->id();
     m_sessions.push_back(std::move(session));
     m_hadSession = true;
-    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}});
+    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}, {"pane", std::int64_t(first)}});
 }
 
 std::string Daemon::listSessions(const IpcRequest& request, pid_t caller)
@@ -603,6 +647,7 @@ std::optional<std::string> Daemon::breakOutPanes(Session& from, Layout layout, s
     }
     const std::string fresh = freeName();
     auto session = std::make_unique<Session>(fresh, from.options(), m_fileLimit, m_images);
+    session->setSerial(++m_lastSessionSerial);
     Attachment* const attachment = shown(from.name());
     for (const std::uint32_t id : ids) {
         std::unique_ptr<MuxPane> pane = from.take(id);
@@ -649,7 +694,7 @@ void Daemon::syncAttached()
                 // As for a window (guarded): the answers to the calls of a
                 // window that went, out of memory, must not end the sessions
                 // of all the others. The next pass tries again.
-                std::fprintf(stderr, "afterglow-mux: a pane of session %s failed: %s\n", session->name().c_str(), e.what());
+                std::fprintf(stderr, "aglow-mux: a pane of session %s failed: %s\n", session->name().c_str(), e.what());
             }
         }
     }
@@ -685,7 +730,7 @@ bool Daemon::guarded(Attachment& attachment, const std::function<bool()>& work)
         // As for a call: one window that fails (out of memory for a frame)
         // must not end the sessions of all the others. That window loses
         // its session, which keeps running.
-        std::fprintf(stderr, "afterglow-mux: the window of session %s failed: %s\n", attachment.session().c_str(), e.what());
+        std::fprintf(stderr, "aglow-mux: the window of session %s failed: %s\n", attachment.session().c_str(), e.what());
         // The calls that waited for it get the answers of a session that no
         // window shows. Out of memory again, they get none.
         const auto session = find(attachment.session());

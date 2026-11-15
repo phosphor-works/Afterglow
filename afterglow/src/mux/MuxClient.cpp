@@ -54,12 +54,26 @@ QString lossText(MuxClient::Loss loss, const QString& name)
 
 } // namespace
 
-std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover, QString* error, const AfterglowMux::Route& route,
-                                              std::size_t eventQueue, std::size_t history)
+SessionLink& SessionLink::operator=(SessionLink&& other) noexcept
 {
-    const auto fail = [error](const QString& text) -> std::shared_ptr<MuxClient> {
+    if (this == &other) return *this;
+    if (fd >= 0) ::close(fd);
+    fd = std::exchange(other.fd, -1);
+    proxy = std::move(other.proxy);
+    return *this;
+}
+
+SessionLink::~SessionLink()
+{
+    if (fd >= 0) ::close(fd);
+}
+
+std::optional<SessionLink> attachSession(const QString& name, bool takeover, const AfterglowMux::Route& route, std::size_t eventQueue,
+                                         std::size_t history, QString* error)
+{
+    const auto fail = [error](const QString& text) -> std::optional<SessionLink> {
         if (error) *error = text;
-        return nullptr;
+        return std::nullopt;
     };
     if (route.proxy.empty() && route.sockets.candidates.empty()) return fail(QString::fromStdString(route.sockets.error));
     std::string reason;
@@ -80,24 +94,50 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
     if (!result) return fail(QString::fromStdString(AfterglowProto::printable(callError.message)));
     // The connection of the call carries the session's stream from here.
     AfterglowProto::IpcConnection::Error releaseError;
-    const int fd = reached.connection->release(&releaseError);
-    if (fd < 0) return fail(QStringLiteral("cannot show session '%1': %2").arg(name, QString::fromStdString(releaseError.message)));
+    SessionLink link;
+    link.proxy = reached.proxy;
+    link.fd = reached.connection->release(&releaseError);
+    if (link.fd < 0) return fail(QStringLiteral("cannot show session '%1': %2").arg(name, QString::fromStdString(releaseError.message)));
+    return link;
+}
 
+std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover, QString* error, const AfterglowMux::Route& route,
+                                              std::size_t eventQueue, std::size_t history)
+{
+    auto link = attachSession(name, takeover, route, eventQueue, history, error);
+    return link ? adopt(name, std::move(*link), error, route, eventQueue) : nullptr;
+}
+
+std::shared_ptr<MuxClient> MuxClient::adopt(const QString& name, SessionLink link, QString* error, const AfterglowMux::Route& route,
+                                             std::size_t eventQueue)
+{
+    const auto fail = [error](const QString& text) -> std::shared_ptr<MuxClient> {
+        if (error) *error = text;
+        return nullptr;
+    };
     std::shared_ptr<MuxClient> client(new MuxClient);
     client->m_session = name;
     client->m_eventQueue = eventQueue;
     client->m_route = route;
-    client->m_proxy = reached.proxy;
+    client->m_proxy = link.proxy;
+    const int fd = std::exchange(link.fd, -1);
     PhosphorChannel::Stream::Options options;
     options.maxChannelId = Attach::MaxChannelId;
     client->m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
     std::string streamError;
     client->m_input = client->m_stream->openWriter(Attach::ControlChannel, Attach::InputCodec, &streamError);
     if (client->m_input) client->m_actions = client->m_stream->openWriter(Attach::ActionChannel, Attach::ActionCodec, &streamError);
-    if (!client->m_input || !client->m_actions) return fail(QString::fromStdString(streamError));
+    PhosphorChannel::StreamWriter* commands =
+        client->m_actions ? client->m_stream->openWriter(Attach::CommandsChannel, Attach::CommandsCodec, &streamError) : nullptr;
+    if (!client->m_input || !client->m_actions || !commands) return fail(QString::fromStdString(streamError));
+    client->m_commands = std::make_unique<MuxCommands>(name, commands, [raw = client.get()] { raw->updateNotifiers(); });
+    // The programs of another host get what an ssh session of that host
+    // gets: the commands that a script marks remote.
+    if (client->remote()) client->m_commands->setRemoteHost(client->host());
 
-    // The daemon sends the layout first: the window lays out the session's
-    // tabs and splits, and makes their panes.
+    // The daemon sends the layout first, as soon as the stream starts: the
+    // window lays out the session's tabs and splits, and makes their panes.
+    // The GUI thread waits for it here, at most Attach::ConnectWaitMs.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(Attach::ConnectWaitMs);
     while (!client->m_layoutCame && !client->m_ended) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
@@ -124,6 +164,11 @@ std::shared_ptr<MuxClient> MuxClient::attach(const QString& name, bool takeover,
 }
 
 MuxClient::~MuxClient() = default;
+
+void MuxClient::setCommandsHost(MuxCommands::Host host)
+{
+    if (m_commands) m_commands->setHost(std::move(host));
+}
 
 bool MuxClient::hostEvent(Attach::Event& event, bool* lostLink)
 {
@@ -276,6 +321,9 @@ void MuxClient::release(std::uint32_t id, MuxRelease release)
     delete m_readNotifier;
     delete m_writeNotifier;
     m_readNotifier = m_writeNotifier = nullptr;
+    // Before the stream, which holds their channel: the clients' runs end,
+    // and the daemon tells them why.
+    if (m_commands) m_commands->closeAll();
     m_stream.reset();
     // Its stream's connection closed: the proxy ends by itself.
     m_proxy.reset();
@@ -310,6 +358,19 @@ std::optional<QString> MuxClient::breakOut(const AfterglowMux::Layout& layout, Q
         return std::nullopt;
     }
     return QString::fromStdString(name);
+}
+
+void MuxClient::sendSettings(const AfterglowMux::SessionSettings& settings)
+{
+    if (!showing()) return;
+    std::string json = Json::write(AfterglowMux::toJson(settings));
+    if (json == m_sentSettings) return;
+    Attach::Input input;
+    input.type = Attach::InputType::Settings;
+    input.bytes = json;
+    m_sentSettings = std::move(json);
+    queueInput(Attach::encode(input), false);
+    sendWaitingInput();
 }
 
 void MuxClient::sendLayout(const AfterglowMux::Layout& layout)
@@ -348,10 +409,10 @@ bool MuxClient::sendInput(std::uint32_t id, std::string_view bytes)
     return true;
 }
 
-void MuxClient::queueInput(std::string frame, bool resize)
+void MuxClient::queueInput(std::string frame, bool resize, bool counted)
 {
-    m_waitingBytes.fetch_add(frame.size(), std::memory_order_relaxed);
-    m_waitingInput.push_back(std::move(frame));
+    if (counted) m_waitingBytes.fetch_add(frame.size(), std::memory_order_relaxed);
+    m_waitingInput.push_back({std::move(frame), counted});
     if (!resize) m_waitingResizeOf.reset();
 }
 
@@ -367,7 +428,7 @@ void MuxClient::sendResize(std::uint32_t id, const AfterglowMux::PaneSize& size)
     // first. A size that still waits with nothing after it is old: the new
     // one takes its place.
     if (m_waitingResizeOf == id && !m_waitingInput.empty()) {
-        std::string& last = m_waitingInput.back();
+        std::string& last = m_waitingInput.back().bytes;
         m_waitingBytes.fetch_sub(last.size(), std::memory_order_relaxed);
         m_waitingBytes.fetch_add(frame.size(), std::memory_order_relaxed);
         last = std::move(frame);
@@ -414,21 +475,44 @@ void MuxClient::answerControlCalls()
     while (!m_controlCalls.empty()) {
         const ControlCall call = std::move(m_controlCalls.front());
         m_controlCalls.pop_front();
-        ControlAnswer answer;
-        if (m_controlHandler) answer = m_controlHandler(call.fn, call.args);
-        else answer.error = QStringLiteral("this window answers no control calls");
-        // The answer goes after the layout that the call changed: the daemon
-        // reads the input in its order.
-        if (call.id == 0 || !showing()) continue;
-        QJsonObject reply{{QStringLiteral("id"), call.id}};
-        if (answer.error.isEmpty()) reply.insert(QStringLiteral("result"), answer.result);
-        else reply.insert(QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), QStringLiteral("CALL_FAILED")}, {QStringLiteral("message"), answer.error}});
-        Attach::Input input;
-        input.type = Attach::InputType::ControlReply;
-        input.bytes = QJsonDocument(reply).toJson(QJsonDocument::Compact).toStdString();
-        queueInput(Attach::encode(input), false);
-        sendWaitingInput();
+        ControlReply reply = [self = QPointer<MuxClient>(this), id = call.id](const ControlAnswer& answer) {
+            if (self) self->sendControlReply(id, answer);
+        };
+        if (m_controlHandler) m_controlHandler(call.fn, call.args, call.client, std::move(reply));
+        else reply({{}, QStringLiteral("this window answers no control calls")});
     }
+}
+
+void MuxClient::sendControlReply(qint64 id, const ControlAnswer& answer)
+{
+    // The answer goes after the layout that the call changed: the daemon
+    // reads the input in its order.
+    if (id == 0 || !showing()) return;
+    QJsonObject reply{{QStringLiteral("id"), id}};
+    if (answer.error.isEmpty()) reply.insert(QStringLiteral("result"), answer.result);
+    else
+        reply.insert(QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), answer.code.isEmpty() ? QStringLiteral("CALL_FAILED") : answer.code},
+                                                          {QStringLiteral("message"), answer.error}});
+    std::string json = QJsonDocument(reply).toJson(QJsonDocument::Compact).toStdString();
+    // One that does not fit a frame (a screenshot) goes in parts. One past
+    // what the daemon takes fails there: the client hears why, not this.
+    if (json.size() > Attach::MaxControlReply) {
+        QJsonObject tooLarge{{QStringLiteral("id"), id}};
+        tooLarge.insert(QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), QStringLiteral("failed")},
+                                                              {QStringLiteral("message"), QStringLiteral("the answer is larger than %1 MiB")
+                                                                                              .arg(Attach::MaxControlReply >> 20)}});
+        json = QJsonDocument(tooLarge).toJson(QJsonDocument::Compact).toStdString();
+    }
+    for (std::size_t at = 0;;) {
+        Attach::Input input;
+        const bool last = json.size() - at <= Attach::ControlReplyPartBytes;
+        input.type = last ? Attach::InputType::ControlReply : Attach::InputType::ControlReplyPart;
+        input.bytes = json.substr(at, last ? std::string::npos : Attach::ControlReplyPartBytes);
+        queueInput(Attach::encode(input), false, false);
+        if (last) break;
+        at += Attach::ControlReplyPartBytes;
+    }
+    sendWaitingInput();
 }
 
 void MuxClient::sendWaitingInput()
@@ -438,11 +522,12 @@ void MuxClient::sendWaitingInput()
         m_waitingActions.pop_front();
     }
     while (m_stream && m_input && !m_waitingInput.empty()) {
-        if (m_input->tryWrite(m_waitingInput.front()) != WriteResult::Written) break;
-        m_waitingBytes.fetch_sub(m_waitingInput.front().size(), std::memory_order_relaxed);
+        if (m_input->tryWrite(m_waitingInput.front().bytes) != WriteResult::Written) break;
+        if (m_waitingInput.front().counted) m_waitingBytes.fetch_sub(m_waitingInput.front().bytes.size(), std::memory_order_relaxed);
         m_waitingInput.pop_front();
     }
     if (m_waitingInput.empty()) m_waitingResizeOf.reset();
+    if (m_stream && m_commands) m_commands->writable();
     updateNotifiers();
 }
 
@@ -557,7 +642,8 @@ void MuxClient::handleFrames()
                 bad = error.error != QJsonParseError::NoError || !id.isDouble() || id.toInteger(-1) < 0 || !call.value(QLatin1String("fn")).isString()
                     || !call.value(QLatin1String("args")).isArray();
                 if (!bad) {
-                    m_controlCalls.push_back({id.toInteger(), call.value(QLatin1String("fn")).toString(), call.value(QLatin1String("args")).toArray()});
+                    m_controlCalls.push_back({id.toInteger(), call.value(QLatin1String("fn")).toString(), call.value(QLatin1String("args")).toArray(),
+                                              call.value(QLatin1String("client")).toInteger(0)});
                     if (!std::exchange(m_controlCallsQueued, true)) QMetaObject::invokeMethod(this, &MuxClient::answerControlCalls, Qt::QueuedConnection);
                 }
             } else if (event && event->type == Attach::EventType::PaneOpened) {
@@ -573,6 +659,9 @@ void MuxClient::handleFrames()
                     m_exits[event->pane] = event->status;
                     paneExited(event->pane);
                 }
+            } else if (event && event->type == Attach::EventType::Commands) {
+                auto relay = Attach::decodeRelay(event->payload);
+                bad = !relay || !m_commands || !m_commands->frame(std::move(*relay));
             } else if (event && event->type == Attach::EventType::Host) {
                 bad = !m_channels.contains(event->pane);
                 bool lostLink = false;
@@ -662,6 +751,9 @@ void MuxClient::end(Loss loss)
         m_ended = true;
         m_loss = loss;
     }
+    // The window serves the clients of the session no more: their runs end,
+    // and the daemon tells them why.
+    if (m_commands) m_commands->closeAll();
     // The calls that wait go, but those of a pane whose exit is half known:
     // its last frames still come, and a notification after the last output
     // of a session shows with them. No other pane takes calls any more.
