@@ -10,14 +10,19 @@
 
 #include "TestDaemon.h"
 
+#include <AfterglowProto/Ipc.h>
+
 #include <QEventLoop>
 #include <QGuiApplication>
 #include <QTimer>
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <functional>
 #include <memory>
+#include <thread>
 #include <vector>
 
 using Afterglow::MuxClient;
@@ -346,6 +351,53 @@ TEST(MuxClient, EachPaneHearsOfItsOwnRefresh)
     // or not it came inside that wait.
     EXPECT_TRUE(waitFor([&] { return !shown.first->sessionScreensHeld(); })) << daemon.errors();
     EXPECT_TRUE(other->sessionScreensHeld());
+}
+
+// The answer to a call of `afterglow ctl` that waits behind the input of a
+// pane reaches the client, also when a newer layout comes after it: only an
+// older layout makes room for a newer one. The handler stops the daemon, so
+// that the answer and the layout wait in the window's queue.
+TEST(MuxClient, AnAnswerThatWaitsIsNoOldLayout)
+{
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    Shown shown = show(daemon, "busy");
+    ASSERT_TRUE(shown.client && shown.first);
+    const std::uint32_t paneId = shown.first->sessionPaneId();
+    bool asked = false;
+    shown.client->setControlHandler([&](const QString& fn, const QJsonArray&, qint64, MuxClient::ControlReply reply) {
+        asked = fn == QLatin1String("setTitle");
+        ::kill(daemon.pid(), SIGSTOP);
+        // More input than the stream lets go to a daemon that reads nothing:
+        // the answer waits behind it.
+        const std::string chunk(std::size_t(64) << 10, 'a');
+        for (int i = 0; i < 96; ++i) shown.first->sendInput(chunk);
+        // After the answer queued: a newer layout.
+        QTimer::singleShot(0, [&] {
+            AfterglowMux::Layout layout = shown.client->layout();
+            layout.tabs.front().title = "newer";
+            shown.client->sendLayout(layout);
+            ::kill(daemon.pid(), SIGCONT);
+        });
+        reply(MuxClient::ControlAnswer{});
+    });
+    std::atomic<int> answered{-1}; ///< -1 until the call ends, then 0 or 1
+    std::thread ctl([&] {
+        AfterglowProto::IpcConnection connection;
+        AfterglowProto::IpcConnection::Error error;
+        bool ok = connection.connect(daemon.socket(), &error, 2000)
+            && connection.call(AfterglowMux::Target, AfterglowMux::Fn::SelectSession,
+                               MuxTest::Json::Array{AfterglowMux::ProtocolVersion, "busy"}, 5000, &error)
+            && connection.call("control", "setTitle", MuxTest::Json::Array{std::int64_t(paneId), "t"}, 30000, &error);
+        if (!ok) ADD_FAILURE() << error.code << " " << error.message;
+        answered = ok ? 1 : 0;
+    });
+    const bool done = waitFor([&] { return answered >= 0; }, 40000);
+    ::kill(daemon.pid(), SIGCONT);
+    ctl.join();
+    EXPECT_TRUE(done);
+    EXPECT_TRUE(asked);
+    EXPECT_EQ(answered, 1);
 }
 
 } // namespace
