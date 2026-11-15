@@ -4,10 +4,13 @@
 #include "KeyMapping.h"
 
 #include "XkbKeyboard.h"
+#include "config/ModifierRemap.h"
 
 #include <QKeyEvent>
+#include <QtGui/private/qxkbcommon_p.h>
 
 #include <xkbcommon/xkbcommon-keysyms.h>
+#include <xkbcommon/xkbcommon.h>
 
 namespace Afterglow {
 
@@ -369,6 +372,181 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
         break;
     }
     return out;
+}
+
+namespace {
+
+/// The modifier that a key is in the active layout, and its side: one source
+/// for the modifiers after the key, the Qt key that remappedKeyEvent() gives
+/// it and the terminal key that remappedModifierKey() gives it. AltGr is a
+/// level, and a Hyper or Meta key gives whatever modifier the layout maps it
+/// to: neither has a role. Without a keymap no key has one, and modifier keys
+/// keep their names and Qt's modifiers.
+struct ModifierRole
+{
+    Qt::KeyboardModifier modifier = Qt::NoModifier;
+    bool right = false;
+};
+
+ModifierRole modifierRoleOf(quint32 keycode)
+{
+    switch (XkbKeyboard::instance().keysym(keycode)) {
+    case XKB_KEY_Shift_L:
+        return {Qt::ShiftModifier, false};
+    case XKB_KEY_Shift_R:
+        return {Qt::ShiftModifier, true};
+    case XKB_KEY_Control_L:
+        return {Qt::ControlModifier, false};
+    case XKB_KEY_Control_R:
+        return {Qt::ControlModifier, true};
+    case XKB_KEY_Alt_L:
+        return {Qt::AltModifier, false};
+    case XKB_KEY_Alt_R:
+        return {Qt::AltModifier, true};
+    case XKB_KEY_Super_L:
+        return {Qt::MetaModifier, false};
+    case XKB_KEY_Super_R:
+        return {Qt::MetaModifier, true};
+    default:
+        return {};
+    }
+}
+
+/// Qt's key for a modifier key, as Qt on Wayland names it: Meta for Super.
+int qtKeyOfModifier(Qt::KeyboardModifier modifier)
+{
+    switch (modifier) {
+    case Qt::ShiftModifier:
+        return Qt::Key_Shift;
+    case Qt::ControlModifier:
+        return Qt::Key_Control;
+    case Qt::AltModifier:
+        return Qt::Key_Alt;
+    default:
+        return Qt::Key_Meta;
+    }
+}
+
+Key terminalKeyOfModifier(Qt::KeyboardModifier modifier, bool right)
+{
+    switch (modifier) {
+    case Qt::ShiftModifier:
+        return right ? Key::RightShift : Key::LeftShift;
+    case Qt::ControlModifier:
+        return right ? Key::RightControl : Key::LeftControl;
+    case Qt::AltModifier:
+        return right ? Key::RightAlt : Key::LeftAlt;
+    default:
+        return right ? Key::RightSuper : Key::LeftSuper;
+    }
+}
+
+/// The modifier that QKeyEvent::modifiers() flips for @p key: for these
+/// modifier keys it reports the state after the key, not the one stored.
+Qt::KeyboardModifier flippedModifier(int key)
+{
+    switch (key) {
+    case Qt::Key_Shift:
+        return Qt::ShiftModifier;
+    case Qt::Key_Control:
+        return Qt::ControlModifier;
+    case Qt::Key_Alt:
+        return Qt::AltModifier;
+    case Qt::Key_Meta:
+        return Qt::MetaModifier;
+    case Qt::Key_AltGr:
+        return Qt::GroupSwitchModifier;
+    default:
+        return Qt::NoModifier;
+    }
+}
+
+constexpr Qt::KeyboardModifiers RemappableModifiers =
+    Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier;
+
+} // namespace
+
+bool isModifierKey(int key)
+{
+    switch (key) {
+    case Qt::Key_Shift:
+    case Qt::Key_Control:
+    case Qt::Key_Alt:
+    case Qt::Key_Meta:
+    case Qt::Key_Super_L:
+    case Qt::Key_Super_R:
+    case Qt::Key_Hyper_L:
+    case Qt::Key_Hyper_R:
+        return true;
+    default:
+        return false;
+    }
+}
+
+Qt::KeyboardModifiers modifiersAfter(const QKeyEvent& event)
+{
+    const ModifierRole role = modifierRoleOf(event.nativeScanCode());
+    if (role.modifier == Qt::NoModifier) return event.modifiers();
+    // The state that Qt stores, from before the key, with the key's own bit:
+    // Qt flips that bit only for the keys that it names Shift, Control, Alt
+    // and Meta, and drops it when the key of the other side is held.
+    Qt::KeyboardModifiers modifiers = static_cast<const QInputEvent&>(event).modifiers();
+    modifiers.setFlag(role.modifier, event.type() != QEvent::KeyRelease);
+    return modifiers;
+}
+
+std::unique_ptr<QKeyEvent> remappedKeyEvent(const QKeyEvent& event, const ModifierRemap& remap)
+{
+    if (remap.isEmpty()) return nullptr;
+    const ModifierRole role = modifierRoleOf(event.nativeScanCode());
+    // With any remap a modifier key reports the modifiers after it, also
+    // where Qt's own report does not (one Shift pressed while the other is
+    // held): the remap starts from them.
+    const Qt::KeyboardModifiers before = modifiersAfter(event);
+    Qt::KeyboardModifiers after = remap.apply(before);
+    int key = event.key();
+    QString text = event.text();
+    if (role.modifier != Qt::NoModifier) {
+        // The key names the modifier that it becomes, as in kitty, when that
+        // is one modifier.
+        if (const Qt::KeyboardModifier target = remap.singleTarget(role.modifier); target != Qt::NoModifier)
+            key = qtKeyOfModifier(target);
+    } else if ((before & RemappableModifiers) != (after & RemappableModifiers)) {
+        // The key and the text that the layout gives with the new modifiers,
+        // as Qt makes them: xkb keeps Caps Lock, the level (AltGr) and the
+        // layout, and makes the control character of Ctrl. Without a keymap
+        // the key and the text stay.
+        const XkbKeyboard::HeldModifiers held{bool(after & Qt::ShiftModifier), bool(after & Qt::ControlModifier),
+                                              bool(after & Qt::AltModifier), bool(after & Qt::MetaModifier)};
+        if (xkb_state* state = XkbKeyboard::instance().stateWith(held)) {
+            const xkb_keycode_t code = event.nativeScanCode();
+            const xkb_keysym_t* syms = nullptr;
+            if (xkb_state_key_get_syms(state, code, &syms) > 0) {
+                text = QXkbCommon::lookupString(state, code);
+                after.setFlag(Qt::KeypadModifier, QXkbCommon::isKeypad(syms[0]));
+                // A key with several keysyms has no single Qt key: it keeps its own.
+                if (const xkb_keysym_t keysym = xkb_state_key_get_one_sym(state, code); keysym != XKB_KEY_NoSymbol)
+                    key = QXkbCommon::keysymToQtKey(keysym, after, state, code);
+            }
+        }
+    }
+    if (after == event.modifiers() && key == event.key() && text == event.text()) return nullptr;
+    // Stored so that the new event's modifiers() reads as the remapped ones.
+    auto remapped = std::make_unique<QKeyEvent>(event.type(), key, after ^ flippedModifier(key), event.nativeScanCode(),
+                                                event.nativeVirtualKey(), event.nativeModifiers(), text,
+                                                event.isAutoRepeat(), event.count(), event.device());
+    remapped->setTimestamp(event.timestamp());
+    // Qt sends a ShortcutOverride ignored, and a new event starts accepted.
+    remapped->setAccepted(event.isAccepted());
+    return remapped;
+}
+
+AfterglowVt::Key remappedModifierKey(const QKeyEvent& event, AfterglowVt::Key key, const ModifierRemap& remap)
+{
+    const ModifierRole role = modifierRoleOf(event.nativeScanCode());
+    if (role.modifier == Qt::NoModifier) return key;
+    const Qt::KeyboardModifier target = remap.singleTarget(role.modifier);
+    return target == Qt::NoModifier ? key : terminalKeyOfModifier(target, role.right);
 }
 
 } // namespace Afterglow

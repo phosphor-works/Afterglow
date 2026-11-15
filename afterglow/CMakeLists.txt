@@ -108,8 +108,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 
-# Settings, keybinds, key modes, themes and the terminal text capture, shared
-# with their tests.
+# Settings, keybinds, key modes, the modifier remap, themes, the compositor's
+# xkb keymap and the terminal text capture, shared with their tests.
 qt_add_library(afterglow_config STATIC
     src/desktop/TerminalText.cpp
     src/desktop/TerminalText.h
@@ -117,6 +117,8 @@ qt_add_library(afterglow_config STATIC
     src/config/Keybinds.h
     src/config/KeyModes.cpp
     src/config/KeyModes.h
+    src/config/ModifierRemap.cpp
+    src/config/ModifierRemap.h
     src/config/Settings.cpp
     src/config/Settings.h
     src/config/Theme.cpp
