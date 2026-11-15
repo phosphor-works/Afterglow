@@ -91,7 +91,13 @@ A closed pane falls back off its bottom edge, or switches off to a dot.
 `Animation.splits=false` turns off the open and close animations, the portal and the away frame. Script pulses still show.
 Set `Shaders.paneEffects` to an empty string to turn off all pane effects.
 A pane whose shell moves to another host, user or container passes through a portal, such as after `afterglow ssh`.
-While it is away, a soft frame marks it in a palette color of the theme.
+The `portalStyle` parameter chooses a vortex (1, the default) or a ring (0).
+The vortex opens a black hole at the center of the pane. The text spirals into the hole and then comes back out of it.
+The text is not readable while it is in the hole. The ring sweeps across the pane and keeps the text in its place.
+When the pane returns, the vortex turns the other way, and the ring closes back to the center.
+The `swirl` parameter sets how far the vortex turns the text.
+`Animation.contextDuration` sets the time of the portal.
+While the pane is away, a soft frame marks it in a palette color of the theme.
 The frame is bright cyan for a remote host, bright red for an elevated user and bright magenta for a container.
 When the pane returns, the frame fades out in its color. Between two contexts, the frame changes color.
 The `portal` and `frame` parameters set their strength.

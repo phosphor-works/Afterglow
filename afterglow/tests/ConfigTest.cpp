@@ -1495,6 +1495,23 @@ TEST_F(ConfigTest, OverlayTransitionAndFadeDefaultsOverridesAndClamps)
     EXPECT_EQ(high.settings().animation.overlayDuration, 5000);
 }
 
+TEST_F(ConfigTest, ContextDurationDefaultOverrideAndClamps)
+{
+    // A portal has its own time: it is longer than a pane's open and close.
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().animation.contextDuration, 1000);
+    EXPECT_EQ(defaults.settings().animation.paneEffectDuration, 420);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Animation": {"contextDuration": 2500}})"));
+    EXPECT_EQ(custom.settings().animation.contextDuration, 2500);
+    EXPECT_EQ(custom.settings().animation.paneEffectDuration, 420);
+
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Animation": {"contextDuration": 1}})"));
+    EXPECT_EQ(low.settings().animation.contextDuration, 16);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Animation": {"contextDuration": 99999}})"));
+    EXPECT_EQ(high.settings().animation.contextDuration, 5000);
+}
+
 TEST_F(ConfigTest, LastOutputLimitIsKibibytesWithAClamp)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));

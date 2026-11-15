@@ -15,6 +15,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | --- | --- | --- | --- |
 | `bellCurve` | `"spring:14,1"` |  | Curve of the visual bell fade, in the splitCurve format. |
 | `bellDuration` | `150` | 16–5000 | Duration of the visual bell fade in milliseconds for curves other than springs. |
+| `contextDuration` | `1000` | 16–5000 | Milliseconds that the portal of Shaders.paneEffects takes when the shell of a pane moves to another host, user or container. |
 | `cursor` | `true` |  | Animate cursor movement between cells. |
 | `cursorCurve` | `"spring:48,1"` |  | Curve of cursor motion between cells, in the splitCurve format. |
 | `cursorDuration` | `150` | 16–5000 | Duration of cursor motion in milliseconds for curves other than springs. |
@@ -22,7 +23,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `overlayDuration` | `180` | 16–5000 | Duration of the fade of an overlay (Shaders.overlayTransition) in milliseconds for curves other than springs. |
 | `overviewCurve` | `"spring:12,0.82"` |  | Curve of the pane overview motion, in the splitCurve format. The default spring overshoots slightly. |
 | `overviewDuration` | `450` | 16–5000 | Duration of pane overview motion in milliseconds for curves other than springs. |
-| `paneEffectDuration` | `420` | 16–5000 | Milliseconds that a pane takes to open or close in Shaders.paneEffects. The portal of a pane whose shell moves to another host, user or container takes the same time. |
+| `paneEffectDuration` | `420` | 16–5000 | Milliseconds that a pane takes to open or close in Shaders.paneEffects. |
 | `scroll` | `true` |  | Animate scrolling between rows. |
 | `scrollCurve` | `"spring:26,1"` |  | Curve of scroll motion, in the splitCurve format. |
 | `scrollDuration` | `150` | 16–5000 | Duration of scroll motion in milliseconds for curves other than springs. |
