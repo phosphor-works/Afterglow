@@ -177,8 +177,10 @@ public:
         if (frame) return frame;
         // The target also goes when afterglow quits, which then closes the
         // connection: only a socket that still answers had control turned off.
+        // The daemon ends the subscriptions of a session itself, and lists no
+        // targets: its error says why.
         IpcClient::Error closed;
-        if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget) && !m_client.targets(ReplyTimeoutMs, &closed)) {
+        if (!m_daemon && error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget) && !m_client.targets(ReplyTimeoutMs, &closed)) {
             fail(QStringLiteral("Afterglow quit"));
         } else {
             report(error);
@@ -273,7 +275,7 @@ private:
         // The socket stays open for launches: the control target is what
         // Control.enabled takes away, also from a running watch.
         if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) {
-            fail(QStringLiteral("Control.enabled is off in %1").arg(m_own ? owner() : QStringLiteral("the running Afterglow")));
+            fail(QStringLiteral("Control.enabled is off in %1").arg(m_own || m_daemon ? owner() : QStringLiteral("the running Afterglow")));
         } else if (error.tooLong) {
             fail(QStringLiteral("the request is over what one call carries (%1 MiB)").arg(IpcClient::MaxLineBytes >> 20));
         } else if (error.timedOut) {

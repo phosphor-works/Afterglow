@@ -146,6 +146,13 @@ struct MuxSettings
     /// pane. In MiB in the configuration. The default equals
     /// AfterglowMux::DefaultEventQueue, which ConfigTest checks.
     std::size_t eventQueue = std::size_t(4) << 20;
+    /// The variables that a session of this computer takes from the
+    /// Afterglow that shows it, each time a window shows it, as tmux's
+    /// update-environment: set to Afterglow's value, or removed when
+    /// Afterglow has none. The panes that start later get them.
+    QStringList updateEnvironment{QStringLiteral("DISPLAY"),       QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("XAUTHORITY"),
+                                  QStringLiteral("SSH_AUTH_SOCK"), QStringLiteral("SSH_AGENT_PID"),   QStringLiteral("SSH_CONNECTION"),
+                                  QStringLiteral("SSH_ASKPASS"),   QStringLiteral("KRB5CCNAME")};
     bool operator==(const MuxSettings&) const = default;
 };
 

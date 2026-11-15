@@ -68,18 +68,6 @@ void Control::openProject(const QString& name, bool newInstance, const QString& 
     answer({});
 }
 
-template<typename Result>
-void Control::offThread(std::function<Result()> work, std::function<void(Result)> then)
-{
-    // The answer is posted to this object: an object that went first drops
-    // it, and m_daemonCalls waits for the work before then.
-    m_daemonCalls.start([this, work = std::move(work), then = std::move(then)]() mutable {
-        Result result = work();
-        QMetaObject::invokeMethod(
-            this, [then = std::move(then), result = std::move(result)]() mutable { then(std::move(result)); }, Qt::QueuedConnection);
-    });
-}
-
 TerminalWindow* Control::sessionWindow(const QString& session) const
 {
     for (const auto& window : m_windows) {
@@ -138,7 +126,7 @@ void Control::openProjectSession(const QString& name, const QJsonObject& documen
     }
     // No window measured the panes: the size of a new window, which then
     // resizes them.
-    const AfterglowMux::PaneSize size{settings.window.initialColumns, settings.window.initialRows, 0, 0};
+    const AfterglowMux::PaneSize size = initialPaneSize(settings);
     const std::size_t eventQueue = settings.mux.eventQueue;
     const std::size_t history = settings.terminal.maxScrollback;
     // What the calls read from the process: the GUI thread changes its

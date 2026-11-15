@@ -44,7 +44,7 @@ bool takesPane(std::string_view fn)
 bool windowCall(std::string_view fn)
 {
     return among(fn, {"setTitle", "signal", "notify", "runAction", "newWindow", "openDirectory", "projects", "saveProject", "openProject",
-                      "scriptDiagnostics"});
+                      "scriptDiagnostics", "overlay", "overlayInput", "screenshot"});
 }
 
 std::optional<std::uint32_t> paneArg(const Json::Value& value)
@@ -134,9 +134,12 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
     Session& session = **it;
     // As the control target of a window that Control.enabled turns off.
     if (!session.options().control.enabled) return ipcError(request.id, IpcErrorCode::NoSuchTarget, "no target 'control'");
-    if (request.type == "subscribe") return failed(request, "afterglow ctl watch is not available for a session yet");
+    if (request.type == "subscribe") return subscribe(request, connection, session);
     if (request.type != "call") return ipcError(request.id, IpcErrorCode::MalformedRequest, "the control target answers calls, not '" + request.type + "'");
-    if (among(fn, {"overlay", "overlayInput", "screenshot"})) return failed(request, fn + " is not available for a session yet");
+    // As a window refuses one: first, also for a pane that does not exist.
+    if (fn == "screenshot" && !session.options().control.allowReadText) {
+        return ipcError(request.id, "denied", "screenshots are off (Control.allowReadText)");
+    }
 
     Json::Array args = request.args;
     MuxPane* pane = nullptr;
@@ -197,8 +200,10 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         if (!side) return failed(request, "direction is left, right, up or down");
         // The program that `afterglow ctl` prepared with its settings, as
         // `afterglow mux new` does. A client that prepares none gets the
-        // program of the session's first pane, its shell.
+        // program of the session's first pane, its shell, but not its
+        // directory: the pane's own comes first, as in a window.
         Launch launch = session.firstLaunch();
+        launch.workingDirectory.clear();
         if (args.size() == 4) {
             std::string error;
             auto prepared = launchFrom(args[3], &error);
@@ -315,6 +320,8 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             layout.remove(id);
             layout.split(*target, id, *side);
         }
+        // With no window: `afterglow ctl watch` hears of it here.
+        session.noteMoved(id);
         return ipcReply(request.id.value_or(0), paneMap(session, *pane, readText));
     }
     if (windowCall(fn)) {
@@ -329,11 +336,15 @@ std::string Daemon::forward(const IpcRequest& request, IpcServerConnection& conn
     Attachment* const window = shown(session.name());
     if (!window || !window->showing()) return failed(request, "no window shows session '" + session.name() + "'");
     const std::uint64_t id = m_nextForward++;
+    auto [client, added] = m_clients.try_emplace(&connection, m_nextClient);
+    if (added) ++m_nextClient;
     const bool sent = guarded(*window, [&] {
-        window->sendControl(Json::write(Json::Object{{"id", std::int64_t(id)}, {"fn", request.fn}, {"args", args}}));
+        window->sendControl(Json::write(
+            Json::Object{{"id", std::int64_t(id)}, {"fn", request.fn}, {"args", args}, {"client", std::int64_t(client->second)}}));
         return true;
     });
     if (!sent) return failed(request, "the window of session '" + session.name() + "' failed");
+    if (request.fn == "overlay" || request.fn == "overlayInput") m_overlaySessions[&connection].insert(session.name());
     m_forwards[id] = Forward{&connection, request.id, window->serial(), session.name()};
     return {};
 }
@@ -356,6 +367,8 @@ void Daemon::answerForwarded()
             const auto reply = Json::parse(text);
             const auto id = reply ? (*reply)["id"].toInteger() : std::nullopt;
             const auto forward = id && *id > 0 ? m_forwards.find(std::uint64_t(*id)) : m_forwards.end();
+            // A client that went: its answer goes nowhere.
+            if (forward == m_forwards.end() && id && m_abandonedForwards.erase(std::uint64_t(*id))) continue;
             // Only the window that got the call answers it.
             if (forward == m_forwards.end() || forward->second.window != window->serial()) {
                 std::fprintf(stderr, "aglow-mux: the window of session %s answered a call that it did not get\n",
@@ -373,6 +386,10 @@ void Daemon::answerForwarded()
         }
     }
     // A window that went answers nothing more.
+    std::erase_if(m_abandonedForwards, [this](const auto& abandoned) {
+        return std::none_of(m_attachments.begin(), m_attachments.end(),
+                            [&](const auto& window) { return window->serial() == abandoned.second && window->showing(); });
+    });
     for (auto it = m_forwards.begin(); it != m_forwards.end();) {
         const bool waiting = std::any_of(m_attachments.begin(), m_attachments.end(), [&](const auto& window) {
             return window->serial() == it->second.window && window->showing();
@@ -389,8 +406,23 @@ void Daemon::answerForwarded()
 
 void Daemon::forget(const IpcServerConnection* connection)
 {
+    // Its overlays end, and its inputs go.
+    if (const auto sessions = m_overlaySessions.find(connection); sessions != m_overlaySessions.end()) {
+        for (const std::string& name : sessions->second) {
+            if (const auto session = find(name); session != m_sessions.end()) {
+                tellWindow(**session, "clientGone", Json::Array{std::int64_t(m_clients.at(connection))});
+            }
+        }
+        m_overlaySessions.erase(sessions);
+    }
+    m_clients.erase(connection);
     m_selected.erase(connection);
-    std::erase_if(m_forwards, [connection](const auto& forward) { return forward.second.connection == connection; });
+    forgetWatches(connection);
+    std::erase_if(m_forwards, [this, connection](const auto& forward) {
+        if (forward.second.connection != connection) return false;
+        m_abandonedForwards.emplace(forward.first, forward.second.window);
+        return true;
+    });
     // The window's connection of a client that went closes too.
     if (const auto relay = m_relayOf.find(connection); relay != m_relayOf.end()) endRelay(relay->second, true);
     m_closing.erase(connection);
