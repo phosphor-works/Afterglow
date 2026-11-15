@@ -28,6 +28,7 @@
 #include <AfterglowProto/Lock.h>
 #include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Version.h>
+#include <AfterglowPty/Pty.h>
 
 #include <gtest/gtest.h>
 
@@ -55,6 +56,7 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -103,80 +105,6 @@ return {
     end,
 }
 )";
-
-/// A fake ssh for the probe tests. It writes each run's words to
-/// FAKE_SSH_LOG, separated by 0x1f, one run on each line, and acts as the
-/// FAKE_* variables say: the probe's report, the exit status of -O check
-/// and -O forward, an -O forward that ends only once the file
-/// FAKE_FORWARD_GATE is there, and a session that waits for the file
-/// FAKE_RELEASE.
-/// ssh -G reports what real ssh does without a ControlPath, or with the
-/// user's ControlPath FAKE_CONTROL_PATH, for the destination it is given,
-/// with RequestTTY force (FAKE_TTY), as -tt would: the helper runs without
-/// a terminal here. The helper's second ssh -G reads the user's files
-/// through -F /dev/stdin, and its own Host * block last: the fake takes
-/// that block's values, with %C as "fakehash", unless FAKE_USER sets
-/// ControlPath none or ControlMaster no ("path-none", "master-no"), or
-/// FAKE_CONTROL_PATH is set. A session whose test failed before it
-/// released it ends when its parent has gone, or after 3000 waits of 20 ms:
-/// it never outlives the test for long.
-const QByteArray FakeSsh = R"sh(#!/bin/sh
-{ for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> "$FAKE_SSH_LOG"
-op=; prev=; last=
-for a in "$@"; do
-    [ "$prev" = "-O" ] && op=$a
-    prev=$a; last=$a
-done
-for a in "$@"; do
-    case "$a" in -G)
-        printf 'host %s\nhostname %s.example\nuser me\nport 22\ncontrolpersist no\nrequesttty %s\n' "$last" "$last" "${FAKE_TTY:-force}"
-        [ -n "${FAKE_CONTROL_PATH:-}" ] && printf 'controlpath %s\n' "$FAKE_CONTROL_PATH"
-        case " $* " in
-            *" /dev/stdin "*)
-                own=$(sed -n 's/^ *ControlPath \(.*\)$/\1/p; s/^ *ControlMaster \(.*\)$/master \1/p')
-                case "${FAKE_USER:-}${FAKE_CONTROL_PATH:-}" in
-                    path-none|/*) ;;
-                    *) printf 'controlpath %s\n' "$(printf '%s\n' "$own" | sed -n '1s/%C/fakehash/p')";;
-                esac
-                case "${FAKE_USER:-}" in
-                    master-no) printf 'controlmaster false\n';;
-                    *) printf 'controlmaster %s\n' "$(printf '%s\n' "$own" | sed -n 's/^master //p')";;
-                esac;;
-            *) printf 'controlmaster false\n';;
-        esac
-        exit 0;;
-    esac
-done
-case "$op" in
-    check) exit "${FAKE_CHECK:-0}";;
-    forward)
-        n=0
-        while [ -n "${FAKE_FORWARD_GATE:-}" ] && [ ! -e "$FAKE_FORWARD_GATE" ]; do
-            n=$((n + 1)); [ "$n" -gt 3000 ] && exit 8
-            sleep 0.02
-        done
-        exit "${FAKE_FORWARD:-0}";;
-    ?*) exit 0;;
-esac
-case "$last" in
-    "sh -c "*)
-        printf 'runtime=/run/user/1000\nhome=/home/me\n'
-        case "${FAKE_AGLOW:-same}" in
-            same) printf 'aglow=aglow 0.0.0 (protocol %s)\ndir=%s\n' "$FAKE_PROTOCOL" "${FAKE_DIR:-/run/user/1000/afterglow}";;
-            other) printf 'aglow=aglow 9.9.9 (protocol 99)\ndir=%s\n' "${FAKE_DIR:-/run/user/1000/afterglow}";;
-            another) printf 'aglow=aglow 9.9.8 (protocol 98)\ndir=%s\n' "${FAKE_DIR:-/run/user/1000/afterglow}";;
-        esac
-        exit "${FAKE_PROBE_STATUS:-0}";;
-esac
-: > "$FAKE_RELEASE.started"
-parent=$PPID; n=0
-while [ ! -e "$FAKE_RELEASE" ]; do
-    kill -0 "$parent" 2>/dev/null || exit 9
-    n=$((n + 1)); [ "$n" -gt 3000 ] && exit 8
-    sleep 0.02
-done
-exit 7
-)sh";
 
 using Test::Saved;
 
@@ -247,11 +175,10 @@ protected:
         script.close();
         // The fake ssh, for the probe tests and for the cancels of RemoteSockets.
         ASSERT_TRUE(QDir().mkpath(m_dir.filePath(QStringLiteral("bin"))));
-        QFile ssh(fakeSsh());
-        ASSERT_TRUE(ssh.open(QIODevice::WriteOnly));
-        ssh.write(FakeSsh);
-        ssh.close();
-        ssh.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        // fake-ssh.sh says what it does.
+        QFile::remove(fakeSsh());
+        ASSERT_TRUE(QFile::copy(QStringLiteral(AFTERGLOW_FAKE_SSH), fakeSsh()));
+        QFile(fakeSsh()).setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
     }
 
     void TearDown() override
@@ -298,6 +225,20 @@ protected:
                                                    });
         m_remote->setSsh(fakeSsh());
         m_controlSocket->setRemoteSockets(m_remote.get());
+        // The helper's `afterglow ssh` runs in no pane: it plays the one of
+        // FakePane (NativeWindow.RemoteSocketsOpenOnlyForTheProcessesOfTheirPane).
+        // One in m_pane, which no window holds, runs in its terminal session.
+        m_controlSocket->setPaneProcesses([this](quint32 pane, qint64 process, bool) {
+            if (pane == FakePane) return true;
+            if (!m_pane || pane != m_pane->id() || m_pane->programPid() <= 0) return false;
+            for (int up = 0; process > 1 && up < 64; ++up) {
+                const auto stat = AfterglowPty::processStat(pid_t(process));
+                if (!stat) return false;
+                if (stat->session == m_pane->programPid()) return true;
+                process = stat->parent;
+            }
+            return false;
+        });
         followScriptSettings(*m_scripts, *m_settings);
         qputenv("FAKE_SSH_LOG", log().toUtf8());
         return true;
@@ -569,6 +510,75 @@ TEST_F(RemoteCommandsTest, TheRemoteTargetRunsOnlyRemoteCommandsOnTheSessionsPan
     EXPECT_EQ(frames.value(0).value(QStringLiteral("args")).toArray().at(1).toString(), QStringLiteral("there remote box 7 word\n"));
     frames = run(QStringLiteral("there"), 9);
     EXPECT_TRUE(frames.value(0).value(QStringLiteral("message")).toString().contains(QLatin1String("pane of its ssh session")));
+}
+
+// The socket that a window gives the clients that a mux daemon passes it
+// (MuxCommands): a client in a pane of a session of another host, on the
+// commands target, and on the remote host of an ssh session in a session
+// pane, on the remote target. Each gets only the commands marked remote, on
+// the pane, with the host. One socket serves each pane, host and target
+// until the pane closes, with no forward to cancel and no answer of the
+// pane to change.
+TEST_F(RemoteCommandsTest, AnEndpointServesTheRemoteCommandsOfItsPaneWithNoForward)
+{
+    ASSERT_TRUE(start());
+    m_scripts->setEnabled(true);
+    QString error;
+    const QString commands = m_remote->endpoint(FakePane, QStringLiteral("box"), true, &error);
+    ASSERT_FALSE(commands.isEmpty()) << error.toStdString();
+    EXPECT_TRUE(commands.startsWith(m_runtime + QStringLiteral("/afterglow-remote-"))) << commands.toStdString();
+    EXPECT_EQ(m_remote->endpoint(FakePane, QStringLiteral("box"), true, &error), commands);
+    const QString remote = m_remote->endpoint(FakePane, QStringLiteral("box"), false, &error);
+    ASSERT_FALSE(remote.isEmpty()) << error.toStdString();
+    EXPECT_NE(remote, commands);
+    EXPECT_NE(m_remote->endpoint(FakePane, QStringLiteral("other"), true, &error), commands);
+
+    // Each on its own target, with the commands that declare remote.
+    for (const auto& [socket, target, other] : {std::tuple{commands, QStringLiteral("commands"), QStringLiteral("remote")},
+                                                std::tuple{remote, QStringLiteral("remote"), QStringLiteral("commands")}}) {
+        SCOPED_TRACE(target.toStdString());
+        EXPECT_EQ(callOn(socket, other, QStringLiteral("list"), {}).value(0).value(QStringLiteral("code")).toString(),
+                  QStringLiteral("NO_SUCH_TARGET"));
+        QStringList listed;
+        for (const QJsonValue& entry : callOn(socket, target, QStringLiteral("list"), {}).value(0).value(QStringLiteral("result")).toArray())
+            listed << entry.toObject().value(QStringLiteral("command")).toString();
+        listed.sort();
+        EXPECT_EQ(listed, (QStringList{QStringLiteral("echo"), QStringLiteral("slow"), QStringLiteral("there")}));
+        const auto run = [&](const QString& command, double pane) {
+            return callOn(socket, target, QStringLiteral("run"),
+                          {QStringLiteral("r1"), QStringLiteral("far"), command, QJsonArray{QStringLiteral("word")},
+                           QStringLiteral("/home/me/src"), pane});
+        };
+        QList<QJsonObject> frames = run(QStringLiteral("there"), 0);
+        ASSERT_EQ(frames.size(), 2);
+        EXPECT_EQ(frames[0].value(QStringLiteral("args")).toArray().at(1).toString(), QStringLiteral("there remote box 7 word\n"));
+        frames = run(QStringLiteral("here"), 0);
+        EXPECT_EQ(frames.value(0).value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_COMMAND"));
+        frames = run(QStringLiteral("there"), 9);
+        // The run acts on the pane, and on no other.
+        EXPECT_TRUE(frames.value(0).value(QStringLiteral("message")).toString().endsWith(QLatin1String("pane, 7")) ||
+                    frames.value(0).value(QStringLiteral("message")).toString().endsWith(QLatin1String("session, 7")))
+            << frames.value(0).value(QStringLiteral("message")).toString().toStdString();
+    }
+    // A session of another host hears that its run acts on its own pane.
+    const QList<QJsonObject> elsewhere = callOn(commands, QStringLiteral("commands"), QStringLiteral("run"),
+                                                {QStringLiteral("r2"), QStringLiteral("far"), QStringLiteral("there"), QJsonArray{}, QString(), 9});
+    EXPECT_TRUE(elsewhere.value(0).value(QStringLiteral("message")).toString().contains(QLatin1String("session of another host")));
+
+    // The pane's answer to the query stays as it was: no ssh session of its own.
+    EXPECT_FALSE(m_answers.contains(FakePane));
+    m_remote->paneClosed(FakePane);
+    EXPECT_TRUE(m_remote->tokens().isEmpty());
+    EXPECT_FALSE(exists(commands));
+    EXPECT_FALSE(exists(remote));
+    expectNoCancel();
+    // A host that is no name.
+    EXPECT_TRUE(m_remote->endpoint(FakePane, QString(), true, &error).isEmpty());
+    EXPECT_FALSE(error.isEmpty());
+    // The setting off: no socket, and the reason.
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Terminal"), QStringLiteral("sshRemoteCommands"), false));
+    EXPECT_TRUE(m_remote->endpoint(FakePane, QStringLiteral("box"), true, &error).isEmpty());
+    EXPECT_TRUE(error.contains(QLatin1String("Terminal.sshRemoteCommands"))) << error.toStdString();
 }
 
 TEST_F(RemoteCommandsTest, TheRemoteTargetHasTheCallsOfARunAndNoMore)

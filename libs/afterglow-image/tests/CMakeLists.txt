@@ -9,6 +9,6 @@ set_target_properties(afterglow_image_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 include(GoogleTest)
 # The decoders run on cut and corrupt files in the test process, with no
-# limit on their CPU time as the decoder children of aglow and afterglow-mux
+# limit on their CPU time as the decoder children of aglow and aglow-mux
 # have: the timeout ends a decoder that does not return.
 gtest_discover_tests(afterglow_image_tests TEST_PREFIX "Image." PROPERTIES TIMEOUT 60)

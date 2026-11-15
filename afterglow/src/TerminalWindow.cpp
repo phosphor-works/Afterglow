@@ -17,6 +17,7 @@
 #include "PaneDialog.h"
 #include "PaneLaunch.h"
 #include "mux/MuxClient.h"
+#include "mux/MuxSessions.h"
 
 #include "app/NotificationCenter.h"
 #include "control/Control.h"
@@ -185,7 +186,33 @@ int mouseButtonCode(Qt::MouseButton b)
 
 namespace {
 quint32 s_nextWindowId = 1;
+
+/// Adds what a project saves of session pane @p pane to @p layout, for the
+/// daemon to keep, within MaxLayoutValueBytes: past them, a command saves
+/// as the shell, and a title as the program's. @p commands: false for a
+/// session of another host, whose commands a project would run here.
+void addSessionValues(AfterglowMux::Layout& layout, const Pane& pane, bool commands, std::size_t& used)
+{
+    AfterglowMux::PaneValues values;
+    values.title = layoutTitle(pane);
+    if (commands) values.command = sessionCommand(pane.launchCommand());
+    if (used + values.bytes() > AfterglowMux::MaxLayoutValueBytes) values.command.clear();
+    if (used + values.bytes() > AfterglowMux::MaxLayoutValueBytes) values.title.clear();
+    if (values.empty()) return;
+    used += values.bytes();
+    layout.values.emplace(pane.sessionPaneId(), std::move(values));
 }
+
+/// Gives session pane @p pane the @p values that the daemon kept, with its
+/// command for a session of this computer (@p commands).
+void applySessionValues(Pane& pane, const AfterglowMux::PaneValues& values, bool commands)
+{
+    QStringList command;
+    if (commands) for (const std::string& word : values.command) command << QString::fromStdString(word);
+    pane.setLaunchCommand(command);
+    pane.setUserTitle(QString::fromStdString(values.title));
+}
+} // namespace
 
 TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     : m_device(services.device)
@@ -412,6 +439,15 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         // Tabs that open, close, move or take a title, and the focus.
         connect(this, &TerminalWindow::tabsChanged, this, &TerminalWindow::scheduleSessionLayout);
         connect(this, &TerminalWindow::focusedPaneChanged, this, &TerminalWindow::scheduleSessionLayout);
+        // A move goes with the next layout, for `afterglow ctl watch` of the session.
+        connect(this, &TerminalWindow::paneMoved, this, [this](Pane* pane) {
+            if (!pane || !pane->isSessionPane() || m_movedSessionPanes.size() >= AfterglowMux::MaxSessionPanes) return;
+            m_movedSessionPanes.push_back(pane->sessionPaneId());
+            scheduleSessionLayout();
+        });
+        // The session follows the settings of the window that shows it, and
+        // one of this computer takes its variables.
+        m_session->sendSettings(sessionSettings(m_settings.settings(), !m_session->remote()));
         restoreSession();
     } else if (!options.empty) newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command, options.environment);
     updateTitle();
@@ -606,6 +642,8 @@ void TerminalWindow::bindPane(Pane* pane)
         if (host == shown && m_tabs[std::size_t(index)]->title.isEmpty()) Q_EMIT tabsChanged();
         if (paneDrawn(pane)) scheduleRender();
     });
+    // A project saves the title: the daemon keeps it for the next window.
+    connect(pane, &Pane::userTitleChanged, this, &TerminalWindow::scheduleSessionLayout);
     connect(pane, &Pane::closed, this, [this, guard = QPointer<Pane>(pane)] {
         // An overlay's program ending ends the overlay (PaneOverlay), not a pane.
         if (guard && !guard->overlayHost()) {
@@ -805,13 +843,9 @@ Pane* TerminalWindow::createSessionPane(const std::shared_ptr<MuxClient>& sessio
     // The program runs under the daemon, which holds nothing open: --hold is
     // for a program of the window, and must not go to the next pane.
     m_holdNextPane = false;
-    // The replica keeps the history that the attach asked for, which the
-    // daemon sends, not a Terminal.scrollback that a reload changed since.
-    AfterglowVt::TerminalOptions options = m_settings.settings().terminal;
-    options.maxScrollback = session->history();
-    // The daemon parses with the session's width of ambiguous characters:
-    // the replica lays its rows out alike.
-    options.ambiguousWide = session->ambiguousWide();
+    // The window's settings, which the session follows (sendSettings): the
+    // daemon sends as much history as Terminal.scrollback keeps.
+    const AfterglowVt::TerminalOptions& options = m_settings.settings().terminal;
     auto* pane = new Pane(options, this);
     bindPane(pane);
     applySearchColors(pane);
@@ -830,6 +864,27 @@ Pane* TerminalWindow::createSessionLaunchPane(const QString& workingDirectory, c
 {
     // Its program started already, in the daemon.
     if (const auto placing = std::exchange(m_placingPane, std::nullopt)) return createSessionPane(m_session, *placing);
+    if (m_session->remote()) {
+        // The host's login shell, or the command, in the session's
+        // environment there: this computer's settings name its own paths.
+        // It starts where the focused pane's program is, there.
+        AfterglowMux::Launch launch;
+        for (const QString& word : command) launch.argv.push_back(word.toStdString());
+        if (m_focused && m_focused->isSessionPane()) launch.workingDirectory = m_session->directory(m_focused->sessionPaneId()).toStdString();
+        launch.launchedProgram = launchedProgramName(command).toStdString();
+        const auto& m = m_renderer->fonts().fonts->metrics();
+        const QRect content = contentRect(area);
+        QString error;
+        const auto id = m_session->newPane(launch,
+                                           {std::max(2, content.width() / m.cellWidth), std::max(1, content.height() / m.cellHeight),
+                                            m.cellWidth, m.cellHeight},
+                                           &error);
+        if (!id) {
+            if (failure) *failure = error;
+            return nullptr;
+        }
+        return createSessionPane(m_session, *id);
+    }
     // The program starts as a pane of the window would, with this window's
     // settings, but in the session's environment: the daemon applies what
     // the launch sets and unsets to it, so what the launch reads of the
@@ -849,6 +904,7 @@ Pane* TerminalWindow::createSessionLaunchPane(const QString& workingDirectory, c
     launch.environment = std::move(opts.environment);
     launch.unset = std::move(opts.unsetEnvironment);
     launch.launchedProgram = launchedProgramName(command).toStdString();
+    launch.command = sessionCommand(command);
     const auto& m = m_renderer->fonts().fonts->metrics();
     const QRect content = contentRect(area);
     const AfterglowMux::PaneSize size{std::max(2, content.width() / m.cellWidth), std::max(1, content.height() / m.cellHeight), m.cellWidth,
@@ -886,7 +942,8 @@ void TerminalWindow::restoreSession()
                 continue;
             }
             Pane* pane = createSessionPane(m_session, node.pane);
-            if (!node.title.empty()) pane->setUserTitle(QString::fromStdString(node.title));
+            if (const auto values = layout.values.find(node.pane); values != layout.values.end())
+                applySessionValues(*pane, values->second, !m_session->remote());
             if (node.pane == saved.focused) tab->focused = pane;
             if (node.pane == saved.zoomed) zoomed = pane;
             nodes.push_back({pane, false, 0.5});
@@ -935,6 +992,8 @@ void TerminalWindow::setClosingRelease(const QList<Pane*>& closing)
 MuxRelease TerminalWindow::windowCloseRelease() const
 {
     if (m_keepSession) return MuxRelease::Nothing;
+    // The session of a project keeps running for its next open.
+    if (!m_projectName.isEmpty()) return MuxRelease::Nothing;
     return m_settings.settings().mux.onClose == MuxSettings::Close::Kill ? MuxRelease::Session : MuxRelease::Nothing;
 }
 
@@ -946,6 +1005,11 @@ AfterglowMux::Layout TerminalWindow::sessionLayout() const
         layout.tabs.push_back(sessionTab(tab, int(i) == m_currentTab ? m_focused.data() : tab.focused.data()));
     }
     layout.current = std::size_t(std::clamp(m_currentTab, 0, std::max(0, int(layout.tabs.size()) - 1)));
+    // The panes of the tabs: each is in the layout.
+    std::size_t used = 0;
+    for (Pane* pane : panes()) {
+        if (pane->sessionPaneId() != 0) addSessionValues(layout, *pane, m_session && !m_session->remote(), used);
+    }
     return layout;
 }
 
@@ -957,7 +1021,7 @@ AfterglowMux::LayoutTab TerminalWindow::sessionTab(const Tab& tab, const Pane* f
             out.tree.push_back({0, node.vertical, node.ratio});
             continue;
         }
-        out.tree.push_back({node.pane->sessionPaneId(), false, 0.5, layoutTitle(*node.pane)});
+        out.tree.push_back({node.pane->sessionPaneId(), false, 0.5});
     }
     out.focused = focused && tab.splits->contains(focused) ? focused->sessionPaneId() : 0;
     for (const AfterglowMux::LayoutNode& node : out.tree) {
@@ -985,7 +1049,7 @@ Pane* TerminalWindow::sessionPane(std::uint32_t id) const
     return nullptr;
 }
 
-Pane* TerminalWindow::placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side)
+Pane* TerminalWindow::placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side, const QStringList& command)
 {
     if (!m_session || sessionPane(id)) return nullptr;
     // Through the paths of a split and a tab, with their room and their
@@ -996,6 +1060,7 @@ Pane* TerminalWindow::placeSessionPane(std::uint32_t id, Pane* beside, std::opti
     if (!placed && m_placingPane) placed = openTab({}, &error, beside && tabOf(beside) >= 0 ? beside : nullptr);
     if (!placed && m_placingPane) placed = addTab(createSessionPane(m_session, id), -1);
     m_placingPane.reset();
+    if (placed && !m_session->remote()) placed->setLaunchCommand(command);
     sendSessionLayout();
     return placed;
 }
@@ -1044,11 +1109,13 @@ QString TerminalWindow::breakOutOfSession(Pane* pane, bool wholeTab, QString* se
         moved.tabs.push_back(sessionTab(tab, index == m_currentTab ? m_focused.data() : tab.focused.data()));
     } else {
         moved.addTab(pane->sessionPaneId());
-        moved.tabs.back().tree.front().title = layoutTitle(*pane);
     }
     QList<Pane*> leaving;
     if (wholeTab) tab.splits->forEachPane([&leaving](Pane* p, const QRect&) { leaving.append(p); });
     else leaving.append(pane);
+    // Their titles and commands go with them, for the windows of the new session.
+    std::size_t used = 0;
+    for (const Pane* p : std::as_const(leaving)) addSessionValues(moved, *p, !m_session->remote(), used);
     QString error;
     const auto name = m_session->breakOut(moved, &error);
     if (!name) return error;
@@ -1126,6 +1193,11 @@ void TerminalWindow::adoptBreakOut(const std::shared_ptr<const BreakOut>& kept)
     scheduleRender();
 }
 
+QString TerminalWindow::sessionHost() const
+{
+    return m_session ? m_session->host() : QString();
+}
+
 void TerminalWindow::scheduleSessionLayout()
 {
     if (m_session && !m_sessionLayoutTimer.isActive()) m_sessionLayoutTimer.start();
@@ -1144,7 +1216,12 @@ void TerminalWindow::sendSessionLayout()
             return;
         }
     }
-    m_session->sendLayout(sessionLayout());
+    AfterglowMux::Layout layout = sessionLayout();
+    // The moves of panes that are still in the layout, in their order.
+    for (const std::uint32_t id : std::exchange(m_movedSessionPanes, {})) {
+        if (layout.contains(id)) layout.moved.push_back(id);
+    }
+    m_session->sendLayout(layout);
 }
 
 Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QStringList& command, const PaneLaunchOptions& options, QString* error)
@@ -4861,16 +4938,13 @@ void TerminalWindow::applySettings(const Settings& previous)
     // A held key or the pointer over a link: the hover follows the new rules.
     if (now.modifierRemap != previous.modifierRemap || now.links.modifier != previous.links.modifier) updateLinkHover();
     if (now.terminal != previous.terminal) {
-        for (Pane* p : findChildren<Pane*>()) {
-            // A session pane's colors, modes and history are the session's,
-            // which its frames carry: new options would replace the palette
-            // that they set. Those of the window (word boundaries, bidi,
-            // bold and contrast) change as a local pane's do.
-            if (p->isSessionPane()) p->setViewOptions(now.terminal);
-            else p->setOptions(now.terminal);
-        }
+        // A session pane takes them too, for what the window reads of them
+        // (word boundaries, contrast, bidi). The daemon applies them to the
+        // session's terminal, whose frames then bring the colors and modes.
+        for (Pane* p : findChildren<Pane*>()) p->setOptions(now.terminal);
         setDockOptions(now.terminal);
     }
+    if (m_session) m_session->sendSettings(sessionSettings(now, !m_session->remote()));
     if (now.colors != previous.colors) {
         for (Pane* p : findChildren<Pane*>()) {
             applySearchColors(p);

@@ -62,15 +62,7 @@ bool readTab(const Json::Value& value, LayoutTab& tab, std::set<std::uint32_t>& 
     for (const Json::Value& item : tree->toArray()) {
         if (need == 0) return fail(error, "a tree goes on after its last pane");
         LayoutNode node;
-        // A pane with its title: [ID, title].
-        const bool titled = item.isArray() && !item.toArray().empty() && item.toArray()[0].isNumber();
-        if (titled) {
-            const Json::Array& pane = item.toArray();
-            if (pane.size() != 2 || !pane[1].isString() || pane[1].toString().empty()) return fail(error, "a pane with a title is not [ID, title]");
-            if (pane[1].toString().size() > MaxPaneTitle) return fail(error, "a pane's title is longer than " + std::to_string(MaxPaneTitle) + " bytes");
-            node.title = pane[1].toString();
-        }
-        if (item.isArray() && !titled) {
+        if (item.isArray()) {
             const Json::Array& split = item.toArray();
             if (split.size() != 2 || !split[0].isString() || (split[0].toString() != "right" && split[0].toString() != "down")
                 || !split[1].isNumber()) {
@@ -81,7 +73,7 @@ bool readTab(const Json::Value& value, LayoutTab& tab, std::set<std::uint32_t>& 
             if (!std::isfinite(node.ratio) || node.ratio <= 0 || node.ratio >= 1) return fail(error, "a split's ratio is not between 0 and 1");
             need += 1;
         } else {
-            const auto id = paneIdFrom(titled ? item.toArray()[0] : item);
+            const auto id = paneIdFrom(item);
             if (!id) return fail(error, "a pane of a tree is not a pane ID");
             if (!seen.insert(*id).second) return fail(error, "pane " + std::to_string(*id) + " is in the layout more than once");
             if (seen.size() > MaxSessionPanes) return fail(error, "the layout has more than " + std::to_string(MaxSessionPanes) + " panes");
@@ -113,7 +105,63 @@ bool readTab(const Json::Value& value, LayoutTab& tab, std::set<std::uint32_t>& 
     return true;
 }
 
+/// Reads the values of the panes in @p value into @p layout, whose tabs hold @p panes.
+bool readValues(const Json::Value& value, Layout& layout, const std::set<std::uint32_t>& panes, std::string* error)
+{
+    if (!value.isArray()) return fail(error, "the values of the panes are not a list");
+    for (const Json::Value& item : value.toArray()) {
+        if (!item.isObject()) return fail(error, "the values of a pane are not an object");
+        for (const auto& [key, field] : item.toObject()) {
+            if (key != "id" && key != "title" && key != "command") return fail(error, keyText(key) + " is not a value of a pane");
+        }
+        const Json::Value* id = item.find("id");
+        const auto pane = id ? paneIdFrom(*id) : std::nullopt;
+        if (!pane || !panes.contains(*pane)) return fail(error, "values name a pane that is not in the layout");
+        if (layout.values.contains(*pane)) return fail(error, "pane " + std::to_string(*pane) + " has values more than once");
+        PaneValues values;
+        const Json::Value* title = item.find("title");
+        if (!title || !title->isString()) return fail(error, "the values of a pane have no 'title'");
+        if (title->toString().size() > MaxPaneTitle) return fail(error, "a pane's title is longer than " + std::to_string(MaxPaneTitle) + " bytes");
+        values.title = title->toString();
+        const Json::Value* command = item.find("command");
+        if (!command || !command->isArray()) return fail(error, "the values of a pane have no 'command'");
+        for (const Json::Value& word : command->toArray()) {
+            if (!word.isString()) return fail(error, "a pane's command has an argument that is not text");
+            values.command.push_back(word.toString());
+        }
+        if (!values.command.empty() && !validPaneCommand(values.command)) {
+            return fail(error, "a pane's command has an empty program, more than " + std::to_string(MaxPaneCommandArgs)
+                                   + " arguments, or one longer than " + std::to_string(MaxPaneCommandArg) + " bytes");
+        }
+        if (!values.empty()) layout.values.emplace(*pane, std::move(values));
+    }
+    if (layout.valueBytes() > MaxLayoutValueBytes) {
+        return fail(error, "the titles and commands of the panes are more than " + std::to_string(MaxLayoutValueBytes) + " bytes");
+    }
+    return true;
+}
+
 } // namespace
+
+std::size_t PaneValues::bytes() const
+{
+    std::size_t total = title.size();
+    for (const std::string& arg : command) total += arg.size();
+    return total;
+}
+
+std::size_t Layout::valueBytes() const
+{
+    std::size_t total = 0;
+    for (const auto& [pane, value] : values) total += value.bytes();
+    return total;
+}
+
+bool validPaneCommand(const std::vector<std::string>& command)
+{
+    return !command.empty() && !command.front().empty() && command.size() <= MaxPaneCommandArgs
+        && std::none_of(command.begin(), command.end(), [](const std::string& arg) { return arg.size() > MaxPaneCommandArg; });
+}
 
 std::optional<std::uint32_t> paneIdFrom(const Json::Value& value)
 {
@@ -166,6 +214,7 @@ std::size_t currentAfter(std::size_t keptBefore, std::size_t tabs)
 bool Layout::remove(std::uint32_t pane)
 {
     if (pane == 0) return false;
+    values.erase(pane);
     for (std::size_t t = 0; t < tabs.size(); ++t) {
         std::vector<LayoutNode>& tree = tabs[t].tree;
         const auto leaf = std::find_if(tree.begin(), tree.end(), [pane](const LayoutNode& node) { return node.pane == pane; });
@@ -273,6 +322,8 @@ void Layout::reconcile(const std::vector<std::uint32_t>& live)
         if (pane != 0 && present.insert(pane).second) addTab(pane);
     }
     if (current >= tabs.size()) current = tabs.empty() ? 0 : tabs.size() - 1;
+    // The values of the panes that went go with them.
+    std::erase_if(values, [&alive](const auto& value) { return !alive.contains(value.first); });
 }
 
 std::optional<std::size_t> Layout::tabOf(std::uint32_t pane) const
@@ -332,8 +383,7 @@ Json::Value toJson(const Layout& layout)
     for (const LayoutTab& tab : layout.tabs) {
         Json::Array tree;
         for (const LayoutNode& node : tab.tree) {
-            if (node.pane != 0 && node.title.empty()) tree.push_back(std::int64_t(node.pane));
-            else if (node.pane != 0) tree.push_back(Json::Array{std::int64_t(node.pane), node.title});
+            if (node.pane != 0) tree.push_back(std::int64_t(node.pane));
             else tree.push_back(Json::Array{node.down ? "down" : "right", node.ratio});
         }
         tabs.push_back(Json::Object{{"tree", std::move(tree)},
@@ -341,7 +391,20 @@ Json::Value toJson(const Layout& layout)
                                     {"zoomed", std::int64_t(tab.zoomed)},
                                     {"title", tab.title}});
     }
-    return Json::Object{{"tabs", std::move(tabs)}, {"current", std::int64_t(layout.current)}};
+    Json::Array values;
+    for (const auto& [pane, value] : layout.values) {
+        if (value.empty()) continue;
+        values.push_back(Json::Object{{"id", std::int64_t(pane)},
+                                      {"title", value.title},
+                                      {"command", Json::Array(value.command.begin(), value.command.end())}});
+    }
+    Json::Object out{{"tabs", std::move(tabs)}, {"current", std::int64_t(layout.current)}, {"values", std::move(values)}};
+    if (!layout.moved.empty()) {
+        Json::Array moved;
+        for (const std::uint32_t pane : layout.moved) moved.push_back(std::int64_t(pane));
+        out.emplace_back("moved", std::move(moved));
+    }
+    return out;
 }
 
 std::optional<Layout> layoutFrom(const Json::Value& value, std::string* error)
@@ -351,7 +414,7 @@ std::optional<Layout> layoutFrom(const Json::Value& value, std::string* error)
         return std::nullopt;
     }
     for (const auto& [key, item] : value.toObject()) {
-        if (key != "tabs" && key != "current") {
+        if (key != "tabs" && key != "current" && key != "values" && key != "moved") {
             fail(error, keyText(key) + " is not a key of a layout");
             return std::nullopt;
         }
@@ -383,6 +446,22 @@ std::optional<Layout> layoutFrom(const Json::Value& value, std::string* error)
         return std::nullopt;
     }
     layout.current = std::size_t(*index);
+    // A layout of panes without values has none.
+    if (const Json::Value* values = value.find("values"); values && !readValues(*values, layout, seen, error)) return std::nullopt;
+    if (const Json::Value* moved = value.find("moved")) {
+        if (!moved->isArray() || moved->toArray().size() > MaxSessionPanes) {
+            fail(error, "the moved panes are not a list of the layout's panes");
+            return std::nullopt;
+        }
+        for (const Json::Value& item : moved->toArray()) {
+            const auto pane = paneIdFrom(item);
+            if (!pane || !seen.contains(*pane)) {
+                fail(error, "the moved panes are not a list of the layout's panes");
+                return std::nullopt;
+            }
+            layout.moved.push_back(*pane);
+        }
+    }
     return layout;
 }
 

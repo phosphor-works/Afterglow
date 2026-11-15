@@ -67,7 +67,7 @@ Shown show(MuxTest::TestDaemon& daemon, const std::string& name, AfterglowMux::S
     if (made) *made = options;
     EXPECT_TRUE(daemon.newSession(options)) << daemon.lastError();
     QString error;
-    shown.client = MuxClient::attach(QString::fromStdString(name), false, &error, daemon.sockets(), std::size_t(1) << 20, 1000);
+    shown.client = MuxClient::attach(QString::fromStdString(name), false, &error, AfterglowMux::Route{daemon.sockets(), {}, {}}, std::size_t(1) << 20, 1000);
     EXPECT_TRUE(shown.client) << error.toStdString();
     if (!shown.client) return shown;
     const std::vector<std::uint32_t> panes = shown.client->layout().panes();
@@ -104,8 +104,6 @@ TEST(MuxClient, AWindowShowsMorePanesThanTheDefaultChannels)
     // The session's environment, as `afterglow mux new` gave it: a new pane
     // starts from it, not from this process's.
     EXPECT_TRUE(shown.client->environment() == made.environment);
-    // The history that the attach asked for, which every replica keeps.
-    EXPECT_EQ(shown.client->history(), 1000u);
     std::vector<std::unique_ptr<Pane>> panes;
     for (int i = 0; i < 99; ++i) {
         panes.push_back(newPane(*shown.client, shown.client, {"/bin/cat"}));
@@ -265,7 +263,7 @@ TEST(MuxClient, APaneThatShowsAfterItsFirstFramesHasTheWindowsSize)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(daemon.newSession(daemon.options({"/bin/cat"}, "late"))) << daemon.lastError();
     QString error;
-    const auto client = MuxClient::attach(QStringLiteral("late"), false, &error, daemon.sockets(), std::size_t(1) << 20, 1000);
+    const auto client = MuxClient::attach(QStringLiteral("late"), false, &error, AfterglowMux::Route{daemon.sockets(), {}, {}}, std::size_t(1) << 20, 1000);
     ASSERT_TRUE(client) << error.toStdString();
     ASSERT_EQ(client->layout().panes().size(), 1u);
     Pane pane(AfterglowVt::TerminalOptions{});
@@ -367,7 +365,7 @@ TEST(MuxClient, AnAnswerThatWaitsIsNoOldLayout)
     ASSERT_TRUE(shown.client && shown.first);
     const std::uint32_t paneId = shown.first->sessionPaneId();
     bool asked = false;
-    shown.client->setControlHandler([&](const QString& fn, const QJsonArray&) {
+    shown.client->setControlHandler([&](const QString& fn, const QJsonArray&, qint64, MuxClient::ControlReply reply) {
         asked = fn == QLatin1String("setTitle");
         ::kill(daemon.pid(), SIGSTOP);
         // More input than the stream lets go to a daemon that reads nothing:
@@ -381,7 +379,7 @@ TEST(MuxClient, AnAnswerThatWaitsIsNoOldLayout)
             shown.client->sendLayout(layout);
             ::kill(daemon.pid(), SIGCONT);
         });
-        return MuxClient::ControlAnswer{};
+        reply(MuxClient::ControlAnswer{});
     });
     std::atomic<int> answered{-1}; ///< -1 until the call ends, then 0 or 1
     std::thread ctl([&] {

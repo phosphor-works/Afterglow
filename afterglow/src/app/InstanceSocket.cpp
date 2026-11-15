@@ -15,6 +15,7 @@
 #include <QSet>
 
 #include <string>
+#include <utility>
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -32,7 +33,7 @@ std::string lockPath(const QString& socket)
     return QFile::encodeName(socket + QStringLiteral(".lock")).toStdString();
 }
 
-// The lock on @p socket's lock file, as afterglow-mux takes the lock of its
+// The lock on @p socket's lock file, as aglow-mux takes the lock of its
 // sockets: AfterglowProto::LockHeld while another holder has it,
 // AfterglowProto::LockFailed when the file cannot be opened or locked.
 int lockSocket(const QString& socket)
@@ -79,11 +80,17 @@ InstanceSocket::InstanceSocket()
 
 InstanceSocket::~InstanceSocket()
 {
+    close();
+}
+
+void InstanceSocket::close()
+{
     // The socket file goes first: while the lock is held, no other process
     // can take the path and lose its file to this one.
     m_router->stop();
-    if (m_lock >= 0) unlockSocket(m_path, m_lock);
-    if (g_processPath == m_path) g_processPath.clear();
+    if (m_lock >= 0) unlockSocket(m_path, std::exchange(m_lock, -1));
+    if (!m_path.isEmpty() && g_processPath == m_path) g_processPath.clear();
+    m_path.clear();
 }
 
 InstanceSocket::Listen InstanceSocket::listen(const QString& path)

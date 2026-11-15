@@ -67,16 +67,12 @@ TEST(MuxLayout, RoundTripsThroughText)
     EXPECT_EQ(back->panes(), (std::vector<std::uint32_t>{1, 2, 3, 4}));
     // A split is [direction, ratio], and a pane is its ID.
     EXPECT_EQ(Json::write(toJson(layout)["tabs"].toArray()[0]["tree"]), R"([["right",0.3],1,["down",0.6],2,3])");
-    // A pane with a title that the user gave it is [ID, title].
-    layout.tabs[0].tree[3].title = "logs";
-    EXPECT_EQ(Json::write(toJson(layout)["tabs"].toArray()[0]["tree"]), R"([["right",0.3],1,["down",0.6],[2,"logs"],3])");
-    const auto titled = throughText(layout, &error);
-    ASSERT_TRUE(titled) << error;
-    EXPECT_TRUE(*titled == layout);
-    EXPECT_EQ(titled->tabs[0].tree[3].title, "logs");
+    // The title that the user gave a pane is in the values, not in the tree.
+    layout.values[2] = {"logs", {}};
+    EXPECT_EQ(Json::write(toJson(layout)["tabs"].toArray()[0]["tree"]), R"([["right",0.3],1,["down",0.6],2,3])");
     // It keeps its title when another pane closes.
     ASSERT_TRUE(layout.remove(3));
-    EXPECT_EQ(layout.tabs[0].tree.back().title, "logs");
+    EXPECT_EQ(layout.values.at(2).title, "logs");
 }
 
 TEST(MuxLayout, AClosedPaneLeavesItsPlaceToTheOtherSide)
@@ -202,15 +198,18 @@ TEST(MuxLayout, ADeepTreeNeedsNoDeepJson)
 // The largest layout that the daemon takes fits one frame of the attach
 // stream, as an event and as input: MaxSessionPanes tabs whose titles, and
 // those of their panes, are the longest, of bytes that JSON writes as six
-// each, with the largest IDs.
+// each, with the largest IDs. The titles of the panes take all the bytes of
+// the values (MaxLayoutValueBytes).
 TEST(MuxLayout, TheLargestLayoutFitsOneFrame)
 {
     Layout layout;
     for (std::size_t i = 0; i < MaxSessionPanes; ++i) {
         const std::uint32_t id = 0xffffffffu - std::uint32_t(i);
-        layout.tabs.push_back(LayoutTab{{LayoutNode{id, false, 0.5, std::string(MaxPaneTitle, '\x01')}}, id, id, std::string(MaxTabTitle, '\x01')});
+        layout.tabs.push_back(LayoutTab{{LayoutNode{id, false, 0.5}}, id, id, std::string(MaxTabTitle, '\x01')});
+        layout.values[id] = {std::string(MaxPaneTitle, '\x01'), {}};
     }
     layout.current = layout.tabs.size() - 1;
+    ASSERT_EQ(layout.valueBytes(), MaxLayoutValueBytes);
     const std::string json = Json::write(toJson(layout));
     ASSERT_GT(json.size(), MaxSessionPanes * (MaxTabTitle + MaxPaneTitle) * 6);
     std::string error;
@@ -323,7 +322,7 @@ TEST(MuxLayout, RefusesWhatIsNotALayout)
         // A title that is not a string, or too long.
         withTab(tab({1}, 1, 0, 3)),
         withTab(tab({1}, 1, 0, std::string(MaxTabTitle + 1, 't'))),
-        // A pane with a title: [ID, title], the title not empty and not too long.
+        // A pane is its ID alone: its title is in the values.
         withTab(tab({Json::Array{1, ""}}, 1)),
         withTab(tab({Json::Array{1, 2}}, 1)),
         withTab(tab({Json::Array{1, "a", "b"}}, 1)),
@@ -351,7 +350,6 @@ TEST(MuxLayout, RefusesWhatIsNotALayout)
     EXPECT_NE(error.find("more than once"), std::string::npos) << error;
     // The good ones: a zoom of 0 is none, and a title at the limit.
     EXPECT_TRUE(layoutFrom(withTab(tab({1}, 1, 0, std::string(MaxTabTitle, 't'))), &error)) << error;
-    EXPECT_TRUE(layoutFrom(withTab(tab({Json::Array{"down", 0.5}, Json::Array{1, std::string(MaxPaneTitle, 't')}, 2}, 1)), &error)) << error;
     EXPECT_TRUE(layoutFrom(withTab(tab({Json::Array{"down", 0.25}, 1, 2}, 2, 1)), &error)) << error;
 }
 
@@ -433,4 +431,54 @@ TEST(MuxLayout, AFocusShowsTheTabOfThePane)
     EXPECT_FALSE(layout.focus(99));
     EXPECT_EQ(layout.tabOf(4), 1u);
     EXPECT_FALSE(layout.tabOf(99));
+}
+
+// The titles and commands of the panes, which a project saves, go with the
+// layout, and with their panes: a pane that goes takes its values.
+TEST(MuxLayout, ThePanesKeepTheirTitlesAndCommands)
+{
+    Layout layout = twoTabs();
+    layout.values[2] = {"editor", {}};
+    layout.values[4] = {"", {"sleep", "300"}};
+    std::string error;
+    const auto back = throughText(layout, &error);
+    ASSERT_TRUE(back) << error;
+    EXPECT_TRUE(*back == layout);
+    // A pane without values has no entry.
+    layout.values[1] = {};
+    EXPECT_EQ(toJson(layout)["values"].toArray().size(), 2u);
+    layout.values.erase(1);
+    layout.remove(2);
+    EXPECT_FALSE(layout.values.contains(2));
+    layout.reconcile({1, 3});
+    EXPECT_TRUE(layout.values.empty());
+
+    const auto withValues = [](Json::Array values) {
+        Json::Object object = withTab(tab({Json::Array{"down", 0.25}, 1, 2}, 2)).toObject();
+        object.emplace_back("values", std::move(values));
+        return Json::Value(std::move(object));
+    };
+    const auto value = [](Json::Value id, Json::Value title, Json::Value command) {
+        return Json::Object{{"id", std::move(id)}, {"title", std::move(title)}, {"command", std::move(command)}};
+    };
+    EXPECT_TRUE(layoutFrom(withValues({value(1, std::string(MaxPaneTitle, 't'), Json::Array(MaxPaneCommandArgs, Json::Value("a")))}), &error))
+        << error;
+    for (const Json::Value& bad : {
+             withValues({value(3, "x", Json::Array{})}),
+             withValues({value(1, "x", Json::Array{}), value(1, "y", Json::Array{})}),
+             withValues({value(1, std::string(MaxPaneTitle + 1, 't'), Json::Array{})}),
+             withValues({value(1, "", Json::Array{""})}),
+             withValues({value(1, "", Json::Array(MaxPaneCommandArgs + 1, Json::Value("a")))}),
+             withValues({value(1, "", Json::Array{"vi", std::string(MaxPaneCommandArg + 1, 'x')})}),
+             withValues({value(1, "", Json::Array{1})}),
+             // Each fits, and both are past MaxLayoutValueBytes.
+             withValues({value(1, "", Json::Array(MaxPaneCommandArgs, Json::Value(std::string(MaxPaneCommandArg, 'x')))),
+                         value(2, "t", Json::Array(MaxPaneCommandArgs, Json::Value(std::string(MaxPaneCommandArg, 'x'))))}),
+             withValues({Json::Object{{"id", 1}, {"title", ""}}}),
+             withValues({Json::Object{{"id", 1}, {"title", ""}, {"command", Json::Array{}}, {"other", 1}}}),
+         }) {
+        error.clear();
+        EXPECT_FALSE(layoutFrom(bad, &error)) << Json::write(bad);
+        EXPECT_FALSE(error.empty()) << Json::write(bad);
+    }
 }

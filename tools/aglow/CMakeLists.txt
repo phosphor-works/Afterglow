@@ -228,13 +228,14 @@ if(BUILD_TESTING AND TARGET afterglow)
                        $<TARGET_FILE:afterglow> icat --help)
     unset(AGLOW_RUN_OPTIONS)
 
-    # aglow alone (AFTERGLOW_AGLOW_ONLY), as a remote host builds it: where
-    # find_package finds no Qt and with no Phosphor checkout, installed into a
-    # directory of the build tree. It compiles zlib-ng and the image codecs
-    # again, so it has the label slow, and ctest -LE slow leaves it out. It
-    # takes the tools and the flags of this build: with the sanitizers of the
-    # debug preset, aglow alone links dynamically too, and needs no static
-    # runtime libraries. PROCESSORS tells ctest -j the jobs of its build,
+    # aglow and aglow-mux alone (AFTERGLOW_AGLOW_ONLY), as a remote host
+    # builds them: where find_package finds no Qt, with only phosphor-channel
+    # of the Phosphor checkout of this build, and with no checkout for aglow
+    # without aglow-mux, installed into a directory of the build tree. It
+    # compiles zlib-ng and the image codecs again, so it has the label slow,
+    # and ctest -LE slow leaves it out. It takes the tools and the flags of
+    # this build: with the sanitizers of the debug preset, aglow alone links
+    # dynamically too, and needs no static runtime libraries. PROCESSORS tells ctest -j the jobs of its build,
     # which its build of libjpeg-turbo takes too (AFTERGLOW_CODEC_BUILD_JOBS).
     set(AGLOW_ONLY_JOBS 2)
     # The flags of each build type too, as the check of a static link at the
@@ -257,6 +258,7 @@ if(BUILD_TESTING AND TARGET afterglow)
     add_test(NAME aglow_only_build
              COMMAND ${CMAKE_COMMAND} "-DSOURCE=${PROJECT_SOURCE_DIR}" "-DBINARY=${CMAKE_CURRENT_BINARY_DIR}/aglow-only"
                      "-DGENERATOR=${CMAKE_GENERATOR}" "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+                     "-DPHOSPHOR_LIBS=${AFTERGLOW_PHOSPHOR_LIBS_DIR}"
                      "-DBUILD_TYPE=${CMAKE_BUILD_TYPE}"
                      "-DC_COMPILER=${CMAKE_C_COMPILER}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
                      "-DC_FLAGS=${CMAKE_C_FLAGS}" "-DCXX_FLAGS=${CMAKE_CXX_FLAGS}"

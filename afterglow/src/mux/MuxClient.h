@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "MuxCommands.h"
 #include "MuxConnect.h"
 #include "MuxHost.h"
 #include "MuxLayout.h"
@@ -27,6 +28,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <utility>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -40,6 +42,38 @@ class StreamWriter;
 } // namespace PhosphorChannel
 
 namespace Afterglow {
+
+/// The connection that answered an attach call: it carries the session's
+/// stream from then on. It closes unless MuxClient::adopt takes it.
+struct SessionLink
+{
+    /// First: it goes after the connection, which ends it.
+    std::shared_ptr<AfterglowMux::ProxyProcess> proxy;
+    int fd = -1;
+    /// What the attach answered (Fn::Attach), for MuxClient::environment()
+    /// and the window's own calls.
+    std::vector<std::pair<std::string, std::string>> environment;
+    std::uint64_t window = 0;
+
+    SessionLink() = default;
+    SessionLink(SessionLink&& other) noexcept
+        : proxy(std::move(other.proxy))
+        , fd(std::exchange(other.fd, -1))
+        , environment(std::move(other.environment))
+        , window(other.window)
+    {
+    }
+    SessionLink& operator=(SessionLink&& other) noexcept;
+    SessionLink(const SessionLink&) = delete;
+    SessionLink& operator=(const SessionLink&) = delete;
+    ~SessionLink();
+};
+
+/// The first half of MuxClient::attach(): the calls that wait for the
+/// daemon (its connection, maybe over ssh, and the attach call), with no Qt
+/// object, for any thread. Nothing, with @p error, when they fail.
+std::optional<SessionLink> attachSession(const QString& name, bool takeover, const AfterglowMux::Route& route, std::size_t eventQueue,
+                                         std::size_t history, QString* error);
 
 class Pane;
 
@@ -82,29 +116,31 @@ public:
 
     /// Attaches to session @p name: when @p takeover, also when another window
     /// shows it, which then detaches. Waits until the daemon names the
-    /// session's layout. Nullptr with @p error on a failure. @p sockets are
-    /// the daemon's: the user's, or a test's. @p eventQueue is Mux.eventQueue
-    /// in bytes, and @p history Terminal.scrollback, the history rows that
-    /// the window keeps of each pane.
-    static std::shared_ptr<MuxClient> attach(const QString& name, bool takeover, QString* error,
-                                             const AfterglowProto::MuxSockets& sockets, std::size_t eventQueue,
-                                             std::size_t history);
+    /// session's layout. Nullptr with @p error on a failure. @p route leads
+    /// to the daemon: the user's on this computer or on another host
+    /// (`aglow-mux proxy` over ssh), or a test's. @p eventQueue is
+    /// Mux.eventQueue in bytes, and @p history Terminal.scrollback, the
+    /// history rows that the window keeps of each pane.
+    static std::shared_ptr<MuxClient> attach(const QString& name, bool takeover, QString* error, const AfterglowMux::Route& route,
+                                             std::size_t eventQueue, std::size_t history);
+    /// The client of the connection of @p link, which answered the attach
+    /// call of session @p name (attachSession): the second half of attach(),
+    /// on the GUI thread. Waits until the daemon names the layout.
+    static std::shared_ptr<MuxClient> adopt(const QString& name, SessionLink link, QString* error, const AfterglowMux::Route& route,
+                                            std::size_t eventQueue);
     ~MuxClient() override;
 
     const QString& session() const { return m_session; }
+    /// The ssh destination of the session's daemon, empty for this computer.
+    QString host() const { return QString::fromStdString(m_route.host); }
+    /// The session runs on another host: its paths are not this computer's.
+    bool remote() const { return !m_route.proxy.empty(); }
     /// The Mux.eventQueue that the attach passed, in bytes.
     std::size_t eventQueue() const { return m_eventQueue; }
-    /// The history rows of each pane that the attach asked for: the daemon
-    /// sends no older rows to this link, so every replica of it keeps as
-    /// many, also one made after a reload changed Terminal.scrollback.
-    std::size_t history() const { return m_history; }
     /// The environment that the session's panes start from: the one of the
     /// client that made the session (`afterglow mux new`), which a new pane's
     /// launch changes as the first pane's did. Not this process's.
     const std::vector<std::pair<std::string, std::string>>& environment() const { return m_environment; }
-    /// Terminal.ambiguousWide of the session's terminals, which parse what
-    /// the programs write: the replicas of its panes measure as they do.
-    bool ambiguousWide() const { return m_ambiguousWide; }
     /// The session's tabs and splits when the window attached: the daemon
     /// sends them first.
     const AfterglowMux::Layout& layout() const { return m_layout; }
@@ -133,6 +169,10 @@ public:
     /// for the next window. A layout like the last one sent does not go
     /// again.
     void sendLayout(const AfterglowMux::Layout& layout);
+    /// The settings of the window, after its attach and after a change: the
+    /// session follows them (AfterglowMux::SessionSettings). Settings like
+    /// the last ones sent do not go again.
+    void sendSettings(const AfterglowMux::SessionSettings& settings);
     /// Moves the panes of @p layout to a new session of the daemon, which
     /// keeps that layout (Fn::BreakOut): the name of the new session, or
     /// nothing with @p error. Those panes leave the link at once: no frame
@@ -184,12 +224,24 @@ public:
     {
         QJsonValue result;
         QString error;
+        /// The error's code, as the control target of a window sends it
+        /// (`no_pane`, `denied`): empty for CALL_FAILED.
+        QString code{};
     };
+    /// Sends the answer to a call of the control target, once.
+    using ControlReply = std::function<void(const ControlAnswer& answer)>;
     /// Answers the calls of `afterglow ctl` for the session that only a
     /// window can answer (Attach::EventType::Control), with the daemon's pane
-    /// IDs. On the GUI thread, after the frames and events that came first.
-    using ControlHandler = std::function<ControlAnswer(const QString& fn, const QJsonArray& args)>;
+    /// IDs, through @p reply: at once, or later (openProject, overlay,
+    /// screenshot). @p client is the daemon's number of the client of the
+    /// call: its overlays and their inputs are its own. On the GUI thread,
+    /// after the frames and events that came first.
+    using ControlHandler = std::function<void(const QString& fn, const QJsonArray& args, qint64 client, ControlReply reply)>;
     void setControlHandler(ControlHandler handler) { m_controlHandler = std::move(handler); }
+    /// Serves the command clients of the session's panes (`aglow run`) with
+    /// @p host: the socket of the Afterglow whose commands answer them, and
+    /// the window's IDs of the panes. A session of another host gets none.
+    void setCommandsHost(MuxCommands::Host host);
 
     /// Reads the stream for up to @p waitMs, and handles what comes, until
     /// @p done: a pane that waits for the answer of a host call on the GUI
@@ -250,7 +302,7 @@ private:
     void letGo(std::uint32_t id);
     /// Queues @p frame after the input that waits: pane @p id's input, or for
     /// 0 a frame of the window's own, which counts against no pane: its
-    /// layout with @p layout, and its answers to the daemon.
+    /// layout with @p layout, its settings and its answers to the daemon.
     void queueInput(std::string frame, std::uint32_t id, bool layout = false);
     /// Adds @p bytes to (or with @p remove takes them from) the input of
     /// pane @p id that waits.
@@ -272,27 +324,37 @@ private:
     /// Answers the calls of the control target that came (m_controlCalls).
     /// Out of handleFrames(): an answer makes panes, which read the stream.
     void answerControlCalls();
+    /// Sends @p answer to call @p id of the control target.
+    void sendControlReply(qint64 id, const ControlAnswer& answer);
     void updateNotifiers();
     void end(Loss loss);
     void lost();
 
     QString m_session;
     std::size_t m_eventQueue = 0;
-    std::size_t m_history = 0; ///< history()
-    AfterglowProto::MuxSockets m_sockets; ///< the daemon's, for callDaemon
+    AfterglowMux::Route m_route; ///< to the daemon, for callDaemon
+    /// The proxy command that carries the stream from another host: it ends
+    /// after the stream.
+    std::shared_ptr<AfterglowMux::ProxyProcess> m_proxy;
+    /// The serial of the window in the attach answer: its newPane and
+    /// breakOut give it, so that the daemon knows them from those of a
+    /// window that another one took the session from.
+    std::uint64_t m_window = 0;
     std::unique_ptr<PhosphorChannel::Stream> m_stream;
     PhosphorChannel::StreamWriter* m_input = nullptr;
     /// Attach::ActionChannel: the kill, the panes that the user closed, what
     /// the user sees of each pane (Visible) and the reads of a pane's text
     /// (Refresh)
     PhosphorChannel::StreamWriter* m_actions = nullptr;
+    /// The command clients of the session's panes, on Attach::CommandsChannel.
+    std::unique_ptr<MuxCommands> m_commands;
     QSocketNotifier* m_readNotifier = nullptr;
     QSocketNotifier* m_writeNotifier = nullptr;
     std::vector<std::pair<std::string, std::string>> m_environment; ///< environment()
-    bool m_ambiguousWide = false; ///< ambiguousWide()
     AfterglowMux::Layout m_layout;
     bool m_layoutCame = false;
     std::string m_sentLayout; ///< the JSON of the last layout that went, or that came
+    std::string m_sentSettings; ///< the JSON of the last settings that went
     std::map<std::uint32_t, std::uint32_t> m_channels; ///< the state channel of each pane
     std::map<std::uint32_t, QPointer<Pane>> m_panes;
     /// The panes that the window binds next: those of the layout that came,
@@ -364,6 +426,7 @@ private:
         qint64 id = 0; ///< 0: the daemon wants no answer
         QString fn;
         QJsonArray args;
+        qint64 client = 0; ///< the daemon's number of the client of the call, 0 for the daemon's own
     };
     std::deque<ControlCall> m_controlCalls;
     bool m_controlCallsQueued = false;

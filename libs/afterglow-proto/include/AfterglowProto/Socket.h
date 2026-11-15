@@ -84,8 +84,8 @@ struct MuxSocket
 /// The sockets of the mux daemon, in the order that a client tries them. The
 /// daemon listens on each of them. They do not depend on the display:
 ///
-///   $XDG_RUNTIME_DIR/afterglow-mux/socket
-///   $XDG_STATE_HOME/afterglow-mux/<muxStateSocketName()> (by default under ~/.local/state)
+///   $XDG_RUNTIME_DIR/aglow-mux/socket
+///   $XDG_STATE_HOME/aglow-mux/<muxStateSocketName()> (by default under ~/.local/state)
 ///
 /// The second outlives the runtime directory, which logind removes when the
 /// user's last login ends, and a daemon started without XDG_RUNTIME_DIR is on

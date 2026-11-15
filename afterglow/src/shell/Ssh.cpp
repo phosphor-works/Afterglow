@@ -687,9 +687,10 @@ RemoteResult forwardRemote(const QByteArrayList& args, const Arguments& parsed, 
     const std::string local = (*opened)["socket"].toString();
     const std::string remote = (*opened)["path"].toString();
     // Only the pair that this session asked for goes into ssh's -R, which
-    // splits it at ':'.
+    // splits it at ':'. The socket of an Afterglow, or of the mux daemon
+    // for a session pane (aglow-mux/remote-TOKEN.sock).
     const std::string name = token + ".sock";
-    const bool localOk = local.starts_with('/') && local.ends_with("/afterglow-remote-" + name)
+    const bool localOk = local.starts_with('/') && (local.ends_with("/afterglow-remote-" + name) || local.ends_with("/remote-" + name))
         && local.find_first_of(":\\") == std::string::npos && AfterglowProto::isCleanText(local);
     const bool remoteOk = !token.empty() && AfterglowProto::Remote::validPath(remote)
         && remote == AfterglowProto::Remote::socketPath(found.directory.toStdString(), token);
@@ -753,6 +754,37 @@ Arguments parseArguments(const QStringList& args)
         }
     }
     return result;
+}
+
+QByteArrayList sharedCommand(const QString& destination, QString* error)
+{
+    const QByteArray host = destination.toLocal8Bit();
+    // ssh would read it as an option.
+    if (host.isEmpty() || host.startsWith('-')) {
+        *error = QStringLiteral("'%1' is no ssh destination").arg(destination);
+        return {};
+    }
+    const IgnoredSignals signals;
+    const auto resolved = capture(QByteArrayList{"ssh", "-G", "--", host}, signals, {}, true);
+    if (!resolved || resolved->status != 0) {
+        *error = QStringLiteral("ssh cannot read the destination '%1' (ssh -G)").arg(destination);
+        return {};
+    }
+    // No terminal: the command's standard streams carry a connection.
+    return QByteArrayList{"ssh", "-T"} + sharing(parseConfig(resolved->output)) + QByteArrayList{"--", host};
+}
+
+bool installTerminfo(const QString& destination)
+{
+    const QByteArray host = destination.toLocal8Bit();
+    if (host.isEmpty() || host.startsWith('-')) return false;
+    const IgnoredSignals signals;
+    const auto resolved = capture(QByteArrayList{"ssh", "-G", "--", host}, signals, {}, true);
+    if (!resolved || resolved->status != 0) return false;
+    const QByteArrayList args{host};
+    QByteArrayList options;
+    return installTerminfo(args, parseArguments({destination}), parseConfig(resolved->output), signals, options).result
+        == Install::Installed;
 }
 
 Config parseConfig(const QByteArray& resolved)

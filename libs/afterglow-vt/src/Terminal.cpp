@@ -437,14 +437,22 @@ void Terminal::setOptions(const TerminalOptions& options)
 
 void Terminal::setViewOptions(const TerminalOptions& options)
 {
-    if (options.boldIsBright == m_options.boldIsBright && options.minimumContrast == m_options.minimumContrast
+    const bool scrollback = options.maxScrollback != m_options.maxScrollback;
+    const bool quota = options.graphicsQuota != m_options.graphicsQuota;
+    if (!scrollback && !quota && options.boldIsBright == m_options.boldIsBright && options.minimumContrast == m_options.minimumContrast
         && options.wordBoundaries == m_options.wordBoundaries && options.bidi == m_options.bidi) {
         return;
+    }
+    if (scrollback) m_primary->setMaxScrollback(options.maxScrollback);
+    if (quota) {
+        for (GraphicsStore& store : m_graphics) store.setQuota(options.graphicsQuota);
     }
     m_options.boldIsBright = options.boldIsBright;
     m_options.minimumContrast = options.minimumContrast;
     m_options.wordBoundaries = options.wordBoundaries;
     m_options.bidi = options.bidi;
+    m_options.maxScrollback = options.maxScrollback;
+    m_options.graphicsQuota = options.graphicsQuota;
     touch();
 }
 

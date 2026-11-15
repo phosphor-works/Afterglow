@@ -157,14 +157,14 @@ MuxSockets muxSockets(const EnvironmentLookup& env)
     };
     // A directory of its own, never a file next to the terminal's sockets:
     // InstanceSocket removes stale afterglow-*.sock files, and a
-    // WAYLAND_DISPLAY of "mux" would name afterglow-mux.sock.
+    // WAYLAND_DISPLAY of "mux" would name aglow-mux.sock.
     if (const std::string_view runtime = runtimeDirectory(env); !runtime.empty()) {
-        add(join(runtime, "afterglow-mux"), "socket");
+        add(join(runtime, "aglow-mux"), "socket");
     } else {
         sockets.error = noRuntimeDirectory(env);
     }
     if (const std::string state = stateDirectory(env); !state.empty()) {
-        add(join(state, "afterglow-mux"), muxStateSocketName());
+        add(join(state, "aglow-mux"), muxStateSocketName());
     } else {
         sockets.error += std::string(sockets.error.empty() ? "" : " and ") + "neither XDG_STATE_HOME nor HOME is an absolute path";
     }
@@ -181,7 +181,7 @@ std::string muxStateSocketName(std::string_view machineId, std::string_view host
     // machine-id(5): the ID is confidential and is not used directly, but
     // through a keyed hash with a key of the application's own. The file
     // name is on an NFS server and in its traffic.
-    if (valid) return toHex(hmacSha256("afterglow-mux-state-socket", machineId)).substr(0, 32) + ".sock";
+    if (valid) return toHex(hmacSha256("aglow-mux-state-socket", machineId)).substr(0, 32) + ".sock";
     return hostFileName(host) + ".sock";
 }
 

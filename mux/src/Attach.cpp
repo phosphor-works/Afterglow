@@ -5,18 +5,15 @@
 
 #include "Session.h"
 
-#include <AfterglowProto/Socket.h>
-
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <utility>
 
-#include <sys/random.h>
+#include <fcntl.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/un.h>
 #include <unistd.h>
 
 namespace AfterglowMux {
@@ -25,76 +22,42 @@ using PhosphorChannel::WriteResult;
 
 namespace {
 
-std::string randomName()
-{
-    unsigned char bytes[8];
-    if (::getrandom(bytes, sizeof bytes, 0) != ssize_t(sizeof bytes)) return {};
-    static const char hex[] = "0123456789abcdef";
-    std::string out = "attach-";
-    for (const unsigned char b : bytes) {
-        out.push_back(hex[b >> 4]);
-        out.push_back(hex[b & 15]);
-    }
-    return out + ".sock";
-}
-
 /// The serial of the last attachment: the daemon has one thread.
 std::uint64_t lastSerial = 0;
 
 // The largest Host event, a part and its header, fits a frame of the window's
 // channel: its grant is the default window (MuxClient).
 static_assert(Attach::HostPartBytes + 32 <= PhosphorChannel::Stream::Options{}.window - PhosphorChannel::Stream::FrameCost);
+// And the largest part of a reply of the window, which the daemon grants the
+// window's input channel.
+static_assert(Attach::ControlReplyPartBytes + 32 <= PhosphorChannel::Stream::Options{}.window - PhosphorChannel::Stream::FrameCost);
 
 } // namespace
 
-std::unique_ptr<Attachment> Attachment::listen(const std::string& directory, std::string session, pid_t caller,
-                                                std::string* error)
+Attachment::Attachment(std::string session)
+    : m_session(std::move(session))
+    , m_deadline(std::chrono::steady_clock::now() + std::chrono::milliseconds(Attach::ConnectWaitMs))
+    , m_serial(++lastSerial)
 {
-    const auto fail = [error](std::string text) -> std::unique_ptr<Attachment> {
-        if (error) *error = std::move(text);
-        return nullptr;
-    };
-    const std::string name = randomName();
-    if (name.empty()) return fail("cannot make the name of the attach socket");
-    const std::string path = directory + "/" + name;
-    if (path.size() > AfterglowProto::MaxSocketPathBytes) return fail("the attach socket path is too long: " + path);
-    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-    if (fd < 0) return fail(std::string("cannot make the attach socket: ") + std::strerror(errno));
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    std::memcpy(address.sun_path, path.data(), path.size());
-    // 0600 from the moment it exists, as the daemon's own sockets.
-    const mode_t mask = ::umask(0177);
-    const bool bound = ::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0;
-    const int bindErrno = errno;
-    ::umask(mask);
-    if (!bound || ::listen(fd, 1) != 0) {
-        const int failure = bound ? errno : bindErrno;
-        ::close(fd);
-        if (bound) ::unlink(path.c_str());
-        return fail("cannot listen on " + path + ": " + std::strerror(failure));
-    }
-    std::unique_ptr<Attachment> attachment(new Attachment);
-    attachment->m_listenFd = fd;
-    attachment->m_session = std::move(session);
-    attachment->m_path = path;
-    attachment->m_caller = caller;
-    attachment->m_serial = ++lastSerial;
-    attachment->m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(Attach::ConnectWaitMs);
-    return attachment;
 }
 
 Attachment::~Attachment()
 {
-    if (m_listenFd >= 0) {
-        ::close(m_listenFd);
-        ::unlink(m_path.c_str());
-    }
+    // The stream closes the connection once it has it.
+    if (m_fd >= 0) ::close(m_fd);
+}
+
+void Attachment::adopt(int fd, std::string unsent)
+{
+    m_fd = fd;
+    m_unsent = std::move(unsent);
+    ::fcntl(m_fd, F_SETFL, ::fcntl(m_fd, F_GETFL) | O_NONBLOCK);
 }
 
 pollfd Attachment::pollFd() const
 {
-    if (!m_stream) return {m_listenFd, POLLIN, 0};
+    // No connection yet: nothing to wait for but the deadline.
+    if (!m_stream) return {m_fd, short(m_fd < 0 ? 0 : POLLIN | (m_unsent.empty() ? 0 : POLLOUT)), 0};
     return {m_stream->readFd(), short(POLLIN | (m_stream->wantsWrite() ? POLLOUT : 0)), 0};
 }
 
@@ -105,43 +68,22 @@ int Attachment::timeoutMs() const
     return left.count() > 0 ? int(left.count()) : 0;
 }
 
-void Attachment::accept()
+void Attachment::startStream()
 {
-    while (true) {
-        const int fd = ::accept4(m_listenFd, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
-        if (fd < 0) {
-            if (errno == EINTR || errno == ECONNABORTED) continue;
-            // Out of descriptors or memory: the connection stays in the
-            // backlog and the socket stays readable, so the poll would spin.
-            // The window hears that its connection ended.
-            if (errno != EAGAIN && errno != EWOULDBLOCK) m_failed = true;
-            return;
-        }
-        ucred peer{};
-        socklen_t size = sizeof peer;
-        // Only the process that made the attach call: the socket's name is
-        // no secret from other processes of the user.
-        if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &size) != 0 || peer.uid != ::geteuid() || peer.pid != m_caller) {
-            ::close(fd);
-            continue;
-        }
-        ::close(m_listenFd);
-        ::unlink(m_path.c_str());
-        m_listenFd = -1;
-        // The window writes its input and its layout on the control channel,
-        // and its actions on the action channel (Attach::isAction).
-        PhosphorChannel::Stream::Options options;
-        options.maxChannels = 2;
-        options.maxChannelId = Attach::ActionChannel + 1;
-        m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
-        std::string error;
-        m_events = m_stream->openWriter(Attach::ControlChannel, Attach::EventCodec, &error);
-        if (!m_events) m_failed = true;
-        // A finished attachment that the window reaches only now: the
-        // window still learns why the session does not show.
-        if (m_finish) m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FinishWaitMs);
-        return;
-    }
+    const int fd = std::exchange(m_fd, -1);
+    // The window writes its input and its layout on the control channel, its
+    // actions on the action channel (Attach::isAction), and the bytes of its
+    // command connections on the commands channel.
+    PhosphorChannel::Stream::Options options;
+    options.maxChannels = 3;
+    options.maxChannelId = Attach::CommandsChannel + 1;
+    m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
+    std::string error;
+    m_events = m_stream->openWriter(Attach::ControlChannel, Attach::EventCodec, &error);
+    if (!m_events) m_failed = true;
+    // A finished attachment whose window starts only now: the window still
+    // learns why the session does not show.
+    if (m_finish) m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FinishWaitMs);
 }
 
 void Attachment::sendEvent(const Attach::Event& event, std::shared_ptr<const std::string> call)
@@ -252,6 +194,14 @@ void Attachment::sendControl(std::string json)
     control.type = Attach::EventType::Control;
     control.payload = std::move(json);
     sendEvent(control);
+}
+
+void Attachment::sendRelay(const Attach::RelayFrame& frame)
+{
+    Attach::Event commands;
+    commands.type = Attach::EventType::Commands;
+    commands.payload = Attach::encode(frame);
+    sendEvent(commands);
 }
 
 void Attachment::panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane*>>& panes)
@@ -383,6 +333,8 @@ bool Attachment::deliver(Session* session, const Attach::Input& message, bool wi
     case Attach::InputType::ClosePane:
     case Attach::InputType::Layout:
     case Attach::InputType::ControlReply:
+    case Attach::InputType::ControlReplyPart:
+    case Attach::InputType::Settings:
         break; // not a pane's
     }
     return true;
@@ -456,6 +408,9 @@ void Attachment::readInput(Session& session)
         }
         if (m_kill) return;
     }
+    // Apart from the input, which waits while a PTY is full: the client of a
+    // run can be what keeps it full, and waits for its output.
+    if (!readCommands()) return;
     PhosphorChannel::StreamReader* input = m_stream->reader(Attach::ControlChannel);
     if (!input) return;
     if (input->codec() != Attach::InputCodec) {
@@ -476,8 +431,15 @@ void Attachment::readInput(Session& session)
             m_failed = true;
             return;
         }
-        if (message->type == Attach::InputType::ControlReply) {
-            m_controlReplies.push_back(std::move(message->bytes));
+        if (message->type == Attach::InputType::ControlReplyPart || message->type == Attach::InputType::ControlReply) {
+            if (m_controlReplyParts.size() + message->bytes.size() > Attach::MaxControlReply) {
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent a reply of more than %zu bytes\n", m_session.c_str(),
+                             Attach::MaxControlReply);
+                m_failed = true;
+                return;
+            }
+            m_controlReplyParts += message->bytes;
+            if (message->type == Attach::InputType::ControlReply) m_controlReplies.push_back(std::exchange(m_controlReplyParts, {}));
             continue;
         }
         if (message->type == Attach::InputType::Layout) {
@@ -485,7 +447,7 @@ void Attachment::readInput(Session& session)
             const auto json = AfterglowProto::Json::parse(message->bytes, &error);
             auto layout = json ? layoutFrom(*json, &error) : std::nullopt;
             if (!layout) {
-                std::fprintf(stderr, "afterglow-mux: the window of session %s sent a layout that is not valid: %s\n", m_session.c_str(),
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent a layout that is not valid: %s\n", m_session.c_str(),
                              error.c_str());
                 m_failed = true;
                 return;
@@ -493,10 +455,47 @@ void Attachment::readInput(Session& session)
             session.setLayout(std::move(*layout));
             continue;
         }
+        if (message->type == Attach::InputType::Settings) {
+            std::string error;
+            const auto json = AfterglowProto::Json::parse(message->bytes, &error);
+            auto settings = json ? sessionSettings(*json, &error) : std::nullopt;
+            if (!settings) {
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent settings that are not valid: %s\n", m_session.c_str(),
+                             error.c_str());
+                m_failed = true;
+                return;
+            }
+            session.applySettings(*settings);
+            // The window keeps as much history as its new scrollback.
+            m_replicaHistory = settings->terminal.maxScrollback;
+            for (auto& [id, link] : m_panes) link.state.setReplicaHistory(m_replicaHistory);
+            continue;
+        }
         // Behind the input that waits for the pane, in order. The input of
         // the other panes goes meanwhile.
         if (m_heldInput.contains(message->pane) || !deliver(&session, *message, windowLeft)) hold(std::move(*message));
     }
+}
+
+bool Attachment::readCommands()
+{
+    PhosphorChannel::StreamReader* commands = m_stream->reader(Attach::CommandsChannel);
+    if (!commands) return true;
+    if (commands->codec() != Attach::CommandsCodec) {
+        m_failed = true;
+        return false;
+    }
+    std::string frame;
+    while (commands->read(frame) == PhosphorChannel::ReadResult::Frame) {
+        auto relay = Attach::decodeRelay(frame);
+        // Only the daemon opens a relay.
+        if (!relay || relay->part == Attach::RelayPart::Open) {
+            m_failed = true;
+            return false;
+        }
+        m_relayFrames.push_back(std::move(*relay));
+    }
+    return true;
 }
 
 void Attachment::readLate(Session* session)
@@ -519,6 +518,9 @@ void Attachment::readLate(Session* session)
             if (action->type == Attach::InputType::ClosePane) m_late.closedPanes.push_back(action->pane);
         }
     }
+    // What the window sent its command clients before it heard, the end of
+    // a run, still reaches them (Daemon::deliverRelayFrames).
+    if (!readCommands()) return;
     PhosphorChannel::StreamReader* input = m_stream->reader(Attach::ControlChannel);
     if (!input) return;
     if (input->codec() != Attach::InputCodec) {
@@ -552,8 +554,11 @@ void Attachment::readLate(Session* session)
         case Attach::InputType::Kill:
         case Attach::InputType::ClosePane:
         case Attach::InputType::ControlReply:
-            // The size of a window that went, the actions (refused above), and
-            // its answers: answerForwarded failed their calls when it went.
+        case Attach::InputType::ControlReplyPart:
+        case Attach::InputType::Settings:
+            // The size of a window that went, the actions (refused above), its
+            // answers (answerForwarded failed their calls when it went) and its
+            // settings: those of the window that shows the session count.
             break;
         }
     }
@@ -570,7 +575,20 @@ void Attachment::catchUp(Session& session)
 bool Attachment::handle(short revents, Session* session)
 {
     if (!m_stream) {
-        if (revents & POLLIN) accept();
+        if (m_fd < 0) return timeoutMs() > 0;
+        // The end of the answer to the attach call goes first.
+        while (!m_unsent.empty()) {
+            const ssize_t n = ::send(m_fd, m_unsent.data(), m_unsent.size(), MSG_NOSIGNAL);
+            if (n < 0 && errno == EINTR) continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+            if (n <= 0) return false;
+            m_unsent.erase(0, std::size_t(n));
+        }
+        // The window's first bytes, or its end: the stream reads them.
+        if (m_unsent.empty() && (revents & (POLLIN | POLLHUP | POLLERR))) {
+            startStream();
+            m_stream->readable();
+        }
         if (m_failed) return false;
         if (!m_stream) return timeoutMs() > 0;
     } else {

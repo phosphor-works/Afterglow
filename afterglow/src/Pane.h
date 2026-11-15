@@ -88,10 +88,6 @@ public:
                int cellHeight, QString* error);
     /// Applies changed config to the running terminal.
     void setOptions(const AfterglowVt::TerminalOptions& options);
-    /// Applies only the options that are the window's, not the terminal's
-    /// (Terminal::setViewOptions): for a session pane, whose colours and
-    /// history are the session's.
-    void setViewOptions(const AfterglowVt::TerminalOptions& options);
 
     void resize(int cols, int rows, int cellWidth, int cellHeight);
 
@@ -105,8 +101,9 @@ public:
     const MuxClient* session() const { return m_session.get(); }
     /// The pane's ID in the daemon, 0 for a pane that is no session pane.
     std::uint32_t sessionPaneId() const { return m_sessionPane; }
-    /// The pane shows mux session @p name, and has not lost it.
-    bool showsSession(const QString& name) const;
+    /// The pane shows mux session @p name of @p host (empty: this computer),
+    /// and has not lost it.
+    bool showsSession(const QString& name, const QString& host = {}) const;
     /// What closing the session pane ends: the window sets it as it closes
     /// the pane, by what the close is (the pane alone, or the window), or as
     /// the pane moves to a session of its own (MuxRelease::Nothing).
@@ -260,6 +257,9 @@ public:
     QString title() const;
     /// Overrides the title; empty returns to the program's.
     void setUserTitle(const QString& title);
+    /// The process of the program, which leads the terminal session of the
+    /// pane. 0 or less for a session pane, and once the program exited.
+    pid_t programPid() const;
     QString userTitle() const;
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
     /// is local and exists, else the foreground job's directory from /proc.
@@ -297,6 +297,9 @@ public:
     const QStringList& launchCommand() const { return m_launchCommand; }
     const QString& launchDirectory() const { return m_launchDirectory; }
     void setLaunch(const QString& cwd, const QStringList& command) { m_launchDirectory = cwd; m_launchCommand = command; }
+    /// The command that a project saves, for a session pane that another
+    /// window or the daemon started.
+    void setLaunchCommand(const QStringList& command) { m_launchCommand = command; }
     void setLaunchedProgram(const QString& name) { m_launchedProgram = name; }
     /// Keeps the pane open after an unsuccessful exit, until a key is
     /// pressed (the fallback panes of a restored project).

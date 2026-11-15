@@ -4,20 +4,26 @@
 #include "Control.h"
 
 #include "../Pane.h"
+#include "../PaneOverlay.h"
 #include "../TerminalWindow.h"
 #include "../app/NotificationCenter.h"
 #include "../app/WindowStart.h"
 #include "../config/Keybinds.h"
 #include "../config/Settings.h"
+#include "../mux/MuxClient.h"
 #include "../scripting/ScriptHost.h"
 
+#include <QBuffer>
 #include <QDir>
+#include <QImage>
 #include <QFileInfo>
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QGuiApplication>
 #include <QSet>
 #include <QUrl>
+
+#include <AfterglowPty/Pty.h>
 
 #include <algorithm>
 #include <chrono>
@@ -80,6 +86,14 @@ void Control::attachWindow(TerminalWindow* window)
             NotificationCenter::instance().showNotice(guard && find(id) ? guard.data() : nullptr, QStringLiteral("Move failed"), textPrefix(error, 2048));
     });
     connect(window, &TerminalWindow::paneCreated, this, &Control::attachPane);
+    // The window of a session: what its clients left goes with it, as no
+    // daemon tells it of them any more. Its overlays close with it.
+    if (window->showsSession()) {
+        connect(window, &QObject::destroyed, this, [this, prefix = sessionClientOwner(window->sessionHost(), window->sessionName())] {
+            m_sessionInputs.dropPrefix(prefix);
+            m_sessionOverlayOwners.removeIf([&prefix](const QString& owner) { return owner.startsWith(prefix); });
+        });
+    }
     connect(window, &TerminalWindow::scriptKey, this, &Control::scriptKey);
     connect(window, &TerminalWindow::scriptDockEvent, this, &Control::scriptDockEvent);
     connect(window, &TerminalWindow::tabSwitched, this, [this, window](quint32 from, quint32 to, int direction) {
@@ -210,6 +224,55 @@ std::optional<PaneInfo> Control::paneInfo(quint32 id) const
     TerminalWindow* window = nullptr;
     Pane* pane = find(id, &window);
     return pane ? std::optional(describe(window, pane)) : std::nullopt;
+}
+
+bool Control::runsIn(quint32 id, qint64 process, bool overlay) const
+{
+    // A terminal in a terminal (tmux, an editor) and a shell's nesting are
+    // far fewer.
+    constexpr int MaxAncestors = 64;
+    const Pane* pane = find(id);
+    if (pane && overlay) pane = pane->overlay() ? pane->overlay()->pane() : nullptr;
+    const pid_t leader = pane ? pane->programPid() : 0;
+    if (leader <= 0 || process <= 1 || process > std::numeric_limits<pid_t>::max()) return false;
+    pid_t at = pid_t(process);
+    for (int up = 0; at > 1 && up < MaxAncestors; ++up) {
+        const auto stat = AfterglowPty::processStat(at);
+        if (!stat) return false;
+        if (stat->session == leader) return true;
+        at = pid_t(stat->parent);
+    }
+    return false;
+}
+
+void Control::endSessionClient(const QString& owner, const QString& message)
+{
+    m_sessionInputs.drop(owner);
+    if (m_sessionOverlayOwners.remove(owner)) closeOverlays(owner, message);
+}
+
+void Control::endSessionClients(const QString& message)
+{
+    m_sessionInputs.clear();
+    for (const QString& owner : std::exchange(m_sessionOverlayOwners, {})) closeOverlays(owner, message);
+}
+
+void Control::encodePng(QImage image, std::function<void(const QString& base64)> done)
+{
+    offThread<QString>(
+        [image = std::move(image)]() {
+            QByteArray png;
+            QBuffer buffer(&png);
+            buffer.open(QIODevice::WriteOnly);
+            return image.save(&buffer, "PNG") ? QString::fromLatin1(png.toBase64()) : QString();
+        },
+        std::move(done));
+}
+
+Control::~Control()
+{
+    m_closing->store(true);
+    m_background.clear();
 }
 
 std::optional<quint32> Control::focusedPane() const
@@ -919,10 +982,12 @@ QString Control::breakOut(TerminalWindow* source, Pane* pane, bool tab, QVariant
 {
     if (!m_openSessionWindow) return QStringLiteral("cannot open a window");
     const std::uint32_t daemonPane = pane->sessionPaneId();
+    // The new session is on the host of the one that the panes leave.
+    const QString host = pane->session() ? pane->session()->host() : QString();
     QString session;
     std::shared_ptr<const TerminalWindow::BreakOut> kept;
     if (const QString error = source->breakOutOfSession(pane, tab, &session, &kept); !error.isEmpty()) return error;
-    if (const QString error = m_openSessionWindow(session); !error.isEmpty()) {
+    if (const QString error = m_openSessionWindow(session, host); !error.isEmpty()) {
         // The daemon moved them already: what is left is to show them.
         return (tab ? QStringLiteral("the tab went to session %1, but no window can show it (%2)")
                     : QStringLiteral("the pane went to session %1, but no window can show it (%2)"))
@@ -932,7 +997,7 @@ QString Control::breakOut(TerminalWindow* source, Pane* pane, bool tab, QVariant
     // the same program.
     for (TerminalWindow* window : TerminalWindow::windows()) {
         const QList<Pane*> shown = window->panes();
-        if (std::none_of(shown.cbegin(), shown.cend(), [&session](const Pane* p) { return p->showsSession(session); })) continue;
+        if (std::none_of(shown.cbegin(), shown.cend(), [&](const Pane* p) { return p->showsSession(session, host); })) continue;
         window->adoptBreakOut(kept);
         for (Pane* p : shown) {
             if (p->sessionPaneId() == daemonPane) {

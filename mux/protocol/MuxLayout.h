@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -20,8 +21,8 @@
 //
 // A tab's split tree is a list in preorder, not nested objects: a split is
 // followed by its first side, then its second, each a pane or a split. A
-// split is ["right" or "down", ratio], a pane its ID, or [ID, title] when
-// the user gave it a title. A deep tree is then no deeper JSON
+// split is ["right" or "down", ratio], a pane its ID. A deep tree is then
+// no deeper JSON
 // (Json::MaxDepth). The daemon's code walks the list without recursion. The
 // window's code that recurses over a tree goes no deeper than
 // MaxSessionPanes.
@@ -33,11 +34,23 @@ namespace AfterglowMux {
 /// that many panes and the channel of the events at once.
 inline constexpr std::size_t MaxSessionPanes = 256;
 /// The longest tab title, in bytes. A layout of MaxSessionPanes tabs with
-/// such titles and panes with such titles still fits one frame of the attach
-/// stream (MuxLayoutTest).
+/// such titles and with the most values (MaxLayoutValueBytes) still fits
+/// one frame of the attach stream (MuxLayoutTest).
 inline constexpr std::size_t MaxTabTitle = 1024;
 /// The longest title that the user gives a pane, in bytes.
 inline constexpr std::size_t MaxPaneTitle = 1024;
+/// The most arguments of a pane's command, and the longest one, in bytes:
+/// a project keeps 64 of at most 4096 characters, so it keeps each command
+/// that fits.
+inline constexpr std::size_t MaxPaneCommandArgs = 64;
+inline constexpr std::size_t MaxPaneCommandArg = 4096;
+/// The bytes of the titles and commands of all the panes of a layout
+/// (Layout::valueBytes). With JSON's escapes, 6 bytes for a control
+/// character, the layout stays well under the largest frame of a channel's
+/// default window (4 MiB), as one pane's command in a placePane call does.
+inline constexpr std::size_t MaxLayoutValueBytes = std::size_t(256) << 10;
+static_assert(MaxPaneCommandArgs * MaxPaneCommandArg <= MaxLayoutValueBytes);
+static_assert(MaxSessionPanes * MaxPaneTitle <= MaxLayoutValueBytes);
 
 /// A node of a split tree.
 struct LayoutNode
@@ -48,10 +61,6 @@ struct LayoutNode
     bool down = false;
     /// A split: the share of the first side, above 0 and below 1.
     double ratio = 0.5;
-    /// A pane: the title that the user gave it, else empty. Empty for a
-    /// split. An initializer of its own, so that {pane, down, ratio} names
-    /// all that it must.
-    std::string title = {};
 
     bool operator==(const LayoutNode&) const = default;
 };
@@ -71,6 +80,25 @@ struct LayoutTab
     bool operator==(const LayoutTab&) const = default;
 };
 
+/// What a project saves of a pane that only a window, or the client that
+/// started the pane, knows: the title that the user gave it, and the command
+/// that it was asked to run. The daemon keeps them for the next window.
+struct PaneValues
+{
+    /// Empty: the program's title.
+    std::string title;
+    /// Empty: the shell.
+    std::vector<std::string> command;
+    bool operator==(const PaneValues&) const = default;
+    bool empty() const { return title.empty() && command.empty(); }
+    /// The bytes of the title and the arguments.
+    std::size_t bytes() const;
+};
+
+/// Whether @p command fits in a layout (MaxPaneCommandArgs,
+/// MaxPaneCommandArg), with a program name first.
+bool validPaneCommand(const std::vector<std::string>& command);
+
 /// Where a pane goes beside another one (`afterglow ctl split` and
 /// `move-pane`).
 enum class Side : std::uint8_t { Right, Down, Left, Up };
@@ -80,6 +108,15 @@ struct Layout
     std::vector<LayoutTab> tabs;
     /// The tab that shows: below tabs.size() unless there is no tab.
     std::size_t current = 0;
+    /// The values of the panes that have any, each a pane of the tabs, at
+    /// most MaxLayoutValueBytes in all.
+    std::map<std::uint32_t, PaneValues> values;
+    /// The panes that the window moved since its last layout, which
+    /// `afterglow ctl watch` hears of (paneMoved): a layout that the window
+    /// sends has them, and the daemon keeps none.
+    std::vector<std::uint32_t> moved;
+    /// The bytes of the values.
+    std::size_t valueBytes() const;
 
     bool operator==(const Layout&) const = default;
 
@@ -89,7 +126,7 @@ struct Layout
     bool contains(std::uint32_t pane) const;
     /// Adds a tab with @p pane alone, after the last tab. Nothing for 0.
     void addTab(std::uint32_t pane);
-    /// Removes @p pane: the other side of its split takes its place, and a
+    /// Removes @p pane, with its values: the other side of its split takes its place, and a
     /// tab without panes goes. When the pane had the focus of its tab, the
     /// tab's first pane gets it. When the tab showed the pane alone, the
     /// zoom ends. False when the layout has no such pane. Allocates nothing:
@@ -121,13 +158,15 @@ std::optional<std::uint32_t> paneIdFrom(const AfterglowProto::Json::Value& value
 
 AfterglowProto::Json::Value toJson(const Layout& layout);
 /// nullopt for a value that is not a valid layout: @p error says why. A
-/// valid layout is an object with only the keys "tabs" and "current": at
-/// least one tab, and the index of one of them. Each tab has only "tree",
-/// "focused", "zoomed" and "title". Its tree is a whole split tree in
-/// preorder (each split ["right" or "down", a ratio above 0 and below 1],
-/// each pane its ID, or [ID, title] with a title that is not empty and of
-/// at most MaxPaneTitle bytes). The focus is a pane of the tab's tree, the
-/// zoom one too or 0, and the title a string of at most MaxTabTitle bytes.
+/// valid layout is an object with the keys "tabs" and "current", and
+/// optionally "values" and "moved": at least one tab, and the index of one
+/// of them. Each tab has only "tree", "focused", "zoomed" and "title". Its
+/// tree is a whole split tree in preorder (each split ["right" or "down", a
+/// ratio above 0 and below 1], each pane its ID). The focus is a pane of the
+/// tab's tree, the zoom one too or 0, and the title a string of at most
+/// MaxTabTitle bytes. The values give a pane of the layout a title of at
+/// most MaxPaneTitle bytes and a command (validPaneCommand), each pane once
+/// and MaxLayoutValueBytes in all. The moved panes are panes of the layout.
 /// The layout names each pane once, and at most MaxSessionPanes panes.
 std::optional<Layout> layoutFrom(const AfterglowProto::Json::Value& value, std::string* error);
 

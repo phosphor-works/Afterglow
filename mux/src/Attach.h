@@ -29,11 +29,12 @@ namespace AfterglowMux {
 
 class Session;
 
-/// The window that a session shows in. The attach call makes it with a
-/// socket of its own, where only the process that called may connect; then
-/// a phosphor-channel stream on that connection carries the session's layout
-/// and state to the window, and the window's input, its layout and the panes
-/// that it closes back (MuxStream.h).
+/// The window that a session shows in. The attach call makes it, and its own
+/// connection carries the window's stream from then on: a phosphor-channel
+/// stream with the session's layout and state to the window, and the
+/// window's input, its layout and the panes that it closes back
+/// (MuxStream.h). So the window reaches it as it reached the daemon, also
+/// through a proxy on another host (`aglow-mux proxy`).
 ///
 /// A pane's frame that the channel refuses waits, and no newer frame is made
 /// until it went: a frame covers every change since the one before, so the
@@ -80,24 +81,26 @@ public:
     /// past it, the daemon reads no more of the window's input.
     static constexpr std::size_t MaxHeldInput = std::size_t(4) << 20;
 
-    /// Listens on a new socket in @p directory for @p caller, to show
-    /// @p session. Nullptr with @p error when the socket cannot be made.
-    static std::unique_ptr<Attachment> listen(const std::string& directory, std::string session, pid_t caller,
-                                              std::string* error);
+    /// An attachment that shows @p session once it has its connection
+    /// (adopt()).
+    explicit Attachment(std::string session);
     ~Attachment();
     Attachment(const Attachment&) = delete;
     Attachment& operator=(const Attachment&) = delete;
 
+    /// Takes @p fd, the connection whose attach call made it, after the
+    /// daemon answered the call: @p unsent is the end of that answer, which
+    /// goes first. The window writes first, as its stream opens its
+    /// channels: until then nothing more goes, so that the reader of the
+    /// window's call takes no byte of the stream.
+    void adopt(int fd, std::string unsent);
+
     const std::string& session() const { return m_session; }
-    const std::string& path() const { return m_path; }
-    /// The process that made the attach call: the only one that may change
-    /// the panes of the session while this window shows it.
-    pid_t caller() const { return m_caller; }
     /// Finds a pane of any session of the daemon by its ID: the answers of
     /// the window to the calls of a pane that went to another session
     /// before the window heard of it still reach the pane's program.
     void setPaneFinder(std::function<MuxPane*(std::uint32_t)> find) { m_findPane = std::move(find); }
-    /// The window connected to the socket.
+    /// The window's stream started: it wrote its first bytes.
     bool connected() const { return m_stream != nullptr; }
     /// finish() ran: the session no longer shows here.
     bool finishing() const { return m_finish.has_value(); }
@@ -133,8 +136,8 @@ public:
     void pump(Session* session);
     /// A frame can go now: the daemon polls without waiting.
     bool busy() const;
-    /// The time left for the window to connect, or for a finished attachment
-    /// to send what waits; -1 when neither waits.
+    /// The time left for the window to start its stream, or for a finished
+    /// attachment to send what waits; -1 when neither waits.
     int timeoutMs() const;
     /// The window asked to end the session (Attach::InputType::Kill). Once.
     bool takeKill() { return std::exchange(m_kill, false); }
@@ -190,6 +193,16 @@ public:
     void sendControl(std::string json);
     /// The answers of the window to those calls, as their JSON, oldest first.
     std::vector<std::string> takeControlReplies() { return std::exchange(m_controlReplies, {}); }
+    /// A part of a command connection that the window serves (an
+    /// Attach::EventType::Commands event).
+    void sendRelay(const Attach::RelayFrame& frame);
+    /// The events that wait for the window are under eventQueue(): the
+    /// daemon reads the next line of a command client. A client that sends
+    /// faster than the window takes waits in its socket.
+    bool relayRoom() const { return m_waitingBytes < m_eventQueue; }
+    /// The parts of command connections that the window sent, oldest first:
+    /// Bytes and End only.
+    std::vector<Attach::RelayFrame> takeRelayFrames() { return std::exchange(m_relayFrames, {}); }
 
 private:
     struct PaneLink
@@ -218,12 +231,15 @@ private:
         std::unique_ptr<MuxPane> closed; ///< the pane once its program exited
     };
 
-    Attachment() = default;
-    void accept();
+    /// The window wrote its first bytes: its stream starts here too.
+    void startStream();
     void readInput(Session& session);
     /// readInput() once finishing(): what counts goes to m_late. Without
     /// @p session (it ended), the bytes of the panes that went to another
     /// session still go.
+    /// Reads the bytes of the window's command connections (m_relayFrames).
+    /// False when the window failed.
+    bool readCommands();
     void readLate(Session* session);
     /// Gives @p message to its pane: one of @p session, or for its bytes one
     /// that went to another session. Without @p session (it ended), only
@@ -257,11 +273,10 @@ private:
     void flushEvents();
     bool finished() const;
 
-    int m_listenFd = -1;
+    int m_fd = -1; ///< the connection, until the stream takes it
+    std::string m_unsent; ///< the end of the answer to the attach call
     std::string m_session;
-    std::string m_path;
-    pid_t m_caller = 0;
-    std::chrono::steady_clock::time_point m_deadline; ///< to connect, then to finish
+    std::chrono::steady_clock::time_point m_deadline; ///< for the window's stream, then to finish
     std::unique_ptr<PhosphorChannel::Stream> m_stream;
     PhosphorChannel::StreamWriter* m_events = nullptr;
     struct WaitingEvent
@@ -307,6 +322,8 @@ private:
     bool m_finishSent = false;
     bool m_layoutSent = false; ///< the first event, before any PaneOpened
     std::vector<std::string> m_controlReplies; ///< Attach::InputType::ControlReply, for the daemon
+    std::string m_controlReplyParts; ///< the ControlReplyPart frames of the reply that comes
+    std::vector<Attach::RelayFrame> m_relayFrames; ///< from CommandsChannel, for the daemon
     bool m_outputEnded = false; ///< all went, and the stream's output ended: the window closes
 
     bool m_kill = false;

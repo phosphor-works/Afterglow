@@ -154,12 +154,12 @@ TEST(Socket, MuxSocketsAreTheRuntimeAndTheStateDirectory)
     EXPECT_TRUE(sockets.error.empty()) << sockets.error;
     // A directory of its own: never afterglow-*.sock next to the terminal's
     // sockets, which a WAYLAND_DISPLAY of "mux" would name.
-    EXPECT_EQ(sockets.candidates[0].path, "/run/user/1000/afterglow-mux/socket");
-    EXPECT_EQ(sockets.candidates[0].directory, "/run/user/1000/afterglow-mux");
+    EXPECT_EQ(sockets.candidates[0].path, "/run/user/1000/aglow-mux/socket");
+    EXPECT_EQ(sockets.candidates[0].directory, "/run/user/1000/aglow-mux");
     EXPECT_NE(sockets.candidates[0].path, sharedSocketPath(env));
     // A file for each host: a home on NFS has one state directory for all.
-    EXPECT_EQ(sockets.candidates[1].path, "/home/u/state/afterglow-mux/" + muxStateSocketName());
-    EXPECT_EQ(sockets.candidates[1].directory, "/home/u/state/afterglow-mux");
+    EXPECT_EQ(sockets.candidates[1].path, "/home/u/state/aglow-mux/" + muxStateSocketName());
+    EXPECT_EQ(sockets.candidates[1].directory, "/home/u/state/aglow-mux");
 }
 
 TEST(Socket, MuxSocketsDoNotDependOnTheDisplay)
@@ -175,7 +175,7 @@ TEST(Socket, MuxSocketsWithoutARuntimeDirectoryHaveTheStateOne)
     for (const auto& env : {environment({{"HOME", "/home/u"}}),
                             environment({{"XDG_RUNTIME_DIR", "run"}, {"XDG_STATE_HOME", "s"}, {"HOME", "/home/u/"}})}) {
         const MuxSockets sockets = muxSockets(env);
-        EXPECT_EQ(paths(sockets), std::vector<std::string>{"/home/u/.local/state/afterglow-mux/" + muxStateSocketName()});
+        EXPECT_EQ(paths(sockets), std::vector<std::string>{"/home/u/.local/state/aglow-mux/" + muxStateSocketName()});
         EXPECT_NE(sockets.error.find("XDG_RUNTIME_DIR"), std::string::npos) << sockets.error;
     }
     const MuxSockets none = muxSockets(environment({{"HOME", "relative"}}));
@@ -183,7 +183,7 @@ TEST(Socket, MuxSocketsWithoutARuntimeDirectoryHaveTheStateOne)
     EXPECT_NE(none.error.find("XDG_RUNTIME_DIR is not set"), std::string::npos) << none.error;
     EXPECT_NE(none.error.find("neither XDG_STATE_HOME nor HOME is an absolute path"), std::string::npos) << none.error;
     // Without a state directory, the runtime one alone.
-    EXPECT_EQ(paths(muxSockets(environment({{"XDG_RUNTIME_DIR", "/r"}}))), std::vector<std::string>{"/r/afterglow-mux/socket"});
+    EXPECT_EQ(paths(muxSockets(environment({{"XDG_RUNTIME_DIR", "/r"}}))), std::vector<std::string>{"/r/aglow-mux/socket"});
 }
 
 TEST(Socket, AMuxSocketOverTheLimitIsLeftOutAlone)
@@ -191,17 +191,17 @@ TEST(Socket, AMuxSocketOverTheLimitIsLeftOutAlone)
     const std::string longDirectory = "/" + std::string(MaxSocketPathBytes, 'd');
     // The runtime one is too long: the state one is left.
     const MuxSockets state = muxSockets(environment({{"XDG_RUNTIME_DIR", longDirectory}, {"XDG_STATE_HOME", "/s"}}));
-    EXPECT_EQ(paths(state), std::vector<std::string>{"/s/afterglow-mux/" + muxStateSocketName()});
+    EXPECT_EQ(paths(state), std::vector<std::string>{"/s/aglow-mux/" + muxStateSocketName()});
     EXPECT_NE(state.error.find(longDirectory), std::string::npos) << state.error;
     // The state one is too long: the runtime one is left.
     const MuxSockets runtime = muxSockets(environment({{"XDG_RUNTIME_DIR", "/r"}, {"XDG_STATE_HOME", longDirectory}}));
-    EXPECT_EQ(paths(runtime), std::vector<std::string>{"/r/afterglow-mux/socket"});
+    EXPECT_EQ(paths(runtime), std::vector<std::string>{"/r/aglow-mux/socket"});
     EXPECT_NE(runtime.error.find(longDirectory), std::string::npos) << runtime.error;
     // Both: the lookup fails, and says why for each.
     const MuxSockets none = muxSockets(environment({{"XDG_RUNTIME_DIR", longDirectory}, {"HOME", longDirectory}}));
     EXPECT_TRUE(none.candidates.empty());
-    EXPECT_NE(none.error.find(longDirectory + "/afterglow-mux/socket"), std::string::npos) << none.error;
-    EXPECT_NE(none.error.find(longDirectory + "/.local/state/afterglow-mux/"), std::string::npos) << none.error;
+    EXPECT_NE(none.error.find(longDirectory + "/aglow-mux/socket"), std::string::npos) << none.error;
+    EXPECT_NE(none.error.find(longDirectory + "/.local/state/aglow-mux/"), std::string::npos) << none.error;
 }
 
 TEST(Socket, TheStateSocketIsNamedByTheMachineId)
@@ -214,10 +214,10 @@ TEST(Socket, TheStateSocketIsNamedByTheMachineId)
     EXPECT_TRUE(name.ends_with(".sock")) << name;
     EXPECT_EQ(name.find(id), std::string::npos) << name;
     EXPECT_EQ(name.find_first_not_of("0123456789abcdef"), 32u) << name;
-    // The value itself, HMAC-SHA256 keyed with "afterglow-mux-state-socket"
+    // The value itself, HMAC-SHA256 keyed with "aglow-mux-state-socket"
     // over the ID as the file writes it (trimmed, not lowercased): the name
     // that every build gives this computer.
-    EXPECT_EQ(name, "a5ac02801df2fd01f375060eb4ba2d4a.sock");
+    EXPECT_EQ(name, "aa61b4424e846eed2a6aaa2b3875b520.sock");
     EXPECT_EQ(muxStateSocketName(id, "other-name"), name);
     // Another computer, another name.
     EXPECT_NE(muxStateSocketName("1123456789abcdef0123456789abcdef", "box"), name);

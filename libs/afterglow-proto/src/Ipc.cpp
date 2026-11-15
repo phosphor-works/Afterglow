@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <utility>
 
 #include <poll.h>
 #include <sys/socket.h>
@@ -124,6 +125,28 @@ bool IpcConnection::connect(const std::string& path, Error* error, int timeoutMs
         return false;
     }
     return true;
+}
+
+void IpcConnection::adopt(int fd)
+{
+    close();
+    m_fd = fd;
+}
+
+int IpcConnection::release(Error* error)
+{
+    if (m_fd < 0) {
+        set(error, {}, "not connected");
+        return -1;
+    }
+    if (!m_waiting.empty() || m_buffer.size() > m_head) {
+        set(error, {}, "the server sent more than its answer before the next protocol");
+        close();
+        return -1;
+    }
+    const int fd = std::exchange(m_fd, -1);
+    close();
+    return fd;
 }
 
 std::string IpcConnection::requestLine(std::int64_t id, const std::string& target, const std::string& fn, Json::Array args)

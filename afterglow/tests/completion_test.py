@@ -126,6 +126,9 @@ def mux_commands():
         if not body:
             raise SystemExit(f'FAIL: no {function} in {MUX}')
         found = set(re.findall(r'\barg == "(--[a-z-]+)"', body.group(0)))
+        # --ssh DESTINATION, which takeSsh takes.
+        if 'takeSsh(' in body.group(0):
+            found.add('--ssh')
         unavailable = set(re.findall(r'arg == "(--[a-z-]+)"\)\s*\{?\s*return fail\([^;]*not available yet', body.group(0)))
         options[command] = found - unavailable
     return list(commands), options
@@ -496,13 +499,18 @@ def mux_cases(commands, options):
     # As after the options of ctl, the options that are left.
     yield 'afterglow mux new --name x ', options['new'] - {'--name'}
     yield 'afterglow mux kill -', options['kill']
-    yield 'afterglow mux kill --force -', set()
+    yield 'afterglow mux kill --force -', {'--ssh'}
     yield 'afterglow mux attach -', options['attach']
-    yield 'afterglow mux attach --no-takeover -', set()
+    yield 'afterglow mux attach --no-takeover -', {'--ssh'}
     # The session names are the daemon's: nothing to offer, not files.
     yield 'afterglow mux attach ', lambda got: 'adir' not in got
     yield 'afterglow mux detach -', options['detach']
-    yield 'afterglow mux ls ', set()
+    # ls takes no word: zsh offers its option there too.
+    yield 'afterglow mux ls ', lambda got: got <= {'--ssh'}
+    yield 'afterglow mux ls -', options['ls']
+    yield 'afterglow mux ls --ssh far -', set()
+    yield 'afterglow mux kill --ssh far -', options['kill'] - {'--ssh'}
+    yield 'afterglow mux new --ssh far -', options['new'] - {'--ssh'}
     yield 'afterglow mux server ', set()
 
 

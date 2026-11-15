@@ -375,8 +375,9 @@ TEST(StateSync, ViewOptionsLeaveTheReplicaAsItsWriter)
     p.source.feed("\x1b[5 q\x1b]4;3;rgb:12/34/56\x1b\\\x1b]11;rgb:01/02/03\x1b\\\x1b]12;rgb:aa/bb/cc\x1b\\x");
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
-    // A reload of the window: other colours, cursor and history too, which
-    // stay the writer's.
+    // A reload of the window: other colours and cursor too, which stay the
+    // writer's. The history that the replica keeps follows the window, as the
+    // writer's daemon sends as much as the window keeps.
     TerminalOptions o = withScrollback(2);
     o.basePalette[3] = {1, 1, 1};
     o.defaultBackground = {9, 9, 9};
@@ -394,7 +395,7 @@ TEST(StateSync, ViewOptionsLeaveTheReplicaAsItsWriter)
     EXPECT_DOUBLE_EQ(p.replica.options().minimumContrast, 4.5);
     EXPECT_TRUE(p.replica.options().wordBoundaries == U"-");
     EXPECT_EQ(p.replica.options().bidi, BidiMode::Auto);
-    EXPECT_EQ(p.replica.options().maxScrollback, 10u);
+    EXPECT_EQ(p.replica.options().maxScrollback, 2u);
     EXPECT_FALSE(p.replica.options().cursorColor.has_value());
     // The same options again draw nothing new.
     const std::uint64_t applied = p.replica.generation();

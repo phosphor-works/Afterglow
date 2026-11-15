@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "CommandSocket.h"
+
 #include <AfterglowProto/Remote.h>
 
 #include <QHash>
@@ -116,6 +118,18 @@ public:
     QString failed(const QString& token, const QString& reason);
     /// Ends the sessions of @p pane, which closed.
     void paneClosed(quint32 pane);
+    /// A socket for the clients that a mux daemon passes a window
+    /// (MuxCommands): a client in a pane of a session of another host, or on
+    /// the remote host of an ssh session in a session pane. Its runs act on
+    /// @p pane, which the window shows, with @p host as ev.remote.host, and
+    /// get only the commands
+    /// that a script marks remote, as on the socket of an ssh session. It
+    /// answers on CommandSocket::Target with @p commandsTarget, else on
+    /// Remote::Target. No ssh session holds it, it has no forward, and the
+    /// pane's answer to OSC 24569 stays: it serves the next client too,
+    /// until the pane closes or the settings turn remote commands off. Its
+    /// path, or empty with the reason in @p error.
+    QString endpoint(quint32 pane, const QString& host, bool commandsTarget, QString* error);
 
     /// The tokens of the open sessions. A test hook.
     QStringList tokens() const { return m_sessions.keys(); }
@@ -128,6 +142,9 @@ private:
     struct Session;
 
     void applySettings();
+    /// Listens on a new local socket for @p session, whose commands serve
+    /// @p remote. An error, or empty.
+    QString listen(Session& session, const CommandSocket::RemoteSession& remote);
     /// Ends @p token's session: its socket closes and its forward is
     /// cancelled. Its runs fail with @p reason.
     void close(const QString& token, const QString& reason);

@@ -31,9 +31,11 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 
 ## aglow
 
-`AFTERGLOW_AGLOW_ONLY=ON` builds only `libs/afterglow-proto`, `libs/afterglow-image` and `tools/aglow`: no Qt, no
-Phosphor checkout, and an install of `bin/aglow`, its completions and its notices in `share/licenses/aglow`.
-`docs/BUILD.md` has the procedure.
+`AFTERGLOW_AGLOW_ONLY=ON` builds only `libs/afterglow-proto`, `libs/afterglow-image`, `tools/aglow` and, with
+`AFTERGLOW_BUILD_MUX` (on by default), `libs/afterglow-vt`, `libs/afterglow-pty`, phosphor-channel and `mux/`: no Qt,
+and of the Phosphor checkout only phosphor-channel (none with `AFTERGLOW_BUILD_MUX=OFF`). It installs `bin/aglow`,
+its completions and its notices in `share/licenses/aglow`, and `bin/aglow-mux`, its private libraries in
+`lib/afterglow` and its notices in `share/licenses/aglow-mux`. `docs/BUILD.md` has the procedure.
 
 `AFTERGLOW_BUILD_AGLOW` is on by default. `aglow` links statically, so the configuration needs `libc.a` and
 `libstdc++.a` (Fedora: `glibc-static` and `libstdc++-static`). Without them, the configuration stops with a message
@@ -44,7 +46,7 @@ do the `RunBinaryTest.*` tests of `afterglow_command_tests` and the `sshd` test 
 `aglow` builds next to `afterglow` (`build/afterglow/aglow`), and building `afterglow` builds it too.
 
 `libs/afterglow-image` builds libpng, libjpeg-turbo and libwebp from their pinned archives into `aglow` and
-`afterglow-mux`, also with `-DAFTERGLOW_BUILD_AGLOW=OFF`. No image library of the system is used. libjpeg-turbo
+`aglow-mux`, also with `-DAFTERGLOW_BUILD_AGLOW=OFF`. No image library of the system is used. libjpeg-turbo
 builds with its own CMake during the build, in `build/_afterglow_deps/libjpeg-turbo-build`. When that step fails,
 its output is in the logs under `build/_afterglow_deps/libjpeg-turbo-steps`. It uses NASM when NASM is installed.
 It runs `AFTERGLOW_CODEC_BUILD_JOBS` jobs (2 by default) beside the main build: count them in the memory cap.
@@ -53,24 +55,24 @@ It runs `AFTERGLOW_CODEC_BUILD_JOBS` jobs (2 by default) beside the main build: 
 `afterglow_native_bench`. Shader previews, `aglow_icat_render` and `afterglow_headless_runner` need it. The renderer
 tests (`Render.*`) do not: `BUILD_TESTING` builds them.
 
-## afterglow-mux
+## aglow-mux
 
-`afterglow-mux` (`mux/`) is the session daemon of `afterglow mux`. It has no Qt and links `afterglow-vt`,
+`aglow-mux` (`mux/`) is the session daemon of `afterglow mux`. It has no Qt and links `afterglow-vt`,
 `afterglow-pty`, `afterglow-proto`, phosphor-channel and `afterglow-image`, which its image decoder uses. It builds
-next to `afterglow` (`build/afterglow/afterglow-mux`), because
+next to `afterglow` (`build/afterglow/aglow-mux`), because
 `afterglow mux` runs the daemon from its own directory, and building `afterglow` builds it too. A build of `aglow`
-alone (`AFTERGLOW_AGLOW_ONLY`) does not build it. Its tests are `afterglow_mux_tests` (`Mux.*`) and the client
+alone (`AFTERGLOW_AGLOW_ONLY`) builds it into `mux/` of its build directory, unless `AFTERGLOW_BUILD_MUX` is off. Its tests are `afterglow_mux_tests` (`Mux.*`) and the client
 tests of `afterglow mux` in `afterglow_mux_command_tests` (`MuxCommandTest.*`), with the server and socket tests of
 `afterglow-proto`: `ctest -R '^(Proto\.(IpcServer|Socket)|Mux|MuxCommandTest)\.' -j4` takes about 10 seconds. Most
 of that time is the start wait of `Mux.MuxDaemon.ADaemonThatNobodyReachesEnds`. Without `-j`, the run takes about 30
 seconds. `afterglow mux new` without `--detach`, `afterglow mux attach` and `afterglow --mux-attach` also open a window:
 the native tests show sessions with a daemon of their own (`mux/tests/TestDaemon.h`).
 
-`afterglow mux` (every command but `--help`) and `afterglow-mux` (every run but `--help` and `--version`) reach the
+`afterglow mux` (every command but `--help`) and `aglow-mux` (every run but `--help` and `--version`) reach the
 user's mux daemon and its sessions, also from a nested KWin. Run them only with a private `XDG_RUNTIME_DIR` and
 `XDG_STATE_HOME` under `/tmp`, as these tests do (they also give a `HOME` of their own), and kill the sessions that
-you made. Never stop, restart or mask the user's `afterglow-mux.service`, and never remove the files in the user's
-two `afterglow-mux` directories.
+you made. Never stop, restart or mask the user's `aglow-mux.service`, and never remove the files in the user's
+two `aglow-mux` directories.
 
 ## The Phosphor libraries
 
@@ -131,8 +133,9 @@ systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
 The suite has about 2,000 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
 before a commit.
 
-- `aglow_only_build` (label `slow`) configures, builds and installs `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) in
-  `build/tools/aglow/aglow-only`, with Qt hidden and no Phosphor directory. It compiles zlib-ng and the image codecs
+- `aglow_only_build` (label `slow`) configures `aglow` alone with Qt hidden and no Phosphor directory, then
+  configures, builds and installs `aglow` and `aglow-mux` alone (`AFTERGLOW_AGLOW_ONLY`) in
+  `build/tools/aglow/aglow-only`, with Qt hidden and the Phosphor checkout of `build`. It compiles zlib-ng and the image codecs
   again and takes some minutes. `-LE slow` leaves it out while you work. The whole suite before a commit includes it.
 - The renderer tests (`libs/afterglow-render/tests`), `afterglow/tests/PopupLookTest.cpp` and
   `afterglow/tests/PointerMapTest.cpp` (`afterglow_pointer_map_tests`) need a Wayland display and a working Vulkan

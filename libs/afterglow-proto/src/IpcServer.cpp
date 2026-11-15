@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -108,6 +109,30 @@ std::optional<IpcRequest> parseIpcRequest(std::string_view text, std::string* er
         set(error, "'call' requires a non-empty 'fn'");
         return std::nullopt;
     }
+    if (request.type == "subscribe") {
+        request.signal = (*parsed)["signal"].toString();
+        if (request.target.empty() || request.signal.empty()) {
+            set(error, "'subscribe' requires a non-empty 'target' and 'signal'");
+            return std::nullopt;
+        }
+    }
+    if (const Json::Value* value = parsed->find("subscriptionId"); value && !value->isNull()) {
+        if (!value->isNumber()) {
+            set(error, "'subscriptionId' must be a number if present");
+            return std::nullopt;
+        }
+        const auto subscription = requestId(value->toNumber());
+        if (!subscription) {
+            set(error, "'subscriptionId' must be a finite integer within JSON-double-precision int64 range");
+            return std::nullopt;
+        }
+        request.subscriptionId = *subscription;
+    }
+    // Id 0 is the protocol's "absent".
+    if (request.type == "unsubscribe" && request.subscriptionId == 0) {
+        set(error, "'unsubscribe' requires a non-zero 'subscriptionId'");
+        return std::nullopt;
+    }
     if (const Json::Value* args = parsed->find("args"); args && !args->isNull()) {
         if (!args->isArray()) {
             set(error, "'args' must be an array if present");
@@ -125,6 +150,11 @@ std::optional<IpcRequest> parseIpcRequest(std::string_view text, std::string* er
 std::string ipcReply(std::int64_t id, Json::Value result)
 {
     return line(Json::Object{{"type", "reply"}, {"id", id}, {"result", std::move(result)}});
+}
+
+std::string ipcEvent(std::int64_t subscriptionId, Json::Array args)
+{
+    return line(Json::Object{{"type", "event"}, {"subscriptionId", subscriptionId}, {"args", std::move(args)}});
 }
 
 std::string ipcError(std::optional<std::int64_t> id, std::string_view code, std::string_view message)
@@ -275,6 +305,17 @@ void IpcServerConnection::close()
     m_fd = -1;
 }
 
+int IpcServerConnection::release(std::string* unsent)
+{
+    if (m_fd < 0 || m_in.size() > m_inHead) return -1;
+    *unsent = m_out.substr(m_outOffset);
+    m_out.clear();
+    m_outOffset = 0;
+    m_in.clear();
+    m_inHead = m_scanned = 0;
+    return std::exchange(m_fd, -1);
+}
+
 bool IpcServerConnection::fill()
 {
     char buffer[65536];
@@ -348,7 +389,7 @@ bool IpcServerConnection::nextLine(std::string& out)
     return false;
 }
 
-IpcServerConnection::Read IpcServerConnection::nextRequest(IpcRequest& request)
+IpcServerConnection::Read IpcServerConnection::nextRequest(IpcRequest& request, std::string* line)
 {
     std::string text;
     if (!nextLine(text)) return Read::None;
@@ -366,6 +407,7 @@ IpcServerConnection::Read IpcServerConnection::nextRequest(IpcRequest& request)
     }
     m_malformed = 0;
     request = std::move(*parsed);
+    if (line) *line = std::move(text);
     return Read::Request;
 }
 

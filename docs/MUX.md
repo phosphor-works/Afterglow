@@ -3,7 +3,7 @@
 
 # The mux daemon
 
-The mux daemon, `afterglow-mux`, keeps terminal sessions running while no window shows them.
+The mux daemon, `aglow-mux`, keeps terminal sessions running while no window shows them.
 A session is a set of tabs and split panes with running programs. A session that `afterglow mux new` creates starts with one pane.
 The `afterglow mux` commands create, list and end sessions. They also show a session in a window, and close that window again.
 
@@ -12,12 +12,12 @@ A mux session and a normal `afterglow` launch can run at the same time.
 
 ## The daemon
 
-`afterglow-mux` is a daemon with no Qt. It needs no display and no GPU.
+`aglow-mux` is a daemon with no Qt. It needs no display and no GPU.
 A second process of it starts a process for each image that a session decodes (see [what the daemon answers](#what-the-daemon-answers)).
 It owns the sessions, the PTYs of their panes and the terminal state of each pane.
 It reads no configuration file. `afterglow mux new` sends the values that a session needs (see [environment](#environment)).
 
-`afterglow mux` runs the `afterglow-mux` in the directory of the `afterglow` executable. It does not search `PATH`.
+`afterglow mux` runs the `aglow-mux` in the directory of the `afterglow` executable. It does not search `PATH`.
 
 ### Start
 
@@ -33,10 +33,10 @@ The command uses the systemd user manager when all of these conditions are true:
 
 | Condition | How the daemon starts |
 | --- | --- |
-| All of the conditions are true | In its own systemd user unit, `afterglow-mux.service`, with `systemd-run --user` |
+| All of the conditions are true | In its own systemd user unit, `aglow-mux.service`, with `systemd-run --user` |
 | One of the conditions is false | In a new session with `setsid`, outside the process group and the terminal of the command |
-| `systemd-run` fails, and `afterglow-mux.service` does not exist | In a new session with `setsid` |
-| `systemd-run` fails, and `afterglow-mux.service` exists | No second daemon starts. The command waits for the daemon of that unit, which starts or ends. |
+| `systemd-run` fails, and `aglow-mux.service` does not exist | In a new session with `setsid` |
+| `systemd-run` fails, and `aglow-mux.service` exists | No second daemon starts. The command waits for the daemon of that unit, which starts or ends. |
 
 `UID` is your user ID. Lingering is on when `/var/lib/systemd/linger/USER` exists (`loginctl enable-linger`).
 The command finds the user manager through its socket, `$XDG_RUNTIME_DIR/systemd/private`.
@@ -57,21 +57,21 @@ When `afterglow mux attach` creates the session, the message starts with `afterg
 | Start | Result | Message |
 | --- | --- | --- |
 | `setsid` | The daemon reports an error before it exits, for example when it can use none of its sockets (see [sockets](#sockets)) | The error of the daemon, such as `no socket to listen on: ` and the reason for each socket. The command stops at once. |
-| `setsid` | The daemon finds a socket that another daemon holds, and that daemon does not answer in 5 seconds | `afterglow-mux: another afterglow-mux listens on PATH, which does not answer` |
-| `setsid` | The daemon exits before it listens and reports no error | `afterglow-mux ended before it listened`. The command stops at once, without the wait of 5 seconds. |
-| `setsid` | No socket of the daemon answers in 5 seconds | `afterglow-mux did not start: no daemon answers on PATH`, with the path of each socket |
-| systemd user unit | The unit is in the state `deactivating`, and no socket answers in 5 seconds | `afterglow-mux did not start: the daemon of afterglow-mux.service is ending. Try again when it has ended` |
-| systemd user unit | No socket of the daemon answers in 5 seconds. Or the unit that the command started ends before its daemon answers, and no other daemon holds the lock of a socket. | `afterglow-mux did not start: see journalctl --user -u afterglow-mux`. The journal shows the error of the daemon. |
-| systemd user unit | Another daemon holds the lock of a socket and does not answer in 5 seconds. A lock file that a killed daemon left holds no lock. | `afterglow-mux did not start: another afterglow-mux holds a socket and does not answer` |
+| `setsid` | The daemon finds a socket that another daemon holds, and that daemon does not answer in 5 seconds | `aglow-mux: another aglow-mux listens on PATH, which does not answer` |
+| `setsid` | The daemon exits before it listens and reports no error | `aglow-mux ended before it listened`. The command stops at once, without the wait of 5 seconds. |
+| `setsid` | No socket of the daemon answers in 5 seconds | `aglow-mux did not start: no daemon answers on PATH`, with the path of each socket |
+| systemd user unit | The unit is in the state `deactivating`, and no socket answers in 5 seconds | `aglow-mux did not start: the daemon of aglow-mux.service is ending. Try again when it has ended` |
+| systemd user unit | No socket of the daemon answers in 5 seconds. Or the unit that the command started ends before its daemon answers, and no other daemon holds the lock of a socket. | `aglow-mux did not start: see journalctl --user -u aglow-mux`. The journal shows the error of the daemon. |
+| systemd user unit | Another daemon holds the lock of a socket and does not answer in 5 seconds. A lock file that a killed daemon left holds no lock. | `aglow-mux did not start: another aglow-mux holds a socket and does not answer` |
 
 Two commands can start a daemon at the same time. Then the second daemon finds the socket of the first daemon and exits.
 Its command waits for the first daemon, because the first daemon can take some time before it answers.
-When the unit `afterglow-mux.service` is still loaded because its daemon ends, `afterglow mux new` waits for the end of that unit.
+When the unit `aglow-mux.service` is still loaded because its daemon ends, `afterglow mux new` waits for the end of that unit.
 When the unit is gone, the command starts the unit again one time, in the same 5 seconds.
 
 A daemon of another build of Afterglow can speak another protocol.
 Then `afterglow mux new`, `attach`, `detach`, `ls` and `kill` stop with exit status 1, and no window opens.
-The message is `afterglow-mux speaks protocol N and this afterglow speaks M: end its sessions with the afterglow that started it, or wait until they end`.
+The message is `aglow-mux speaks protocol N and this afterglow speaks M: end its sessions with the afterglow that started it, or wait until they end`.
 `afterglow mux attach NAME` writes it after `afterglow: `, and the other commands after `afterglow mux COMMAND: `.
 
 ### End
@@ -86,12 +86,12 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 
 | Command | Function |
 | --- | --- |
-| `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `-- COMMAND...`. |
-| `afterglow mux attach [NAME]` | Shows a session in a window. Option: `--no-takeover`. |
-| `afterglow mux detach [NAME]` | Closes the window of the session. The session keeps running. |
-| `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES` |
-| `afterglow mux kill NAME` | Ends a session and its programs. Option: `--force`. |
-| `afterglow mux server` | Runs `afterglow-mux` in the foreground |
+| `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `--ssh DESTINATION`, `-- COMMAND...`. |
+| `afterglow mux attach [NAME]` | Shows a session in a window. Options: `--no-takeover`, `--ssh DESTINATION`. |
+| `afterglow mux detach [NAME]` | Closes the window of the session. The session keeps running. Option: `--ssh DESTINATION`. |
+| `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES`. Option: `--ssh DESTINATION`. |
+| `afterglow mux kill NAME` | Ends a session and its programs. Options: `--force`, `--ssh DESTINATION`. |
+| `afterglow mux server` | Runs `aglow-mux` in the foreground |
 | `afterglow mux --help` | Prints the usage |
 
 `afterglow mux new` shows the new session in a window. With `--detach`, it creates the session without a window and prints its name.
@@ -147,7 +147,7 @@ The Reset and Clear actions of a pane reset or clear the terminal of that pane i
 | Event | Result |
 | --- | --- |
 | You close a pane or a tab, and the window has other panes | The programs of the pane or the tab end, as in a window outside a session. The session keeps running. |
-| You close the window, or its last pane or tab | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running, with its tabs and splits. |
+| You close the window, or its last pane or tab | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running, with its tabs and splits. The window of a [project's session](PROJECTS.md#projects-and-mux-sessions) always keeps it. |
 | You quit Afterglow | The session keeps running, whatever `Mux.onClose` says. When a window stops the quit with a question, `Mux.onClose` applies again to the windows that stay open. At your last logout, the daemon can end too (see [start](#start)). |
 | `afterglow mux detach NAME` | The window closes. The session keeps running. In a session pane, `NAME` defaults to the session that holds that pane (see [detach in a session pane](#detach-in-a-session-pane)). |
 | Another window shows the session (`afterglow mux attach`) | The window closes, with a notice. The session keeps running. |
@@ -188,16 +188,13 @@ The window sends them after each change. The next window that shows the session 
 | Focus | The pane that has the focus in each tab |
 | Zoom | The zoomed pane of each tab |
 | Titles | The titles that you gave to the tabs and to the panes |
+| Commands | The command that started each pane, for a [project](PROJECTS.md#projects-and-mux-sessions) that saves the window, or none for the shell. A window of a session of another host keeps no commands, because a project runs its commands on this computer. |
 
 While no window shows the session, a pane whose program exits leaves its tab, as in a window.
 
 New Window (`new_window`) in the window of a session opens a window outside the session.
 Its first pane starts in the directory that a new tab of the focused pane gets (see [working directory](#working-directory)).
 Its programs end with that window, as in any window outside a session.
-
-Save Project is not possible in the window of a session, because the daemon keeps its tabs and splits.
-The window shows the notice `Session NAME keeps the tabs and splits of this window. A window of a mux session cannot be saved as a project.`
-`afterglow ctl save-project` fails with the same message.
 
 ### Working directory
 
@@ -206,6 +203,8 @@ The shell of that pane reports its directory with OSC 7, OSC 9;9, OSC 633 or iTe
 When it reports no directory that exists on this computer, the window asks the daemon.
 The daemon gives the directory of the program in the foreground.
 When the daemon gives none, the new programs start in your home directory.
+A [project](PROJECTS.md#projects-and-mux-sessions) can open into a session with the name of the project, and show it again after its window closed.
+The window of a project's session leaves the session running when it closes, whatever `Mux.onClose` says.
 
 The `cwd` that scripts and `afterglow ctl` read is the directory that the shell reported, when it exists on this computer.
 For it, the window does not ask the daemon, because scripts read every pane often.
@@ -279,7 +278,7 @@ While the pane overview is open, you can see only the panes that it shows as car
 A session pane differs from a pane outside a session in these ways:
 
 - The window of a session shows only the panes of that session (see [move panes and tabs](#move-panes-and-tabs)).
-- A Sixel or iTerm2 image does not show when the program prints it before any window shows the session. A Kitty image that the program places then does not move the cursor. The daemon places images in cells, and only a window measures a cell.
+- Before any window shows the session, its cells have the size of the font of your settings (`Font`), at the scale of the primary screen when Afterglow starts the session, else at a scale of 1. The daemon places images in cells with that size. A window then measures its own cells, and an image that the program placed before keeps its cells. When the font does not load, the cells have no size: a Sixel or iTerm2 image does not show, and a Kitty image does not move the cursor, until a window shows the session.
 - An image shows when all of its pixels came from the daemon. The pixels of a large image come in more than one frame, so the image can show a short time after the text around it.
 - A bell, a notification or another request of the program comes after the text on the screen that the program wrote before it. It can come before history and before the pixels of an image that the program sent before it.
 - When a program sends an image again before its pixels came, the window shows each version that came whole.
@@ -296,18 +295,18 @@ A session pane differs from a pane outside a session in these ways:
   - A pane outside a session shows a compressed BMP (run-length encoding) and a GIF whose screen has an empty side. A session pane does not show them.
   - A session pane shows a BMP with a header of 52 or 56 bytes, or with its masks after the header (compression 6). A pane outside a session does not show it.
   - Where the first frame of a GIF does not draw, a session pane shows nothing, as Kitty and browsers do. A pane outside a session can show the background color of the GIF there.
-- The session keeps the terminal settings and the colors of the `afterglow mux new` that started it (see [settings of a session pane](#settings-of-a-session-pane)).
+- The session follows the terminal settings and the colors of the window that shows it, and keeps those of its last window while no window shows it (see [settings of a session pane](#settings-of-a-session-pane)).
 
 ### Exit status
 
 | Status | Meaning |
 | --- | --- |
 | 0 | The command did its work. `afterglow mux ls` without sessions also exits with 0. |
-| 1 | The command failed and wrote why on standard error. Examples: no session has the name, the daemon did not start, or the command has the `--ssh` option. `afterglow mux kill` also exits with 1 when you do not answer `y`, `Y` or `yes` to its question. |
+| 1 | The command failed and wrote why on standard error. Examples: no session has the name, the daemon did not start. `afterglow mux kill` also exits with 1 when you do not answer `y`, `Y` or `yes` to its question. |
 | 2 | A usage error, for example an unknown command, option or argument, or an option without its value. The command also writes the usage on standard error. |
 | 2 | A session name that is not valid, for `afterglow mux new --name`, `attach` or `detach`. The command writes only the rule for names. |
-| 126 | `afterglow mux server` found `afterglow-mux` but cannot run it. `afterglow mux new` or `attach` found `afterglow` but cannot run it. |
-| 127 | `afterglow mux server` cannot find `afterglow-mux` next to `afterglow`. `afterglow mux new` or `attach` cannot find `afterglow`. |
+| 126 | `afterglow mux server` found `aglow-mux` but cannot run it. `afterglow mux new` or `attach` found `afterglow` but cannot run it. |
+| 127 | `afterglow mux server` cannot find `aglow-mux` next to `afterglow`. `afterglow mux new` or `attach` cannot find `afterglow`. |
 
 The usage errors include these:
 
@@ -325,8 +324,8 @@ A client tries the sockets in the order of the table and uses the first one that
 
 | Order | Directory | Socket in the directory |
 | --- | --- | --- |
-| 1 | `$XDG_RUNTIME_DIR/afterglow-mux` | `socket` |
-| 2 | `$XDG_STATE_HOME/afterglow-mux`, by default `~/.local/state/afterglow-mux` | `ID.sock` |
+| 1 | `$XDG_RUNTIME_DIR/aglow-mux` | `socket` |
+| 2 | `$XDG_STATE_HOME/aglow-mux`, by default `~/.local/state/aglow-mux` | `ID.sock` |
 
 `ID` comes from the machine ID of the computer, in `/etc/machine-id`.
 It is 32 hexadecimal digits of a keyed hash of the machine ID, so the file name does not show the machine ID.
@@ -345,7 +344,7 @@ The daemon refuses a connection from a process of another user (`SO_PEERCRED`).
 
 Next to each socket, the daemon holds a lock on the file `SOCKET.lock`.
 Another daemon can hold the lock of one of the sockets.
-Then the new daemon exits with status 1 and the message `another afterglow-mux listens on PATH`.
+Then the new daemon exits with status 1 and the message `another aglow-mux listens on PATH`.
 Your sessions stay in the daemon that holds the lock.
 `afterglow mux new` then waits for the daemon that holds the lock (see [start](#start)).
 A socket can fail for another reason, such as a directory with the wrong mode.
@@ -353,12 +352,52 @@ Then the daemon writes the reason on standard error and uses the other socket.
 When the daemon has no socket, it exits with status 1.
 When the daemon exits, it removes its sockets and its lock files.
 
-For each window that shows a session, the daemon makes one more socket, `attach-` and 16 hexadecimal digits, then `.sock`.
-It is in the directory of the first socket that the daemon still listens on.
-Only the process that asked for it can connect, and the daemon removes it when that process connects, or after 5 seconds.
-A daemon that starts removes the attach sockets that a daemon before it left in `$XDG_RUNTIME_DIR/afterglow-mux`.
-It leaves the state directory as it is, because other computers can share it.
-Thus an attach socket that a killed daemon left there stays until you remove it.
+A window that shows a session gets the state of the session on the connection of its attach call.
+The daemon uses no other socket for it.
+
+## Sessions on another host
+
+`--ssh DESTINATION` acts on the daemon of another host, through ssh.
+Each `afterglow mux` command but `server` takes it. `NAME` is the name of a session on that host.
+`afterglow mux new --ssh` starts the daemon of the host when none runs there, and `attach --ssh` starts it when it creates a session.
+The window of the session opens on this computer, as for a session of this computer.
+
+The command runs `aglow-mux proxy` on the host, over the connection that `afterglow ssh` shares with it (see [SSH](INPUT.md#ssh)).
+The proxy connects to the daemon there, and carries that connection on its standard input and output.
+You authenticate once for the shared connection. ssh needs no port forward.
+
+The host needs `aglow-mux` on the `PATH` of your login there, for example from a package of Afterglow.
+The host does not need Qt or the rest of Afterglow: see [build aglow and aglow-mux alone](BUILD.md#build-aglow-and-aglow-mux-alone).
+The daemon of the host must speak the protocol of this Afterglow.
+
+| Result | Message |
+| --- | --- |
+| No daemon runs on the host | `afterglow mux ls` reports no sessions. `detach` and `kill` report `no sessions`. No daemon starts. |
+| The host has no `aglow-mux` | `DESTINATION has no aglow-mux (aglow-mux): install it there` |
+| The daemon speaks another protocol | `aglow-mux speaks protocol N and this afterglow speaks M: ...` |
+| ssh fails | What ssh wrote on its standard error |
+| ssh cannot read the destination | `ssh cannot read the destination 'DESTINATION' (ssh -G)` |
+
+`aglow-mux proxy --start` starts the daemon of the host when none runs, as `afterglow mux new` does on this computer.
+
+A session of another host runs with the environment of your ssh login there, which the proxy has, not with the environment of this computer.
+`afterglow mux new --ssh` sets these variables over it:
+
+| Variable | Value |
+| --- | --- |
+| `TERM` | `Terminal.term`. With `afterglow`, the command first installs the terminfo entry on the host, as `afterglow ssh` does. When the host has no `tic`, `TERM` is `xterm-256color`. |
+| `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION` | As in a pane of this computer |
+
+A pane of the session without a command runs your shell there as a login shell (`-l`), because the environment of an ssh command did not read your login files.
+It starts in your home directory there, or in `--cwd DIR`, which must be an absolute path on the host.
+`Terminal.shell`, `Terminal.env` and shell integration of this computer do not apply: they name paths of this computer.
+A shell integration that you install on the host works there.
+
+A new tab or split of the window of the session runs your shell there too, in the directory of the program in the foreground of the focused pane.
+`afterglow ctl` and scripts read the directory of a pane of the session only when it also exists on this computer.
+
+When the ssh connection breaks, the window closes with a notice, and the session keeps running on the host.
+`afterglow mux attach --ssh` shows it again.
 
 ## Environment
 
@@ -369,6 +408,18 @@ Thus a session does not get variables of the daemon's systemd unit, such as `INV
 It adds shell integration, `TERM`, `COLORTERM`, `TERM_PROGRAM` and the values of `Terminal.env`.
 The programs of the session get the umask of `afterglow mux new`.
 They get the soft limit of open files that the daemon had before it raised its own (see [limits](#limits)).
+
+Each time a window shows a session of this computer, the session takes the variables of `Mux.updateEnvironment` from that Afterglow, as tmux does with `update-environment`.
+By default these are `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `SSH_AUTH_SOCK`, `SSH_AGENT_PID`, `SSH_CONNECTION`, `SSH_ASKPASS` and `KRB5CCNAME`.
+Thus a session that you show again after you log in again gets the new `SSH_AUTH_SOCK`.
+
+| Afterglow has the variable | The session |
+| --- | --- |
+| Yes | Takes Afterglow's value |
+| No | Removes it |
+
+Only the panes that start after that get the new values: a program that runs keeps its environment.
+A session of another host keeps its own values, because the values of this computer do not apply there.
 
 A new pane leaves out the variables that name another terminal or the shell instance that started the command.
 A window, an overlay and a session do this the same way.
@@ -399,24 +450,29 @@ The daemon removes `AFTERGLOW_OVERLAY`.
 An `afterglow` that starts from a session pane does not give `AFTERGLOW_SESSION` to its own panes.
 
 `afterglow mux new` also sends the terminal settings of your configuration, such as `Terminal.scrollback` and the theme colors.
-The session keeps these values (see [settings of a session pane](#settings-of-a-session-pane)).
+From then on, the session follows the settings of the window that shows it.
+The window sends them when it shows the session, and again after each change, such as an edit of the configuration file.
+The daemon gives them to each pane of the session, also to a pane that starts later.
+While no window shows the session, it keeps the settings of its last window.
+A change of the terminal settings replaces the colors that the programs set (OSC 4, 10, 11), as in a window.
+So does a window with other terminal settings that shows the session, such as an Afterglow with another configuration.
+The requests that reach a window follow the settings of that window, such as `Terminal.bell` and `Terminal.clipboardRead` (see [what a window answers](#what-a-window-answers)).
+A change of these settings applies at once.
 `afterglow mux new` reads no colors from the application palette.
-When `Colors.theme` names a dark and a light theme, the session gets the dark theme.
+When `Colors.theme` names a dark and a light theme, `afterglow mux new` gives the session the dark theme, and a window gives it the theme that the window shows.
 With a `plasma` theme, the session gets only the colors that `kdeglobals` sets, over the theme.
 When `kdeglobals` sets no background, `plasma` alone takes `afterglow-dark`.
 
 ### Settings of a session pane
 
-A session pane takes some settings from its session, and others from the window that shows it.
+A session pane takes some settings from the session, which follows the window that shows it, and others from that window alone.
 
 | Settings | From | When a change applies |
 | --- | --- | --- |
-| `Terminal.scrollback`, `Terminal.cursorShape`, `Terminal.cursorBlink`, `Terminal.ambiguousWide`, `Terminal.allowScreenReadback`, `Terminal.graphicsFileTransfer`, `Graphics.quota` | The session: the values of the `afterglow mux new` that started it. A new tab or split of the window gets them too. | Never for a running session |
-| `Colors.theme`, `Colors.foreground`, `Colors.background`, `Colors.cursor`, `Colors.cursorText`, `Colors.selectionForeground`, `Colors.selectionBackground`, `Colors.palette` | The session, as above | Never for a running session |
+| `Terminal.scrollback`, `Terminal.cursorShape`, `Terminal.cursorBlink`, `Terminal.ambiguousWide`, `Terminal.bidi`, `Terminal.allowScreenReadback`, `Terminal.graphicsFileTransfer`, `Graphics.quota` | The session: the settings of the window that shows it, else those of its last window, else those of the `afterglow mux new` that started it | At once, for each pane of the session |
+| `Colors.theme`, `Colors.foreground`, `Colors.background`, `Colors.cursor`, `Colors.cursorText`, `Colors.selectionForeground`, `Colors.selectionBackground`, `Colors.palette` | The session, as above | At once. The colors that the programs set (OSC 4, 10, 11) go, as in a window. |
 | `Terminal.shell`, `Terminal.env`, `Terminal.term`, `Terminal.shellIntegration`, `Terminal.sshIntegration`, `Terminal.sshTerminfo` | The window, when it starts a new tab or split. The program starts in the environment of the session. | At the next new tab or split |
 | `Terminal.wordSeparators`, `Colors.boldIsBright`, `Colors.minimumContrast` | The window | At once |
-| `Terminal.bidi` | Both. The session decides which directional controls stay as visible cells, with the value of the `afterglow mux new` that started it. The window decides the order in which the text shows. | The order at once. The directional controls never for a running session. |
-| `Terminal.scrollback` of the window | The window: the number of history rows that it shows (see [limits](#limits)) | At the next attach |
 | `Terminal.bell`, `Terminal.clipboardRead` and the other settings of requests | The window (see [what a window answers](#what-a-window-answers)) | At once |
 
 ### Control of a session
@@ -429,8 +485,7 @@ Without `--pane`, a command acts on the pane that has the focus in the tab that 
 The control socket of a window that shows a session also lists the session panes, with the pane IDs of that window, and acts on them as on the panes of other windows.
 A pane ID in the daemon and a pane ID in a window can have the same value.
 
-The daemon follows `Control.enabled` and `Control.allowReadText` as `afterglow mux new` found them.
-A later change of them does not change a running session.
+The daemon follows `Control.enabled` and `Control.allowReadText` of the window that showed the session last, else as `afterglow mux new` found them.
 A window that answers a command follows its own settings too.
 
 | Command | No window shows the session | A window shows the session |
@@ -441,14 +496,90 @@ A window that answers a command follows its own settings too.
 | `move-pane`, `detach-tab` | The daemon moves the pane in its layout. A move to a new window makes a new session, as in a window (see [move panes and tabs](#move-panes-and-tabs)). No window shows the new session. | The window moves the pane, as a drag in the window does |
 | `get-text --selection` | Empty: only a window has a selection | The window answers |
 | `set-title`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
-| `overlay`, `screenshot`, `watch` | Refused with `CALL is not available for a session yet` | Refused the same way |
+| `overlay`, `screenshot` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window runs the overlay or takes the picture, and answers when it is done |
+| `watch` | The daemon sends the events of the session | The daemon sends the events of the session |
+
+The overlay of `afterglow ctl overlay` runs on the computer of the window, over the pane, as an overlay of the window's own pane does: its program and its `--cwd` are of that computer.
+It belongs to the client that asked for it: it closes when that client goes. The standard input of `afterglow ctl overlay` goes to the window in parts.
+`screenshot` needs `Control.allowReadText`, of the session and of the window.
+
+`afterglow ctl watch` gets the [events](CONTROL.md#events) of the panes of the session from the daemon, also while no window shows it.
+
+| Event | For a session |
+| --- | --- |
+| `paneCreated`, `paneClosed` | When a pane of the session starts or ends |
+| `paneMoved` | When the window that shows the session moves a pane, as for a pane of its own, and when `afterglow ctl move-pane` moves one while no window shows the session |
+| `focusChanged` | When another pane has the focus in the tab that shows |
+| `titleChanged`, `statusChanged`, `bell`, `userVarChanged`, `commandStarted`, `commandFinished` | As in a window |
+| `contextChanged` | Never: the daemon knows no context of a pane, and `ls` gives it as empty |
+
+The daemon merges the events as a window does, with `Control.eventInterval` of the window that showed the session last, else of the `afterglow` that started the session.
+It sends the command of `commandStarted` and `commandFinished`, and the value of `userVarChanged`, only with `Control.allowReadText`.
+When the session ends, the daemon sends `paneClosed` for its panes, then ends each subscription with the error `NO_SUCH_SESSION`. When `Control.enabled` goes off, it does the same with `NO_SUCH_TARGET`, as a window does. `afterglow ctl watch` then exits with status 1 and says why.
+
+A session of another host reaches only what its programs could reach over ssh: no program of this computer runs for it.
+
+| Call from a session of another host | The window |
+| --- | --- |
+| `overlay` | Refuses it: `a session of another host runs no program on this computer` |
+| `new-window` with a command | Refuses it the same way. Without a command, it opens a window with your shell. |
+| `action script:ID.COMMAND` | Refuses it. `aglow run` in the session runs the script commands that a script marks remote. |
+
+| Limit of the calls that a window answers | Value | At the limit |
+| --- | --- | --- |
+| Answer of the window | 24 MiB of JSON, which the window sends in parts of 1 MiB | The call fails with the code `failed`: `the answer is larger than 24 MiB` |
+| Screenshots in progress for the clients of sessions | 4, for all clients | The call fails with the code `busy` |
+| Inputs of `overlayInput` that wait for `overlay` | 4 for each client, 64 MiB for all the clients of sessions | The `overlayInput` call fails |
 
 For `split` and `new-tab`, `afterglow ctl` prepares the program with your settings, as `afterglow mux new` does: `Terminal.shell`, shell integration and `Terminal.env`, over the environment of the session.
 Without `--cwd`, a new tab or split starts in the directory of its pane, or where `Window.workingDirectory` says.
 `new-window` opens a window outside the session in the Afterglow of the window, and prints the ID of its pane there.
 
-In a session pane, `aglow run` gets the error `CALL_FAILED` with the message `a session pane takes no script commands: the mux daemon runs no scripts`.
-`afterglow ssh` connects without [remote commands](CONTROL.md#remote-commands). With `-v`, it writes `a session pane takes no remote commands: the mux daemon runs no scripts` as the reason.
+### Script commands in a session pane
+
+In a session pane, `aglow run` and `afterglow run` run the commands of the scripts of the window that shows the session.
+The daemon runs no scripts. It passes the connection of the command to that window.
+The window runs the command as for one of its own panes, with its own settings (`Control.enabled`, `Scripts.enabled` and the limits of `Scripts`).
+A command acts on the pane that it names, as the window shows it. `aglow run` names the pane of the client, unless `--pane` names another pane of the session.
+A command that names no pane (pane 0) acts on the focused pane, as outside a session.
+The output, the exit status and the input of the command are as for a pane outside a session.
+
+A session of another host (`--ssh`) gets what an [ssh session](CONTROL.md#remote-commands) of that host gets.
+Its panes run only the commands that a script marks `remote`, and only with `Terminal.sshRemoteCommands` on in the window.
+A command acts on the pane of the client, and `ev.source` is `remote`.
+`ev.remote.host` is the host of the session, as `--ssh` names it.
+`aglow run` with no arguments lists only the commands that are marked `remote`.
+A command that is not marked `remote` fails as a command that does not exist.
+
+| Case | Result |
+| --- | --- |
+| No window shows the session | `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts` |
+| The client does not run in a session pane of the daemon, nor below a program of one. A program that runs a terminal of its own, such as an editor, stays in the pane. A server that left the pane, such as a tmux server, does not. | `CALL_FAILED`: `only a client in a session pane reaches the mux daemon for the commands of scripts` |
+| The session has 64 command clients already | `CALL_FAILED`: `session 'NAME' has 64 command clients already` |
+| The window's ID of the pane makes the run request longer than 1 MiB. `aglow run` refuses such a run before it sends it. | `CALL_FAILED`: `with the window's ID of its pane, the run request is over 1 MiB` |
+| The run names a pane of the daemon that the window does not show | `CALL_FAILED`: `no pane N of session 'NAME' shows in its window` |
+| The window closes or detaches while the command runs | The command ends. The client gets `the window of session 'NAME' closed, and with it the runs of this client`, and exits with status 1. |
+
+### Remote commands of an ssh session in a session pane
+
+`afterglow ssh` in a session pane gets [remote commands](CONTROL.md#remote-commands) as in a pane outside a session.
+The daemon keeps the socket that ssh forwards, because the ssh session runs in the daemon and outlives a window.
+In a session of another host, the ssh session also runs on that host.
+The daemon passes each connection of the remote host to the window that shows the session.
+The window runs the command as for an ssh session of its own.
+The daemon also gives the pane its answer to the query of `aglow run` (OSC 24569).
+
+| Item | Value |
+| --- | --- |
+| Local socket | `remote-TOKEN.sock` with mode 0600, in the directory of the socket that session panes name in `AFTERGLOW_SOCKET`: `$XDG_RUNTIME_DIR/aglow-mux`, else `$XDG_STATE_HOME/aglow-mux` (see [sockets](#sockets)). A daemon that starts removes those that a daemon left when it was killed. |
+| Settings | `Terminal.sshRemoteCommands`, `Control.enabled` and `Scripts.enabled` of the window that showed the session last, else as `afterglow mux new` found them, and the same settings of the window that runs the command. When a window turns remote commands off, the sockets of the session close. |
+| End | When the `afterglow ssh` process ends, when its pane closes, and when the daemon ends. The daemon then cancels the forward with `ssh -O cancel`, with the `ssh` on its own `PATH` |
+| Limits | 16 sessions for each pane, 256 for the daemon, and 64 connections for each socket, as in a window |
+
+The daemon gives a session pane no overlay. An overlay over a session pane runs in the window, on the computer of the window, so `afterglow ssh` in it gets no socket of the daemon.
+The daemon gives a socket only to an `afterglow ssh` that runs in the pane that it names, or below a program of that pane, by its processes.
+A process of another terminal that names the pane gets `CALL_FAILED`: `` only `afterglow ssh` in pane N opens a remote socket for it ``.
+When no window shows the session, a client of the remote host gets `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts`.
 
 ## What the daemon answers
 
@@ -462,9 +593,9 @@ While a window shows the session, these answers go through the window, as the an
 | --- | --- |
 | Title and working directory | The daemon keeps the last value |
 | Notification query (OSC 99 `p=?`) | The daemon gives the answer of a window |
-| Query of the socket of an ssh session (OSC 24569) | The daemon answers that there is none (`error=off`) |
+| Query of the socket of an ssh session (OSC 24569) | The daemon answers with the socket of the newest ssh session of the pane (see [remote commands of an ssh session in a session pane](#remote-commands-of-an-ssh-session-in-a-session-pane)), else that there is none (`error=off`) |
 | Visibility report (mode 2033) | The window says whether you can see the pane. Until a window says it, the program hears that you cannot see the pane. This is also true after a takeover, and while no window shows the session. |
-| Images | The daemon keeps the images, also while no window shows the session. It decodes PNG (Kitty graphics `f=100`) and iTerm2 images (PNG, JPEG, GIF, WebP and BMP). Each image decodes in a process of its own, which the decoder of the daemon (`afterglow-mux --decode-images`) starts. It decodes with libpng, libjpeg-turbo and libwebp, which the build includes. Each process has limits on its memory, its CPU time and the system calls that it can make. A decoder process that crashes or takes too long ends, and the daemon and the other sessions go on. The images do not decode on a kernel without seccomp filters, or on a kernel older than Linux 5.3 (`pidfd_open`). They also do not decode on a processor other than x86-64, little-endian AArch64, RISC-V 64 and little-endian POWER. The daemon then writes why on its standard error, which is the journal when it runs in `afterglow-mux.service`. When the decoder cannot start, images do not decode for a minute, and the daemon writes why. The window shows the images that the daemon keeps. |
+| Images | The daemon keeps the images, also while no window shows the session. It decodes PNG (Kitty graphics `f=100`) and iTerm2 images (PNG, JPEG, GIF, WebP and BMP). Each image decodes in a process of its own, which the decoder of the daemon (`aglow-mux --decode-images`) starts. It decodes with libpng, libjpeg-turbo and libwebp, which the build includes. Each process has limits on its memory, its CPU time and the system calls that it can make. A decoder process that crashes or takes too long ends, and the daemon and the other sessions go on. The images do not decode on a kernel without seccomp filters, or on a kernel older than Linux 5.3 (`pidfd_open`). They also do not decode on a processor other than x86-64, little-endian AArch64, RISC-V 64 and little-endian POWER. The daemon then writes why on its standard error, which is the journal when it runs in `aglow-mux.service`. When the decoder cannot start, images do not decode for a minute, and the daemon writes why. The window shows the images that the daemon keeps. |
 
 While no window shows the session, the daemon also answers these requests.
 
@@ -532,10 +663,12 @@ A pane can move to a new session while a request of its program waits for the wi
 | Lines that do not parse, one after the other | 16 | Each line gets `MALFORMED_REQUEST`. The daemon closes the connection after its answer to the 17th line. |
 | Waiting output to one client | 32 MiB | The daemon closes the connection to a client that does not read its answers |
 | Environment, arguments and directory of a session | UTF-8 text | `afterglow mux new` changes each byte that is not UTF-8 to U+FFFD |
-| Wait for a window to connect to its attach socket | 5 seconds | The daemon removes the socket, and `afterglow mux attach` stops with exit status 1 |
+| Wait for a window to start its stream after the answer to its attach call | 5 seconds | The session is free for another window, and the window does not show it |
+| Command of a pane that the daemon keeps for a project | 64 arguments of at most 4096 bytes | The pane saves as a shell |
+| Titles and commands of the panes that the daemon keeps, together | 256 KiB in a session | The panes past it save as shells, with the titles of their programs |
 | Input of a window that a program does not read | 32 MiB in the queue of the PTY of the pane. Then the daemon holds the input of the pane, up to 4 MiB for all the panes of the window. Then 32 MiB for each pane in the window. | While the daemon holds less than 4 MiB, the other panes still get their input. At 4 MiB, the daemon stops reading the input of the window. The window sends which panes you can see, and its reads of the screen and the history of a pane, apart from its input. Input that waits does not stop them. At 32 MiB for one pane, the window refuses more input for that pane and shows a notice, as for a pane of its own. Closing the window with `Mux.onClose` kill still ends the session. |
 | Frames to a window | About 2 MiB of state in each frame, and at most 4 MiB, the largest frame of the stream | Larger state goes in more frames, so a slow window gets fewer frames. It never holds a queue of old ones. A pane that you cannot see gets frames without its screen. |
-| History rows to a window | `Terminal.scrollback` of the window when it attaches, in rows | The daemon sends no older rows |
+| History rows to a window | `Terminal.scrollback` of the window, in rows | The daemon sends no older rows |
 | Wait for the screen and the history of a pane that you cannot see, or that shows again before its screen came, before a read of its text or a screenshot | 5 seconds | The read gets the text that the window has, which can be older. The window does not draw or take input while it waits. |
 | Image file that the daemon decodes | The limits of a pane outside a session (see [COMPATIBILITY.md](COMPATIBILITY.md)): 320 MiB of Kitty data, and 96 MiB of iTerm2 base64 | The error of a pane outside a session: `EFBIG` for data in the command, `EBADF` for a file or shared memory. An iTerm2 image does not show. |
 | Image that the daemon decodes | 10,000 pixels on a side, and 320 MiB of pixels | A Kitty command gets an `EBADPNG` error. An iTerm2 image does not show. |
