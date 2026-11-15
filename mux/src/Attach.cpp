@@ -26,6 +26,9 @@ std::uint64_t lastSerial = 0;
 // The largest Host event, a part and its header, fits a frame of the window's
 // channel: its grant is the default window (MuxClient).
 static_assert(Attach::HostPartBytes + 32 <= PhosphorChannel::Stream::Options{}.window - PhosphorChannel::Stream::FrameCost);
+// And the largest part of a reply of the window, which the daemon grants the
+// window's input channel.
+static_assert(Attach::ControlReplyPartBytes + 32 <= PhosphorChannel::Stream::Options{}.window - PhosphorChannel::Stream::FrameCost);
 
 } // namespace
 
@@ -66,11 +69,12 @@ int Attachment::timeoutMs() const
 void Attachment::startStream()
 {
     const int fd = std::exchange(m_fd, -1);
-    // The window writes only its input, on the control channel, and its
-    // Kill and ClosePane on the action channel.
+    // The window writes only its input, on the control channel, its Kill
+    // and ClosePane on the action channel, and the bytes of its command
+    // connections on the commands channel.
     PhosphorChannel::Stream::Options options;
-    options.maxChannels = 2;
-    options.maxChannelId = Attach::ActionChannel + 1;
+    options.maxChannels = 3;
+    options.maxChannelId = Attach::CommandsChannel + 1;
     m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
     std::string error;
     m_events = m_stream->openWriter(Attach::ControlChannel, Attach::EventCodec, &error);
@@ -182,6 +186,14 @@ void Attachment::sendControl(std::string json)
     sendEvent(control);
 }
 
+void Attachment::sendRelay(const Attach::RelayFrame& frame)
+{
+    Attach::Event commands;
+    commands.type = Attach::EventType::Commands;
+    commands.payload = Attach::encode(frame);
+    sendEvent(commands);
+}
+
 void Attachment::paneRemoved(std::uint32_t id, MuxPane* moved)
 {
     if (moved) {
@@ -262,6 +274,23 @@ void Attachment::readInput(Session& session)
         }
         if (m_kill) return;
     }
+    // Apart from the input, which waits while a PTY is full: the client of a
+    // run can be what keeps it full, and waits for its output.
+    if (PhosphorChannel::StreamReader* commands = m_stream->reader(Attach::CommandsChannel)) {
+        if (commands->codec() != Attach::CommandsCodec) {
+            m_failed = true;
+            return;
+        }
+        while (commands->read(frame) == PhosphorChannel::ReadResult::Frame) {
+            auto relay = Attach::decodeRelay(frame);
+            // Only the daemon opens a relay.
+            if (!relay || relay->part == Attach::RelayPart::Open) {
+                m_failed = true;
+                return;
+            }
+            m_relayFrames.push_back(std::move(*relay));
+        }
+    }
     PhosphorChannel::StreamReader* input = m_stream->reader(Attach::ControlChannel);
     if (!input) return;
     if (input->codec() != Attach::InputCodec) {
@@ -284,8 +313,15 @@ void Attachment::readInput(Session& session)
             m_failed = true;
             return;
         }
-        if (message->type == Attach::InputType::ControlReply) {
-            m_controlReplies.push_back(std::move(message->bytes));
+        if (message->type == Attach::InputType::ControlReplyPart || message->type == Attach::InputType::ControlReply) {
+            if (m_controlReplyParts.size() + message->bytes.size() > Attach::MaxControlReply) {
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent a reply of more than %zu bytes\n", m_session.c_str(),
+                             Attach::MaxControlReply);
+                m_failed = true;
+                return;
+            }
+            m_controlReplyParts += message->bytes;
+            if (message->type == Attach::InputType::ControlReply) m_controlReplies.push_back(std::exchange(m_controlReplyParts, {}));
             continue;
         }
         if (message->type == Attach::InputType::Layout) {
@@ -299,6 +335,22 @@ void Attachment::readInput(Session& session)
                 return;
             }
             session.setLayout(std::move(*layout));
+            continue;
+        }
+        if (message->type == Attach::InputType::Settings) {
+            std::string error;
+            const auto json = AfterglowProto::Json::parse(message->bytes, &error);
+            auto settings = json ? sessionSettings(*json, &error) : std::nullopt;
+            if (!settings) {
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent settings that are not valid: %s\n", m_session.c_str(),
+                             error.c_str());
+                m_failed = true;
+                return;
+            }
+            session.applySettings(*settings);
+            // The window keeps as much history as its new scrollback.
+            m_replicaHistory = settings->terminal.maxScrollback;
+            for (auto& [id, link] : m_panes) link.state.setReplicaHistory(m_replicaHistory);
             continue;
         }
         MuxPane* pane = session.pane(message->pane);
@@ -333,6 +385,8 @@ void Attachment::readInput(Session& session)
         case Attach::InputType::ClosePane:
         case Attach::InputType::Layout:
         case Attach::InputType::ControlReply:
+        case Attach::InputType::ControlReplyPart:
+        case Attach::InputType::Settings:
             break; // taken above
         }
     }

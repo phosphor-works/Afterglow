@@ -28,15 +28,19 @@ inline constexpr const char* NoSuchFn = "NO_SUCH_FN";
 inline constexpr const char* InvalidArg = "INVALID_ARG";
 inline constexpr const char* MalformedRequest = "MALFORMED_REQUEST";
 inline constexpr const char* CallFailed = "CALL_FAILED";
+inline constexpr const char* NoSuchSignal = "NO_SUCH_SIGNAL";
+inline constexpr const char* NoSuchSubscription = "NO_SUCH_SUBSCRIPTION";
 } // namespace IpcErrorCode
 
 struct IpcRequest
 {
-    std::string type; ///< "call" is the only type that a server of this library answers
+    std::string type; ///< "call", "subscribe" or "unsubscribe" for a server of this library
     std::optional<std::int64_t> id;
     std::string target;
     std::string fn;
     Json::Array args;
+    std::string signal; ///< subscribe: the event
+    std::int64_t subscriptionId = 0; ///< unsubscribe: the id of the subscribe request
 };
 
 /// Reads one request line with the rules of PhosphorIpc::parseRequest, in
@@ -48,6 +52,9 @@ std::optional<IpcRequest> parseIpcRequest(std::string_view line, std::string* er
 
 /// The lines that a server sends, each with its '\n'.
 std::string ipcReply(std::int64_t id, Json::Value result);
+/// An event of the subscription of request @p subscriptionId, as
+/// PhosphorIpc::buildEvent writes it.
+std::string ipcEvent(std::int64_t subscriptionId, Json::Array args);
 std::string ipcError(std::optional<std::int64_t> id, std::string_view code, std::string_view message);
 
 /// A listening Unix socket that takes connections only from processes of
@@ -154,9 +161,10 @@ public:
     /// IpcConnection::MaxRequestBytes, its '\n' included, gets the error
     /// MALFORMED_REQUEST, and the connection closes.
     bool nextLine(std::string& line);
-    /// The next line, read as a request into @p request. A line that is not
-    /// one gets MALFORMED_REQUEST here.
-    Read nextRequest(IpcRequest& request);
+    /// The next line, read as a request into @p request, and as it came in
+    /// @p line when not null (a server that passes it on). A line that is
+    /// not one gets MALFORMED_REQUEST here.
+    Read nextRequest(IpcRequest& request, std::string* line = nullptr);
     /// A complete line waits: the next nextLine() returns it without a read.
     /// The caller then polls with a timeout of 0, as the socket may have
     /// nothing more to say.

@@ -82,6 +82,8 @@ The keybinding action names are `save_project` and `switch_project`.
 | `afterglow ctl projects` | Lists the saved projects |
 | `afterglow ctl open-project development` | Focuses the open instance, or starts the project |
 | `afterglow ctl open-project development --new` | Starts another instance of the project |
+| `afterglow ctl open-project development --session` | Opens the project into a mux session, whatever the project says |
+| `afterglow ctl open-project development --no-session` | Opens the project into a window outside a session, whatever the project says |
 | `afterglow ctl save-project development --pane 12 --overwrite` | Saves the window of pane 12 in place of the saved project `development` |
 
 ## Project files
@@ -108,7 +110,7 @@ A save or an open that a limit stops names that limit.
 
 | Object | Fields |
 | --- | --- |
-| Document | `version`, `active_tab`, `tabs` |
+| Document | `version`, `active_tab`, `tabs`, and the optional `session` (true or false) |
 | Tab | `id`, `title`, `active_pane`, `tree` |
 | Leaf | `pane: {id, cwd, title, command}` |
 | Split | `direction`, `ratio`, `first`, `second` |
@@ -135,8 +137,30 @@ Press a key to close a held pane.
 
 Projects store launch layouts, not running sessions.
 They do not save scrollback, environment snapshots, remote sessions or process state.
-The [mux daemon](MUX.md) keeps running sessions. A project cannot open into a session.
 Examine commands in imported layouts before you open them.
+
+## Projects and mux sessions
+
+A project with `"session": true` opens into a session of the [mux daemon](MUX.md) of this computer.
+The session has the name of the project, and its programs keep running when its window closes, whatever `Mux.onClose` says.
+To end the session, run `afterglow mux kill NAME`, or end its programs.
+`--session` and `--no-session` of `afterglow ctl open-project` choose for one open.
+**Switch Project** and the `open_project` effect of scripts follow the project.
+
+| The session of the project | Open the project |
+| --- | --- |
+| A window shows it | Focuses that window |
+| It runs, and no window shows it | A new window shows it again, with its programs as they are |
+| It does not run | Starts it with all the panes of the project, and a new window lays them out. A pane whose program ended before the window opened is left out, with a warning. |
+| It runs, with `--new` | Starts another session, whose name the daemon gives |
+
+A save of the window of a session of this computer writes `"session": true`.
+The daemon keeps the command and the title of each pane, so a window that shows the session again saves them too.
+Afterglow starts the daemon, the session and the panes of the project in the background, and connects to the session there. The windows go on responding while the session starts.
+The `afterglow ctl open-project` call, and the result of the `open_project` effect, come when the window of the session opens.
+While the session of a project starts, a second open of the project waits for it, and then focuses its window.
+A pane of a session closes when its program exits: the project does not hold it, as it holds a pane outside a session.
+A project whose name starts with `-` cannot name a session, and opens only into a window.
 
 ## Script and control results
 
@@ -144,10 +168,10 @@ Examine commands in imported layouts before you open them.
 | --- | --- |
 | `save_project(pane, name, overwrite?)` | `name`, `window_id` |
 | `list_projects()` | `names` |
-| `open_project(name, newInstance?)` | `name`, `window_id`, `reused` |
+| `open_project(name, newInstance?)` | `name`, `window_id`, `reused`, and `session` for a project that opens into a session |
 
 Wait for the result with `afterglow.await`.
-A new project instance also returns `pane_ids`, `tab_ids` and `warnings`.
+A new project instance also returns `pane_ids`, `tab_ids` and `warnings`. A window that shows a session that ran already returns no ID maps.
 The ID maps connect saved labels to runtime IDs.
 Project creation uses the structural action budget.
 Window snapshots contain `project`. An unnamed window has an empty project name.

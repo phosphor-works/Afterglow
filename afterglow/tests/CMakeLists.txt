@@ -70,7 +70,8 @@ gtest_discover_tests(afterglow_command_tests PROPERTIES TIMEOUT 60)
 # without sshd. A pane runs in it, offscreen.
 qt_add_executable(afterglow_remote_tests RemoteCommandsTest.cpp)
 target_link_libraries(afterglow_remote_tests PRIVATE afterglow_app Afterglow::Proto GTest::gtest)
-target_compile_definitions(afterglow_remote_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>")
+target_compile_definitions(afterglow_remote_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>"
+                                                     AFTERGLOW_FAKE_SSH="${CMAKE_CURRENT_SOURCE_DIR}/fake-ssh.sh")
 add_dependencies(afterglow_remote_tests afterglow)
 if(AFTERGLOW_BUILD_AGLOW)
     target_compile_definitions(afterglow_remote_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")

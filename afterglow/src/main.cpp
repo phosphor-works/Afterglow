@@ -149,6 +149,11 @@ int main(int argc, char** argv)
         return Afterglow::Ssh::run(args);
     }
     Afterglow::prepareApplication();
+    // A launcher can leave SIGCHLD ignored: the children would reap
+    // themselves, and the waits for them would fail. The start of the mux
+    // daemon waits for its starter (MuxStart.h), and the PTYs for their
+    // programs.
+    std::signal(SIGCHLD, SIG_DFL);
 
     QCommandLineParser parser;
     // The commands that run before Qt starts take no window and no options of their own here.
