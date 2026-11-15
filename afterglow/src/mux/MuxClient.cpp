@@ -384,7 +384,7 @@ void MuxClient::release(std::uint32_t id, MuxRelease release)
     }
     // The layout goes first: the next window shows the tabs and splits of
     // this one, and the input that a slow program holds back can be lost.
-    const auto layout = std::find_if(m_waitingInput.begin(), m_waitingInput.end(), [](const WaitingInput& w) { return w.pane == 0; });
+    const auto layout = std::find_if(m_waitingInput.begin(), m_waitingInput.end(), [](const WaitingInput& w) { return w.layout; });
     if (layout != m_waitingInput.end()) std::rotate(m_waitingInput.begin(), layout, std::next(layout));
     // The input that waits goes before the window lets the session go, for a
     // short time: the GUI thread waits here. What a slow program or daemon
@@ -490,8 +490,8 @@ void MuxClient::sendLayout(const AfterglowMux::Layout& layout)
     // In order with the input, and not part of it: the daemon reads it as
     // it reads the input that came before it. A layout that still waits is
     // old: the daemon keeps only the newest.
-    std::erase_if(m_waitingInput, [](const WaitingInput& w) { return w.pane == 0; });
-    queueInput(Attach::encode(input), 0);
+    std::erase_if(m_waitingInput, [](const WaitingInput& w) { return w.layout; });
+    queueInput(Attach::encode(input), 0, true);
     sendWaitingInput();
 }
 
@@ -516,16 +516,16 @@ bool MuxClient::sendInput(std::uint32_t id, std::string_view bytes)
     return true;
 }
 
-void MuxClient::queueInput(std::string frame, std::uint32_t id)
+void MuxClient::queueInput(std::string frame, std::uint32_t id, bool layout)
 {
     countWaiting(id, frame.size(), false);
-    m_waitingInput.push_back(WaitingInput{std::move(frame), id});
+    m_waitingInput.push_back(WaitingInput{std::move(frame), id, layout});
     m_waitingResizeOf.reset();
 }
 
 void MuxClient::countWaiting(std::uint32_t id, std::size_t bytes, bool remove)
 {
-    // The layout is the window's, and counts against no pane.
+    // The window's own frames count against no pane.
     if (id == 0) return;
     std::lock_guard lock(m_waitingMutex);
     std::size_t& waiting = m_waitingBytes[id];
@@ -623,7 +623,7 @@ void MuxClient::answerControlCalls()
         Attach::Input input;
         input.type = Attach::InputType::ControlReply;
         input.bytes = QJsonDocument(reply).toJson(QJsonDocument::Compact).toStdString();
-        queueInput(Attach::encode(input), false);
+        queueInput(Attach::encode(input), 0);
         sendWaitingInput();
     }
 }
@@ -646,7 +646,7 @@ void MuxClient::sendWaitingInput()
         const WriteResult result = m_input->tryWrite(next.frame);
         if (result == WriteResult::TooLarge) {
             qCWarning(lcMux) << "session" << m_session << "takes no input frame of" << next.frame.size() << "bytes"
-                             << (next.pane == 0 ? "(a layout)" : "");
+                             << (next.layout ? "(a layout)" : "");
         } else if (result != WriteResult::Written) {
             break;
         }

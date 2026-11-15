@@ -248,9 +248,10 @@ private:
     /// Pane @p id is no longer the window's: its frames are read and dropped
     /// until its channel closes, and its calls go nowhere.
     void letGo(std::uint32_t id);
-    /// Queues @p frame after the input that waits: pane @p id's input, or
-    /// the layout for 0.
-    void queueInput(std::string frame, std::uint32_t id);
+    /// Queues @p frame after the input that waits: pane @p id's input, or for
+    /// 0 a frame of the window's own, which counts against no pane: its
+    /// layout with @p layout, and its answers to the daemon.
+    void queueInput(std::string frame, std::uint32_t id, bool layout = false);
     /// Adds @p bytes to (or with @p remove takes them from) the input of
     /// pane @p id that waits.
     void countWaiting(std::uint32_t id, std::size_t bytes, bool remove);
@@ -351,7 +352,8 @@ private:
     struct WaitingInput
     {
         std::string frame;
-        std::uint32_t pane = 0; ///< whose input it is: 0 for the layout
+        std::uint32_t pane = 0; ///< whose input it is: 0 for the window's own
+        bool layout = false; ///< the layout, which a newer one replaces
     };
     /// One queue for the control channel: the daemon reads it in order. At
     /// most one layout waits, the newest.
