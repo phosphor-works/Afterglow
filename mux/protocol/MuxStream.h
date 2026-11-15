@@ -113,13 +113,24 @@ enum class InputType : std::uint8_t {
     /// The window's settings (SessionSettings), as JSON in `bytes`, after
     /// the attach and after each change of them.
     Settings = 10,
+    /// A part of a ControlReply larger than one frame, such as a screenshot:
+    /// the parts, then the ControlReply with the rest, make its JSON.
+    ControlReplyPart = 11,
 };
+
+/// The bytes of a ControlReply in each ControlReplyPart, when the reply does
+/// not fit one frame.
+inline constexpr std::size_t ControlReplyPartBytes = std::size_t(1) << 20;
+/// The most bytes of one ControlReply with its parts: the daemon ends the
+/// link of a window that sends more. Under the output that waits for one
+/// client of the daemon.
+inline constexpr std::size_t MaxControlReply = std::size_t(24) << 20;
 
 struct Input
 {
     InputType type = InputType::Bytes;
     std::uint32_t pane = 0;
-    std::string bytes; ///< Bytes: for the program. Layout and ControlReply: their JSON.
+    std::string bytes; ///< Bytes: for the program. Layout and ControlReply: their JSON. ControlReplyPart: a part of it.
     PaneSize size;
     bool visible = false;
 };

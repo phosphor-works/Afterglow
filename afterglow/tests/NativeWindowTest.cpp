@@ -11745,6 +11745,116 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne) {
     EXPECT_TRUE(daemon.call(AfterglowMux::Fn::KillSession, AfterglowProto::Json::Array{"dev"})) << daemon.lastError();
 }
 
+// `afterglow ctl --session overlay` and `screenshot` while a window shows the
+// session: the daemon passes them to the window, which runs the overlay over
+// the session pane with the client's input, takes the picture, and answers
+// when it is done. The overlay of a client that goes closes.
+TEST_F(NativeWindow, ASessionsWindowRunsOverlaysAndTakesScreenshotsForCtl) {
+    restartApplication(QStringLiteral("session-frames.conf"),
+                       testSettings({{QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}, {QStringLiteral("allowReadText"), true}}}}),
+                       {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "frames")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("frames"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    auto ctl = std::make_unique<AfterglowProto::IpcConnection>();
+    AfterglowProto::IpcConnection::Error failure;
+    ASSERT_TRUE(ctl->connect(daemon.socket(), &failure, 2000)) << failure.message;
+    ASSERT_TRUE(ctl->call(AfterglowMux::Target, AfterglowMux::Fn::SelectSession, MuxTest::Json::Array{AfterglowMux::ProtocolVersion, "frames"},
+                          5000, &failure))
+        << failure.message;
+    const std::int64_t id = pane->sessionPaneId();
+    /// A call of the control target that the window answers while this
+    /// test's event loop runs: the call waits on a thread of its own.
+    const auto call = [&](const char* fn, MuxTest::Json::Array args) {
+        std::optional<MuxTest::Json::Value> result;
+        std::atomic<bool> answered{false};
+        std::thread caller([&] {
+            result = ctl->call("control", fn, std::move(args), 15000, &failure);
+            answered = true;
+        });
+        waitFor([&] { return answered.load(); }, 20000);
+        caller.join();
+        return result;
+    };
+
+    // The client's input, then the overlay that takes it.
+    ASSERT_TRUE(call("overlayInput", MuxTest::Json::Array{"in", "from the client", true})) << failure.message;
+    const auto ran = call("overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"cat"}, MuxTest::Json::Object{{"input", "in"}}});
+    ASSERT_TRUE(ran) << failure.message;
+    EXPECT_EQ((*ran)["exit_code"].toInteger(), 0);
+    EXPECT_EQ((*ran)["stdout"].toString(), "from the client");
+    // An answer larger than a frame of the stream goes in parts: a MiB of
+    // quotes is two in JSON.
+    const auto large = call("overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"sh", "-c", "head -c 1048576 /dev/zero | tr '\\0' '\"'"},
+                                                          MuxTest::Json::Object{}});
+    ASSERT_TRUE(large) << failure.message;
+    EXPECT_EQ((*large)["stdout"].toString(), std::string(1048576, '"'));
+    // A picture of the session pane, as the window draws it.
+    const auto shot = call("screenshot", MuxTest::Json::Array{id, "pane"});
+    ASSERT_TRUE(shot) << failure.message;
+    EXPECT_GT((*shot)["width"].toInteger().value_or(0), 0);
+    QImage image;
+    ASSERT_TRUE(image.loadFromData(QByteArray::fromBase64(QByteArray::fromStdString((*shot)["png"].toString())), "PNG"));
+    EXPECT_EQ(image.width(), (*shot)["width"].toInteger().value_or(0));
+
+    // An overlay that runs when its client goes closes.
+    std::thread lasting([&] { ctl->call("control", "overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"sleep", "30"}, MuxTest::Json::Object{}}, 2000, &failure); });
+    const bool opened = waitFor([&] { return pane->overlay() != nullptr; }, 5000);
+    lasting.join();
+    ASSERT_TRUE(opened);
+    ctl.reset();
+    EXPECT_TRUE(waitFor([&] { return pane->overlay() == nullptr; }, 5000));
+    delete shown;
+}
+
+// A session of another host reaches only what its programs could reach over
+// ssh: its window runs no overlay, no window with a command, and no script
+// command for it, which `aglow run` runs when a script marks it remote.
+TEST_F(NativeWindow, ASessionOfAnotherHostRunsNoProgramHere) {
+    restartApplication(QStringLiteral("far-frames.conf"),
+                       testSettings({{QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}, {QStringLiteral("allowReadText"), true}}}}),
+                       {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const auto ssh = fakeSshTo(daemon, directory.filePath(QStringLiteral("ssh-bin")));
+    ASSERT_TRUE(ssh);
+    ASSERT_TRUE(shellSession(daemon, "far")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("box"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    AfterglowProto::IpcConnection ctl;
+    AfterglowProto::IpcConnection::Error failure;
+    ASSERT_TRUE(ctl.connect(daemon.socket(), &failure, 2000)) << failure.message;
+    ASSERT_TRUE(ctl.call(AfterglowMux::Target, AfterglowMux::Fn::SelectSession, MuxTest::Json::Array{AfterglowMux::ProtocolVersion, "far"}, 5000,
+                         &failure))
+        << failure.message;
+    const std::int64_t id = pane->sessionPaneId();
+    const auto refused = [&](const char* fn, MuxTest::Json::Array args) {
+        std::optional<MuxTest::Json::Value> result;
+        std::atomic<bool> answered{false};
+        std::thread caller([&] {
+            result = ctl.call("control", fn, std::move(args), 10000, &failure);
+            answered = true;
+        });
+        waitFor([&] { return answered.load(); }, 15000);
+        caller.join();
+        return result ? std::string("answered") : failure.message;
+    };
+    const std::string none = "a session of another host runs no program on this computer";
+    EXPECT_EQ(refused("overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"true"}, MuxTest::Json::Object{}}), none);
+    EXPECT_EQ(refused("overlayInput", MuxTest::Json::Array{"in", "x", true}), none);
+    EXPECT_EQ(refused("newWindow", MuxTest::Json::Array{"", MuxTest::Json::Array{"true"}}), none);
+    EXPECT_NE(refused("runAction", MuxTest::Json::Array{id, "script:far.there"}).find("only the script commands that a script marks remote"),
+              std::string::npos);
+    EXPECT_EQ(pane->overlay(), nullptr);
+    delete shown;
+}
+
 // `afterglow ctl --session` while a window shows the session: the window
 // places the pane that the daemon starts, and answers what only it can do.
 TEST_F(NativeWindow, CtlForASessionReachesItsWindow) {

@@ -206,9 +206,9 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     // answer, which the daemon passes it.
     if (options.session) {
         options.session->setControlHandler(
-            [this, shown = QPointer<TerminalWindow>(window)](const QString& fn, const QJsonArray& args, MuxClient::ControlReply reply) {
+            [this, shown = QPointer<TerminalWindow>(window)](const QString& fn, const QJsonArray& args, qint64 client, MuxClient::ControlReply reply) {
                 if (!shown) return reply({{}, QStringLiteral("the window of the session closed")});
-                answerSessionCall(m_control, m_settings.settings(), *shown, fn, args, std::move(reply));
+                answerSessionCall(m_control, m_settings.settings(), *shown, fn, args, client, std::move(reply));
             });
         // `aglow run` in a session pane: the commands target of this
         // process serves it, as it serves a pane outside a session. A

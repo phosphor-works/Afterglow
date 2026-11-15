@@ -190,14 +190,19 @@ public:
     {
         QJsonValue result;
         QString error;
+        /// The error's code, as the control target of a window sends it
+        /// (`no_pane`, `denied`): empty for CALL_FAILED.
+        QString code{};
     };
     /// Sends the answer to a call of the control target, once.
     using ControlReply = std::function<void(const ControlAnswer& answer)>;
     /// Answers the calls of `afterglow ctl` for the session that only a
     /// window can answer (Attach::EventType::Control), with the daemon's pane
-    /// IDs, through @p reply: at once, or later (openProject). On the GUI
-    /// thread, after the frames and events that came first.
-    using ControlHandler = std::function<void(const QString& fn, const QJsonArray& args, ControlReply reply)>;
+    /// IDs, through @p reply: at once, or later (openProject, overlay,
+    /// screenshot). @p client is the daemon's number of the client of the
+    /// call: its overlays and their inputs are its own. On the GUI thread,
+    /// after the frames and events that came first.
+    using ControlHandler = std::function<void(const QString& fn, const QJsonArray& args, qint64 client, ControlReply reply)>;
     void setControlHandler(ControlHandler handler) { m_controlHandler = std::move(handler); }
     /// Serves the command clients of the session's panes (`aglow run`) with
     /// @p host: the socket of the Afterglow whose commands answer them, and
@@ -233,7 +238,10 @@ private:
     /// Makes the calls of pane @p id whose frames the window read, in their
     /// order.
     void releaseHostCalls(std::uint32_t id);
-    void queueInput(std::string frame, bool resize);
+    /// @p counted: the frame counts against MaxWaitingInput, as input of
+    /// the panes does. The parts of an answer to the daemon do not: a
+    /// screenshot must not refuse the keys that come after it.
+    void queueInput(std::string frame, bool resize, bool counted = true);
     /// Queues @p input for pane @p id after the input that waits, while the
     /// session shows.
     void sendPaneInput(std::uint32_t id, AfterglowMux::Attach::Input& input);
@@ -298,13 +306,19 @@ private:
     static constexpr std::size_t MaxWaitingHostCalls = std::size_t(AfterglowMux::MaxEventQueue) * 2 + AfterglowMux::Host::MaxCall;
     std::map<std::uint32_t, std::string> m_hostParts; ///< the parts of a call that came, by pane
     std::set<std::uint32_t> m_closedChannels; ///< the pane's last frame was read
-    std::deque<std::string> m_waitingInput;
+    struct WaitingFrame
+    {
+        std::string bytes;
+        bool counted = true; ///< in m_waitingBytes
+    };
+    std::deque<WaitingFrame> m_waitingInput;
     std::deque<std::string> m_waitingActions; ///< ClosePane frames that wait for the action channel
     struct ControlCall
     {
         qint64 id = 0; ///< 0: the daemon wants no answer
         QString fn;
         QJsonArray args;
+        qint64 client = 0; ///< the daemon's number of the client of the call, 0 for the daemon's own
     };
     std::deque<ControlCall> m_controlCalls;
     bool m_controlCallsQueued = false;

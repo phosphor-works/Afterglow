@@ -26,6 +26,9 @@ std::uint64_t lastSerial = 0;
 // The largest Host event, a part and its header, fits a frame of the window's
 // channel: its grant is the default window (MuxClient).
 static_assert(Attach::HostPartBytes + 32 <= PhosphorChannel::Stream::Options{}.window - PhosphorChannel::Stream::FrameCost);
+// And the largest part of a reply of the window, which the daemon grants the
+// window's input channel.
+static_assert(Attach::ControlReplyPartBytes + 32 <= PhosphorChannel::Stream::Options{}.window - PhosphorChannel::Stream::FrameCost);
 
 } // namespace
 
@@ -310,8 +313,15 @@ void Attachment::readInput(Session& session)
             m_failed = true;
             return;
         }
-        if (message->type == Attach::InputType::ControlReply) {
-            m_controlReplies.push_back(std::move(message->bytes));
+        if (message->type == Attach::InputType::ControlReplyPart || message->type == Attach::InputType::ControlReply) {
+            if (m_controlReplyParts.size() + message->bytes.size() > Attach::MaxControlReply) {
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent a reply of more than %zu bytes\n", m_session.c_str(),
+                             Attach::MaxControlReply);
+                m_failed = true;
+                return;
+            }
+            m_controlReplyParts += message->bytes;
+            if (message->type == Attach::InputType::ControlReply) m_controlReplies.push_back(std::exchange(m_controlReplyParts, {}));
             continue;
         }
         if (message->type == Attach::InputType::Layout) {
@@ -375,6 +385,7 @@ void Attachment::readInput(Session& session)
         case Attach::InputType::ClosePane:
         case Attach::InputType::Layout:
         case Attach::InputType::ControlReply:
+        case Attach::InputType::ControlReplyPart:
         case Attach::InputType::Settings:
             break; // taken above
         }
