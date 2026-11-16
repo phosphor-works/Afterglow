@@ -46,9 +46,12 @@ void save(AfterglowPty::SpawnOptions& o, const std::string& name, const Inherite
     put(o, "AFTERGLOW_ORIGINAL_" + name, value.value_or(""));
 }
 }
-bool prepare(AfterglowPty::SpawnOptions& o, bool enabled, const QString& root, const InheritedEnvironment* inherited)
+bool prepare(AfterglowPty::SpawnOptions& o, const QString& switches, const QString& root, const InheritedEnvironment* inherited,
+             bool promptCursorBlinks)
 {
-    if (!enabled || env(o, "AFTERGLOW_SHELL_INTEGRATION", inherited) == "0") return false;
+    QStringList features = switches.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (features.contains(QLatin1String("disabled")) || env(o, "AFTERGLOW_SHELL_INTEGRATION", inherited) == "0") return false;
+    features.removeAll(QStringLiteral("enabled"));
     auto args = o.argv;
     if (args.empty()) args.push_back(defaultShell(o, inherited));
     const QString shell = QFileInfo(QString::fromStdString(args.front())).fileName();
@@ -81,6 +84,8 @@ bool prepare(AfterglowPty::SpawnOptions& o, bool enabled, const QString& root, c
         args.insert(args.begin() + 1, {"--init-command", (QStringLiteral("source '") + quoted + QLatin1Char('\'')).toStdString()});
     }
     o.argv = std::move(args);
+    put(o, "AFTERGLOW_SHELL_FEATURES", features.join(QLatin1Char(' ')).toStdString());
+    put(o, "AFTERGLOW_PROMPT_CURSOR", promptCursorBlinks ? "5" : "6");
     return true;
 }
 }

@@ -13,6 +13,38 @@ set +o posix
 shopt -u inherit_errexit
 # POSIX startup otherwise chooses .sh_history instead of Bash's usual file.
 [[ ${HISTFILE-} == "$HOME/.sh_history" ]] && HISTFILE=$HOME/.bash_history
+# The parts that Terminal.shellIntegration turns off, as Kitty's switches.
+__afterglow_features=" ${AFTERGLOW_SHELL_FEATURES-} "
+unset AFTERGLOW_SHELL_FEATURES
+# sudo and run0 drop TERMINFO_DIRS, where afterglow's own terminfo entry is:
+# the command gets a TERM that every system knows, as Kitty's no-sudo
+# switch covers. Defined before the user's files, so that an alias of sudo
+# there still works.
+if [[ $__afterglow_features != *" no-sudo "* && ${TERM-} == afterglow ]] \
+    && ! TERMINFO_DIRS='' TERMINFO='' command tput -T afterglow longname >/dev/null 2>&1; then
+    sudo() {
+        # VAR=value must come after sudo's options; -e and -v take none.
+        local -a args=("$@")
+        local i skip=0
+        for ((i = 0; i < ${#args[@]}; i++)); do
+            if (( skip )); then skip=0; continue; fi
+            case ${args[i]} in
+                --) (( i++ )); break ;;
+                --edit | -e* | -[!-]*e* | --validate | -v* | -[!-]*v*) command sudo "$@"; return ;;
+                --user | --group | --host | --chdir | --chroot | --role | --type | --command-timeout | --auth-type \
+                    | --login-class | --prompt | --close-from | --other-user) skip=1 ;;
+                --*) ;;
+                -*[aCcDghpRrtTuU]) skip=1 ;;
+                -* | *=*) ;;
+                *) break ;;
+            esac
+        done
+        command sudo "${args[@]:0:i}" TERM=xterm-256color "${args[@]:i}"
+    }
+    if type -P run0 >/dev/null 2>&1; then
+        run0() { TERM=xterm-256color command run0 --setenv=TERM "$@"; }
+    fi
+fi
 if shopt -q login_shell; then
     [[ -r /etc/profile ]] && source /etc/profile
     for __afterglow_profile in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
@@ -35,17 +67,39 @@ fi
 [[ $PS1 == *']133;'* || $PS1 == *']633;'* ]] && return
 [[ $(declare -p PROMPT_COMMAND 2>/dev/null) =~ ^declare\ -[^[:space:]]*r ]] && return
 __afterglow_loaded=1
+# The host before the title of an ssh login, as Kitty shows it.
+__afterglow_host=
+[[ -n ${SSH_TTY-} ]] && __afterglow_host="${HOSTNAME%%.*}: "
 __afterglow_before_prompt() {
     __afterglow_status=$?
-    printf '\033]133;D;%d\007' "$__afterglow_status"
+    [[ $__afterglow_features == *" no-prompt-mark "* ]] || printf '\033]133;D;%d\007' "$__afterglow_status"
     return "$__afterglow_status"
 }
+# The title while a command runs: its line, which PS0 does not know.
+__afterglow_command_title() {
+    local line
+    line=$(HISTTIMEFORMAT='' builtin history 1)
+    line=${line#*[[:digit:]]*[[:space:]]}
+    line=${line#"${line%%[![:space:]]*}"}
+    printf '\e]2;%s%s\a' "$__afterglow_host" "${line//[[:cntrl:]]}"
+}
 __afterglow_prompt() {
-    local begin='\[\e]133;A;redraw=1\a\]' end='\[\e]133;B\a\]'
+    local begin='' end='' start=''
+    if [[ $__afterglow_features != *" no-prompt-mark "* ]]; then
+        begin='\[\e]133;A;redraw=1\a\]' end='\[\e]133;B\a\]' start=$'\e]133;C\a'
+    fi
+    # A bar while the user edits the command, the configured cursor for it.
+    if [[ $__afterglow_features != *" no-cursor "* ]]; then
+        end+="\\[\\e[${AFTERGLOW_PROMPT_CURSOR:-5} q\\]" start+=$'\e[0 q'
+    fi
+    if [[ $__afterglow_features != *" no-title "* ]]; then
+        end+="\\[\\e]2;${__afterglow_host}\\w\\a\\]" start+='$(__afterglow_command_title)'
+    fi
     PS1=${PS1#"$begin"}; PS1=${PS1%"$end"}
     PS1=$begin$PS1$end
-    local start=$'\e]133;C\a' current=${PS0-}
+    local current=${PS0-}
     PS0=$start${current#"$start"}
+    [[ $__afterglow_features == *" no-cwd "* ]] && return "$__afterglow_status"
     local LC_ALL=C path=$PWD encoded='' char hex i
     for ((i=0; i<${#path}; i++)); do
         char=${path:i:1}

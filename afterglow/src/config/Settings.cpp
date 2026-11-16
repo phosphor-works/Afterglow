@@ -491,9 +491,12 @@ PhosphorConfig::Schema buildSchema()
         // The daemon's bound: a session takes every value (MuxCommandTest).
         intKey(QStringLiteral("scrollback"), int(term.maxScrollback), 0, int(AfterglowMux::MaxScrollback),
                QStringLiteral("Lines of history that each pane keeps. A value of 0 keeps no history.")),
-        {QStringLiteral("shellIntegration"), d.shellIntegration, QMetaType::Bool,
-         QStringLiteral("Integrate Bash, Zsh and Fish prompts in new panes and new mux sessions automatically. A session "
-                        "of another host does not use it.")},
+        stringKey(QStringLiteral("shellIntegration"), d.shellIntegration,
+                  QStringLiteral("Integrate Bash, Zsh and Fish in new panes and new mux sessions automatically, as in Kitty. "
+                                 "The value is enabled, disabled, or switches apart by spaces that turn off one part each: "
+                                 "no-prompt-mark (the prompt and command marks), no-cwd (the working directory), no-cursor "
+                                 "(the bar cursor at the prompt), no-title (the title at the prompt and while a command "
+                                 "runs) and no-sudo (TERM for sudo and run0). A session of another host does not use it.")),
         {QStringLiteral("sshIntegration"), d.sshIntegration, QMetaType::Bool,
          QStringLiteral("Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and afterglow ssh "
                         "offers COLORTERM and TERM_PROGRAM to the server. New panes and new mux sessions use this value. A "
@@ -1800,7 +1803,21 @@ Settings SettingsStore::read()
     t.bidi = readEnum(st, Terminal, QStringLiteral("bidi"), BidiChoices, t.bidi);
     s.pager = st.read<QString>(Terminal, QStringLiteral("pager"));
     s.lastOutputLimit = std::size_t(st.read<int>(Terminal, QStringLiteral("lastOutputLimit"))) << 10;
-    s.shellIntegration = st.read<bool>(Terminal, QStringLiteral("shellIntegration"));
+    {
+        // Kitty's words; an unknown one goes alone, as a typo in a list should.
+        static const QStringList Switches = {QStringLiteral("enabled"), QStringLiteral("disabled"), QStringLiteral("no-prompt-mark"),
+                                             QStringLiteral("no-cwd"), QStringLiteral("no-cursor"), QStringLiteral("no-title"),
+                                             QStringLiteral("no-sudo")};
+        QStringList words;
+        for (const QString& word : st.read<QString>(Terminal, QStringLiteral("shellIntegration")).split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+            if (Switches.contains(word)) {
+                if (!words.contains(word)) words << word;
+            } else {
+                problem(QStringLiteral("Terminal.shellIntegration: \"%1\" is not a switch. Afterglow leaves it out").arg(word));
+            }
+        }
+        s.shellIntegration = words.isEmpty() ? QStringLiteral("enabled") : words.join(QLatin1Char(' '));
+    }
     s.sshIntegration = st.read<bool>(Terminal, QStringLiteral("sshIntegration"));
     s.sshTerminfo = st.read<QString>(Terminal, QStringLiteral("sshTerminfo"));
     s.sshRemoteCommands = st.read<bool>(Terminal, QStringLiteral("sshRemoteCommands"));

@@ -42,7 +42,7 @@ bool unsets(const SpawnOptions& options, const std::string& name)
 Settings plainSettings()
 {
     Settings settings;
-    settings.shellIntegration = false;
+    settings.shellIntegration = QStringLiteral("disabled");
     return settings;
 }
 

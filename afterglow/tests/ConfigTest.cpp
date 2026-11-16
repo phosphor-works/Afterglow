@@ -2974,6 +2974,8 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
                     QJsonObject{{QStringLiteral("pattern"), QStringLiteral("x+")}, {QStringLiteral("action"), QStringLiteral("open")}}};
             } else if (name == QLatin1String("Keybinds.bindings")) {
                 value = QJsonObject{{QStringLiteral("new_tab"), QStringLiteral("Ctrl+Alt+F12")}};
+            } else if (name == QLatin1String("Terminal.shellIntegration")) {
+                value = QStringLiteral("no-title no-sudo");
             } else if (name == QLatin1String("Keybinds.remapModifiers")) {
                 value = QStringLiteral("ctrl:super super:ctrl");
             } else if (name == QLatin1String("Shaders.params")) {

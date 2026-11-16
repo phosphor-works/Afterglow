@@ -281,7 +281,9 @@ struct Settings
     int scriptCpuBudget = 250; ///< ms of handler time of one script in each second
     QString pager = QStringLiteral("less -R");
     std::size_t lastOutputLimit = std::size_t(1024) << 10; ///< bytes of the last output that show_last_output hands the pager
-    bool shellIntegration = true;
+    /// Terminal.shellIntegration: "enabled" or "disabled", or the switches
+    /// that turn parts off, as Kitty's shell_integration ("no-title no-sudo").
+    QString shellIntegration = QStringLiteral("enabled");
     bool sshIntegration = true; ///< integrated shells run ssh through `afterglow ssh`
     QString sshTerminfo = QStringLiteral("install"); ///< TERM=afterglow on a host without its entry: install or fallback
     bool sshRemoteCommands = false; ///< `afterglow ssh` forwards a socket for the commands marked remote

@@ -145,7 +145,7 @@ AfterglowPty::SpawnOptions prepareLaunch(const Settings& settings, const QString
     } else if (!settings.shell.isEmpty()) {
         opts.argv = {QFile::encodeName(settings.shell).toStdString()};
     }
-    ShellIntegration::prepare(opts, settings.shellIntegration, {}, inherited);
+    ShellIntegration::prepare(opts, settings.shellIntegration, {}, inherited, settings.terminal.cursorBlink);
     // Integrated shells wrap ssh when the helper is named; a launch's own
     // values win, including one that removes the variable.
     if (settings.sshIntegration) offer(opts, "AFTERGLOW_SSH_HELPER", QFile::encodeName(QCoreApplication::applicationFilePath()).toStdString());

@@ -449,7 +449,7 @@ F13 to F35 send the sequences of xterm's terminfo entry, and the Kitty protocol 
 
 ## Shell integration
 
-New panes automatically integrate interactive Bash 4.4 or later, Zsh and Fish 4 or later.
+New panes automatically integrate interactive Bash 4.4 or later, Zsh and Fish.
 Shell markers identify prompts, commands, exit status and working directories.
 Command navigation and Luau events use these markers.
 
@@ -460,11 +460,23 @@ It supports login and interactive flags.
 It does not inject integration into scripts, `-c` commands or explicit startup overrides.
 Examples of startup overrides are `--norc`, `-f` and `--no-config`.
 
-Set `Terminal.shellIntegration=false` to disable automatic injection into new panes.
+Set `Terminal.shellIntegration` to `"disabled"` to disable automatic injection into new panes.
+To turn off only some parts, give the switches of Kitty's `shell_integration`, apart by spaces, such as `"no-title no-sudo"`:
+
+| Switch | Turns off |
+| --- | --- |
+| `no-prompt-mark` | The prompt, command and exit-status marks (OSC 133). Fish 4 sends its own. |
+| `no-cwd` | The working directory (OSC 7). Fish 4 sends its own. |
+| `no-cursor` | The bar cursor while you edit the command line, and the configured cursor for the command. The bar blinks when `Terminal.cursorBlink` is on. In Fish, this cursor is used only with the default key bindings. |
+| `no-title` | The title: the directory at the prompt, and the command while it runs, after the host name in an ssh login. Fish sets its own titles. |
+| `no-sudo` | A `TERM` that every system knows for `sudo` and `run0`. With `Terminal.term` set to `afterglow`, `sudo` and `run0` drop the directory of Afterglow's terminfo entry, so the command gets `TERM=xterm-256color`. This applies only when the system has no entry for `afterglow`. |
+
+A Fish older than 4 gets the prompt marks from Afterglow, with Kitty's special key for a click on the command line.
+
 Alternatively, set `AFTERGLOW_SHELL_INTEGRATION` to `0` in `Terminal.env`.
 The variable in the launch environment applies only when the launch starts a new process.
 This does not remove manually configured hooks or native Fish markers.
-Custom shell wrappers and older Fish versions require their own integration.
+Custom shell wrappers require their own integration.
 Zsh integration does not load when `/etc/zsh/zshenv` sets `ZDOTDIR`.
 
 ### Click on the command line

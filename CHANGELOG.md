@@ -65,7 +65,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 ### Shell integration
 
-- Automatic integration for Bash 4.4 or later, Zsh and Fish 4 or later.
+- Automatic integration for Bash 4.4 or later, Zsh and Fish, with Kitty's switches in `Terminal.shellIntegration` (`no-prompt-mark`, `no-cwd`, `no-cursor`, `no-title`, `no-sudo`). It adds a bar cursor at the prompt, the directory and the command as the title, and a `TERM` that `sudo` and `run0` can use. A Fish older than 4 gets the prompt marks from Afterglow.
 - Prompt, command and exit-status markers (OSC 133 and OSC 633), with Kitty's secondary prompt (`k=s`) and command lines quoted as by `printf %q`.
 - A click on the command line moves the cursor of the shell there, with arrow keys, Kitty's special key or the SGR click of `click_events`, as Kitty does. `Mouse.clickMovesCursor` turns it off.
 - The working directory from OSC 7, OSC 9;9, OSC 633 and iTerm2 `CurrentDir`. New tabs and splits start there when it is on this host.
