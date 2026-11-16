@@ -140,6 +140,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `autoScrollInterval` | `50` | 10–1000 | Milliseconds between the rows that a selection scrolls while you extend it past the top or bottom of a pane. |
+| `clickMovesCursor` | `true` |  | Move the cursor of a shell to a click on its command line. It works in a shell with shell integration, which marks where its prompt starts. |
 | `dragSelection` | `false` |  | Allow a single press without Alt inside the selection to drag its text to another pane or another desktop application. A click there without a move clears the selection, and other presses there select as they do elsewhere. |
 | `middleClick` | `"primary"` | `"primary"`, `"clipboard"`, `"none"` | What a middle click pastes. The none value turns middle-click paste off. |
 | `momentumScroll` | `0.96` | 0–1 | Part of the speed of a finger scroll that the scroll keeps every 8 milliseconds after the last finger lifts. It applies to touchpads and touchscreens. A higher value scrolls further. A value of 0 stops the scroll when the finger lifts. A value of 1 does not slow the scroll, which goes on until a click, a key or a touch stops it. |

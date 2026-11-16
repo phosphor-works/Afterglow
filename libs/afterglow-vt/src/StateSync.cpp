@@ -735,10 +735,12 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
         {
             Out o(payload);
             o.byte(std::uint8_t(t.m_semanticZone));
-            o.byte(t.m_promptClickEvents ? 1 : 0);
+            // How a click on the command line reaches the shell, with bit 2
+            // for kitty's special key.
+            o.byte(std::uint8_t(std::uint8_t(t.m_promptClicks) | (t.m_promptSpecialKey ? 4 : 0)));
             o.byte(t.m_commandRunning ? 1 : 0);
             o.byte(t.m_promptRedrawPending ? 1 : 0);
-            for (const Terminal::Mark* m : {&t.m_inputStart, &t.m_outputStart, &t.m_outputEnd}) {
+            for (const Terminal::Mark* m : {&t.m_inputStart, &t.m_outputStart, &t.m_outputEnd, &t.m_secondaryPrompt}) {
                 o.byte(m->valid ? 1 : 0);
                 if (!m->valid) continue;
                 o.varint(m->row);
@@ -1930,7 +1932,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             const std::uint8_t clicks = p.byte();
             const std::uint8_t running = p.byte();
             const std::uint8_t redraw = p.byte();
-            Terminal::Mark marks[3];
+            Terminal::Mark marks[4];
             for (Terminal::Mark& m : marks) {
                 const std::uint8_t valid = p.byte();
                 if (valid > 1) return fail("the state frame has a bad shell mark");
@@ -1963,11 +1965,12 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 lastRow = std::max({lastRow, r.start.row, r.end.row});
                 regions.push_back(r);
             }
-            if (!p.ok() || !p.done() || zone > std::uint8_t(Terminal::SemanticZone::Input) || clicks > 1 || running > 1 || redraw > 1) {
+            if (!p.ok() || !p.done() || zone > std::uint8_t(Terminal::SemanticZone::Input) || clicks > 6 || (clicks & 3) > 2 || running > 1 || redraw > 1) {
                 return fail("the state frame has bad shell marks");
             }
             t.m_semanticZone = Terminal::SemanticZone(zone);
-            t.m_promptClickEvents = clicks;
+            t.m_promptClicks = Terminal::PromptClicks(clicks & 3);
+            t.m_promptSpecialKey = clicks & 4;
             t.m_commandRunning = running;
             // The window holds its frames while the shell draws its prompt
             // after a resize, as for a program of its own.
@@ -1975,6 +1978,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             t.m_inputStart = marks[0];
             t.m_outputStart = marks[1];
             t.m_outputEnd = marks[2];
+            t.m_secondaryPrompt = marks[3];
             t.m_nextSemanticId = nextId;
             t.m_semanticRegions = std::move(regions);
             t.m_semanticRegionsLastRow = lastRow;

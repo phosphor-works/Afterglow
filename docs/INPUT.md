@@ -467,6 +467,25 @@ This does not remove manually configured hooks or native Fish markers.
 Custom shell wrappers and older Fish versions require their own integration.
 Zsh integration does not load when `/etc/zsh/zshenv` sets `ZDOTDIR`.
 
+### Click on the command line
+
+A click on the command line moves the cursor of the shell there, as in Kitty.
+This works in a shell that marks its prompt (OSC 133).
+It does not work in the output, in the history, on the alternate screen, or while a program reads the mouse.
+Set `Mouse.clickMovesCursor` to `false` to turn it off.
+
+| The shell's prompt mark (OSC 133 `A`) | What a click sends |
+| --- | --- |
+| No `click_events` | Left or right arrow keys, one for each character between the cursor and the click |
+| `special_key=1` | Kitty's key 1 in place of the arrows: `CSI 1 u` to the right, `CSI 1 ; 1 u` to the left. Kitty's Fish integration binds them. |
+| `click_events=1` | An SGR mouse click (`CSI < 0 ; x ; y M`, then `m`) with the row of the screen as y |
+| `click_events=2` | An SGR mouse click with y relative to the top line of the current prompt, from 0. The current prompt is the secondary prompt (`OSC 133 ; A ; k=s`) when it starts on or above the click. |
+
+A secondary prompt (`OSC 133 ; A ; k=s`, the prompt of a continuation line) is not a new prompt.
+The command typed before it stays.
+A command line in `OSC 133 ; C ; cmdline=` can have the shell quoting of `printf %q`: backslashes, quotes and `$'...'`.
+Afterglow removes the quoting.
+
 ### SSH
 
 Integrated shells run `ssh` through `afterglow ssh`.

@@ -3590,9 +3590,9 @@ TEST_F(NativeWindow, TheClickThatAPressInsideTheSelectionHeldMovesTheShellCursor
     NoDrag noDrag(window);
     Pane* pane = window->focusedPane();
     ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(received) && !gridOf(window, pane).isEmpty(); }));
-    // A prompt that takes clicks (OSC 133 click_events), with the cursor
-    // after its command, in column 13.
-    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b]133;A;click_events=1\x07$ \x1b]133;B\x07hello world"); });
+    // A prompt that the shell marks (OSC 133), with the cursor after its
+    // command, in column 13. Without click_events a click sends arrows.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b]133;A\x07$ \x1b]133;B\x07hello world"); });
     selectCells(pane, 2, 0, 12, 0);
     // A release on another cell, nearer than the drag distance, is a drag
     // that selects nothing: it moves no cursor.

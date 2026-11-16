@@ -886,12 +886,12 @@ TEST(Terminal, AnExitLeavesThePrompt)
     Term t(20, 4);
     t.feed("\x1b]133;A;click_events=1\x1b\\$ \x1b]133;B\x1b\\");
     ASSERT_TRUE(t.t.atShellPrompt());
-    ASSERT_TRUE(t.t.promptTakesClicks());
+    ASSERT_NE(t.t.promptClickInput(0, 0), "");
     const std::uint64_t before = t.t.generation();
     t.t.programExited();
     EXPECT_GT(t.t.generation(), before);
     EXPECT_FALSE(t.t.atShellPrompt());
-    EXPECT_FALSE(t.t.promptTakesClicks());
+    EXPECT_EQ(t.t.promptClickInput(0, 0), "");
     t.t.resize(12, 4, 10, 20);
     EXPECT_FALSE(t.t.promptRedrawPending());
     // A width change at a live prompt waits for the shell.

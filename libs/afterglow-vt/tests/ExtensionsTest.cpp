@@ -72,14 +72,62 @@ TEST(Extensions, ShellReportedCommandLine)
 
 TEST(Extensions, PromptClickEvents)
 {
+    // kitty's protocol: a shell that asks (click_events=1) gets an SGR click
+    // with an absolute y; one that does not gets cursor keys.
     Host host;
     Terminal t(40, 6, host);
-    t.feed("\x1b]133;A;click_events=1\x07$ \x1b]133;B\x07");
-    EXPECT_TRUE(t.promptTakesClicks());
-    t.feed("x\r\n\x1b]133;C\x07");
-    EXPECT_FALSE(t.promptTakesClicks()); // running, not at the prompt
-    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
-    EXPECT_FALSE(t.promptTakesClicks()); // this prompt did not ask
+    t.feed("\x1b]133;A;click_events=1\x07$ \x1b]133;B\x07" "abc");
+    EXPECT_EQ(t.promptClickInput(2, 0), "\x1b[<0;3;1M\x1b[<0;3;1m");
+    t.feed("\r\n\x1b]133;C\x07");
+    EXPECT_EQ(t.promptClickInput(2, 0), ""); // running, not at the prompt
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07" "abc");
+    EXPECT_EQ(t.promptClickInput(2, 1), "\x1b[D\x1b[D\x1b[D");
+    EXPECT_EQ(t.promptClickInput(2, 0), ""); // above this prompt
+}
+
+TEST(Extensions, PromptClickModesSpecialKeyAndSecondaryPrompt)
+{
+    Host host;
+    Terminal t(40, 6, host);
+    // click_events=2: y relative to the top line of the current prompt, the
+    // secondary prompt when it starts on or above the click.
+    t.feed("\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07" "for x in 1\r\n\x1b]133;A;k=s\x07> echo");
+    EXPECT_EQ(t.promptClickInput(4, 0), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    EXPECT_EQ(t.promptClickInput(4, 1), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    EXPECT_EQ(t.promptClickInput(4, 2), "\x1b[<0;5;1M\x1b[<0;5;1m");
+    // The secondary prompt is no new prompt: the command typed before it stays.
+    t.feed("\r\n\x1b]133;C\x07");
+    ASSERT_EQ(host.commandsStarted.size(), 1u);
+    EXPECT_EQ(host.commandsStarted[0].substr(0, 10), "for x in 1");
+    // special_key=1: kitty's key 1 in place of the arrows.
+    t.feed("\x1b]133;D;0\x07\x1b]133;A;special_key=1\x07$ \x1b]133;B\x07" "ab");
+    const int row = t.screen().cursor.y;
+    EXPECT_EQ(t.promptClickInput(2, row), "\x1b[1;1u\x1b[1;1u");
+    t.feed("\x1b[D\x1b[D");
+    EXPECT_EQ(t.promptClickInput(4, row), "\x1b[1u\x1b[1u");
+    // No click on the command line with mouse tracking or on the alternate screen.
+    t.feed("\x1b[?1000h");
+    EXPECT_EQ(t.promptClickInput(4, row), "");
+    t.feed("\x1b[?1000l\x1b[?1049h");
+    EXPECT_EQ(t.promptClickInput(4, row), "");
+}
+
+TEST(Extensions, ShellQuotedCommandLines)
+{
+    // cmdline= is bash's printf %q: backslashes, quotes and $'...'.
+    Host host;
+    Terminal t(40, 6, host);
+    for (const char* line : {"echo\\ hi\\ there", "printf $'a\\tb\\x41\\101\\u00e9'", "echo 'it'\\''s' \"q\\\"d\"",
+                             "$'unclosed\\n"}) {
+        t.feed(std::string("\x1b]133;A\x07$ \x1b]133;B\x07x\r\n\x1b]133;C;cmdline=") + line + "\x07\x1b]133;D;0\x07");
+    }
+    ASSERT_EQ(host.commandsStarted.size(), 4u);
+    EXPECT_EQ(host.commandsStarted[0], "echo hi there");
+    EXPECT_EQ(host.commandsStarted[1], "printf a\tbAA\u00e9");
+    EXPECT_EQ(host.commandsStarted[2], "echo it's q\"d");
+    // An unclosed $' runs to the end, and the line feed at the end goes, as
+    // for any command line.
+    EXPECT_EQ(host.commandsStarted[3], "unclosed");
 }
 
 TEST(Extensions, VSCodeShellIntegration)

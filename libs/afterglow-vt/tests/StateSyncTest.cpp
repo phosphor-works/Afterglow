@@ -143,9 +143,15 @@ std::string differs(const Terminal& a, const Terminal& b)
     }
     // What a frame carries besides the screens.
     if (std::string d = regionsDiffer(a, b); !d.empty()) return "shell marks: " + d;
-    if (a.atShellPrompt() != b.atShellPrompt() || a.promptTakesClicks() != b.promptTakesClicks()
-        || a.hasCommandOutput() != b.hasCommandOutput() || a.promptRedrawPending() != b.promptRedrawPending()) {
+    if (a.atShellPrompt() != b.atShellPrompt() || a.hasCommandOutput() != b.hasCommandOutput()
+        || a.promptRedrawPending() != b.promptRedrawPending()) {
         return "shell state";
+    }
+    // A click on the command line sends the same input from both: a few
+    // cells, so that random runs stay fast.
+    for (const auto& [x, y] : {std::pair{0, 0}, std::pair{a.cols() - 1, a.rows() - 1}, std::pair{a.cols() / 2, a.rows() / 2},
+                               std::pair{a.screen().cursor.x, a.screen().cursor.y}}) {
+        if (a.promptClickInput(x, y) != b.promptClickInput(x, y)) return "prompt click";
     }
     if (std::string d = statusDiffers(a, b); !d.empty()) return d;
     if (!(a.contexts().stack() == b.contexts().stack())) return "contexts";
@@ -476,6 +482,26 @@ TEST(StateSync, TransparentBackgroundsKeepTheirOpacity)
     EXPECT_FALSE(colors[2].has_value());
 }
 
+TEST(StateSync, PromptClickModesReachTheReplica)
+{
+    // click_events=2 with a secondary prompt, then special_key=1: a click on
+    // the replica in the window sends what the daemon's terminal would.
+    Pair p(30, 8, 100);
+    p.source.feed("\x1b]133;A;click_events=2\x1b\\$ \x1b]133;B\x1b\\for x in 1\r\n\x1b]133;A;k=s\x1b\\> echo");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    for (int row = 0; row < 3; ++row) {
+        EXPECT_EQ(p.replica.promptClickInput(3, row), p.source.promptClickInput(3, row)) << row;
+    }
+    EXPECT_EQ(p.replica.promptClickInput(3, 1), "\x1b[<0;4;0M\x1b[<0;4;0m");
+    p.source.feed("\r\n\x1b]133;C\x1b\\\x1b]133;D;0\x1b\\\x1b]133;A;special_key=1\x1b\\$ \x1b]133;B\x1b\\ab");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    const int row = p.source.screen().cursor.y;
+    EXPECT_EQ(p.replica.promptClickInput(2, row), "\x1b[1;1u\x1b[1;1u");
+    EXPECT_EQ(p.replica.promptClickInput(2, row), p.source.promptClickInput(2, row));
+}
+
 TEST(StateSync, ShellIntegrationMarksAndRegions)
 {
     Pair p(30, 8, 100);
@@ -491,12 +517,12 @@ TEST(StateSync, ShellIntegrationMarksAndRegions)
     EXPECT_EQ(p.replica.text(Terminal::TextScope::LastOutput), p.source.text(Terminal::TextScope::LastOutput));
     EXPECT_NE(p.replica.text(Terminal::TextScope::LastOutput), "");
     EXPECT_TRUE(p.replica.atShellPrompt());
-    EXPECT_TRUE(p.replica.promptTakesClicks());
+    EXPECT_NE(p.replica.promptClickInput(0, p.replica.screen().cursor.y), "");
     // A command runs: the replica leaves the prompt with the source.
     p.source.feed("sleep 1\r\n\x1b]133;C\x1b\\");
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_FALSE(p.replica.atShellPrompt());
-    EXPECT_FALSE(p.replica.promptTakesClicks());
+    EXPECT_EQ(p.replica.promptClickInput(0, p.replica.screen().cursor.y), "");
     EXPECT_EQ(regionsDiffer(p.source, p.replica), "");
     // Output past the screen: the regions keep their rows by stable id.
     for (int i = 0; i < 20; ++i) p.source.feed("line\r\n");

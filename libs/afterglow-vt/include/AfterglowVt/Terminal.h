@@ -356,12 +356,16 @@ public:
     /// is set restarts its timeout when this changes: an end and the next
     /// begin can both arrive between two of its frames.
     std::uint64_t synchronizedOutputSerial() const noexcept { return m_synchronizedOutputSerial; }
-    /// The shell asked (OSC 133 click_events) for clicks on its command line
-    /// to move the cursor there, and the user is at that line now.
-    bool promptTakesClicks() const noexcept
-    {
-        return m_promptClickEvents && m_semanticZone == SemanticZone::Input && !m_modes.altScreen;
-    }
+    /// What a plain click at (@p col, @p row) of the screen sends to a shell
+    /// whose command line the user is at (OSC 133 marks), so that the shell
+    /// moves its cursor there, as kitty's protocol has it: an SGR click when
+    /// the shell asked for click_events (an absolute y for 1, a y relative to
+    /// the top line of the current prompt for 2), else as many cursor keys as
+    /// characters between the cursor and the click (kitty's special key
+    /// CSI 1 u with special_key=1). Empty when the click is not on the
+    /// command line: output, the alternate screen, history in view, mouse
+    /// tracking on, or above the prompt.
+    std::string promptClickInput(int col, int row) const;
     const ShellContexts& contexts() const noexcept { return m_contexts; }
 
     Rgb paletteColor(int index) const noexcept { return m_palette[std::size_t(index & 0xFF)]; }
@@ -701,7 +705,14 @@ private:
     SemanticZone m_semanticZone = SemanticZone::Output;
     bool m_shellRedrawsPrompt = true;
     bool m_promptRedrawPending = false;
-    bool m_promptClickEvents = false;
+    /// How a click on the command line reaches the shell (OSC 133 A
+    /// click_events), and whether its cursor keys are kitty's special key.
+    enum class PromptClicks : std::uint8_t { Keys, Absolute, Relative };
+    PromptClicks m_promptClicks = PromptClicks::Keys;
+    bool m_promptSpecialKey = false;
+    /// Where the secondary (PS2) prompt started (OSC 133 A;k=s), for the y of
+    /// click_events=2. Invalid until a shell sends one after its prompt.
+    Mark m_secondaryPrompt;
     std::uint64_t m_synchronizedOutputSerial = 0;
     /// The command line a shell reported (133 cmdline, 633 E) for the next C.
     std::optional<std::string> m_explicitCommand;

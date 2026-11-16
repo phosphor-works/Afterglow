@@ -116,6 +116,105 @@ std::string percentDecode(std::string_view in)
     return out;
 }
 
+/// One escape of ANSI-C quoting ($'...') that starts at @p in[i], after its
+/// backslash, appended to @p out. Returns the index after the escape.
+std::size_t ansiCEscape(std::string_view in, std::size_t i, std::string& out)
+{
+    const auto digits = [&in](std::size_t from, std::size_t max, int base, std::uint32_t& value) {
+        std::size_t n = 0;
+        value = 0;
+        while (n < max && from + n < in.size()) {
+            const char c = in[from + n];
+            const int d = base == 8 ? (c >= '0' && c <= '7' ? c - '0' : -1) : hexDigit(c);
+            if (d < 0) break;
+            value = value * std::uint32_t(base) + std::uint32_t(d);
+            ++n;
+        }
+        return n;
+    };
+    const char c = in[i];
+    std::uint32_t value = 0;
+    switch (c) {
+    case 'a': out += '\a'; return i + 1;
+    case 'b': out += '\b'; return i + 1;
+    case 'e':
+    case 'E': out += '\x1b'; return i + 1;
+    case 'f': out += '\f'; return i + 1;
+    case 'n': out += '\n'; return i + 1;
+    case 'r': out += '\r'; return i + 1;
+    case 't': out += '\t'; return i + 1;
+    case 'v': out += '\v'; return i + 1;
+    case 'c':
+        if (i + 1 < in.size()) {
+            out += char(in[i + 1] & 0x1f);
+            return i + 2;
+        }
+        break;
+    case 'x':
+        if (const std::size_t n = digits(i + 1, 2, 16, value)) {
+            out += char(value);
+            return i + 1 + n;
+        }
+        break;
+    case 'u':
+    case 'U':
+        if (const std::size_t n = digits(i + 1, c == 'u' ? 4 : 8, 16, value)) {
+            detail::appendUtf8(out, value <= 0x10FFFF && (value < 0xD800 || value > 0xDFFF) ? char32_t(value) : U'\uFFFD');
+            return i + 1 + n;
+        }
+        break;
+    default:
+        if (const std::size_t n = digits(i, 3, 8, value)) {
+            out += char(value & 0xff);
+            return i + n;
+        }
+        break;
+    }
+    // \\, \', \", \? and any other character stand for themselves.
+    out += c;
+    return i + 1;
+}
+
+/// Undoes the shell quoting of bash's printf %q, which OSC 133 cmdline
+/// carries: a backslash before any character, '...' and "...", and $'...'
+/// with the escapes of ANSI-C quoting. An unclosed quote runs to the end.
+std::string shellUnquote(std::string_view in)
+{
+    std::string out;
+    out.reserve(in.size());
+    std::size_t i = 0;
+    while (i < in.size()) {
+        const char c = in[i];
+        if (c == '\\' && i + 1 < in.size()) {
+            out += in[i + 1];
+            i += 2;
+        } else if (c == '\'') {
+            const std::size_t end = std::min(in.find('\'', i + 1), in.size());
+            out.append(in.substr(i + 1, end - i - 1));
+            i = end + 1;
+        } else if (c == '"') {
+            for (++i; i < in.size() && in[i] != '"'; ++i) {
+                if (in[i] == '\\' && i + 1 < in.size() && std::strchr("\"\\$`", in[i + 1])) ++i;
+                out += in[i];
+            }
+            ++i;
+        } else if (c == '$' && i + 1 < in.size() && in[i + 1] == '\'') {
+            for (i += 2; i < in.size() && in[i] != '\'';) {
+                if (in[i] == '\\' && i + 1 < in.size()) {
+                    i = ansiCEscape(in, i + 1, out);
+                } else {
+                    out += in[i++];
+                }
+            }
+            ++i;
+        } else {
+            out += c;
+            ++i;
+        }
+    }
+    return out;
+}
+
 /// @p text as UTF-8 without the code points @p drop names. Each byte where
 /// no valid UTF-8 sequence starts becomes U+FFFD, so the result is valid
 /// UTF-8 whatever a program sent.
@@ -2170,7 +2269,9 @@ void Terminal::fullReset()
     m_extraCursorColor = m_extraCursorTextColor = {};
     endITerm2Multipart();
     m_explicitCommand.reset();
-    m_promptClickEvents = false;
+    m_promptClicks = PromptClicks::Keys;
+    m_promptSpecialKey = false;
+    m_secondaryPrompt = {};
     m_sixelPaletteReady = false;
     // The context stack (OSC 3008) belongs to the processes, not the terminal
     // state: the uapi spec keeps it through resets.
@@ -3774,10 +3875,13 @@ void Terminal::programExited()
     // No shell draws its prompt again: a held pane reflows the prompt it
     // left as any output, holds no frame for a redraw and moves no cursor
     // for a click.
-    const bool prompt = m_semanticZone != SemanticZone::Output || m_promptRedrawPending || m_promptClickEvents;
+    const bool prompt = m_semanticZone != SemanticZone::Output || m_promptRedrawPending
+        || m_promptClicks != PromptClicks::Keys || m_promptSpecialKey || m_secondaryPrompt.valid;
     m_semanticZone = SemanticZone::Output;
     m_promptRedrawPending = false;
-    m_promptClickEvents = false;
+    m_promptClicks = PromptClicks::Keys;
+    m_promptSpecialKey = false;
+    m_secondaryPrompt = {};
     const bool status = m_programStatus.endActivity();
     if (prompt || status) {
         touch();
@@ -4322,11 +4426,92 @@ std::optional<std::string> Terminal::semanticRegionText(std::uint64_t id, std::s
     return std::nullopt;
 }
 
+std::string Terminal::promptClickInput(int col, int row) const
+{
+    const Screen& screen = *m_active;
+    if (m_semanticZone == SemanticZone::Output || m_modes.altScreen || screen.viewportOffset() != 0
+        || m_modes.mouseTracking != MouseTracking::None || col < 0 || col >= cols() || row < 0 || row >= rows()) {
+        return {};
+    }
+    const auto& cur = screen.cursor;
+    // Only on the prompt's own lines: from where it starts to the bottom.
+    int promptRow = cur.y;
+    while (promptRow > 0 && !screen.row(promptRow).promptStart) {
+        --promptRow;
+    }
+    if (row < promptRow) {
+        return {};
+    }
+    if (m_promptClicks != PromptClicks::Keys) {
+        // y relative to the secondary prompt when it starts on or above the
+        // click, else to the primary prompt; 0 is the top line.
+        int top = promptRow;
+        if (m_promptClicks == PromptClicks::Relative && m_secondaryPrompt.valid) {
+            const long long y = static_cast<long long>(m_secondaryPrompt.row)
+                - static_cast<long long>(screen.rowsDropped() + screen.historySize());
+            if (y >= promptRow && y <= row) top = int(y);
+        }
+        const int y = m_promptClicks == PromptClicks::Absolute ? row + 1 : row - top;
+        char buf[64];
+        const int n = std::snprintf(buf, sizeof buf, "\x1b[<0;%d;%dM\x1b[<0;%d;%dm", col + 1, y, col + 1, y);
+        return std::string(buf, std::size_t(n));
+    }
+    // As many cursor keys as characters between the cursor and the click:
+    // a line editor moves by character, not by cell. A row's text ends where
+    // a wrapped row runs on into the next, or after the last character of a
+    // row that ends in a line break, and the break is one more character.
+    const auto contentEnd = [&screen, this](int y) {
+        const auto& r = screen.row(y);
+        if (r.wrapped) return cols();
+        int end = cols();
+        while (end > 0 && r.at(end - 1).codepoint() == 0) --end;
+        return end;
+    };
+    const auto characters = [&screen](int y, int from, int to) {
+        long n = 0;
+        for (int x = std::max(0, from); x < to; ++x) n += screen.row(y).at(x).isTail() ? 0 : 1;
+        return n;
+    };
+    // Counted from the earlier position to the later one, in reading order.
+    const bool forward = row > cur.y || (row == cur.y && col > cur.x);
+    int fromX = cur.x, fromY = cur.y, toX = col, toY = row;
+    if (!forward) {
+        std::swap(fromX, toX);
+        std::swap(fromY, toY);
+    }
+    if (!screen.row(toY).wrapped) toX = std::min(toX, std::max(contentEnd(toY), toY == cur.y ? cur.x : 0));
+    long delta = 0;
+    for (int y = fromY; y <= toY; ++y) {
+        delta += characters(y, y == fromY ? fromX : 0, y == toY ? toX : contentEnd(y));
+        if (y < toY && !screen.row(y).wrapped) ++delta;
+    }
+    if (!forward) delta = -delta;
+    if (delta == 0 || std::labs(delta) > long(cols()) * rows()) {
+        return {};
+    }
+    std::string one;
+    if (m_promptSpecialKey) {
+        // kitty's special key, which its fish integration binds to moving
+        // one character: key code 1, with no modifier for right.
+        one = delta < 0 ? "\x1b[1;1u" : "\x1b[1u";
+    } else {
+        KeyEvent ev;
+        ev.key = delta < 0 ? Key::Left : Key::Right;
+        one = encodeKey(ev, m_modes);
+    }
+    std::string out;
+    out.reserve(one.size() * std::size_t(std::labs(delta)));
+    for (long i = 0; i < std::labs(delta); ++i) out += one;
+    return out;
+}
+
 void Terminal::semanticPrompt(std::string_view args)
 {
     // OSC 133 ; <kind> [; key=value ...]
     const char kind = args.empty() ? '\0' : args[0];
-    bool clickEvents = false;
+    PromptClicks clicks = PromptClicks::Keys;
+    bool specialKey = false;
+    bool secondary = false;
     bool commandGiven = false;
     std::size_t pos = args.find(';');
     while (pos != std::string_view::npos) {
@@ -4337,7 +4522,13 @@ void Terminal::semanticPrompt(std::string_view args)
         } else if (opt == "redraw=1") {
             m_shellRedrawsPrompt = true;
         } else if (opt == "click_events=1") {
-            clickEvents = true;
+            clicks = PromptClicks::Absolute;
+        } else if (opt == "click_events=2") {
+            clicks = PromptClicks::Relative;
+        } else if (opt == "special_key=1") {
+            specialKey = true;
+        } else if (opt == "k=s") {
+            secondary = true;
         } else if (opt.starts_with("cmdline_url=") || opt.starts_with("cmdline=")) {
             // A command line too long to keep goes alone: the mark still
             // counts, and C falls back to the text typed after B.
@@ -4347,10 +4538,19 @@ void Terminal::semanticPrompt(std::string_view args)
             if (value.size() > MaxCommandLine) {
                 m_explicitCommand.reset();
             } else {
-                m_explicitCommand = withoutControls(encoded ? percentDecode(value) : std::string(value));
+                m_explicitCommand = withoutControls(encoded ? percentDecode(value) : shellUnquote(value));
             }
         }
         pos = next;
+    }
+    if (kind == 'A' && secondary) {
+        // The secondary (PS2) prompt of the command line being typed: no new
+        // prompt, so the typed command, the prompt mark and the click
+        // settings stay. Only click_events=2 needs where it starts.
+        if (m_semanticZone != SemanticZone::Output && !m_modes.altScreen) {
+            m_secondaryPrompt = cursorMark();
+        }
+        return;
     }
     switch (kind) {
     case 'A': // prompt start
@@ -4386,7 +4586,9 @@ void Terminal::semanticPrompt(std::string_view args)
         }
         beginSemanticRegion(SemanticZoneKind::Prompt);
         m_semanticZone = SemanticZone::Prompt;
-        m_promptClickEvents = clickEvents;
+        m_promptClicks = clicks;
+        m_promptSpecialKey = specialKey;
+        m_secondaryPrompt = {};
         if (!m_modes.altScreen) {
             m_active->row(cursor().y).promptStart = true;
         }
@@ -4406,7 +4608,9 @@ void Terminal::semanticPrompt(std::string_view args)
     case 'C': { // command output begins
         beginSemanticRegion(SemanticZoneKind::Output);
         m_semanticZone = SemanticZone::Output;
-        m_promptClickEvents = false;
+        m_promptClicks = PromptClicks::Keys;
+        m_promptSpecialKey = false;
+        m_secondaryPrompt = {};
         m_promptRedrawPending = false;
         m_commandSincePrompt = true;
         std::optional<std::string> reported = std::exchange(m_explicitCommand, std::nullopt);

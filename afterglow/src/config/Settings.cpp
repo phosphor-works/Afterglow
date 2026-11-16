@@ -682,6 +682,9 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Allow a single press without Alt inside the selection to drag its text to another pane or "
                         "another desktop application. A click there without a move clears the selection, and other presses "
                         "there select as they do elsewhere.")},
+        {QStringLiteral("clickMovesCursor"), d.mouse.clickMovesCursor, QMetaType::Bool,
+         QStringLiteral("Move the cursor of a shell to a click on its command line. It works in a shell with shell "
+                        "integration, which marks where its prompt starts.")},
     };
     schema.groups[LinksGroup] = {
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,
@@ -1908,6 +1911,7 @@ Settings SettingsStore::read()
     s.mouse.touchScrollMultiplier = st.read<double>(MouseGroup, QStringLiteral("touchScrollMultiplier"));
     s.mouse.touchSelectHold = st.read<int>(MouseGroup, QStringLiteral("touchSelectHold"));
     s.mouse.dragSelection = st.read<bool>(MouseGroup, QStringLiteral("dragSelection"));
+    s.mouse.clickMovesCursor = st.read<bool>(MouseGroup, QStringLiteral("clickMovesCursor"));
 
     // Links
     s.links.detectUrls = st.read<bool>(LinksGroup, QStringLiteral("detectUrls"));

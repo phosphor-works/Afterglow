@@ -6407,67 +6407,11 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
 
 void TerminalWindow::moveCursorToClick(Pane* pane, const QPointF& pos)
 {
-    // The shell asked (OSC 133 click_events) for clicks on its command line
-    // to move the cursor: as many arrow keys as characters between there
-    // and here. A line editor moves by character, not by cell.
+    if (!m_settings.settings().mouse.clickMovesCursor) return;
     const QPoint cell = cellAt(pane, pos);
-    const std::string keys = pane->withTerminal([&cell](Terminal& t) -> std::string {
-        if (!t.promptTakesClicks() || t.screen().viewportOffset() != 0
-            || t.modes().mouseTracking != AfterglowVt::MouseTracking::None) {
-            return {};
-        }
-        const auto& screen = t.screen();
-        const auto& cur = screen.cursor;
-        // Only on the prompt's own lines: from where it starts to the bottom.
-        int promptRow = cur.y;
-        while (promptRow > 0 && !screen.row(promptRow).promptStart) {
-            --promptRow;
-        }
-        if (cell.y() < promptRow) {
-            return {};
-        }
-        // Where a row's text ends: a wrapped row runs on into the next; a
-        // row that ends in a line break stops after its last character,
-        // and the break itself is one more character.
-        const auto contentEnd = [&screen, &t](int y) {
-            const auto& row = screen.row(y);
-            if (row.wrapped) return t.cols();
-            int end = t.cols();
-            while (end > 0 && row.at(end - 1).codepoint() == 0) --end;
-            return end;
-        };
-        const auto characters = [&screen](int y, int from, int to) {
-            long n = 0;
-            for (int x = std::max(0, from); x < to; ++x) n += screen.row(y).at(x).isTail() ? 0 : 1;
-            return n;
-        };
-        // Count from the earlier position to the later one, in reading order.
-        const bool forward = cell.y() > cur.y || (cell.y() == cur.y && cell.x() > cur.x);
-        QPoint from(cur.x, cur.y), to = cell;
-        if (!forward) std::swap(from, to);
-        if (!screen.row(to.y()).wrapped) to.setX(std::min(to.x(), std::max(contentEnd(to.y()), to.y() == cur.y ? cur.x : 0)));
-        long delta = 0;
-        for (int y = from.y(); y <= to.y(); ++y) {
-            const int start = y == from.y() ? from.x() : 0;
-            const int end = y == to.y() ? to.x() : contentEnd(y);
-            delta += characters(y, start, end);
-            if (y < to.y() && !screen.row(y).wrapped) ++delta; // the line break
-        }
-        if (!forward) delta = -delta;
-        if (delta == 0 || std::labs(delta) > long(t.cols()) * t.rows()) {
-            return {};
-        }
-        AfterglowVt::KeyEvent ev;
-        ev.key = delta < 0 ? AfterglowVt::Key::Left : AfterglowVt::Key::Right;
-        const std::string one = AfterglowVt::encodeKey(ev, t.modes());
-        std::string out;
-        for (long i = 0; i < std::labs(delta); ++i) {
-            out += one;
-        }
-        return out;
-    });
-    if (!keys.empty()) {
-        pane->sendInput(keys);
+    const std::string input = pane->withTerminal([&cell](Terminal& t) { return t.promptClickInput(cell.x(), cell.y()); });
+    if (!input.empty()) {
+        pane->sendInput(input);
     }
 }
 

@@ -66,7 +66,11 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 24) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 25) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 25 changed the shell marks of the state frames: the byte of a
+    // click on the command line holds the click_events mode and kitty's
+    // special key, and the marks end with the secondary prompt (OSC 133
+    // A;k=s, StateSync tests).
     // Version 24 added Mux.keptNotifications to the options and the settings
     // of a session, and the missed flag of the Notify and DesktopNotification
     // host calls: the notifications that a pane kept while no window showed

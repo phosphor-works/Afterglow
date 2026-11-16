@@ -105,6 +105,9 @@ struct MouseSettings
     /// clears the selection. Off, as in Kitty: a press inside the selection
     /// selects as it does elsewhere.
     bool dragSelection = false;
+    /// A click on the command line of a shell that marks its prompt
+    /// (OSC 133) moves the shell's cursor there. On, as in Kitty.
+    bool clickMovesCursor = true;
     bool operator==(const MouseSettings&) const = default;
 };
 
