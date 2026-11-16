@@ -217,6 +217,12 @@ private:
     void eraseMulticellAt(Row& row, int x);
     /// Erases only @p row's part of the block at @p x.
     void eraseMulticellInRow(Row& row, int x);
+    /// Before ICH (@p shift > 0) or DCH (< 0) shifts columns x..right of
+    /// @p row: erases the blocks that cannot move whole, and returns the left
+    /// columns of those that move.
+    std::vector<std::uint16_t> settleMulticellsForShift(Row& row, int x, int right, int shift);
+    /// After the shift: moves the map entries of @p moved by @p shift columns.
+    static void shiftMulticellKeys(Row& row, const std::vector<std::uint16_t>& moved, int shift);
     /// Erases blocks in rows top..bottom that also reach outside the region,
     /// or that have rows on both sides of row @p split.
     void eraseMulticellsCrossing(int top, int bottom, int left, int right, int split);

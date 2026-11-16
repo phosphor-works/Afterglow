@@ -110,6 +110,52 @@ TEST(TextSizing, EraseAndEditTakeWholeBlocks)
     EXPECT_FALSE(t.at(0, 1).isMulticell());
 }
 
+TEST(TextSizing, InsertAndDeleteShiftOneRowBlocksWhole)
+{
+    // kitty's spec: ICH and DCH shift a one-row block whole. They erase a
+    // block of more rows, and one that the cells at x and x + n - 1 split.
+    auto block = [](const Term& t, int x) {
+        const Row& r = t.t.screen().row(0);
+        const MulticellParams* p = t.t.screen().multicellParams(r, x);
+        return p && r.at(x).multicellDx() == 0 && p->columns() == 2 && r.at(x).codepoint() == U'x'
+            && r.graphemes && r.graphemes->count(std::uint16_t(x)) && r.graphemes->at(std::uint16_t(x)) == U"y";
+    };
+    Term t(10, 4);
+    t.feed("\x1b[1;4H\x1b]66;w=2;xy\x07"); // one block in columns 3 and 4
+    ASSERT_TRUE(block(t, 3));
+    t.feed("\x1b[1;1H\x1b[2@");
+    EXPECT_TRUE(block(t, 5));
+    EXPECT_FALSE(t.at(3, 0).isMulticell());
+    EXPECT_EQ(t.t.screen().row(0).multicell->count(3), 0u);
+    t.feed("\x1b[1;1H\x1b[2P");
+    EXPECT_TRUE(block(t, 3));
+    EXPECT_FALSE(t.at(5, 0).isMulticell());
+    // ICH at the block's second cell splits it.
+    t.feed("\x1b[1;5H\x1b[@");
+    EXPECT_FALSE(t.at(3, 0).isMulticell());
+    EXPECT_FALSE(t.t.screen().row(0).multicell && !t.t.screen().row(0).multicell->empty());
+    // ICH that pushes it past the right edge.
+    t.feed("\x1b[1;8H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[2@");
+    for (int x = 0; x < 10; ++x) EXPECT_FALSE(t.at(x, 0).isMulticell()) << x;
+    // DCH whose deleted cells take its first cell.
+    t.feed("\x1b[1;4H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[4P");
+    for (int x = 0; x < 10; ++x) EXPECT_FALSE(t.at(x, 0).isMulticell()) << x;
+    // DCH of the cells right before it moves it onto them.
+    t.feed("\x1b[1;4H\x1b]66;w=2;xy\x07\x1b[1;2H\x1b[2P");
+    EXPECT_TRUE(block(t, 1));
+    // A block of two rows goes, though it would fit.
+    t.feed("\x1b[2J\x1b[1;4H\x1b]66;s=2;a\x07\x1b[1;1H\x1b[@");
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 10; ++x) EXPECT_FALSE(t.at(x, y).isMulticell()) << x << "," << y;
+    // With left and right margins, a block past the right margin stays, and
+    // one across it goes.
+    t.feed("\x1b[2J\x1b[?69h\x1b[1;6s\x1b[1;8H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[@");
+    EXPECT_TRUE(block(t, 7));
+    t.feed("\x1b[1;6H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[@");
+    EXPECT_FALSE(t.at(5, 0).isMulticell());
+    EXPECT_FALSE(t.at(6, 0).isMulticell());
+}
+
 TEST(TextSizing, AScrollWithinMarginsKeepsTheParametersOfTheBlocksItMoves)
 {
     // A block that needs a row below the region scrolls the region within

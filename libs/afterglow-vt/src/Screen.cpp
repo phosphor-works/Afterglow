@@ -394,6 +394,49 @@ void moveGrapheme(Row& row, int from, int to)
 }
 } // namespace
 
+std::vector<std::uint16_t> Screen::settleMulticellsForShift(Row& row, int x, int right, int shift)
+{
+    std::vector<std::uint16_t> moved;
+    if (!row.multicell) {
+        return moved;
+    }
+    // kitty's text sizing spec: a block of more than one row that reaches
+    // x..right goes, and so does a one-row block that the shift splits: one
+    // that x cuts, one past the right margin, one that the shift pushes out
+    // (ICH) or that the deleted cells take a part of (DCH). The rest moves whole.
+    std::vector<int> doomed;
+    for (const auto& [left, params] : *row.multicell) {
+        const int end = left + params.columns() - 1;
+        if (end < x || left > right) continue;
+        const int to = left + shift;
+        if (params.scale > 1 || left < x || end > right || to < x || to + params.columns() - 1 > right) {
+            doomed.push_back(left);
+        } else {
+            moved.push_back(left);
+        }
+    }
+    for (const int left : doomed) {
+        if (row.cells[std::size_t(left)].isMulticell()) eraseMulticellAt(row, left);
+    }
+    return moved;
+}
+
+void Screen::shiftMulticellKeys(Row& row, const std::vector<std::uint16_t>& moved, int shift)
+{
+    if (moved.empty() || !row.multicell) {
+        return;
+    }
+    // Take them all out first: a block can move onto another's old column.
+    std::vector<std::pair<std::uint16_t, MulticellParams>> entries;
+    entries.reserve(moved.size());
+    for (const std::uint16_t left : moved) {
+        if (auto node = row.multicell->extract(left)) entries.emplace_back(std::uint16_t(left + shift), node.mapped());
+    }
+    for (const auto& [left, params] : entries) {
+        (*row.multicell)[left] = params;
+    }
+}
+
 void Screen::insertCells(Row& row, int x, int right, int n, std::uint32_t fillStyleId)
 {
     right = std::min(right, m_cols - 1);
@@ -401,13 +444,7 @@ void Screen::insertCells(Row& row, int x, int right, int n, std::uint32_t fillSt
         return;
     }
     n = std::min(n, right - x + 1);
-    if (row.multicell) {
-        for (int i = x; i <= right; ++i) {
-            if (row.cells[std::size_t(i)].isMulticell()) {
-                eraseMulticellAt(row, i);
-            }
-        }
-    }
+    const std::vector<std::uint16_t> moved = settleMulticellsForShift(row, x, right, n);
     // A glyph that starts at x moves whole; only one that x cuts in half breaks.
     if (row.cells[std::size_t(x)].isTail()) {
         breakWideAt(row, x, fillStyleId);
@@ -434,6 +471,7 @@ void Screen::insertCells(Row& row, int x, int right, int n, std::uint32_t fillSt
     if (row.cells[std::size_t(right)].width() == 2) {
         clearCell(row, right, fillStyleId);
     }
+    shiftMulticellKeys(row, moved, n);
 }
 
 void Screen::deleteCells(Row& row, int x, int right, int n, std::uint32_t fillStyleId)
@@ -443,13 +481,7 @@ void Screen::deleteCells(Row& row, int x, int right, int n, std::uint32_t fillSt
         return;
     }
     n = std::min(n, right - x + 1);
-    if (row.multicell) {
-        for (int i = x; i <= right; ++i) {
-            if (row.cells[std::size_t(i)].isMulticell()) {
-                eraseMulticellAt(row, i);
-            }
-        }
-    }
+    const std::vector<std::uint16_t> moved = settleMulticellsForShift(row, x, right, -n);
     breakWideAt(row, x, fillStyleId);
     // The first cell kept moves to x: a glyph starting there moves whole, and
     // only a tail (its head deleted) is left without a partner.
@@ -482,6 +514,7 @@ void Screen::deleteCells(Row& row, int x, int right, int n, std::uint32_t fillSt
         c.setStyleId(fillStyleId);
         m_styles.retain(fillStyleId);
     }
+    shiftMulticellKeys(row, moved, -n);
 }
 
 void Screen::copyRowSpan(Row& dst, const Row& src, int left, int right)
