@@ -91,6 +91,8 @@ std::string encode(const Input& input)
         }
     } else if (input.type == InputType::Visible) {
         out.push_back(input.visible ? 1 : 0);
+    } else if (input.type == InputType::DownloadAnswer) {
+        out.push_back(input.accept ? 1 : 0);
     }
     return out;
 }
@@ -118,11 +120,11 @@ std::optional<Input> decodeInput(std::string_view frame)
         input.type = InputType(type);
         return input;
     }
-    if (type == std::uint8_t(InputType::Visible)) {
-        const std::uint8_t visible = r.byte();
-        if (!r.ok() || !r.done() || visible > 1) return std::nullopt;
-        input.type = InputType::Visible;
-        input.visible = visible;
+    if (type == std::uint8_t(InputType::Visible) || type == std::uint8_t(InputType::DownloadAnswer)) {
+        const std::uint8_t flag = r.byte();
+        if (!r.ok() || !r.done() || flag > 1) return std::nullopt;
+        input.type = InputType(type);
+        (input.type == InputType::Visible ? input.visible : input.accept) = flag;
         return input;
     }
     if (type != std::uint8_t(InputType::Resize)) return std::nullopt;

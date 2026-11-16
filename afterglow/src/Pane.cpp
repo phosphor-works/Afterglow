@@ -37,6 +37,10 @@
 
 #include <utility>
 
+#include <cerrno>
+#include <cstring>
+
+#include <fcntl.h>
 #include <pwd.h>
 #include <unistd.h>
 
@@ -89,6 +93,13 @@ Pane::~Pane()
     // program gets SIGHUP.
     delete m_overlay;
     if (m_searchJob) m_searchJob->cancelled = true;
+    // A reader thread that waits for a download's answer ends its wait.
+    {
+        std::lock_guard lock(m_mutex);
+        m_closing = true;
+        dropDownload();
+    }
+    m_downloadWake.notify_all();
     // Stop the pty thread before the terminal it feeds goes away.
     if (m_pty) m_pty->stop();
     m_dragDrop.reset();
@@ -1185,7 +1196,15 @@ void Pane::applySessionHostCall(const AfterglowMux::Host::Call& call)
     // The daemon measured the command: the start and the end can come here
     // together.
     case Kind::CommandFinished: finishCommand(call.number, qint64(std::min<std::uint64_t>(call.value, std::numeric_limits<qint64>::max()))); break;
-    case Kind::Download: downloadFile(call.title, call.text); break;
+    case Kind::DownloadBegin: downloadBegin(call.title, call.value ? std::int64_t(call.value - 1) : -1); break;
+    case Kind::DownloadData:
+        // A write that fails stops the download in the daemon too.
+        if (m_download.fd >= 0 && !downloadData(call.text)) {
+            downloadEnd(false);
+            if (m_session) m_session->answerDownload(m_sessionPane, false);
+        }
+        break;
+    case Kind::DownloadEnd: downloadEnd(call.number == 1); break;
     case Kind::Report: writeToPty(call.text); break;
     case Kind::ProtocolLost:
         loseProtocolCommands(call.number == AfterglowMux::Host::LostPackets ? DragDrop::Lost::Packets
@@ -1729,8 +1748,15 @@ QList<PaneStatusRecord> Pane::status() const
 void Pane::ptyData(std::string_view bytes)
 {
     {
-        std::lock_guard lock(m_mutex);
+        std::unique_lock lock(m_mutex);
         m_terminal.feed(bytes);
+        // A download's question holds the output: this thread reads no more,
+        // so the program waits, as iTerm2 pauses it, until the answer or the
+        // pane's end. The lock goes meanwhile: the window draws and types.
+        while (m_terminal.holdsInput() && !m_closing) {
+            m_downloadWake.wait(lock, [this] { return !m_terminal.holdsInput() || m_closing; });
+            if (!m_closing) m_terminal.feed({}); // the output that waited, which can ask again
+        }
         if (m_scrollOnOutput.load(std::memory_order_relaxed)) {
             m_terminal.resetViewport();
         }
@@ -1823,26 +1849,11 @@ TerminalText Pane::accessibleText(bool cursorRow) const
 }
 
 namespace Afterglow {
-void Pane::downloadFile(std::string_view name, std::string_view data)
+namespace {
+/// The file name that a download suggests, as the user sees and keeps it:
+/// its last path part, printable, short enough for NAME_MAX.
+QString cleanDownloadName(std::string_view name)
 {
-    // Bound the entire application's pending payloads, including queued GUI work.
-    static std::atomic_bool busy{false};
-    static std::atomic_bool dropNoticed{false};
-    if (busy.exchange(true)) {
-        // Say so once while the dialog is open, not once for each file.
-        if (!dropNoticed.exchange(true)) {
-            QMetaObject::invokeMethod(this, [this] {
-                NotificationCenter::instance().showNotice(this, tr("Download not saved"),
-                    tr("A program sent a file while another file was waiting to be saved."));
-            }, Qt::QueuedConnection);
-        }
-        return;
-    }
-    auto lease = std::shared_ptr<void>(nullptr, [](void*) {
-        dropNoticed.store(false);
-        busy.store(false);
-    });
-    const QByteArray bytes(data.data(), qsizetype(data.size()));
     QString suggested = QString::fromUtf8(name.data(), qsizetype(name.size()));
     suggested.replace(QLatin1Char('\\'), QLatin1Char('/'));
     suggested = suggested.section(QLatin1Char('/'), -1);
@@ -1873,31 +1884,103 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
         clean = (end > 0 ? stem.left(end) : QStringLiteral("download")) + suffix;
     }
     if (clean.isEmpty() || clean == QLatin1String(".") || clean == QLatin1String("..")) clean = QStringLiteral("download.bin");
-    QMetaObject::invokeMethod(this, [this, bytes, clean, lease] {
-        auto* dialog = new QFileDialog(nullptr, tr("Save file received from %1").arg(sanitizedText(title(), 100)));
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->setAcceptMode(QFileDialog::AcceptSave);
-        dialog->setFileMode(QFileDialog::AnyFile);
-        dialog->setDirectory(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
-        dialog->selectFile(clean);
-        // On Wayland a dialog with no transient parent is not attached to the
-        // window. It follows the pane to another window.
-        keepDialogOverPane(dialog, this);
-        // Keep the lease until the dialog is destroyed, including on cancellation.
-        connect(dialog, &QObject::destroyed, [lease] {});
-        connect(this, &QObject::destroyed, dialog, &QDialog::reject);
-        connect(dialog, &QFileDialog::fileSelected, dialog, [bytes](const QString& path) {
-            QSaveFile file(path);
-            if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
-                // Not a modal box parented to the dialog: the dialog deletes
-                // itself when the pane closes, which would end a nested loop
-                // inside it.
-                NotificationCenter::instance().showNotice(nullptr, tr("Download failed"),
-                                                          QStringLiteral("%1: %2").arg(path, file.errorString()));
+    return clean;
+}
+} // namespace
+
+bool Pane::downloadBegin(std::string_view name, std::int64_t size)
+{
+    // m_mutex held: the reader thread, or for a session pane the GUI thread.
+    // The window asks first, as iTerm2 does; meanwhile the terminal holds the
+    // output, and ptyData() waits.
+    m_downloadAsked = true;
+    QMetaObject::invokeMethod(this, [this, clean = cleanDownloadName(name), size] { Q_EMIT downloadRequested(clean, size); },
+                              Qt::QueuedConnection);
+    return true;
+}
+
+void Pane::answerDownload(const QString& path)
+{
+    // GUI thread. A file only for a download that still waits: one that a
+    // reset or the program ended goes without it.
+    {
+        std::lock_guard lock(m_mutex);
+        if (!std::exchange(m_downloadAsked, false)) return;
+        if (!path.isEmpty()) {
+            // Next to the file, so that the rename at the end stays on one
+            // file system: "name.part", or "name.N.part" when that is taken.
+            const QByteArray target = QFile::encodeName(path);
+            for (int n = 0; n < 100 && m_download.fd < 0; ++n) {
+                const QByteArray part = n == 0 ? target + ".part" : target + '.' + QByteArray::number(n) + ".part";
+                const int fd = ::open(part.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+                if (fd >= 0) m_download = OpenDownload{fd, part, target, {}};
+                else if (errno != EEXIST) break;
             }
-        });
-        dialog->open();
-    }, Qt::QueuedConnection);
+            if (m_download.fd < 0) {
+                const QString error = QString::fromLocal8Bit(std::strerror(errno));
+                QMetaObject::invokeMethod(this, [this, path, error] { Q_EMIT downloadFinished(path, false, error); }, Qt::QueuedConnection);
+            }
+        }
+        const bool accept = m_download.fd >= 0;
+        if (m_session) {
+            m_session->answerDownload(m_sessionPane, accept);
+        } else {
+            // The output that waited parses here, on the GUI thread, which
+            // nothing of the download waits for: the reader thread may be
+            // waiting in ptyData(), or the output came from no reader.
+            m_terminal.answerDownload(accept);
+            m_terminal.feed({});
+        }
+    }
+    m_downloadWake.notify_all();
+    if (!m_session) Q_EMIT contentChanged();
+}
+
+bool Pane::downloadData(std::string_view bytes)
+{
+    // m_mutex held.
+    if (m_download.fd < 0) return false;
+    while (!bytes.empty()) {
+        const ssize_t n = ::write(m_download.fd, bytes.data(), bytes.size());
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            m_download.error = QString::fromLocal8Bit(std::strerror(n < 0 ? errno : ENOSPC));
+            return false;
+        }
+        bytes.remove_prefix(std::size_t(n));
+    }
+    return true;
+}
+
+void Pane::downloadEnd(bool complete)
+{
+    // m_mutex held. Before an answer: the window's question goes.
+    if (std::exchange(m_downloadAsked, false)) {
+        QMetaObject::invokeMethod(this, [this] { Q_EMIT downloadCancelled(); }, Qt::QueuedConnection);
+        return;
+    }
+    if (m_download.fd < 0) return;
+    const OpenDownload done = std::exchange(m_download, OpenDownload{});
+    bool ok = complete && ::close(done.fd) == 0;
+    if (!complete) ::close(done.fd);
+    if (ok && ::rename(done.part.constData(), done.target.constData()) != 0) ok = false;
+    QString error = done.error;
+    if (!ok) {
+        if (error.isEmpty()) error = complete ? QString::fromLocal8Bit(std::strerror(errno)) : tr("The program did not send the whole file.");
+        ::unlink(done.part.constData());
+    }
+    QMetaObject::invokeMethod(this, [this, path = QFile::decodeName(done.target), ok, error] { Q_EMIT downloadFinished(path, ok, error); },
+                              Qt::QueuedConnection);
+}
+
+void Pane::dropDownload()
+{
+    // m_mutex held: the pane closes, or its session pane goes.
+    m_downloadAsked = false;
+    if (m_download.fd < 0) return;
+    const OpenDownload done = std::exchange(m_download, OpenDownload{});
+    ::close(done.fd);
+    ::unlink(done.part.constData());
 }
 }
 

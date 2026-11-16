@@ -146,6 +146,9 @@ MuxPane::~MuxPane()
         const std::uint64_t one = 1;
         (void)!::write(m_stopDecode.get(), &one, sizeof one);
     }
+    // A reader thread that waits for a download ends its wait.
+    m_closing = true;
+    m_downloadWake.notify_all();
     if (m_pty) m_pty->stop();
     m_pty.reset();
 }
@@ -693,10 +696,91 @@ void MuxPane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
     m_scrolls.add(m_terminal.modes().altScreen, scroll);
 }
 
-void MuxPane::downloadFile(std::string_view name, std::string_view data)
+bool MuxPane::downloadBegin(std::string_view name, std::int64_t size)
 {
-    // Without a window, the download is dropped: no user can be asked.
-    forward(Host::make(Host::Kind::Download, std::string(name), std::string(data)));
+    // Reader thread, m_mutex held. The window asks, as for a pane of its
+    // own, and the terminal holds the output meanwhile (waitForDownload()).
+    // Without a window no user can answer: refused.
+    Host::Call call = Host::make(Host::Kind::DownloadBegin, std::string(name));
+    call.value = size < 0 ? 0 : std::uint64_t(size) + 1;
+    bool wake = false;
+    {
+        std::lock_guard host(m_hostMutex);
+        if (!queueLocked(Host::encode(call), Host::Kind::DownloadBegin, Fit::Always, &wake)) return false;
+        m_downloadWindow = m_window;
+    }
+    if (wake) m_wake();
+    return true;
+}
+
+bool MuxPane::downloadData(std::string_view bytes)
+{
+    // Never dropped: past Mux.eventQueue, waitForDownload() holds the output
+    // until the window took enough.
+    bool wake = false;
+    {
+        std::lock_guard host(m_hostMutex);
+        if (!m_window || m_window != m_downloadWindow) return false;
+        if (!queueLocked(Host::encode(Host::make(Host::Kind::DownloadData, {}, std::string(bytes))), Host::Kind::DownloadData,
+                         Fit::Always, &wake)) {
+            return false;
+        }
+    }
+    if (wake) m_wake();
+    return true;
+}
+
+void MuxPane::downloadEnd(bool complete)
+{
+    bool wake = false;
+    {
+        std::lock_guard host(m_hostMutex);
+        if (m_window && m_window == m_downloadWindow) {
+            (void)queueLocked(Host::encode(Host::make(Host::Kind::DownloadEnd, {}, {}, complete ? 1 : 0)), Host::Kind::DownloadEnd,
+                              Fit::Always, &wake);
+        }
+        m_downloadWindow = 0;
+    }
+    if (wake) m_wake();
+}
+
+void MuxPane::answerDownload(bool accept)
+{
+    // Daemon's thread. The reader thread parses what waited, as it does in a
+    // window's pane: the download's data may wait for this thread.
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_terminal.holdsInput()) m_terminal.answerDownload(accept);
+        else if (!accept) m_terminal.stopDownload();
+    }
+    m_downloadWake.notify_all();
+}
+
+void MuxPane::waitForDownload(std::unique_lock<std::mutex>& lock)
+{
+    // Reader thread, m_mutex held. As a window's pane, it reads no more while
+    // a download's question waits, so the program waits too, and while the
+    // download's data fills the window's queue. A window that goes answers
+    // no. The queue drains under m_hostMutex, not m_mutex: the wait looks
+    // again every 100 ms rather than count on a wake.
+    while (!m_closing) {
+        const bool holding = m_terminal.holdsInput();
+        bool asked = false;
+        bool full = false;
+        {
+            std::lock_guard host(m_hostMutex);
+            asked = m_window != 0 && m_window == m_downloadWindow;
+            full = asked && m_hostBytes > m_hostLimit;
+        }
+        if (holding && !asked) {
+            m_terminal.answerDownload(false);
+            m_terminal.feed({});
+            continue;
+        }
+        if (!holding && !full) return;
+        m_downloadWake.wait_for(lock, std::chrono::milliseconds(100));
+        if (holding && !m_terminal.holdsInput()) m_terminal.feed({}); // the answer came: what waited
+    }
 }
 
 void MuxPane::desktopNotification(const AfterglowVt::NotificationRequest& request)
@@ -909,6 +993,7 @@ void MuxPane::ptyData(std::string_view bytes)
             ~Unset() { lock = nullptr; }
         } unset{m_feedLock};
         m_terminal.feed(bytes);
+        waitForDownload(lock);
         // What the daemon's thread did not wait for while an image decoded,
         // in its order. After the feed: the decode ends in the middle of a
         // command of the program, which the parse finishes first.

@@ -40,6 +40,8 @@
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFileDialog>
+#include <QPushButton>
 #include <QFileInfo>
 #include <QUrl>
 #include <QGuiApplication>
@@ -746,6 +748,13 @@ void TerminalWindow::bindPane(Pane* pane)
                 }
                 NotificationCenter::instance().handle(guard, request);
             });
+    connect(pane, &Pane::downloadRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& name, qint64 size) {
+        if (guard) askDownload(guard, name, size);
+    });
+    connect(pane, &Pane::downloadFinished, this, [guard = QPointer<Pane>(pane)](const QString& path, bool ok, const QString& error) {
+        NotificationCenter::instance().showNotice(guard, ok ? tr("Download saved") : tr("Download not saved"),
+                                                  ok ? path : QStringLiteral("%1: %2").arg(path, error));
+    });
     pane->setDragAnswerWait(m_settings.settings().dragAnswerWait);
     pane->setNotificationsEnabled(m_settings.settings().notifications);
     connect(pane, &Pane::terminalProtocolRequested, this, [this, guard = QPointer<Pane>(pane)](int code, const QByteArray& payload) {
@@ -5737,6 +5746,94 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
                                    .arg(clipboardAsker(pane, name), buffer, sanitizedText(types.join(QStringLiteral(", ")), 200)),
                                name);
     if (!isActive()) alert(0);
+}
+
+namespace {
+/// @p name in @p directory, or "name (N).ext" when that is taken.
+QString uniqueDownloadPath(const QString& directory, const QString& name)
+{
+    QDir().mkpath(directory);
+    const QDir dir(directory);
+    const qsizetype dot = name.lastIndexOf(QLatin1Char('.'));
+    const QString stem = dot > 0 ? name.left(dot) : name;
+    const QString suffix = dot > 0 ? name.mid(dot) : QString();
+    QString path = dir.filePath(name);
+    for (int n = 1; n < 1000 && QFileInfo::exists(path); ++n) path = dir.filePath(QStringLiteral("%1 (%2)%3").arg(stem).arg(n).arg(suffix));
+    return path;
+}
+} // namespace
+
+void TerminalWindow::askDownload(Pane* pane, const QString& name, qint64 size)
+{
+    const Settings& settings = m_settings.settings();
+    QString directory = settings.downloadDirectory;
+    if (directory == QLatin1String("~") || directory.startsWith(QLatin1String("~/"))) directory = QDir::homePath() + directory.mid(1);
+    if (directory.isEmpty()) directory = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    const QString file = name.isEmpty() ? QStringLiteral("download.bin") : name;
+    switch (settings.downloads) {
+    case Settings::Permission::Deny:
+        pane->answerDownload({});
+        return;
+    case Settings::Permission::Allow:
+        pane->answerDownload(uniqueDownloadPath(directory, file));
+        return;
+    case Settings::Permission::Ask:
+        break;
+    }
+    // One question, before the data comes, as iTerm2 asks: the program
+    // waits. It starts on Refuse, so a Return typed for the shell refuses.
+    const QString shown = sanitizedText(file, 200);
+    const QString text = size >= 0
+        ? tr("%1 wants to save the file “%2” (%3).").arg(clipboardAsker(pane), shown, QLocale().formattedDataSize(size))
+        : tr("%1 wants to save the file “%2”. Its size is not known.").arg(clipboardAsker(pane), shown);
+    auto* dialog = new QMessageBox(QMessageBox::Question, tr("Download"), text, QMessageBox::NoButton);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    // As the file transfer question: Plasma's native box adds its buttons again.
+    dialog->setOption(QMessageBox::Option::DontUseNativeDialog);
+    dialog->setTextFormat(Qt::PlainText);
+    QPushButton* save = dialog->addButton(tr("Save to %1").arg(QDir(directory).dirName()), QMessageBox::AcceptRole);
+    QPushButton* saveAs = dialog->addButton(tr("Save As…"), QMessageBox::ActionRole);
+    QPushButton* refuse = dialog->addButton(tr("Refuse"), QMessageBox::RejectRole);
+    dialog->setDefaultButton(refuse);
+    dialog->setEscapeButton(refuse);
+    keepDialogOverPane(dialog, pane);
+    const QPointer<Pane> guard(pane);
+    connect(dialog, &QDialog::finished, dialog, [this, guard, dialog, save, saveAs, directory, file] {
+        if (!guard) return;
+        if (dialog->clickedButton() == save) guard->answerDownload(uniqueDownloadPath(directory, file));
+        else if (dialog->clickedButton() == saveAs) saveDownloadAs(guard, directory, file);
+        else guard->answerDownload({});
+    });
+    // The download ended before the answer, or the pane closed.
+    connect(pane, &Pane::downloadCancelled, dialog, &QDialog::reject);
+    connect(pane, &QObject::destroyed, dialog, &QDialog::reject);
+    dialog->open();
+    if (!isActive()) alert(0);
+}
+
+void TerminalWindow::saveDownloadAs(Pane* pane, const QString& directory, const QString& name)
+{
+    auto* dialog = new QFileDialog(nullptr, tr("Save file received from %1").arg(sanitizedText(pane->title(), 100)));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setAcceptMode(QFileDialog::AcceptSave);
+    dialog->setFileMode(QFileDialog::AnyFile);
+    dialog->setDirectory(directory);
+    dialog->selectFile(name);
+    keepDialogOverPane(dialog, pane);
+    const QPointer<Pane> guard(pane);
+    // Answered once: a chosen file, or a refusal when the dialog closes
+    // without one.
+    auto answered = std::make_shared<bool>(false);
+    connect(dialog, &QFileDialog::fileSelected, dialog, [guard, answered](const QString& path) {
+        *answered = true;
+        if (guard) guard->answerDownload(path);
+    });
+    connect(dialog, &QDialog::finished, dialog, [guard, answered] {
+        if (!*answered && guard) guard->answerDownload({});
+    });
+    connect(pane, &Pane::downloadCancelled, dialog, &QDialog::reject);
+    connect(pane, &QObject::destroyed, dialog, &QDialog::reject);
+    dialog->open();
 }
 
 QString TerminalWindow::clipboardAsker(Pane* pane, const QString& name) const

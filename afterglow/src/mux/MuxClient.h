@@ -282,6 +282,9 @@ public:
     /// the session's terminal.
     void sendReset(std::uint32_t id);
     void sendClear(std::uint32_t id);
+    /// The answer to a pane's DownloadBegin call, or false to stop its
+    /// download (Attach::InputType::DownloadAnswer).
+    void answerDownload(std::uint32_t id, bool accept);
     /// Whether the user can see pane @p id: its terminal in the daemon
     /// reports a change to the program (mode 2033), and the daemon holds the
     /// screens of a pane that the user cannot see (StateWriter::updateHeld)

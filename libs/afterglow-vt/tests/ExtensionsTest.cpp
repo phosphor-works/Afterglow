@@ -625,45 +625,149 @@ TEST(Extensions, LegacyNotificationsRejectControlsAndBadUtf8)
     EXPECT_EQ(host.notified, "T\xe2\x80\xa9|b\xc3\xa9");
 }
 
-TEST(Extensions, DownloadsRequireCompleteValidBoundedData)
+namespace {
+// Records the downloads of a terminal: their begin, data and end.
+struct DownloadHost : RecordingHost
 {
-    struct Host : RecordingHost
+    bool answerLater = true; ///< hold the input, as a window that asks
+    std::vector<std::pair<std::string, std::int64_t>> begun;
+    std::string data;
+    std::size_t dataBytes = 0;
+    bool keepData = true;
+    std::vector<bool> ended;
+    bool failWrites = false;
+    bool downloadBegin(std::string_view name, std::int64_t size) override
     {
-        int count = 0;
-        std::string name;
-        std::string data;
-        void downloadFile(std::string_view n, std::string_view d) override
-        {
-            ++count;
-            name = n;
-            data = d;
-        }
-    } host;
+        begun.emplace_back(std::string(name), size);
+        data.clear();
+        dataBytes = 0;
+        return answerLater;
+    }
+    bool downloadData(std::string_view bytes) override
+    {
+        dataBytes += bytes.size();
+        if (keepData) data.append(bytes);
+        return !failWrites;
+    }
+    void downloadEnd(bool complete) override { ended.push_back(complete); }
+};
+} // namespace
+
+TEST(Extensions, ADownloadHoldsTheOutputUntilItsAnswer)
+{
+    // iTerm2 asks before a download (OSC 1337 File without inline=1): the
+    // output after its head waits for the answer, then the data streams.
+    DownloadHost host;
     Terminal t(20, 4, host);
-    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=5:aGVsbG8=\x07");
-    ASSERT_EQ(host.count, 1);
-    EXPECT_EQ(host.name, "test.txt");
+    t.feed("before\x1b]1337;File=name=dGVzdC50eHQ=;size=5:aGVsbG8=\x07" "after");
+    ASSERT_EQ(host.begun.size(), 1u);
+    EXPECT_EQ(host.begun[0], (std::pair<std::string, std::int64_t>{"test.txt", 5}));
+    EXPECT_TRUE(t.holdsInput());
+    EXPECT_EQ(rowText(t, 0), "before");
+    EXPECT_TRUE(host.data.empty());
+    // More output waits too.
+    t.feed("more");
+    EXPECT_EQ(rowText(t, 0), "before");
+    t.answerDownload(true);
+    EXPECT_EQ(rowText(t, 0), "before"); // the answer parses nothing itself
+    t.feed("");
+    EXPECT_FALSE(t.holdsInput());
     EXPECT_EQ(host.data, "hello");
-    t.feed("\x1b]1337;File=size=6:aGVsbG8=\x07");
-    t.feed("\x1b]1337;File=size=99999999:aGVsbG8=\x07");
-    t.feed("\x1b]1337;File=:aGVsbG8!\x07");
-    EXPECT_EQ(host.count, 1);
-    t.feed("\x1b]1337;MultipartFile=name=dGVzdC50eHQ=;size=5\x07\x1b]1337;FilePart=aGVs\x07");
-    EXPECT_EQ(host.count, 1);
-    t.feed("\x1b]1337;FilePart=bG8=\x07\x1b]1337;FileEnd\x07");
-    EXPECT_EQ(host.count, 2);
+    EXPECT_EQ(host.ended, (std::vector<bool>{true}));
+    EXPECT_EQ(rowText(t, 0), "beforeaftermore");
+    // Refused: its data goes nowhere, and the output goes on.
+    t.feed("\r\n\x1b]1337;File=size=5:aGVsbG8=\x07" "next");
+    ASSERT_EQ(host.begun.size(), 2u);
+    EXPECT_EQ(host.begun[1], (std::pair<std::string, std::int64_t>{"", 5}));
+    t.answerDownload(false);
+    t.feed("");
+    EXPECT_TRUE(host.data.empty());
+    EXPECT_EQ(host.ended.size(), 1u);
+    EXPECT_EQ(rowText(t, 1), "next");
+    // A host that refuses at once holds nothing.
+    host.answerLater = false;
+    t.feed("\r\n\x1b]1337;File=:aGVsbG8=\x07" "now");
+    EXPECT_FALSE(t.holdsInput());
+    EXPECT_EQ(rowText(t, 2), "now");
+    EXPECT_EQ(host.ended.size(), 1u);
+}
+
+TEST(Extensions, DownloadsEndCompleteOnlyWithValidDataOfTheirSize)
+{
+    DownloadHost host;
+    Terminal t(20, 4, host);
+    const auto run = [&](const std::string& osc) {
+        t.feed(osc);
+        t.answerDownload(true);
+        t.feed("");
+        return host.ended.empty() ? -1 : int(host.ended.back());
+    };
+    // More data than declared stops at once; less ends incomplete; bad
+    // base64 fails; no size takes what comes, unpadded too.
+    EXPECT_EQ(run("\x1b]1337;File=size=4:aGVsbG8=\x07"), 0);
+    EXPECT_EQ(run("\x1b]1337;File=size=6:aGVsbG8=\x07"), 0);
+    EXPECT_EQ(run("\x1b]1337;File=:aGVsbG8!\x07"), 0);
+    EXPECT_EQ(run("\x1b]1337;File=:aGVsbG8\x07"), 1);
     EXPECT_EQ(host.data, "hello");
+    // Line breaks in the data do not count, and a group may be cut between
+    // two reads of the output.
+    t.feed("\x1b]1337;File=size=11:aGVsbG8g");
+    t.answerDownload(true);
+    for (const char c : std::string("d2\r\n9y\nbGQ=\x07")) t.feed(std::string(1, c));
+    EXPECT_EQ(host.data, "hello world");
+    EXPECT_TRUE(host.ended.back());
+    // A host that cannot write ends it.
+    host.failWrites = true;
+    EXPECT_EQ(run("\x1b]1337;File=size=5:aGVsbG8=\x07"), 0);
+    host.failWrites = false;
+    // CAN cuts the stream short.
+    t.feed("\x1b]1337;File=size=5:aGVs");
+    t.answerDownload(true);
+    t.feed("\x18");
+    EXPECT_FALSE(host.ended.back());
+    // An inline image stays an image.
+    const std::size_t begun = host.begun.size();
+    t.feed("\x1b]1337;File=inline=1:aGVsbG8=\x07");
+    EXPECT_EQ(host.begun.size(), begun);
+}
+
+TEST(Extensions, MultipartDownloadsStreamTheirParts)
+{
+    DownloadHost host;
+    Terminal t(20, 4, host);
+    t.feed("\x1b]1337;MultipartFile=name=dGVzdC50eHQ=;size=5\x07" "x");
+    ASSERT_EQ(host.begun.size(), 1u);
+    EXPECT_TRUE(t.holdsInput());
+    EXPECT_EQ(rowText(t, 0), "");
+    t.answerDownload(true);
+    t.feed("\x1b]1337;FilePart=aGVs\x07\x1b]1337;FilePart=bG8=\x07");
+    EXPECT_EQ(host.data, "hello");
+    EXPECT_TRUE(host.ended.empty());
     t.feed("\x1b]1337;FileEnd\x07");
-    EXPECT_EQ(host.count, 2);
-    // 8 MiB is the most a download may hold.
-    const std::string limit(8u * 1024 * 1024, 'x');
-    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size() + 1) + ":"
-           + base64Encode(limit + "x") + "\x07");
-    EXPECT_EQ(host.count, 2);
-    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size()) + ":" + base64Encode(limit)
-           + "\x07");
-    ASSERT_EQ(host.count, 3);
-    EXPECT_EQ(host.data.size(), limit.size());
+    EXPECT_EQ(host.ended, (std::vector<bool>{true}));
+    EXPECT_EQ(rowText(t, 0), "x");
+    // A new file ends one under way, incomplete.
+    t.feed("\x1b]1337;MultipartFile=size=5\x07");
+    t.answerDownload(true);
+    t.feed("\x1b]1337;FilePart=aGVs\x07\x1b]1337;MultipartFile=size=1\x07");
+    EXPECT_EQ(host.ended, (std::vector<bool>{true, false}));
+}
+
+TEST(Extensions, ADownloadLargerThanTheParsersStringBufferStreams)
+{
+    // 72 MiB of base64 in one OSC, past the 64 MiB that the parser keeps of
+    // a string: it streams, and nothing of it stays in the parser.
+    DownloadHost host;
+    host.keepData = false;
+    Terminal t(20, 4, host);
+    const std::size_t bytes = std::size_t(54) << 20;
+    t.feed("\x1b]1337;File=size=" + std::to_string(bytes) + ":");
+    t.answerDownload(true);
+    const std::string chunk = base64Encode(std::string(3 << 16, 'x'));
+    for (std::size_t sent = 0; sent < bytes; sent += std::size_t(3) << 16) t.feed(chunk);
+    t.feed("\x07");
+    EXPECT_EQ(host.dataBytes, bytes);
+    EXPECT_EQ(host.ended, (std::vector<bool>{true}));
 }
 
 TEST(Extensions, MultipleCursorsQueryCoordinatesAndLifecycle)

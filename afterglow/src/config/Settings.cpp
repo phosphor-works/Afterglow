@@ -606,6 +606,13 @@ PhosphorConfig::Schema buildSchema()
                               "event (OSC 5522).")),
         enumKey(QStringLiteral("clipboardWrite"), PermissionChoices, d.clipboardWrite,
                 QStringLiteral("Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write.")),
+        enumKey(QStringLiteral("downloads"), PermissionChoices, d.downloads,
+                QStringLiteral("Files that programs send with the iTerm2 protocol (OSC 1337), as it2dl does. The ask value shows "
+                               "a prompt with the name and the size of each file before its data comes, and the program waits "
+                               "for the answer. The allow value saves each file in Terminal.downloadDirectory.")),
+        {QStringLiteral("downloadDirectory"), d.downloadDirectory, QMetaType::QString,
+         QStringLiteral("The folder for the files that programs send (Terminal.downloads). Empty for the download folder of the "
+                        "desktop. A ~ at the start is the home folder.")},
         enumKey(QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices,
                 term.graphicsFileTransfer ? Settings::Permission::Allow : Settings::Permission::Deny,
                 QStringLiteral("Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared "
@@ -1885,6 +1892,8 @@ Settings SettingsStore::read()
     s.clipboardRead = readEnum(st, Terminal, QStringLiteral("clipboardRead"), PermissionChoices, s.clipboardRead);
     s.pasteReadTimeout = st.read<int>(Terminal, QStringLiteral("pasteReadTimeout"));
     s.clipboardWrite = readEnum(st, Terminal, QStringLiteral("clipboardWrite"), PermissionChoices, s.clipboardWrite);
+    s.downloads = readEnum(st, Terminal, QStringLiteral("downloads"), PermissionChoices, s.downloads);
+    s.downloadDirectory = st.read<QString>(Terminal, QStringLiteral("downloadDirectory")).trimmed();
     // The terminal core enforces these two itself, and Graphics.quota below.
     // t holds the default here, the one the schema has.
     t.graphicsFileTransfer = readEnum(st, Terminal, QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices,

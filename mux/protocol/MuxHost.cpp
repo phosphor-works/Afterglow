@@ -215,9 +215,18 @@ std::string encode(const Call& call)
         break;
     case Kind::ClipboardWrite:
     case Kind::UserVar:
-    case Kind::Download:
         o.string(call.title);
         o.string(call.text);
+        break;
+    case Kind::DownloadBegin:
+        o.string(call.title);
+        o.varint(call.value);
+        break;
+    case Kind::DownloadData:
+        o.string(call.text);
+        break;
+    case Kind::DownloadEnd:
+        o.signedInt(call.number);
         break;
     case Kind::DesktopNotification:
         encodeNotification(o, call.notification);
@@ -249,7 +258,7 @@ std::optional<Call> decode(std::string_view bytes)
     In in(bytes);
     Call call;
     const std::uint8_t kind = in.byte();
-    if (kind < std::uint8_t(Kind::Bell) || kind > std::uint8_t(Kind::ProtocolLost)) return std::nullopt;
+    if (kind < std::uint8_t(Kind::Bell) || kind > std::uint8_t(Kind::DownloadEnd)) return std::nullopt;
     call.kind = Kind(kind);
     switch (call.kind) {
     case Kind::Bell:
@@ -262,9 +271,19 @@ std::optional<Call> decode(std::string_view bytes)
         break;
     case Kind::ClipboardWrite:
     case Kind::UserVar:
-    case Kind::Download:
         call.title = in.string();
         call.text = in.string();
+        break;
+    case Kind::DownloadBegin:
+        call.title = in.string();
+        call.value = in.varint();
+        break;
+    case Kind::DownloadData:
+        call.text = in.string();
+        break;
+    case Kind::DownloadEnd:
+        call.number = in.signedInt();
+        if (call.number != 0 && call.number != 1) return std::nullopt;
         break;
     case Kind::DesktopNotification:
         if (!decodeNotification(in, call.notification)) return std::nullopt;

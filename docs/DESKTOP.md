@@ -160,11 +160,25 @@ A selection that you drop on its own pane does nothing. A program's drag that yo
 
 ## Receive a file from a terminal application
 
-OSC 1337 `File` and `MultipartFile` downloads open a native Save dialog.
+A program sends a file with OSC 1337 `File` or `MultipartFile`, as iTerm2's `it2dl` does.
 Downloads use `inline=0`, which is also the default.
-Choose a destination and select Save, or cancel the request.
-Afterglow writes nothing before Save.
-The interface supports iTerm2 `it2dl` and SSH transports that pass OSC sequences through.
+
+Afterglow asks before the data of the file comes, as iTerm2 does.
+The question shows the name and the size of the file.
+The program waits until you answer.
+
+1. Select **Save to *folder*** to save the file in `Terminal.downloadDirectory`, the download folder of the desktop by default. A name that is taken gets a number: `name (1).txt`.
+2. Or select **Save As…** to choose a file in a Save dialog.
+3. Or select **Refuse**. The program goes on, and its data goes nowhere.
+
+The question starts on **Refuse**, so a Return that you type for the shell refuses.
+`Terminal.downloads` sets the policy: `ask` (the default), `allow`, which saves in `Terminal.downloadDirectory` with no question, or `deny`.
+
+The data goes into `name.part` next to the file while it comes.
+When the whole file came, `name.part` becomes `name`.
+A refused, cut or invalid download leaves no file.
+A notification tells you where the file is, or why it was not saved.
+The interface supports SSH transports that pass OSC sequences through.
 
 From a source checkout, run the example client:
 
@@ -172,17 +186,14 @@ From a source checkout, run the example client:
 python3 data/examples/compatibility/download.py /path/to/report.txt
 ```
 
-| Item | Limit | At the limit |
-| --- | --- | --- |
-| Decoded data of one download | 8 MiB | Afterglow ignores the request. |
-| Pending requests in the application | 1 | Afterglow ignores other requests while the dialog is open. |
+A download has no size limit: its data goes to the file as it comes, not into memory.
+More data than the declared `size`, or less, or invalid base64, stops the download, and the file goes.
 
-In a mux session, a download goes to the window that shows the session, with the other requests of the session. Without a window, the mux session drops it (see [requests that wait](MUX.md#requests-that-wait)).
+In a mux session, the window that shows the session asks, and the data streams to it. While the window takes the data slowly, the program waits. Without a window, the session refuses the download (see [what the daemon answers](MUX.md#what-the-daemon-answers)).
 
-Invalid base64 and declared size mismatches reject the request.
 The suggested name uses only the basename, without control or format characters.
-Writes use `QSaveFile`. The native dialog controls overwrite confirmation.
-Closing the source pane cancels its dialog.
+The Save dialog asks before it replaces a file.
+Closing the source pane refuses the download and removes its `.part` file.
 The protocol has no success acknowledgment.
 Afterglow does not open or execute received files automatically.
 

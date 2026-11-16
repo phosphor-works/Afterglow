@@ -47,17 +47,10 @@ constexpr int MaxRepliesPerSequence = 256;
 /// name the size of the DCS payload would flood the program's input.
 constexpr std::size_t MaxCapabilityHex = 256;
 
-/// iTerm2 files (OSC 1337): the base64 of an image sent in parts, the size
-/// of a download, and the arguments of a MultipartFile.
+/// iTerm2 files (OSC 1337): the base64 of an image sent in parts, and the
+/// arguments of a MultipartFile. Downloads stream, with no limit here.
 constexpr std::size_t MaxITerm2Base64 = 96u * 1024 * 1024;
-constexpr std::size_t MaxITerm2Download = 8u * 1024 * 1024;
 constexpr std::size_t MaxITerm2Args = 4096;
-
-/// The base64 length of @p bytes bytes, padded.
-constexpr std::size_t base64Length(std::size_t bytes)
-{
-    return (bytes + 2) / 3 * 4;
-}
 
 /// Longest command line a shell can report (OSC 133 cmdline, cmdline_url).
 constexpr std::size_t MaxCommandLine = 65536;
@@ -368,11 +361,146 @@ Terminal::~Terminal() = default;
 
 void Terminal::feed(std::string_view bytes)
 {
-    if (bytes.empty()) {
+    if (m_download.waiting) {
+        m_heldInput.append(bytes);
         return;
     }
-    m_parser.feed(bytes);
+    if (!m_heldInput.empty()) {
+        std::string held = std::exchange(m_heldInput, {});
+        held.append(bytes);
+        parse(held);
+        return;
+    }
+    if (!bytes.empty()) {
+        parse(bytes);
+    }
+}
+
+void Terminal::parse(std::string_view bytes)
+{
+    // The parser stops where a download's question holds the input.
+    const std::size_t taken = m_parser.feed(bytes);
+    if (taken < bytes.size()) {
+        m_heldInput.assign(bytes.substr(taken));
+    }
     touch();
+}
+
+void Terminal::answerDownload(bool accept)
+{
+    if (!m_download.waiting) {
+        return;
+    }
+    m_download.waiting = false;
+    m_download.refused = !accept;
+}
+
+void Terminal::stopDownload()
+{
+    if (m_download.active && !m_download.waiting) {
+        m_download.refused = true;
+    }
+}
+
+bool Terminal::oscHead(std::string_view head)
+{
+    // An iTerm2 download, File= without inline=1, streams to the host as it
+    // comes, as iTerm2 takes it: no buffer of the parser bounds its size. An
+    // inline image stays whole, for its decoder.
+    constexpr std::string_view File = "1337;File=";
+    if (!head.starts_with(File) || !head.ends_with(':')) {
+        return false;
+    }
+    const std::string_view args = head.substr(File.size(), head.size() - File.size() - 1);
+    detail::ITerm2File file;
+    detail::parseITerm2Args(args, file);
+    if (file.inlineImage) {
+        return false;
+    }
+    if (m_download.active && m_download.multipart) {
+        endITerm2Multipart(); // a new download ends one under way
+    }
+    beginDownload(file.name, file.size, false);
+    return true;
+}
+
+void Terminal::beginDownload(std::string_view nameBase64, std::size_t size, bool multipart)
+{
+    if (m_download.active) {
+        endDownload(false);
+    }
+    // A name that is not base64 is no name: the host asks for one.
+    const auto name = base64Decode(nameBase64, Base64Check::Strict);
+    m_download = Download{};
+    m_download.active = true;
+    m_download.multipart = multipart;
+    m_download.size = size > 0 ? std::int64_t(std::min<std::size_t>(size, std::size_t(INT64_MAX))) : -1;
+    if (m_host.downloadBegin(name ? std::string_view(*name) : std::string_view(), m_download.size)) {
+        m_download.waiting = true;
+    } else {
+        m_download.refused = true;
+    }
+}
+
+void Terminal::downloadBase64(std::string_view base64)
+{
+    if (!m_download.active || m_download.refused) {
+        return;
+    }
+    // Whole groups of four decode; line breaks in the data do not count.
+    std::string& pending = m_download.base64;
+    pending.append(base64);
+    if (pending.find_first_of("\r\n\t ") != std::string::npos) {
+        std::erase_if(pending, [](char c) { return c == '\r' || c == '\n' || c == '\t' || c == ' '; });
+    }
+    const std::size_t whole = pending.size() / 4 * 4;
+    if (whole == 0) {
+        return;
+    }
+    const auto data = base64Decode(std::string_view(pending).substr(0, whole), Base64Check::Strict);
+    pending.erase(0, whole);
+    if (!data) {
+        failDownload();
+        return;
+    }
+    m_download.written += data->size();
+    // More than it declared: iTerm2 stops it too.
+    if ((m_download.size >= 0 && m_download.written > std::uint64_t(m_download.size)) || !m_host.downloadData(*data)) {
+        failDownload();
+    }
+}
+
+void Terminal::failDownload()
+{
+    m_download.refused = true;
+    m_host.downloadEnd(false);
+}
+
+void Terminal::endDownload(bool complete)
+{
+    if (!m_download.active) {
+        return;
+    }
+    const Download done = std::exchange(m_download, Download{});
+    if (done.refused) {
+        // Refused at its begin, or failed: the host heard its end then.
+        return;
+    }
+    bool ok = complete && !done.waiting;
+    if (ok && !done.base64.empty()) {
+        // An unpadded last group.
+        std::string last = done.base64;
+        last.append((4 - last.size() % 4) % 4, '=');
+        const auto data = base64Decode(last, Base64Check::Strict);
+        ok = data && (done.size < 0 || done.written + data->size() <= std::uint64_t(done.size)) && m_host.downloadData(*data);
+        if (ok) {
+            const std::uint64_t written = done.written + data->size();
+            ok = done.size < 0 || written == std::uint64_t(done.size);
+        }
+    } else if (ok) {
+        ok = done.size < 0 || done.written == std::uint64_t(done.size);
+    }
+    m_host.downloadEnd(ok);
 }
 
 bool Terminal::backgroundIsDark() const noexcept
@@ -4825,13 +4953,14 @@ void Terminal::iterm2(std::string_view args, bool bel)
         }
         detail::ITerm2File file;
         detail::parseITerm2Args(value, file);
-        if (!file.inlineImage && file.size > MaxITerm2Download) {
+        m_iterm2Receiving = true;
+        if (!file.inlineImage) {
+            // A download streams to the host, part by part.
+            beginDownload(file.name, file.size, true);
             return;
         }
-        m_iterm2Receiving = true;
         m_iterm2Args.assign(value);
-        // A download is refused at its end past 8 MiB: no use keeping more.
-        m_iterm2Limit = file.inlineImage ? MaxITerm2Base64 : base64Length(MaxITerm2Download);
+        m_iterm2Limit = MaxITerm2Base64;
         return;
     }
     if (key != "File" && key != "FilePart" && value.size() > 65536) return;
@@ -4841,7 +4970,10 @@ void Terminal::iterm2(std::string_view args, bool bel)
             iterm2File(value.substr(0, colon), value.substr(colon + 1));
         }
     } else if (key == "FilePart") {
-        if (m_iterm2Receiving) {
+        if (m_iterm2Receiving && m_download.active && m_download.multipart) {
+            downloadBase64(value);
+            m_iterm2PromptSincePart = false;
+        } else if (m_iterm2Receiving) {
             if (m_iterm2Data.size() + value.size() > m_iterm2Limit) {
                 endITerm2Multipart(); // up to 96 MiB: give it back
             } else {
@@ -4852,7 +4984,11 @@ void Terminal::iterm2(std::string_view args, bool bel)
     } else if (key == "FileEnd") {
         if (m_iterm2Receiving) {
             m_iterm2Receiving = false;
-            iterm2File(m_iterm2Args, m_iterm2Data);
+            if (m_download.active && m_download.multipart) {
+                endDownload(true);
+            } else {
+                iterm2File(m_iterm2Args, m_iterm2Data);
+            }
             endITerm2Multipart();
         }
     } else if (key == "SetUserVar") {
@@ -4896,6 +5032,9 @@ void Terminal::iterm2(std::string_view args, bool bel)
 
 void Terminal::endITerm2Multipart()
 {
+    if (m_download.active && m_download.multipart) {
+        endDownload(false);
+    }
     m_iterm2Receiving = false;
     m_iterm2Args.clear();
     std::string().swap(m_iterm2Data);
@@ -4908,11 +5047,8 @@ void Terminal::iterm2File(std::string_view args, std::string_view base64)
     detail::ITerm2File file;
     detail::parseITerm2Args(args, file);
     if (!file.inlineImage) {
-        if (base64.size() > base64Length(MaxITerm2Download) || file.size > MaxITerm2Download) return;
-        const auto data = base64Decode(base64, Base64Check::Strict);
-        const auto name = base64Decode(file.name, Base64Check::Strict);
-        if (!data || !name || data->size() > MaxITerm2Download || (file.size && file.size != data->size())) return;
-        m_host.downloadFile(*name, *data);
+        // Downloads stream (oscHead, MultipartFile). This one came whole: its
+        // arguments passed the head's 4 KiB, which no real file needs.
         return;
     }
     if (m_cellWidth <= 0 || m_cellHeight <= 0) return;

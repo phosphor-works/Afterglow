@@ -346,6 +346,10 @@ struct Settings
     int pasteReadTimeout = 10;
     /// Programs writing the clipboard (OSC 52, OSC 5522).
     Permission clipboardWrite = Permission::Allow;
+    /// Files that programs send with iTerm2's protocol (OSC 1337, it2dl).
+    Permission downloads = Permission::Ask;
+    /// Where downloads go: empty for the desktop's download folder.
+    QString downloadDirectory;
     // Terminal.graphicsFileTransfer, Terminal.allowScreenReadback and
     // Graphics.quota live in terminal, which enforces them.
     /// Each a map of pattern, action and command, checked when read.

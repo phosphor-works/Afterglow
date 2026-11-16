@@ -50,7 +50,10 @@ enum class Kind : std::uint8_t {
     UserVar = 9, ///< OSC 1337 SetUserVar: title is the name, text the value
     CommandStarted = 10, ///< OSC 133: text
     CommandFinished = 11, ///< OSC 133: number is the exit code, value the milliseconds that the command ran
-    Download = 12, ///< OSC 1337 File: title is the name, text the data
+    /// An iTerm2 download begins (OSC 1337 File without inline=1): title is
+    /// the name, value the declared size + 1, or 0. The pane's output waits
+    /// for the window's Attach::InputType::DownloadAnswer.
+    DownloadBegin = 12,
     /// The answer that the terminal writes to a query (DA1, DSR, colors), in
     /// text: the window writes it after the replies to the commands that the
     /// program wrote before the query.
@@ -59,6 +62,8 @@ enum class Kind : std::uint8_t {
     /// they held for drag and drop (LostNothing, LostReset, LostPackets), value
     /// 1 when one of them was a terminal reset.
     ProtocolLost = 14,
+    DownloadData = 15, ///< text: data of the accepted download
+    DownloadEnd = 16, ///< number: 1 when the download is whole
 };
 
 /// ProtocolLost: what the lost commands held, in the order that the program

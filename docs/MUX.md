@@ -781,7 +781,7 @@ While no window shows the session, the daemon also answers these requests.
 | Clipboard read (OSC 52 and OSC 5522) | Refused, as when you deny the request |
 | File transfer (OSC 5113) | Refused with `EPERM`, as when you deny the request. A transfer with `q=2` asks for no status and gets no answer. |
 | Drag and drop (OSC 72) | A program that asks which types the terminal supports gets the answer of a window. A drag offer (`t=o`) gets `EPERM`. No drop arrives, and no drag starts. |
-| File download (OSC 1337 `File`) | Dropped |
+| File download (OSC 1337 `File`) | Refused: no one can answer the question. The program goes on, and the data goes nowhere. |
 | Pointer shape (OSC 22), user variables (OSC 1337 `SetUserVar`), commands of shell integration (OSC 133) | The daemon keeps the last pointer shape, the user variables and the running command for the next window |
 
 ### Requests for the next window
@@ -821,7 +821,7 @@ Your settings and prompts apply, such as the questions before a clipboard read a
 | Notification (OSC 9, OSC 777, OSC 99) | The window shows it. A query of the notifications on screen (OSC 99 `p=alive`) gets the answer of the window. |
 | Clipboard write and read (OSC 52 and OSC 5522) | The window writes or reads its clipboard, and asks first as for its own panes |
 | File transfer (OSC 5113) and drag and drop (OSC 72) | The window runs them, with its questions |
-| File download (OSC 1337 `File`) | The window asks where to save the file |
+| File download (OSC 1337 `File`) | The window asks first, as for its own panes, and the program waits for the answer. The data then streams to the window. When the queue of the pane is full, the program waits: no data is dropped. A window that goes ends the download. |
 | Pointer shape (OSC 22) and user variables (OSC 1337 `SetUserVar`) | The window takes them as from its own panes. A window that attaches gets the last values. |
 | Commands of shell integration (OSC 133) | The window takes them as from its own panes, with the time that the daemon measured. A window that attaches while a command runs gets its start. |
 
@@ -831,7 +831,7 @@ The requests wait for the window in a queue of the session and in a queue of eac
 `Mux.eventQueue` sets the size of each queue. A change applies when Afterglow next attaches to a session.
 A request that finds the queue of its pane empty always fits, up to the limit of one request.
 A request that does not fit gets the answer of a session that no window shows (see [what the daemon answers](#what-the-daemon-answers)).
-Thus a notification, an OSC 52 clipboard write and a download that do not fit are dropped.
+Thus a notification and an OSC 52 clipboard write that do not fit are dropped.
 These requests are exceptions:
 
 - An answer to a query that does not fit is dropped, as a window drops one past its own limit.

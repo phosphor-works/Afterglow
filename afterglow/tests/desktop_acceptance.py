@@ -139,17 +139,21 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
                 else:
                     for ref in dbus.Interface(registry, A).GetChildren(): visit(bus.get_object(str(ref[0]), str(ref[1])))
                 return result
-            def save_dialog():
-                return next((obj for obj, name, role, interfaces in nodes() if name.startswith('Save file received from')), None)
-            # The dialog's own buttons: the window's chrome has a Cancel and a
+            def dialog(prefix):
+                return next((obj for obj, name, role, interfaces in nodes() if name.startswith(prefix)), None)
+            def save_dialog(): return dialog('Save file received from')
+            # The question of a download comes first, before its data
+            # (Terminal.downloads is ask): a box named Download.
+            def question(): return dialog('Download')
+            # A dialog's own buttons: the window's chrome has a Cancel and a
             # Save of its own prompts too.
-            def button(name):
-                dialog = save_dialog()
-                for obj, label, role, interfaces in (nodes(dialog) if dialog is not None else []):
+            def button(name, of=save_dialog):
+                found = of()
+                for obj, label, role, interfaces in (nodes(found) if found is not None else []):
                     if label.replace('&', '').lower() == name and role == 'push button': return obj
                 return None
-            def press(name):
-                obj = wait_for(lambda: button(name))
+            def press(name, of=save_dialog):
+                obj = wait_for(lambda: button(name, of))
                 check(dbus.Interface(obj, 'org.a11y.atspi.Action').DoAction(0))
             # A real protocol download; receiving alone must not write a file.
             fixture = root / 'download.sh'
@@ -162,24 +166,16 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
                 fixture.write_text(shlex.join(['bash', str(args.it2dl.resolve()), str(source)]) + '\n')
             def offer(): ctl('send-text', '--pane', panes()[0]['id'], shlex.join(['bash', str(fixture)]) + '\n')
             offer()
-            wait_for(save_dialog)
-            press('cancel')
-            # The dialog holds the one download slot until it is destroyed: a
-            # file sent before then is dropped, not offered.
-            wait_for(lambda: save_dialog() is None)
+            wait_for(question)
+            press('refuse', question)
+            wait_for(lambda: question() is None)
             # HOME is the temporary root, so every place that a download can go is under it.
             written = [p for p in root.rglob(offered) if p != source]
             check(not written, written)
             check(not (root / 'accepted.txt').exists())
-            # The dialog frees the download slot when it is destroyed, an event
-            # after it leaves the tree: an offer in between is dropped.
-            for attempt in range(3):
-                offer()
-                try:
-                    wait_for(lambda: button('save'), timeout=10)
-                    break
-                except AssertionError:
-                    if attempt == 2: raise
+            offer()
+            press('save as…', question)
+            wait_for(lambda: button('save'), timeout=10)
             destination = root / 'accepted.txt'
             fields = [(obj, name) for obj, name, role, interfaces in nodes(save_dialog()) if 'org.a11y.atspi.EditableText' in interfaces]
             print('Save dialog fields:', [name for _, name in fields])
@@ -189,7 +185,8 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
             press('save')
             wait_for(destination.exists)
             check(destination.read_bytes() == b'hello')
-            print('PASS: OSC 1337 cancellation and explicit save')
+            check(not list(root.rglob('*.part')), list(root.rglob('*.part')))
+            print('PASS: OSC 1337 question, refusal and explicit save')
         finally:
             if (root / 'kwin.log').exists():
                 shutil.copyfile(root / 'kwin.log', logs / 'kwin.log')

@@ -66,7 +66,10 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 26) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 27) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 27 streams iTerm2 downloads: DownloadBegin, DownloadData and
+    // DownloadEnd host calls in place of Download, and the DownloadAnswer
+    // input, for which the pane's output waits (AttachTest).
     // Version 26 added the answer to OSC 99's query to the settings of a
     // window, empty while the window shows no notifications: a session
     // follows Notifications.enabled (below).
@@ -233,15 +236,28 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     refreshed.frames = 300;
     EXPECT_EQ(Attach::encode(refreshed), std::string("\x08\x03\x00\x00\xac\x02", 6));
     // The Visible input and the Refresh go on the action channel: neither
-    // waits behind the input of a program. Each of the thirteen input types
+    // waits behind the input of a program. Each of the fourteen input types
     // is on one channel or the other.
     for (const auto type : {Attach::InputType::Kill, Attach::InputType::ClosePane, Attach::InputType::Visible, Attach::InputType::Refresh,
                             Attach::InputType::PaneForgotten})
         EXPECT_TRUE(Attach::isAction(type)) << int(type);
     for (const auto type : {Attach::InputType::Bytes, Attach::InputType::Resize, Attach::InputType::Reset, Attach::InputType::Clear,
                             Attach::InputType::Layout, Attach::InputType::ControlReply, Attach::InputType::Settings,
-                            Attach::InputType::ControlReplyPart})
+                            Attach::InputType::ControlReplyPart, Attach::InputType::DownloadAnswer})
         EXPECT_FALSE(Attach::isAction(type)) << int(type);
+    // Version 27: the answer to a download's question, a byte.
+    for (const bool accept : {false, true}) {
+        Attach::Input answer;
+        answer.type = Attach::InputType::DownloadAnswer;
+        answer.pane = 3;
+        answer.accept = accept;
+        EXPECT_EQ(Attach::encode(answer), std::string("\x0e\x03", 2) + char(accept ? 1 : 0));
+        const auto decoded = Attach::decodeInput(Attach::encode(answer));
+        ASSERT_TRUE(decoded);
+        EXPECT_EQ(decoded->type, Attach::InputType::DownloadAnswer);
+        EXPECT_EQ(decoded->accept, accept);
+    }
+    EXPECT_FALSE(Attach::decodeInput(std::string("\x0e\x03\x02", 3)));
     Layout layout;
     layout.addTab(4);
     layout.values[4] = {"t", {"htop"}};
@@ -293,7 +309,8 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
              {Host::Kind::Bell, 1}, {Host::Kind::Flash, 2}, {Host::Kind::Notify, 3}, {Host::Kind::DesktopNotification, 4},
              {Host::Kind::ClipboardWrite, 5}, {Host::Kind::ClipboardRequest, 6}, {Host::Kind::TerminalProtocol, 7},
              {Host::Kind::PointerShape, 8}, {Host::Kind::UserVar, 9}, {Host::Kind::CommandStarted, 10},
-             {Host::Kind::CommandFinished, 11}, {Host::Kind::Download, 12}, {Host::Kind::Report, 13}, {Host::Kind::ProtocolLost, 14}}) {
+             {Host::Kind::CommandFinished, 11}, {Host::Kind::DownloadBegin, 12}, {Host::Kind::Report, 13}, {Host::Kind::ProtocolLost, 14},
+             {Host::Kind::DownloadData, 15}, {Host::Kind::DownloadEnd, 16}}) {
         EXPECT_EQ(int(kind), number);
     }
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::Notify, "t", "b")), std::string("\x03\x01t\x01" "b\x00", 6));
@@ -434,7 +451,11 @@ TEST(MuxProtocol, HostCallsRoundTrip)
         finished.value = std::uint64_t(code < 0 ? 0 : code) * 1000;
         calls.push_back(finished);
     }
-    calls.push_back(Host::make(Host::Kind::Download, "file.txt", "contents"));
+    Host::Call begin = Host::make(Host::Kind::DownloadBegin, "file.txt");
+    begin.value = 9; // 8 bytes
+    calls.push_back(begin);
+    calls.push_back(Host::make(Host::Kind::DownloadData, {}, std::string("cont\0ents", 9)));
+    calls.push_back(Host::make(Host::Kind::DownloadEnd, {}, {}, 1));
     calls.push_back(Host::make(Host::Kind::Report, {}, "\x1b[?62;22c"));
     for (const int held : {Host::LostNothing, Host::LostReset, Host::LostPackets}) {
         Host::Call lost = Host::make(Host::Kind::ProtocolLost, {}, {}, held);

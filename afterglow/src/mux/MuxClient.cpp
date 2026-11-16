@@ -818,6 +818,14 @@ void MuxClient::sendReset(std::uint32_t id)
     sendPaneInput(id, input);
 }
 
+void MuxClient::answerDownload(std::uint32_t id, bool accept)
+{
+    Attach::Input input;
+    input.type = Attach::InputType::DownloadAnswer;
+    input.accept = accept;
+    sendPaneInput(id, input);
+}
+
 void MuxClient::sendClear(std::uint32_t id)
 {
     Attach::Input input;

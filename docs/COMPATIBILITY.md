@@ -17,7 +17,7 @@ The table below lists the protocols that Afterglow supports, each with the tests
 | --- | --- | --- |
 | Kitty relative images | `P`, `Q`, signed `H`/`V`; parent movement; chained parents; cascade deletion; missing-parent, cycle and depth errors; virtual placeholder parents | `Graphics.Relative*`, `Graphics.TransmitAndPlaceReportsInvalidRelativeParent` and transmit/placeholder pixel regressions; [moving-image client](../data/examples/compatibility/relative-images.py) |
 | Kitty multiple cursors | Shapes 1/2/3/29, clear 0, coordinate types 0/2/4, color operations 30/40, capabilities and queries 100/101; clipping, reset, clear, alternate-screen lifecycle; blink and mixed shape rendering | `Extensions.MultipleCursor*`, `Extensions.ExtraCursorColors*`, `Extensions.ResizeClipsExtraCursorsToTheScreen`, `Terminal.ExtraCursorsAreBounded`, `Terminal.ResizeClipsExtraCursorsToTheClampedSize`, `SnapshotCursor.*`, `Render.MultipleCursors*`; [multi-edit client](../data/examples/compatibility/multi-edit.py) |
-| OSC 1337 downloads | `File`, `MultipartFile`, `FilePart`, `FileEnd`; explicit native Save dialog; cancellation; bounded data | `Extensions.Downloads*`, `desktop_acceptance.py`; [download client](../data/examples/compatibility/download.py), upstream [it2dl](https://iterm2.com/utilities/it2dl) |
+| OSC 1337 downloads | `File`, `MultipartFile`, `FilePart`, `FileEnd`; a question before the data, as in iTerm2, while the program waits; data of any size streamed to the file | `Extensions.ADownload*`, `Extensions.DownloadsEndCompleteOnlyWithValidDataOfTheirSize`, `Extensions.MultipartDownloadsStreamTheirParts`, `PaneDownload.*`, `MuxAttach.ADownloadAsksTheWindowAndStreamsItsData`, `NativeWindow.ADownloadAsksBeforeItsDataAndSavesInTheDownloadFolder`, `desktop_acceptance.py`; [download client](../data/examples/compatibility/download.py), upstream [it2dl](https://iterm2.com/utilities/it2dl) |
 | IME context | Live cursor-row surrounding text, before/after text, UTF-16 position and cursor rectangle | `DesktopText.*`; [IME behavior](DESKTOP.md#input-methods-and-directionality) |
 | Native terminal accessibility | Viewport text, cursor, selection and character geometry through Qt/AT-SPI; pane actions, the pane menu and docked-area buttons | `DesktopText.*`, `NativeWindow.Accessible*`, `desktop_acceptance.py`; [accessibility](DESKTOP.md#accessible-terminal-text) |
 | Local file drop | Local absolute paths quoted for Bash/Zsh/Fish, targeted pane, bracketed paste, no automatic Enter | `FileDrop.*`; [file-drop workflow](DESKTOP.md#drop-files-and-text-into-a-pane) |
@@ -364,6 +364,7 @@ The permissions of the socket are the only boundary.
 | A temporary image file (`t=t`) | Deleted only when `tty-graphics-protocol` is in its path below the temporary directory. | Kitty looks for the tag anywhere in the path. |
 | Sized text (OSC 66) at a resize that reflows | The text stays, at the normal size, because a block of several rows cannot wrap. | The Kitty specification does not say what a reflow does with sized text. |
 | Unscroll (`CSI n + T`) with a scrolling region smaller than the screen | Blank lines, as SD gives. Afterglow fills from the scrollback only when the region is the whole screen. | Kitty also fills a region that starts at the top line. |
+| OSC 1337 downloads | One question with the name and the size: Save to the download folder, Save As…, or Refuse, and a `Terminal.downloads` policy. The data goes to the file as it comes. | iTerm2 asks two questions (allow the download, then where to save it), asks again past 1 GiB, and keeps the data in memory until the end. Kitty does not support OSC 1337 downloads. |
 | The end message of a drag (`t=e:x=4`) | Has the key `o`, the action that the drop took. A move to another application is reported as a copy. | Kitty sends no `o`. |
 
 The differences of `aglow` from `kitten` are in [aglow interoperability](#aglow-interoperability).
@@ -441,8 +442,9 @@ The command line is then the text typed after the `B` mark.
 
 ### Downloads
 
-Downloads permit 8 MiB of decoded data and one pending application request.
-A `MultipartFile` download stops when its data passes the 8 MiB limit. An inline image in parts can have 96 MiB of base64 data.
+A download (OSC 1337 `File` or `MultipartFile` without `inline=1`) has no size limit: its data streams to the file.
+The arguments of a `File` download must come in its first 4,096 bytes, before the `:`. Longer arguments refuse the file.
+An inline image in parts can have 96 MiB of base64 data.
 `MultipartFile` arguments have a 4,096-byte limit. Longer arguments refuse the file.
 
 ### Pointer shapes

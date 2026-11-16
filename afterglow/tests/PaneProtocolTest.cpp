@@ -7,8 +7,10 @@
 
 #include <AfterglowProto/Base64.h>
 
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QTemporaryDir>
 #include <QThread>
@@ -462,6 +464,76 @@ TEST(PaneEvents, TheEndOfACommandWhoseStartWasDroppedIsDroppedToo)
     pane.withTerminal([&](AfterglowVt::Terminal& terminal) { terminal.feed(CommandEnd); });
     QCoreApplication::sendPostedEvents(&pane, QEvent::MetaCall);
     EXPECT_EQ(events.size(), 256) << events.constLast().toStdString();
+}
+
+TEST(PaneDownload, TheProgramWaitsForTheAnswerAndTheFileStreamsToItsPlace)
+{
+    // An iTerm2 download from a real program: 2 MiB, more than the PTY's
+    // pipe holds, so the program waits while the question does, and its
+    // output after the file shows only after the answer. The file streams
+    // to "name.part" and becomes "name" when whole.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString source = dir.filePath(QStringLiteral("source"));
+    {
+        QFile f(source);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+        QByteArray data(2 << 20, '\0');
+        for (int i = 0; i < data.size(); ++i) data[i] = char(i * 7);
+        f.write(data);
+    }
+    const auto run = [&](const QString& answer, const char* tail) {
+        Pane pane { AfterglowVt::TerminalOptions {} };
+        QString asked;
+        qint64 askedSize = -2;
+        QObject::connect(&pane, &Pane::downloadRequested, [&](const QString& name, qint64 size) {
+            asked = name;
+            askedSize = size;
+        });
+        bool finished = false;
+        bool savedOk = false;
+        QObject::connect(&pane, &Pane::downloadFinished, [&](const QString&, bool ok, const QString&) {
+            finished = true;
+            savedOk = ok;
+        });
+        AfterglowPty::SpawnOptions options;
+        options.argv = { "/bin/sh", "-c",
+            std::string("printf '\\033]1337;File=name=Z290LmJpbg==;size=2097152:'; base64 -w 0 \"$0\"; printf '\\007") + tail
+                + "'; exec cat",
+            QFile::encodeName(source).toStdString() };
+        QString error;
+        EXPECT_TRUE(pane.start(options, QStringLiteral("xterm-256color"), 40, 5, 10, 20, &error)) << error.toStdString();
+        EXPECT_TRUE(waitFor([&] { return !asked.isEmpty(); }));
+        EXPECT_EQ(asked, QStringLiteral("got.bin"));
+        EXPECT_EQ(askedSize, 2 << 20);
+        // The program waits: its text after the file has not come.
+        QThread::msleep(300);
+        QCoreApplication::processEvents();
+        pane.refreshSnapshot();
+        EXPECT_FALSE(pane.text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1String(tail)));
+        pane.answerDownload(answer);
+        EXPECT_TRUE(waitFor([&] {
+            pane.refreshSnapshot();
+            return pane.text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1String(tail));
+        }));
+        if (!answer.isEmpty()) {
+            EXPECT_TRUE(waitFor([&] { return finished; }));
+        }
+        return savedOk;
+    };
+    const QString target = dir.filePath(QStringLiteral("got.bin"));
+    EXPECT_TRUE(run(target, "saved"));
+    QFile got(target);
+    ASSERT_TRUE(got.open(QIODevice::ReadOnly));
+    QFile want(source);
+    ASSERT_TRUE(want.open(QIODevice::ReadOnly));
+    EXPECT_TRUE(got.readAll() == want.readAll());
+    EXPECT_FALSE(QFileInfo::exists(target + QStringLiteral(".part")));
+    // Refused: no file, and the program goes on.
+    const QString refused = dir.filePath(QStringLiteral("refused.bin"));
+    run({}, "refused");
+    EXPECT_FALSE(QFileInfo::exists(refused));
+    EXPECT_EQ(QDir(dir.path()).entryList(QDir::Files).size(), 2);
 }
 
 TEST(PaneAnimation, AnITerm2GifPlaysThroughThePanesDecoder)

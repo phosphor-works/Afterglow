@@ -215,8 +215,21 @@ public:
     {
         return false;
     }
-    /// Complete bounded OSC 1337 download. The host must ask before writing.
-    virtual void downloadFile(std::string_view name, std::string_view data) {}
+    /// An iTerm2 download (OSC 1337 File or MultipartFile without inline=1)
+    /// begins, before any of its data: @p name as the program gave it
+    /// (decoded, maybe empty, not checked) and its declared @p size, or -1.
+    /// Return true to hold the terminal's input until the host calls
+    /// Terminal::answerDownload(), as iTerm2 asks first; the host stops
+    /// reading meanwhile, so the program waits. False refuses it: its data
+    /// goes nowhere. A download that ends before the answer gets
+    /// downloadEnd(false).
+    virtual bool downloadBegin(std::string_view name, std::int64_t size) { return false; }
+    /// Decoded data of the accepted download, as it comes. False ends it as
+    /// failed (downloadEnd(false)), and its other data goes nowhere.
+    virtual bool downloadData(std::string_view bytes) { return false; }
+    /// The download ends: @p complete when all its data came, valid and of
+    /// its declared size.
+    virtual void downloadEnd(bool complete) {}
     /// Decodes an image in any format the host reads (iTerm2 inline images:
     /// PNG, JPEG, GIF...) into RGBA8. Defaults to PNG only.
     virtual bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
@@ -296,7 +309,21 @@ public:
     Terminal(const Terminal&) = delete;
     Terminal& operator=(const Terminal&) = delete;
 
+    /// Parses @p bytes. While the terminal holds its input (holdsInput()),
+    /// it keeps them, and parses them at the first feed() after the answer;
+    /// that feed may be empty.
     void feed(std::string_view bytes);
+    /// The terminal waits for the host's answer to downloadBegin(): the host
+    /// stops reading the program's output until it gives it.
+    bool holdsInput() const noexcept { return m_download.waiting; }
+    /// The host's answer to downloadBegin(). The held input parses at the
+    /// next feed(), not in this call: the caller may be the thread that the
+    /// download's data waits for.
+    void answerDownload(bool accept);
+    /// Stops a download whose data streams: the host cannot take it (a
+    /// window's write failed). The rest of it goes nowhere, and no
+    /// downloadEnd() comes.
+    void stopDownload();
 
     /// Applies new defaults to a running terminal (live config reload, or
     /// the settings of a window that shows a session). The colours change
@@ -509,6 +536,16 @@ private:
     void oscDispatch(std::string_view payload, bool belTerminated);
     void dcsDispatch(const Params& params, const Intermediates& inter, std::uint8_t final, std::string_view data);
     void apcDispatch(std::string_view payload);
+    // The streamed OSC 1337 File= of a download (Parser's optional calls).
+    bool oscHead(std::string_view head);
+    void oscStreamData(std::string_view data) { downloadBase64(data); }
+    void oscStreamEnd(bool complete) { endDownload(complete); }
+    void parse(std::string_view bytes);
+    /// A download begins (downloadBegin()), and ends one under way.
+    void beginDownload(std::string_view nameBase64, std::size_t size, bool multipart);
+    void downloadBase64(std::string_view base64);
+    void failDownload();
+    void endDownload(bool complete);
 
     // Operations.
     Cursor& cursor() noexcept { return m_active->cursor; }
@@ -748,6 +785,20 @@ private:
     /// A new prompt (133 A or N, 633 A, after a C) came with no FilePart
     /// since: a second one ends the file.
     bool m_iterm2PromptSincePart = false;
+    /// An iTerm2 download under way, streamed to the host.
+    struct Download
+    {
+        bool active = false;
+        bool waiting = false; ///< for answerDownload(): the input is held
+        bool refused = false; ///< its data goes nowhere
+        bool multipart = false; ///< MultipartFile, not a streamed File=
+        std::int64_t size = -1; ///< declared, or -1
+        std::uint64_t written = 0;
+        std::string base64; ///< characters of an unfinished group of four
+    };
+    Download m_download;
+    /// Input that came while the terminal held it.
+    std::string m_heldInput;
     /// A command started (C) since the last prompt mark: the next one is a
     /// new prompt, not the shell drawing the same one again. A D only closes
     /// the command that a C opened, so it adds nothing.

@@ -1254,6 +1254,70 @@ TEST(MuxAttach, AClipboardReadWaitsForTheWindowsAnswer)
 
 // The daemon's terminal answers a query (DA1) after the commands before it:
 // the window writes the answer behind its replies to them.
+// An iTerm2 download in a session pane: the window asks, as for a pane of its
+// own, while the program waits; then the data streams to the window as host
+// calls, none dropped also past Mux.eventQueue, and ends whole. A refusal
+// lets the program go on with no data.
+TEST(MuxAttach, ADownloadAsksTheWindowAndStreamsItsData)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string file = daemon.dir() + "/payload";
+    std::string payload(3 << 20, '\0');
+    for (std::size_t i = 0; i < payload.size(); ++i) payload[i] = char(i * 13);
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << payload;
+    }
+    // The program sends once the window shows it (a line typed then): with
+    // no window, the daemon refuses a download.
+    const auto start = [&](const std::string& name, const char* tail) {
+        return daemon.newSession(daemon.options({"/bin/sh", "-c",
+            std::string("read -r _; printf '\\033]1337;File=name=Z290LmJpbg==;size=") + std::to_string(payload.size())
+                + ":'; base64 -w 0 \"$0\"; printf '\\007" + tail + "'; exec cat", file}, name));
+    };
+    ASSERT_TRUE(start("take", "after")) << daemon.lastError();
+    Window w;
+    // The smallest queue, a third of the file: the data waits for room.
+    ASSERT_EQ(w.attach(daemon, "take", true, std::size_t(MinEventQueue)), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    ASSERT_TRUE(w.type("\r"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::DownloadBegin); })) << daemon.errors();
+    const auto begin = std::find_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::DownloadBegin; });
+    EXPECT_EQ(begin->title, "got.bin");
+    EXPECT_EQ(begin->value, payload.size() + 1);
+    // The program waits for the answer.
+    EXPECT_FALSE(w.until([&] { return contains(w.screen(), "after"); }, std::chrono::milliseconds(300)));
+    Attach::Input answer;
+    answer.type = Attach::InputType::DownloadAnswer;
+    answer.pane = w.pane;
+    answer.accept = true;
+    ASSERT_TRUE(w.send(answer));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::DownloadEnd); }, std::chrono::seconds(30))) << daemon.errors();
+    std::string received;
+    int end = -1;
+    for (const Host::Call& c : w.calls) {
+        if (c.kind == Host::Kind::DownloadData) received += c.text;
+        if (c.kind == Host::Kind::DownloadEnd) end = c.number;
+    }
+    EXPECT_EQ(end, 1);
+    EXPECT_TRUE(received == payload) << received.size();
+    EXPECT_TRUE(w.until([&] { return contains(w.screen(), "after"); }));
+
+    ASSERT_TRUE(start("refuse", "refused")) << daemon.lastError();
+    Window r;
+    ASSERT_EQ(r.attach(daemon, "refuse"), "");
+    ASSERT_TRUE(r.until([&] { return r.pane != 0; }));
+    ASSERT_TRUE(r.type("\r"));
+    ASSERT_TRUE(r.until([&] { return hasCall(r, Host::Kind::DownloadBegin); }));
+    answer.pane = r.pane;
+    answer.accept = false;
+    ASSERT_TRUE(r.send(answer));
+    EXPECT_TRUE(r.until([&] { return contains(r.screen(), "refused"); }));
+    EXPECT_FALSE(hasCall(r, Host::Kind::DownloadData));
+    EXPECT_FALSE(hasCall(r, Host::Kind::DownloadEnd));
+}
+
 TEST(MuxAttach, AReportFollowsTheCommandsBeforeIt)
 {
     TestDaemon daemon;

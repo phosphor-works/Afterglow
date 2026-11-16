@@ -351,6 +351,9 @@ bool Attachment::deliver(Session* session, const Attach::Input& message, bool wi
     case Attach::InputType::Resize:
         pane->resize(message.size);
         break;
+    case Attach::InputType::DownloadAnswer:
+        pane->answerDownload(message.accept);
+        break;
     case Attach::InputType::Reset:
         pane->reset();
         break;
@@ -598,6 +601,7 @@ void Attachment::readLate(Session* session)
             deliver(session, *message, true);
             break;
         case Attach::InputType::Resize:
+        case Attach::InputType::DownloadAnswer:
         case Attach::InputType::Visible:
         case Attach::InputType::Refresh:
         case Attach::InputType::Kill:

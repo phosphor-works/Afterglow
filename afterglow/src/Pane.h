@@ -201,6 +201,10 @@ public:
     /// from a terminal without the protocol, so that a program does not
     /// count on notifications that the window will not show.
     void setNotificationsEnabled(bool on) { m_notificationsEnabled = on; }
+    /// The window's answer to downloadRequested(): the file to save the
+    /// download as, which it streams to ("name.part" until it is whole), or
+    /// empty to refuse it. Its program goes on then.
+    void answerDownload(const QString& path);
     /// GUI thread: delivers the program's protocol commands that wait for the
     /// GUI thread, and no other events. With @p waitMs above 0 and nothing to
     /// deliver, first waits up to that long for the next one. Runs no event
@@ -403,6 +407,14 @@ Q_SIGNALS:
     /// for an overlay's dialog. The window can change how the dialog shows
     /// (the quick terminal does).
     void dialogOpened(QDialog* dialog);
+    /// A program wants to save a file (an iTerm2 download, OSC 1337): its
+    /// output waits for answerDownload(). @p name is clean to show and to
+    /// keep; @p size is as declared, or -1.
+    void downloadRequested(const QString& name, qint64 size);
+    /// The download that the window asks about ended before the answer.
+    void downloadCancelled();
+    /// The download to @p path ended: saved, or not, for @p error.
+    void downloadFinished(const QString& path, bool ok, const QString& error);
     /// The terminal changed. Emitted on the GUI thread: coalesced for the
     /// output of the pane's own program, once for each frame that a session
     /// pane applies (applySessionFrame), for each frame of an animated image
@@ -508,6 +520,21 @@ private:
     std::atomic_bool m_eventsPosted{false};
     /// setNotificationsEnabled(); read on the PTY reader thread.
     std::atomic_bool m_notificationsEnabled{true};
+    /// The download that streams to a file (answerDownload()), m_mutex held.
+    struct OpenDownload
+    {
+        int fd = -1;
+        QByteArray part;
+        QByteArray target;
+        QString error; ///< why a write failed
+    };
+    OpenDownload m_download;
+    /// The window asks about a download: answerDownload() takes it.
+    bool m_downloadAsked = false;
+    /// ptyData() waits on it while the terminal holds the output for a
+    /// download's answer; the answer and the pane's end wake it.
+    std::condition_variable m_downloadWake;
+    bool m_closing = false;
     /// GUI thread: titleUpdated when the title to show changed.
     void announceTitle();
     std::atomic_bool m_bellQueued{false};
@@ -591,7 +618,11 @@ private:
     void contextChanged() override;
     void regionScrolled(const AfterglowVt::RegionScroll& scroll) override;
     void userVarChanged(std::string_view name, std::string_view value) override;
-    void downloadFile(std::string_view name, std::string_view data) override;
+    bool downloadBegin(std::string_view name, std::int64_t size) override;
+    bool downloadData(std::string_view bytes) override;
+    void downloadEnd(bool complete) override;
+    /// The pane closes: an open download goes, with its file.
+    void dropDownload();
     bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
                      std::vector<std::uint8_t>& rgba) override;
     bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,

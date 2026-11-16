@@ -970,6 +970,10 @@ private:
     /// (@p name, else the pane's title), and where the pane is when it is
     /// not the one the user looks at.
     QString clipboardAsker(Pane* pane, const QString& name = {}) const;
+    /// A program in @p pane wants to save a file (Pane::downloadRequested):
+    /// Terminal.downloads decides, or the user does, before its data comes.
+    void askDownload(Pane* pane, const QString& name, qint64 size);
+    void saveDownloadAs(Pane* pane, const QString& directory, const QString& name);
     /// A program's clipboard write (OSC 52 or 5522), as Terminal.clipboardWrite says.
     void clipboardWrite(Pane* pane, const AfterglowVt::ClipboardRequest& request);
     void writeClipboard(Pane* pane, const AfterglowVt::ClipboardRequest& request);

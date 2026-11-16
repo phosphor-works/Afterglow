@@ -53,6 +53,7 @@
 #include <QFontMetricsF>
 #include <QUrl>
 #include <QDir>
+#include <QLocale>
 #include <QFileInfo>
 #include <sys/stat.h>
 #include <dlfcn.h>
@@ -170,6 +171,20 @@ template <class T>
 QPointer<T> waitForDialog(const QString& title, int ms = 3000) {
     const QList<QPointer<T>> found = waitForDialogs<T>(title, ms);
     return found.isEmpty() ? QPointer<T>() : found.last();
+}
+// Answers a download's question (TerminalWindow::askDownload) with
+// @p button: "Save As…" opens the Save dialog of the download. False when
+// no question shows.
+bool answerDownloadQuestion(const QString& button = QStringLiteral("Save As…")) {
+    const QPointer<QMessageBox> question = waitForDialog<QMessageBox>(QStringLiteral("Download"));
+    if (!question) return false;
+    for (QAbstractButton* b : question->buttons()) {
+        if (b->text() == button) {
+            b->click();
+            return true;
+        }
+    }
+    return false;
 }
 // Feeds @p bytes to @p pane's terminal as its program's output, from a
 // thread that stands in for the PTY reader. The terminal's callbacks then
@@ -9602,7 +9617,7 @@ void openPaneDialogs(Pane* asking, const QString& sent, PaneDialogs& dialogs) {
     feedFromReader(asking, "\x1b]1337;File=name=" + QByteArray("notes.txt").toBase64().toStdString() + ";size=5;inline=0:"
                                + QByteArray("hello").toBase64().toStdString() + "\x07");
     dialogs.prompt = waitForDialog<QMessageBox>(QStringLiteral("File transfer"));
-    dialogs.save = waitForDialog<QFileDialog>(QStringLiteral("Save file received from"));
+    if (answerDownloadQuestion()) dialogs.save = waitForDialog<QFileDialog>(QStringLiteral("Save file received from"));
     // A save that should not happen would land beside the directory.
     if (dialogs.save) dialogs.save->setDirectory(QFileInfo(sent).absolutePath());
 }
@@ -9861,12 +9876,55 @@ TEST_F(NativeWindow, ARequestFromAClosedPaneOpensNoDialog) {
     chrome->answerClipboard(0);
 }
 
+// An iTerm2 download asks first (Terminal.downloads is ask), with the file's
+// name and size, before its data comes; the question starts on Refuse. Save
+// puts the file in Terminal.downloadDirectory under its name, or "name (1)"
+// when that is taken. With allow it saves with no question.
+TEST_F(NativeWindow, ADownloadAsksBeforeItsDataAndSavesInTheDownloadFolder) {
+    const QString folder = directory.filePath(QStringLiteral("downloads"));
+    restartApplication(QStringLiteral("downloads.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("downloadDirectory"), folder}}}}), {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    const std::string file = "\x1b]1337;File=name=" + QByteArray("notes.txt").toBase64().toStdString() + ";size=5:"
+        + QByteArray("hello").toBase64().toStdString() + "\x07";
+    feedFromReader(pane, file);
+    const QPointer<QMessageBox> question = waitForDialog<QMessageBox>(QStringLiteral("Download"));
+    ASSERT_TRUE(question);
+    EXPECT_TRUE(question->text().contains(QStringLiteral("notes.txt"))) << question->text().toStdString();
+    EXPECT_TRUE(question->text().contains(QLocale().formattedDataSize(5))) << question->text().toStdString();
+    ASSERT_NE(question->defaultButton(), nullptr);
+    EXPECT_EQ(question->defaultButton()->text(), QStringLiteral("Refuse"));
+    // Nothing was written before the answer.
+    EXPECT_FALSE(QFileInfo::exists(folder + QStringLiteral("/notes.txt")));
+    ASSERT_TRUE(answerDownloadQuestion(QStringLiteral("Save to downloads")));
+    ASSERT_TRUE(waitFor([&] { return fileContent(folder + QStringLiteral("/notes.txt")) == "hello"; }));
+    feedFromReader(pane, file);
+    ASSERT_TRUE(answerDownloadQuestion(QStringLiteral("Save to downloads")));
+    ASSERT_TRUE(waitFor([&] { return fileContent(folder + QStringLiteral("/notes (1).txt")) == "hello"; }));
+    feedFromReader(pane, file);
+    ASSERT_TRUE(answerDownloadQuestion(QStringLiteral("Refuse")));
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(QDir(folder).entryList(QDir::Files).size(), 2) << QDir(folder).entryList(QDir::Files).join(QLatin1Char(' ')).toStdString();
+
+    restartApplication(QStringLiteral("downloads-allowed.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("downloadDirectory"), folder},
+                                                               {QStringLiteral("downloads"), QStringLiteral("allow")}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    feedFromReader(window->focusedPane(), file);
+    ASSERT_TRUE(waitFor([&] { return fileContent(folder + QStringLiteral("/notes (2).txt")) == "hello"; }));
+    EXPECT_FALSE(waitForDialog<QMessageBox>(QStringLiteral("Download"), 300));
+}
+
 TEST_F(NativeWindow, ADownloadKeepsTheCharactersOfItsNameOutsideTheBmp) {
     // Two UTF-16 units each, and neither one printable alone.
     Pane* pane = window->focusedPane();
     const QString name = QStringLiteral("\U0001F4F7 photo \U00020000.txt");
     feedFromReader(pane, "\x1b]1337;File=name=" + name.toUtf8().toBase64().toStdString() + ";size=5;inline=0:"
                              + QByteArray("hello").toBase64().toStdString() + "\x07");
+    ASSERT_TRUE(answerDownloadQuestion());
     QPointer<QFileDialog> save = waitForDialog<QFileDialog>(QStringLiteral("Save file received from"));
     ASSERT_TRUE(save);
     const auto refuse = qScopeGuard([&save] {
@@ -9891,6 +9949,7 @@ TEST_F(NativeWindow, ADownloadsNameFitsAFileName) {
         SCOPED_TRACE(expected.toStdString());
         feedFromReader(pane, "\x1b]1337;File=name=" + name.toUtf8().toBase64().toStdString() + ";size=5;inline=0:"
                                  + QByteArray("hello").toBase64().toStdString() + "\x07");
+        EXPECT_TRUE(answerDownloadQuestion());
         QPointer<QFileDialog> save = waitForDialog<QFileDialog>(QStringLiteral("Save file received from"));
         EXPECT_TRUE(save);
         if (!save) continue;
@@ -10062,6 +10121,8 @@ QPointer<QFileDialog> openDownloadDialog(Application& application, QPointer<Term
     if (!source) return {};
     if (quick) source->toggleQuick();
     else source->show();
+    // The question first, before the data comes: Save As… opens the dialog.
+    if (!answerDownloadQuestion()) return {};
     // The dialog moves to @p folder once, before its name is checked: a
     // native dialog could answer the move with another name.
     QPointer<QFileDialog> moved;

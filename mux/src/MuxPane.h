@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -112,6 +113,9 @@ public:
     /// own: the window shows the result with the next frame.
     void reset();
     void clear();
+    /// The window's answer to a DownloadBegin call, or false to stop a
+    /// download that streams: the pane's output goes on.
+    void answerDownload(bool accept);
     /// New terminal values (Terminal::setOptions), when they differ: the
     /// window shows the result with the next frame.
     void setOptions(const AfterglowVt::TerminalOptions& options);
@@ -270,7 +274,9 @@ public:
     void userVarChanged(std::string_view name, std::string_view value) override;
     void commandStarted(std::string_view command) override;
     void commandFinished(int exitCode) override;
-    void downloadFile(std::string_view name, std::string_view data) override;
+    bool downloadBegin(std::string_view name, std::int64_t size) override;
+    bool downloadData(std::string_view bytes) override;
+    void downloadEnd(bool complete) override;
     void regionScrolled(const AfterglowVt::RegionScroll& scroll) override;
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override;
@@ -299,6 +305,8 @@ private:
     void setVisibleLocked(bool visible, std::uint64_t window);
     bool decodeOutsideLock(std::string_view data, ImageFormats formats, std::uint32_t& width, std::uint32_t& height,
                            std::vector<std::uint8_t>& rgba);
+    /// ptyData(): waits while a download holds the output or fills the queue.
+    void waitForDownload(std::unique_lock<std::mutex>& lock);
     /// Runs @p decode on the reader thread with m_mutex let go, as a decode
     /// can take seconds.
     bool outsideLock(const std::function<bool()>& decode);
@@ -314,6 +322,11 @@ private:
     std::function<void()> m_wake;
     std::atomic<bool> m_changed{false};
     std::atomic<int> m_exitStatus{0};
+    /// ptyData() waits on it, m_mutex held, while the terminal holds the
+    /// output for a download's answer, or while the download's data fills
+    /// the window's queue.
+    std::condition_variable m_downloadWake;
+    std::atomic<bool> m_closing{false};
     std::string m_notificationCapabilities; ///< under m_hostMutex
     ImageDecoder& m_images;
     /// Readable once the pane closes: a decode that runs, and any after it,
@@ -423,6 +436,9 @@ private:
     /// none (localDirectory()).
     std::string m_checkedDirectory;
     std::uint64_t m_window = 0;
+    /// The window that a download asked: its data and end go to it only. A
+    /// window that goes, or another one, ends the download.
+    std::uint64_t m_downloadWindow = 0;
     std::size_t m_hostLimit = 0;
     std::deque<WaitingCall> m_hostCalls;
     std::size_t m_hostBytes = 0;

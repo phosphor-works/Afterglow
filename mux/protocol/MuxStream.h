@@ -150,6 +150,10 @@ enum class InputType : std::uint8_t {
     /// Until then the daemon moves that pane back into this session for no
     /// one (ActionChannel only).
     PaneForgotten = 13,
+    /// The answer to a DownloadBegin host call (MuxHost.h), in `accept`:
+    /// the pane's output goes on. false while the data comes stops the
+    /// download (a write failed): the rest of its data goes nowhere.
+    DownloadAnswer = 14,
 };
 
 /// The bytes of a ControlReply in each ControlReplyPart, when the reply does
@@ -169,6 +173,7 @@ struct Input
     std::string bytes;
     PaneSize size;
     bool visible = false;
+    bool accept = false; ///< DownloadAnswer
 };
 
 /// The inputs that come on ActionChannel, and never on the control channel.
