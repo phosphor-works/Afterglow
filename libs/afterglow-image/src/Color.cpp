@@ -218,8 +218,15 @@ ColorSpace colorSpaceOf(Format format, std::string_view bytes)
     case Format::Png: return pngSpace(bytes);
     case Format::Jpeg: return jpegSpace(bytes);
     case Format::WebP: return webpSpace(bytes);
+    case Format::Tiff: {
+        ColorSpace space;
+        space.icc = tiffIcc(bytes);
+        if (space.icc.size() > MaxIcc) space.icc.clear();
+        return space;
+    }
     case Format::Gif:
     case Format::Bmp:
+    case Format::Pnm:
     case Format::Unknown: break;
     }
     return {};

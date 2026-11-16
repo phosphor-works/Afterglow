@@ -25,8 +25,8 @@ inline constexpr std::string_view DecodeServerArgument = "--decode-images";
 /// The formats that a program may send.
 enum class ImageFormats : std::uint8_t {
     Png, ///< kitty graphics f=100: PNG only
-    Common, ///< PNG, JPEG, GIF and WebP (their first frame) and BMP
-    CommonFrames, ///< iTerm2 inline images: Common, with each frame of a GIF or WebP animation
+    Common, ///< PNG, JPEG, GIF, WebP and APNG (their first frame), BMP, TIFF and netPBM
+    CommonFrames, ///< iTerm2 inline images: Common, with each frame of a GIF, WebP or APNG animation
 };
 
 /// One frame of decodeFrames(): RGBA8 with straight alpha, and the

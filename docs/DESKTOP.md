@@ -237,7 +237,7 @@ Run `aglow COMMAND --help` for the options of a command.
 
 | Example | Result |
 | --- | --- |
-| `aglow icat ./picture.png` | Shows an image. An animated GIF or WebP plays. |
+| `aglow icat ./picture.png` | Shows an image. An animated GIF, WebP or APNG plays. |
 | `aglow clipboard ./picture.png` | Copies a file to the clipboard as an image. |
 | `aglow clipboard --get-clipboard --mime image/png ./copy.png` | Writes the image on the clipboard to another file. |
 
@@ -257,14 +257,18 @@ See [remote commands](CONTROL.md#remote-commands).
 
 ### aglow icat
 
-`aglow icat` shows PNG, JPEG, GIF, WebP and BMP images.
-It decodes PNG, JPEG and WebP with libpng, libjpeg-turbo and libwebp, which the build includes, and GIF and BMP with readers of its own.
+`aglow icat` shows PNG, APNG, JPEG, GIF, WebP, BMP, TIFF and netPBM (PBM, PGM, PPM and PAM) images.
+It decodes PNG, JPEG and WebP with libpng, libjpeg-turbo and libwebp, which the build includes, and GIF, BMP, TIFF and netPBM with readers of its own.
+Of a TIFF or netPBM file with more than one image, it shows the first image.
 It does not show these images:
 
 - a BMP that is compressed (run-length encoding, or JPEG or PNG data in the BMP)
 - a BMP with a depth other than 1, 4, 8, 16, 24 or 32 bits
 - a JPEG with a sample size other than 8 bits, or a progressive JPEG with more than 1,000 scans
 - Apple's CgBI PNG
+- a TIFF with a compression other than LZW, Deflate and PackBits (for example JPEG)
+- a TIFF with each sample in a plane of its own, with floating-point samples, or with a photometric interpretation other than grey, palette, RGB and CMYK
+- a BigTIFF
 
 It sends a PNG image that needs no change as it is.
 It decodes the other images to pixels.
@@ -272,7 +276,7 @@ It also decodes a PNG image that it must scale, mirror, turn or draw on a color 
 It also decodes a PNG image that is damaged, so that it can report the error.
 It turns a JPEG, PNG or WebP image as its EXIF orientation tells.
 It applies the gamma of a PNG (the gAMA chunk), as Kitty does.
-It does not apply an embedded color profile (ICC).
+It converts an image with an ICC color profile or a cICP color space to sRGB.
 A child process decodes each image, with limits on its memory and CPU time.
 A corrupt image stops only that process, and `aglow icat` reports an error.
 
@@ -282,6 +286,8 @@ A frame that has no time shows together with the next frame.
 A GIF that is damaged after its first frame plays the frames before the damage, and `aglow icat` shows a warning.
 A WebP keeps the frames before the damage only when the damage is in the image data of a later frame.
 A WebP file that is cut short shows nothing.
+An APNG plays the frames before a damaged frame, or before a frame whose chunks are out of order, and `aglow icat` shows a warning.
+An APNG whose first image is not a frame plays its frames without that image, as browsers play it.
 With `--loop 0`, `aglow icat` decodes the first frame only.
 
 For a directory, `aglow icat` shows the image files in it and in its subdirectories, in name order.

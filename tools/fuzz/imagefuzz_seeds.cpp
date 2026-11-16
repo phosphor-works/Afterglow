@@ -29,8 +29,27 @@ int main(int argc, char** argv)
         {"rgb.bmp", &Bmp}, {"two-frames.gif", &Gif}, {"rgb.jpg", &Jpeg}, {"cmyk.jpg", &JpegCmyk},
         {"cmyk-dark.jpg", &JpegCmykDark}, {"progressive.jpg", &JpegProgressive}, {"grey.jpg", &JpegGrey},
         {"lossless.webp", &Webp}, {"lossy.webp", &WebpLossy}, {"alpha.webp", &WebpAlpha}, {"lossy-alpha.webp", &WebpLossyAlpha},
-        {"two-frames.webp", &WebpAnimated},
+        {"two-frames.webp", &WebpAnimated}, {"rgb.tif", &TiffRgb}, {"lzw.tif", &TiffLzw},
+        {"deflate-predictor.tif", &TiffDeflatePredictor}, {"packbits-big.tif", &TiffPackBitsBig},
+        {"rgb16-predictor.tif", &Tiff16Predictor}, {"bilevel.tif", &TiffBilevel}, {"palette.tif", &TiffPalette},
+        {"tiled.tif", &TiffTiled}, {"rgba.tif", &TiffRgba}, {"cmyk.tif", &TiffCmyk}, {"three-frames.png", &Apng},
+        {"hidden-default.png", &ApngHiddenDefault},
     };
+    // netPBM files are text up to their samples.
+    const std::string netpbm[] = {"P1\n3 2\n1 0 1\n010", "P3 1 1 255\n10 20 30\n", std::string("P5 2 1 65535\n\x80\x00\xff\xff", 17),
+                                  "P7\nWIDTH 1\nHEIGHT 1\nDEPTH 2\nMAXVAL 3\nENDHDR\n\x01\x03"};
+    const std::pair<const char*, const std::string*> texts[] = {
+        {"plain.pbm", &netpbm[0]}, {"plain.ppm", &netpbm[1]}, {"wide.pgm", &netpbm[2]}, {"grey-alpha.pam", &netpbm[3]},
+    };
+    for (const auto& [name, bytes] : texts) {
+        const std::string path = std::string(argv[1]) + '/' + name;
+        std::ofstream out(path, std::ios::binary);
+        out.write(bytes->data(), std::streamsize(bytes->size()));
+        if (!out.flush()) {
+            std::fprintf(stderr, "%s: cannot write %s\n", argv[0], path.c_str());
+            return 1;
+        }
+    }
     for (const auto& [name, bytes] : files) {
         const std::string path = std::string(argv[1]) + '/' + name;
         std::ofstream out(path, std::ios::binary);

@@ -50,6 +50,8 @@ Probe probe(std::string_view bytes, int& width, int& height)
     case Format::Gif: return detail::probeGif(bytes, width, height);
     case Format::WebP: return detail::probeWebP(bytes, width, height);
     case Format::Bmp: return detail::probeBmp(bytes, width, height);
+    case Format::Tiff: return detail::probeTiff(bytes, width, height);
+    case Format::Pnm: return detail::probePnm(bytes, width, height);
     case Format::Unknown: break;
     }
     return Probe::Unknown;
@@ -80,11 +82,13 @@ bool decode(std::string_view bytes, const FrameSink& sink, std::string& error, s
         out = &colored;
     }
     switch (kind) {
-    case Format::Png: return detail::decodePng(bytes, *out, error);
+    case Format::Png: return detail::decodePng(bytes, *out, error, warning);
     case Format::Jpeg: return detail::decodeJpeg(bytes, *out, error);
     case Format::Gif: return detail::decodeGif(bytes, *out, error, warning);
     case Format::WebP: return detail::decodeWebP(bytes, *out, error, warning);
     case Format::Bmp: return detail::decodeBmp(bytes, *out, error);
+    case Format::Tiff: return detail::decodeTiff(bytes, *out, error);
+    case Format::Pnm: return detail::decodePnm(bytes, *out, error);
     case Format::Unknown: break;
     }
     error = "not an image that this decoder reads";

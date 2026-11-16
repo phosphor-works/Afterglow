@@ -45,7 +45,7 @@ bool refused(Probe probe, const char* name, std::string& error);
 std::string libraryMessage(std::string_view text);
 
 Probe probePng(std::string_view bytes, int& width, int& height);
-bool decodePng(std::string_view bytes, const FrameSink& sink, std::string& error);
+bool decodePng(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning);
 
 Probe probeJpeg(std::string_view bytes, int& width, int& height);
 bool decodeJpeg(std::string_view bytes, const FrameSink& sink, std::string& error);
@@ -58,5 +58,13 @@ bool decodeGif(std::string_view bytes, const FrameSink& sink, std::string& error
 
 Probe probeBmp(std::string_view bytes, int& width, int& height);
 bool decodeBmp(std::string_view bytes, const FrameSink& sink, std::string& error);
+
+Probe probeTiff(std::string_view bytes, int& width, int& height);
+bool decodeTiff(std::string_view bytes, const FrameSink& sink, std::string& error);
+/// The ICC profile of the first image of a TIFF, or nothing.
+std::string tiffIcc(std::string_view bytes);
+
+Probe probePnm(std::string_view bytes, int& width, int& height);
+bool decodePnm(std::string_view bytes, const FrameSink& sink, std::string& error);
 
 } // namespace AfterglowImage::detail

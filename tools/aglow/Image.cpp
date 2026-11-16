@@ -480,6 +480,11 @@ bool isPng(std::string_view bytes)
             return false;
         }
         data |= chunk.starts_with("IDAT");
+        // An APNG: a terminal shows one image of a PNG, so aglow decodes
+        // the frames and sends them as an animation, as kitten icat does.
+        if (chunk.starts_with("acTL")) {
+            return false;
+        }
         i += 12 + length;
         if (chunk.starts_with("IEND")) {
             break;

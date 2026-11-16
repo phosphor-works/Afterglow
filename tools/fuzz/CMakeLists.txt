@@ -5,8 +5,8 @@
 # terminal core and the reader of its state frames, afterglow_protofuzz for
 # the protocol readers that take what a remote program sends,
 # afterglow_imagefuzz for the image decoders of aglow and aglow-mux
-# (libs/afterglow-image: its GIF and BMP readers, and libpng, libjpeg-turbo
-# and libwebp behind it), and
+# (libs/afterglow-image: its GIF, BMP, TIFF and netPBM readers, its APNG
+# frames, and libpng, libjpeg-turbo and libwebp behind them), and
 # afterglow_muxfuzz for the readers of the attach stream of aglow-mux and
 # of the values of its calls.
 # afterglow_muxfuzz compiles code of mux/, which is GPL-3.0-or-later, so its
@@ -91,7 +91,7 @@ target_link_libraries(afterglow_muxfuzz PRIVATE afterglow_fuzz_proto)
 afterglow_fuzz_sources(AfterglowImage IMAGE_SOURCES)
 add_executable(afterglow_imagefuzz imagefuzz.cpp ${IMAGE_SOURCES})
 target_include_directories(afterglow_imagefuzz PRIVATE $<TARGET_PROPERTY:AfterglowImage,INTERFACE_INCLUDE_DIRECTORIES>)
-target_link_libraries(afterglow_imagefuzz PRIVATE afterglow_png afterglow_turbojpeg afterglow_webp)
+target_link_libraries(afterglow_imagefuzz PRIVATE afterglow_png afterglow_turbojpeg afterglow_webp afterglow_lcms2 afterglow_zlib)
 # The files of the tests of the decoders, as a first corpus of
 # afterglow_imagefuzz. It reads no input, so it is not instrumented.
 add_executable(afterglow_imagefuzz_seeds imagefuzz_seeds.cpp)

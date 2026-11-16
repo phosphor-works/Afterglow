@@ -611,6 +611,28 @@ TEST(PaneAnimation, AnITerm2GifPlaysThroughThePanesDecoder)
     }));
 }
 
+TEST(PaneAnimation, AnITerm2ApngPlaysItsFrames)
+{
+    // OSC 1337 with an APNG of three frames: red, blue over red in the
+    // middle, then green in a corner. The decoder process draws each frame.
+    Pane pane { AfterglowVt::TerminalOptions {} };
+    pane.resize(20, 10, 10, 20);
+    const auto corner = [&] {
+        QCoreApplication::sendPostedEvents(&pane, QEvent::MetaCall);
+        pane.refreshSnapshot();
+        const auto& images = pane.snapshot().images;
+        if (images.size() != 1 || !images[0].frame || images[0].frame->rgba.size() != 64) return std::vector<std::uint8_t> {};
+        const auto& px = images[0].frame->rgba;
+        return std::vector<std::uint8_t>(px.begin(), px.begin() + 4);
+    };
+    pane.withTerminal([](AfterglowVt::Terminal& terminal) {
+        terminal.feed(std::string(20, '\n'));
+        terminal.feed("\x1b]1337;File=inline=1:" + AfterglowProto::base64Encode(AfterglowImage::TestFiles::Apng) + "\x07");
+    });
+    EXPECT_EQ(corner(), (std::vector<std::uint8_t> {255, 0, 0, 255}));
+    EXPECT_TRUE(waitFor([&] { return corner() == std::vector<std::uint8_t> {0, 255, 0, 255}; }));
+}
+
 TEST(PaneAnimation, AnImageScrolledBackIntoViewShowsItsCurrentFrameAtOnce)
 {
     Pane pane { AfterglowVt::TerminalOptions {} };

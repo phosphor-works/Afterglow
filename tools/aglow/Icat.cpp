@@ -232,7 +232,7 @@ bool hasImageExtension(const std::string& name)
     }
     std::string ext = name.substr(dot + 1);
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-    static const char* known[] = { "png", "jpg", "jpeg", "gif", "webp", "bmp" };
+    static const char* known[] = { "png", "apng", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "pbm", "pgm", "ppm", "pnm", "pam" };
     return std::any_of(std::begin(known), std::end(known), [&](const char* k) { return ext == k; });
 }
 

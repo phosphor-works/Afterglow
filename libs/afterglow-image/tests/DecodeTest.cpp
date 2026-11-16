@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <initializer_list>
@@ -709,6 +710,150 @@ TEST(ImageDecode, RefusesBmpsThatAreNotValid)
     EXPECT_TRUE(refuses(header(18, 10001), "side longer than 10000"));
 }
 
+/// A still image of @p width by @p height whose pixels are TiffPattern.
+::testing::AssertionResult showsPattern(std::string_view file, int width, int height)
+{
+    const Result r = run(file);
+    if (const auto size = still(r, width, height); !size) return size;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const std::uint8_t* p = r.frames[0].rgba.data() + (std::size_t(y) * std::size_t(width) + std::size_t(x)) * 4;
+            const std::uint32_t want = TiffPattern(x, y);
+            if (p[0] != (want >> 16) || p[1] != ((want >> 8) & 255) || p[2] != (want & 255) || p[3] != 255) {
+                return ::testing::AssertionFailure() << "at " << x << ", " << y << ": " << int(p[0]) << ' ' << int(p[1]) << ' ' << int(p[2])
+                                                     << ' ' << int(p[3]);
+            }
+        }
+    }
+    return ::testing::AssertionSuccess();
+}
+
+/// @p file with the value of its TIFF field @p entry (the tag, type and
+/// count, as they are in the file) replaced by @p value.
+std::string withField(std::string file, std::string_view entry, std::string_view value)
+{
+    const std::size_t at = file.find(entry);
+    EXPECT_NE(at, std::string::npos);
+    if (at != std::string::npos) file.replace(at + entry.size(), value.size(), value);
+    return file;
+}
+
+TEST(ImageDecode, TiffOfEachKind)
+{
+    EXPECT_TRUE(shows(TiffRgb, 3, 2, {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 10, 20, 30, 255, 200, 100, 50, 255, 1, 2, 3, 255}));
+    // LZW with codes of 9 to 12 bits and a clear code, the predictor of 8
+    // and 16 bits, PackBits in a big-endian file, and edge tiles.
+    EXPECT_TRUE(showsPattern(TiffLzw, 40, 36));
+    EXPECT_TRUE(showsPattern(TiffDeflatePredictor, 8, 8));
+    EXPECT_TRUE(showsPattern(TiffPackBitsBig, 8, 8));
+    EXPECT_TRUE(showsPattern(TiffTiled, 20, 20));
+    EXPECT_TRUE(shows(Tiff16Predictor, 2, 1, {128, 64, 192, 255, 255, 1, 0, 255}));
+    // 1 bit, white is zero, rows of whole bytes.
+    std::vector<std::uint8_t> bilevel(10 * 2 * 4, 255);
+    for (const int i : {0, 3, 9, 15}) std::fill_n(bilevel.begin() + i * 4, 3, std::uint8_t(0));
+    EXPECT_TRUE(shows(TiffBilevel, 10, 2, bilevel));
+    EXPECT_TRUE(shows(TiffPalette, 2, 1, {0, 0, 255, 255, 255, 0, 0, 255}));
+    // Unassociated alpha stays as it is.
+    EXPECT_TRUE(shows(TiffRgba, 2, 1, {200, 100, 50, 128, 1, 2, 3, 0}));
+    EXPECT_TRUE(shows(TiffCmyk, 2, 1, {255, 0, 0, 255, 127, 127, 127, 255}));
+    // The ICC profile of the first image.
+    EXPECT_TRUE(convertsTo(TiffAdobe, 2, 1, {{66, 151, 203}, {0, 201, 0}}));
+}
+
+TEST(ImageDecode, RefusesTiffsThatAreNotSupportedOrValid)
+{
+    // TiffRgb is little-endian: tag, type and count, then the value.
+    const std::string compression("\x03\x01\x03\x00\x01\x00\x00\x00", 8);
+    const std::string photometric("\x06\x01\x03\x00\x01\x00\x00\x00", 8);
+    EXPECT_TRUE(refuses(withField(TiffRgb, compression, std::string("\x07\x00", 2)), "compression 7"));
+    EXPECT_TRUE(refuses(withField(TiffRgb, photometric, std::string("\x06\x00", 2)), "photometric interpretation 6"));
+    EXPECT_TRUE(refuses(TiffRgb.substr(0, TiffRgb.size() - 1), "truncated"));
+    // A count of samples near 2^32, found by the fuzzer: refused at once,
+    // not after a loop over each sample.
+    const std::string samples("\x15\x01\x03\x00\x01\x00\x00\x00", 8);
+    EXPECT_TRUE(refuses(withField(TiffRgb, samples, std::string("\xff\xff", 2)), "65535 samples"));
+    // The byte count of TiffLzw's strip, far less than its data.
+    const std::string counts("\x17\x01\x04\x00\x01\x00\x00\x00", 8);
+    EXPECT_TRUE(refuses(withField(TiffLzw, counts, std::string("\x00\x01\x00\x00", 4)), "corrupt"));
+    EXPECT_TRUE(refuses(std::string("II*\0\x08\0\0\0", 8), "no valid header"));
+    const std::string width("\x00\x01\x04\x00\x01\x00\x00\x00", 8);
+    const std::string wide = withField(TiffRgb, width, le(10001, 4));
+    EXPECT_EQ(probed(wide), "too large 10001x2");
+    EXPECT_TRUE(refuses(wide, "side longer than 10000"));
+}
+
+TEST(ImageDecode, NetpbmOfEachKind)
+{
+    // Plain PBM: 1 is black, and the digits need no space between them.
+    EXPECT_TRUE(shows("P1\n# a comment\n3 2\n1 0 1\n010", 3, 2,
+                      {0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255}));
+    EXPECT_TRUE(shows("P2\n3 1\n15\n0 7 15\n", 3, 1, {0, 0, 0, 255, 119, 119, 119, 255, 255, 255, 255, 255}));
+    EXPECT_TRUE(shows("P3 1 1 255\n10 20 30\n", 1, 1, {10, 20, 30, 255}));
+    // Raw PBM: rows of whole bytes.
+    std::vector<std::uint8_t> bitmap(10 * 4, 255);
+    for (const int i : {0, 3, 9}) std::fill_n(bitmap.begin() + i * 4, 3, std::uint8_t(0));
+    EXPECT_TRUE(shows(std::string("P4\n10 1\n\x90\x40", 10), 10, 1, bitmap));
+    // Samples of 16 bits, big-endian.
+    EXPECT_TRUE(shows(std::string("P5 2 1 65535\n\x80\x00\xff\xff", 17), 2, 1, {128, 128, 128, 255, 255, 255, 255, 255}));
+    EXPECT_TRUE(shows("P6\n2 1\n255\n\x01\x02\x03\xfa\xfb\xfc", 2, 1, {1, 2, 3, 255, 250, 251, 252, 255}));
+    EXPECT_TRUE(shows("P7\nWIDTH 2\nHEIGHT 1\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n" + std::string("\x01\x02\x03\x80\x04\x05\x06\x00", 8),
+                      2, 1, {1, 2, 3, 128, 4, 5, 6, 0}));
+    // A PAM without a tuple type: its depth says which.
+    EXPECT_TRUE(shows("P7\nWIDTH 1\nHEIGHT 1\nDEPTH 2\nMAXVAL 3\nENDHDR\n\x01\x03", 1, 1, {85, 85, 85, 255}));
+    EXPECT_EQ(probed("P6\n640 480\n255\n"), "image 640x480");
+
+    EXPECT_TRUE(refuses("P6\n2 1\n255\n\x01", "truncated"));
+    EXPECT_TRUE(refuses("P2 2 1 255 1", "truncated"));
+    EXPECT_TRUE(refuses("P7\nWIDTH 1\nHEIGHT 1\nDEPTH 4\nMAXVAL 255\nTUPLTYPE CMYK\nENDHDR\n\x01\x02\x03\x04", "no valid header"));
+    EXPECT_TRUE(refuses("P5 1 1 0\n\x01", "no valid header"));
+    EXPECT_TRUE(refuses("P6 10001 1 255\n", "side longer than 10000"));
+}
+
+TEST(ImageDecode, ApngGivesEachFrameOnItsCanvas)
+{
+    const Result r = run(Apng);
+    ASSERT_TRUE(r.ok) << r.error;
+    EXPECT_EQ(r.warning, "");
+    ASSERT_EQ(r.frames.size(), 3u);
+    const auto pixel = [&](std::size_t frame, int x, int y) {
+        const std::uint8_t* p = r.frames[frame].rgba.data() + (std::size_t(y) * 4 + std::size_t(x)) * 4;
+        return std::vector<std::uint8_t>(p, p + 4);
+    };
+    const std::vector<std::uint8_t> red{255, 0, 0, 255};
+    EXPECT_EQ(r.frames[0].delay, 100);
+    EXPECT_EQ(r.frames[1].delay, 50);
+    EXPECT_EQ(r.frames[2].delay, 30);
+    for (int i = 0; i < 16; ++i) EXPECT_EQ(pixel(0, i % 4, i / 4), red);
+    // Blue at alpha 128 over red, in the 2 by 2 at (1, 1) only.
+    EXPECT_EQ(pixel(1, 0, 0), red);
+    EXPECT_EQ(pixel(1, 1, 1), (std::vector<std::uint8_t>{127, 0, 128, 255}));
+    EXPECT_EQ(pixel(1, 2, 2), (std::vector<std::uint8_t>{127, 0, 128, 255}));
+    EXPECT_EQ(pixel(1, 3, 3), red);
+    // The second frame restored what it covered.
+    EXPECT_EQ(pixel(2, 0, 0), (std::vector<std::uint8_t>{0, 255, 0, 255}));
+    EXPECT_EQ(pixel(2, 1, 1), red);
+
+    // A default image without an fcTL before it is not a frame.
+    const Result hidden = run(ApngHiddenDefault);
+    ASSERT_TRUE(hidden.ok) << hidden.error;
+    ASSERT_EQ(hidden.frames.size(), 2u);
+    EXPECT_EQ(hidden.frames[0].rgba, (std::vector<std::uint8_t>{255, 255, 255, 255, 255, 255, 255, 255}));
+    EXPECT_EQ(hidden.frames[1].rgba, (std::vector<std::uint8_t>{0, 0, 0, 255, 0, 0, 0, 255}));
+
+    // One frame after a default image that is not a frame: a still image
+    // of that frame.
+    const std::size_t second = ApngHiddenDefault.find("fcTL", ApngHiddenDefault.find("fcTL") + 4) - 4;
+    EXPECT_TRUE(shows(ApngHiddenDefault.substr(0, second), 2, 1, {255, 255, 255, 255, 255, 255, 255, 255}));
+
+    // The frames before a chunk out of order, and a warning.
+    const Result bad = run(ApngBadSequence);
+    ASSERT_TRUE(bad.ok) << bad.error;
+    EXPECT_EQ(bad.frames.size(), 2u);
+    EXPECT_NE(bad.warning.find("frame 3"), std::string::npos) << bad.warning;
+    // A sink that says stop gets no more frames.
+    EXPECT_EQ(run(Apng, 1).frames.size(), 1u);
+}
+
 TEST(ImageDecode, FormatComesFromTheSignature)
 {
     for (const std::string* file : {&Png, &Png16, &PngPalette, &PngInterlaced}) EXPECT_EQ(format(*file), Format::Png);
@@ -718,6 +863,11 @@ TEST(ImageDecode, FormatComesFromTheSignature)
     EXPECT_EQ(format("GIF87a"), Format::Gif);
     EXPECT_EQ(format(Bmp), Format::Bmp);
     EXPECT_EQ(format("BM"), Format::Bmp);
+    for (const std::string* file : {&TiffRgb, &TiffPackBitsBig}) EXPECT_EQ(format(*file), Format::Tiff);
+    EXPECT_EQ(format(std::string("II+\0", 4)), Format::Unknown); // BigTIFF
+    for (const char* file : {"P1\n", "P6 ", "P7\n"}) EXPECT_EQ(format(file), Format::Pnm);
+    EXPECT_EQ(format("P8\n"), Format::Unknown);
+    EXPECT_EQ(format("P6x"), Format::Unknown);
     EXPECT_EQ(format("GIF88a"), Format::Unknown);
     EXPECT_EQ(format(std::string("\xff\xd8", 2)), Format::Unknown);
     EXPECT_EQ(format(std::string("RIFF\x04\0\0\0WAVE", 12)), Format::Unknown);

@@ -50,7 +50,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     }
     if (std::uint64_t(width) * std::uint64_t(height) > MaxPixels) return 0;
     const AfterglowImage::Format kind = AfterglowImage::format(bytes);
-    const bool still = kind == AfterglowImage::Format::Png || kind == AfterglowImage::Format::Jpeg || kind == AfterglowImage::Format::Bmp;
+    // A PNG can be an APNG.
+    const bool still = kind == AfterglowImage::Format::Jpeg || kind == AfterglowImage::Format::Bmp || kind == AfterglowImage::Format::Tiff
+        || kind == AfterglowImage::Format::Pnm;
     int frames = 0;
     std::uint32_t sum = 0;
     const bool decoded = AfterglowImage::decode(bytes, [&](const unsigned char* rgba, int w, int h, int delay) {
@@ -69,7 +71,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return ++frames < MaxFrames;
     }, error, warning);
     // Decoded means a frame, and not decoded means an error text and no
-    // frame. PNG, JPEG and BMP give no warning.
+    // frame. Still images give no warning.
     if (decoded ? frames == 0 : (frames != 0 || error.empty())) __builtin_trap();
     if (still && !warning.empty()) __builtin_trap();
     // The sum is used, so that the loop above is not optimized away.

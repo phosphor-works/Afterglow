@@ -158,6 +158,46 @@ def png(width, height, depth, colour, raw, extra=b""):
             + extra + png_chunk(b"IDAT", zlib.compress(raw)) + png_chunk(b"IEND", b""))
 
 
+def tiff(width, height, kind, samples, data, compression=1):
+    """A little-endian TIFF of one strip: KIND is its photometric interpretation, of 8-bit SAMPLES."""
+    if compression == 32773:
+        # PackBits: literal runs of up to 128 bytes.
+        data = b"".join(bytes([len(data[at:at + 128]) - 1]) + data[at:at + 128] for at in range(0, len(data), 128))
+    entries = [(256, 4, [width]), (257, 4, [height]), (258, 3, [8] * samples), (259, 3, [compression]),
+               (262, 3, [kind]), (273, 4, [0]), (277, 3, [samples]), (278, 4, [height]), (279, 4, [len(data)])]
+    start = 8 + 2 + 12 * len(entries) + 4
+    extra = b""
+    fields = b""
+    for tag, kind_of, values in entries:
+        packed = b"".join(struct.pack("<H" if kind_of == 3 else "<I", v) for v in values)
+        if tag == 273:
+            packed = b""  # set below, once the extra values have their place
+        if len(packed) > 4:
+            fields += struct.pack("<HHII", tag, kind_of, len(values), start + len(extra))
+            extra += packed
+        else:
+            fields += struct.pack("<HHI", tag, kind_of, len(values)) + (packed or b"@@@@").ljust(4, b"\0")
+    fields = fields.replace(b"@@@@", struct.pack("<I", start + len(extra)))
+    return b"II*\0" + struct.pack("<I", 8) + struct.pack("<H", len(entries)) + fields + b"\0" * 4 + extra + data
+
+
+def apng(frames):
+    """A 1 by 1 APNG of FRAMES, each (r, g, b, a, milliseconds), its first frame the default image."""
+    out = (b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+           + png_chunk(b"acTL", struct.pack(">II", len(frames), 0)))
+    sequence = 0
+    for index, (r, g, b, a, ms) in enumerate(frames):
+        out += png_chunk(b"fcTL", struct.pack(">IIIIIHHBB", sequence, 1, 1, 0, 0, ms, 1000, 0, 0))
+        sequence += 1
+        data = zlib.compress(bytes([0, r, g, b, a]))
+        if index == 0:
+            out += png_chunk(b"IDAT", data)
+        else:
+            out += png_chunk(b"fdAT", struct.pack(">I", sequence) + data)
+            sequence += 1
+    return out + png_chunk(b"IEND", b"")
+
+
 def tiff_orientation(value):
     """A TIFF block of one IFD with the EXIF orientation VALUE."""
     return b"MM\x00\x2a" + struct.pack(">I", 8) + struct.pack(">H", 1) + struct.pack(">HHIHH", 0x0112, 3, 1, value, 0) + b"\0\0\0\0"
@@ -509,6 +549,25 @@ def main():
         check(code == 0 and len(sent) == 2 and sent[0]["keys"]["a"] == "T" and sent[1]["keys"]["a"] == "f", err, len(sent))
         check(pixels(sent[0]) == [red] * 16 and pixels(sent[1]) == [blue] * 16, pixels(sent[0])[:1], pixels(sent[1])[:1])
         print("WebP and its animation: passed", flush=True)
+
+        # TIFF and netPBM, as kitten icat reads them, and an APNG, whose frames go as an animation: as a
+        # PNG, a terminal would show its first frame only.
+        code, sent, err = show("rgb.tif", tiff(2, 1, 2, 3, bytes([255, 0, 0, 0, 0, 255])))
+        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [red, blue], err, sent and pixels(sent[0]))
+        code, sent, err = show("grey.tif", tiff(2, 1, 1, 1, bytes([16, 240]), compression=32773))
+        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [(16, 16, 16, 255), (240, 240, 240, 255)], err)
+        code, sent, err = show("jpeg.tif", tiff(2, 1, 1, 1, bytes([16, 240]), compression=7))
+        check(code != 0 and "compression 7" in err and not sent, code, err)
+        code, sent, err = show("grey.pgm", b"P5\n2 1\n255\n\x10\xf0")
+        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [(16, 16, 16, 255), (240, 240, 240, 255)], err)
+        code, sent, err = show("plain.ppm", b"P3\n# red, then blue\n2 1\n15\n15 0 0 0 0 15\n")
+        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [red, blue], err)
+        code, sent, err = show("animated.png", apng([(255, 0, 0, 255, 100), (0, 0, 255, 255, 200)]))
+        check(code == 0 and len(sent) == 2 and sent[0]["keys"]["a"] == "T" and sent[0]["keys"].get("f") != "100"
+              and sent[1]["keys"]["a"] == "f", err, len(sent), sent and sent[0]["keys"])
+        check(pixels(sent[0]) == [red] and pixels(sent[1]) == [blue] and sent[1]["keys"].get("z") == "200",
+              pixels(sent[0]), pixels(sent[1]), sent[1]["keys"])
+        print("TIFF, netPBM and APNG: passed", flush=True)
 
         # A frame of 65535 pixels a side on a canvas of one, with data that spells strings of 4090
         # pixels: decoding stops once no pixel can land, in far less than the CPU limit of the child.

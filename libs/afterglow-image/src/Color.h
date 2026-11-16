@@ -25,7 +25,8 @@ struct ColorSpace
 };
 
 /// The colour space of @p bytes, a file of @p format: PNG (cICP, iCCP), JPEG
-/// (APP2 ICC_PROFILE segments) and WebP (ICCP). GIF and BMP give none.
+/// (APP2 ICC_PROFILE segments), WebP (ICCP) and TIFF (the ICC profile
+/// field). GIF, BMP and netPBM give none.
 ColorSpace colorSpaceOf(Format format, std::string_view bytes);
 
 /// A PNG without the chunks that say how its samples relate to light (gAMA,

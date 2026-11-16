@@ -253,6 +253,8 @@ add_library(AfterglowImage STATIC
     src/Gif.cpp
     src/Jpeg.cpp
     src/Png.cpp
+    src/Pnm.cpp
+    src/Tiff.cpp
     src/WebP.cpp
 )
 add_library(Afterglow::Image ALIAS AfterglowImage)

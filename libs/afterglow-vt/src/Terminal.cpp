@@ -5052,7 +5052,7 @@ void Terminal::iterm2File(std::string_view args, std::string_view base64)
         return;
     }
     if (m_cellWidth <= 0 || m_cellHeight <= 0) return;
-    // Each frame of an animation (GIF, WebP), as iTerm2 and WezTerm play it.
+    // Each frame of an animation (GIF, WebP, APNG), as iTerm2 and WezTerm play it.
     std::vector<ImageFrame> frames;
     std::vector<std::uint32_t> delays;
     if (!m_host.decodeImageFrames(base64Decode(base64), m_options.graphicsQuota, frames, delays) || frames.empty()

@@ -215,12 +215,13 @@ TEST(MuxImageDecoder, AnItermImageCanBeJpegGifWebPOrBmp)
 TEST(MuxImageDecoder, RefusesOtherFormatsAndBadFiles)
 {
     // kitty's f=100 is PNG only.
-    for (const std::string* file : {&Jpeg, &Gif, &Bmp, &Webp}) EXPECT_FALSE(decode(*file, ImageFormats::Png).ok);
-    // Formats that no decoder here reads (PPM, TGA): their signature is unknown.
+    const std::string ppm("P6\n1 1\n255\n\xff\x00\x00", 14);
+    for (const std::string* file : {&Jpeg, &Gif, &Bmp, &Webp, &TiffRgb, &ppm}) EXPECT_FALSE(decode(*file, ImageFormats::Png).ok);
+    EXPECT_TRUE(decode(ppm, ImageFormats::Common).ok);
+    // A format that no decoder here reads (TGA): its signature is unknown.
     // Corrupt files of the formats that it reads are the library's tests
     // (Image.ImageDecode.*): there a sanitizer's report fails the test,
     // where here it ends a decoding process as a refusal does.
-    EXPECT_FALSE(decode(std::string("P6\n1 1\n255\n\xff\x00\x00", 14), ImageFormats::Common).ok);
     const std::string tga("\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x01\x00\x18\x00\x00\x00\xff", 21);
     EXPECT_FALSE(decode(tga, ImageFormats::Common).ok);
     EXPECT_FALSE(decode("", ImageFormats::Common).ok);
