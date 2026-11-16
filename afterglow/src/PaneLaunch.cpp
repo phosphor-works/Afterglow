@@ -3,9 +3,12 @@
 
 #include "PaneLaunch.h"
 
+#include "ProjectStore.h"
 #include "app/BuildTree.h"
 #include "config/Settings.h"
 #include "shell/ShellIntegration.h"
+
+#include "MuxLayout.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -20,6 +23,11 @@
 #include <vector>
 
 namespace Afterglow {
+
+// A project keeps what a session's layout keeps, so that a session's window
+// saves as a project and a project opens into a session alike.
+static_assert(ProjectStore::MaxCommandArgs == qsizetype(AfterglowMux::MaxPaneCommandArgs));
+static_assert(ProjectStore::MaxCommandArgBytes == qsizetype(AfterglowMux::MaxPaneCommandArg));
 
 namespace {
 
@@ -169,6 +177,27 @@ void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantM
         if (it.value().metaType().id() == QMetaType::Bool) AfterglowPty::unsetVariable(options, it.key().toStdString());
         else AfterglowPty::setVariable(options, it.key().toStdString(), it.value().toString().toStdString());
     }
+}
+
+std::vector<std::string> sessionCommand(const QStringList& command)
+{
+    // Within the project's limits, the command is valid in a layout too
+    // (AfterglowMux::validPaneCommand), in the same UTF-8 bytes.
+    if (!ProjectStore::keepsCommand(command)) return {};
+    std::vector<std::string> out;
+    for (const QString& word : command) out.push_back(word.toStdString());
+    return out;
+}
+
+QStringList launchSearchPath(const Settings& settings)
+{
+    const auto path = std::find_if(settings.environment.rbegin(), settings.environment.rend(), [](const auto& kv) { return kv.first == "PATH"; });
+    if (path == settings.environment.rend()) return {};
+    QStringList out;
+    // An empty entry is the directory that the program starts in, as Pty::spawn searches it.
+    for (const QString& entry : QFile::decodeName(QByteArray::fromStdString(path->second)).split(QLatin1Char(':')))
+        out << (entry.isEmpty() ? QStringLiteral(".") : entry);
+    return out;
 }
 
 QString launchedProgramName(const QStringList& command)

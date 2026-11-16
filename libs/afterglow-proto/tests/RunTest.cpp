@@ -84,6 +84,17 @@ public:
             for (int fd : {in[0], in[1], out[0], out[1], err[0], err[1], result[0], input}) {
                 if (fd > 2) ::close(fd);
             }
+            // The dispositions that the tests expect, whatever ctest got: a
+            // background job of a shell without job control ignores SIGINT,
+            // and the run keeps a signal that came ignored. prepare() can
+            // change them again.
+            sigset_t signals;
+            sigemptyset(&signals);
+            for (int number : {SIGINT, SIGTERM, SIGPIPE}) {
+                ::signal(number, SIG_DFL);
+                sigaddset(&signals, number);
+            }
+            ::sigprocmask(SIG_UNBLOCK, &signals, nullptr);
             if (options.prepare) options.prepare();
             Run::Environment environment;
             std::vector<std::pair<std::string, std::string>> variables = options.variables;
@@ -633,11 +644,85 @@ TEST(RunClient, RefusesWhatTheTerminalWouldBeforeItConnects)
     EXPECT_FALSE(server.connectionWaits()) << outcome.err;
 }
 
+// A mux daemon passes the run of a session pane to the window that shows
+// the session, which names the pane by its own ID: a run that fits only
+// with the client's shorter ID is refused before its input goes. A remote
+// run that names a pane can reach the daemon of a session too.
+TEST(RunClient, ARunFitsWithTheLongestPaneId)
+{
+    std::vector<std::string> full(255, std::string(Run::MaxArgLength, 'x'));
+    const auto fitsWith = [&](std::int64_t pane, std::size_t last) {
+        Json::Array arguments(full.begin(), full.end());
+        arguments.emplace_back(std::string(last, 'x'));
+        return IpcConnection::fits(Run::Target, "run", Json::Array{std::string(32, '0'), "tools", "greet", std::move(arguments), "/", pane});
+    };
+    // The longest last argument that fits with pane 1.
+    ASSERT_TRUE(fitsWith(1, 0));
+    ASSERT_FALSE(fitsWith(1, Run::MaxArgLength));
+    std::size_t low = 0;
+    std::size_t high = Run::MaxArgLength;
+    while (high - low > 1) {
+        const std::size_t middle = (low + high) / 2;
+        (fitsWith(1, middle) ? low : high) = middle;
+    }
+    ASSERT_FALSE(fitsWith(0xffffffff, low));
+    // The longest ID is nine digits longer than 1.
+    ASSERT_TRUE(fitsWith(0xffffffff, low - 10));
+    const auto argsWith = [&](std::size_t last) {
+        std::vector<std::string> args{"--pane", "1", "tools", "greet"};
+        args.insert(args.end(), full.begin(), full.end());
+        args.push_back(std::string(last, 'x'));
+        return args;
+    };
+    const auto refused = [](const Outcome& outcome) {
+        EXPECT_EQ(outcome.status, Run::UsageError) << outcome.err;
+        EXPECT_NE(outcome.err.find("over 1 MiB with the longest pane ID of a window"), std::string::npos) << outcome.err;
+    };
+    {
+        // A session pane.
+        FakeServer server;
+        Client client(server, argsWith(low), {.cwd = "/", .variables = {{"AFTERGLOW_SESSION", "s"}}});
+        ASSERT_TRUE(client.started());
+        ASSERT_TRUE(list(server, {command("tools", "greet")}));
+        refused(client.wait());
+    }
+    {
+        // A remote run, through a socket that afterglow ssh forwarded. Its
+        // target is shorter than the commands target by two bytes.
+        FakeServer server;
+        TempDir runtime;
+        ASSERT_FALSE(runtime.path().empty());
+        const std::string forwarded = runtime.path() + "/0123456789abcdef.sock";
+        ASSERT_EQ(::symlink(server.path().c_str(), forwarded.c_str()), 0);
+        Client client(server, argsWith(low), {.cwd = "/", .socket = false, .variables = {{"AFTERGLOW_SOCKET", forwarded}}});
+        ASSERT_TRUE(client.started());
+        ASSERT_TRUE(list(server, {command("tools", "greet")}));
+        refused(client.wait());
+    }
+    // Room for the longest ID: the run goes. So does a run that fits with
+    // its own ID through the socket of an Afterglow, which takes that ID.
+    for (const bool session : {true, false}) {
+        FakeServer server;
+        std::vector<std::pair<std::string, std::string>> variables;
+        if (session) variables.emplace_back("AFTERGLOW_SESSION", "s");
+        Client client(server, argsWith(session ? low - 10 : low), {.cwd = "/", .variables = variables});
+        ASSERT_TRUE(client.started());
+        ASSERT_TRUE(list(server, {command("tools", "greet")}));
+        const auto run = expect(server, "run");
+        ASSERT_TRUE(run) << session;
+        EXPECT_EQ((*run)["args"].toArray()[5].toInteger(), 1);
+        server.reply(*run, Json::Object{{"exit", 0}});
+        const Outcome outcome = client.wait();
+        EXPECT_EQ(outcome.status, 0) << outcome.err;
+    }
+}
+
 TEST(RunClient, SendsTheWorkingDirectoryOrNoneForADeletedOne)
 {
     const auto cwdOfRun = [](Options options) {
         FakeServer server;
         Client client(server, {"tools", "greet"}, std::move(options));
+        if (!client.started()) return std::string("no client");
         if (!list(server, {command("tools", "greet")})) return std::string("no list");
         const auto run = expect(server, "run");
         if (!run) return std::string("no run");
@@ -673,6 +758,7 @@ TEST(RunClient, AStatusThatNoProcessHasIsOne)
                                        std::pair{Json::Value(1.5), 1}, std::pair{Json::Value("0"), 1}}) {
         FakeServer server;
         Client client(server, {"tools", "greet"});
+        ASSERT_TRUE(client.started());
         ASSERT_TRUE(list(server, {command("tools", "greet")}));
         const auto run = expect(server, "run");
         ASSERT_TRUE(run);
@@ -690,6 +776,7 @@ TEST(RunClient, AcknowledgesTheOutputThatItWrote)
                                                   ::dup2(null, 1);
                                                   ::close(null);
                                               }});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(list(server, {command("tools", "talk")}));
     const auto run = expect(server, "run");
     ASSERT_TRUE(run);
@@ -714,6 +801,7 @@ TEST(RunClient, NamesTheProgramThatRunsIt)
     // Help is an option, also after others.
     for (const auto& args : {std::vector<std::string>{"--help"}, std::vector<std::string>{"-n", "--pane", "3", "-h"}}) {
         Client client(server, args, {.program = "afterglow run"});
+        ASSERT_TRUE(client.started());
         const Outcome outcome = client.wait();
         EXPECT_EQ(outcome.status, 0);
         EXPECT_EQ(outcome.out.rfind("Usage: afterglow run  ", 0), 0u) << outcome.out;
@@ -721,6 +809,7 @@ TEST(RunClient, NamesTheProgramThatRunsIt)
         EXPECT_FALSE(server.connectionWaits());
     }
     Client client(server, {"--pane"}, {.program = "afterglow run"});
+    ASSERT_TRUE(client.started());
     const Outcome outcome = client.wait();
     EXPECT_EQ(outcome.status, Run::UsageError);
     EXPECT_EQ(outcome.err.rfind("afterglow run: --pane needs a pane ID\n\nUsage: afterglow run", 0), 0u) << outcome.err;
@@ -733,6 +822,7 @@ TEST(RunClient, TheTerminalSaysWhyACommandIsNotInTheList)
         // refusal says why.
         FakeServer server;
         Client client(server, {"tools", "greet"});
+        ASSERT_TRUE(client.started());
         ASSERT_TRUE(list(server, {command("other", "go")}));
         const auto run = expect(server, "run");
         ASSERT_TRUE(run);
@@ -749,6 +839,7 @@ TEST(RunClient, TheTerminalSaysWhyACommandIsNotInTheList)
           std::pair{std::vector<std::string>{"gone", "nope"}, std::string("no script gone with commands (aglow run lists them)")}}) {
         FakeServer server;
         Client client(server, args);
+        ASSERT_TRUE(client.started());
         ASSERT_TRUE(client.write("abc"));
         client.closeInput();
         ASSERT_TRUE(list(server, {command("tools", "greet", true)}));
@@ -765,6 +856,7 @@ TEST(RunClient, AScriptWithoutACommandSaysWhichItHas)
 {
     FakeServer server;
     Client client(server, {"tools"});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(list(server, {command("tools", "a", false, "First")}));
     const Outcome outcome = client.wait();
     EXPECT_EQ(outcome.status, Run::UsageError);
@@ -779,17 +871,20 @@ TEST(RunClient, CompletesOnlyNamesThatAShellTakesAsTheyAre)
     FakeServer server;
     {
         Client client(server, {"--complete"});
+        ASSERT_TRUE(client.started());
         ASSERT_TRUE(list(server, commands));
         EXPECT_EQ(client.wait().out, "tools\nmore\n");
     }
     {
         Client client(server, {"--complete", "tools"});
+        ASSERT_TRUE(client.started());
         ASSERT_TRUE(list(server, commands));
         EXPECT_EQ(client.wait().out, "go\tGo?now\n");
     }
     {
         // Every command of every script, in the order of the list.
         Client client(server, {"--complete", "--all"});
+        ASSERT_TRUE(client.started());
         ASSERT_TRUE(list(server, commands));
         EXPECT_EQ(client.wait().out, "tools\tgo\tGo?now\nmore\tit\tSummary\n");
     }
@@ -799,6 +894,7 @@ TEST(RunClient, CompletionDoesNotWaitLong)
 {
     FakeServer server;
     Client client(server, {"--complete"});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(server.accept());
     ASSERT_TRUE(expect(server, "list")); // and no answer
     const Outcome outcome = client.wait();
@@ -817,24 +913,26 @@ TEST(RunClient, CompletionWaitsOnceForTheConnectionAndTheList)
     IpcConnection::Error error;
     ASSERT_TRUE(first.connect(server.path(), &error, 1000)) << error.message;
     Client client(server, {"--complete"});
+    ASSERT_TRUE(client.started());
     std::this_thread::sleep_for(std::chrono::milliseconds(Run::CompleteTimeoutMs * 7 / 10));
     ASSERT_TRUE(server.accept()); // the first
     ASSERT_TRUE(server.accept()); // the client's, late
     ASSERT_TRUE(expect(server, "list")); // and no answer
-    const auto asked = std::chrono::steady_clock::now();
     const Outcome outcome = client.wait();
-    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - asked);
     EXPECT_EQ(outcome.status, 1);
     EXPECT_TRUE(outcome.out.empty());
-    // The list gets what the connection left of the second, about 0.3 s,
-    // not a second of its own.
-    EXPECT_LT(waited.count(), Run::CompleteTimeoutMs * 2 / 3);
+    // About a second from the start of the client: the list gets what the
+    // connection left of it, about 0.3 s, not a second of its own (1.7 s).
+    // The time counts from before the fork, so a client that starts late
+    // takes that much longer.
+    EXPECT_LT(outcome.ms, Run::CompleteTimeoutMs * 3 / 2);
 }
 
 TEST(RunClient, PrintsTheTerminalsTextWithoutControlCharacters)
 {
     FakeServer server;
     Client client(server, {"tools", "greet"});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(list(server, {command("tools", "greet")}));
     const auto run = expect(server, "run");
     ASSERT_TRUE(run);
@@ -848,6 +946,7 @@ TEST(RunClient, AlignsTheListingByCharacters)
 {
     FakeServer server;
     Client client(server, {});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(list(server, {command("tools", "a", false, "First"), command("tools", "bb", false, "Second", "é"),
                               command("tools", "cc", false, "Third", "一")}));
     // "bb é" takes four columns in five bytes, "cc 一" five in six, and "a"
@@ -859,12 +958,30 @@ TEST(RunClient, SaysWhyTheConnectionWasLost)
 {
     FakeServer server;
     Client client(server, {"tools", "greet"});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(list(server, {command("tools", "greet")}));
     ASSERT_TRUE(expect(server, "run"));
     server.write("garbage\n");
     const Outcome outcome = client.wait();
     EXPECT_EQ(outcome.status, 1);
     EXPECT_NE(outcome.err.find("lost Afterglow: the server sent a line that is not a JSON object"), std::string::npos) << outcome.err;
+}
+
+TEST(RunClient, AnErrorThatAnswersNoCallEndsTheRunWithItsMessage)
+{
+    FakeServer server;
+    Client client(server, {"tools", "greet"});
+    ASSERT_TRUE(client.started());
+    ASSERT_TRUE(list(server, {command("tools", "greet")}));
+    const auto run = expect(server, "run");
+    ASSERT_TRUE(run);
+    server.event("commands", "stdout", {runId(*run), "before\n"});
+    server.write(R"({"type":"error","code":"CALL_FAILED","message":"the window closed"})" "\n");
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.out, "before\n");
+    EXPECT_NE(outcome.err.find("the window closed"), std::string::npos) << outcome.err;
+    EXPECT_EQ(outcome.err.find("lost Afterglow"), std::string::npos) << outcome.err;
 }
 
 TEST(RunRemote, TheTerminalsOscPayloadIsWhatFollowsItsNumber)
@@ -879,6 +996,7 @@ TEST(RunRemote, ASocketThatTheTerminalNamesTakesRemoteCommands)
 {
     FakeServer server;
     Client client(server, {}, {.socket = false, .askTerminal = answers(reply(server.path()))});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(server.accept());
     const auto call = expect(server, "list");
     ASSERT_TRUE(call);
@@ -894,6 +1012,7 @@ TEST(RunRemote, ASocketWithoutTheRemoteTargetSaysSo)
 {
     FakeServer server;
     Client client(server, {}, {.socket = false, .askTerminal = answers(reply(server.path()))});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(server.accept());
     const auto call = expect(server, "list");
     ASSERT_TRUE(call);
@@ -913,6 +1032,7 @@ TEST(RunRemote, ANamedPathThatIsNoSocketOfTheUserSaysWhy)
     const std::vector<std::pair<std::string, std::string>> variables{{"XDG_RUNTIME_DIR", runtime.path()}};
     {
         Client client(server, {}, {.socket = false, .variables = variables, .askTerminal = answers(reply(file))});
+        ASSERT_TRUE(client.started());
         const Outcome outcome = client.wait();
         EXPECT_EQ(outcome.status, 1);
         EXPECT_EQ(outcome.err, "aglow run: cannot use the socket of this ssh session, " + file + ": it is not a socket\n");
@@ -921,6 +1041,7 @@ TEST(RunRemote, ANamedPathThatIsNoSocketOfTheUserSaysWhy)
         // Only a path that is not there is on another host.
         const std::string missing = runtime.path() + "/missing.sock";
         Client client(server, {}, {.socket = false, .variables = variables, .askTerminal = answers(reply(missing))});
+        ASSERT_TRUE(client.started());
         const Outcome outcome = client.wait();
         EXPECT_EQ(outcome.status, 1);
         EXPECT_NE(outcome.err.find(missing + ", is on another host"), std::string::npos) << outcome.err;
@@ -936,6 +1057,7 @@ TEST(RunRemote, WithoutALocalAfterglowBothFindingsShow)
     ASSERT_FALSE(runtime.path().empty());
     {
         Client client(server, {}, {.socket = false, .askTerminal = answers(replyError(Remote::Error::Off))});
+        ASSERT_TRUE(client.started());
         const Outcome outcome = client.wait();
         EXPECT_EQ(outcome.status, 1);
         EXPECT_NE(outcome.err.find("aglow run: XDG_RUNTIME_DIR is not set, and the terminal names no socket of an ssh session"),
@@ -945,6 +1067,7 @@ TEST(RunRemote, WithoutALocalAfterglowBothFindingsShow)
     {
         Client client(server, {}, {.socket = false, .variables = {{"XDG_RUNTIME_DIR", runtime.path()}},
                                    .askTerminal = answers({Run::TerminalAnswer::Kind::Passthrough, {}})});
+        ASSERT_TRUE(client.started());
         const Outcome outcome = client.wait();
         EXPECT_EQ(outcome.status, 1);
         EXPECT_NE(outcome.err.find("aglow run: no running Afterglow on this display, and inside tmux"), std::string::npos)
@@ -954,6 +1077,7 @@ TEST(RunRemote, WithoutALocalAfterglowBothFindingsShow)
         // The pane's own Afterglow, which has no socket.
         Client client(server, {}, {.socket = false, .variables = {{"AFTERGLOW_PANE_ID", "4"}},
                                    .askTerminal = answers(replyError(Remote::Error::Off))});
+        ASSERT_TRUE(client.started());
         const Outcome outcome = client.wait();
         EXPECT_EQ(outcome.status, 1);
         EXPECT_NE(outcome.err.find("aglow run: the Afterglow that runs this pane has no socket, and the terminal names no socket"),
@@ -964,6 +1088,7 @@ TEST(RunRemote, WithoutALocalAfterglowBothFindingsShow)
         // A reason that only an ssh session has stands alone.
         Client client(server, {}, {.socket = false, .variables = {{"XDG_RUNTIME_DIR", runtime.path()}},
                                    .askTerminal = answers(replyError(Remote::Error::Forward))});
+        ASSERT_TRUE(client.started());
         const Outcome outcome = client.wait();
         EXPECT_EQ(outcome.status, 1);
         EXPECT_EQ(outcome.err.find("aglow run: the socket of the commands has no forward"), 0u) << outcome.err;
@@ -977,6 +1102,7 @@ TEST(RunRemote, ARunThatDidNotAskSaysHowToReachAnSshSession)
     ASSERT_FALSE(runtime.path().empty());
     Client client(server, {}, {.socket = false, .variables = {{"XDG_RUNTIME_DIR", runtime.path()}},
                                .askTerminal = answers({Run::TerminalAnswer::Kind::None, {}})});
+    ASSERT_TRUE(client.started());
     const Outcome outcome = client.wait();
     EXPECT_EQ(outcome.status, 1);
     EXPECT_EQ(outcome.err.find("aglow run: no running Afterglow on this display ("), 0u) << outcome.err;
@@ -998,6 +1124,7 @@ TEST(RunRemote, AForwardedSocketInAfterglowSocketTakesRemoteCommands)
     Client client(server, {"far", "there"},
                   {.socket = false, .variables = {{"AFTERGLOW_SOCKET", forwarded}, {"AFTERGLOW_PANE_ID", "12"}},
                    .askTerminal = answers({Run::TerminalAnswer::Kind::Interrupted, {}})});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(server.accept());
     const auto list = expect(server, "list");
     ASSERT_TRUE(list);
@@ -1021,6 +1148,7 @@ TEST(RunRemote, CompletionWaitsOnceForTheQueryTheConnectionAndTheList)
                                                std::this_thread::sleep_for(std::chrono::milliseconds(slow));
                                                return reply(path);
                                            }});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(server.accept());
     ASSERT_TRUE(expect(server, "list")); // and no answer
     const Outcome outcome = client.wait();
@@ -1037,6 +1165,7 @@ TEST(RunClient, ASocketWithoutTheCommandsTargetNamesBothCauses)
     // s.sock is neither of these nor the name of an Afterglow's socket.
     FakeServer server;
     Client client(server, {});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(server.accept());
     const auto call = expect(server, "list");
     ASSERT_TRUE(call);
@@ -1057,6 +1186,7 @@ TEST(RunClient, ThePaneSocketWithoutTheCommandsTargetHasCommandsOff)
     const std::string pane = runtime.path() + "/afterglow-wayland-0.sock";
     ASSERT_EQ(::symlink(server.path().c_str(), pane.c_str()), 0);
     Client client(server, {}, {.socket = false, .variables = {{"AFTERGLOW_SOCKET", pane}}});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(server.accept());
     const auto call = expect(server, "list");
     ASSERT_TRUE(call);
@@ -1070,22 +1200,28 @@ TEST(RunClient, ThePaneSocketWithoutTheCommandsTargetHasCommandsOff)
 TEST(RunClient, TheLocalSocketOfAnSshSessionSaysWhereItTakesCommands)
 {
     // It holds only the target of remote runs: Control.enabled and
-    // Scripts.enabled are not the cause.
+    // Scripts.enabled are not the cause. That of a window, and that of a
+    // session pane beside the socket of the mux daemon.
     FakeServer server;
     TempDir runtime;
     ASSERT_FALSE(runtime.path().empty());
-    const std::string session = runtime.path() + "/afterglow-remote-0123456789abcdef.sock";
-    ASSERT_EQ(::symlink(server.path().c_str(), session.c_str()), 0);
-    Client client(server, {}, {.socket = false, .variables = {{"AFTERGLOW_SOCKET", session}}});
-    ASSERT_TRUE(server.accept());
-    const auto call = expect(server, "list");
-    ASSERT_TRUE(call);
-    EXPECT_EQ((*call)["target"].toString(), Run::Target);
-    server.error(*call, "NO_SUCH_TARGET", "no such target");
-    const Outcome outcome = client.wait();
-    EXPECT_EQ(outcome.status, 1);
-    EXPECT_EQ(outcome.err, "aglow run: $AFTERGLOW_SOCKET is the socket of an ssh session on this computer. It takes commands "
-                           "only on the remote host, where afterglow ssh forwards it as DIRECTORY/TOKEN.sock\n");
+    ASSERT_EQ(::mkdir((runtime.path() + "/aglow-mux").c_str(), 0700), 0);
+    for (const std::string& name : {std::string("/afterglow-remote-0123456789abcdef.sock"), std::string("/aglow-mux/remote-0123456789abcdef.sock")}) {
+        const std::string session = runtime.path() + name;
+        ASSERT_EQ(::symlink(server.path().c_str(), session.c_str()), 0);
+        Client client(server, {}, {.socket = false, .variables = {{"AFTERGLOW_SOCKET", session}}});
+        ASSERT_TRUE(client.started());
+        ASSERT_TRUE(server.accept());
+        const auto call = expect(server, "list");
+        ASSERT_TRUE(call);
+        EXPECT_EQ((*call)["target"].toString(), Run::Target);
+        server.error(*call, "NO_SUCH_TARGET", "no such target");
+        const Outcome outcome = client.wait();
+        EXPECT_EQ(outcome.status, 1);
+        EXPECT_EQ(outcome.err, "aglow run: $AFTERGLOW_SOCKET is the socket of an ssh session on this computer. It takes commands "
+                               "only on the remote host, where afterglow ssh forwards it as DIRECTORY/TOKEN.sock\n")
+            << name;
+    }
 }
 
 TEST(RunClient, InputWaitsForASlowLinkWithoutATimeLimit)
@@ -1136,6 +1272,7 @@ TEST(RunRemote, ChecksTheSizeOfARunForTheTargetThatTheLookupFound)
 
     FakeServer server;
     Client client(server, args, {.cwd = directory, .socket = false, .askTerminal = answers(reply(server.path()))});
+    ASSERT_TRUE(client.started());
     ASSERT_TRUE(server.accept());
     const auto list = expect(server, "list");
     ASSERT_TRUE(list);
@@ -1145,4 +1282,149 @@ TEST(RunRemote, ChecksTheSizeOfARunForTheTargetThatTheLookupFound)
     server.reply(*run, Json::Object{{"exit", 0}});
     const Outcome outcome = client.wait();
     EXPECT_EQ(outcome.status, 0) << outcome.err;
+}
+
+// The mux daemon ends the connection of a session pane's run with an error
+// that answers no call, such as when the window of the session closes.
+TEST(RunClient, AnErrorThatAnswersNoCallEndsTheWaitForInput)
+{
+    FakeServer server;
+    Client client(server, {"tools", "read"});
+    ASSERT_TRUE(client.started());
+    ASSERT_TRUE(list(server, {command("tools", "read", true)}));
+    // Stdin stays open, and nothing comes.
+    ASSERT_TRUE(server.write(R"({"type":"error","code":"CALL_FAILED","message":"the window of session s closed"})" "\n"));
+    server.hangUp();
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.err, "aglow run: the window of session s closed\n");
+}
+
+TEST(RunClient, AnErrorThatCameWithAnAnswerEndsTheWaitForInput)
+{
+    // The error comes in the same read as the answer to a part of the
+    // input, and the connection stays open: the socket has nothing more to
+    // wake a poll.
+    FakeServer server;
+    Client client(server, {"tools", "read"});
+    ASSERT_TRUE(client.started());
+    ASSERT_TRUE(list(server, {command("tools", "read", true)}));
+    ASSERT_TRUE(client.write(std::string(Run::InputPartBytes + 8 * 1024, 'x')));
+    const auto input = expect(server, "input");
+    ASSERT_TRUE(input);
+    const std::string reply = Json::write(Json::Object{{"type", "reply"}, {"id", (*input)["id"]}, {"result", true}}) + "\n";
+    ASSERT_TRUE(server.write(reply + R"({"type":"error","code":"CALL_FAILED","message":"the window closed"})" "\n"));
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.err, "aglow run: the window closed\n");
+}
+
+TEST(RunClient, AnAckThatTheClosedServerRefusesLeavesItsReasonToRead)
+{
+    // An event over AckBytes that stdout holds back, then the reason and
+    // the end: the ack goes after the server closed.
+    FakeServer server;
+    Client client(server, {"tools", "talk"});
+    ASSERT_TRUE(client.started());
+    ASSERT_TRUE(list(server, {command("tools", "talk")}));
+    const auto run = expect(server, "run");
+    ASSERT_TRUE(run);
+    const std::string text(Run::AckBytes + 1024, 'x');
+    ASSERT_TRUE(server.event("commands", "stdout", {runId(*run), text}));
+    ASSERT_TRUE(client.outputFull());
+    ASSERT_TRUE(server.write(R"({"type":"error","code":"CALL_FAILED","message":"the window closed"})" "\n"));
+    server.hangUp();
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_TRUE(outcome.out == text) << outcome.out.size() << " bytes";
+    EXPECT_EQ(outcome.err, "aglow run: the window closed\n");
+}
+
+TEST(RunClient, ASessionPaneWithoutTheCommandsTargetNamesTheWindow)
+{
+    // The daemon passes the connection to the window, whose Afterglow has
+    // commands off.
+    FakeServer server;
+    Client client(server, {}, {.variables = {{"AFTERGLOW_SESSION", "s"}, {"AFTERGLOW_PANE_ID", "3"}}});
+    ASSERT_TRUE(client.started());
+    ASSERT_TRUE(server.accept());
+    const auto call = expect(server, "list");
+    ASSERT_TRUE(call);
+    EXPECT_EQ((*call)["target"].toString(), Run::Target);
+    server.error(*call, "NO_SUCH_TARGET", "no such target");
+    const Outcome outcome = client.wait();
+    EXPECT_EQ(outcome.status, 1);
+    EXPECT_EQ(outcome.err, "aglow run: the Afterglow of the window that shows this session takes no commands (Control.enabled "
+                           "or Scripts.enabled is off)\n");
+}
+
+TEST(RunClient, ASessionPaneSaysThatASessionOfAnotherHostRunsOnlyRemoteCommands)
+{
+    // The client cannot tell a session of another host, whose window lists
+    // only the commands that a script marks remote.
+    const std::string hint = ". In a session of another host, a pane runs only the commands that a script marks remote";
+    {
+        FakeServer server;
+        Client client(server, {}, {.variables = {{"AFTERGLOW_SESSION", "s"}, {"AFTERGLOW_PANE_ID", "3"}}});
+        ASSERT_TRUE(client.started());
+        ASSERT_TRUE(list(server, {}));
+        const Outcome outcome = client.wait();
+        EXPECT_EQ(outcome.status, 0);
+        EXPECT_EQ(outcome.out, "No script has commands" + hint + " (remote = true).\n");
+    }
+    {
+        FakeServer server;
+        Client client(server, {"tools", "nope"}, {.variables = {{"AFTERGLOW_SESSION", "s"}, {"AFTERGLOW_PANE_ID", "3"}}});
+        ASSERT_TRUE(client.started());
+        ASSERT_TRUE(list(server, {command("tools", "greet")}));
+        const auto run = expect(server, "run");
+        ASSERT_TRUE(run);
+        server.error(*run, Run::NoSuchCommand, "No command nope in tools");
+        const Outcome outcome = client.wait();
+        EXPECT_EQ(outcome.status, Run::UsageError);
+        EXPECT_EQ(outcome.err, "aglow run: no command nope in tools (aglow run tools --help lists them)" + hint + "\n");
+    }
+}
+
+TEST(RunClient, ASessionPaneWhoseDaemonSocketIsGoneSaysSo)
+{
+    // logind removed the runtime directory: the daemon goes on at its
+    // other socket, and the pane keeps the path.
+    FakeServer server;
+    TempDir runtime;
+    ASSERT_FALSE(runtime.path().empty());
+    const std::string gone = runtime.path() + "/aglow-mux/socket";
+    for (const bool session : {true, false}) {
+        std::vector<std::pair<std::string, std::string>> variables{{"AFTERGLOW_SOCKET", gone}, {"AFTERGLOW_PANE_ID", "3"}};
+        if (session) variables.emplace_back("AFTERGLOW_SESSION", "s");
+        Client client(server, {}, {.socket = false, .variables = variables});
+        ASSERT_TRUE(client.started());
+        const Outcome outcome = client.wait();
+        EXPECT_EQ(outcome.status, 1);
+        const std::string expected = session
+            ? "aglow run: the socket of the mux daemon of this session pane is gone: $AFTERGLOW_SOCKET names no file ("
+            : "aglow run: the Afterglow that runs this pane has exited (";
+        EXPECT_EQ(outcome.err.rfind(expected, 0), 0u) << outcome.err;
+    }
+}
+
+TEST(RunClient, TheSocketsOfTheMuxDaemonAreNotForwardedOnes)
+{
+    // A state socket named by a host name of 16 hex digits has the form of
+    // a forwarded socket: in the daemon's directory, it is the daemon's.
+    FakeServer server;
+    TempDir runtime;
+    ASSERT_FALSE(runtime.path().empty());
+    const std::string directory = runtime.path() + "/aglow-mux";
+    ASSERT_EQ(::mkdir(directory.c_str(), 0700), 0);
+    const std::string state = directory + "/0123456789abcdef.sock";
+    ASSERT_EQ(::symlink(server.path().c_str(), state.c_str()), 0);
+    Client client(server, {}, {.socket = false, .variables = {{"AFTERGLOW_SOCKET", state}, {"AFTERGLOW_SESSION", "s"}}});
+    ASSERT_TRUE(client.started());
+    ASSERT_TRUE(server.accept());
+    const auto call = expect(server, "list");
+    ASSERT_TRUE(call);
+    EXPECT_EQ((*call)["target"].toString(), Run::Target);
+    server.reply(*call, Json::Array{command("tools", "greet")});
+    EXPECT_EQ(client.wait().status, 0);
 }

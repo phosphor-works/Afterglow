@@ -4,7 +4,8 @@
 # Bash completion for afterglow. Script IDs and their commands come from the
 # running Afterglow, through the aglow that afterglow runs (aglow run
 # --complete). It works best with the bash-completion package, which
-# completes the commands of -e, ssh and ctl ... -- CMD. afterglow run,
+# completes the commands of -e, ssh, ctl ... -- CMD and mux new -- CMD, and
+# the hosts of mux --ssh. afterglow run,
 # transfer, dnd, icat and clipboard complete as aglow does: bash-completion
 # loads the completion of aglow when it is first needed. Without
 # bash-completion, source aglow.bash as well.
@@ -94,10 +95,20 @@ _afterglow_unused()
 
 _afterglow_ctl()
 {
-    local command=${words[2]} start=3 i j positional=0 text=""
-    if ((cword == 2)); then
+    # --session NAME comes before the command. afterglow mux ls lists the
+    # names, but a completion runs no program but aglow run --complete, so
+    # none is offered. With the cursor on the word --session itself, that
+    # word is the one being completed.
+    local first=2
+    if [[ ${words[2]} == --session ]] && ((cword > 2)); then
+        ((cword == 3)) && return
+        first=4
+    fi
+    local command=${words[first]} start=$((first + 1)) i j positional=0 text=""
+    if ((cword == first)); then
         if [[ $cur == -* ]]; then
-            _afterglow_matching -h --help
+            # The usage only comes first: after --session NAME a command follows.
+            ((first == 2)) && _afterglow_matching -h --help --session
         else
             # shellcheck disable=SC2086 # the list splits into its words
             _afterglow_matching $_afterglow_ctl_commands
@@ -227,14 +238,25 @@ _afterglow_ctl()
     overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" ;;
     open-directory) _afterglow_unused --layout ;;
     save-project) _afterglow_unused $pane --overwrite ;;
-    open-project) _afterglow_unused --new ;;
+    open-project) _afterglow_unused --new "--into-session|--no-session" ;;
     watch | scripts | projects) ;;
     *) _afterglow_unused $pane ;;
     esac
 }
 
-# afterglow mux COMMAND ...: the commands, their options, the directory of
-# new --cwd, and after new -- the program and its arguments.
+# The ssh destinations that bash-completion knows, when it is loaded.
+_afterglow_hosts()
+{
+    if declare -F _comp_compgen_known_hosts >/dev/null; then
+        _comp_compgen_known_hosts -- "$cur"
+    elif declare -F _known_hosts_real >/dev/null; then
+        _known_hosts_real -- "$cur"
+    fi
+}
+
+# afterglow mux COMMAND ...: the commands, their options, the hosts of
+# --ssh, the directory of new --cwd, and after new -- the program and its
+# arguments.
 _afterglow_mux()
 {
     if ((cword == 2)); then
@@ -254,23 +276,39 @@ _afterglow_mux()
                 _afterglow_offset $((i + 1))
                 return
                 ;;
-            --name | --cwd) ((i++)) ;;
+            --name | --cwd | --ssh) ((i++)) ;;
             esac
         done
         case $prev in
+        --ssh)
+            _afterglow_hosts
+            return
+            ;;
         --cwd)
+            # With --ssh, also after the cursor, it is a directory of that host.
+            for ((i = 3; i < ${#words[@]}; i++)); do
+                [[ ${words[i]} == -- ]] && break
+                [[ ${words[i]} == --ssh ]] && return
+            done
             _afterglow_files -d
             return
             ;;
         --name) return ;;
         esac
-        _afterglow_unused --name --cwd --detach
+        _afterglow_unused --name --cwd --detach --ssh
         ;;
-    kill)
-        [[ $cur == -* ]] && _afterglow_unused --force
-        ;;
-    attach)
-        [[ $cur == -* ]] && _afterglow_unused --no-takeover
+    kill | attach | detach | ls)
+        if [[ $prev == --ssh ]]; then
+            _afterglow_hosts
+            return
+        fi
+        if [[ $cur == -* ]]; then
+            case ${words[2]} in
+            kill) _afterglow_unused --force --ssh ;;
+            attach) _afterglow_unused --no-takeover --ssh ;;
+            *) _afterglow_unused --ssh ;;
+            esac
+        fi
         ;;
     esac
 }

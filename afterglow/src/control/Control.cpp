@@ -4,14 +4,19 @@
 #include "Control.h"
 
 #include "../Pane.h"
+#include "../PaneOverlay.h"
+#include "../ShownText.h"
 #include "../TerminalWindow.h"
 #include "../app/NotificationCenter.h"
 #include "../app/WindowStart.h"
 #include "../config/Keybinds.h"
 #include "../config/Settings.h"
+#include "../mux/MuxClient.h"
 #include "../scripting/ScriptHost.h"
 
+#include <QBuffer>
 #include <QDir>
+#include <QImage>
 #include <QFileInfo>
 #include <QClipboard>
 #include <QDesktopServices>
@@ -19,18 +24,41 @@
 #include <QSet>
 #include <QUrl>
 
+#include <AfterglowPty/Pty.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <mutex>
+#include <system_error>
+#include <thread>
 
 namespace Afterglow {
+
+/// Where the calls of offThread give their results: the Control while it
+/// lives. A call to the daemon can wait for seconds, and a quit waits for
+/// it only a bounded time.
+struct ControlMailbox
+{
+    std::mutex mutex;
+    Control* control = nullptr;
+};
 
 Control::Control(SettingsStore& settings, WindowFactory newWindow, QObject* parent)
     : QObject(parent)
     , m_settings(settings)
     , m_newWindow(std::move(newWindow))
+    , m_mailbox(std::make_shared<ControlMailbox>())
 {
+    m_mailbox->control = this;
+    m_encoder.setMaxThreadCount(1);
+    // The overlays and inputs of the clients of sessions end with control,
+    // as those of the control socket do, whether or not that socket holds
+    // its target.
+    connect(&settings, &SettingsStore::changed, this, [this](const Settings& previous) {
+        if (previous.control.enabled && !m_settings.settings().control.enabled) endSessionClients(QStringLiteral("Control.enabled is off"));
+    });
 }
 
 namespace {
@@ -43,7 +71,7 @@ QString noPane(quint32 id)
 QString maxBytesRefusal(int limit)
 {
     if (limit >= 1 && limit <= ScriptHost::MaxReadTextBytes) return {};
-    return QStringLiteral("max_bytes must be a whole number from 1 to %1").arg(ScriptHost::MaxReadTextBytes);
+    return ScriptHost::maxBytesError();
 }
 
 // The text a script command reads can reach the client of its run: then
@@ -72,14 +100,27 @@ void Control::attachWindow(TerminalWindow* window)
     connect(window, &TerminalWindow::transferRequested, this, [this](Pane* pane, bool tab) {
         const QPointer<Pane> guard(pane);
         const quint32 id = pane->id();
-        QVariantMap result;
-        const auto error = tab ? detachTab(id, result) : movePane(id, 0, QStringLiteral("new-window"), result);
-        // A move out of a session that failed after the daemon took the
-        // panes left the pane in no window: the notice names none.
-        if (!error.isEmpty())
-            NotificationCenter::instance().showNotice(guard && find(id) ? guard.data() : nullptr, QStringLiteral("Move failed"), textPrefix(error, 2048));
+        const PaneMoved moved = [this, guard, id](const QString& error, const QVariantMap&) {
+            // A move out of a session that failed after the daemon took the
+            // panes left the pane in no window: the notice names none.
+            if (!error.isEmpty())
+                NotificationCenter::instance().showNotice(guard && find(id) ? guard.data() : nullptr, QStringLiteral("Move failed"),
+                                                          textPrefix(error, 2048));
+        };
+        if (tab) detachTab(id, moved);
+        else movePane(id, 0, QStringLiteral("new-window"), moved);
     });
     connect(window, &TerminalWindow::paneCreated, this, &Control::attachPane);
+    // The window of a session: what its clients left goes with it, as no
+    // daemon tells it of them any more. Its overlays close with it. The
+    // owners are the window's own, not the session's: a window that shows
+    // the session now keeps its clients.
+    if (window->showsSession()) {
+        connect(window, &QObject::destroyed, this, [this, prefix = sessionClientOwner(window->id())] {
+            m_sessionInputs.dropPrefix(prefix);
+            m_sessionOverlayOwners.removeIf([&prefix](const QString& owner) { return owner.startsWith(prefix); });
+        });
+    }
     connect(window, &TerminalWindow::scriptKey, this, &Control::scriptKey);
     connect(window, &TerminalWindow::scriptDockEvent, this, &Control::scriptDockEvent);
     connect(window, &TerminalWindow::tabSwitched, this, [this, window](quint32 from, quint32 to, int direction) {
@@ -212,6 +253,133 @@ std::optional<PaneInfo> Control::paneInfo(quint32 id) const
     return pane ? std::optional(describe(window, pane)) : std::nullopt;
 }
 
+bool Control::runsIn(quint32 id, qint64 process, bool overlay) const
+{
+    // A terminal in a terminal (tmux, an editor) and a shell's nesting are
+    // far fewer.
+    constexpr int MaxAncestors = 64;
+    const Pane* pane = find(id);
+    if (pane && overlay) pane = pane->overlay() ? pane->overlay()->pane() : nullptr;
+    const pid_t leader = pane ? pane->programPid() : 0;
+    if (leader <= 0 || process <= 1 || process > std::numeric_limits<pid_t>::max()) return false;
+    pid_t at = pid_t(process);
+    for (int up = 0; at > 1 && up < MaxAncestors; ++up) {
+        const auto stat = AfterglowPty::processStat(at);
+        if (!stat) return false;
+        if (stat->session == leader) return true;
+        at = pid_t(stat->parent);
+    }
+    return false;
+}
+
+void Control::endSessionClient(const QString& owner, const QString& message)
+{
+    m_sessionInputs.drop(owner);
+    if (m_sessionOverlayOwners.remove(owner)) closeOverlays(owner, message);
+}
+
+void Control::endSessionClients(const QString& message)
+{
+    m_sessionInputs.clear();
+    for (const QString& owner : std::exchange(m_sessionOverlayOwners, {})) closeOverlays(owner, message);
+}
+
+void Control::encodePng(QImage image, std::function<void(const QString& base64)> done)
+{
+    // As offThread, on the pool of the encodes. The answer is posted to this
+    // object, and m_encoder waits for the work before it goes.
+    m_encoder.start([this, image = std::move(image), done = std::move(done)]() mutable {
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        QString base64 = image.save(&buffer, "PNG") ? QString::fromLatin1(png.toBase64()) : QString();
+        QMetaObject::invokeMethod(
+            this, [done = std::move(done), base64 = std::move(base64)] { done(base64); }, Qt::QueuedConnection);
+    });
+}
+
+QString Control::screenshot(quint32 id, CaptureScope scope, ScreenshotReply reply, QString& code)
+{
+    // The permission goes first: it holds for every pane.
+    if (QString refused = captureRefusal(code); !refused.isEmpty()) return refused;
+    if (m_screenshots >= MaxScreenshots) {
+        code = QStringLiteral("busy");
+        return QStringLiteral("%1 screenshots are in progress").arg(MaxScreenshots);
+    }
+    ++m_screenshots;
+    const QPointer<Control> self(this);
+    const QString error = capture(
+        id, scope,
+        [self, reply](const QString& error, const QString& code, const QImage& image) {
+            if (!self) return reply(QStringLiteral("Afterglow quits"), QStringLiteral("failed"), {});
+            if (!error.isEmpty()) {
+                --self->m_screenshots;
+                return reply(error, code, {});
+            }
+            // A 4K PNG takes a moment to encode: not on the thread that draws
+            // the windows. encodePng answers only while this object lives.
+            Control* control = self.data();
+            control->encodePng(image, [control, reply, size = image.size()](const QString& base64) {
+                --control->m_screenshots;
+                // Checked again as the picture goes out: read access, or
+                // control itself, can go off while the frame is drawn and
+                // encoded.
+                QString code;
+                if (const QString refused = control->captureRefusal(code); !refused.isEmpty()) return reply(refused, code, {});
+                if (!control->m_settings.settings().control.enabled) {
+                    return reply(QStringLiteral("Control.enabled is off"), QStringLiteral("cancelled"), {});
+                }
+                if (base64.isEmpty()) return reply(QStringLiteral("the PNG could not be written"), QStringLiteral("failed"), {});
+                reply({}, {},
+                      QJsonObject{{QStringLiteral("png"), base64}, {QStringLiteral("width"), size.width()},
+                                  {QStringLiteral("height"), size.height()}});
+            });
+        },
+        code);
+    if (!error.isEmpty()) --m_screenshots;
+    return error;
+}
+
+Control::~Control()
+{
+    m_closing->store(true);
+    const std::lock_guard lock(m_mailbox->mutex);
+    m_mailbox->control = nullptr;
+}
+
+QString Control::startOffThread(std::function<OffThreadResult()> work, std::function<void(OffThreadResult)> then)
+{
+    // Each call waits for the daemon on a thread of its own, for seconds at
+    // most: a bound, as the pool before it had, for clients and scripts
+    // that open projects in a loop.
+    if (m_offThread.size() >= MaxOffThreadCalls) {
+        return QStringLiteral("cannot call the mux daemon: %1 calls wait for it already").arg(MaxOffThreadCalls);
+    }
+    const quint64 id = ++m_lastOffThread;
+    m_offThread.insert(id, std::move(then));
+    try {
+        std::thread([counted = MuxClient::CallThread(), mailbox = m_mailbox, id, work = std::move(work)]() mutable {
+            // Counted to the end of the body: a quit waits for it
+            // (MuxClient::waitForCallThreads), before the statics go.
+            const MuxClient::CallThread running = std::move(counted);
+            OffThreadResult result = work();
+            const std::lock_guard lock(mailbox->mutex);
+            if (!mailbox->control) return;
+            QMetaObject::invokeMethod(
+                mailbox->control, [control = mailbox->control, id, result] { control->offThreadDone(id, result); }, Qt::QueuedConnection);
+        }).detach();
+    } catch (const std::system_error& e) {
+        m_offThread.remove(id);
+        return QStringLiteral("cannot call the mux daemon: %1").arg(QString::fromLocal8Bit(e.what()));
+    }
+    return {};
+}
+
+void Control::offThreadDone(quint64 id, OffThreadResult result)
+{
+    if (auto then = m_offThread.take(id)) then(std::move(result));
+}
+
 std::optional<quint32> Control::focusedPane() const
 {
     for (const QPointer<TerminalWindow>& w : m_windows) {
@@ -262,6 +430,7 @@ QVariantMap Control::state() const
         windows.append(QVariantMap{{QStringLiteral("id"), w->id()}, {QStringLiteral("project"), w->projectName()}, {QStringLiteral("project_directory"), w->projectDirectory()}, {QStringLiteral("focused"), w->isActive()},
                                    {QStringLiteral("active_tab"), w->activeTabId()}, {QStringLiteral("active_pane"), focused},
                                    {QStringLiteral("overview"), w->overviewState()},
+                                   {QStringLiteral("session"), w->sessionName()}, {QStringLiteral("session_host"), w->sessionHost()},
                                    {QStringLiteral("cols"), grid.width()}, {QStringLiteral("rows"), grid.height()}});
         for (const auto& tab : w->tabs()) {
             tabs.append(QVariantMap{{QStringLiteral("id"), tab.id}, {QStringLiteral("window"), w->id()},
@@ -391,7 +560,6 @@ QString launchOptions(const QString& cwd, const QStringList& command, const QVar
         out.cwd = input.value(QStringLiteral("cwd")).toString();
     }
     if (out.cwd.contains(QChar::Null)) return QStringLiteral("cwd contains a null character");
-    if (const QString error = Control::localDirectory(out.cwd); !error.isEmpty()) return error;
     for (const auto& arg : command) if (arg.contains(QChar::Null)) return QStringLiteral("command contains a null character");
     if (!command.isEmpty() && command.first().isEmpty()) return QStringLiteral("command must name a program");
     if (input.contains(QStringLiteral("size"))) {
@@ -416,21 +584,44 @@ QString launchOptions(const QString& cwd, const QStringList& command, const QVar
     }
     return {};
 }
+
+/// The options of a new pane in @p window: launchOptions, then a refusal
+/// for a session of another host, whose panes take no cwd or env of this
+/// computer, then the directory, which must exist here.
+QString paneOptions(const TerminalWindow& window, const QString& cwd, const QStringList& command, const QVariantMap& input,
+                    PaneLaunchOptions& out)
+{
+    if (const QString error = launchOptions(cwd, command, input, out); !error.isEmpty()) return error;
+    if (const QString error = window.remoteLaunchError(out); !error.isEmpty()) return error;
+    return Control::localDirectory(out.cwd);
+}
+
+/// The side of a split that @p name names: left, right, up or down.
+std::optional<SplitTree::Direction> splitDirection(const QString& name)
+{
+    if (name == QLatin1String("right")) return SplitTree::Direction::Right;
+    if (name == QLatin1String("left")) return SplitTree::Direction::Left;
+    if (name == QLatin1String("up")) return SplitTree::Direction::Up;
+    if (name == QLatin1String("down")) return SplitTree::Direction::Down;
+    return std::nullopt;
+}
+
+QString badSplitDirection()
+{
+    return QStringLiteral("direction must be left, right, up or down");
+}
 }
 QString Control::split(quint32 id, const QString& direction, const QStringList& command, const QVariantMap& input, quint32& created)
 {
     created = 0;
-    SplitTree::Direction dir;
-    if (direction == QLatin1String("right")) dir = SplitTree::Direction::Right;
-    else if (direction == QLatin1String("left")) dir = SplitTree::Direction::Left;
-    else if (direction == QLatin1String("up")) dir = SplitTree::Direction::Up;
-    else if (direction == QLatin1String("down")) dir = SplitTree::Direction::Down;
-    else return QStringLiteral("direction must be left, right, up or down");
-    PaneLaunchOptions options;
-    if (const auto error = launchOptions({}, command, input, options); !error.isEmpty()) return error;
+    const auto side = splitDirection(direction);
+    if (!side) return badSplitDirection();
+    const SplitTree::Direction dir = *side;
     TerminalWindow* window = nullptr;
     auto* pane = find(id, &window);
     if (!pane) return noPane(id);
+    PaneLaunchOptions options;
+    if (const auto error = paneOptions(*window, {}, command, input, options); !error.isEmpty()) return error;
     QString error;
     auto* added = window->splitPane(pane, dir, options, &error);
     if (!added && error == TerminalWindow::noRoomForPane()) return QStringLiteral("not enough room for another pane");
@@ -438,6 +629,45 @@ QString Control::split(quint32 id, const QString& direction, const QStringList& 
     created = added->id();
     return {};
 }
+void Control::split(quint32 id, const QString& direction, const QStringList& command, const QVariantMap& input, PaneMade done)
+{
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    // A window of its own starts the program at once.
+    if (!pane || !window->showsSession()) {
+        quint32 created = 0;
+        const QString error = split(id, direction, command, input, created);
+        return done(error, created);
+    }
+    const auto side = splitDirection(direction);
+    if (!side) return done(badSplitDirection(), 0);
+    PaneLaunchOptions options;
+    if (const auto error = paneOptions(*window, {}, command, input, options); !error.isEmpty()) return done(error, 0);
+    const QString refused = window->startSessionPane(pane, side, options, [done](Pane* added, const QString& error) {
+        done(added ? QString() : error.isEmpty() ? QStringLiteral("cannot split pane") : error, added ? added->id() : 0);
+    });
+    if (refused == TerminalWindow::noRoomForPane()) done(QStringLiteral("not enough room for another pane"), 0);
+    else if (!refused.isEmpty()) done(refused, 0);
+}
+
+void Control::newTab(quint32 id, const QString& cwd, const QStringList& command, const QVariantMap& input, PaneMade done)
+{
+    TerminalWindow* window = nullptr;
+    Pane* from = find(id, &window);
+    if (!from || !window->showsSession()) {
+        quint32 created = 0;
+        const QString error = newTab(id, cwd, command, input, created);
+        return done(error, created);
+    }
+    PaneLaunchOptions options;
+    if (const auto error = paneOptions(*window, cwd, command, input, options); !error.isEmpty()) return done(error, 0);
+    // Without a directory, the tab starts where the pane is, as a split does.
+    const QString refused = window->startSessionPane(from, std::nullopt, options, [done](Pane* added, const QString& error) {
+        done(added ? QString() : error.isEmpty() ? QStringLiteral("cannot open a tab") : error, added ? added->id() : 0);
+    });
+    if (!refused.isEmpty()) done(refused, 0);
+}
+
 QString Control::newTab(quint32 id, const QString& cwd, const QStringList& command, quint32& created)
 {
     return newTab(id, cwd, command, {}, created);
@@ -445,11 +675,11 @@ QString Control::newTab(quint32 id, const QString& cwd, const QStringList& comma
 QString Control::newTab(quint32 id, const QString& cwd, const QStringList& command, const QVariantMap& input, quint32& created)
 {
     created = 0;
-    PaneLaunchOptions options;
-    if (const auto error = launchOptions(cwd, command, input, options); !error.isEmpty()) return error;
     TerminalWindow* window = nullptr;
     Pane* from = find(id, &window);
     if (!from) return noPane(id);
+    PaneLaunchOptions options;
+    if (const auto error = paneOptions(*window, cwd, command, input, options); !error.isEmpty()) return error;
     QString error;
     // Without a directory, the tab starts where the pane is, as a split does.
     auto* added = window->openTab(options, &error, from);
@@ -466,6 +696,7 @@ QString Control::newWindow(const QString& cwd, const QStringList& command, const
     created = 0;
     PaneLaunchOptions options;
     if (const auto error = launchOptions(cwd, command, input, options); !error.isEmpty()) return error;
+    if (const auto error = localDirectory(options.cwd); !error.isEmpty()) return error;
     auto* window = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
     if (!window) return QStringLiteral("cannot open a window");
     QString error;
@@ -504,7 +735,9 @@ QString Control::setTitle(quint32 id, const QString& title)
     if (!p) {
         return noPane(id);
     }
-    p->setUserTitle(textPrefix(title, 256));
+    // It shows in the tab bar, and a session's layout keeps it: no control
+    // characters, and nothing that disguises text.
+    p->setUserTitle(sanitizedLine(title, 256));
     return {};
 }
 
@@ -646,6 +879,21 @@ QString Control::runScriptAction(quint32 id, const QString& action)
     if (!m_settings.settings().scriptsAllowReadText && readsPaneText(action))
         return QStringLiteral("action %1 reads pane text, which is off (Scripts.allowReadText)").arg(action);
     return runAction(id, action);
+}
+
+QString Control::runClientAction(quint32 id, const QString& action)
+{
+    // These move pane text to the clipboard, into other panes or into a pager
+    // file: the same reading that getText needs permission for.
+    if (!m_settings.settings().control.allowReadText && readsPaneText(action))
+        return QStringLiteral("action %1 reads pane text, which is off (Control.allowReadText)").arg(action);
+    return runAction(id, action);
+}
+
+QVariantMap Control::clientPaneMap(QVariantMap pane) const
+{
+    if (!m_settings.settings().control.allowReadText && pane.contains(QStringLiteral("command"))) pane.insert(QStringLiteral("command"), QString());
+    return pane;
 }
 
 bool Control::readsPaneText(const QString& action)
@@ -805,6 +1053,29 @@ QString Control::overlay(const QString& owner, const QString& request, quint32 i
     return window->openOverlay(owner, request, pane, spec, std::move(reply), code);
 }
 
+std::optional<OverlaySpec> Control::clientOverlaySpec(const QStringList& argv, const QVariantMap& options, QString& error)
+{
+    auto spec = OverlaySpec::read(argv, options, &error);
+    // A client names a directory of this machine: one that is missing is
+    // its mistake, where a script's remote path starts in $HOME.
+    if (spec) error = localDirectory(spec->cwd);
+    if (!error.isEmpty()) return std::nullopt;
+    return spec;
+}
+
+QString Control::clientOverlay(const QString& owner, quint32 pane, const OverlaySpec& spec, OverlayReply reply, QString& code)
+{
+    return overlay(
+        owner, {}, pane, spec,
+        [reply = std::move(reply), self = QPointer<Control>(this)](const QString& error, const QString& code, const QVariantMap& result) {
+            if (!error.isEmpty()) return reply(error, code, {});
+            QVariantMap answer = result;
+            if (!self || !self->m_settings.settings().control.allowReadText) answer.remove(QStringLiteral("stdout"));
+            reply({}, {}, answer);
+        },
+        code);
+}
+
 void Control::closeOverlays(const QString& owner, const QString& message)
 {
     for (auto window : m_windows) if (window) window->closeOverlays(owner, {}, message);
@@ -835,11 +1106,11 @@ void Control::endScriptKeyMode(const QString& owner)
     for (auto window : m_windows) if (window) window->endScriptKeyMode(owner);
 }
 
-QString Control::overview(const QString& owner, quint32 id, const QString& operation, QVariantMap& result)
+QString Control::overview(const QString& owner, quint32 id, const QString& operation, QVariantMap& result, QString* code)
 {
     TerminalWindow* window = nullptr;
     Pane* pane = find(id, &window);
-    return pane ? window->scriptOverview(owner, pane, operation, result) : noPane(id);
+    return pane ? window->scriptOverview(owner, pane, operation, result, code) : noPane(id);
 }
 
 QString Control::overviewMove(quint32 id, quint32 target, int step, QVariantMap& result)
@@ -870,77 +1141,141 @@ QVariantMap Control::paneOrigin(quint32 id) const
     return {{QStringLiteral("split_from"), origin.from}, {QStringLiteral("edge"), origin.edge}};
 }
 
-QString Control::movePane(quint32 id, quint32 target, const QString& placement, QVariantMap& result)
+void Control::movePane(quint32 id, quint32 target, const QString& placement, PaneMoved done)
 {
     TerminalWindow *source = nullptr, *destination = nullptr;
     auto* pane = find(id, &source);
-    if (!pane) return noPane(id);
+    if (!pane) return done(noPane(id), {});
     Pane* beside = target ? find(target, &destination) : nullptr;
-    if (target && !beside) return noPane(target);
+    if (target && !beside) return done(noPane(target), {});
     SplitTree::Direction direction = SplitTree::Direction::Right;
     if (placement == QLatin1String("left")) direction = SplitTree::Direction::Left;
     else if (placement == QLatin1String("up")) direction = SplitTree::Direction::Up;
     else if (placement == QLatin1String("down")) direction = SplitTree::Direction::Down;
     else if (placement != QLatin1String("right") && placement != QLatin1String("new-tab") && placement != QLatin1String("new-window"))
-        return QStringLiteral("placement must be left, right, up, down, new-tab or new-window");
+        return done(QStringLiteral("placement must be left, right, up, down, new-tab or new-window"), {});
     const bool newTab = placement == QLatin1String("new-tab");
     const bool newWindow = placement == QLatin1String("new-window");
-    if ((newTab || newWindow) && target) return QStringLiteral("new-tab and new-window need target 0");
-    if (!newTab && !newWindow && !beside) return QStringLiteral("a target pane is required");
-    if (pane == beside) return QStringLiteral("cannot move a pane beside itself");
-    if (newTab) destination = source;
+    if (newWindow && target) return done(QStringLiteral("new-window takes no target pane"), {});
+    if (!newTab && !newWindow && !beside) return done(QStringLiteral("a target pane is required"), {});
+    if (!newTab && pane == beside) return done(QStringLiteral("cannot move a pane beside itself"), {});
+    // A new tab goes to the window of its target, else to the pane's own.
+    if (newTab && !beside) destination = source;
     // A session's panes run under its daemon: they leave in a session of
     // their own, which a window of its own shows.
-    if (newWindow && source->showsSession()) return breakOut(source, pane, false, result);
+    if (newWindow && source->showsSession()) return breakOut(source, pane, false, std::move(done));
+    // Or they join the session of another window, whose daemon moves them.
+    if (destination && destination != source && source->showsSession() && destination->showsSession())
+        return joinSession(source, pane, destination, beside, placement, std::move(done));
     if (newWindow) destination = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
-    if (!destination) return QStringLiteral("cannot open a window");
-    const auto error = source->movePaneTo(pane, destination, beside, direction);
+    if (!destination) return done(QStringLiteral("cannot open a window"), {});
+    const auto error = source->movePaneTo(pane, destination, newTab ? nullptr : beside, direction, newTab ? beside : nullptr);
     // A window made for the move must not stay hidden and keep afterglow running.
     if (!error.isEmpty() && newWindow) destination->deleteLater();
+    QVariantMap result;
     if (error.isEmpty()) if (const auto info = paneInfo(id)) result = paneMap(*info);
-    return error;
+    done(error, result);
 }
 
-QString Control::detachTab(quint32 id, QVariantMap& result)
+void Control::detachTab(quint32 id, PaneMoved done)
 {
     TerminalWindow* source = nullptr;
     auto* pane = find(id, &source);
-    if (!pane) return noPane(id);
-    if (source->showsSession()) return breakOut(source, pane, true, result);
+    if (!pane) return done(noPane(id), {});
+    if (source->showsSession()) return breakOut(source, pane, true, std::move(done));
     auto* destination = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
-    if (!destination) return QStringLiteral("cannot open a window");
+    if (!destination) return done(QStringLiteral("cannot open a window"), {});
     const auto error = source->detachTabTo(pane, destination);
     if (!error.isEmpty()) destination->deleteLater();
+    QVariantMap result;
     if (error.isEmpty()) if (const auto info = paneInfo(id)) result = paneMap(*info);
-    return error;
+    done(error, result);
 }
 
-QString Control::breakOut(TerminalWindow* source, Pane* pane, bool tab, QVariantMap& result)
+void Control::breakOut(TerminalWindow* source, Pane* pane, bool tab, PaneMoved done)
 {
-    if (!m_openSessionWindow) return QStringLiteral("cannot open a window");
+    if (!m_openSessionWindow) return done(QStringLiteral("cannot open a window"), {});
     const std::uint32_t daemonPane = pane->sessionPaneId();
-    QString session;
-    std::shared_ptr<const TerminalWindow::BreakOut> kept;
-    if (const QString error = source->breakOutOfSession(pane, tab, &session, &kept); !error.isEmpty()) return error;
-    if (const QString error = m_openSessionWindow(session); !error.isEmpty()) {
-        // The daemon moved them already: what is left is to show them.
-        return (tab ? QStringLiteral("the tab went to session %1, but no window can show it (%2)")
-                    : QStringLiteral("the pane went to session %1, but no window can show it (%2)"))
-            .arg(session, error);
-    }
-    // The window that shows the new session, and in it the pane that shows
-    // the same program.
-    for (TerminalWindow* window : TerminalWindow::windows()) {
-        const QList<Pane*> shown = window->panes();
-        if (std::none_of(shown.cbegin(), shown.cend(), [&session](const Pane* p) { return p->showsSession(session); })) continue;
-        window->adoptBreakOut(kept);
-        for (Pane* p : shown) {
-            if (p->sessionPaneId() == daemonPane) {
-                if (const auto info = paneInfo(p->id())) result = paneMap(*info);
+    // The new session is on the host of the one that the panes leave.
+    const QString host = pane->session() ? pane->session()->host() : QString();
+    // The daemon's call and the new window's attach run off the GUI thread.
+    // What answers later finds this object gone when Afterglow quits: the
+    // caller then hears nothing (its script, or its client, ends too).
+    const auto showIt = [self = QPointer<Control>(this), daemonPane, host, tab, done](const QString& error, const QString& session,
+                                                                                     std::shared_ptr<const TerminalWindow::BreakOut> kept) {
+        if (!self) return;
+        if (!error.isEmpty()) return done(error, {});
+        const auto unshown = [tab, session](const QString& why) {
+            // The daemon moved them already: what is left is to show them.
+            return (tab ? QStringLiteral("the tab went to session %1, but no window can show it (%2)")
+                        : QStringLiteral("the pane went to session %1, but no window can show it (%2)"))
+                .arg(session, why);
+        };
+        if (!self->m_openSessionWindow) return done(unshown(QStringLiteral("cannot open a window")), {});
+        self->m_openSessionWindow(session, host, [self, daemonPane, host, tab, session, kept, done, unshown](const QString& error) {
+            if (!self) return;
+            if (!error.isEmpty()) return done(unshown(error), {});
+            // The window that shows the new session, and in it the pane that
+            // shows the same program.
+            QVariantMap result;
+            for (TerminalWindow* window : TerminalWindow::windows()) {
+                const QList<Pane*> shown = window->panes();
+                if (std::none_of(shown.cbegin(), shown.cend(), [&](const Pane* p) { return p->showsSession(session, host); })) continue;
+                window->adoptBreakOut(kept);
+                for (Pane* p : shown) {
+                    if (p->sessionPaneId() == daemonPane) {
+                        if (const auto info = self->paneInfo(p->id())) result = paneMap(*info);
+                    }
+                }
             }
+            // The window opened, but its pane is gone: its program ended
+            // meanwhile. A caller that takes success would name the pane
+            // that left.
+            if (result.isEmpty()) {
+                return done((tab ? QStringLiteral("the tab went to session %1, but no window shows its pane")
+                                 : QStringLiteral("the pane went to session %1, but no window shows it"))
+                                .arg(session),
+                            {});
+            }
+            done({}, result);
+        });
+    };
+    if (const QString refused = source->breakOutOfSession(pane, tab, showIt); !refused.isEmpty()) done(refused, {});
+}
+
+void Control::joinSession(TerminalWindow* source, Pane* pane, TerminalWindow* destination, Pane* beside, const QString& placement,
+                          PaneMoved done)
+{
+    // None for new-tab.
+    const std::optional<SplitTree::Direction> side = splitDirection(placement);
+    const std::uint32_t daemonPane = pane->sessionPaneId();
+    // A project of the other session saves the command, as this one did.
+    const QStringList command = pane->launchCommand();
+    // The daemon's call runs off the GUI thread. What answers later finds
+    // this object gone when Afterglow quits: the caller then hears nothing.
+    const auto placed = [self = QPointer<Control>(this), destination = QPointer<TerminalWindow>(destination), beside = QPointer<Pane>(beside),
+                         side, daemonPane, command, done](const QString& error, const QString& session,
+                                                          std::shared_ptr<const TerminalWindow::BreakOut> kept) {
+        if (!self) return;
+        if (!error.isEmpty()) return done(error, {});
+        if (!destination || destination->closing() || destination->sessionName() != session) {
+            return done(QStringLiteral("the pane went to session %1, but its window no longer shows it").arg(session), {});
         }
-    }
-    return {};
+        // The daemon tells the window to place the pane too (placePane): the
+        // first of the two places it, and the other finds it there.
+        Pane* shown = destination->sessionPane(daemonPane);
+        if (!shown) {
+            Pane* const next = beside && destination->tabIndexOf(beside) >= 0 ? beside.data() : nullptr;
+            shown = destination->placeSessionPane(daemonPane, next, side, command);
+        }
+        if (!shown) return done(QStringLiteral("the pane went to session %1, but its window cannot show it").arg(session), {});
+        destination->adoptBreakOut(kept);
+        destination->requestActivate();
+        QVariantMap result;
+        if (const auto info = self->paneInfo(shown->id())) result = paneMap(*info);
+        done({}, result);
+    };
+    if (const QString refused = source->joinSession(pane, destination, beside, side, placed); !refused.isEmpty()) done(refused, {});
 }
 
 void Control::showNew(TerminalWindow* window) const

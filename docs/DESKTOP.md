@@ -192,6 +192,7 @@ Afterglow does not open or execute received files automatically.
 This document describes each of them.
 `aglow run` also runs the commands of scripts in the Afterglow on the same computer (see [script commands](CONTROL.md#script-commands)).
 On a remote host, `aglow run` runs the commands that a script marks `remote`, through `afterglow ssh` (see [remote commands](CONTROL.md#remote-commands)).
+It does the same in a pane of a mux session of another host (see [MUX.md](MUX.md#script-commands-in-a-session-pane)).
 `aglow` is one static binary with no shared libraries.
 It runs on a Linux computer of its architecture whose kernel is as new as the static C library of the build host needs.
 On x86-64, the processor must also have the instruction level that the build needs.
@@ -208,7 +209,7 @@ The differences are in [aglow interoperability](COMPATIBILITY.md#aglow-interoper
 | `aglow dnd` | Drags files and data out of a pane, and receives drops |
 | `aglow icat` | Shows images in the pane |
 | `aglow clipboard` | Reads and writes the clipboard. With OSC 5522, it can use any MIME type. With OSC 52, it uses plain text only. |
-| `aglow run` | Runs a command of a script in the Afterglow on the same computer, or in the Afterglow that `afterglow ssh` came from |
+| `aglow run` | Runs a command of a script in the Afterglow on the same computer. On a remote host, it runs it in the Afterglow that `afterglow ssh` came from, or in the Afterglow that shows the mux session of the pane. |
 | `aglow remote-prune DIR` | Removes the sockets of ended ssh sessions from `DIR`. The probe of `afterglow ssh` runs it on the remote host (see [remote commands](CONTROL.md#remote-commands)). You do not need to run it yourself, and the command list and the completions do not show it. |
 
 `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` run the `aglow` next to `afterglow`.
@@ -233,8 +234,11 @@ Run `aglow COMMAND --help` for the options of a command.
 
 Afterglow does not copy `aglow` to a remote host.
 Copy the static `aglow` of your build to a remote host whose kernel and processor it supports.
-You can also install `aglow` on the remote host from a package, or build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow alone](BUILD.md#build-aglow-alone)).
-That build does not need Qt or the Phosphor libraries.
+You can also install `aglow` on the remote host from a package.
+You can also build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow and aglow-mux alone](BUILD.md#build-aglow-and-aglow-mux-alone)).
+That build needs no Qt.
+With `AFTERGLOW_BUILD_MUX` on, the default, it also builds `aglow-mux` and needs PCRE2 and phosphor-channel from a PlasmaZones checkout.
+With `-DAFTERGLOW_BUILD_MUX=OFF`, it builds `aglow` alone and needs no Phosphor library.
 For file transfer, drag and drop, images and the clipboard, the remote host needs `aglow` or `kitten`, because these are Kitty protocols.
 For script commands, the remote host needs `aglow`, because `kitten` has no counterpart of `aglow run`.
 `aglow run` there runs the script commands that are marked `remote` when `Terminal.sshRemoteCommands` is on.

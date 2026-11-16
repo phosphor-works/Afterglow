@@ -14,8 +14,6 @@
 #include <QJsonArray>
 #include <QObject>
 #include <QSet>
-#include <QSize>
-#include <QThreadPool>
 #include <QTimer>
 
 #include <memory>
@@ -28,9 +26,10 @@ class SettingsStore;
 
 /// The calls of the control socket's "control" target. A call that fails
 /// sends an error reply (CALL_FAILED) with Control's message, and its return
-/// value is dropped. The overlay and screenshot calls, which answer later,
-/// fail with codes of their own too. The signals name the events that a
-/// client can subscribe to. ControlSocket sends them; Qt never emits them.
+/// value is dropped. The overlay, screenshot, openProject, movePane and
+/// detachTab calls can answer later. Overlay and screenshot fail with codes
+/// of their own too. The signals name the events that a client can
+/// subscribe to. ControlSocket sends them; Qt never emits them.
 class ControlApi : public QObject, protected PhosphorIpc::IpcCallContext
 {
     Q_OBJECT
@@ -57,12 +56,16 @@ public:
     Q_INVOKABLE void notify(double pane, const QString& title, const QString& body);
     /// copy, paste, select_all and show_last_output need Control.allowReadText.
     Q_INVOKABLE void runAction(double pane, const QString& action);
-    Q_INVOKABLE QVariantMap movePane(double pane, double target, const QString& placement);
-    Q_INVOKABLE QVariantMap detachTab(double pane);
+    /// Answered once the pane moved: a pane of a mux session's window that
+    /// goes to a new window waits for the daemon off the GUI thread.
+    Q_INVOKABLE void movePane(double pane, double target, const QString& placement);
+    Q_INVOKABLE void detachTab(double pane);
     Q_INVOKABLE QVariantMap openDirectory(const QString& directory, const QString& layout);
     Q_INVOKABLE QStringList projects();
     Q_INVOKABLE QVariantMap saveProject(double pane, const QString& name, bool overwrite);
-    Q_INVOKABLE QVariantMap openProject(const QString& name, bool newInstance);
+    /// @p mode: "session", "window", or empty for what the project says. A
+    /// project that opens into a session answers later.
+    Q_INVOKABLE void openProject(const QString& name, bool newInstance, const QString& mode);
     Q_INVOKABLE QVariantList scriptDiagnostics();
     /// Runs @p argv over @p pane (0: the focused pane) and answers once it
     /// exits, with {exit_code, stdout, truncated}: stdout only with
@@ -79,8 +82,9 @@ public:
     /// TerminalWindow::captureFrame. Only the window scope has the tab bar.
     /// Returns {png: base64, width, height} in device pixels. Needs
     /// Control.allowReadText, also as the reply goes out. Fails with the
-    /// code denied, busy (MaxScreenshots), no_pane, not_shown, failed, or
-    /// cancelled when Control.enabled goes off first.
+    /// code denied, busy (MaxScreenshots, shared with the clients of
+    /// sessions), no_pane, not_shown, failed, or cancelled when
+    /// Control.enabled goes off first.
     Q_INVOKABLE void screenshot(double pane, const QString& scope);
     /// Standard input for an overlay of this connection, in parts, before
     /// overlay() names it with its input option: input that does not fit in
@@ -94,13 +98,12 @@ public:
     Q_INVOKABLE bool overlayInput(const QString& input, const QString& chunk, bool eof);
 
     /// Inputs that wait for overlay(), for one connection.
-    static constexpr int MaxWaitingInputs = 4;
+    static constexpr int MaxWaitingInputs = OverlayInputs::MaxWaiting;
     /// The bytes of all the inputs that wait, of every connection.
-    static constexpr qsizetype MaxWaitingInputBytes = 16 * OverlaySpec::MaxInput;
-    /// Screenshots from the call to the reply, of every connection: each
-    /// holds a frame and its PNG. A client that closes its connection does
-    /// not stop its frame or encode, so the count drops only as they end.
-    static constexpr int MaxScreenshots = 4;
+    static constexpr qsizetype MaxWaitingInputBytes = OverlayInputs::MaxWaitingBytes;
+    /// Screenshots from the call to the reply, of every client: see
+    /// Control::screenshot.
+    static constexpr int MaxScreenshots = Control::MaxScreenshots;
 
     /// For `afterglow ssh`: whether it can forward a socket for remote
     /// commands (RemoteSockets::enabled), before it asks the remote host.
@@ -121,6 +124,9 @@ public:
     /// `ssh -O forward` failed for @p token: @p reason is forward.
     Q_INVOKABLE void remoteSocketFailed(const QString& token, const QString& reason);
     void setRemoteSockets(RemoteSockets* sockets) { m_remote = sockets; }
+    /// Whether a process runs in a pane, or in its overlay (Control::runsIn).
+    using PaneProcesses = std::function<bool(quint32 pane, qint64 process, bool overlay)>;
+    void setPaneProcesses(PaneProcesses check) { m_paneProcesses = std::move(check); }
 
     /// Whose overlays a connection's are, as Control knows them.
     static QString overlayOwner(quint64 connection) { return QStringLiteral("control:%1").arg(connection); }
@@ -157,33 +163,20 @@ private:
     /// The reply of the running call, to answer later, or null after the
     /// error @p noClient for a call from no connection.
     PendingReply deferCall(const QString& noClient);
+    /// The end of a move of a pane or a tab, for @p reply.
+    Control::PaneMoved movedReply(const PendingReply& reply);
     /// @p id, or the focused pane for 0, or nothing after @p reply failed
     /// with no_pane.
     std::optional<quint32> targetPane(PhosphorIpc::IpcPendingReply& reply, quint32 id);
-    /// Sends the PNG of a screenshot, @p base64 (empty when it could not be
-    /// written), unless read access or control went off meanwhile.
-    void finishScreenshot(PhosphorIpc::IpcPendingReply& reply, const QString& base64, const QSize& size);
-
-    struct WaitingInput
-    {
-        QByteArray bytes; ///< UTF-8
-        bool eof = false;
-    };
-    /// Drops the input @p name of @p connection.
-    void dropInput(quint64 connection, const QString& name);
 
     Control& m_control;
     SettingsStore& m_settings;
     RemoteSockets* m_remote = nullptr;
-    QHash<quint64, QHash<QString, WaitingInput>> m_inputs;
-    qsizetype m_inputBytes = 0;
+    PaneProcesses m_paneProcesses;
+    /// Keyed by the connection's ID.
+    OverlayInputs m_inputs;
     /// The open connections that have opened an overlay.
     QSet<quint64> m_overlayClients;
-    int m_screenshots = 0;
-    /// Encodes the PNGs, off the thread that draws the windows, and away
-    /// from the global pool of searches and hints. Last: its destructor
-    /// waits for the encodes, which post their reply to this object.
-    QThreadPool m_encoder;
 };
 
 /// External control on the process's socket (InstanceSocket): the "control"
@@ -206,6 +199,9 @@ public:
     bool enabled() const { return m_enabled; }
     /// The sockets of remote commands, for the calls of `afterglow ssh`.
     void setRemoteSockets(RemoteSockets* sockets) { m_api.setRemoteSockets(sockets); }
+    /// For the tests, whose `afterglow ssh` runs in no pane: what tells the
+    /// processes of a pane, Control::runsIn by default.
+    void setPaneProcesses(ControlApi::PaneProcesses check) { m_api.setPaneProcesses(std::move(check)); }
 
 private:
     void applySettings();

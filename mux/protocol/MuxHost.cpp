@@ -209,6 +209,10 @@ std::string encode(const Call& call)
     case Kind::Flash:
         break;
     case Kind::Notify:
+        o.string(call.title);
+        o.string(call.text);
+        o.byte(call.missed);
+        break;
     case Kind::ClipboardWrite:
     case Kind::UserVar:
     case Kind::Download:
@@ -217,6 +221,7 @@ std::string encode(const Call& call)
         break;
     case Kind::DesktopNotification:
         encodeNotification(o, call.notification);
+        o.byte(call.missed);
         break;
     case Kind::ClipboardRequest:
         encodeClipboard(o, call.clipboard);
@@ -251,6 +256,10 @@ std::optional<Call> decode(std::string_view bytes)
     case Kind::Flash:
         break;
     case Kind::Notify:
+        call.title = in.string();
+        call.text = in.string();
+        call.missed = in.boolean();
+        break;
     case Kind::ClipboardWrite:
     case Kind::UserVar:
     case Kind::Download:
@@ -259,6 +268,7 @@ std::optional<Call> decode(std::string_view bytes)
         break;
     case Kind::DesktopNotification:
         if (!decodeNotification(in, call.notification)) return std::nullopt;
+        call.missed = in.boolean();
         break;
     case Kind::ClipboardRequest:
         if (!decodeClipboard(in, call.clipboard)) return std::nullopt;

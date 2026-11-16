@@ -115,6 +115,8 @@ bool SplitTree::swap(Pane* first, Pane* second)
 
 bool SplitTree::rotate(bool clockwise)
 {
+    // A tree that restore() left empty has no root.
+    if (!m_root) return false;
     std::vector<Node*> leaves;
     const std::function<void(Node*)> collect = [&](Node* node) {
         if (node->pane) leaves.push_back(node);
@@ -135,6 +137,7 @@ bool SplitTree::rotate(bool clockwise)
 void SplitTree::layout(const QRect& area, int dividerWidth)
 {
     m_dividers.clear();
+    if (!m_root) return;
     layoutNode(m_root.get(), area, dividerWidth);
     if (m_zoomed) {
         m_dividers.clear();
@@ -383,7 +386,7 @@ void SplitTree::equalize()
         walk(n->first.get());
         walk(n->second.get());
     };
-    walk(m_root.get());
+    if (m_root) walk(m_root.get());
 }
 
 QJsonObject SplitTree::snapshot(const std::function<QJsonObject(Pane*)>& pane) const
@@ -394,22 +397,33 @@ QJsonObject SplitTree::snapshot(const std::function<QJsonObject(Pane*)>& pane) c
                 {QStringLiteral("ratio"), node->ratio}, {QStringLiteral("first"), encode(node->first.get())},
                 {QStringLiteral("second"), encode(node->second.get())}};
     };
-    return encode(m_root.get());
+    return m_root ? encode(m_root.get()) : QJsonObject();
 }
 
 std::unique_ptr<SplitTree> SplitTree::restore(const QJsonObject& tree, const std::function<Pane*(const QJsonObject&)>& factory)
 {
     auto result = std::make_unique<SplitTree>(nullptr);
-    std::function<std::unique_ptr<Node>(const QJsonObject&, Node*)> decode = [&](const QJsonObject& value, Node* parent) {
+    std::function<std::unique_ptr<Node>(const QJsonObject&, Node*)> decode = [&](const QJsonObject& value, Node* parent) -> std::unique_ptr<Node> {
         auto node = std::make_unique<Node>();
         node->parent = parent;
-        if (value.contains(QStringLiteral("pane"))) node->pane = factory(value.value(QStringLiteral("pane")).toObject());
-        else {
-            node->vertical = value.value(QStringLiteral("direction")).toString() == QLatin1String("down");
-            node->ratio = value.value(QStringLiteral("ratio")).toDouble();
-            node->serial = result->m_nextSerial++;
-            node->first = decode(value.value(QStringLiteral("first")).toObject(), node.get());
-            node->second = decode(value.value(QStringLiteral("second")).toObject(), node.get());
+        if (value.contains(QStringLiteral("pane"))) {
+            node->pane = factory(value.value(QStringLiteral("pane")).toObject());
+            if (!node->pane) return nullptr;
+            return node;
+        }
+        node->vertical = value.value(QStringLiteral("direction")).toString() == QLatin1String("down");
+        // The bounds of split(): a ratio this close to 0 or 1 would leave a
+        // side of no pixel.
+        node->ratio = std::clamp(value.value(QStringLiteral("ratio")).toDouble(), 0.001, 0.999);
+        node->serial = result->m_nextSerial++;
+        node->first = decode(value.value(QStringLiteral("first")).toObject(), node.get());
+        node->second = decode(value.value(QStringLiteral("second")).toObject(), node.get());
+        // A side without a pane goes: the other side takes the split's place,
+        // as when a pane closes.
+        if (!node->first || !node->second) {
+            std::unique_ptr<Node> kept = std::move(node->first ? node->first : node->second);
+            if (kept) kept->parent = parent;
+            return kept;
         }
         return node;
     };
@@ -447,7 +461,7 @@ std::unique_ptr<SplitTree> SplitTree::fromPreorder(const std::vector<PreorderNod
         node->pane = given.pane;
         if (!given.pane) {
             node->vertical = given.vertical;
-            node->ratio = given.ratio;
+            node->ratio = std::clamp(given.ratio, 0.001, 0.999);
             node->serial = result->m_nextSerial++;
         }
         if (!result->m_root) {

@@ -27,7 +27,8 @@
 -- (Keybinds.bindings, a key table or a key sequence), from
 -- `afterglow ctl action script:<id>.<command>` or a SCRIPT.COMMAND call of
 -- the commands target, and, for a command with remote = true, from
--- `aglow run` on a remote host in an `afterglow ssh` session.
+-- `aglow run` on a remote host in an `afterglow ssh` session, or in a pane of
+-- a mux session of another host.
 -- A package declares its commands in package.json, not in metadata.
 --
 -- A helper that takes a pane targets the event's pane when the pane is nil.
@@ -54,8 +55,10 @@ export type Pane = {
 -- The pane overview: cards are the pane IDs of every tab in tab order while it is open, else the current tab's.
 export type Overview = { open: boolean, highlighted: number, cards: { number } }
 -- cols and rows: the cells that fit in the window. A top or bottom window dock is cols wide.
+-- session: the mux session that the window shows, else "". session_host: the ssh destination
+-- of that session's daemon, "" for this computer.
 export type Window = { id: number, project: string, project_directory: string, focused: boolean, active_tab: number,
-    active_pane: number, overview: Overview, cols: number, rows: number }
+    active_pane: number, overview: Overview, session: string, session_host: string, cols: number, rows: number }
 export type Tab = { id: number, window: number, index: number, title: string, active: boolean, active_pane: number }
 -- Detached metadata, captured before dispatch. Editing it cannot mutate the host.
 -- Zero active IDs mean that no terminal window currently has keyboard focus.
@@ -97,7 +100,7 @@ export type CommandEvent = {
     -- stdin that is not UTF-8 text (exit status 2).
     stdin: string?,
     source: "shell" | "palette" | "key" | "menu" | "control" | "remote",
-    remote: { host: string }?, -- for source "remote": the host of the ssh session, as afterglow ssh named it
+    remote: { host: string }?, -- for source "remote": the host of the ssh session as afterglow ssh named it, or of the mux session as --ssh named it
     run: string, -- for afterglow.output, output_error and exit
     terminal: State,
 }
@@ -206,8 +209,8 @@ export type OperationData = {
     open: boolean?, highlighted: number?, cards: { number }?,
     -- Durable state results; revision must be supplied to the next state_write.
     value: {[string]: any}?, version: number?, revision: number?,
-    -- Project listing and launch/restore results.
-    names: { string }?, cwd: string?, reused: boolean?,
+    -- Project listing and launch/restore results. session: the mux session that a project opened into.
+    names: { string }?, cwd: string?, reused: boolean?, session: string?,
     pane_ids: {[string]: number}?, tab_ids: {[string]: number}?, warnings: { string }?,
 }
 export type ResultEvent = {
@@ -225,7 +228,7 @@ export type SignalValue = { channel: number, value: number }
 
 export type Effect = { kind: string, request_id: string? }
 -- A command's fields, in metadata.commands, package.json and set_commands.
--- remote: aglow run on a remote host can run it, through afterglow ssh (Terminal.sshRemoteCommands).
+-- remote: aglow run on a remote host can run it, through afterglow ssh or a mux session of that host (Terminal.sshRemoteCommands).
 export type CommandSpec = { summary: string, usage: string?, palette: string?, stdin: boolean?, remote: boolean? }
 export type Effects = Effect | { Effect }
 
@@ -288,7 +291,7 @@ declare afterglow: {
     save_project: (pane: PaneRef, name: string, overwrite: boolean?) -> Effect,
     open_project: (name: string, newInstance: boolean?) -> Effect,
     list_projects: () -> Effect,
-    -- left, right, up and down need a target; new-tab and new-window take none.
+    -- left, right, up and down need a target. new-tab goes to the window of its target, else to the pane's own. new-window takes none.
     move_pane: (pane: PaneRef, target: PaneRef?, placement: ("left" | "right" | "up" | "down" | "new-tab" | "new-window")?) -> Effect,
     detach_tab: (pane: PaneRef) -> Effect,
     timer: (name: string, delay_ms: number, repeat_ms: number?) -> Effect,
@@ -361,7 +364,7 @@ declare afterglow: {
     -- Result data: the Overview.
     overview: (pane: PaneRef, operation: ("open" | "close" | "choose")?) -> Effect,
     overview_move: (pane: PaneRef, step: number?, target: PaneRef?) -> Effect,
-    -- Plays over the pane in Shaders.paneEffects. duration_ms: 50-10000 (default 600). color is a
-    -- palette index (default 4).
+    -- Plays over the pane in Shaders.paneEffects. duration_ms: a whole number from 50 to 10000
+    -- (default 600). color is a palette index (default 4).
     pulse: (pane: PaneRef, effect: ("portal" | "flash" | "shake" | string | number), options: { duration_ms: number?, color: number? }?) -> Effect,
 }

@@ -23,7 +23,7 @@ add_executable(afterglow_vt_tests
     UnicodeTest.cpp
 )
 target_link_libraries(afterglow_vt_tests PRIVATE Afterglow::Vt GTest::gtest_main)
-set_target_properties(afterglow_vt_tests PROPERTIES AUTOMOC OFF)
+set_target_properties(afterglow_vt_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 include(GoogleTest)
 # A test that hangs (a parser loop that never ends) fails instead of

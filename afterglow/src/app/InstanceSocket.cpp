@@ -15,6 +15,7 @@
 #include <QSet>
 
 #include <string>
+#include <utility>
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -32,7 +33,7 @@ std::string lockPath(const QString& socket)
     return QFile::encodeName(socket + QStringLiteral(".lock")).toStdString();
 }
 
-// The lock on @p socket's lock file, as afterglow-mux takes the lock of its
+// The lock on @p socket's lock file, as aglow-mux takes the lock of its
 // sockets: AfterglowProto::LockHeld while another holder has it,
 // AfterglowProto::LockFailed when the file cannot be opened or locked.
 int lockSocket(const QString& socket)
@@ -57,8 +58,10 @@ SocketFile socketFile(const QString& path)
     return S_ISSOCK(info.st_mode) && info.st_uid == ::getuid() ? SocketFile::Ours : SocketFile::Other;
 }
 
-// A listener without the lock (an older build) still answers: only a refused
-// connection proves that none is there. A busy listener times out.
+// A listener can hold no lock file: one that something removed while the
+// listener ran (a cleaner of the runtime directory) lets the next process
+// take a new lock. It still answers: only a refused connection proves that
+// none is there. A busy listener times out.
 bool refusesConnections(const QString& path)
 {
     QLocalSocket probe;
@@ -79,11 +82,17 @@ InstanceSocket::InstanceSocket()
 
 InstanceSocket::~InstanceSocket()
 {
+    close();
+}
+
+void InstanceSocket::close()
+{
     // The socket file goes first: while the lock is held, no other process
     // can take the path and lose its file to this one.
     m_router->stop();
-    if (m_lock >= 0) unlockSocket(m_path, m_lock);
-    if (g_processPath == m_path) g_processPath.clear();
+    if (m_lock >= 0) unlockSocket(m_path, std::exchange(m_lock, -1));
+    if (!m_path.isEmpty() && g_processPath == m_path) g_processPath.clear();
+    m_path.clear();
 }
 
 InstanceSocket::Listen InstanceSocket::listen(const QString& path)
@@ -101,7 +110,7 @@ InstanceSocket::Listen InstanceSocket::listen(const QString& path)
             QFile::remove(path);
             break;
         }
-        // A listener without the lock: an older build.
+        // A listener whose lock file went.
         unlockSocket(path, lock);
         return Listen::Held;
     case SocketFile::Other:

@@ -143,19 +143,36 @@ void TerminalWindow::finishTransfer(quint32 previousTab, int previousIndex)
 QString TerminalWindow::sessionMoveError(const TerminalWindow* destination) const
 {
     // A session's programs run under its daemon, and its window shows them
-    // all: a pane of the session cannot go to another window, and a program
-    // of a window cannot join the session.
+    // all: a program of a window cannot join the session. A pane of the
+    // session goes to the window of another session of the same daemon,
+    // which moves it (joinSession), and to no other window.
     if (destination == this || (!m_session && !destination->m_session)) return {};
-    return m_session ? QStringLiteral("A pane of session %1 cannot leave its window").arg(m_session->session())
-                     : QStringLiteral("A pane cannot move into the window of session %1").arg(destination->m_session->session());
+    if (!m_session) return QStringLiteral("A pane cannot move into the window of session %1").arg(destination->m_session->session());
+    if (!destination->m_session)
+        return QStringLiteral("A pane of session %1 can move only into the window of another session").arg(m_session->session());
+    if (!m_session->sameDaemon(*destination->m_session)) {
+        const bool otherHost = m_session->host() != destination->m_session->host();
+        return (otherHost ? QStringLiteral("A pane of session %1 cannot move to session %2, which runs on another host")
+                          : QStringLiteral("A pane of session %1 cannot move to session %2, which runs under another mux daemon"))
+            .arg(m_session->session(), destination->m_session->session());
+    }
+    return {};
 }
 
-QString TerminalWindow::movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction)
+QString TerminalWindow::movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction, Pane* after)
 {
     const int index = tabOf(pane);
     if (index < 0 || !destination || (beside && destination->tabOf(beside) < 0) || pane == beside)
         return QStringLiteral("Invalid pane destination");
     if (const QString refused = sessionMoveError(destination); !refused.isEmpty()) return refused;
+    // Into the window of another session, the daemon moves its program
+    // (joinSession): its pane here cannot go there as it is.
+    if (m_session && destination != this)
+        return QStringLiteral("A pane of session %1 moves to session %2 through the mux daemon")
+            .arg(m_session->session(), destination->m_session->session());
+    // A break out takes it to another session wherever it is, and closes it
+    // here then (finishBreakOut): the move would be for nothing.
+    if (m_session && m_leavingPanes.contains(pane)) return QStringLiteral("This pane is leaving session %1 already").arg(m_session->session());
     // A new tab in its own window for a pane alone in its tab would only
     // replace the tab, with a new ID and without its title.
     if (destination == this && !beside && m_tabs[std::size_t(index)]->splits->paneCount() == 1)
@@ -198,8 +215,13 @@ QString TerminalWindow::movePaneTo(Pane* pane, TerminalWindow* destination, Pane
         auto target = std::make_unique<Tab>();
         target->splits = std::make_unique<SplitTree>(pane);
         target->focused = pane;
-        destination->m_tabs.push_back(std::move(target));
-        destination->m_currentTab = int(destination->m_tabs.size()) - 1;
+        // After the tab of its target, found now that the pane's own tab may
+        // have gone: as the daemon places it.
+        const int afterIndex = after && after != pane ? destination->tabOf(after) : -1;
+        const auto at = afterIndex >= 0 ? destination->m_tabs.begin() + afterIndex + 1 : destination->m_tabs.end();
+        // The insert first: it can move the tabs, and begin() with them.
+        const auto inserted = destination->m_tabs.insert(at, std::move(target));
+        destination->m_currentTab = int(inserted - destination->m_tabs.begin());
     }
     if (destination != this) finishTransfer(sourceTab, sourceIndex);
     destination->finishTransfer(destination == this ? sourceTab : destinationTab,
@@ -214,6 +236,12 @@ QString TerminalWindow::detachTabTo(Pane* pane, TerminalWindow* destination)
     const int index = tabOf(pane);
     if (index < 0 || !destination || destination == this) return QStringLiteral("Invalid tab destination");
     if (const QString refused = sessionMoveError(destination); !refused.isEmpty()) return refused;
+    // Into the window of another session, the daemon moves the programs: the
+    // panes here cannot go there as they are (movePaneTo).
+    if (m_session) {
+        return QStringLiteral("A pane of session %1 moves to session %2 through the mux daemon")
+            .arg(m_session->session(), destination->m_session->session());
+    }
     // Both windows' current tabs keep their focus through the transfer: each
     // is shown again from its saved focus.
     if (m_focused && m_currentTab >= 0) m_tabs[std::size_t(m_currentTab)]->focused = m_focused;

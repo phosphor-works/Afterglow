@@ -6,12 +6,9 @@
 #include "RemoteSockets.h"
 #include "../config/Settings.h"
 
-#include <QBuffer>
-#include <QImage>
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QPointer>
-#include <QRegularExpression>
 
 #include <algorithm>
 #include <cmath>
@@ -50,9 +47,6 @@ ControlApi::ControlApi(Control& control, SettingsStore& settings, QObject* paren
     , m_control(control)
     , m_settings(settings)
 {
-    // One at a time: a screenshot waits for its frame anyway, and the cap
-    // of MaxScreenshots bounds the queue.
-    m_encoder.setMaxThreadCount(1);
 }
 
 bool ControlApi::failed(const QString& error)
@@ -129,66 +123,19 @@ void ControlApi::screenshot(double pane, const QString& scope)
         reply->fail(code, refused);
         return;
     }
-    if (m_screenshots >= MaxScreenshots) {
-        reply->fail(QStringLiteral("busy"), QStringLiteral("%1 screenshots are in progress").arg(MaxScreenshots));
-        return;
-    }
     const auto target = targetPane(*reply, *id);
     if (!target) return;
-    ++m_screenshots;
-    const QString error = m_control.capture(*target, *captureScope,
-        [reply, api = QPointer<ControlApi>(this)](const QString& error, const QString& code, const QImage& image) {
-            if (!api) {
-                reply->fail(QStringLiteral("failed"), QStringLiteral("the control socket closed"));
-                return;
-            }
-            if (!error.isEmpty()) {
-                --api->m_screenshots;
-                reply->fail(code, error);
-                return;
-            }
-            // A 4K PNG takes a moment to encode: not on the thread that draws
-            // the windows. The answer comes back to this object's thread,
-            // the router's.
-            ControlApi* self = api.data();
-            // The reply moves on to the posted call: the pool keeps no copy,
-            // so it ends on the router's thread, as IpcPendingReply wants.
-            self->m_encoder.start([reply, image, self]() mutable {
-                QByteArray png;
-                QBuffer buffer(&png);
-                buffer.open(QIODevice::WriteOnly);
-                const QString base64 = image.save(&buffer, "PNG") ? QString::fromLatin1(png.toBase64()) : QString();
-                buffer.close();
-                png = {};
-                QMetaObject::invokeMethod(self, [reply = std::move(reply), base64, size = image.size(), self] {
-                    self->finishScreenshot(*reply, base64, size);
-                });
-            });
+    // The reply moves on with the answer, which Control posts to its thread,
+    // the router's: it ends there, as IpcPendingReply wants.
+    const QString error = m_control.screenshot(
+        *target, *captureScope,
+        [reply, api = QPointer<ControlApi>(this)](const QString& error, const QString& code, const QJsonObject& result) {
+            if (!api) reply->fail(QStringLiteral("failed"), QStringLiteral("the control socket closed"));
+            else if (!error.isEmpty()) reply->fail(code, error);
+            else reply->finish(result);
         },
         code);
-    if (!error.isEmpty()) {
-        --m_screenshots;
-        reply->fail(code, error);
-    }
-}
-
-void ControlApi::finishScreenshot(PhosphorIpc::IpcPendingReply& reply, const QString& base64, const QSize& size)
-{
-    --m_screenshots;
-    // Checked again as the picture goes out: read access, or control
-    // itself, can go off while the frame is drawn and encoded.
-    QString code;
-    if (const QString refused = m_control.captureRefusal(code); !refused.isEmpty()) {
-        reply.fail(code, refused);
-    } else if (!m_settings.settings().control.enabled) {
-        reply.fail(QStringLiteral("cancelled"), QStringLiteral("Control.enabled is off"));
-    } else if (base64.isEmpty()) {
-        reply.fail(QStringLiteral("failed"), QStringLiteral("the PNG could not be written"));
-    } else {
-        reply.finish(QJsonObject{{QStringLiteral("png"), base64},
-                                 {QStringLiteral("width"), size.width()},
-                                 {QStringLiteral("height"), size.height()}});
-    }
+    if (!error.isEmpty()) reply->fail(code, error);
 }
 
 QString ControlApi::getText(double pane, const QString& scope)
@@ -257,33 +204,38 @@ void ControlApi::notify(double pane, const QString& title, const QString& body)
 
 void ControlApi::runAction(double pane, const QString& action)
 {
+    if (const auto id = paneId(pane)) failed(m_control.runClientAction(*id, action));
+}
+
+Control::PaneMoved ControlApi::movedReply(const PendingReply& reply)
+{
+    // Control answers on its thread, the router's, as IpcPendingReply wants.
+    return [reply, api = QPointer<ControlApi>(this)](const QString& error, const QVariantMap& result) {
+        if (!error.isEmpty()) reply->fail(error);
+        else if (!api) reply->fail(QStringLiteral("the control socket closed"));
+        else reply->finish(QJsonObject::fromVariantMap(api->m_control.clientPaneMap(result)));
+    };
+}
+
+void ControlApi::movePane(double pane, double target, const QString& placement)
+{
     const auto id = paneId(pane);
     if (!id) return;
-    // These move pane text to the clipboard, into other panes or into a pager
-    // file: the same reading that getText needs permission for.
-    if (!m_settings.settings().control.allowReadText && Control::readsPaneText(action)) {
-        failed(QStringLiteral("action %1 reads pane text, which is off (Control.allowReadText)").arg(action));
-        return;
-    }
-    failed(m_control.runAction(*id, action));
-}
-
-QVariantMap ControlApi::movePane(double pane, double target, const QString& placement)
-{
-    QVariantMap result;
-    const auto id = paneId(pane);
-    if (!id) return result;
     const auto to = paneId(target);
-    if (!to) return result;
-    failed(m_control.movePane(*id, *to, placement, result));
-    return result;
+    if (!to) return;
+    // Taken first: a call that cannot wait moves nothing.
+    const PendingReply reply = deferCall(QStringLiteral("moving a pane needs a client connection"));
+    if (!reply) return;
+    m_control.movePane(*id, *to, placement, movedReply(reply));
 }
 
-QVariantMap ControlApi::detachTab(double pane)
+void ControlApi::detachTab(double pane)
 {
-    QVariantMap result;
-    if (const auto id = paneId(pane)) failed(m_control.detachTab(*id, result));
-    return result;
+    const auto id = paneId(pane);
+    if (!id) return;
+    const PendingReply reply = deferCall(QStringLiteral("moving a tab needs a client connection"));
+    if (!reply) return;
+    m_control.detachTab(*id, movedReply(reply));
 }
 
 QVariantMap ControlApi::openDirectory(const QString& directory, const QString& layout)
@@ -305,11 +257,16 @@ QVariantMap ControlApi::saveProject(double pane, const QString& name, bool overw
     return result;
 }
 
-QVariantMap ControlApi::openProject(const QString& name, bool newInstance)
+void ControlApi::openProject(const QString& name, bool newInstance, const QString& mode)
 {
-    QVariantMap result;
-    failed(m_control.openProject(name, newInstance, result));
-    return result;
+    // A session waits for the mux daemon off the GUI thread: the call is
+    // answered then. Taken first: a call that cannot wait opens nothing.
+    const PendingReply reply = deferCall(QStringLiteral("opening a project needs a client connection"));
+    if (!reply) return;
+    m_control.openProject(name, newInstance, mode, [reply](const QString& error, const QVariantMap& result) {
+        if (error.isEmpty()) reply->finish(QJsonObject::fromVariantMap(result));
+        else reply->fail(error);
+    });
 }
 
 QVariantList ControlApi::scriptDiagnostics()
@@ -333,6 +290,16 @@ QVariantMap ControlApi::openRemoteSocket(double pane, double pid, const QString&
     }
     if (!isWhole(pid) || !isWhole(protocol) || std::abs(protocol) > 1e9) {
         failed(QStringLiteral("the process ID and the protocol are whole numbers"));
+        return {};
+    }
+    // The pane is the one that the caller and the process it names run in:
+    // a process of another terminal that names the pane gets no socket that
+    // runs remote commands for it.
+    const auto runsIn = [&](qint64 process) {
+        return m_paneProcesses ? m_paneProcesses(*id, process, overlay) : m_control.runsIn(*id, process, overlay);
+    };
+    if (!runsIn(connectionPid()) || !runsIn(qint64(std::clamp(pid, -1.0, 1e12)))) {
+        failed(QStringLiteral("only `afterglow ssh` in pane %1 opens a remote socket for it").arg(*id));
         return {};
     }
     RemoteSockets::Opened opened;
@@ -369,76 +336,21 @@ void ControlApi::remoteSocketFailed(const QString& token, const QString& reason)
 
 bool ControlApi::overlayInput(const QString& input, const QString& chunk, bool eof)
 {
-    static const QRegularExpression rule(QStringLiteral("\\A[A-Za-z0-9_-]{1,64}\\z"));
-    if (!rule.match(input).hasMatch()) return !failed(QStringLiteral("an input name is 1 to 64 letters, digits, _ and -"));
     const quint64 connection = connectionId();
     if (!connection) return !failed(QStringLiteral("an input needs a client connection"));
-    // Looked up, not made: a refused first part leaves no books behind.
-    const auto books = m_inputs.constFind(connection);
-    const qsizetype waitingInputs = books == m_inputs.cend() ? 0 : books->size();
-    const auto known = books == m_inputs.cend() ? nullptr : &*books;
-    const auto entry = known ? known->constFind(input) : QHash<QString, WaitingInput>::const_iterator();
-    const bool exists = known && entry != known->cend();
-    if (!exists && waitingInputs >= MaxWaitingInputs)
-        return !failed(QStringLiteral("%1 inputs wait for their overlay already").arg(MaxWaitingInputs));
-    if (exists && entry->eof) return !failed(QStringLiteral("the input %1 has ended").arg(input));
-    const QByteArray bytes = chunk.toUtf8();
-    const qsizetype size = exists ? entry->bytes.size() : 0;
-    if (size + bytes.size() > OverlaySpec::MaxInput) {
-        dropInput(connection, input);
-        return !failed(QStringLiteral("the overlay's stdin is over %1 MiB").arg(OverlaySpec::MaxInput >> 20));
-    }
-    if (m_inputBytes + bytes.size() > MaxWaitingInputBytes)
-        return !failed(QStringLiteral("afterglow keeps at most %1 MiB of input for overlays that have not started")
-                           .arg(MaxWaitingInputBytes >> 20));
-    WaitingInput& waiting = m_inputs[connection][input];
-    waiting.bytes += bytes;
-    waiting.eof = eof;
-    m_inputBytes += bytes.size();
-    return true;
-}
-
-void ControlApi::dropInput(quint64 connection, const QString& name)
-{
-    const auto inputs = m_inputs.find(connection);
-    if (inputs == m_inputs.end()) return;
-    m_inputBytes -= inputs->take(name).bytes.size();
-    if (inputs->isEmpty()) m_inputs.erase(inputs);
+    return !failed(m_inputs.add(QString::number(connection), input, chunk, eof));
 }
 
 void ControlApi::overlay(double pane, const QStringList& argv, const QVariantMap& given)
 {
-    QString error;
     // Standard input that came in parts: the call takes it, whatever it
     // decides, also for a pane ID that it refuses.
     QVariantMap options = given;
-    if (options.contains(QStringLiteral("input"))) {
-        const QString name = options.take(QStringLiteral("input")).toString();
-        QByteArray bytes;
-        bool complete = false;
-        if (const auto inputs = m_inputs.constFind(connectionId()); inputs != m_inputs.cend()) {
-            if (const auto input = inputs->constFind(name); input != inputs->cend() && input->eof) {
-                bytes = input->bytes;
-                complete = true;
-            }
-        }
-        dropInput(connectionId(), name);
-        if (options.contains(QStringLiteral("stdin"))) {
-            failed(QStringLiteral("the overlay options stdin and input exclude each other"));
-            return;
-        }
-        if (!complete) {
-            failed(QStringLiteral("no complete input %1 on this connection").arg(name));
-            return;
-        }
-        options.insert(QStringLiteral("stdin"), QString::fromUtf8(bytes));
-    }
+    if (failed(m_inputs.resolve(QString::number(connectionId()), options))) return;
     const auto id = paneId(pane);
     if (!id) return;
-    auto spec = OverlaySpec::read(argv, options, &error);
-    // A client names a directory of this machine: one that is missing is
-    // its mistake, where a script's remote path starts in $HOME.
-    if (spec) error = Control::localDirectory(spec->cwd);
+    QString error;
+    const auto spec = Control::clientOverlaySpec(argv, options, error);
     if (failed(error)) return;
     const quint64 connection = connectionId();
     const PendingReply reply = deferCall(QStringLiteral("an overlay needs a client connection"));
@@ -448,18 +360,13 @@ void ControlApi::overlay(double pane, const QStringList& argv, const QVariantMap
     const auto target = targetPane(*reply, *id);
     if (!target) return;
     QString code;
-    error = m_control.overlay(overlayOwner(connection), {}, *target, *spec,
-        [reply, api = QPointer<ControlApi>(this)](const QString& error, const QString& code, const QVariantMap& result) {
-            if (!error.isEmpty()) {
-                reply->fail(code, error);
-                return;
-            }
-            // Gated as it goes out, as events are: read access can go while
-            // the program runs.
-            QVariantMap answer = result;
-            if (!api || !api->m_settings.settings().control.allowReadText) answer.remove(QStringLiteral("stdout"));
-            reply->finish(QJsonObject::fromVariantMap(answer));
-        }, code);
+    error = m_control.clientOverlay(
+        overlayOwner(connection), *target, *spec,
+        [reply](const QString& error, const QString& code, const QVariantMap& result) {
+            if (!error.isEmpty()) reply->fail(code, error);
+            else reply->finish(QJsonObject::fromVariantMap(result));
+        },
+        code);
     if (!error.isEmpty()) {
         reply->fail(code, error);
         return;
@@ -476,12 +383,11 @@ void ControlApi::cancelOverlays(const QString& message)
 void ControlApi::dropInputs()
 {
     m_inputs.clear();
-    m_inputBytes = 0;
 }
 
 void ControlApi::connectionClosed(quint64 connection)
 {
-    for (const WaitingInput& input : m_inputs.take(connection)) m_inputBytes -= input.bytes.size();
+    m_inputs.drop(QString::number(connection));
     if (m_overlayClients.remove(connection)) m_control.closeOverlays(overlayOwner(connection), QStringLiteral("The client went away"));
 }
 
@@ -555,6 +461,7 @@ void ControlSocket::applySettings()
             // Its waiting overlay calls would still answer, and the overlays
             // hold the keyboard for clients that control no longer serves.
             m_api.cancelOverlays(QStringLiteral("Control.enabled is off"));
+            // Control ends those of the clients of sessions itself.
             // No overlay call can take them now: a client sends them again.
             m_api.dropInputs();
         }

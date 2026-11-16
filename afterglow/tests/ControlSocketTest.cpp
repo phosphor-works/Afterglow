@@ -9,11 +9,14 @@
 #include "control/Ctl.h"
 #include "control/IpcClient.h"
 
+#include "MuxProtocol.h"
+
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QDeadlineTimer>
+#include <QMetaMethod>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -26,7 +29,6 @@
 #include <QThread>
 #include <QTimer>
 
-#include <algorithm>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -175,7 +177,8 @@ protected:
     Saved m_display{"WAYLAND_DISPLAY"};
     Saved m_socketVar{"AFTERGLOW_SOCKET"};
     Saved m_paneVar{"AFTERGLOW_PANE_ID"};
-    QTemporaryDir m_dir;
+    /// Under /tmp: TMPDIR can be too long for the path of a socket in it.
+    QTemporaryDir m_dir{QStringLiteral("/tmp/afterglow-control-XXXXXX")};
     QString m_runtime;
     std::unique_ptr<SettingsStore> m_settings;
     std::unique_ptr<Control> m_control;
@@ -288,13 +291,18 @@ TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
     // the spec refuses it before the directory check.
     EXPECT_EQ(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("cwd"), QStringLiteral(":/")}}}),
               QStringLiteral("cwd must be an absolute path, ~ or a path that starts with ~/"));
-    // A new tab reaches the directory check itself, before it looks for the
-    // pane.
+    // A new tab looks for its pane first: the pane's host decides which
+    // directories it takes (a session of another host takes none).
     const QJsonObject tab = call(client, QStringLiteral("newTab"), {7, QStringLiteral(":/"), QJsonArray{}});
     EXPECT_EQ(tab.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
     EXPECT_EQ(tab.value(QStringLiteral("code")).toString(), QStringLiteral("CALL_FAILED"));
-    EXPECT_EQ(tab.value(QStringLiteral("message")).toString(), QStringLiteral("cwd must name an existing absolute directory"));
-    // So does a project directory.
+    EXPECT_EQ(tab.value(QStringLiteral("message")).toString(), QStringLiteral("no pane 7"));
+    // A new window reaches the directory check before it needs a window:
+    // Qt takes ":/" for absolute, and no program starts in it.
+    const QJsonObject window = call(client, QStringLiteral("newWindow"), {QStringLiteral(":/"), QJsonArray{}});
+    EXPECT_EQ(window.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+    EXPECT_EQ(window.value(QStringLiteral("message")).toString(), QStringLiteral("cwd must name an existing absolute directory"));
+    // A project directory reaches the directory check itself.
     const QJsonObject project = call(client, QStringLiteral("openDirectory"), {QStringLiteral(":/"), QString()});
     EXPECT_EQ(project.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
     EXPECT_EQ(project.value(QStringLiteral("message")).toString(), QStringLiteral("project directory must be absolute or start with ~/"));
@@ -347,13 +355,13 @@ TEST_F(ControlSocketTest, OverlayInputComesInPartsAndBelongsToItsConnection)
     EXPECT_TRUE(call(client, QStringLiteral("overlayInput"), {QStringLiteral("list"), part, true}).value(QStringLiteral("result")).toBool());
     EXPECT_EQ(overlay(QStringLiteral("list")).value(QStringLiteral("code")).toString(), QStringLiteral("no_pane"));
     // The call took it, whatever it decided.
-    EXPECT_EQ(error(overlay(QStringLiteral("list"))), QStringLiteral("no complete input list on this connection"));
+    EXPECT_EQ(error(overlay(QStringLiteral("list"))), QStringLiteral("no complete input list for this client"));
     const auto accepted = [&](QLocalSocket& on, const QString& name, const QString& chunk, bool eof) {
         return call(on, QStringLiteral("overlayInput"), {name, chunk, eof}).value(QStringLiteral("result")) == QJsonValue(true);
     };
     // An input that has not ended is not complete, and goes with the call too.
     ASSERT_TRUE(accepted(client, QStringLiteral("open"), QStringLiteral("a"), false));
-    EXPECT_EQ(error(overlay(QStringLiteral("open"))), QStringLiteral("no complete input open on this connection"));
+    EXPECT_EQ(error(overlay(QStringLiteral("open"))), QStringLiteral("no complete input open for this client"));
     // Nothing comes after the end.
     ASSERT_TRUE(accepted(client, QStringLiteral("done"), QStringLiteral("a"), true));
     EXPECT_EQ(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("done"), QStringLiteral("b"), true})),
@@ -370,7 +378,7 @@ TEST_F(ControlSocketTest, OverlayInputComesInPartsAndBelongsToItsConnection)
                         .value(QStringLiteral("result")).toBool());
     EXPECT_EQ(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("big"), QStringLiteral("z"), true})),
               QStringLiteral("the overlay's stdin is over 4 MiB"));
-    EXPECT_EQ(error(overlay(QStringLiteral("big"))), QStringLiteral("no complete input big on this connection"));
+    EXPECT_EQ(error(overlay(QStringLiteral("big"))), QStringLiteral("no complete input big for this client"));
     // A bad name, and at most four inputs that wait on one connection.
     EXPECT_FALSE(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("a b"), QString(), true})).isEmpty());
     static_assert(ControlApi::MaxWaitingInputs == 4);
@@ -382,7 +390,7 @@ TEST_F(ControlSocketTest, OverlayInputComesInPartsAndBelongsToItsConnection)
     ASSERT_TRUE(connect(other));
     const QJsonObject elsewhere = call(other, QStringLiteral("overlay"),
                                        {7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("input"), QStringLiteral("w1")}}});
-    EXPECT_EQ(error(elsewhere), QStringLiteral("no complete input w1 on this connection"));
+    EXPECT_EQ(error(elsewhere), QStringLiteral("no complete input w1 for this client"));
 }
 
 TEST_F(ControlSocketTest, AnOverlayTakesItsInputForABadPaneAndControlOffDropsTheInputs)
@@ -400,14 +408,14 @@ TEST_F(ControlSocketTest, AnOverlayTakesItsInputForABadPaneAndControlOffDropsThe
     };
     ASSERT_TRUE(input(QStringLiteral("bad")));
     EXPECT_TRUE(overlay(-1, QStringLiteral("bad")).startsWith(QLatin1String("a pane ID is"))) << qPrintable(overlay(-1, QStringLiteral("bad")));
-    EXPECT_EQ(overlay(7, QStringLiteral("bad")), QStringLiteral("no complete input bad on this connection"));
+    EXPECT_EQ(overlay(7, QStringLiteral("bad")), QStringLiteral("no complete input bad for this client"));
 
     // No overlay call can take an input while control is off: it goes.
     ASSERT_TRUE(input(QStringLiteral("off")));
-    m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), false);
-    m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true);
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), false));
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true));
     ASSERT_TRUE(m_socket->enabled());
-    EXPECT_EQ(overlay(7, QStringLiteral("off")), QStringLiteral("no complete input off on this connection"));
+    EXPECT_EQ(overlay(7, QStringLiteral("off")), QStringLiteral("no complete input off for this client"));
 }
 
 TEST_F(ControlSocketTest, WaitingOverlayInputHasACapForAllConnectionsThatAClosedConnectionGivesBack)
@@ -447,23 +455,28 @@ TEST_F(ControlSocketTest, WaitingOverlayInputHasACapForAllConnectionsThatAClosed
 }
 
 /// Runs @p work on a thread of its own while this thread's event loop
-/// serves the socket: the client blocks.
+/// serves the socket: the client blocks. A client that has not ended after
+/// @p timeoutMs fails the test: @p cancel then closes the server's side of
+/// its connections, so that its reads end, and the thread is joined. It is
+/// never terminated, which could leave a lock of the heap held and hang the
+/// binary later; one that still hangs leaves the end to ctest's timeout.
 template<typename Work>
-bool runBlocking(Work work, int timeoutMs = 20000)
+bool runBlocking(Work work, const std::function<void()>& cancel, int timeoutMs = 20000)
 {
     std::unique_ptr<QThread> thread(QThread::create(std::move(work)));
     thread->start();
-    QElapsedTimer clock;
-    clock.start();
-    while (!thread->isFinished() && clock.elapsed() < timeoutMs) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
-        QThread::msleep(1);
-    }
+    const auto pump = [&thread](int ms) {
+        QElapsedTimer clock;
+        clock.start();
+        while (!thread->isFinished() && clock.elapsed() < ms) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            QThread::msleep(1);
+        }
+    };
+    pump(timeoutMs);
     if (thread->wait(QDeadlineTimer(1000))) return true;
-    // A hung client must fail this test, not abort the binary: a QThread
-    // destroyed while it runs ends the process, and the work holds
-    // references to the caller's locals.
-    thread->terminate();
+    cancel();
+    pump(5000);
     thread->wait();
     return false;
 }
@@ -495,6 +508,9 @@ TEST_F(ControlSocketTest, ClientCallsAndReadsTheServersErrors)
         outcome.tooLong =
             client.call(QStringLiteral("control"), QStringLiteral("sendText"), {1, tooLong}, 3000, &outcome.tooLongError);
         outcome.after = client.call(QStringLiteral("control"), QStringLiteral("projects"), {}, 3000, &error);
+    }, [this] {
+        m_socket.reset();
+        m_instance.reset();
     }));
     ASSERT_TRUE(outcome.connected);
     EXPECT_EQ(outcome.peer, getpid());
@@ -533,7 +549,7 @@ TEST_F(ControlSocketTest, ClientTakesAnErrorWithNoIdAsTheAnswer)
         clock.start();
         result = client.call(QStringLiteral("control"), QStringLiteral("projects"), {}, 5000, &error);
         took = clock.elapsed();
-    }));
+    }, [&server] { qDeleteAll(server.findChildren<QLocalSocket*>()); }));
     EXPECT_FALSE(result.has_value());
     EXPECT_EQ(error.code, QStringLiteral("MALFORMED_REQUEST"));
     EXPECT_EQ(error.message, QStringLiteral("unreadable"));
@@ -552,14 +568,14 @@ TEST_F(ControlSocketTest, FollowsControlEnabled)
     QJsonObject off = call(client, QStringLiteral("listPanes"));
     EXPECT_EQ(off.value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_TARGET"));
 
-    m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true);
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true));
     ASSERT_TRUE(m_socket->enabled());
     EXPECT_EQ(call(client, QStringLiteral("listPanes")).value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
     ASSERT_TRUE(subscribe(client, QStringLiteral("titleChanged")));
     const qint64 subscription = m_id;
 
     // Turning control off ends the subscription, and the client hears it.
-    m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), false);
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), false));
     EXPECT_FALSE(m_socket->enabled());
     const auto ended = next(client);
     ASSERT_TRUE(ended.has_value());
@@ -789,7 +805,7 @@ TEST_F(ControlSocketTest, ReadAccessCountsWhenTheValueGoesOut)
     EXPECT_EQ(events(client, 1), QStringList{QStringLiteral("userVarChanged:1:token:first")});
     Q_EMIT m_control->userVarChanged(1, QStringLiteral("token"), QStringLiteral("secret"));
     // The value waits. The user takes read access away before it goes.
-    m_settings->write(QStringLiteral("Control"), QStringLiteral("allowReadText"), false);
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("allowReadText"), false));
     Q_EMIT m_control->paneClosed(1);
     EXPECT_EQ(events(client, 2), (QStringList{QStringLiteral("userVarChanged:1:token:"), QStringLiteral("paneClosed:1")}));
 }
@@ -805,7 +821,7 @@ TEST_F(ControlSocketTest, ZeroIntervalSendsEveryChangeAndCommandsFollowReadAcces
     Q_EMIT m_control->titleChanged(1, QStringLiteral("a"));
     Q_EMIT m_control->titleChanged(1, QStringLiteral("b"));
     Q_EMIT m_control->commandStarted(1, QStringLiteral("make"));
-    m_settings->write(QStringLiteral("Control"), QStringLiteral("allowReadText"), false);
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("allowReadText"), false));
     Q_EMIT m_control->commandStarted(1, QStringLiteral("secret"));
     EXPECT_EQ(events(client, 4), (QStringList{QStringLiteral("titleChanged:1:a"), QStringLiteral("titleChanged:1:b"),
                                              QStringLiteral("commandStarted:1:make"), QStringLiteral("commandStarted:1:")}));
@@ -819,7 +835,7 @@ TEST_F(ControlSocketTest, IntervalTurnedToZeroSendsWhatWaitsFirst)
     ASSERT_TRUE(subscribe(client, QStringLiteral("titleChanged")));
     Q_EMIT m_control->titleChanged(1, QStringLiteral("a"));
     Q_EMIT m_control->titleChanged(1, QStringLiteral("old"));
-    m_settings->write(QStringLiteral("Control"), QStringLiteral("eventInterval"), 0);
+    ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("eventInterval"), 0));
     Q_EMIT m_control->titleChanged(1, QStringLiteral("new"));
     // The client ends on the newest title.
     EXPECT_EQ(events(client, 3), (QStringList{QStringLiteral("titleChanged:1:a"), QStringLiteral("titleChanged:1:old"),
@@ -829,6 +845,23 @@ TEST_F(ControlSocketTest, IntervalTurnedToZeroSendsWhatWaitsFirst)
 }
 
 } // namespace
+
+// The events of a session in the daemon are the window's: `afterglow ctl
+// watch` subscribes to every signal of ControlApi, and a session that
+// refused one would end the watch.
+TEST(ControlEvents, AreTheSignalsOfTheControlTarget)
+{
+    QStringList signalNames;
+    const QMetaObject& api = ControlApi::staticMetaObject;
+    for (int i = QObject::staticMetaObject.methodCount(); i < api.methodCount(); ++i) {
+        if (api.method(i).methodType() == QMetaMethod::Signal) signalNames << QString::fromLatin1(api.method(i).name());
+    }
+    QStringList daemon;
+    for (const std::string_view event : AfterglowMux::ControlEvents) daemon << QString::fromLatin1(event.data(), qsizetype(event.size()));
+    signalNames.sort();
+    daemon.sort();
+    EXPECT_EQ(signalNames, daemon);
+}
 
 int main(int argc, char** argv)
 {

@@ -86,12 +86,10 @@ public:
     /// pty: its standard input can be large.
     bool start(AfterglowPty::SpawnOptions options, const QString& term, int cols, int rows, int cellWidth,
                int cellHeight, QString* error);
-    /// Applies changed config to the running terminal.
+    /// Applies changed config to the running terminal. A session pane takes
+    /// only the options of its view: the session's terminal takes the rest
+    /// from the daemon, and its frames carry them.
     void setOptions(const AfterglowVt::TerminalOptions& options);
-    /// Applies only the options that are the window's, not the terminal's
-    /// (Terminal::setViewOptions): for a session pane, whose colours and
-    /// history are the session's.
-    void setViewOptions(const AfterglowVt::TerminalOptions& options);
 
     void resize(int cols, int rows, int cellWidth, int cellHeight);
 
@@ -105,8 +103,9 @@ public:
     const MuxClient* session() const { return m_session.get(); }
     /// The pane's ID in the daemon, 0 for a pane that is no session pane.
     std::uint32_t sessionPaneId() const { return m_sessionPane; }
-    /// The pane shows mux session @p name, and has not lost it.
-    bool showsSession(const QString& name) const;
+    /// The pane shows mux session @p name of @p host (empty: this computer),
+    /// and has not lost it.
+    bool showsSession(const QString& name, const QString& host = {}) const;
     /// What closing the session pane ends: the window sets it as it closes
     /// the pane, by what the close is (the pane alone, or the window), or as
     /// the pane moves to a session of its own (MuxRelease::Nothing).
@@ -261,15 +260,20 @@ public:
     /// Overrides the title; empty returns to the program's.
     void setUserTitle(const QString& title);
     QString userTitle() const;
+    /// The process of the program, which leads the terminal session of the
+    /// pane. 0 or less for a session pane, and once the program exited.
+    pid_t programPid() const;
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
     /// is local and exists, else the foreground job's directory from /proc.
     /// A session pane's program runs under the daemon, which reads that
     /// directory: the GUI thread waits for its answer (MuxClient::directory),
-    /// so this is for a user's action, such as a new tab.
+    /// so this is for a user's action, such as a new tab. Empty for a pane of
+    /// a session of another host, whose directories are not on this machine.
     QString workingDirectory() const;
     /// workingDirectory without a call to the daemon, for what reads every
     /// pane often (Control::describe, the snapshot of each script event): a
-    /// session pane gives only what its shell reported.
+    /// session pane gives only what its shell reported, and a pane of a
+    /// session of another host gives nothing.
     QString knownDirectory() const;
     QString text(AfterglowVt::Terminal::TextScope scope);
     /// At most `limit` bytes of text. The caller bounds the limit: scripts
@@ -297,6 +301,9 @@ public:
     const QStringList& launchCommand() const { return m_launchCommand; }
     const QString& launchDirectory() const { return m_launchDirectory; }
     void setLaunch(const QString& cwd, const QStringList& command) { m_launchDirectory = cwd; m_launchCommand = command; }
+    /// The command that a project saves, for a session pane that another
+    /// window or the daemon started.
+    void setLaunchCommand(const QStringList& command) { m_launchCommand = command; }
     void setLaunchedProgram(const QString& name) { m_launchedProgram = name; }
     /// Keeps the pane open after an unsuccessful exit, until a key is
     /// pressed (the fallback panes of a restored project).
@@ -409,7 +416,9 @@ Q_SIGNALS:
     void shaderSignalsChanged();
     void bellRang();
     void clipboardWriteRequested(const QString& text, bool primarySelection);
-    void notificationRequested(const QString& title, const QString& body);
+    /// OSC 9 and OSC 777. @p missed: a session pane's program sent it while
+    /// no window showed the session (AfterglowMux::Host::Call::missed).
+    void notificationRequested(const QString& title, const QString& body, bool missed);
     void inputRejected();
     void pointerShapeRequested(const QString& shape);
     /// Program status records changed; read them with status().
@@ -420,8 +429,9 @@ Q_SIGNALS:
     /// requests below, emitted on the GUI thread (queueEvent).
     void commandBegan(const QString& command);
     void commandEnded(const QString& command, int exitCode, qint64 durationMs);
-    /// An OSC 99 desktop notification request.
-    void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request);
+    /// An OSC 99 desktop notification request. @p missed as for
+    /// notificationRequested.
+    void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request, bool missed);
     /// An OSC 5522 or OSC 52 clipboard read, or an OSC 5522 write.
     void clipboardRequested(const AfterglowVt::ClipboardRequest& request);
     /// An OSC 72 or OSC 5113 command, or a terminal reset (code 0).
@@ -439,9 +449,10 @@ Q_SIGNALS:
     void sessionLeft();
 
 private:
-    // ITerminalHost: m_mutex held, on the pty thread, or for a session pane
-    // on the GUI thread (applySessionHostCall, and the replica's callbacks in
-    // applySessionFrame).
+    // ITerminalHost: m_mutex held, on the pty thread, or on the GUI thread:
+    // for any pane when the window resizes or resets its terminal (resize,
+    // resetTerminal), and for a session pane in applySessionHostCall and the
+    // replica's callbacks in applySessionFrame.
     void writeToPty(std::string_view bytes) override;
     void reportInputFailure();
     /// An inputRejected is queued or was emitted, and no input got through since.
@@ -476,6 +487,10 @@ private:
     /// after its start) and is never refused: a start must not wait for an
     /// end that never comes.
     bool queueEvent(std::function<void()> event, std::size_t bytes, EventBudget& budget, bool paired = false);
+    /// notify() and desktopNotification(), and the same calls of a session
+    /// pane with their missed flag. m_mutex held.
+    void queueNotification(std::string_view title, std::string_view body, bool missed);
+    void queueDesktopNotification(const AfterglowVt::NotificationRequest& request, bool missed);
     /// Posts one deliverEvents() unless one is posted already.
     void postEvents();
     /// GUI thread: emits the queued events in order.
@@ -610,10 +625,10 @@ private:
     std::atomic<bool> m_holdOnFailure{false};
     std::atomic<bool> m_held{false}; ///< exited and held open
     bool m_scrollOnInput = true;
-    QString m_contextLabel;
-    QString m_contextKind;
+    QString m_contextLabel; ///< guarded by m_mutex
+    QString m_contextKind; ///< guarded by m_mutex
     QString m_reportedDirectory; ///< local, absolute; guarded by m_mutex
-    QHash<QString, QString> m_userVars;
+    QHash<QString, QString> m_userVars; ///< guarded by m_mutex
     bool m_userVarsFull = false; ///< the warning about MaxUserVars was given; guarded by m_mutex
     /// Changed user variables that wait for the GUI thread, guarded by m_mutex.
     std::vector<std::pair<QString, QString>> m_pendingUserVars;
@@ -627,7 +642,7 @@ private:
     AfterglowProto::Remote::Answer m_remoteSocket; ///< guarded by m_mutex
     std::chrono::steady_clock::time_point m_commandStart;
     AfterglowVt::Terminal m_terminal;
-    QString m_title;
+    QString m_title; ///< guarded by m_mutex
     QString m_shownTitle; ///< the title to show, guarded by m_mutex
     QString m_announcedTitle; ///< the last titleUpdated, GUI thread
 
@@ -648,6 +663,7 @@ private:
         std::atomic<bool> cancelled{false};
         std::uint64_t epoch = 0, nextRow = 0, lastRow = 0;
         bool alt = false;
+        bool partial = false; ///< history of the session was still on its way
     };
     std::shared_ptr<SearchJob> m_searchJob;
     void captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string query, bool regex);
@@ -660,6 +676,9 @@ private:
     /// The last search lost matches to moved text: the next search with the
     /// same query starts again. GUI thread.
     bool m_searchStale = false;
+    /// The last search started while history of the session was on its way:
+    /// once all of it came, the next search starts again. GUI thread.
+    bool m_searchPartial = false;
     bool m_searchAlt = false;
     QString m_searchNotice;
     std::vector<AfterglowVt::SearchMatch> m_searchMatches;
@@ -703,6 +722,9 @@ private:
     std::atomic<bool> m_sessionGone{false};
     bool m_leftSession = false; ///< GUI thread: leftSession()
     bool lastOutputArrivingLocked() const; ///< m_mutex held
+    /// A session pane's primary screen misses history rows that are on their
+    /// way from the daemon. m_mutex held.
+    bool historyArrivingLocked() const;
     int m_sessionVisible = -1; ///< the last state given to the daemon (setSessionVisible), -1 for none yet
     /// GUI thread: sessionScreensHeld(). A read refreshes the replica, so
     /// the reads that are const change it.

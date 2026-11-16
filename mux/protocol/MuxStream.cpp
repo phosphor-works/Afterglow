@@ -25,7 +25,7 @@ std::string encode(const Event& event)
         out += event.payload;
     } else if (event.type == EventType::Refreshed) {
         varint(out, event.frames);
-    } else if (event.type == EventType::Layout) {
+    } else if (event.type == EventType::Layout || event.type == EventType::Control || event.type == EventType::Commands) {
         out += event.payload;
     }
     return out;
@@ -43,12 +43,14 @@ std::optional<Event> decodeEvent(std::string_view frame)
     if (type == std::uint8_t(EventType::Host) && r.ok()) {
         event.frames = r.varint(~std::uint64_t(0));
         if (r.ok()) event.payload = std::string(r.rest());
-    } else if (type == std::uint8_t(EventType::Layout) && r.ok()) {
+    } else if ((type == std::uint8_t(EventType::Layout) || type == std::uint8_t(EventType::Control)
+                || type == std::uint8_t(EventType::Commands))
+               && r.ok()) {
         event.payload = std::string(r.rest());
     } else if (type == std::uint8_t(EventType::Refreshed) && r.ok()) {
         event.frames = r.varint(~std::uint64_t(0));
     }
-    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Refreshed)) {
+    if (!r.ok() || !r.done() || type < std::uint8_t(EventType::PaneOpened) || type > std::uint8_t(EventType::Commands)) {
         return std::nullopt;
     }
     event.type = EventType(type);
@@ -60,9 +62,19 @@ std::optional<Event> decodeEvent(std::string_view frame)
     if (event.type == EventType::Host && (event.pane == 0 || event.channel != 0 || (event.status != -1 && event.status != HostPart))) {
         return std::nullopt;
     }
-    // The layout is the session's, of no pane.
-    if (event.type == EventType::Layout && (event.pane != 0 || event.channel != 0 || event.status != -1)) return std::nullopt;
+    // The layout, a control call and the bytes of a command client are the
+    // session's: of no pane.
+    if ((event.type == EventType::Layout || event.type == EventType::Control || event.type == EventType::Commands)
+        && (event.pane != 0 || event.channel != 0 || event.status != -1)) {
+        return std::nullopt;
+    }
     if (event.type == EventType::Refreshed && (event.pane == 0 || event.channel != 0 || event.status != -1)) return std::nullopt;
+    // A program's end names its pane. The end of the link names nothing.
+    if (event.type == EventType::PaneClosed && (event.pane == 0 || event.channel != 0)) return std::nullopt;
+    if ((event.type == EventType::SessionEnded || event.type == EventType::TakenOver || event.type == EventType::Detached)
+        && (event.pane != 0 || event.channel != 0 || event.status != -1)) {
+        return std::nullopt;
+    }
     return event;
 }
 
@@ -70,7 +82,8 @@ std::string encode(const Input& input)
 {
     std::string out(1, char(input.type));
     varint(out, input.pane);
-    if (input.type == InputType::Bytes || input.type == InputType::Layout) {
+    if (input.type == InputType::Bytes || input.type == InputType::Layout || input.type == InputType::ControlReply
+        || input.type == InputType::Settings || input.type == InputType::ControlReplyPart) {
         out += input.bytes;
     } else if (input.type == InputType::Resize) {
         for (const int v : {input.size.cols, input.size.rows, input.size.cellWidth, input.size.cellHeight}) {
@@ -89,15 +102,18 @@ std::optional<Input> decodeInput(std::string_view frame)
     const std::uint8_t type = r.byte();
     input.pane = std::uint32_t(r.varint(0xffffffffu));
     if (!r.ok()) return std::nullopt;
-    if (type == std::uint8_t(InputType::Bytes) || type == std::uint8_t(InputType::Layout)) {
-        // The window's layout is of no pane.
-        if (type == std::uint8_t(InputType::Layout) && input.pane != 0) return std::nullopt;
+    if (type == std::uint8_t(InputType::Bytes) || type == std::uint8_t(InputType::Layout) || type == std::uint8_t(InputType::ControlReply)
+        || type == std::uint8_t(InputType::Settings) || type == std::uint8_t(InputType::ControlReplyPart)) {
+        // Only the bytes for a program name a pane: the window's layout, its
+        // settings and its answers to control calls are the session's.
+        if (type != std::uint8_t(InputType::Bytes) && input.pane != 0) return std::nullopt;
         input.type = InputType(type);
         input.bytes = std::string(r.rest());
         return input;
     }
     if (type == std::uint8_t(InputType::Reset) || type == std::uint8_t(InputType::Clear) || type == std::uint8_t(InputType::Kill)
-        || type == std::uint8_t(InputType::ClosePane) || type == std::uint8_t(InputType::Refresh)) {
+        || type == std::uint8_t(InputType::ClosePane) || type == std::uint8_t(InputType::Refresh)
+        || type == std::uint8_t(InputType::PaneForgotten)) {
         if (!r.done()) return std::nullopt;
         input.type = InputType(type);
         return input;
@@ -120,6 +136,48 @@ std::optional<Input> decodeInput(std::string_view frame)
     input.size.cellHeight = std::min(value(), 65535);
     if (!r.ok() || !r.done()) return std::nullopt;
     return input;
+}
+
+std::string encode(const RelayFrame& frame)
+{
+    std::string out(1, char(frame.part));
+    varint(out, frame.relay);
+    if (frame.part == RelayPart::Bytes) {
+        out += frame.bytes;
+    } else if (frame.part == RelayPart::Open) {
+        varint(out, frame.pane);
+        out.push_back(char(frame.kind));
+        if (frame.kind == RelayKind::Remote) out += frame.host;
+    }
+    return out;
+}
+
+std::optional<RelayFrame> decodeRelay(std::string_view bytes)
+{
+    Reader r(bytes);
+    RelayFrame frame;
+    const std::uint8_t part = r.byte();
+    frame.relay = r.varint(~std::uint64_t(0));
+    if (!r.ok() || frame.relay == 0) return std::nullopt;
+    if (part == std::uint8_t(RelayPart::Bytes)) {
+        frame.bytes = std::string(r.rest());
+        if (frame.bytes.empty()) return std::nullopt;
+    } else if (part == std::uint8_t(RelayPart::Open)) {
+        frame.pane = std::uint32_t(r.varint(0xffffffffu));
+        const std::uint8_t kind = r.byte();
+        if (!r.ok() || frame.pane == 0 || kind > std::uint8_t(RelayKind::Remote)) return std::nullopt;
+        frame.kind = RelayKind(kind);
+        if (frame.kind == RelayKind::Remote) {
+            frame.host = std::string(r.rest());
+            if (frame.host.empty()) return std::nullopt;
+        } else if (!r.done()) {
+            return std::nullopt;
+        }
+    } else if (part != std::uint8_t(RelayPart::End) || !r.done()) {
+        return std::nullopt;
+    }
+    frame.part = RelayPart(part);
+    return frame;
 }
 
 } // namespace AfterglowMux::Attach

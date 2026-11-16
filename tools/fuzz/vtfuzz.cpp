@@ -7,9 +7,10 @@
 // control records that do what the application does between reads: resize
 // (odd cell sizes and very large grids too), scroll the viewport, copy a
 // selection, search the text as the search bar does, advance animations,
-// reset, clear, read text, reload options, end the program, change
-// visibility, encode a paste, and read the images as the renderer does. The
-// host that supports everything answers aglow's remote socket query too. One
+// reset, clear, read text, reload options (the replica's view options too),
+// end the program, change visibility, encode a paste, and read the images as
+// the renderer does. The host that supports everything answers aglow's remote
+// socket query too. One
 // record gives the rest of the input to the reader of the mux state codec
 // (StateSync.h), as a frame for a fresh replica.
 //
@@ -422,6 +423,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             o.graphicsQuota = std::size_t(1 + b) << 16;
             o.graphicsFileTransfer = (a & 0x20) != 0;
             t.setOptions(o);
+            // The window's replica takes the view options at once, and its
+            // daemon then sends no more history than the replica keeps.
+            mirror.replica.setViewOptions(o);
+            mirror.writer.setReplicaHistory(o.maxScrollback);
             break;
         }
         case 8:

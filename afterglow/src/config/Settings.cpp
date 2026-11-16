@@ -6,6 +6,7 @@
 #include "Theme.h"
 #include "animation/MomentumScroll.h"
 
+#include "MuxConnect.h"
 #include "MuxProtocol.h"
 
 #include <AfterglowRender/Snapshot.h>
@@ -277,8 +278,9 @@ QString hintLetters(const QString& value)
     return letters.size() >= 2 ? letters : QString();
 }
 
-/// The Terminal.env names that Afterglow does not take, each with what to
-/// use instead: a setting gives the value, or Afterglow always sets it.
+/// The variable names that Afterglow does not take from Terminal.env or
+/// Mux.updateEnvironment, each with what to use instead: a setting gives the
+/// value, or Afterglow always sets it (ownedVariable()).
 const QHash<QString, QString>& reservedVariables()
 {
     static const QHash<QString, QString> Names{
@@ -292,6 +294,22 @@ const QHash<QString, QString>& reservedVariables()
         {QStringLiteral("AFTERGLOW_RESULT"), QStringLiteral("Afterglow sets it for an overlay that captures a file and removes it for other panes")},
     };
     return Names;
+}
+
+/// Why Terminal.env and Mux.updateEnvironment do not take @p name, or empty:
+/// a name of reservedVariables(), or another name of the prefix that
+/// Afterglow keeps for its own variables. Afterglow and the daemon set,
+/// read or remove those for each pane (AFTERGLOW_BASH_INJECT and the saved
+/// AFTERGLOW_ORIGINAL_ values of shell integration too), and a value from
+/// the user would fight them. AFTERGLOW_SHELL_INTEGRATION is the user's own:
+/// 0 turns shell integration off (docs/INPUT.md).
+QString ownedVariable(const QString& name)
+{
+    if (const QString reason = reservedVariables().value(name); !reason.isEmpty()) return reason;
+    if (name.startsWith(QLatin1String("AFTERGLOW_")) && name != QLatin1String("AFTERGLOW_SHELL_INTEGRATION")) {
+        return QStringLiteral("Afterglow keeps the names that start with AFTERGLOW_ for itself");
+    }
+    return {};
 }
 
 QVariantList stringList(const QStringList& strings)
@@ -410,36 +428,29 @@ PhosphorConfig::Schema buildSchema()
                                  "and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use "
                                  "plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme "
                                  "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
-                                 "after the brightness of the color scheme. A mux session runs without the desktop. It takes the "
-                                 "dark NAME, and plasma takes only the colors that the color scheme file sets. It keeps the "
-                                 "colors that it started with. A theme replaces each color and the visual bell intensity that "
-                                 "it sets. It also replaces the "
+                                 "after the brightness of the color scheme. A session that afterglow mux new starts has no "
+                                 "desktop. It takes the dark NAME, and plasma takes only the colors that the color scheme "
+                                 "file sets. A window that shows the session gives it the colors of the window. A theme "
+                                 "replaces each color and the visual bell intensity that it sets. It also replaces the "
                                  "divider and popup border colors. Afterglow reads its own JSON themes, Ghostty themes, "
                                  "Kitty themes and Konsole color schemes. A value with a slash is a file path. A path can "
                                  "start with ~/ for the home directory. A relative path starts at the directory of the "
                                  "config file.")),
         colorKey(QStringLiteral("foreground"), hex(term.defaultForeground),
-                 QStringLiteral("Default text color. An empty value uses the default. A mux session keeps the color that it started "
-                                "with.")),
+                 QStringLiteral("Default text color. An empty value uses the default.")),
         colorKey(QStringLiteral("background"), hex(term.defaultBackground),
-                 QStringLiteral("Default background color. An empty value uses the default. A mux session keeps the color that it "
-                                "started with.")),
+                 QStringLiteral("Default background color. An empty value uses the default.")),
         colorKey(QStringLiteral("cursor"), {},
-                 QStringLiteral("Cursor color. An empty value uses the foreground. A mux session keeps the color that it started "
-                                "with.")),
+                 QStringLiteral("Cursor color. An empty value uses the foreground.")),
         colorKey(QStringLiteral("cursorText"), {},
-                 QStringLiteral("Text color under a block cursor. An empty value uses the background. A mux session keeps the "
-                                "color that it started with.")),
+                 QStringLiteral("Text color under a block cursor. An empty value uses the background.")),
         colorKey(QStringLiteral("selectionForeground"), {},
-                 QStringLiteral("Selected text color. An empty value reverses the cell colors. A mux session keeps the color "
-                                "that it started with.")),
+                 QStringLiteral("Selected text color. An empty value reverses the cell colors.")),
         colorKey(QStringLiteral("selectionBackground"), {},
-                 QStringLiteral("Selection background color. An empty value reverses the cell colors. A mux session keeps the "
-                                "color that it started with.")),
+                 QStringLiteral("Selection background color. An empty value reverses the cell colors.")),
         {QStringLiteral("palette"), defaultPalette(term), QMetaType::QVariantList,
          QStringLiteral("The 16 ANSI colors, from black to bright white. With fewer than 16, the others use the default. "
-                        "With more, Afterglow uses the first 16. An entry that is not a color uses the default. A mux "
-                        "session keeps the colors that it started with.")},
+                        "With more, Afterglow uses the first 16. An entry that is not a color uses the default.")},
         colorKey(QStringLiteral("divider"), {},
                  QStringLiteral("Color of the dividers between panes. An empty value uses the color a fifth of the way from the "
                                 "background color to the text color. A theme replaces it. A theme without a divider color gets "
@@ -455,7 +466,7 @@ PhosphorConfig::Schema buildSchema()
                                  "they are. A value of 0 turns the darkening off.")),
         {QStringLiteral("boldIsBright"), term.boldIsBright, QMetaType::Bool,
          QStringLiteral("Use bright colors 8–15 for bold text with colors 0–7.")},
-        doubleKey(QStringLiteral("minimumContrast"), term.minimumContrast, 1.0, 21.0,
+        doubleKey(QStringLiteral("minimumContrast"), term.minimumContrast, AfterglowMux::MinContrast, AfterglowMux::MaxContrast,
                   QStringLiteral("Minimum contrast ratio between text and its background. Afterglow changes the color of text "
                                  "with less contrast. A value of 1 keeps every color. A value of 4.5 is the WCAG AA level for "
                                  "normal text.")),
@@ -477,24 +488,34 @@ PhosphorConfig::Schema buildSchema()
                 QStringLiteral("Bidirectional layout of the main screen. The off value keeps text in logical order. The auto value "
                                "finds the direction of each paragraph. The ltr and rtl values set it. The alternate screen "
                                "keeps logical order, and so does a screen while a program reads the mouse.")),
-        intKey(QStringLiteral("scrollback"), int(term.maxScrollback), 0, 1000000,
-               QStringLiteral("Lines of history that each pane keeps. A value of 0 keeps no history. A mux session keeps the value "
-                              "that it started with. Its window shows at most as many lines as this value had at the attach.")),
+        // The daemon's bound: a session takes every value (MuxCommandTest).
+        intKey(QStringLiteral("scrollback"), int(term.maxScrollback), 0, int(AfterglowMux::MaxScrollback),
+               QStringLiteral("Lines of history that each pane keeps. A value of 0 keeps no history.")),
         {QStringLiteral("shellIntegration"), d.shellIntegration, QMetaType::Bool,
-         QStringLiteral("Integrate Bash, Zsh and Fish prompts in new panes and new mux sessions automatically.")},
+         QStringLiteral("Integrate Bash, Zsh and Fish prompts in new panes and new mux sessions automatically. A session "
+                        "of another host does not use it.")},
         {QStringLiteral("sshIntegration"), d.sshIntegration, QMetaType::Bool,
          QStringLiteral("Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and afterglow ssh "
-                        "offers COLORTERM and TERM_PROGRAM to the server. New panes and new mux sessions use this value.")},
+                        "offers COLORTERM and TERM_PROGRAM to the server. New panes and new mux sessions use this value. A "
+                        "session of another host does not use it.")},
         enumKey(QStringLiteral("sshTerminfo"), d.sshTerminfo,
                 QStringLiteral("What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use "
-                               "xterm-256color there instead. New panes and new mux sessions use this value."),
+                               "xterm-256color there instead. New panes and new mux sessions use this value. A session of "
+                               "another host does not use it."),
                 {QStringLiteral("install"), QStringLiteral("fallback")}),
         {QStringLiteral("sshRemoteCommands"), d.sshRemoteCommands, QMetaType::Bool,
-         QStringLiteral("Allow the script commands that are marked remote to run from aglow run on the hosts that "
-                        "afterglow ssh connects to. Every process of the remote user, and the remote root user, can then run "
-                        "those commands. It needs Control.enabled and Scripts.enabled. A change to on applies to the ssh "
-                        "sessions that start after it. A change to off closes the sockets of the running ssh sessions. In a "
-                        "pane of a mux session, afterglow ssh connects without remote commands.")},
+         QStringLiteral("Allow the script commands that are marked remote to run from aglow run on another host. This "
+                        "applies to the hosts that afterglow ssh connects to, and to the panes of a mux session of another "
+                        "host. Every process of the remote user, and the remote root user, can then run those commands. "
+                        "It needs Control.enabled and Scripts.enabled. A change to on applies to the ssh sessions that "
+                        "start after it. A change to off closes the sockets of the running ssh sessions. A mux session "
+                        "follows this setting of the window that showed it last.")},
+        intKey(QStringLiteral("sshControlPersist"), d.sshControlPersist, 1, 3600,
+               QStringLiteral("Seconds that the ssh connection of Afterglow for the mux sessions of another host stays open "
+                              "with no command on it. The afterglow mux commands with --ssh and the windows of those sessions "
+                              "use this connection. A command in that time does not sign in again. afterglow ssh makes a "
+                              "connection of its own, which this setting does not change. A change applies to the "
+                              "connections that start after it.")),
         stringKey(QStringLiteral("pager"), d.pager,
                   QStringLiteral("Command for viewing the last command output. Afterglow splits it into words and runs it "
                                  "without a shell. An empty value turns the pager off.")),
@@ -503,15 +524,16 @@ PhosphorConfig::Schema buildSchema()
                               "start and a note.")),
         stringKey(QStringLiteral("shell"), {},
                   QStringLiteral("Program that new panes and new mux sessions run, as a name or a path. It gets no "
-                                 "arguments. An empty value starts your login shell.")),
+                                 "arguments. An empty value starts your login shell. A session of another host runs your "
+                                 "login shell there.")),
         stringKey(QStringLiteral("term"), d.term,
                   QStringLiteral("Value of TERM for the programs in the panes. An empty value uses the default. New panes "
-                                 "and new mux sessions use this value.")),
+                                 "and new mux sessions use this value. A session of another host keeps the value that "
+                                 "afterglow mux new --ssh gave it.")),
         enumKey(QStringLiteral("cursorShape"), CursorShapeChoices, term.cursorShape,
-                QStringLiteral("Shape of the cursor until a program sets another one with DECSCUSR. A mux session keeps the "
-                               "value that it started with.")),
+                QStringLiteral("Shape of the cursor until a program sets another one with DECSCUSR.")),
         {QStringLiteral("cursorBlink"), term.cursorBlink, QMetaType::Bool,
-         QStringLiteral("Make the cursor blink. A mux session keeps the value that it started with.")},
+         QStringLiteral("Make the cursor blink.")},
         enumKey(QStringLiteral("copyOnSelect"), CopyOnSelectChoices, d.copyOnSelect,
                 QStringLiteral("Where Afterglow copies a new selection. The primary value copies it to the primary selection. "
                                "The clipboard value copies it to the clipboard too. The off value does not copy it.")),
@@ -521,9 +543,11 @@ PhosphorConfig::Schema buildSchema()
                                "value but none also plays Terminal.bellSound.")),
         {QStringLiteral("confirmClose"), d.confirmClose, QMetaType::Bool,
          QStringLiteral("Ask before closing a pane, tab or window where a program is running. The command afterglow mux "
-                        "kill asks too, before it ends a session where a program is running. With Mux.onClose detach, "
-                        "closing the window of a mux session or its last tab or pane asks nothing about the programs "
-                        "of the session. They keep running.")},
+                        "kill asks too, before it ends a session where a program is running. Without a terminal on its "
+                        "input, it refuses until you give --force. With Mux.onClose detach, a window of a mux session keeps "
+                        "the session when it closes. The window of a project that opens into a session keeps it too. "
+                        "Closing such a window, or its last tab or pane, asks nothing about the programs of the session. "
+                        "They keep running.")},
         {QStringLiteral("hideMouseWhileTyping"), d.hideMouseWhileTyping, QMetaType::Bool,
          QStringLiteral("Hide the pointer while typing. Pointer movement shows it again.")},
         intKey(QStringLiteral("scrollLines"), d.scrollLines, 1, 50, QStringLiteral("Rows that each notch of the mouse wheel scrolls.")),
@@ -535,8 +559,7 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Scroll to the bottom when new output arrives.")},
         {QStringLiteral("scrollOnInput"), d.scrollOnInput, QMetaType::Bool, QStringLiteral("Scroll to the bottom on typing or paste.")},
         {QStringLiteral("ambiguousWide"), term.ambiguousWide, QMetaType::Bool,
-         QStringLiteral("Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols. A "
-                        "mux session keeps the value that it started with.")},
+         QStringLiteral("Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols.")},
         stringKey(QStringLiteral("bellSound"), {},
                   QStringLiteral("Bell sound. An empty value turns the bell sound off, and so does Terminal.bell none. "
                                  "The value \"default\" plays the bell of the desktop sound theme with canberra-gtk-play. "
@@ -552,9 +575,11 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Variables that Afterglow adds to the environment of the shell, such as { \"EDITOR\": \"nvim\" }. Each "
                         "value must be a string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow "
                         "ignores TERM, AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO here. Terminal.term, "
-                        "Terminal.sshIntegration and Terminal.sshTerminfo set them. Afterglow also ignores AFTERGLOW_PANE_ID, "
-                        "AFTERGLOW_SOCKET, AFTERGLOW_OVERLAY, AFTERGLOW_SESSION and AFTERGLOW_RESULT, which it sets or "
-                        "removes for each pane. New panes and new mux sessions use this value.")},
+                        "Terminal.sshIntegration and Terminal.sshTerminfo set them. Afterglow also ignores the other names that "
+                        "start with AFTERGLOW_, such as AFTERGLOW_PANE_ID and AFTERGLOW_SOCKET, which it sets or removes for "
+                        "each pane. AFTERGLOW_SHELL_INTEGRATION is not ignored: set it to 0 to turn off shell integration. "
+                        "New panes and new mux sessions use this value. A session of another host does "
+                        "not use it.")},
         {QStringLiteral("confirmUnsafePaste"), d.confirmUnsafePaste, QMetaType::Bool,
          QStringLiteral("Ask before pasting or dropping text that holds a line break, unless the program uses bracketed "
                         "paste. A line break could run a command.")},
@@ -581,17 +606,16 @@ PhosphorConfig::Schema buildSchema()
         enumKey(QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices,
                 term.graphicsFileTransfer ? Settings::Permission::Allow : Settings::Permission::Deny,
                 QStringLiteral("Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared "
-                               "memory. Images sent inline always work. A mux session keeps the value that it started with.")),
+                               "memory. Images sent inline always work.")),
         {QStringLiteral("allowScreenReadback"), term.allowScreenReadback, QMetaType::Bool,
-         QStringLiteral("Answer DECRQCRA checksum requests. These let any program in the pane read the screen back. A mux "
-                        "session keeps the value that it started with.")},
+         QStringLiteral("Answer DECRQCRA checksum requests. These let any program in the pane read the screen back.")},
     };
     schema.groups[Window] = {
         intKey(QStringLiteral("padding"), d.window.padding, 0, 200, QStringLiteral("Space around the grid in logical pixels.")),
         intKey(QStringLiteral("initialColumns"), d.window.initialColumns, 10, 1000,
-               QStringLiteral("Columns of a new window, and of a session that afterglow mux new starts.")),
+               QStringLiteral("Columns of a new window, and of a new session that afterglow mux new or a project starts.")),
         intKey(QStringLiteral("initialRows"), d.window.initialRows, 4, 500,
-               QStringLiteral("Rows of a new window, and of a session that afterglow mux new starts.")),
+               QStringLiteral("Rows of a new window, and of a new session that afterglow mux new or a project starts.")),
         doubleKey(QStringLiteral("backgroundOpacity"), d.window.backgroundOpacity, 0.05, 1.0,
                   QStringLiteral("Opacity of the default background. Text stays opaque.")),
         {QStringLiteral("blur"), d.window.blur, QMetaType::Bool,
@@ -607,7 +631,9 @@ PhosphorConfig::Schema buildSchema()
                                  "the launcher. When the pane's directory is not known, it uses the home directory. A path "
                                  "must be absolute, ~, or start with ~/. A path that is not a directory uses inherit. The "
                                  "afterglow -d option overrides this setting. A session of afterglow mux new starts in its "
-                                 "--cwd or in the current directory.")),
+                                 "--cwd or in the current directory. With --ssh, it starts in its --cwd or in the home "
+                                 "directory on that host. In a session of another host, a new tab or pane starts in the "
+                                 "directory of the pane that it opens from.")),
         enumKey(QStringLiteral("startMode"), StartModeChoices, d.window.startMode,
                 QStringLiteral("How new windows open. The normal value opens them at Window.initialColumns and "
                                "Window.initialRows. The maximized value fills the screen beside the panels. The fullscreen "
@@ -693,8 +719,9 @@ PhosphorConfig::Schema buildSchema()
                                "session and its programs end, as in a window outside a session. With detach, the session "
                                "keeps running with its tabs and splits, and afterglow mux attach shows it again. Closing "
                                "another tab or pane of the window ends only the programs of that tab or pane. With either "
-                               "value, the session keeps running after afterglow mux detach, a takeover by another window, "
-                               "a quit of Afterglow, a crash and a lost connection.")),
+                               "value, the session keeps running after afterglow mux detach or a takeover by another window. "
+                               "It also keeps running after a quit of Afterglow, a crash or a lost connection. The window of "
+                               "a project that opens into a session always keeps its session.")),
         intKey(QStringLiteral("eventQueue"), int(d.mux.eventQueue >> 20), int(AfterglowMux::MinEventQueue >> 20),
                int(AfterglowMux::MaxEventQueue >> 20),
                QStringLiteral("Most mebibytes of requests, such as bells, notifications and clipboard requests, that "
@@ -702,24 +729,56 @@ PhosphorConfig::Schema buildSchema()
                               "pane keeps another. A request that does not fit gets the answer of a session that no window "
                               "shows. A request that finds the queue of its pane empty always fits. A change applies when "
                               "Afterglow next attaches to a session.")),
+        {QStringLiteral("updateEnvironment"), stringList(d.mux.updateEnvironment), QMetaType::QVariantList,
+         QStringLiteral("Environment variables that a session of this computer takes from Afterglow when a window shows "
+                        "it. An example is a new SSH_AUTH_SOCK after you log in again. Afterglow's value replaces the session's. "
+                        "A variable that Afterglow does not have leaves the session. Only the panes that start after that "
+                        "get the new values. A change of the list applies at once to a session that a window shows. A name "
+                        "that leaves the list keeps its value in the session. A session of another host keeps its own. A "
+                        "name has ASCII letters, digits and underscores, and does not start with a digit. Afterglow "
+                        "ignores TERM, which Terminal.term sets, and the names that start with AFTERGLOW_, except "
+                        "AFTERGLOW_SHELL_INTEGRATION. Afterglow uses "
+                        "the first %1 names. An empty list takes no variables.")
+             .arg(AfterglowMux::MaxUpdatedVariables)},
+        stringKey(QStringLiteral("remoteCommand"), d.mux.remoteCommand,
+                  QStringLiteral("Command that ssh runs on another host for the mux sessions of that host, such as those of "
+                                 "afterglow mux new --ssh. Your login shell there reads it as a command line, with the "
+                                 "arguments of the proxy after it. Use a name that that shell finds, or a path there. An "
+                                 "empty value uses the default.")),
+        intKey(QStringLiteral("signInTimeout"), d.mux.signInTimeout, 5, 600,
+               QStringLiteral("Seconds that the afterglow mux commands wait for the first answer of the mux daemon of another "
+                              "host. In that time, ssh can ask for a password or a passphrase. The window of a session of "
+                              "another host waits %1 seconds, and ssh asks for nothing there.")
+                   .arg(AfterglowMux::CallTimeoutMs / 1000)),
+        intKey(QStringLiteral("keptNotifications"), d.mux.keptNotifications, 0, int(AfterglowMux::MaxKeptNotifications),
+               QStringLiteral("The largest number of notifications that each pane of a mux session keeps while no window "
+                              "shows the session. The next window that shows the session shows them, oldest first. "
+                              "Notifications.enabled and Notifications.rateLimit apply to them, so a value above the rate "
+                              "limit only drops the newest. When a pane has more, the oldest goes. The notifications of a pane "
+                              "take at most 256 KiB, and a larger one keeps no icon. A pane also keeps a bell and a flash, "
+                              "whatever this value. The session does not keep clipboard writes. The value 0 keeps no "
+                              "notifications. A change applies at once to a session that a window shows.")),
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
          QStringLiteral("Allow other programs, such as afterglow ctl and aglow run, to control Afterglow through its "
                         "socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the "
                         "socket also when this is off. A value other than true, false, yes, no, on, off, 1 or 0 turns it off. "
-                        "In a pane of a mux session, afterglow ctl and aglow run reach the mux daemon, which refuses them.")},
+                        "A mux session follows Control.enabled, Control.allowReadText and Control.eventInterval of the "
+                        "window that showed it last.")},
         {QStringLiteral("allowReadText"), d.control.allowReadText, QMetaType::Bool,
          QStringLiteral("Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands "
                         "that run and the values of user variables. It also allows screenshots of panes, tabs and windows. A "
                         "script command that runs for a client, such as aglow run or afterglow run, reads pane text only when "
                         "Scripts.allowReadText is on too.")},
         {QStringLiteral("allowRemoteReadText"), d.control.allowRemoteReadText, QMetaType::Bool,
-         QStringLiteral("Allow a script command that runs from a remote host, with aglow run in an afterglow ssh session, to "
-                        "read pane text. Any process of the remote user, and the remote root user, can run such a "
-                        "command and read its output. Scripts.allowReadText and Control.allowReadText must be on too. "
-                        "While this is off, only the handler of the run writes to its output.")},
-        intKey(QStringLiteral("eventInterval"), d.control.eventInterval, 0, 10000,
+         QStringLiteral("Allow a script command that runs from a remote host to read pane text. Such a command runs with "
+                        "aglow run in an afterglow ssh session, or in a pane of a mux session of another host. Any process "
+                        "of the remote user, and the remote root user, can run such a command and read its output. "
+                        "Scripts.allowReadText and Control.allowReadText must be on too. While this is off, only the "
+                        "handler of the run writes to its output.")},
+        // The daemon's bound: a session takes every value (MuxCommandTest).
+        intKey(QStringLiteral("eventInterval"), d.control.eventInterval, 0, int(AfterglowMux::MaxEventInterval),
                QStringLiteral("Shortest time in milliseconds between two events of one kind for one pane, for titles, status, "
                               "context, bells and each user variable. A newer event replaces one that waits, and the bells in "
                               "between become one. A value of 0 sends every event.")),
@@ -834,8 +893,7 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("quota"), int(term.graphicsQuota >> 20), 16, int(AfterglowVt::GraphicsStore::MaxQuota >> 20),
                QStringLiteral("Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 "
                               "bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images "
-                              "without a placement go first: those sent with the transient hint (N=1), then the oldest. A mux "
-                              "session keeps the value that it started with.")),
+                              "without a placement go first: those sent with the transient hint (N=1), then the oldest.")),
     };
     schema.groups[NotificationsGroup] = {
         {QStringLiteral("enabled"), d.notifications, QMetaType::Bool,
@@ -1743,6 +1801,7 @@ Settings SettingsStore::read()
     s.sshIntegration = st.read<bool>(Terminal, QStringLiteral("sshIntegration"));
     s.sshTerminfo = st.read<QString>(Terminal, QStringLiteral("sshTerminfo"));
     s.sshRemoteCommands = st.read<bool>(Terminal, QStringLiteral("sshRemoteCommands"));
+    s.sshControlPersist = st.read<int>(Terminal, QStringLiteral("sshControlPersist"));
     s.shell = st.read<QString>(Terminal, QStringLiteral("shell")).trimmed();
     // s still holds the default term.
     if (const QString term = st.read<QString>(Terminal, QStringLiteral("term")).trimmed(); !term.isEmpty()) s.term = term;
@@ -1766,10 +1825,10 @@ Settings SettingsStore::read()
         // name or the value short.
         if (it.key().isEmpty() || it.key().contains(QLatin1Char('=')) || it.key().contains(QChar(u'\0'))) {
             problem(QStringLiteral("Terminal.env: \"%1\" is not a variable name").arg(it.key()));
-        } else if (const QString setting = reservedVariables().value(it.key()); !setting.isEmpty()) {
+        } else if (const QString owned = ownedVariable(it.key()); !owned.isEmpty()) {
             // It would win over the setting without a word, or lose to the
             // value that Afterglow always sets.
-            problem(QStringLiteral("Terminal.env.%1 is not used. %2").arg(it.key(), setting));
+            problem(QStringLiteral("Terminal.env.%1 is not used. %2").arg(it.key(), owned));
         } else if (it.value().typeId() != QMetaType::QString) {
             // null, a number or a list would otherwise turn into text the user did not write.
             problem(QStringLiteral("Terminal.env.%1 must be a string").arg(it.key()));
@@ -1898,6 +1957,35 @@ Settings SettingsStore::read()
     // Mux
     s.mux.onClose = readEnum(st, MuxGroup, QStringLiteral("onClose"), MuxCloseChoices, s.mux.onClose);
     s.mux.eventQueue = std::size_t(st.read<int>(MuxGroup, QStringLiteral("eventQueue"))) << 20;
+    s.mux.updateEnvironment.clear();
+    for (const QString& name : strings(MuxGroup, QStringLiteral("updateEnvironment"))) {
+        static const QRegularExpression VariableName(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+        if (!VariableName.match(name).hasMatch()) {
+            problem(QStringLiteral("Mux.updateEnvironment has %1, which is not a variable name. Ignoring it").arg(name));
+            continue;
+        }
+        // Afterglow sets or removes its own variables for each pane, in the
+        // daemon and in the launch: an update would fight them.
+        if (const QString owned = ownedVariable(name); !owned.isEmpty()) {
+            problem(QStringLiteral("Mux.updateEnvironment has %1, which is not used. %2").arg(name, owned));
+            continue;
+        }
+        if (s.mux.updateEnvironment.contains(name)) continue;
+        // The daemon refuses the settings of a window with more, and then no
+        // session could show.
+        if (std::size_t(s.mux.updateEnvironment.size()) == AfterglowMux::MaxUpdatedVariables) {
+            problem(QStringLiteral("Mux.updateEnvironment names more than %1 variables. Afterglow uses the first %1")
+                        .arg(AfterglowMux::MaxUpdatedVariables));
+            break;
+        }
+        s.mux.updateEnvironment.append(name);
+    }
+    // s still holds the default.
+    if (const QString command = st.read<QString>(MuxGroup, QStringLiteral("remoteCommand")).trimmed(); !command.isEmpty()) {
+        s.mux.remoteCommand = command;
+    }
+    s.mux.signInTimeout = st.read<int>(MuxGroup, QStringLiteral("signInTimeout"));
+    s.mux.keptNotifications = st.read<int>(MuxGroup, QStringLiteral("keptNotifications"));
 
     // Control
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));

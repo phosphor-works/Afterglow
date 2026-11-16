@@ -18,7 +18,7 @@
 
 namespace AfterglowMux {
 
-/// The argument that makes afterglow-mux the server of ImageDecoder, with
+/// The argument that makes aglow-mux the server of ImageDecoder, with
 /// the daemon's process id after it.
 inline constexpr std::string_view DecodeServerArgument = "--decode-images";
 
@@ -35,12 +35,13 @@ enum class ImageFormats : std::uint8_t {
 ///
 /// Each image decodes in a process of its own, so that a corrupt file ends
 /// that process, not the daemon and its sessions. Those processes fork from
-/// a server that the daemon starts once, with its own executable: a fork
-/// costs less than an exec, and the server's code and libraries are those
-/// of the daemon's start, also after an upgrade replaced them on disk. The
-/// daemon has threads, and a process with threads cannot fork without an
-/// exec safely: the server has none. A decoding process ends with the
-/// server, the server with the daemon.
+/// a server that the daemon starts with its own executable: a fork costs
+/// less than an exec. The first server's code and libraries are those of the
+/// daemon's start, also after an upgrade replaced them on disk. A server that
+/// starts again after one ended runs the daemon's executable with the
+/// libraries on disk then. The daemon has threads, and a process with
+/// threads cannot fork without an exec safely: the server has none. A
+/// decoding process ends with the server, the server with the daemon.
 ///
 /// The limits of a decoding process are the safety bounds of untrusted
 /// input, as those of aglow's decoder, not settings: its CPU time and its
@@ -83,17 +84,24 @@ private:
     void stopLocked();
     /// Asks the server for a process that decodes @p input into @p output,
     /// and returns a pidfd of that process. None, with the server running,
-    /// when it could not fork, when @p deadline passed before the request,
-    /// and when @p cancel is readable (@p cancelled). A server that does not
-    /// take the request or answer it by @p deadline ends: m_socket is then
+    /// when it could not fork, when @p deadline passed before the answer
+    /// (the answer is owed then), and when @p cancel is readable
+    /// (@p cancelled). A server that does not take the request, or that
+    /// does not answer m_waitMs after a request, ends: m_socket is then
     /// closed. m_mutex held.
     AfterglowProto::UniqueFd requestLocked(ImageFormats formats, int input, int output,
                                            std::chrono::steady_clock::time_point deadline, int cancel, bool& cancelled);
     /// The server's answer to a request: the pidfd of its process, or none.
     /// m_socket closes when the server ended. m_mutex held.
     AfterglowProto::UniqueFd answerLocked();
-    /// Closes the socket of a server that ended. m_mutex held.
+    /// Closes the socket of a server that ended, and reaps it. m_mutex held.
     void serverEndedLocked();
+    /// Ends a server that did not answer in time, with the back-off of one
+    /// that ended before it answered. m_mutex held.
+    void stuckLocked();
+    /// A request's answer comes to the next request: by @p due, or the
+    /// server is stuck. m_mutex held.
+    void oweLocked(std::chrono::steady_clock::time_point due);
 
     const std::string m_executable;
     const int m_waitMs;
@@ -106,8 +114,11 @@ private:
     /// When a server last failed to start, or when two in a row ended before
     /// they answered: none starts for a minute.
     std::optional<std::chrono::steady_clock::time_point> m_failedStart;
-    /// Answers that the requests of panes that closed left on the socket.
+    /// Answers that the requests of panes that closed, and of callers whose
+    /// deadline came first, left on the socket.
     int m_owedAnswers = 0;
+    /// When the oldest owed answer must have come.
+    std::chrono::steady_clock::time_point m_answerDue;
     /// A line on standard error, at most once a minute for each @p last. Its
     /// own lock: a pane whose decode is late does not wait for another
     /// pane's.

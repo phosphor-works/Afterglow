@@ -222,8 +222,8 @@ It uses `Terminal.pager`, which defaults to `less -R`.
 `Terminal.lastOutputLimit` sets the output limit in KiB, from 1 to 65536. The default is 1024 (1 MiB).
 A notice identifies truncation.
 The pager reads a temporary file. Afterglow removes the file when the pane closes.
-In the window of a mux session, Afterglow removes the file when the pane or the window closes. A move to a new session also removes it.
-The pager runs in the session, and can keep running after the window closes. A pager that has the file open still shows it.
+In the window of a mux session, the pager runs in the session, and can keep running after the window closes.
+There, the pager gets the file already open, as `/dev/fd/4`, and the file is removed before the pager starts.
 The pager command uses arguments without shell expansion.
 Missing shell markers cause a notification.
 If the pager is not installed, or the output cannot be shown, a notification gives the reason.
@@ -259,6 +259,9 @@ Commands accept `{match}`, `{path}`, `{line}` and `{column}` placeholders.
 `{line}` and `{column}` come from a trailing `:LINE` or `:LINE:COLUMN` in the match.
 A missing line or column is 1. A leading `~/` is the home directory.
 Relative paths use the pane working directory.
+When that directory is not known, an action on a relative path does not run, and a notice says why.
+In a pane of a mux session of another host, `open` and `command` do not run. The paths of the pane are on that host.
+A command does not run when a placeholder makes an argument start with a dash.
 
 | Limit | Value | At the limit |
 | --- | --- | --- |

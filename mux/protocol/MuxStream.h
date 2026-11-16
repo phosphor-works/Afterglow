@@ -13,16 +13,18 @@
 #include <string_view>
 
 // The stream of an attached session: a phosphor-channel Stream over the
-// socket that the attach call names. The daemon writes the session's events
-// on channel 0 and the state of each pane on a channel of its own
-// (AfterglowVt::StateCodec), which PaneOpened names. Its first event is the
-// session's Layout, before any PaneOpened. An attachment that finished
-// before the window connected sends only its last event (TakenOver,
-// Detached or SessionEnded). The window writes its input and its layout on
-// channel 0, and on ActionChannel what is not for a program: its Kill,
-// ClosePane, Visible and Refresh. The ids of each direction are apart, so a
-// pane's state channel and the action channel can both be 1. Integers are
-// LEB128 varints in their shortest form.
+// connection of the attach call, after its answer (Fn::Attach). The daemon
+// writes the session's events on channel 0 and the state of each pane on a
+// channel of its own (AfterglowVt::StateCodec), which PaneOpened names. Its
+// first event is the session's Layout, before any PaneOpened. An attachment
+// that finished before the window started its stream sends only its last
+// event (TakenOver, Detached or SessionEnded). The window writes on channel
+// 0 its input, its layout, its settings and its answers to Control events
+// (ControlReply and ControlReplyPart); on ActionChannel what is not for a
+// program (its Kill, ClosePane, Visible and Refresh); and on CommandsChannel
+// the bytes of the command clients that the daemon passes it. The ids of
+// each direction are apart, so a pane's state channel and the action
+// channel can both be 1. Integers are LEB128 varints in their shortest form.
 //
 // A pane's channel closes after its last frame, and then PaneClosed follows
 // on channel 0. The window learns that a pane's program exited once it has
@@ -38,6 +40,11 @@ inline constexpr std::uint32_t ControlChannel = 0;
 /// gets no credit.
 inline constexpr std::uint32_t ActionChannel = 1;
 inline constexpr const char* ActionCodec = "afterglow.mux.actions.v1";
+/// The window's channel for the bytes of its command connections
+/// (RelayFrame). Not the input channel: input waits while a PTY is full,
+/// and the client of a run can be what keeps that PTY full.
+inline constexpr std::uint32_t CommandsChannel = 2;
+inline constexpr const char* CommandsCodec = "afterglow.mux.commands.v1";
 /// The ids of the state channels, which the window reads, are below this:
 /// the daemon gives a pane the lowest channel id that is free. The window
 /// takes MaxSessionPanes channels and the events at once, closing ones
@@ -46,15 +53,18 @@ inline constexpr std::uint32_t MaxChannelId = std::uint32_t(MaxSessionPanes) + 1
 inline constexpr const char* EventCodec = "afterglow.mux.events.v1";
 inline constexpr const char* InputCodec = "afterglow.mux.input.v1";
 
-/// How long the daemon waits for the window to connect to the socket of an
-/// attach, in milliseconds. The window connects right after the call.
-inline constexpr int ConnectWaitMs = 5000;
+/// How long the daemon waits for the window to start its stream after the
+/// answer to its attach call, in milliseconds. It starts right after it.
+/// The window is connected already: the stream goes over the connection of
+/// the call.
+inline constexpr int StreamStartWaitMs = 5000;
 
 enum class EventType : std::uint8_t {
     PaneOpened = 1, ///< a pane exists, and its state comes on `channel`
     /// the program of a pane exited, with its status; or the pane left the
     /// window, with -1: the window closed it (ClosePane), or it went to
-    /// another session (Fn::BreakOut)
+    /// another session (Fn::BreakOut, Fn::JoinPane, or the movePane of the
+    /// control target, after a paneLeft call)
     PaneClosed = 2,
     SessionEnded = 3, ///< the last program ended, or `afterglow mux kill` ended it
     TakenOver = 4, ///< another window attached: this one detaches
@@ -64,6 +74,19 @@ enum class EventType : std::uint8_t {
     /// the answer to a Refresh of the pane, one for each: its screens and
     /// history are whole in its first `frames` frames
     Refreshed = 8,
+    /// A call of the control target that the window answers (`afterglow ctl`
+    /// for the session): {"id", "fn", "args", "client"} as JSON in
+    /// `payload`, with the daemon's pane IDs. "client" numbers the
+    /// connection of the call, the same for its calls. The window answers
+    /// with ControlReply. Calls with the ID 0 are the daemon's own, and get
+    /// no answer: focus (pane), placePane (pane, beside pane, right, down,
+    /// left, up or tab, command, title) for a pane that the daemon started or
+    /// moved into the session, and paneLeft (pane, session) before the
+    /// PaneClosed of a pane that `afterglow ctl` moved to another session.
+    Control = 9,
+    /// A part of a command connection that the window serves: an encoded
+    /// RelayFrame in `payload`.
+    Commands = 10,
 };
 
 /// The status of a Host event that holds a part of a call, not its end.
@@ -90,7 +113,8 @@ struct Event
     /// frames that hold the screens that the Refresh asked for.
     std::uint64_t frames = 0;
     /// Host: the call, encoded, or its next part. A call larger than one
-    /// frame comes in parts of at most HostPartBytes. Layout: its JSON.
+    /// frame comes in parts of at most HostPartBytes. Layout and Control:
+    /// their JSON. Commands: an encoded RelayFrame.
     std::string payload;
 };
 
@@ -112,13 +136,37 @@ enum class InputType : std::uint8_t {
     /// daemon sends its screens and history as they are now, also while the
     /// pane does not show, and then a Refreshed event (ActionChannel only)
     Refresh = 9,
+    /// The answer to a Control event: {"id", "result"} or {"id", "error"} as
+    /// JSON in `bytes`, with the daemon's pane IDs.
+    ControlReply = 10,
+    /// The window's settings (SessionSettings), as JSON in `bytes`, after
+    /// the attach and after each change of them.
+    Settings = 11,
+    /// A part of a ControlReply larger than one frame, such as a screenshot:
+    /// the parts, then the ControlReply with the rest, make its JSON.
+    ControlReplyPart = 12,
+    /// The window let go of a pane that left the session (PaneClosed after
+    /// a move to another session): its ID may come into the stream again.
+    /// Until then the daemon moves that pane back into this session for no
+    /// one (ActionChannel only).
+    PaneForgotten = 13,
 };
+
+/// The bytes of a ControlReply in each ControlReplyPart, when the reply does
+/// not fit one frame.
+inline constexpr std::size_t ControlReplyPartBytes = std::size_t(1) << 20;
+/// The most bytes of one ControlReply with its parts: the daemon ends the
+/// link of a window that sends more. Under the output that waits for one
+/// client of the daemon.
+inline constexpr std::size_t MaxControlReply = std::size_t(24) << 20;
 
 struct Input
 {
     InputType type = InputType::Bytes;
     std::uint32_t pane = 0;
-    std::string bytes; ///< Bytes: for the program. Layout: its JSON.
+    /// Bytes: for the program. Layout, Settings and ControlReply: their
+    /// JSON. ControlReplyPart: a part of the JSON of a ControlReply.
+    std::string bytes;
     PaneSize size;
     bool visible = false;
 };
@@ -126,10 +174,52 @@ struct Input
 /// The inputs that come on ActionChannel, and never on the control channel.
 constexpr bool isAction(InputType type)
 {
-    return type == InputType::Kill || type == InputType::ClosePane || type == InputType::Visible || type == InputType::Refresh;
+    return type == InputType::Kill || type == InputType::ClosePane || type == InputType::Visible || type == InputType::Refresh
+        || type == InputType::PaneForgotten;
 }
 
 std::string encode(const Input& input);
 std::optional<Input> decodeInput(std::string_view frame);
+
+/// A client that calls the commands of scripts reaches the daemon, which
+/// runs no scripts: a client in a session pane (`aglow run`, target
+/// AfterglowProto::Run::Target), or a client on the remote host of an
+/// `afterglow ssh` in a session pane, through the socket that the daemon
+/// keeps for that ssh session. The daemon passes the connection to the
+/// window that shows the session: its request lines go to the window in
+/// Commands events, and the window serves them on a connection to its own
+/// Afterglow, whose bytes come back on CommandsChannel. Each connection is a
+/// relay, by a number that the daemon gives it.
+enum class RelayPart : std::uint8_t {
+    Open = 1, ///< the daemon: a new relay
+    Bytes = 2, ///< bytes of the connection: whole request lines from the daemon, any bytes from the window
+    End = 3, ///< the connection ended on the side that sends this
+};
+
+/// Who the client of a relay is, which decides the commands that it gets.
+enum class RelayKind : std::uint8_t {
+    /// A client in a session pane, of the commands target: the commands of
+    /// the window's scripts. For a session of another host, only those that
+    /// a script marks remote, as for an ssh session of that host.
+    Commands = 0,
+    /// A client on the remote host of an ssh session, of the target
+    /// AfterglowProto::Remote::Target: only the commands marked remote.
+    Remote = 1,
+};
+
+struct RelayFrame
+{
+    std::uint64_t relay = 0; ///< from 1
+    RelayPart part = RelayPart::Bytes;
+    std::string bytes{}; ///< Bytes: never empty
+    /// Open: the daemon's ID of the pane of the client, or of the ssh
+    /// session that the client's socket belongs to. Never 0.
+    std::uint32_t pane = 0;
+    RelayKind kind = RelayKind::Commands; ///< Open
+    std::string host{}; ///< Open of RelayKind::Remote: the host of the ssh session (ev.remote.host), never empty
+};
+
+std::string encode(const RelayFrame& frame);
+std::optional<RelayFrame> decodeRelay(std::string_view frame);
 
 } // namespace AfterglowMux::Attach

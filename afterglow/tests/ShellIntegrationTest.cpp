@@ -3,6 +3,7 @@
 #include "shell/ShellIntegration.h"
 #include "SavedEnvironment.h"
 #include "shell/Ssh.h"
+#include "MuxConnect.h"
 #include <gtest/gtest.h>
 #include <AfterglowVt/Terminal.h>
 #include <QFile>
@@ -16,10 +17,12 @@
 #include <mutex>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <optional>
 #include <pwd.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 using namespace AfterglowPty;
 using Afterglow::ShellIntegration::prepare;
@@ -281,7 +284,11 @@ TEST(Pty, ClosesWhenTheShellExitsWhileABackgroundJobHoldsTheTerminal)
     EXPECT_TRUE(WIFEXITED(*status) && WEXITSTATUS(*status) == 3) << *status;
     const std::string text = output.take();
     EXPECT_NE(text.find("LAST_OUTPUT"), std::string::npos) << text;
-    if (const auto job = text.find("JOB="); job != std::string::npos) kill(std::stoi(text.substr(job + 4)), SIGKILL);
+    if (const auto job = text.find("JOB="); job != std::string::npos) {
+        // Only a process ID: kill() takes 0 and -1 for groups of processes.
+        const long pid = std::strtol(text.c_str() + job + 4, nullptr, 10);
+        if (pid > 0) kill(pid_t(pid), SIGKILL);
+    }
 }
 
 TEST(Pty, KeepsTheLastValueOfARepeatedVariable)
@@ -568,6 +575,36 @@ TEST(Ssh, TheProbeRunsInAnyShellAndMakesAPrivateDirectoryForEachHost)
     EXPECT_FALSE(parseProbe("dir=/a\n").ran);
 }
 
+// The answer to openRemoteSocket: the socket of a window, or the one that
+// the mux daemon makes for a session pane, named with the ID of its host.
+TEST(Ssh, ForwardsOnlyThePairOfItsToken)
+{
+    using Afterglow::Ssh::forwardPair;
+    const std::string token = "0123456789abcdef";
+    const std::string directory = "/run/user/1000/afterglow";
+    const std::string remote = directory + "/" + token + ".sock";
+    EXPECT_TRUE(forwardPair("/run/user/1000/afterglow-remote-" + token + ".sock", remote, token, directory));
+    EXPECT_TRUE(forwardPair("/run/user/1000/aglow-mux/remote-00112233445566778899aabbccddeeff-" + token + ".sock", remote,
+                            token, directory));
+    EXPECT_TRUE(forwardPair("/home/u/.local/state/aglow-mux/remote-myhost-" + token + ".sock", remote, token, directory));
+
+    // Another token, a daemon's name outside its directory or without an ID.
+    EXPECT_FALSE(forwardPair("/run/user/1000/afterglow-remote-fedcba9876543210.sock", remote, token, directory));
+    EXPECT_FALSE(forwardPair("/run/user/1000/aglow-mux/remote-id-fedcba9876543210.sock", remote, token, directory));
+    EXPECT_FALSE(forwardPair("/run/user/1000/remote-id-" + token + ".sock", remote, token, directory));
+    EXPECT_FALSE(forwardPair("/run/user/1000/aglow-mux/remote-" + token + ".sock", remote, token, directory));
+    EXPECT_FALSE(forwardPair("/run/user/1000/aglow-mux/socket", remote, token, directory));
+    // ssh splits -R at ':' and reads '\' as an escape.
+    EXPECT_FALSE(forwardPair("/run/user/1000/aglow-mux/remote-a:b-" + token + ".sock", remote, token, directory));
+    EXPECT_FALSE(forwardPair("/run/user/1000/aglow-mux/remote-a\\b-" + token + ".sock", remote, token, directory));
+    EXPECT_FALSE(forwardPair("afterglow-remote-" + token + ".sock", remote, token, directory));
+    // The remote path is the one in the probe's directory.
+    const std::string window = "/run/user/1000/afterglow-remote-" + token + ".sock";
+    EXPECT_FALSE(forwardPair(window, directory + "/fedcba9876543210.sock", token, directory));
+    EXPECT_FALSE(forwardPair(window, "/tmp/" + token + ".sock", token, directory));
+    EXPECT_FALSE(forwardPair("/run/user/1000/afterglow-remote-.sock", directory + "/.sock", {}, directory));
+}
+
 TEST(Ssh, ReadsOptionsAfterTheDestinationUpToTheCommand)
 {
     using Afterglow::Ssh::parseArguments;
@@ -650,7 +687,7 @@ TEST(Ssh, InstallsTheTerminfoEntryOnceOrFallsBack)
     ssh.environment.set("TERM", "afterglow");
     ssh.environment.set("FAKE_SETENV", "1");
     EXPECT_EQ(Afterglow::Ssh::run({"-p", "2222", "prod"}), 7);
-    const QString shared = "[-o] [ControlMaster=auto] [-o] [ControlPath=" + ssh.dir.path() + "/afterglow-ssh-%C] [-o] [ControlPersist=10]";
+    const QString shared = "[-o] [ControlMaster=auto] [-o] [ControlPath=" + ssh.dir.path() + "/afterglow-ssh-helper-%C] [-o] [ControlPersist=10]";
     auto runs = ssh.take();
     ASSERT_EQ(runs.size(), 4) << runs.join('\n').toStdString();
     EXPECT_TRUE(runs[0].startsWith("ARGS " + shared + " [-p] [2222] [-T] [--] [prod] [sh -c ")) << runs[0].toStdString();
@@ -763,3 +800,78 @@ TEST(Ssh, DiesFromCtrlCAtTheInstallPrompt)
     // No session starts after the interrupted install.
     EXPECT_EQ(ssh.take().size(), 2);
 }
+
+// The ssh command of `afterglow mux --ssh` and of a window of a session of
+// another host: Afterglow's own connection in the private XDG_RUNTIME_DIR,
+// never the user's, forwarding nothing, and the options that let its command
+// run where the user's config runs none.
+TEST(Ssh, SharedCommandOwnsItsConnectionAndRunsPastTheConfig)
+{
+    FakeSsh ssh;
+    ssh.environment.set("FAKE_REMOTECOMMAND", "1");
+    // The user's own master too, which the command never joins.
+    ssh.environment.set("FAKE_CONFIG", "stdinnull yes\nsessiontype none\ncontrolpath /tmp/user-master\ncontrolmaster auto");
+    QString error;
+    const QByteArrayList words = Afterglow::Ssh::sharedCommand(QStringLiteral("prod"), 15, AfterglowMux::currentEnvironment(), &error);
+    const QByteArray path = "ControlPath=" + QFile::encodeName(ssh.dir.path()) + "/afterglow-ssh-%C";
+    EXPECT_EQ(words, (QByteArrayList{"ssh", "-T", "-o", "ControlMaster=auto", "-o", path, "-o", "ControlPersist=15", "-o",
+                                     "ClearAllForwardings=yes", "-o", "PermitLocalCommand=no", "-o", "RemoteCommand=none", "-o",
+                                     "StdinNull=no", "-o", "SessionType=default", "-o", "ForkAfterAuthentication=no", "--", "prod"}))
+        << error.toStdString();
+    // No private runtime directory: no connection of Afterglow's own.
+    ssh.environment.set("XDG_RUNTIME_DIR", "");
+    error.clear();
+    EXPECT_TRUE(Afterglow::Ssh::sharedCommand(QStringLiteral("prod"), 15, AfterglowMux::currentEnvironment(), &error).isEmpty());
+    EXPECT_TRUE(error.startsWith(QLatin1String("no private XDG_RUNTIME_DIR"))) << error.toStdString();
+    // ssh -G comes from the PATH of the environment given, which the window
+    // takes on its GUI thread, not from this process's.
+    error.clear();
+    EXPECT_TRUE(Afterglow::Ssh::sharedCommand(QStringLiteral("prod"), 15, {"PATH=" + ssh.dir.filePath("none").toStdString()}, &error)
+                    .isEmpty());
+    EXPECT_TRUE(error.startsWith(QLatin1String("cannot run ssh"))) << error.toStdString();
+    // A destination that ssh would read as an option, with its control
+    // characters shown as text.
+    error.clear();
+    EXPECT_TRUE(Afterglow::Ssh::sharedCommand(QStringLiteral("-x"), 15, AfterglowMux::currentEnvironment(), &error).isEmpty());
+    EXPECT_EQ(error, QStringLiteral("'-x' is no ssh destination"));
+    error.clear();
+    EXPECT_TRUE(Afterglow::Ssh::sharedCommand(QString::fromUtf8("-a\x1b[31m"), 15, AfterglowMux::currentEnvironment(), &error).isEmpty());
+    EXPECT_FALSE(error.contains(QChar(0x1b))) << error.toStdString();
+    EXPECT_TRUE(error.endsWith(QLatin1String("is no ssh destination"))) << error.toStdString();
+}
+
+// A session of another host gets the terminal's variables, in their order,
+// but not TERMINFO_DIRS: its directories are this computer's.
+TEST(Ssh, RemoteVariablesLeaveOutTheTerminfoDirectoriesOfThisComputer)
+{
+    const std::vector<std::pair<std::string, std::string>> terminal{{"TERM", "afterglow"},
+                                                                    {"TERMINFO_DIRS", "/build/terminfo:"},
+                                                                    {"COLORTERM", "truecolor"},
+                                                                    {"TERMINFO_DIRS", "/again"}};
+    const std::vector<std::pair<std::string, std::string>> remote{{"TERM", "afterglow"}, {"COLORTERM", "truecolor"}};
+    EXPECT_TRUE(Afterglow::Ssh::remoteVariables(terminal) == remote);
+    EXPECT_TRUE(Afterglow::Ssh::remoteVariables({}).empty());
+}
+
+#ifdef AFTERGLOW_BINARY
+// `afterglow ssh` from a launcher that left SIGCHLD ignored: the exit
+// status of ssh still comes through, not the 127 of a lost child.
+TEST(Ssh, AnIgnoredSigchldKeepsTheExitStatusOfSsh)
+{
+    FakeSsh ssh;
+    // Nothing of the user's terminal: no pane, session or display.
+    ssh.environment.unset("AFTERGLOW_SESSION");
+    ssh.environment.unset("WAYLAND_DISPLAY");
+    QProcess process;
+    process.setProcessEnvironment(QProcessEnvironment::systemEnvironment());
+    process.setChildProcessModifier([] { ::signal(SIGCHLD, SIG_IGN); });
+    process.start(QStringLiteral(AFTERGLOW_BINARY), {QStringLiteral("ssh"), QStringLiteral("prod")});
+    ASSERT_TRUE(process.waitForStarted());
+    process.closeWriteChannel();
+    const bool ended = process.waitForFinished(15000);
+    if (!ended) process.kill();
+    ASSERT_TRUE(ended);
+    EXPECT_EQ(process.exitStatus(), QProcess::NormalExit);
+    EXPECT_EQ(process.exitCode(), 7) << process.readAllStandardError().toStdString();
+}
+#endif

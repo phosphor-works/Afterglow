@@ -122,9 +122,10 @@ struct Modes
 
 /// Callbacks out of the terminal. Invoked synchronously, while the caller
 /// holds its terminal lock, from Terminal::feed() and also from reset(),
-/// programExited(), resize(), setOptions() and setVisible(): on whatever
-/// thread calls those. A host whose callbacks emit
-/// signals must not let a receiver on the calling thread take that lock again.
+/// programExited(), resize(), setOptions() and setVisible(), and from
+/// StateReader::apply() on a replica: on whatever thread calls those. A
+/// host whose callbacks emit signals must not let a receiver on the calling
+/// thread take that lock again.
 class ITerminalHost
 {
 public:
@@ -282,18 +283,27 @@ public:
 
     void feed(std::string_view bytes);
 
-    /// Applies new defaults to a running terminal (live config reload).
-    /// Colours set by the application (OSC 4/10/11/12/17/19 and OSC 21) are
-    /// replaced and the XTPUSHCOLORS stack is emptied. The cursor shape and
-    /// blink a program chose stay unless the configured ones changed.
+    /// Applies new defaults to a running terminal (live config reload, or
+    /// the settings of a window that shows a session). The colours change
+    /// under what programs set: a palette entry, the default foreground or
+    /// the default background that still has its configured value takes the
+    /// new one, also in the XTPUSHCOLORS stack, and one that a program set
+    /// (OSC 4/10/11/12/17/19, OSC 21) stays. A program's colour that equals
+    /// the configured one counts as configured. The cursor shape and blink a
+    /// program chose stay unless the configured ones changed.
     void setOptions(const TerminalOptions& options);
-    /// Applies only the options of @p options that change how the screen
-    /// draws and selects: boldIsBright, minimumContrast, wordBoundaries and
-    /// bidi. For a replica (StateSync), whose colours, cursor and history are
-    /// its writer's: setOptions would replace them with the configured ones.
-    /// A replica parses nothing, so these change only how it draws and
-    /// selects what it holds. On a terminal that parses, bidi also decides
-    /// whether the directional controls that come next stay as cells.
+    /// Applies only the options of @p options that a replica (StateSync)
+    /// takes from its window: how the screen draws and selects
+    /// (boldIsBright, minimumContrast, wordBoundaries and bidi), the width
+    /// that clusterWidth() gives an East Asian Ambiguous character
+    /// (ambiguousWide), and the scrollback, which drops the oldest history
+    /// rows. A replica's colours, cursor, modes, cell widths and images are
+    /// its writer's: setOptions would replace them with the configured ones,
+    /// reset colours and report to the program. graphicsQuota is only kept
+    /// in options(): the writer's quota decides which images a replica
+    /// holds. On a terminal that parses, bidi also decides whether the
+    /// directional controls that come next stay as cells. Nothing when none
+    /// of them changed.
     void setViewOptions(const TerminalOptions& options);
 
     /// @param cellWidth, cellHeight cell size in pixels, reported by CSI 14/16 t.
@@ -325,6 +335,9 @@ public:
 
     const std::string& title() const noexcept { return m_title; }
     const std::string& workingDirectory() const noexcept { return m_cwd; }
+    /// Longest working directory a program can report, in bytes (a
+    /// percent-encoded OSC 7 URI of a path up to PATH_MAX fits).
+    static constexpr std::size_t MaxWorkingDirectory = 8192;
     /// OSC 133 regions kept; the oldest goes when a new one begins.
     static constexpr std::size_t MaxSemanticRegions = 1024;
     /// The newest MaxSemanticRegions retained OSC 133 regions, including
@@ -360,6 +373,8 @@ public:
         if (m_protocolColors.cursorDynamic) return nullptr;
         return m_hasCursorColor ? &m_cursorColor : (m_options.cursorColor ? &*m_options.cursorColor : nullptr);
     }
+    /// An OSC 21 transparent background colour. @c opacity is 0 to 1, or
+    /// negative (-1) for the window's opacity ('@' with a value below 0).
     struct TransparentColor { Rgb color; double opacity = 1.0; };
     const auto& transparentColors() const noexcept { return m_protocolColors.transparent; }
     const Rgb* visualBellColor() const noexcept { return m_protocolColors.bell ? &*m_protocolColors.bell : nullptr; }
@@ -389,8 +404,10 @@ public:
     /// What programs report doing (OSC 7501). Records belong to the terminal,
     /// not a screen.
     const ProgramStatus& programStatus() const noexcept { return m_programStatus; }
-    /// The program attached to the terminal exited: in-flight status ends,
-    /// and so does an iTerm2 file sent in parts.
+    /// The program attached to the terminal exited: every OSC 5113 and
+    /// OSC 72 session resets (terminalProtocol(0, {}) to the host), in-flight
+    /// status ends, an iTerm2 file sent in parts ends, and the shell
+    /// integration state leaves the prompt (no redraw pending, no clicks).
     void programExited();
     /// Whether the user can see the terminal (mode 2033 reports changes).
     void setVisible(bool visible);

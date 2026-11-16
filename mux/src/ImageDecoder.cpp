@@ -34,6 +34,20 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+// A sanitizer build: what a sanitizer reports in a decoding process goes to
+// the daemon's standard error. Otherwise nothing of a decoding process does.
+// GCC has no macro for UBSan alone: mux/CMakeLists.txt defines this from the
+// flags.
+#if defined(AFTERGLOW_MUX_SANITIZED)
+#elif defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define AFTERGLOW_MUX_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(memory_sanitizer) \
+    || __has_feature(undefined_behavior_sanitizer)
+#define AFTERGLOW_MUX_SANITIZED 1
+#endif
+#endif
+
 namespace AfterglowMux {
 
 namespace {
@@ -134,7 +148,7 @@ void report(std::chrono::steady_clock::time_point& last, const std::string& text
     const auto now = std::chrono::steady_clock::now();
     if (last != std::chrono::steady_clock::time_point{} && now - last < std::chrono::minutes(1)) return;
     last = now;
-    std::fprintf(stderr, "afterglow-mux: %s\n", text.c_str());
+    std::fprintf(stderr, "aglow-mux: %s\n", text.c_str());
 }
 
 // ---------------------------------------------------------- the process ---
@@ -164,15 +178,17 @@ constexpr int NoFilterStatus = 3;
 constexpr int RefusedStatus = 4;
 
 /// Past this, the decoding process makes only the system calls that
-/// decoding needs: memory, a read of its file, a write of its pixels or of
-/// a sanitizer's report, the lowering of its own limits, its end, and
-/// sigaltstack(), which AddressSanitizer calls before each noreturn call
-/// (_exit, longjmp, throw) and which changes only the caller's own signal
-/// stack. Any other
-/// fails with ENOSYS, so that code that a corrupt file took over can open,
-/// run or connect to nothing, and read no terminal that standard error may
-/// be. A system call of another architecture kills it. False when the
-/// filter cannot be set, and on an architecture that it does not know.
+/// decoding needs: memory (mmap, munmap, mremap, mprotect, madvise, brk), a
+/// read of its file, a write of its pixels or of a sanitizer's report (to
+/// /dev/null but in a sanitizer build), the lowering of its own limits
+/// (prlimit64, getrlimit, setrlimit), close, futex, getrandom, clock_gettime,
+/// rt_sigreturn, its end, and sigaltstack(), which AddressSanitizer calls
+/// before each noreturn call (_exit, longjmp, throw) and which changes only
+/// the caller's own signal stack. Any other fails with ENOSYS, so that code
+/// that a corrupt file took over can open, run or connect to nothing, and
+/// read no terminal that standard error may be. A system call of another
+/// architecture kills it. False when the filter cannot be set, and on an
+/// architecture that it does not know.
 bool allowOnlyDecoding()
 {
     if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return false;
@@ -241,8 +257,15 @@ bool allowOnlyDecoding()
     ::sigemptyset(&none);
     ::sigprocmask(SIG_SETMASK, &none, nullptr);
     if (::dup2(input, STDIN_FILENO) < 0 || ::dup2(output, STDOUT_FILENO) < 0) ::_exit(RefusedStatus);
-    // Standard error stays the daemon's: what a sanitizer reports goes there.
     AfterglowPty::closeFrom(STDERR_FILENO + 1);
+#ifndef AFTERGLOW_MUX_SANITIZED
+    // Standard error is the daemon's journal, or a terminal: code that a
+    // corrupt file took over writes neither. A sanitizer build keeps it, for
+    // the reports.
+    const int null = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+    if (null < 0 || ::dup2(null, STDERR_FILENO) < 0) ::_exit(RefusedStatus);
+    ::close(null);
+#endif
     // The kernel's OOM killer takes this process before the daemon. Before
     // PR_SET_DUMPABLE, which gives /proc/self to root.
     if (const int adjust = ::open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC); adjust >= 0) {
@@ -482,16 +505,16 @@ bool ImageDecoder::startLocked()
     // a host of this class ignores: the server reaps its processes.
     sigset_t none;
     ::sigemptyset(&none);
-    sigset_t pipe;
-    ::sigemptyset(&pipe);
-    ::sigaddset(&pipe, SIGPIPE);
-    ::sigaddset(&pipe, SIGXCPU);
-    ::sigaddset(&pipe, SIGCHLD);
+    sigset_t defaults;
+    ::sigemptyset(&defaults);
+    ::sigaddset(&defaults, SIGPIPE);
+    ::sigaddset(&defaults, SIGXCPU);
+    ::sigaddset(&defaults, SIGCHLD);
     const bool prepared = ::posix_spawn_file_actions_adddup2(&actions, server.get(), STDIN_FILENO) == 0
         && ::posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0) == 0
-        && ::posix_spawnattr_setsigmask(&attributes, &none) == 0 && ::posix_spawnattr_setsigdefault(&attributes, &pipe) == 0
+        && ::posix_spawnattr_setsigmask(&attributes, &none) == 0 && ::posix_spawnattr_setsigdefault(&attributes, &defaults) == 0
         && ::posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF) == 0;
-    std::string name = "afterglow-mux";
+    std::string name = "aglow-mux";
     std::string argument(DecodeServerArgument);
     std::string parent = std::to_string(::getpid());
     char* argv[] = {name.data(), argument.data(), parent.data(), nullptr};
@@ -554,7 +577,8 @@ bool readable(int fd)
 
 void ImageDecoder::serverEndedLocked()
 {
-    m_socket.reset();
+    // Reaped now: a server that crashed stays no zombie until the next decode.
+    stopLocked();
     // A server that ended before it answered once can have been killed (the
     // OOM killer, a user) after it ran for hours: the next one starts. When
     // that one ends before it answers too, no server starts: a library of
@@ -564,6 +588,24 @@ void ImageDecoder::serverEndedLocked()
         m_failedStart = std::chrono::steady_clock::now();
         reportOnce(m_lastStartReport, "the image decoder ends before it answers: images of sessions do not show for a minute");
     }
+}
+
+void ImageDecoder::stuckLocked()
+{
+    stopLocked();
+    // As one that ended before it answered: two in a row, and none starts for
+    // a minute.
+    if (m_unanswered >= 2) {
+        m_failedStart = std::chrono::steady_clock::now();
+        reportOnce(m_lastStartReport, "the image decoder does not answer: images of sessions do not show for a minute");
+    } else {
+        reportOnce(m_lastReport, "the image decoder did not answer in " + std::to_string(m_waitMs) + " ms: it starts again");
+    }
+}
+
+void ImageDecoder::oweLocked(std::chrono::steady_clock::time_point due)
+{
+    if (m_owedAnswers++ == 0) m_answerDue = due;
 }
 
 AfterglowProto::UniqueFd ImageDecoder::answerLocked()
@@ -607,13 +649,15 @@ AfterglowProto::UniqueFd ImageDecoder::requestLocked(ImageFormats formats, int i
         cancelled = true;
         return {};
     }
-    // The answers that requests of closed panes left: their processes have
-    // no one to read them. The server answers as soon as it forked: one that
-    // does not by the deadline is stuck, and the next decode starts another.
+    // The answers that requests of closed panes, and of callers whose own
+    // deadline came first, left: their processes have no one to read them.
+    // The server answers as soon as it forked: one that owes an answer
+    // m_waitMs after its request is stuck, and the next decode starts
+    // another. A caller whose own deadline comes first leaves it be.
     while (m_owedAnswers > 0) {
-        switch (waitForAnswer(m_socket.get(), deadline, cancel)) {
+        switch (waitForAnswer(m_socket.get(), std::min(deadline, m_answerDue), cancel)) {
         case 0:
-            stopLocked();
+            if (std::chrono::steady_clock::now() >= m_answerDue) stuckLocked();
             return {};
         case 2:
             cancelled = true;
@@ -623,7 +667,8 @@ AfterglowProto::UniqueFd ImageDecoder::requestLocked(ImageFormats formats, int i
         }
         if (const AfterglowProto::UniqueFd stale = answerLocked(); stale.valid()) pidfdKill(stale.get());
         if (!m_socket.valid()) return {};
-        --m_owedAnswers;
+        // The server answers in order: the next one follows.
+        if (--m_owedAnswers > 0) m_answerDue = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_waitMs);
     }
     // A drain that ended at the deadline leaves the server no time to
     // answer: it is fine, and the request goes no further.
@@ -650,14 +695,21 @@ AfterglowProto::UniqueFd ImageDecoder::requestLocked(ImageFormats formats, int i
         serverEndedLocked();
         return {};
     }
-    switch (waitForAnswer(m_socket.get(), deadline, cancel)) {
+    const auto due = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_waitMs);
+    switch (waitForAnswer(m_socket.get(), std::min(deadline, due), cancel)) {
     case 0:
-        stopLocked();
+        if (std::chrono::steady_clock::now() >= due) {
+            stuckLocked();
+            return {};
+        }
+        // The caller's deadline came first, as it waited for the lock: the
+        // answer comes to the next request, which ends its process. A
+        // healthy server goes on, and so do the decodes of other panes.
+        oweLocked(due);
         return {};
     case 2:
-        // The pane closes: its answer comes to the next request, which ends
-        // its process. The server goes on for the other panes.
-        ++m_owedAnswers;
+        // The pane closes: likewise.
+        oweLocked(due);
         cancelled = true;
         return {};
     default:
@@ -691,10 +743,11 @@ bool ImageDecoder::decode(std::string_view data, ImageFormats formats, std::uint
         bool cancelled = false;
         for (int attempt = 0; attempt < 2 && !process.valid() && !cancelled; ++attempt) {
             if (!m_socket.valid()) {
-                // The server ended: a crash, the OOM killer, or one that got
-                // stuck. The new one runs the daemon's own executable
-                // (/proc/self/exe), with the libraries of now. One that did
-                // not start waits a minute before it is tried again.
+                // The server ended: a crash, the OOM killer, one that got
+                // stuck, or one that did not start. The new one runs the
+                // daemon's own executable (/proc/self/exe), with the
+                // libraries of now. One that did not start waits a minute
+                // before it is tried again.
                 const auto now = std::chrono::steady_clock::now();
                 if (now >= deadline || (m_failedStart && now - *m_failedStart < std::chrono::minutes(1))) return false;
                 stopLocked();
@@ -703,7 +756,7 @@ bool ImageDecoder::decode(std::string_view data, ImageFormats formats, std::uint
                 if (!startLocked()) return false;
                 // Not with the reports of failed starts, which this line
                 // would hold back when the new server fails too.
-                reportOnce(m_lastReport, "the image decoder ended: it started again");
+                reportOnce(m_lastReport, "the image decoder is not running: it starts again");
             }
             process = requestLocked(formats, input.get(), writer.get(), deadline, cancel, cancelled);
             // A server that answers with no process could not fork: no

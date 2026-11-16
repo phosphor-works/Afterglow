@@ -109,9 +109,18 @@ end
 
 function __afterglow_ctl
     set -l cur (commandline -ct)
+    set -l options -h\t'Show the usage' --help\t'Show the usage' --session\t'Act on a mux session'
+    # --session NAME comes before the command. afterglow mux ls lists the
+    # names, but a completion runs no program but aglow run --complete.
+    if test "$argv[1]" = --session
+        set -q argv[2]; or return
+        set -e argv[1..2]
+        # The usage only comes first: a command follows.
+        set options
+    end
     if not set -q argv[1]
         if string match -q -- '-*' "$cur"
-            __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
+            __afterglow_print $options
         else
             __afterglow_print ls\t'List panes' send-text\t'Type text into the pane' get-text\t'Print pane text' \
                 split\t'Split the pane' move-pane\t'Move the pane beside another' \
@@ -248,6 +257,9 @@ function __afterglow_ctl
             contains -- --overwrite $argv; or set -a offer --overwrite\t'Replace a project with the name'
         case open-project
             contains -- --new $argv; or set -a offer --new\t'Launch the layout again'
+            if not contains -- --into-session $argv; and not contains -- --no-session $argv
+                set -a offer --into-session\t'Open into a mux session' --no-session\t'Open into a window'
+            end
     end
     __afterglow_print $offer
 end
@@ -258,7 +270,7 @@ function __afterglow_mux
         if string match -q -- '-*' "$cur"
             __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
         else
-            __afterglow_print server\t'Run afterglow-mux in the foreground' new\t'Create a session' \
+            __afterglow_print server\t'Run aglow-mux in the foreground' new\t'Create a session' \
                 attach\t'Show a session in a window' detach\t'Close the window of a session, and keep the session' \
                 ls\t'List the sessions' kill\t'End a session and its programs'
         end
@@ -279,8 +291,20 @@ function __afterglow_mux
             case --name --cwd
                 if test $command = new
                     if test $i -eq $n
-                        # The cursor is at the option's value.
-                        test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
+                        # The cursor is at the option's value. With --ssh,
+                        # also after the cursor, it is a directory of that host.
+                        test $argv[$i] = --cwd
+                        and not contains -- --ssh (commandline -xp)
+                        and __fish_complete_directories "$cur"
+                        return
+                    end
+                    set i (math $i + 1)
+                end
+            case --ssh
+                # server takes no option.
+                if contains -- $command new attach detach ls kill
+                    if test $i -eq $n
+                        __fish_print_hostnames
                         return
                     end
                     set i (math $i + 1)
@@ -303,6 +327,13 @@ function __afterglow_mux
             string match -q -- '-*' "$cur"
             and not contains -- --force $argv
             and set -a offer --force\t'End it without a question'
+    end
+    # A session of another host. An empty word is the name of the session,
+    # or nothing for ls.
+    if contains -- $command new attach detach ls kill; and not contains -- --ssh $argv
+        if test $command = new; or string match -q -- '-*' "$cur"
+            set -a offer --ssh\t'A session of another host'
+        end
     end
     __afterglow_print $offer
 end

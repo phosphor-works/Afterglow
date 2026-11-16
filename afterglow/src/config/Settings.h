@@ -141,13 +141,40 @@ struct MuxSettings
     enum class Close { Kill, Detach };
     /// Kill ends the session and its programs, as a window that is not in a
     /// session ends its programs. Detach keeps the session running. A quit
-    /// of Afterglow always detaches.
+    /// of Afterglow always detaches, and so does the window of a project
+    /// that opened into the session (TerminalWindow::keepSessionForProject).
     Close onClose = Close::Kill;
     /// The bytes of host calls (MuxHost.h) that wait for a slow window: the
     /// daemon keeps a queue of this size for the session and one for each
     /// pane. In MiB in the configuration. The default equals
     /// AfterglowMux::DefaultEventQueue, which ConfigTest checks.
     std::size_t eventQueue = std::size_t(4) << 20;
+    /// The variables that a session of this computer takes from the
+    /// Afterglow that shows it, as tmux's update-environment: set to
+    /// Afterglow's value, or removed when Afterglow has none. A window sends
+    /// them when it shows the session and at each change of the settings. A
+    /// name that leaves the list keeps its value in the session. The panes
+    /// that start later get them. At most AfterglowMux::MaxUpdatedVariables
+    /// names. The default is tmux 3.8's without MSYSTEM, WINDOWID and the
+    /// XDG_ desktop names.
+    QStringList updateEnvironment{QStringLiteral("DISPLAY"),       QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("XAUTHORITY"),
+                                  QStringLiteral("SSH_AUTH_SOCK"), QStringLiteral("SSH_AGENT_PID"),   QStringLiteral("SSH_CONNECTION"),
+                                  QStringLiteral("SSH_ASKPASS"),   QStringLiteral("KRB5CCNAME")};
+    /// The command line that ssh gives the login shell of another host for
+    /// its sessions (`<remoteCommand> proxy`): a name that the shell finds,
+    /// or a path there, which the shell can expand. Never empty: the read
+    /// gives the default for an empty value.
+    QString remoteCommand = QStringLiteral("aglow-mux");
+    /// Seconds that the afterglow mux commands wait for the first answer
+    /// through a proxy of the daemon of another host: ssh may ask for a
+    /// password or a passphrase first. A window waits
+    /// AfterglowMux::CallTimeoutMs, with ssh in BatchMode, which asks for
+    /// nothing.
+    int signInTimeout = 120;
+    /// The most notifications that each pane of a session keeps while no
+    /// window shows the session, for the next window. The default equals
+    /// AfterglowMux::DefaultKeptNotifications, which ConfigTest checks.
+    int keptNotifications = 8;
     bool operator==(const MuxSettings&) const = default;
 };
 
@@ -156,7 +183,9 @@ struct ControlSettings
     /// The "control" target on the process's socket (afterglow ctl) and,
     /// with Scripts.enabled, the "commands" target (aglow run, afterglow run)
     /// and the remote sockets that afterglow ssh forwards
-    /// (Terminal.sshRemoteCommands).
+    /// (Terminal.sshRemoteCommands). The mux daemon follows this, and
+    /// allowReadText and eventInterval, of the window that showed a session
+    /// last (sessionSettings in MuxSessions.cpp).
     bool enabled = true;
     bool allowReadText = false; ///< let it read pane contents
     /// Let a script command that runs from a remote host read pane text,
@@ -253,6 +282,11 @@ struct Settings
     bool sshIntegration = true; ///< integrated shells run ssh through `afterglow ssh`
     QString sshTerminfo = QStringLiteral("install"); ///< TERM=afterglow on a host without its entry: install or fallback
     bool sshRemoteCommands = false; ///< `afterglow ssh` forwards a socket for the commands marked remote
+    /// Seconds of ControlPersist of Afterglow's own ssh master for the mux
+    /// sessions of another host (Ssh::sharedCommand): `afterglow mux --ssh`
+    /// and the windows of those sessions. `afterglow ssh` makes another
+    /// master, which this does not change.
+    int sshControlPersist = 10;
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
     /// Where a finished selection is copied: nowhere, the primary selection

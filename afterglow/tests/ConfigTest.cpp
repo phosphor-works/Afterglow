@@ -653,8 +653,8 @@ TEST_F(ConfigTest, WithoutTheDesktopPlasmaKeepsTheColorsThatTheSchemeLeavesOut)
     EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
 }
 
-// plasma alone with a scheme that gives no background: dark, as a session
-// without the desktop takes the dark side.
+// plasma alone with a scheme that gives no background: dark, as afterglow
+// mux new, which has no desktop, takes the dark side.
 TEST_F(ConfigTest, PlasmaWithoutABackgroundTakesTheDarkTheme)
 {
     ASSERT_EQ(qobject_cast<QGuiApplication*>(QCoreApplication::instance()), nullptr);
@@ -846,19 +846,142 @@ TEST_F(ConfigTest, ReadsTheEventQueueOfASessionWithinTheDaemonsBounds)
     EXPECT_EQ(std::int64_t(MuxSettings{}.eventQueue), AfterglowMux::DefaultEventQueue);
     // The bounds are the daemon's: every value of the setting is one that an
     // attach call may pass.
-    const auto queue = SettingsStore::reference()
-                           .value(QStringLiteral("groups"))
-                           .toObject()
-                           .value(QStringLiteral("Mux"))
-                           .toObject()
-                           .value(QStringLiteral("eventQueue"))
-                           .toObject();
+    const auto key = [](const char* group, const char* name) {
+        return SettingsStore::reference()
+            .value(QStringLiteral("groups"))
+            .toObject()
+            .value(QLatin1String(group))
+            .toObject()
+            .value(QLatin1String(name))
+            .toObject();
+    };
+    const auto queue = key("Mux", "eventQueue");
     EXPECT_EQ(std::int64_t(queue.value(QStringLiteral("minimum")).toInt()) << 20, AfterglowMux::MinEventQueue);
     EXPECT_EQ(std::int64_t(queue.value(QStringLiteral("maximum")).toInt()) << 20, AfterglowMux::MaxEventQueue);
+    // The other settings that a session takes: a range past the daemon's
+    // bound would make it refuse the settings of every window.
+    EXPECT_EQ(key("Terminal", "scrollback").value(QStringLiteral("maximum")).toInteger(), AfterglowMux::MaxScrollback);
+    EXPECT_EQ(key("Colors", "minimumContrast").value(QStringLiteral("minimum")).toDouble(), AfterglowMux::MinContrast);
+    EXPECT_EQ(key("Colors", "minimumContrast").value(QStringLiteral("maximum")).toDouble(), AfterglowMux::MaxContrast);
+    EXPECT_EQ(key("Graphics", "quota").value(QStringLiteral("maximum")).toInteger() << 20, AfterglowMux::MaxGraphicsQuota);
+    EXPECT_EQ(key("Control", "eventInterval").value(QStringLiteral("minimum")).toInteger(), 0);
+    EXPECT_EQ(key("Control", "eventInterval").value(QStringLiteral("maximum")).toInteger(), AfterglowMux::MaxEventInterval);
+    // A session that no window showed follows the Control settings of the
+    // afterglow mux new that started it: the same defaults.
+    const AfterglowMux::ControlOptions daemon;
+    const ControlSettings control;
+    EXPECT_EQ(daemon.enabled, control.enabled);
+    EXPECT_EQ(daemon.allowReadText, control.allowReadText);
+    EXPECT_EQ(daemon.eventInterval, control.eventInterval);
     for (const auto& [given, expected] : std::vector<std::pair<int, std::size_t>>{{16, 16}, {0, 1}, {1000, 64}}) {
         SettingsStore store(write(QStringLiteral("queue.json"), QStringLiteral(R"({"Mux": {"eventQueue": %1}})").arg(given).toUtf8()));
         EXPECT_EQ(store.settings().mux.eventQueue, expected << 20) << given;
     }
+}
+
+// The notifications that a pane of a session keeps while no window shows
+// it: the daemon's default and bounds, which it checks in the settings of a
+// window, and the clamp of the store.
+TEST_F(ConfigTest, ReadsTheKeptNotificationsOfASessionWithinTheDaemonsBounds)
+{
+    EXPECT_EQ(std::int64_t(MuxSettings{}.keptNotifications), AfterglowMux::DefaultKeptNotifications);
+    EXPECT_EQ(AfterglowMux::SessionSettings{}.keptNotifications, MuxSettings{}.keptNotifications);
+    const QJsonObject kept = SettingsStore::reference()
+                                 .value(QStringLiteral("groups"))
+                                 .toObject()
+                                 .value(QStringLiteral("Mux"))
+                                 .toObject()
+                                 .value(QStringLiteral("keptNotifications"))
+                                 .toObject();
+    EXPECT_EQ(kept.value(QStringLiteral("minimum")).toInteger(), 0);
+    EXPECT_EQ(kept.value(QStringLiteral("maximum")).toInteger(), AfterglowMux::MaxKeptNotifications);
+    for (const auto& [given, expected] : std::vector<std::pair<int, int>>{{3, 3}, {0, 0}, {-5, 0}, {1000, 100}}) {
+        SettingsStore store(write(QStringLiteral("kept.json"), QStringLiteral(R"({"Mux": {"keptNotifications": %1}})").arg(given).toUtf8()));
+        EXPECT_EQ(store.settings().mux.keptNotifications, expected) << given;
+    }
+}
+
+// The variables that a session takes from Afterglow: tmux 3.8's without
+// MSYSTEM, WINDOWID and the XDG_ desktop names, or the user's names, without
+// the ones that are not variable names or that Afterglow keeps for itself.
+TEST_F(ConfigTest, ReadsTheVariablesThatASessionUpdates)
+{
+    EXPECT_EQ(MuxSettings{}.updateEnvironment,
+              (QStringList{QStringLiteral("DISPLAY"), QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("XAUTHORITY"),
+                           QStringLiteral("SSH_AUTH_SOCK"), QStringLiteral("SSH_AGENT_PID"), QStringLiteral("SSH_CONNECTION"),
+                           QStringLiteral("SSH_ASKPASS"), QStringLiteral("KRB5CCNAME")}));
+    SettingsStore store(write(QStringLiteral("environment.json"),
+                              R"({"Mux": {"updateEnvironment": ["GPG_AGENT_INFO", "BAD NAME", "AFTERGLOW_SOCKET", "GPG_AGENT_INFO",
+                                                                "_X1", "AFTERGLOW_MINE", "TERM", "AFTERGLOW_SHELL_INTEGRATION"]}})"));
+    // AFTERGLOW_SHELL_INTEGRATION is the user's, as in Terminal.env.
+    EXPECT_EQ(store.settings().mux.updateEnvironment,
+              (QStringList{QStringLiteral("GPG_AGENT_INFO"), QStringLiteral("_X1"), QStringLiteral("AFTERGLOW_SHELL_INTEGRATION")}));
+    const std::string problems = store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("BAD NAME, which is not a variable name"))) << problems;
+    // A name that Afterglow sets gets the reason of Terminal.env; another
+    // name of its prefix, the prefix.
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("AFTERGLOW_SOCKET, which is not used. Afterglow sets it for each pane")))
+        << problems;
+    EXPECT_TRUE(mentions(store.problems(),
+                         QStringLiteral("AFTERGLOW_MINE, which is not used. Afterglow keeps the names that start with AFTERGLOW_")))
+        << problems;
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("TERM, which is not used. Use Terminal.term"))) << problems;
+    SettingsStore none(write(QStringLiteral("none.json"), R"({"Mux": {"updateEnvironment": []}})"));
+    EXPECT_TRUE(none.settings().mux.updateEnvironment.isEmpty());
+}
+
+// The daemon refuses the settings of a window that name more variables: the
+// read keeps the first ones, and a duplicate does not count.
+TEST_F(ConfigTest, KeepsTheVariablesOfASessionWithinTheDaemonsBound)
+{
+    const int most = int(AfterglowMux::MaxUpdatedVariables);
+    QJsonArray names{QStringLiteral("V0")};
+    for (int i = 0; i <= most; ++i) names.append(QStringLiteral("V%1").arg(i));
+    const QJsonObject config{{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("updateEnvironment"), names}}}};
+    SettingsStore store(write(QStringLiteral("many.json"), QJsonDocument(config).toJson()));
+    const QStringList& kept = store.settings().mux.updateEnvironment;
+    ASSERT_EQ(kept.size(), most);
+    EXPECT_EQ(kept.first(), QStringLiteral("V0"));
+    EXPECT_EQ(kept.last(), QStringLiteral("V%1").arg(most - 1));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("names more than %1 variables").arg(most)))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    // At the bound: every name, and no problem.
+    names.removeLast();
+    SettingsStore full(write(QStringLiteral("full.json"),
+                             QJsonDocument(QJsonObject{{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("updateEnvironment"), names}}}}).toJson()));
+    EXPECT_EQ(full.settings().mux.updateEnvironment.size(), most);
+    EXPECT_TRUE(full.problems().isEmpty()) << full.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// How a session of another host is reached: the program that ssh runs there,
+// the wait for a sign-in and the life of Afterglow's own ssh master.
+TEST_F(ConfigTest, ReadsHowASessionOfAnotherHostIsReached)
+{
+    const Settings defaults;
+    EXPECT_EQ(defaults.mux.remoteCommand, QStringLiteral("aglow-mux"));
+    EXPECT_EQ(defaults.mux.signInTimeout, 120);
+    EXPECT_EQ(defaults.sshControlPersist, 10);
+    {
+        SettingsStore store(write(QStringLiteral("remote.json"),
+                                  R"({"Mux": {"remoteCommand": " /opt/aglow/bin/aglow-mux ", "signInTimeout": 30},
+                                      "Terminal": {"sshControlPersist": 60}})"));
+        EXPECT_EQ(store.settings().mux.remoteCommand, QStringLiteral("/opt/aglow/bin/aglow-mux"));
+        EXPECT_EQ(store.settings().mux.signInTimeout, 30);
+        EXPECT_EQ(store.settings().sshControlPersist, 60);
+        EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    {
+        // Clamped, and an empty program is the default: never a command
+        // without a program.
+        SettingsStore store(write(QStringLiteral("remote.json"),
+                                  R"({"Mux": {"remoteCommand": "  ", "signInTimeout": 1}, "Terminal": {"sshControlPersist": 0}})"));
+        EXPECT_EQ(store.settings().mux.remoteCommand, QStringLiteral("aglow-mux"));
+        EXPECT_EQ(store.settings().mux.signInTimeout, 5);
+        EXPECT_EQ(store.settings().sshControlPersist, 1);
+    }
+    SettingsStore store(write(QStringLiteral("remote.json"), R"({"Mux": {"signInTimeout": 100000}, "Terminal": {"sshControlPersist": 100000}})"));
+    EXPECT_EQ(store.settings().mux.signInTimeout, 600);
+    EXPECT_EQ(store.settings().sshControlPersist, 3600);
 }
 
 // A file that means to turn scripts or the control socket off, and says it
@@ -2857,8 +2980,11 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
                 value = QJsonObject{{QStringLiteral("bloom"), QJsonObject{{QStringLiteral("strength"), 0.5}}}};
             } else if (name == QLatin1String("Window.workingDirectory")) {
                 value = QStringLiteral("~/afterglow-test");
+            } else if (name == QLatin1String("Mux.updateEnvironment")) {
+                value = QJsonArray{QStringLiteral("TEST_VARIABLE")};
             } else if (def.expectedType == QMetaType::QVariantMap) {
-                value = QJsonObject{{QStringLiteral("AFTERGLOW_TEST"), QStringLiteral("1")}};
+                // Not AFTERGLOW_: Afterglow keeps those names for itself.
+                value = QJsonObject{{QStringLiteral("TEST_VARIABLE"), QStringLiteral("1")}};
             } else if (def.expectedType == QMetaType::QVariantList) {
                 value = QJsonArray{QStringLiteral("afterglow-test")};
             } else {
@@ -3254,9 +3380,21 @@ TEST_F(ConfigTest, EnvironmentNamesThatSettingsOrAfterglowSetAreNotUsed)
 {
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Terminal": {"env": {
         "TERM": "dumb", "AFTERGLOW_SSH_TERMINFO": "fallback", "AFTERGLOW_SOCKET": "/tmp/x", "AFTERGLOW_OVERLAY": "1",
-        "AFTERGLOW_SESSION": "work", "EDITOR": "nvim"}}})"));
+        "AFTERGLOW_SESSION": "work", "EDITOR": "nvim", "AFTERGLOW_MINE": "x", "AFTERGLOW_ORIGINAL_ENV_SET": "1",
+        "AFTERGLOW_BASH_INJECT": "1", "AFTERGLOW_SHELL_INTEGRATION": "0"}}})"));
     using Environment = std::vector<std::pair<std::string, std::string>>;
-    EXPECT_EQ(store.settings().environment, (Environment{{"EDITOR", "nvim"}}));
+    // AFTERGLOW_SHELL_INTEGRATION=0 turns shell integration off: the user's
+    // own name of the prefix, as docs/INPUT.md says.
+    EXPECT_EQ(store.settings().environment, (Environment{{"AFTERGLOW_SHELL_INTEGRATION", "0"}, {"EDITOR", "nvim"}}));
+    // The other names of the prefix are Afterglow's, as for
+    // Mux.updateEnvironment: shell integration and the daemon set, read and
+    // remove them for each pane.
+    for (const char* name : {"AFTERGLOW_MINE", "AFTERGLOW_ORIGINAL_ENV_SET", "AFTERGLOW_BASH_INJECT"}) {
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.%1 is not used. Afterglow keeps the names that start with "
+                                                              "AFTERGLOW_ for itself")
+                                                   .arg(QLatin1String(name))))
+            << name;
+    }
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.TERM is not used. Use Terminal.term")));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.AFTERGLOW_SSH_TERMINFO is not used. Use Terminal.sshTerminfo")));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.AFTERGLOW_SOCKET is not used")));

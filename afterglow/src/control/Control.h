@@ -4,19 +4,25 @@
 #pragma once
 
 #include "Capture.h"
+#include "OverlayInputs.h"
 #include "../scripting/OverlaySpec.h"
 
 #include <AfterglowProto/Remote.h>
 
 #include <QHash>
+#include <QJsonObject>
 #include <QList>
 #include <QObject>
 #include <QPair>
 #include <QPointer>
+#include <QSet>
+#include <QThreadPool>
 #include <QStringList>
 #include <QVariantMap>
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <functional>
 #include <optional>
 
@@ -30,6 +36,8 @@ class Pane;
 class ProjectStore;
 class SettingsStore;
 class TerminalWindow;
+struct SessionLink;
+struct ControlMailbox;
 
 /// One pane as the control interface and scripts see it.
 struct PaneInfo
@@ -62,14 +70,43 @@ public:
     /// no client, from @p source (ev.source). Returns an error, or empty.
     using ScriptCommandRunner = std::function<QString(const QString& command, quint32 pane, const QString& source)>;
 
-    /// Opens a window that shows mux session @p session: empty, else why not.
-    using SessionWindowOpener = std::function<QString(const QString& session)>;
+    /// The end of a SessionWindowOpener: empty, else why no window shows the
+    /// session.
+    using SessionOpened = std::function<void(const QString& error)>;
+    /// Opens a window that shows mux session @p session of @p host (empty:
+    /// this computer), with the calls that wait for the daemon off the GUI
+    /// thread: @p done gets the outcome once, before this returns or later,
+    /// unless Afterglow quits first.
+    using SessionWindowOpener = std::function<void(const QString& session, const QString& host, SessionOpened done)>;
+    /// Opens a window that shows mux session @p session of this computer,
+    /// on @p link, the connection that answered its attach call
+    /// (attachSession): empty, else why not.
+    using SessionLinkShower = std::function<QString(const QString& session, SessionLink&& link)>;
+    /// The end of openProject(): its error, or empty and its result.
+    using ProjectOpened = std::function<void(const QString& error, const QVariantMap& result)>;
+    /// The end of movePane() and detachTab(): the error, or the pane where
+    /// it went, as paneMap() describes it.
+    using PaneMoved = std::function<void(const QString& error, const QVariantMap& result)>;
+    /// The end of a split() or newTab() that can wait: the error, or the
+    /// new pane.
+    using PaneMade = std::function<void(const QString& error, quint32 created)>;
 
     Control(SettingsStore& settings, WindowFactory newWindow, QObject* parent = nullptr);
+    /// Has the calls to the mux daemon that still run end the sessions that
+    /// they start, and drops their answers: it does not wait for them,
+    /// which a quit does only a bounded time (MuxClient::waitForCallThreads).
+    /// A call that the quit cuts short can leave a project's session that no
+    /// window shows (openProjectSession): that session runs on, as after a
+    /// crash.
+    ~Control() override;
     /// For a pane or a tab that moves to a new window from a session's
     /// window (a drag, a key, the menu, a script or afterglow ctl): it goes
-    /// to a new session, which a new window shows.
+    /// to a new session, which a new window shows. Also for a project whose
+    /// session runs while the window that showed it closed (openProject).
     void setSessionWindowOpener(SessionWindowOpener opener) { m_openSessionWindow = std::move(opener); }
+    /// For a project that opens into a session, whose attach waited for the
+    /// daemon off the GUI thread.
+    void setSessionLinkShower(SessionLinkShower shower) { m_showSessionLink = std::move(shower); }
 
     /// Follows a window's panes; every window registers on creation.
     void attachWindow(TerminalWindow* window);
@@ -97,9 +134,71 @@ public:
     QVariantList scriptDiagnostics() const { return m_scriptDiagnostics ? m_scriptDiagnostics() : QVariantList{}; }
     QStringList projectNames() const;
     QString saveProject(quint32 pane, const QString& name, bool overwrite, QVariantMap& result);
-    QString openProject(const QString& name, bool newInstance, QVariantMap& result);
-    QString movePane(quint32 pane, quint32 target, const QString& placement, QVariantMap& result);
-    QString detachTab(quint32 pane, QVariantMap& result);
+    /// Who owns the overlays and the inputs of @p client of the session that
+    /// window @p window shows: the client numbers are its daemon's. A window
+    /// shows one session for its life, and no two windows share an ID.
+    /// Without @p client, the start of the owners of the window.
+    static QString sessionClientOwner(quint32 window, std::optional<qint64> client = std::nullopt)
+    {
+        const QString prefix = QStringLiteral("session:%1:").arg(window);
+        return client ? prefix + QString::number(*client) : prefix;
+    }
+    /// The overlays and their inputs of the clients of sessions that the mux
+    /// daemon passes to the windows of this process (`afterglow ctl
+    /// --session NAME overlay`), as the control socket keeps them for its
+    /// own clients: @p owner is the client's (SessionControl).
+    QString addSessionOverlayInput(const QString& owner, const QString& name, const QString& chunk, bool eof)
+    {
+        return m_sessionInputs.add(owner, name, chunk, eof);
+    }
+    QString takeSessionOverlayInput(const QString& owner, QVariantMap& options) { return m_sessionInputs.resolve(owner, options); }
+    void sessionOverlayOpened(const QString& owner) { m_sessionOverlayOwners.insert(owner); }
+    /// The client @p owner of a session went: its overlays close with
+    /// @p message, and its inputs go.
+    void endSessionClient(const QString& owner, const QString& message);
+    /// The same for the clients of every session. Control does it itself when
+    /// Control.enabled goes off.
+    void endSessionClients(const QString& message);
+    /// The answer to a screenshot for a client: {png, width, height}, or an
+    /// error and its code.
+    using ScreenshotReply = std::function<void(const QString& error, const QString& code, const QJsonObject& result)>;
+    /// A screenshot of @p pane for a client of the control socket or of a
+    /// session: capture(), then its PNG, encoded off the GUI thread one at a
+    /// time. Read access and Control.enabled are checked again as the answer
+    /// goes out. A refusal returns its error at once with @p code: denied,
+    /// busy past MaxScreenshots, or no_pane. Else @p reply gets the answer
+    /// once, also with the code not_shown, failed or cancelled.
+    QString screenshot(quint32 pane, CaptureScope scope, ScreenshotReply reply, QString& code);
+    /// Screenshots from the call to the answer, of every client: each holds
+    /// a frame and its PNG. A client that goes does not stop its frame or
+    /// encode, so the count drops only as they end.
+    static constexpr int MaxScreenshots = 4;
+    /// Calls of the mux daemon that wait on threads of their own (the opens
+    /// of projects into sessions): past this, a call fails at once.
+    static constexpr int MaxOffThreadCalls = 16;
+    /// Whether process @p process runs in pane @p pane, or in its overlay with
+    /// @p overlay: the program leads the terminal session of the process, or
+    /// of a process above it, at most 64 up (a shell in an editor's
+    /// terminal has a session of its own). By the processes, not by an
+    /// AFTERGLOW_PANE_ID that a process of another terminal can carry.
+    bool runsIn(quint32 pane, qint64 process, bool overlay) const;
+    /// Opens project @p name: into a mux session with @p mode "session", into
+    /// a window with "window", and as the project says with an empty mode.
+    /// @p done gets the outcome once, before this returns, or later for a
+    /// session, unless this object goes first: the calls to the mux daemon,
+    /// which can start it, run off the GUI thread.
+    void openProject(const QString& name, bool newInstance, const QString& mode, ProjectOpened done);
+    /// Moves @p pane beside @p target, to a new tab, or to a new window. A
+    /// new tab with a target is in the window of the target, else in the
+    /// pane's own. @p done gets the outcome once, before this returns, or
+    /// later for a pane of a mux session's window that goes to a new window
+    /// or to the window of another session, unless this object goes first:
+    /// the pane goes to a new session or joins that one, and the calls to
+    /// its daemon, and the attach of the window that shows it, run off the
+    /// GUI thread.
+    void movePane(quint32 pane, quint32 target, const QString& placement, PaneMoved done);
+    /// Moves @p pane's tab to a new window, as movePane() does.
+    void detachTab(quint32 pane, PaneMoved done);
     QString sendText(quint32 pane, const QString& text);
     /// Honours Control.allowReadText.
     QString readText(quint32 pane, TextScope scope, QString& out);
@@ -111,8 +210,17 @@ public:
     QString semanticRegions(quint32 pane, QVariantMap& result, bool clientRun);
     QString readRegion(quint32 pane, const QString& region, int limit, QVariantMap& result, bool clientRun);
     QString split(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options, quint32& created);
+    /// split() that does not wait for the mux daemon (a script's): in the
+    /// window of a session, the daemon starts the program off the GUI
+    /// thread (TerminalWindow::startSessionPane). @p done gets the outcome
+    /// once, before this returns, or later, also when the window closes
+    /// first.
+    void split(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options, PaneMade done);
     QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, quint32& created);
     QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
+    /// newTab() that does not wait for the mux daemon, as split() with
+    /// @p done.
+    void newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options, PaneMade done);
     QString newWindow(const QString& workingDirectory, const QStringList& command, quint32& created);
     QString newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
     QString focus(quint32 pane);
@@ -150,6 +258,12 @@ public:
     /// runAction for a script: the actions that read pane text need
     /// Scripts.allowReadText, and script commands are refused.
     QString runScriptAction(quint32 pane, const QString& action);
+    /// runAction for a client of the control socket or of a session: the
+    /// actions that read pane text need Control.allowReadText.
+    QString runClientAction(quint32 pane, const QString& action);
+    /// @p pane, a paneMap, as it leaves for a client: commands can carry
+    /// secrets, and leave only with Control.allowReadText.
+    QVariantMap clientPaneMap(QVariantMap pane) const;
     /// copy, paste, select_all and show_last_output move pane text to the
     /// clipboard, into another pane or into a file, with no user step between.
     static bool readsPaneText(const QString& action);
@@ -180,6 +294,17 @@ public:
     /// apart: no_pane, busy or spawn_failed.
     QString overlay(const QString& owner, const QString& request, quint32 pane, const OverlaySpec& spec, OverlayReply reply,
                     QString& code);
+    /// The overlay call of a client of the control socket or of a session,
+    /// in two steps that both take, so that their rules cannot drift apart.
+    /// The caller takes the client's waiting input into @p options first,
+    /// and names the pane between the steps. This one reads @p argv with
+    /// @p options: the spec, whose directory is one of this computer, or
+    /// nothing and @p error, which has no code.
+    static std::optional<OverlaySpec> clientOverlaySpec(const QStringList& argv, const QVariantMap& options, QString& error);
+    /// Then overlay() for @p owner with no request ID. The result's stdout
+    /// leaves only with Control.allowReadText, checked as it goes out: read
+    /// access can go while the program runs.
+    QString clientOverlay(const QString& owner, quint32 pane, const OverlaySpec& spec, OverlayReply reply, QString& code);
     /// Reads back the next frame of @p pane's window, as it shows on screen,
     /// cut to @p scope. It needs Control.allowReadText (see captureRefusal()).
     /// A refusal returns its error at once, with @p code denied or no_pane.
@@ -193,8 +318,10 @@ public:
     void closeOverlays(const QString& owner, const QString& message);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);
     void endScriptKeyMode(const QString& owner);
-    /// The overview for @p owner's script: see TerminalWindow::scriptOverview.
-    QString overview(const QString& owner, quint32 pane, const QString& operation, QVariantMap& result);
+    /// The overview for @p owner's script: see TerminalWindow::scriptOverview,
+    /// which sets @p code "busy" for a refusal while another script holds
+    /// the keyboard.
+    QString overview(const QString& owner, quint32 pane, const QString& operation, QVariantMap& result, QString* code = nullptr);
     QString overviewMove(quint32 pane, quint32 target, int step, QVariantMap& result);
     QString pulse(quint32 pane, int effect, int durationMs, int color);
     /// Where a pane split from: {"split_from": pane ID, "edge": 1-4}, empty when it did not.
@@ -236,6 +363,21 @@ Q_SIGNALS:
     void tabSwitched(quint32 pane, quint32 fromTab, quint32 toTab, int direction);
 
 private:
+    /// The window that shows mux session @p session of this computer, or nullptr.
+    TerminalWindow* sessionWindow(const QString& session) const;
+    /// openProject() into a mux session named @p name: its window, or a new
+    /// window of the session that runs, or a new session.
+    void openProjectSession(const QString& name, const QJsonObject& document, bool newInstance, ProjectOpened done);
+    /// Runs @p work on a thread of its own, then @p then with its result on
+    /// this object's thread, unless this object went first: @p then stays
+    /// here, and @p work must capture nothing that this thread must free.
+    /// An error when no thread starts, or MaxOffThreadCalls calls wait
+    /// already, and then neither runs.
+    template<typename Result>
+    QString offThread(std::function<Result()> work, std::function<void(Result)> then);
+    using OffThreadResult = std::shared_ptr<void>;
+    QString startOffThread(std::function<OffThreadResult()> work, std::function<void(OffThreadResult)> then);
+    void offThreadDone(quint64 id, OffThreadResult result);
     ProjectStore projects() const;
     void projectDialog(Pane* pane, bool save);
     void attachPane(Pane* pane);
@@ -243,15 +385,27 @@ private:
     static PaneInfo describe(TerminalWindow* window, Pane* pane);
     /// Shows a window made by m_newWindow as Window.startMode asks.
     void showNew(TerminalWindow* window) const;
+    /// Encodes @p image as a PNG on m_encoder, then gives its base64 to
+    /// @p done on this thread: empty when the PNG could not be written.
+    void encodePng(QImage image, std::function<void(const QString& base64)> done);
     /// Moves @p pane of @p source, or its tab with @p tab, out of the session
     /// that @p source shows, to a new session in a new window, which takes
-    /// what @p source kept for the panes. @p result describes the pane in
-    /// the new window, which has another ID.
-    QString breakOut(TerminalWindow* source, Pane* pane, bool tab, QVariantMap& result);
+    /// what @p source kept for the panes. @p done gets the pane in the new
+    /// window, which has another ID, once: a refusal at once, else later.
+    /// An error when no window shows it.
+    void breakOut(TerminalWindow* source, Pane* pane, bool tab, PaneMoved done);
+    /// Moves @p pane of @p source, the window of a mux session, into
+    /// @p destination, the window of another session: on @p placement of
+    /// @p beside, a side or new-tab. The daemon moves its program
+    /// (TerminalWindow::joinSession), and @p destination takes what @p source
+    /// kept for the pane. @p done gets the pane in @p destination, which has
+    /// another ID, once: a refusal at once, else later.
+    void joinSession(TerminalWindow* source, Pane* pane, TerminalWindow* destination, Pane* beside, const QString& placement, PaneMoved done);
 
     SettingsStore& m_settings;
     WindowFactory m_newWindow;
     SessionWindowOpener m_openSessionWindow;
+    SessionLinkShower m_showSessionLink;
     ScriptCommandRunner m_scriptCommands;
     std::function<QVariantList()> m_scriptDiagnostics;
     bool m_noticesEnded = false;
@@ -271,6 +425,38 @@ private:
         quint32 pane = 0;
     };
     QList<DockRecord> m_docks;
+    /// The projects whose session opens (openProjectSession), each with the
+    /// opens of it that wait for that one to end.
+    QHash<QString, QList<std::function<void()>>> m_projectOpens;
+    /// The session names that opens ask the daemon for, until it answers.
+    QSet<QString> m_namingSessions;
+    /// The inputs of the overlays of clients of sessions, by their owners.
+    OverlayInputs m_sessionInputs;
+    /// The clients of sessions that opened an overlay.
+    QSet<QString> m_sessionOverlayOwners;
+    int m_screenshots = 0;
+    /// Set as this object goes: a session that a call to the daemon starts
+    /// then has no window to lay it out.
+    std::shared_ptr<std::atomic<bool>> m_closing = std::make_shared<std::atomic<bool>>(false);
+    /// Where the calls to the mux daemon of this computer, which run on
+    /// threads of their own (offThread), give their results: this object
+    /// while it lives.
+    std::shared_ptr<ControlMailbox> m_mailbox;
+    /// What runs with each result of offThread, by its call.
+    QHash<quint64, std::function<void(OffThreadResult)>> m_offThread;
+    quint64 m_lastOffThread = 0;
+    /// The PNGs of screenshots, one at a time: a screenshot waits for its
+    /// frame anyway, and MaxScreenshots bounds the queue. Away from the
+    /// calls to the daemon, which can wait for seconds. Last: it waits for
+    /// its work as it goes, while the rest of this object is still there.
+    QThreadPool m_encoder;
 };
+
+template<typename Result>
+QString Control::offThread(std::function<Result()> work, std::function<void(Result)> then)
+{
+    return startOffThread([work = std::move(work)]() -> OffThreadResult { return std::make_shared<Result>(work()); },
+                          [then = std::move(then)](OffThreadResult result) { then(std::move(*std::static_pointer_cast<Result>(result))); });
+}
 
 } // namespace Afterglow

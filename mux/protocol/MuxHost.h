@@ -41,8 +41,8 @@ inline constexpr std::size_t CallCost = 64;
 enum class Kind : std::uint8_t {
     Bell = 1,
     Flash = 2, ///< OSC 555
-    Notify = 3, ///< OSC 9 and OSC 777: title and text
-    DesktopNotification = 4, ///< OSC 99: notification
+    Notify = 3, ///< OSC 9 and OSC 777: title and text, and missed
+    DesktopNotification = 4, ///< OSC 99: notification, and missed
     ClipboardWrite = 5, ///< OSC 52 write: title is the selection list, text the data
     ClipboardRequest = 6, ///< OSC 52 read and OSC 5522: clipboard
     TerminalProtocol = 7, ///< OSC 5113 and OSC 72, and 0 for a terminal reset: number is the code, text the payload
@@ -76,6 +76,11 @@ struct Call
     std::uint64_t value = 0;
     AfterglowVt::NotificationRequest notification;
     AfterglowVt::ClipboardRequest clipboard;
+    /// Notify and DesktopNotification: the program made the call while no
+    /// window showed the session, and the pane kept it for the next window
+    /// (MuxPane::setKeptNotifications). No user saw the pane then: the
+    /// window shows it whatever pane has the focus now.
+    bool missed = false;
 };
 
 /// A call of @p kind with the fields that most kinds use.

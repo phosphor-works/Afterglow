@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <random>
@@ -126,6 +127,15 @@ std::string differs(const Terminal& a, const Terminal& b)
         || !same(a.selectionForeground(), b.selectionForeground()) || !same(a.selectionBackground(), b.selectionBackground())
         || !same(a.visualBellColor(), b.visualBellColor())) {
         return "dynamic colors";
+    }
+    // An opacity goes in 65535ths, and a negative one (the window's) as -1.
+    for (std::size_t i = 0; i < a.transparentColors().size(); ++i) {
+        const auto& x = a.transparentColors()[i];
+        const auto& y = b.transparentColors()[i];
+        if (bool(x) != bool(y)
+            || (x && (!(x->color == y->color) || (x->opacity < 0) != (y->opacity < 0) || std::abs(x->opacity - y->opacity) > 1.0 / 65535))) {
+            return "transparent color " + std::to_string(i + 1);
+        }
     }
     if (std::string d = differs(a.primaryScreen(), b.primaryScreen(), "primary"); !d.empty()) return d;
     if (a.modes().altScreen) {
@@ -372,11 +382,16 @@ TEST(StateSync, TextStylesLinksAndText)
 TEST(StateSync, ViewOptionsLeaveTheReplicaAsItsWriter)
 {
     Pair p(20, 4, 10);
+    for (int i = 0; i < 12; ++i) p.source.feed("row " + std::to_string(i) + "\r\n");
     p.source.feed("\x1b[5 q\x1b]4;3;rgb:12/34/56\x1b\\\x1b]11;rgb:01/02/03\x1b\\\x1b]12;rgb:aa/bb/cc\x1b\\x");
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
-    // A reload of the window: other colours, cursor and history too, which
-    // stay the writer's.
+    ASSERT_EQ(differs(p.source, p.replica), "");
+    ASSERT_EQ(p.replica.primaryScreen().historySize(), 9u);
+    ASSERT_EQ(p.replica.clusterWidth(U"\u03b1"), 1);
+    // A reload of the window: other colours and cursor too, which stay the
+    // writer's. The history that the replica keeps follows the window, as the
+    // writer's daemon sends as much as the window keeps.
     TerminalOptions o = withScrollback(2);
     o.basePalette[3] = {1, 1, 1};
     o.defaultBackground = {9, 9, 9};
@@ -386,24 +401,79 @@ TEST(StateSync, ViewOptionsLeaveTheReplicaAsItsWriter)
     o.minimumContrast = 4.5;
     o.wordBoundaries = U"-";
     o.bidi = BidiMode::Auto;
+    o.ambiguousWide = true;
     const std::uint64_t before = p.replica.generation();
     p.replica.setViewOptions(o);
+    p.writer.setReplicaHistory(2);
     EXPECT_GT(p.replica.generation(), before);
-    EXPECT_EQ(differs(p.source, p.replica), "");
+    // Everything but the history is the writer's: the oldest rows went.
+    EXPECT_EQ(differs(p.source, p.replica), "primary: history 9 and 2");
+    const Screen& replica = p.replica.primaryScreen();
+    ASSERT_EQ(replica.historySize(), 2u);
+    EXPECT_EQ(rowText(replica, replica.absoluteRow(0)), "row 7");
+    EXPECT_EQ(rowText(replica, replica.absoluteRow(1)), "row 8");
     EXPECT_TRUE(p.replica.options().boldIsBright);
     EXPECT_DOUBLE_EQ(p.replica.options().minimumContrast, 4.5);
     EXPECT_TRUE(p.replica.options().wordBoundaries == U"-");
     EXPECT_EQ(p.replica.options().bidi, BidiMode::Auto);
-    EXPECT_EQ(p.replica.options().maxScrollback, 10u);
+    EXPECT_EQ(p.replica.options().maxScrollback, 2u);
     EXPECT_FALSE(p.replica.options().cursorColor.has_value());
+    // What the input method measures follows the window, as the cells that
+    // the daemon makes with the same settings do.
+    EXPECT_EQ(p.replica.clusterWidth(U"\u03b1"), 2);
     // The same options again draw nothing new.
     const std::uint64_t applied = p.replica.generation();
     p.replica.setViewOptions(o);
     EXPECT_EQ(p.replica.generation(), applied);
-    // Frames still apply over them.
-    p.source.feed("\x1b]4;3;rgb:65/43/21\x1b\\y");
+    // Frames still apply over them, and the replica keeps the newest rows.
+    p.source.feed("\x1b]4;3;rgb:65/43/21\x1b\\y\r\nmore\r\nlast");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    const Screen& source = p.source.primaryScreen();
+    ASSERT_EQ(replica.historySize(), 2u);
+    EXPECT_EQ(rowText(replica, replica.absoluteRow(0)), rowText(source, source.absoluteRow(source.historySize() - 2)));
+    EXPECT_EQ(rowText(replica, replica.absoluteRow(1)), rowText(source, source.absoluteRow(source.historySize() - 1)));
+    EXPECT_EQ(differs(p.source.screen(), p.replica.screen(), "x").find("history"), 3u);
+    EXPECT_EQ(p.replica.paletteColor(3), p.source.paletteColor(3));
+}
+
+// A window's lower image quota leaves the replica's images alone: they are
+// the writer's, which places them again before its daemon has the quota.
+TEST(StateSync, ALowerQuotaOfTheWindowKeepsTheWritersImages)
+{
+    Pair p(30, 8, 100);
+    p.source.resize(30, 8, 10, 20);
+    p.source.feed(apc("a=T,f=32,s=2,v=2,i=7,q=2", rgba(2, 2, 255, 0, 0)));
+    p.source.feed(apc("a=T,f=32,s=2,v=2,i=9,q=2", rgba(2, 2, 0, 0, 255)));
+    p.source.feed(apc("a=d,d=i,i=9,q=2")); // its placement goes, its pixels stay
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    ASSERT_EQ(p.replica.graphics().images().size(), 2u);
+    TerminalOptions o = p.replica.options();
+    o.graphicsQuota = 16; // the bytes of one of the two images
+    p.replica.setViewOptions(o);
+    EXPECT_EQ(p.replica.options().graphicsQuota, 16u);
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+    // The writer counts image 9 as sent: a frame that places it applies.
+    p.source.feed(apc("a=p,i=9,q=2") + apc("a=p,i=7,p=2,q=2"));
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+}
+
+// A transparent background with the window's opacity (OSC 21 '@' below 0)
+// keeps it on the replica: no clamp to fully transparent.
+TEST(StateSync, TransparentBackgroundsKeepTheirOpacity)
+{
+    Pair p(20, 4, 10);
+    p.source.feed("\x1b]21;transparent_background_color1=red@-1;transparent_background_color2=#102030@0.5\x1b\\\x1b[41mx");
+    std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(differs(p.source, p.replica), "");
+    const auto& colors = p.replica.transparentColors();
+    ASSERT_TRUE(colors[0].has_value());
+    EXPECT_LT(colors[0]->opacity, 0.0);
+    ASSERT_TRUE(colors[1].has_value());
+    EXPECT_NEAR(colors[1]->opacity, 0.5, 1.0 / 65535);
+    EXPECT_FALSE(colors[2].has_value());
 }
 
 TEST(StateSync, ShellIntegrationMarksAndRegions)
@@ -1094,10 +1164,8 @@ TEST(StateSync, ReaderRefusesBadNewSections)
     const auto frame = [](std::uint8_t tag, std::string payload) {
         std::string out(1, char(1));
         out.push_back(char(tag));
-        out.push_back(char(payload.size()));
-        return out + payload;
+        return out + varint(payload.size()) + payload;
     };
-    StateReader reader;
     for (const auto& [name, bytes] : std::vector<std::pair<const char*, std::string>>{
              {"a scroll of no rows", frame(15, std::string("\x00\x01\x00\x05\x02\x00\x01\x01\x01", 9))},
              {"a scroll that moves nothing", frame(15, std::string("\x00\x01\x00\x01\x02\x00\x01\x01\x00", 9))},
@@ -1122,7 +1190,20 @@ TEST(StateSync, ReaderRefusesBadNewSections)
              {"a progress past 100", frame(12, std::string("\x01\x00\x01\x00\xca\x01\x00\x00\x00\x01", 10))},
              {"an extra cursor of shape 4", frame(14, std::string("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x04", 14))},
              {"an extra cursor color mode 3", frame(14, std::string("\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 11))},
+             {"a modifyOtherKeys of 3", frame(1, std::string("\x00\x03\x00\x00\x00\x00", 6))},
+             {"a kitty keyboard flag past the last", frame(1, std::string("\x00\x00\x00\x00\x20\x00", 6))},
+             {"a title with a control character", frame(3, std::string("\x01\x07\x00", 3))},
+             {"a title that is not UTF-8", frame(3, std::string("\x01\xff\x00", 3))},
+             {"a title with a bidirectional control", frame(3, std::string("\x03\xe2\x80\xae\x00", 5))},
+             {"a title with a line separator", frame(3, std::string("\x03\xe2\x80\xa8\x00", 5))},
+             {"a directory with a line feed", frame(3, std::string("\x00\x02/\n", 4))},
+             {"a directory with DEL", frame(3, std::string("\x00\x02/\x7f", 4))},
+             {"a directory longer than the terminal takes",
+              frame(3, std::string(1, '\0') + varint(Terminal::MaxWorkingDirectory + 1) + std::string(Terminal::MaxWorkingDirectory + 1, 'a'))},
          }) {
+        // A refused frame leaves a reader unfit to judge the next: each case
+        // has its own.
+        StateReader reader;
         Terminal replica(20, 4, p.replicaHost);
         std::string why;
         EXPECT_FALSE(reader.apply(replica, bytes, &why)) << name;
@@ -1392,6 +1473,12 @@ TEST(StateSync, RandomOutputStaysEqual)
         "\x1b_Ga=T,f=32,s=40,v=40,i=%d,q=2;" + large + "\x1b\\",
         "\x1b_Ga=f,f=32,s=2,v=2,i=%d,q=2;" + pixels + "\x1b\\", "\x1b_Ga=a,i=%d,s=3,q=2\x1b\\", "\x1b_Ga=d,d=A,q=2\x1b\\",
         "\x1bPq#1;2;100;0;0#1~~\x1b\\",
+        // The colours that programs set, reset, save and restore.
+        "\x1b]21;transparent_background_color1=red@-1\x1b\\", "\x1b]21;transparent_background_color2=#102030@0.5\x1b\\",
+        "\x1b]21;transparent_background_color%d=#a0b0c0\x1b\\", "\x1b]21;transparent_background_color1=\x1b\\",
+        "\x1b]10;rgb:%d/f/f\x1b\\", "\x1b]11;rgb:%d/0/0\x1b\\", "\x1b]17;rgb:%d/20/30\x1b\\", "\x1b]19;rgb:%d/40/50\x1b\\",
+        "\x1b]110\x1b\\", "\x1b]111\x1b\\", "\x1b]112\x1b\\", "\x1b]117\x1b\\", "\x1b]119\x1b\\", "\x1b]104;%d\x1b\\",
+        "\x1b[#P", "\x1b[#Q", "\x1b]30001\x1b\\", "\x1b]30101\x1b\\",
     };
     for (unsigned seed = 1; seed <= 60; ++seed) {
         std::mt19937 rng(seed);

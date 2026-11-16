@@ -12,6 +12,7 @@
 #include "control/Ctl.h"
 #include "control/Mux.h"
 #include "control/IpcClient.h"
+#include "mux/MuxClient.h"
 #include "shell/Aglow.h"
 #include "shell/Ssh.h"
 
@@ -34,6 +35,7 @@
 
 #include <cerrno>
 #include <csignal>
+#include <cstdlib>
 #include <exception>
 #include <optional>
 #include <sys/stat.h>
@@ -108,6 +110,13 @@ ForwardResult forwardToRunningInstance(const QString& path, const QString& cwd, 
             return ForwardResult::Failed;
         }
         if (failure.tooLong) return ForwardResult::TooLong;
+        // The running process has the request, and can still open its window
+        // (a session of another host waits for ssh): a second process would
+        // open another, and take the session from the first.
+        if (failure.timedOut) {
+            *error = QStringLiteral("the running Afterglow did not answer the launch in %1 s").arg(ForwardTimeoutMs / 1000);
+            return ForwardResult::Failed;
+        }
         if (failure.code.isEmpty()) break; // no answer
         // Another error does not change when asked again (an argument that
         // the running process refuses, INVALID_ARG).
@@ -124,6 +133,11 @@ ForwardResult forwardToRunningInstance(const QString& path, const QString& cwd, 
 
 int main(int argc, char** argv)
 {
+    // A launcher can leave SIGCHLD ignored: the children would reap
+    // themselves, and the waits for them would fail. The commands below wait
+    // for theirs (ssh in afterglow ssh), the start of the mux daemon waits
+    // for its starter (MuxStart.h), and the PTYs wait for their programs.
+    std::signal(SIGCHLD, SIG_DFL);
     if (argc == 2 && std::strcmp(argv[1], "--config-reference") == 0) {
         QCoreApplication app(argc, argv);
         const QByteArray json = QJsonDocument(Afterglow::SettingsStore::reference()).toJson();
@@ -157,7 +171,7 @@ int main(int argc, char** argv)
         "Commands that run before a window starts:\n"
         "  afterglow ctl ...       Control a running Afterglow.\n"
         "  afterglow mux ...       Keep terminal sessions running, and show them in windows.\n"
-        "  afterglow ssh ...       Run ssh with shell integration on the remote computer.\n");
+        "  afterglow ssh ...       Run ssh with the remote side prepared for Afterglow.\n");
     if (Afterglow::Aglow::built()) {
         for (const Afterglow::Aglow::Command& command : Afterglow::Aglow::Commands) {
             description += QStringLiteral("  ") + QStringLiteral("afterglow %1 ...").arg(QLatin1String(command.name)).leftJustified(24)
@@ -196,8 +210,11 @@ int main(int argc, char** argv)
     QCommandLineOption muxNoTakeoverOption(QStringLiteral("mux-no-takeover"),
                                            QStringLiteral("Refuse when another window shows the session."));
     muxNoTakeoverOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    QCommandLineOption muxHostOption(QStringLiteral("mux-host"), QStringLiteral("The session runs on this ssh destination."),
+                                     QStringLiteral("destination"));
+    muxHostOption.setFlags(QCommandLineOption::HiddenFromHelp);
     parser.addOptions({cwdOption, quickOption, execOption, titleOption, holdOption, configOption, overrideOption, classOption,
-                       muxAttachOption, muxNoTakeoverOption});
+                       muxAttachOption, muxNoTakeoverOption, muxHostOption});
     // Everything after the program -e runs is its own, options included.
     parser.setOptionsAfterPositionalArgumentsMode(QCommandLineParser::ParseAsPositionalArguments);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("With -e: the program and its arguments."),
@@ -246,6 +263,9 @@ int main(int argc, char** argv)
     if (parser.isSet(muxNoTakeoverOption) && !parser.isSet(muxAttachOption)) {
         return fail(QStringLiteral("--mux-no-takeover needs --mux-attach"));
     }
+    if (parser.isSet(muxHostOption) && (!parser.isSet(muxAttachOption) || parser.value(muxHostOption).isEmpty())) {
+        return fail(QStringLiteral("--mux-host needs --mux-attach and a destination"));
+    }
     if (parser.isSet(muxAttachOption) && parser.value(muxAttachOption).isEmpty()) {
         return fail(QStringLiteral("--mux-attach needs the name of a session"));
     }
@@ -267,14 +287,18 @@ int main(int argc, char** argv)
                                     {QStringLiteral("hold"), parser.isSet(holdOption)},
                                     {QStringLiteral("activationToken"), qEnvironmentVariable("XDG_ACTIVATION_TOKEN")},
                                     {QStringLiteral("session"), parser.value(muxAttachOption)},
+                                    {QStringLiteral("sessionHost"), parser.value(muxHostOption)},
                                     {QStringLiteral("takeover"), !parser.isSet(muxNoTakeoverOption)}};
     qunsetenv("XDG_ACTIVATION_TOKEN");
     // An Afterglow started from a pane of another one, or of a mux session,
-    // must not hand that pane's identity to its scripts' programs. Its own
-    // panes get their own, and are in no session.
+    // or by the program of an overlay there, must not hand that pane's
+    // identity to its scripts' programs. Its own panes get their own, and
+    // are in no session and no overlay.
     qunsetenv("AFTERGLOW_SOCKET");
     qunsetenv("AFTERGLOW_PANE_ID");
     qunsetenv("AFTERGLOW_SESSION");
+    qunsetenv("AFTERGLOW_OVERLAY");
+    qunsetenv("AFTERGLOW_RESULT");
 
     QJsonObject overrides;
     for (const QString& assignment : parser.values(overrideOption)) {
@@ -357,9 +381,20 @@ int main(int argc, char** argv)
             // The chrome's Qt Quick scenes render on afterglow's Vulkan device.
             QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
             Afterglow::Application application(socket, configPath, overrides);
+            // The first window, which can open once the loop runs (a mux
+            // session waits for its daemon): when it cannot, afterglow ends
+            // with its error, unless a later launch opened a window meanwhile.
+            bool started = true;
+            const auto launched = [&started](const QString& error) {
+                if (error.isEmpty()) return;
+                fail(error);
+                started = false;
+                if (Afterglow::TerminalWindow::windows().isEmpty()) QCoreApplication::exit(1);
+            };
             // The quick terminal is a layer surface, which takes no activation token.
-            const QString error = quick ? application.toggleQuickTerminal() : application.openLaunch(cwd, command, windowOptions);
-            if (!error.isEmpty()) return fail(error);
+            if (quick) launched(application.toggleQuickTerminal());
+            else application.openLaunch(cwd, command, windowOptions, launched);
+            if (!started) return 1;
             // A signal during the start ends the loop at its first pass:
             // QuitSignals hears it there.
             code = app->exec();
@@ -367,6 +402,18 @@ int main(int argc, char** argv)
         } catch (const std::exception& e) {
             return fail(QString::fromLocal8Bit(e.what()));
         }
+    }
+    // A daemon call or a window's attach that still runs on its own thread
+    // (a split over ssh) uses the logging categories, which a return
+    // destroys: after a short wait, end without the static destructors.
+    if (!Afterglow::MuxClient::waitForCallThreads(1000)) {
+        app.reset();
+        std::fflush(nullptr);
+        if (quitSignal != 0) {
+            std::signal(quitSignal, SIG_DFL);
+            std::raise(quitSignal);
+        }
+        std::_Exit(code);
     }
     // After the clean shutdown, end as the signal does: the parent (a shell,
     // a session manager) sees that a signal ended Afterglow. The raise skips

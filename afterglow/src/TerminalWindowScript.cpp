@@ -242,7 +242,7 @@ QVariantMap TerminalWindow::overviewState() const
             {QStringLiteral("cards"), cards}};
 }
 
-QString TerminalWindow::scriptOverview(const QString& owner, Pane* pane, const QString& operation, QVariantMap& result)
+QString TerminalWindow::scriptOverview(const QString& owner, Pane* pane, const QString& operation, QVariantMap& result, QString* code)
 {
     if (operation == QLatin1String("open")) {
         if (!m_overview.open) {
@@ -250,7 +250,10 @@ QString TerminalWindow::scriptOverview(const QString& owner, Pane* pane, const Q
             // cannot open on the pane.
             if (!overviewOpensOn(pane ? pane : m_focused.data())) return QStringLiteral("The overview is not available");
             // Another script's key mode would take the overview's keys from the user.
-            if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
+            if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) {
+                if (code) *code = QStringLiteral("busy");
+                return QStringLiteral("Another script holds the keyboard");
+            }
             if (pane && pane != m_focused) revealPane(pane);
             if (!openOverview()) return QStringLiteral("The overview is not available");
         }

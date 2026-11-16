@@ -1,14 +1,31 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Each test runs its own afterglow-mux (TestDaemon.h), so no test reaches the
+// Each test runs its own aglow-mux (TestDaemon.h), so no test reaches the
 // daemon of the user.
 
 #include "TestDaemon.h"
 
 #include "MuxLayout.h"
 
+#include <atomic>
+#include <cstring>
+#include <tuple>
+
 using namespace MuxTest;
+
+namespace {
+
+/// Checks that the daemon of @p daemon removed its sockets and their locks.
+void expectSocketsGone(const TestDaemon& daemon)
+{
+    for (const std::string& path : {daemon.socket(), daemon.stateSocket()}) {
+        EXPECT_FALSE(exists(path)) << path;
+        EXPECT_FALSE(exists(path + ".lock")) << path;
+    }
+}
+
+} // namespace
 
 TEST(MuxDaemon, AnswersItsVersion)
 {
@@ -24,10 +41,16 @@ TEST(MuxDaemon, CreatesListsAndKillsSessions)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // The answer names the session and its first pane, a new one each time.
+    std::int64_t lastPane = 0;
     for (const char* expected : {"1", "2"}) {
         const auto created = daemon.newSession(daemon.options(Waiting));
         ASSERT_TRUE(created) << daemon.lastError();
         EXPECT_EQ((*created)["name"].toString(), expected);
+        const auto pane = (*created)["pane"].toInteger();
+        ASSERT_TRUE(pane) << Json::write(*created);
+        EXPECT_GT(*pane, lastPane);
+        lastPane = *pane;
     }
     ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "work"))) << daemon.lastError();
     IpcConnection::Error error;
@@ -65,13 +88,19 @@ TEST(MuxDaemon, RefusesBadCalls)
     EXPECT_FALSE(daemon.call(Fn::NewSession, Json::Array{ProtocolVersion + 1, toJson(daemon.options(Waiting))}, &error));
     EXPECT_EQ(error.code, Error::VersionMismatch);
     EXPECT_NE(error.message.find(std::to_string(ProtocolVersion + 1)), std::string::npos) << error.message;
-    // The number of arguments, and their types.
-    for (const auto& [fn, args] : {std::pair{Fn::NewSession, Json::Array{ProtocolVersion}},
-                                   std::pair{Fn::NewSession, Json::Array{"2", toJson(daemon.options(Waiting))}},
-                                   std::pair{Fn::KillSession, Json::Array{}}, std::pair{Fn::KillSession, Json::Array{"a", "b"}},
-                                   std::pair{Fn::KillSession, Json::Array{1}}}) {
-        EXPECT_FALSE(daemon.call(fn, args, &error)) << fn;
-        EXPECT_TRUE(error.code == IpcErrorCode::InvalidArg || error.code == Error::VersionMismatch) << fn << " " << error.code;
+    // The number of arguments, and their types. A protocol that is no
+    // number is another protocol.
+    const std::tuple<const char*, Json::Array, const char*> rows[] = {
+        {Fn::NewSession, Json::Array{ProtocolVersion}, IpcErrorCode::InvalidArg},
+        {Fn::NewSession, Json::Array{"2", toJson(daemon.options(Waiting))}, Error::VersionMismatch},
+        {Fn::KillSession, Json::Array{}, IpcErrorCode::InvalidArg},
+        {Fn::KillSession, Json::Array{"a", "b"}, IpcErrorCode::InvalidArg},
+        {Fn::KillSession, Json::Array{1}, IpcErrorCode::InvalidArg},
+    };
+    for (const auto& [fn, args, code] : rows) {
+        SCOPED_TRACE(std::string(fn) + " " + Json::write(Json::Value(args)));
+        EXPECT_FALSE(daemon.call(fn, args, &error));
+        EXPECT_EQ(error.code, code) << error.message;
     }
     Json::Object bad = toJson(daemon.options(Waiting)).toObject();
     for (auto& [key, value] : bad) {
@@ -91,14 +120,16 @@ TEST(MuxDaemon, RefusesBadCalls)
     EXPECT_EQ(names(daemon.sessions()), std::vector<std::string>{"keep"});
 }
 
-// A session pane's AFTERGLOW_SOCKET names the daemon: `afterglow ctl` and
-// `aglow run` there get an answer that says why they cannot act.
+// A session pane's AFTERGLOW_SOCKET names the daemon: `aglow run` there, and
+// a control client that selected no session, get an answer that says why
+// they cannot act (MuxControl.* for one that selected a session).
 TEST(MuxDaemon, ControlAndCommandCallsFailWithAReason)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    const std::string message = "a session pane takes no control calls: the mux daemon answers only mux calls";
-    for (const std::string target : {"control", AfterglowProto::Run::Target}) {
+    for (const auto& [target, message] : std::vector<std::pair<std::string, std::string>>{
+             {"control", "no session is selected: afterglow ctl --session NAME, or afterglow ctl in a session pane, selects one"},
+             {AfterglowProto::Run::Target, "only a client in a session pane reaches the mux daemon for the commands of scripts"}}) {
         SCOPED_TRACE(target);
         IpcConnection::Error error;
         EXPECT_FALSE(daemon.call("listPanes", {}, &error, target));
@@ -136,10 +167,7 @@ TEST(MuxDaemon, ASessionEndsWithItsProgramAndTheDaemonWithItsLastSession)
     ASSERT_TRUE(daemon.call(Fn::KillSession, Json::Array{"stays"}));
     EXPECT_EQ(daemon.waitExit(), 0) << daemon.errors();
     // It removed its sockets and their locks.
-    for (const std::string& path : {daemon.socket(), daemon.stateSocket()}) {
-        EXPECT_FALSE(exists(path)) << path;
-        EXPECT_FALSE(exists(path + ".lock")) << path;
-    }
+    expectSocketsGone(daemon);
 }
 
 TEST(MuxDaemon, ADaemonThatNobodyReachesEnds)
@@ -173,32 +201,50 @@ TEST(MuxDaemon, ASecondDaemonRefusesToStart)
     ASSERT_GT(second, 0);
     ASSERT_TRUE(status) << "the second daemon still runs " << daemon.errors();
     EXPECT_EQ(*status, 1) << daemon.errors();
-    EXPECT_EQ(reported, std::string(1, AfterglowMux::ReportHeld) + "afterglow-mux: another afterglow-mux listens on " + daemon.socket() + "\n");
-    EXPECT_NE(daemon.errors().find("another afterglow-mux listens on " + daemon.socket()), std::string::npos) << daemon.errors();
+    EXPECT_EQ(reported, std::string(1, AfterglowMux::ReportHeld) + "aglow-mux: another aglow-mux listens on " + daemon.socket() + "\n");
+    EXPECT_NE(daemon.errors().find("another aglow-mux listens on " + daemon.socket()), std::string::npos) << daemon.errors();
     // The first one still serves, on both sockets.
     EXPECT_EQ(names(daemon.sessions()), std::vector<std::string>{"keep"});
     daemon.callOn(daemon.stateSocket());
     EXPECT_EQ(names(daemon.sessions()), std::vector<std::string>{"keep"});
 }
 
-TEST(MuxDaemon, SigtermEndsTheSessionsAndTheirPrograms)
+namespace {
+
+/// A daemon that @p signal ends: it ends its sessions first, and their
+/// programs with them, and then itself with the signal. The program ignores
+/// the hangup, so only the daemon's end (the PTY's reaper) ends it: a
+/// daemon that the signal killed outright would leave it, and its sockets.
+void endsWith(int signal)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     const std::string pidFile = daemon.dir() + "/pid";
-    ASSERT_TRUE(daemon.newSession(daemon.options({"/bin/sh", "-c", "echo $$ > '" + pidFile + "'; exec sleep 60"})));
+    ASSERT_TRUE(daemon.newSession(daemon.options({"/bin/sh", "-c", "trap '' HUP; echo $$ > '" + pidFile + "'; exec sleep 60"})));
     ASSERT_TRUE(waitFor([&] { return readFile(pidFile).find('\n') != std::string::npos; }));
     const pid_t program = pid_t(std::strtol(readFile(pidFile).c_str(), nullptr, 10));
     ASSERT_GT(program, 0);
-    ::kill(daemon.pid(), SIGTERM);
-    // The daemon ends with the signal, after its sessions.
-    EXPECT_EQ(daemon.waitExit(), 128 + SIGTERM) << daemon.errors();
-    // The hangup ended the program: it is gone, or a zombie that waits for its reaper.
+    ASSERT_EQ(::kill(daemon.pid(), signal), 0);
+    EXPECT_EQ(daemon.waitExit(), 128 + signal) << daemon.errors();
+    expectSocketsGone(daemon);
+    // Gone, or a zombie that waits for its reaper.
     EXPECT_TRUE(waitFor([&] { return !running(program); }));
+    // A program that a failure left behind ends here.
+    if (running(program)) ::kill(program, SIGKILL);
+}
+
+} // namespace
+
+TEST(MuxDaemon, SigtermSigintAndSighupEndTheSessionsAndTheirPrograms)
+{
+    for (const int signal : {SIGTERM, SIGINT, SIGHUP}) {
+        SCOPED_TRACE(::strsignal(signal));
+        endsWith(signal);
+    }
 }
 
 // As under nohup: a hangup that the daemon got as ignored stays ignored, and
-// its sessions stay. SIGTERM still ends it.
+// its sessions stay. SIGTERM still ends it, after its sessions.
 TEST(MuxDaemon, AnIgnoredHangupStaysIgnored)
 {
     TestDaemon daemon;
@@ -209,6 +255,7 @@ TEST(MuxDaemon, AnIgnoredHangupStaysIgnored)
     EXPECT_EQ(names(daemon.sessions()), std::vector<std::string>{"keep"});
     ::kill(daemon.pid(), SIGTERM);
     EXPECT_EQ(daemon.waitExit(), 128 + SIGTERM) << daemon.errors();
+    expectSocketsGone(daemon);
 }
 
 // The variables of the client reach the pane, from the session's environment
@@ -218,7 +265,8 @@ TEST(MuxDaemon, TheDaemonSetsTheAfterglowVariablesOverTheClients)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    for (const bool inLaunch : {true, false}) {
+    // Each place alone: a failure of the first does not skip the second.
+    const auto setsOver = [&daemon](bool inLaunch) {
         const std::string name = inLaunch ? "launch" : "session";
         SCOPED_TRACE(name);
         const std::string out = daemon.dir() + "/env-" + name;
@@ -229,21 +277,59 @@ TEST(MuxDaemon, TheDaemonSetsTheAfterglowVariablesOverTheClients)
         variables.emplace_back("AFTERGLOW_SESSION", "other");
         variables.emplace_back("AFTERGLOW_OVERLAY", "1");
         variables.emplace_back("AFTERGLOW_SOCKET", "/elsewhere");
-        ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+        const auto created = daemon.newSession(o);
+        ASSERT_TRUE(created) << daemon.lastError();
+        const auto pane = (*created)["pane"].toInteger();
+        ASSERT_TRUE(pane) << Json::write(*created);
         ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
         const std::string env = "\n" + readFile(out);
         EXPECT_NE(env.find("\nFROM_CLIENT=yes\n"), std::string::npos) << env;
         EXPECT_NE(env.find("\nAFTERGLOW_SESSION=" + name + "\n"), std::string::npos) << env;
         EXPECT_EQ(env.find("\nAFTERGLOW_SESSION=other\n"), std::string::npos) << env;
-        // The daemon's runtime socket, which answers control calls with
-        // CALL_FAILED (ControlAndCommandCallsFailWithAReason).
+        // The daemon's runtime socket, which serves the control target of
+        // the session once a client selects it (MuxControl.*), and refuses
+        // a client that selected none (ControlAndCommandCallsFailWithAReason).
         EXPECT_NE(env.find("\nAFTERGLOW_SOCKET=" + daemon.socket() + "\n"), std::string::npos) << env;
         EXPECT_EQ(env.find("\nAFTERGLOW_SOCKET=/elsewhere\n"), std::string::npos) << env;
-        // The daemon's own pane ID, not the client's.
-        EXPECT_EQ(env.find("\nAFTERGLOW_PANE_ID=999\n"), std::string::npos) << env;
-        EXPECT_NE(env.find("\nAFTERGLOW_PANE_ID="), std::string::npos) << env;
+        // The daemon's own pane ID, not the client's: that of the answer.
+        EXPECT_NE(env.find("\nAFTERGLOW_PANE_ID=" + std::to_string(*pane) + "\n"), std::string::npos) << env;
         EXPECT_EQ(env.find("\nAFTERGLOW_OVERLAY="), std::string::npos) << env;
+    };
+    setsOver(true);
+    setsOver(false);
+}
+
+// A session of another host takes the environment of the process that made
+// it (the proxy, in the user's ssh login there), with the client's variables
+// over it, and runs the user's shell as a login shell in HOME.
+TEST(MuxDaemon, ASessionCanTakeTheEnvironmentOfItsCaller)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // A shell that says how it ran: its arguments and its directory.
+    const std::string home = daemon.dir() + "/home";
+    const std::string shell = daemon.dir() + "/shell";
+    const std::string out = daemon.dir() + "/ran";
+    {
+        std::ofstream script(shell);
+        script << "#!/bin/sh\nprintf '%s\\n' \"$*\" \"$PWD\" \"$PATH\" \"$FROM_CLIENT\" > '" << out
+               << ".part' && mv '" << out << ".part' '" << out << "'\nexec sleep 60\n";
     }
+    ASSERT_EQ(::chmod(shell.c_str(), 0700), 0);
+    if (::access(shell.c_str(), X_OK) != 0) GTEST_SKIP() << daemon.dir() << " runs no program";
+    // The caller is this process: its environment from its start, which
+    // /proc shows, PATH among it. That is all of the developer's
+    // environment, which TestDaemon::cleanEnvironment() never sees: the
+    // shell of this session runs only printf, mv and sleep, nothing that
+    // looks up a socket, a display or a bus.
+    SessionOptions o = daemon.options({}, "far");
+    o.environment = {{"FROM_CLIENT", "yes"}, {"SHELL", shell}, {"HOME", home}};
+    o.launch.workingDirectory.clear();
+    o.callerEnvironment = true;
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+    const char* path = std::getenv("PATH");
+    EXPECT_EQ(readFile(out), "-l\n" + home + "\n" + (path ? path : "") + "\nyes\n");
 }
 
 TEST(MuxDaemon, ThePaneEnvironmentLeavesOutTheDaemonsOwn)
@@ -257,8 +343,9 @@ TEST(MuxDaemon, ThePaneEnvironmentLeavesOutTheDaemonsOwn)
     const std::string out = daemon.dir() + "/env";
     ASSERT_TRUE(daemon.newSession(daemon.options(writesEnvironment(out))));
     ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
-    EXPECT_NE(readFile(out).find("PATH="), std::string::npos);
-    EXPECT_EQ(readFile(out).find("MUX_TEST_DAEMON_ONLY"), std::string::npos);
+    const std::string env = "\n" + readFile(out);
+    EXPECT_NE(env.find("\nPATH="), std::string::npos) << env;
+    EXPECT_EQ(env.find("\nMUX_TEST_DAEMON_ONLY="), std::string::npos) << env;
 }
 
 // The programs get the umask of the client and the descriptor limit that the
@@ -269,6 +356,11 @@ TEST(MuxDaemon, ThePaneGetsTheUmaskOfTheClientAndTheOriginalFileLimit)
     rlimit limit{};
     ASSERT_EQ(::getrlimit(RLIMIT_NOFILE, &limit), 0);
     if (limit.rlim_max <= 256) GTEST_SKIP() << "the hard limit leaves no room below it";
+    // A mask that the test's process does not have: the daemon gets the
+    // test's, and a daemon that gave its own would pass with it.
+    const mode_t own = ::umask(0);
+    ::umask(own);
+    const mode_t mask = own == 027 ? 037 : 027;
     TestDaemon daemon;
     // The daemon raises 256 to the hard limit for itself.
     daemon.startFileLimit(256);
@@ -276,13 +368,13 @@ TEST(MuxDaemon, ThePaneGetsTheUmaskOfTheClientAndTheOriginalFileLimit)
     const auto writesLimits = [](const std::string& out) {
         return std::vector<std::string>{"/bin/sh", "-c", "{ umask; ulimit -n; } > '" + out + ".part' && mv '" + out + ".part' '" + out + "'; exec sleep 60"};
     };
-    const auto expectLimits = [](const std::string& out) {
+    const auto expectLimits = [mask](const std::string& out) {
         ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); })) << out;
         std::istringstream lines(readFile(out));
-        std::string mask;
+        std::string text;
         long files = 0;
-        lines >> mask >> files;
-        EXPECT_EQ(std::strtol(mask.c_str(), nullptr, 8), 027) << out << ": " << mask;
+        lines >> text >> files;
+        EXPECT_EQ(std::strtol(text.c_str(), nullptr, 8), long(mask)) << out << ": " << text;
         EXPECT_EQ(files, 256) << out;
     };
     const auto newPane = [&](const std::string& session, const std::string& out) -> std::optional<std::uint32_t> {
@@ -294,7 +386,7 @@ TEST(MuxDaemon, ThePaneGetsTheUmaskOfTheClientAndTheOriginalFileLimit)
     };
     const std::string out = daemon.dir() + "/limits";
     SessionOptions o = daemon.options(writesLimits(out), "s");
-    o.umask = 027;
+    o.umask = int(mask);
     ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
     {
         SCOPED_TRACE("the first pane");
@@ -340,7 +432,10 @@ def ask(path):
     s.sendall(b'{"type":"call","id":1,"target":"mux","fn":"listSessions","args":[]}\n')
     data = b''
     while not data.endswith(b'\n'):
-        data += s.recv(4096)
+        more = s.recv(4096)
+        if not more:
+            sys.exit(1)
+        data += more
     with open(path + '.part', 'wb') as f:
         f.write(data)
     os.rename(path + '.part', path)
@@ -381,7 +476,7 @@ TEST(MuxDaemon, ListensOnTheStateDirectoryToo)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    for (const std::string& directory : {daemon.runtime() + "/afterglow-mux", daemon.stateDirectory(), daemon.stateHome()}) {
+    for (const std::string& directory : {daemon.runtime() + "/aglow-mux", daemon.stateDirectory(), daemon.stateHome()}) {
         struct stat info{};
         if (::lstat(directory.c_str(), &info) != 0) {
             ADD_FAILURE() << "no " << directory;
@@ -410,7 +505,7 @@ void skipsDirectory(bool link)
 {
     {
         TestDaemon daemon;
-        const std::string directory = daemon.runtime() + "/afterglow-mux";
+        const std::string directory = daemon.runtime() + "/aglow-mux";
         if (link) {
             ASSERT_EQ(::mkdir((daemon.dir() + "/elsewhere").c_str(), 0700), 0);
             ASSERT_EQ(::symlink((daemon.dir() + "/elsewhere").c_str(), directory.c_str()), 0);
@@ -457,27 +552,44 @@ TEST(MuxDaemon, PanesNameASocketThatStillExists)
 }
 
 // A client that sends calls without a pause and reads no answer does not
-// keep the daemon from the others.
+// keep the daemon from the others (Daemon::MaxLinesPerRead).
 TEST(MuxDaemon, APipeliningClientDoesNotStarveTheOthers)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     RawClient flood(daemon.socket());
     ASSERT_TRUE(flood.connected());
-    std::string calls;
-    for (int i = 1; i <= 2000; ++i) calls += R"({"type":"call","id":)" + std::to_string(i) + R"(,"target":"mux","fn":"version","args":[]})" "\n";
-    std::jthread writer([&] { flood.send(calls); });
+    // Calls in batches, faster than the daemon answers them, until the
+    // other call got its answer, or for longer than its wait: a daemon that
+    // read the flood to its end would never get to the other call.
+    std::atomic<bool> done{false};
+    std::atomic<int> sent{0};
+    std::jthread writer([&] {
+        const auto deadline = std::chrono::steady_clock::now() + 3s;
+        int next = 1;
+        while (!done && std::chrono::steady_clock::now() < deadline) {
+            std::string batch;
+            for (int i = 0; i < 100; ++i, ++next) batch += R"({"type":"call","id":)" + std::to_string(next) + R"(,"target":"mux","fn":"version","args":[]})" "\n";
+            if (!flood.send(batch)) break;
+            sent = next - 1;
+        }
+    });
+    // The other call goes once the flood runs: else it could get its
+    // answer before the first batch, and the test would show nothing.
+    ASSERT_TRUE(waitFor([&] { return sent > 0; }, 3s));
     IpcConnection connection;
     IpcConnection::Error error;
     ASSERT_TRUE(connection.connect(daemon.socket(), &error, 1000)) << error.message;
     // The call's own wait bounds it: a daemon that answered the flood first
     // would leave it without an answer.
     const auto list = connection.call(Target, Fn::ListSessions, {}, 1000, &error);
-    EXPECT_TRUE(list) << error.message;
+    done = true;
     writer.join();
+    EXPECT_TRUE(list) << error.message;
     // Each call gets its answer, in order: the lines that wait in the
     // daemon's buffer after the socket went quiet are answered too.
-    for (int i = 1; i <= 2000; ++i) {
+    ASSERT_GT(sent.load(), 0);
+    for (int i = 1; i <= sent; ++i) {
         const auto reply = Json::parse(flood.line());
         ASSERT_TRUE(reply) << "no answer to call " << i;
         ASSERT_EQ((*reply)["type"].toString(), "reply") << Json::write(*reply);

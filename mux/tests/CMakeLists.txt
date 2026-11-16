@@ -3,13 +3,14 @@
 
 find_package(GTest REQUIRED)
 
-add_executable(afterglow_mux_tests AttachTest.cpp DaemonTest.cpp ImageDecoderTest.cpp MuxLayoutTest.cpp MuxPaneTest.cpp MuxProtocolTest.cpp)
+add_executable(afterglow_mux_tests AttachTest.cpp DaemonTest.cpp ImageDecoderTest.cpp MuxLayoutTest.cpp MuxPaneTest.cpp MuxProtocolTest.cpp
+               MuxStartTest.cpp ProxyTest.cpp)
 # The image files of the tests of the decoders (libs/afterglow-image).
 target_link_libraries(afterglow_mux_tests PRIVATE afterglow_mux_daemon afterglow_image_test_files GTest::gtest_main)
 # A test that runs a daemon gives it a runtime directory, a state directory and a
 # home directory of its own, so that it never reaches the user's daemon.
-target_compile_definitions(afterglow_mux_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:afterglow-mux>")
-add_dependencies(afterglow_mux_tests afterglow-mux)
+target_compile_definitions(afterglow_mux_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:aglow-mux>")
+add_dependencies(afterglow_mux_tests aglow-mux)
 set_target_properties(afterglow_mux_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 include(GoogleTest)

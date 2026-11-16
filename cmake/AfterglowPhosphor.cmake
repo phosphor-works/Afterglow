@@ -7,28 +7,25 @@
 #
 # Each library is added in dependency order: a library that find_package()s a
 # sibling picks up the in-tree target only if that target already exists.
+#
+# The build of aglow and aglow-mux alone (AFTERGLOW_AGLOW_ONLY) adds only
+# phosphor-channel, which needs no Qt and no other library of the checkout.
 
 set(AFTERGLOW_PHOSPHOR_LIBS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../PlasmaZones/phosphor-libs"
     CACHE PATH "Path to the phosphor-libs directory of a PlasmaZones checkout")
 
-if(NOT EXISTS "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-rendering/CMakeLists.txt")
-    message(FATAL_ERROR
-        "phosphor-libs not found at ${AFTERGLOW_PHOSPHOR_LIBS_DIR}. "
-        "Set -DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/PlasmaZones/phosphor-libs.")
+# A build of aglow alone reads the checkout only for aglow-mux: each error
+# about the checkout says how to do without it.
+set(AFTERGLOW_PHOSPHOR_WITHOUT "")
+if(AFTERGLOW_AGLOW_ONLY)
+    set(AFTERGLOW_PHOSPHOR_WITHOUT " Or turn AFTERGLOW_BUILD_MUX off, to build aglow without aglow-mux and the checkout.")
 endif()
 
-# The pins of the archives that the libraries fetch (Luau, valijson). The module
-# must be included at the top scope: its PHOSPHOR_DEPS list is a directory
-# variable, and a library that included it itself would hide the list from its
-# siblings. An older checkout has no such module, and include() alone would
-# then fail without saying why.
-if(NOT EXISTS "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/../cmake/PhosphorDependencies.cmake")
+if(NOT IS_DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs")
     message(FATAL_ERROR
-        "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/../cmake/PhosphorDependencies.cmake not found. "
-        "This PlasmaZones checkout is too old. Check out the PlasmaZones commit that docs/BUILD.md "
-        "names in its Build steps.")
+        "phosphor-libs not found at ${AFTERGLOW_PHOSPHOR_LIBS_DIR}. "
+        "Set -DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/PlasmaZones/phosphor-libs.${AFTERGLOW_PHOSPHOR_WITHOUT}")
 endif()
-include("${AFTERGLOW_PHOSPHOR_LIBS_DIR}/../cmake/PhosphorDependencies.cmake")
 
 # The phosphor libraries' install rules are for a system install of phosphor
 # (headers, CMake packages, the plugin in Qt's directory). Afterglow installs
@@ -49,12 +46,30 @@ function(afterglow_add_phosphor_libs)
         if(NOT EXISTS "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/${lib}/CMakeLists.txt")
             message(FATAL_ERROR
                 "${AFTERGLOW_PHOSPHOR_LIBS_DIR} has no ${lib}. This PlasmaZones checkout is too old. Check out "
-                "the PlasmaZones commit that docs/BUILD.md names in its Build steps.")
+                "the PlasmaZones commit that docs/BUILD.md names in its Build steps.${AFTERGLOW_PHOSPHOR_WITHOUT}")
         endif()
         add_subdirectory("${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/${lib}"
                          "${CMAKE_BINARY_DIR}/phosphor/${lib}" EXCLUDE_FROM_ALL)
     endforeach()
 endfunction()
+
+if(AFTERGLOW_AGLOW_ONLY)
+    afterglow_add_phosphor_libs(phosphor-channel)
+    return()
+endif()
+
+# The pins of the archives that the libraries fetch (Luau, valijson). The module
+# must be included at the top scope: its PHOSPHOR_DEPS list is a directory
+# variable, and a library that included it itself would hide the list from its
+# siblings. An older checkout has no such module, and include() alone would
+# then fail without saying why.
+if(NOT EXISTS "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/../cmake/PhosphorDependencies.cmake")
+    message(FATAL_ERROR
+        "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/../cmake/PhosphorDependencies.cmake not found. "
+        "This PlasmaZones checkout is too old. Check out the PlasmaZones commit that docs/BUILD.md "
+        "names in its Build steps.")
+endif()
+include("${AFTERGLOW_PHOSPHOR_LIBS_DIR}/../cmake/PhosphorDependencies.cmake")
 
 afterglow_add_phosphor_libs(
     phosphor-audio

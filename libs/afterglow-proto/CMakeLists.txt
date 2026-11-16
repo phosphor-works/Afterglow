@@ -3,7 +3,7 @@
 
 # zlib-ng and xxHash are built into the tree from the archives that
 # cmake/AfterglowDependencies.cmake pins, not taken from the system. Every
-# build (the application, afterglow-vt, afterglow-mux, the tests, the fuzz
+# build (the application, afterglow-vt, aglow-mux, the tests, the fuzz
 # targets and a static client of this library) then uses the same code.
 # zlib-ng has the SIMD paths that a distribution's zlib-ng has, chosen at run
 # time, so the terminal decodes o=z images as fast as with the system
@@ -49,14 +49,17 @@ target_link_libraries(afterglow_zlib INTERFACE zlib-ng)
 target_include_directories(afterglow_zlib SYSTEM INTERFACE ${AFTERGLOW_ZLIB_NG_BINARY_DIR} ${AFTERGLOW_ZLIB_NG_SOURCE_DIR})
 
 afterglow_third_party_target(zlib-ng afterglow_xxhash)
-# Both are linked into the binaries, so their notices go with them. They
-# install with the other license texts (afterglow/CMakeLists.txt).
+# Both are linked into the binaries, so their notices go with them:
+# afterglow_install_bundled_notices (cmake/AfterglowDependencies.cmake)
+# installs them for the application (afterglow/CMakeLists.txt), and for
+# aglow and aglow-mux when they install alone (tools/aglow/CMakeLists.txt,
+# mux/CMakeLists.txt).
 set(AFTERGLOW_ZLIB_LICENSE "${AFTERGLOW_ZLIB_NG_SOURCE_DIR}/LICENSE.md" PARENT_SCOPE)
 set(AFTERGLOW_XXHASH_LICENSE "${xxhash_SOURCE_DIR}/LICENSE" PARENT_SCOPE)
 
 # Static and PIC: it links into the shared afterglow-vt, into
 # afterglow_mux_protocol, and into each executable that uses it directly (the
-# application, afterglow-mux, aglow, the tests). Each of them gets its own copy
+# application, aglow-mux, aglow, the tests). Each of them gets its own copy
 # of the code, with hidden symbols.
 add_library(AfterglowProto STATIC
     src/Clipboard.cpp

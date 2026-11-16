@@ -1,18 +1,20 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// libFuzzer target for the image decoders of aglow and afterglow-mux
+// libFuzzer target for the image decoders of aglow and aglow-mux
 // (libs/afterglow-image), called in this process as their decoder children
 // call them, so that the sanitizers see each read and write of the GIF and
 // BMP readers, of the code around libpng, libjpeg-turbo and libwebp, and of
 // the three codecs, which a fuzz build instruments too. It also checks what
-// Decode.h promises about the result. aglow and afterglow-mux decode in a
-// child process with limits on its memory and CPU time. This target bounds
-// the work by the size instead: a canvas of at most 2^20 pixels (4 MiB of
-// RGBA), and 64 frames. The work of a GIF frame is bounded by its canvas and
-// its data, whatever size the frame claims, so the canvas bounds it here
-// too. The 64 frames keep one path out of reach: a WebP animation stops
-// after 128 frames of the longest time (the tests of the library have it).
+// Decode.h promises about the result: frames of the probed size, one frame
+// of no time and no warning for PNG, JPEG and BMP, and no frame after the
+// sink said stop. aglow and aglow-mux decode in a child process with limits
+// on its memory and CPU time. This target bounds the work by the size
+// instead: a canvas of at most 2^20 pixels (4 MiB of RGBA), and 64 frames.
+// The work of a GIF frame is bounded by its canvas and its data, whatever
+// size the frame claims, so the canvas bounds it here too. The 64 frames
+// keep one path out of reach: a WebP animation stops after 128 frames of the
+// longest time (the tests of the library have it).
 // afterglow_imagefuzz_seeds writes the files of those tests as a first
 // corpus.
 
@@ -47,12 +49,17 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     }
     if (std::uint64_t(width) * std::uint64_t(height) > MaxPixels) return 0;
+    const AfterglowImage::Format kind = AfterglowImage::format(bytes);
+    const bool still = kind == AfterglowImage::Format::Png || kind == AfterglowImage::Format::Jpeg || kind == AfterglowImage::Format::Bmp;
     int frames = 0;
     std::uint32_t sum = 0;
     const bool decoded = AfterglowImage::decode(bytes, [&](const unsigned char* rgba, int w, int h, int delay) {
+        // A sink that said stop is not called again: the 64 frames bound
+        // the work only if the decoders stop.
+        if (frames >= MaxFrames) __builtin_trap();
         // Each frame has the size that the probe gave, and a time that is
-        // not negative.
-        if (w != width || h != height || delay < 0) __builtin_trap();
+        // not negative. A still image is one frame, of no time.
+        if (w != width || h != height || delay < 0 || (still && (frames > 0 || delay != 0))) __builtin_trap();
         // Every byte of every frame is read, so that AddressSanitizer sees a
         // frame that is shorter than its size says.
         const std::size_t n = std::size_t(w) * std::size_t(h) * 4;
@@ -61,8 +68,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         }
         return ++frames < MaxFrames;
     }, error, warning);
-    // Decoded means a frame, and not decoded means an error text and no frame.
+    // Decoded means a frame, and not decoded means an error text and no
+    // frame. PNG, JPEG and BMP give no warning.
     if (decoded ? frames == 0 : (frames != 0 || error.empty())) __builtin_trap();
+    if (still && !warning.empty()) __builtin_trap();
     // The sum is used, so that the loop above is not optimized away.
     volatile std::uint32_t keep = sum;
     (void)keep;

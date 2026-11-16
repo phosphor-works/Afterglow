@@ -3,7 +3,7 @@
 
 // The decoders in this process: the formats, their sizes from the header,
 // and the files that they refuse. aglow's icat_decode.py and the tests of
-// afterglow-mux run them in their child processes.
+// aglow-mux run them in their child processes.
 
 #include "../src/Formats.h"
 #include "ImageFiles.h"
@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -162,6 +163,51 @@ std::string gifPixel(int left, int top, int index)
 
 const std::string GifTrailer("\x3b", 1);
 
+/// A frame of @p width by @p height at @p left, @p top with the colours
+/// @p indices in the order of its data: row by row, or pass by pass when
+/// @p interlaced. A clear code comes before each index, so that the codes
+/// keep three bits and the decoder adds no string.
+std::string gifFrame(int left, int top, int width, int height, const std::vector<int>& indices, bool interlaced = false)
+{
+    std::vector<unsigned> codes;
+    for (const int index : indices) {
+        codes.push_back(4);
+        codes.push_back(unsigned(index));
+    }
+    codes.push_back(5);
+    std::string data;
+    unsigned bits = 0;
+    int count = 0;
+    for (const unsigned code : codes) {
+        bits |= code << count;
+        count += 3;
+        for (; count >= 8; count -= 8, bits >>= 8) data += char(bits & 0xFF);
+    }
+    if (count > 0) data += char(bits & 0xFF);
+    std::string out = std::string("\x2c", 1) + le(std::uint32_t(left), 2) + le(std::uint32_t(top), 2) + le(std::uint32_t(width), 2)
+        + le(std::uint32_t(height), 2) + char(interlaced ? 0x40 : 0) + std::string("\x02", 1);
+    for (std::size_t i = 0; i < data.size(); i += 255) {
+        const std::string block = data.substr(i, 255);
+        out += char(block.size()) + block;
+    }
+    return out + std::string("\x00", 1);
+}
+
+/// RGBA pixels, one after the other.
+std::vector<std::uint8_t> joined(std::initializer_list<std::vector<std::uint8_t>> pixels)
+{
+    std::vector<std::uint8_t> out;
+    for (const auto& pixel : pixels) out.insert(out.end(), pixel.begin(), pixel.end());
+    return out;
+}
+
+/// A graphic control extension: the next frame's disposal and time in
+/// hundredths of a second.
+std::string gifControl(int disposal, int delay)
+{
+    return std::string("\x21\xf9\x04", 3) + char(disposal << 2) + le(std::uint32_t(delay), 2) + std::string("\x00\x00", 2);
+}
+
 /// The place of the marker @p marker (0xC2: SOF2) in a JPEG.
 std::size_t marker(const std::string& jpeg, char marker, std::size_t from = 0)
 {
@@ -233,9 +279,11 @@ TEST(ImageDecode, JpegWarningsShowThePictureAndErrorsDoNot)
     ASSERT_EQ(jfif2[version], 1);
     jfif2[version] = 2;
     EXPECT_TRUE(showsNear(jfif2, 8, 8, 255, 0, 0));
-    // Data that ends early is a warning: every row comes, as in browsers.
+    // Data that ends early is a warning of libjpeg-turbo: every row comes,
+    // as in browsers, and decode() gives no warning for a still image.
     const Result cut = run(Jpeg.substr(0, Jpeg.size() - 6));
     ASSERT_TRUE(cut.ok) << cut.error;
+    EXPECT_TRUE(cut.warning.empty()) << cut.warning;
     ASSERT_EQ(cut.frames.size(), 1u);
     EXPECT_EQ(cut.frames[0].width, 8);
     EXPECT_EQ(cut.frames[0].rgba.back(), 255);
@@ -385,6 +433,17 @@ TEST(ImageDecode, GifCanvasAndBlocks)
     // The older signature.
     EXPECT_TRUE(shows(gifScreen(1, 1, 0, "GIF87a") + gifPixel(0, 0, 3) + GifTrailer, 1, 1, {255, 255, 255, 255}));
 
+    // A frame larger than the screen and partly on it: only its pixels on the
+    // canvas land, and its rows still start where they should.
+    const std::vector<std::uint8_t> none{0, 0, 0, 0};
+    const std::vector<std::uint8_t> red{255, 0, 0, 255};
+    const std::vector<std::uint8_t> blue{0, 0, 255, 255};
+    const std::vector<std::uint8_t> white{255, 255, 255, 255};
+    const std::vector<std::uint8_t> black{0, 0, 0, 255};
+    EXPECT_TRUE(shows(gifScreen(2, 2) + gifFrame(1, 0, 2, 2, {1, 2, 3, 2}) + GifTrailer, 2, 2, joined({none, red, none, white})));
+    // An interlaced frame: the data has rows 0, 2, 1 and 3 of four.
+    EXPECT_TRUE(shows(gifScreen(1, 4) + gifFrame(0, 0, 1, 4, {1, 2, 3, 0}, true) + GifTrailer, 1, 4, joined({red, white, blue, black})));
+
     // No image, with and without a trailer.
     EXPECT_TRUE(refuses(gifScreen(1, 1) + GifTrailer, "no image"));
     EXPECT_TRUE(refuses(gifScreen(1, 1), "no image"));
@@ -401,6 +460,32 @@ TEST(ImageDecode, GifCanvasAndBlocks)
     // A screen with an empty side.
     EXPECT_EQ(probed(gifScreen(0, 0) + gifPixel(0, 0, 1) + GifTrailer), "unknown 0x0");
     EXPECT_TRUE(refuses(gifScreen(0, 0) + gifPixel(0, 0, 1) + GifTrailer));
+}
+
+TEST(ImageDecode, GifDisposalOfAFrame)
+{
+    const std::vector<std::uint8_t> none{0, 0, 0, 0};
+    const std::vector<std::uint8_t> red{255, 0, 0, 255};
+    const std::vector<std::uint8_t> blue{0, 0, 255, 255};
+    const std::vector<std::uint8_t> white{255, 255, 255, 255};
+    // Disposal 2: the frame's rectangle goes back to transparent before the
+    // next frame.
+    Result r = run(gifScreen(2, 1) + gifControl(2, 10) + gifFrame(0, 0, 1, 1, {1}) + gifControl(0, 10) + gifFrame(1, 0, 1, 1, {2})
+                   + GifTrailer);
+    ASSERT_TRUE(r.ok) << r.error;
+    EXPECT_TRUE(r.warning.empty()) << r.warning;
+    ASSERT_EQ(r.frames.size(), 2u);
+    EXPECT_EQ(r.frames[0].delay, 100);
+    EXPECT_EQ(r.frames[0].rgba, joined({red, none}));
+    EXPECT_EQ(r.frames[1].rgba, joined({none, blue}));
+    // Disposal 3: the canvas goes back to what it was before the frame.
+    r = run(gifScreen(2, 1) + gifFrame(0, 0, 2, 1, {3, 3}) + gifControl(3, 10) + gifFrame(0, 0, 1, 1, {1}) + gifFrame(1, 0, 1, 1, {2})
+            + GifTrailer);
+    ASSERT_TRUE(r.ok) << r.error;
+    ASSERT_EQ(r.frames.size(), 3u);
+    EXPECT_EQ(r.frames[0].rgba, joined({white, white}));
+    EXPECT_EQ(r.frames[1].rgba, joined({red, white}));
+    EXPECT_EQ(r.frames[2].rgba, joined({white, blue}));
 }
 
 TEST(ImageDecode, BmpOfEachDepthAndHeader)

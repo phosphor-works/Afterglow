@@ -26,7 +26,7 @@ endif()
 # Ubuntu read share/zsh/vendor-completions, not share/zsh/site-functions. The
 # default is empty so that it follows CMAKE_INSTALL_DATADIR at each configure:
 # a cached path would keep the DATADIR of the first one. _afterglow and _aglow
-# both install here, also in a build of aglow alone.
+# install here, and a build of aglow alone installs _aglow here too.
 set(AFTERGLOW_ZSH_COMPLETION_DIR "" CACHE STRING
     "Directory for the zsh completions, relative to the prefix or absolute (empty: DATADIR/zsh/site-functions)")
 set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${AFTERGLOW_ZSH_COMPLETION_DIR}")
@@ -34,28 +34,64 @@ if(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR STREQUAL "")
     set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
 endif()
 
-# aglow alone, for a computer that runs no Afterglow: a remote host, or a
-# package of its own. It needs CMake, the C and C++20 compilers and the static
-# C and C++ runtime libraries, but no Qt and no Phosphor checkout. zlib-ng,
-# xxHash and the image codecs come from their pinned archives, as in the whole
-# build. It installs aglow, its completions and its license notices, nothing
-# of the application.
-option(AFTERGLOW_AGLOW_ONLY "Build only aglow and the two libraries that it uses (protocol and image): no Qt and no Phosphor libraries" OFF)
+# Installed layout: the executables in bin/; afterglow's libraries, its own
+# copies of the phosphor libraries and their layer-shell plugin in a private
+# lib/afterglow/, so a system install of phosphor is never touched.
+# afterglow and aglow-mux find that directory and no other run path (aglow is
+# static); the libraries in it and the plugin set their own run paths where
+# they are installed (afterglow/CMakeLists.txt, and mux/CMakeLists.txt for
+# aglow-mux alone).
+set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
+# The path from the executables to it, also for an absolute LIBDIR or a
+# BINDIR deeper than bin/.
+file(RELATIVE_PATH AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}/afterglow")
+set(AFTERGLOW_INSTALL_RPATH "$ORIGIN/${AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN}")
+set(CMAKE_INSTALL_RPATH "${AFTERGLOW_INSTALL_RPATH}")
+# The private libraries of aglow-mux, which it installs alone and afterglow
+# installs with its own in a whole build. AglowOnlyCheck.cmake checks for
+# them in the installation of aglow-mux alone.
+set(AFTERGLOW_MUX_PRIVATE_LIBS AfterglowVt AfterglowPty PhosphorChannel)
+
+# aglow and aglow-mux alone, for a computer that runs no Afterglow: a remote
+# host, where the --ssh option of afterglow mux runs aglow-mux proxy, or
+# packages of their own. It needs CMake, the C and C++20 compilers and the static C and C++
+# runtime libraries, but no Qt. zlib-ng, xxHash and the image codecs come from
+# their pinned archives, as in the whole build. aglow-mux needs PCRE2, which
+# pkg-config finds, and phosphor-channel, the one Phosphor library with no Qt,
+# from the Phosphor checkout; without AFTERGLOW_BUILD_MUX the build makes only
+# aglow and reads no checkout. It installs the two programs, the completions
+# of aglow, the private libraries of aglow-mux and the license notices of
+# both, nothing else of the application.
+option(AFTERGLOW_AGLOW_ONLY "Build only aglow and aglow-mux, with the libraries that they use: no Qt, and of the Phosphor libraries only phosphor-channel. With AFTERGLOW_BUILD_MUX off, only aglow, with no Phosphor library" OFF)
+# The whole build always builds aglow-mux, because afterglow runs it for
+# afterglow mux: the option shows only with AFTERGLOW_AGLOW_ONLY.
+include(CMakeDependentOption)
+cmake_dependent_option(AFTERGLOW_BUILD_MUX "With AFTERGLOW_AGLOW_ONLY, build aglow-mux too. It needs PCRE2 (through pkg-config) and the Phosphor checkout" ON
+                       "AFTERGLOW_AGLOW_ONLY" ON)
 if(AFTERGLOW_AGLOW_ONLY)
     if(DEFINED AFTERGLOW_BUILD_AGLOW AND NOT AFTERGLOW_BUILD_AGLOW)
         message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds aglow. Turn AFTERGLOW_BUILD_AGLOW on, or AFTERGLOW_AGLOW_ONLY off.")
     endif()
-    # The tools and the fuzz targets need the application's libraries, which
-    # this build leaves out. Asked for, they would be missing without a word.
-    foreach(option AFTERGLOW_BUILD_TOOLS AFTERGLOW_BUILD_FUZZERS AFTERGLOW_BUILD_VTDIFF)
+    # The tools, the fuzz targets and the native window tests need the
+    # application's libraries, which this build leaves out. Asked for, they
+    # would be missing without a word.
+    foreach(option AFTERGLOW_BUILD_TOOLS AFTERGLOW_BUILD_FUZZERS AFTERGLOW_BUILD_VTDIFF AFTERGLOW_NATIVE_TESTS)
         if(${option})
-            message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds only aglow, not ${option}. Turn one of them off.")
+            message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds only aglow and aglow-mux, not ${option}. Turn one of them off.")
         endif()
     endforeach()
+    if(AFTERGLOW_BUILD_MUX)
+        include(cmake/AfterglowPhosphor.cmake)
+    endif()
     include(cmake/AfterglowDependencies.cmake)
     add_subdirectory(libs/afterglow-proto)
     add_subdirectory(libs/afterglow-image)
     add_subdirectory(tools/aglow)
+    if(AFTERGLOW_BUILD_MUX)
+        add_subdirectory(libs/afterglow-vt)
+        add_subdirectory(libs/afterglow-pty)
+        add_subdirectory(mux)
+    endif()
     return()
 endif()
 
@@ -69,21 +105,15 @@ set(QT_NO_PRIVATE_MODULE_WARNING ON)
 find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Gui ShaderTools)
 message(STATUS "Afterglow uses Qt ${Qt6_VERSION} private APIs; rebuild Afterglow after changing the Qt build.")
 qt_standard_project_setup()
+# qt_standard_project_setup() appends $ORIGIN and $ORIGIN/../lib to the run
+# path: the executables would then load a library from bin/ or from the
+# shared lib/ of the prefix (a Qt in ~/.local/lib, say) before the Qt of the
+# build. They search only the private directory.
+set(CMAKE_INSTALL_RPATH "${AFTERGLOW_INSTALL_RPATH}")
 
 # Qt's signals/slots/emit keywords collide with ordinary identifiers (the
 # phosphor libraries name variables `slots`); use Q_SIGNALS / Q_EMIT instead.
 add_compile_definitions(QT_NO_KEYWORDS)
-
-# Installed layout: the executable in bin/; afterglow's libraries, its own
-# copies of the phosphor libraries and their layer-shell plugin in a private
-# lib/afterglow/, so a system install of phosphor is never touched. The
-# executable finds that directory; the libraries in it and the plugin set their
-# own run paths where they are installed (afterglow/CMakeLists.txt).
-set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
-# The path from the executables to it, also for an absolute LIBDIR or a
-# BINDIR deeper than bin/.
-file(RELATIVE_PATH AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}/afterglow")
-set(CMAKE_INSTALL_RPATH "$ORIGIN/${AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN}")
 
 include(cmake/AfterglowPhosphor.cmake)
 # The pins of zlib-ng and xxHash (libs/afterglow-proto) and of the image
@@ -95,7 +125,7 @@ include(cmake/AfterglowDependencies.cmake)
 
 option(AFTERGLOW_BUILD_TOOLS "Build developer tools: benchmarks, afterglow_renderpng and the headless conformance host" OFF)
 option(AFTERGLOW_BUILD_AGLOW "Build aglow, the static client of the Kitty protocols and of script commands (no Qt). Without it, afterglow has no run, transfer, dnd, icat or clipboard command" ON)
-option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core, the protocol library, the image decoders and the attach stream of afterglow-mux (clang for C and C++)" OFF)
+option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core, the protocol library, the image decoders and the attach stream of aglow-mux (clang for C and C++)" OFF)
 option(AFTERGLOW_BUILD_VTDIFF "Build afterglow_vtdiff, which compares the terminal core with libghostty-vt (needs libghostty-vt in CMAKE_PREFIX_PATH)" OFF)
 if(AFTERGLOW_BUILD_FUZZERS)
     # The instrumentation of the fuzz targets and of the third-party code
@@ -116,9 +146,9 @@ endif()
 add_subdirectory(libs/afterglow-proto)  # protocol formats, terminal and client side: transfer, drag and drop, images, clipboard, the phosphor-ipc client and server (no Qt)
 add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, screen, Unicode, input encoding (no Qt)
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
-add_subdirectory(libs/afterglow-image)  # image decoders of aglow and afterglow-mux, with libpng, libjpeg-turbo and libwebp built in (no Qt)
+add_subdirectory(libs/afterglow-image)  # image decoders of aglow and aglow-mux, with libpng, libjpeg-turbo and libwebp built in (no Qt)
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas
-add_subdirectory(mux)                   # afterglow-mux, the session daemon, and the protocol that afterglow shares with it (no Qt)
+add_subdirectory(mux)                   # aglow-mux, the session daemon, and the protocol that afterglow shares with it (no Qt)
 add_subdirectory(afterglow)             # the application
 if(AFTERGLOW_BUILD_AGLOW)
     add_subdirectory(tools/aglow)       # after the application: it goes next to its executable

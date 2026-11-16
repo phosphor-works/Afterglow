@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -100,12 +101,34 @@ std::optional<IpcRequest> parseIpcRequest(std::string_view text, std::string* er
     }
     request.target = (*parsed)["target"].toString();
     request.fn = (*parsed)["fn"].toString();
-    if (request.type == "call" && request.target.empty()) {
-        set(error, "'call' requires a non-empty 'target'");
+    request.signal = (*parsed)["signal"].toString();
+    if (const Json::Value* value = parsed->find("subscriptionId"); value && !value->isNull()) {
+        if (!value->isNumber()) {
+            set(error, "'subscriptionId' must be a number if present");
+            return std::nullopt;
+        }
+        const auto subscription = requestId(value->toNumber());
+        if (!subscription) {
+            set(error, "'subscriptionId' must be a finite integer within JSON-double-precision int64 range");
+            return std::nullopt;
+        }
+        request.subscriptionId = *subscription;
+    }
+    if ((request.type == "call" || request.type == "subscribe") && request.target.empty()) {
+        set(error, "'" + request.type + "' requires a non-empty 'target'");
         return std::nullopt;
     }
     if (request.type == "call" && request.fn.empty()) {
         set(error, "'call' requires a non-empty 'fn'");
+        return std::nullopt;
+    }
+    if (request.type == "subscribe" && request.signal.empty()) {
+        set(error, "'subscribe' requires a non-empty 'signal'");
+        return std::nullopt;
+    }
+    // Id 0 is the protocol's "absent".
+    if (request.type == "unsubscribe" && request.subscriptionId == 0) {
+        set(error, "'unsubscribe' requires a non-zero 'subscriptionId'");
         return std::nullopt;
     }
     if (const Json::Value* args = parsed->find("args"); args && !args->isNull()) {
@@ -125,6 +148,11 @@ std::optional<IpcRequest> parseIpcRequest(std::string_view text, std::string* er
 std::string ipcReply(std::int64_t id, Json::Value result)
 {
     return line(Json::Object{{"type", "reply"}, {"id", id}, {"result", std::move(result)}});
+}
+
+std::string ipcEvent(std::int64_t subscriptionId, Json::Array args)
+{
+    return line(Json::Object{{"type", "event"}, {"subscriptionId", subscriptionId}, {"args", std::move(args)}});
 }
 
 std::string ipcError(std::optional<std::int64_t> id, std::string_view code, std::string_view message)
@@ -195,11 +223,13 @@ IpcListener::Listen IpcListener::listen(const std::string& path, std::string* er
 void IpcListener::close()
 {
     if (m_fd < 0) return;
+    // Someone may have removed the file, and another server bound the path
+    // after it took a new lock file. The check comes while the socket is
+    // open: a closed one whose file is gone frees its inode, and the new
+    // server's socket can get the same device and inode.
+    if (names(m_path, m_device, m_inode)) ::unlink(m_path.c_str());
     ::close(m_fd);
     m_fd = -1;
-    // Someone may have removed the file, and another server bound the path
-    // after it took a new lock file.
-    if (names(m_path, m_device, m_inode)) ::unlink(m_path.c_str());
     unlockFile(lockPath(m_path), m_lock);
     m_lock = -1;
     if (m_reserve >= 0) ::close(m_reserve);
@@ -273,6 +303,19 @@ void IpcServerConnection::close()
 {
     if (m_fd >= 0) ::close(m_fd);
     m_fd = -1;
+    m_out.clear();
+    m_outOffset = 0;
+}
+
+int IpcServerConnection::release(std::string* unsent)
+{
+    if (m_fd < 0 || m_in.size() > m_inHead) return -1;
+    if (unsent) *unsent = m_out.substr(m_outOffset);
+    m_out.clear();
+    m_outOffset = 0;
+    m_in.clear();
+    m_inHead = m_scanned = 0;
+    return std::exchange(m_fd, -1);
 }
 
 bool IpcServerConnection::fill()
@@ -292,8 +335,14 @@ bool IpcServerConnection::fill()
         }
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) return true;
-        close();
-        return false;
+        // As the end of the client's side (ECONNRESET of a client that
+        // closed with answers unread): the complete lines that came before
+        // still count, and no answer can go any more.
+        m_eof = true;
+        m_peerGone = true;
+        m_out.clear();
+        m_outOffset = 0;
+        return true;
     }
     return false;
 }
@@ -337,7 +386,7 @@ bool IpcServerConnection::nextLine(std::string& out)
             // request. The answers that wait still go out: flush() closes.
             m_in.clear();
             m_inHead = m_scanned = 0;
-            if (!wantsWrite()) close();
+            if (!wantsWrite() && !m_keep) close();
             return false;
         }
         if (filled) return false;
@@ -348,7 +397,7 @@ bool IpcServerConnection::nextLine(std::string& out)
     return false;
 }
 
-IpcServerConnection::Read IpcServerConnection::nextRequest(IpcRequest& request)
+IpcServerConnection::Read IpcServerConnection::nextRequest(IpcRequest& request, std::string* line)
 {
     std::string text;
     if (!nextLine(text)) return Read::None;
@@ -366,6 +415,7 @@ IpcServerConnection::Read IpcServerConnection::nextRequest(IpcRequest& request)
     }
     m_malformed = 0;
     request = std::move(*parsed);
+    if (line) *line = std::move(text);
     return Read::Request;
 }
 
@@ -377,7 +427,7 @@ bool IpcServerConnection::pending() const
 
 void IpcServerConnection::send(std::string text)
 {
-    if (m_fd < 0) return;
+    if (m_fd < 0 || m_peerGone) return;
     if (m_out.size() - m_outOffset + text.size() > MaxWaitingBytes) {
         close();
         return;
@@ -414,9 +464,15 @@ bool IpcServerConnection::flush()
         m_out.clear();
         m_outOffset = 0;
         // The client ended its side and has every answer.
-        if (m_eof && !pending()) close();
+        if (m_eof && !pending() && !m_keep) close();
     }
     return m_fd >= 0;
+}
+
+void IpcServerConnection::keepAtEnd(bool keep)
+{
+    m_keep = keep;
+    if (!keep) flush();
 }
 
 } // namespace AfterglowProto

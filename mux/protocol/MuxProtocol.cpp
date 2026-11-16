@@ -3,6 +3,8 @@
 
 #include "MuxProtocol.h"
 
+#include "MuxLayout.h"
+
 #include <AfterglowProto/Text.h>
 #include <AfterglowVt/Screen.h>
 
@@ -88,10 +90,12 @@ public:
         if (value) out = value->toString();
         return value;
     }
-    bool strings(std::string_view key, std::vector<std::string>& out)
+    /// @p most: the most items, refused before they are copied.
+    bool strings(std::string_view key, std::vector<std::string>& out, std::size_t most = std::size_t(-1))
     {
         const Json::Value* value = get(key, Json::Value::Type::Array);
         if (!value) return false;
+        if (value->toArray().size() > most) return fail(key, "has more than " + std::to_string(most) + " items");
         for (const Json::Value& item : value->toArray()) {
             if (!item.isString()) return fail(key, "has an item that is not a string");
             out.push_back(item.toString());
@@ -297,6 +301,10 @@ bool readLaunch(Reader& outer, const Json::Value& object, Launch& launch)
         }
     }
     r.string("launchedProgram", launch.launchedProgram);
+    if (r.strings("command", launch.command, MaxPaneCommandArgs) && !launch.command.empty() && !validPaneCommand(launch.command)) {
+        r.fail("command", "has an empty program, more than " + std::to_string(MaxPaneCommandArgs) + " arguments, or one longer than "
+                              + std::to_string(MaxPaneCommandArg) + " bytes");
+    }
     r.noOtherKeys();
     return outer.absorb(r);
 }
@@ -333,6 +341,29 @@ std::optional<T> readWhole(const Json::Value& value, std::string* error, Read re
     return out;
 }
 
+Json::Value toJson(const ControlOptions& control)
+{
+    return Json::Object{{"enabled", control.enabled},
+                        {"allowReadText", control.allowReadText},
+                        {"remoteCommandsOff", control.remoteCommandsOff},
+                        {"eventInterval", control.eventInterval}};
+}
+
+void readControl(Reader& outer, const Json::Value& object, ControlOptions& control)
+{
+    if (!object.isObject()) {
+        outer.fail("control", "is not an object");
+        return;
+    }
+    Reader c = outer.nested(object, "control");
+    c.boolean("enabled", control.enabled);
+    c.boolean("allowReadText", control.allowReadText);
+    c.string("remoteCommandsOff", control.remoteCommandsOff);
+    if (const auto interval = c.integer("eventInterval", 0, MaxEventInterval)) control.eventInterval = int(*interval);
+    c.noOtherKeys();
+    outer.absorb(c);
+}
+
 } // namespace
 
 bool validSessionName(std::string_view name)
@@ -351,6 +382,7 @@ Json::Value toJson(const Launch& launch)
         {"environment", environmentJson(launch.environment)},
         {"unset", Json::Array(launch.unset.begin(), launch.unset.end())},
         {"launchedProgram", launch.launchedProgram},
+        {"command", Json::Array(launch.command.begin(), launch.command.end())},
     };
 }
 
@@ -392,12 +424,60 @@ Json::Value toJson(const SessionOptions& o)
     return Json::Object{
         {"name", o.name},
         {"environment", environmentJson(o.environment)},
+        {"callerEnvironment", o.callerEnvironment},
         {"umask", o.umask},
         {"launch", toJson(o.launch)},
         {"size", toJson(o.size)},
         {"terminal", toJson(o.terminal)},
         {"notificationCapabilities", o.notificationCapabilities},
+        {"control", toJson(o.control)},
+        {"keptNotifications", o.keptNotifications},
     };
+}
+
+Json::Value toJson(const SessionSettings& s)
+{
+    Json::Array environment;
+    for (const auto& [name, value] : s.environment) environment.push_back(Json::Array{name, value ? Json::Value(*value) : Json::Value(nullptr)});
+    return Json::Object{{"terminal", toJson(s.terminal)},
+                        {"control", toJson(s.control)},
+                        {"environment", std::move(environment)},
+                        {"keptNotifications", s.keptNotifications}};
+}
+
+std::optional<SessionSettings> sessionSettings(const Json::Value& value, std::string* error)
+{
+    if (!value.isObject()) {
+        if (error) *error = "the session settings are not an object";
+        return std::nullopt;
+    }
+    SessionSettings s;
+    Reader r(value, error);
+    if (const Json::Value* terminal = r.lookup("terminal")) readTerminal(r, *terminal, s.terminal);
+    else r.fail("terminal", "is missing");
+    if (const Json::Value* control = r.lookup("control")) readControl(r, *control, s.control);
+    else r.fail("control", "is missing");
+    // [name, value or null] pairs.
+    if (const Json::Value* environment = r.get("environment", Json::Value::Type::Array)) {
+        if (environment->toArray().size() > MaxUpdatedVariables) {
+            r.fail("environment", "has more than " + std::to_string(MaxUpdatedVariables) + " items");
+        } else {
+            for (const Json::Value& entry : environment->toArray()) {
+                const bool pair = entry.isArray() && entry.toArray().size() == 2 && entry.toArray()[0].isString()
+                    && (entry.toArray()[1].isString() || entry.toArray()[1].isNull());
+                if (!pair || !validVariableName(entry.toArray()[0].toString())) {
+                    r.fail("environment", "has an item that is not a [name, value or null] pair");
+                    break;
+                }
+                const Json::Value& value = entry.toArray()[1];
+                s.environment.emplace_back(entry.toArray()[0].toString(), value.isNull() ? std::nullopt : std::optional(value.toString()));
+            }
+        }
+    }
+    if (const auto kept = r.integer("keptNotifications", 0, MaxKeptNotifications)) s.keptNotifications = int(*kept);
+    r.noOtherKeys();
+    if (r.failed()) return std::nullopt;
+    return s;
 }
 
 std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::string* error)
@@ -412,6 +492,7 @@ std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::stri
         r.fail("name", std::string("is not ") + SessionNameRule);
     }
     readEnvironment(r, "environment", o.environment);
+    r.boolean("callerEnvironment", o.callerEnvironment);
     if (const auto n = r.integer("umask", -1, 0777)) o.umask = int(*n);
     if (const Json::Value* launch = r.lookup("launch")) readLaunch(r, *launch, o.launch);
     else r.fail("launch", "is missing");
@@ -420,6 +501,8 @@ std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::stri
     if (const Json::Value* terminal = r.lookup("terminal")) readTerminal(r, *terminal, o.terminal);
     else r.fail("terminal", "is missing");
     r.string("notificationCapabilities", o.notificationCapabilities);
+    if (const Json::Value* control = r.get("control", Json::Value::Type::Object)) readControl(r, *control, o.control);
+    if (const auto kept = r.integer("keptNotifications", 0, MaxKeptNotifications)) o.keptNotifications = int(*kept);
     r.noOtherKeys();
     if (r.failed()) return std::nullopt;
     return o;
@@ -440,7 +523,9 @@ std::optional<SessionInfo> sessionInfo(const Json::Value& value)
     if (!value.isObject()) return std::nullopt;
     SessionInfo info;
     Reader r(value, nullptr);
-    r.string("name", info.name);
+    // The name comes from a daemon, maybe of another host: a client prints
+    // it and passes it to --mux-attach.
+    if (r.string("name", info.name) && !validSessionName(info.name)) r.fail("name", std::string("is not ") + SessionNameRule);
     r.boolean("attached", info.attached);
     if (const auto n = r.integer("panes", 0, 1 << 20)) info.panes = int(*n);
     r.strings("jobs", info.jobs);

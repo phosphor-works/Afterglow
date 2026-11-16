@@ -5032,7 +5032,7 @@ return { on_bell = function(ev)
         afterglow.pulse(ev.pane, "flash", {color = 4.5}),
         afterglow.move_pane(ev.pane),
         afterglow.move_pane(ev.pane, 8, "rigth"),
-        afterglow.move_pane(ev.pane, 8, "new-tab"),
+        afterglow.move_pane(ev.pane, 8, "new-window"),
         afterglow.new_tab(ev.pane, "/tmp\0evil"),
         {nil, afterglow.copy("after a hole")},
         afterglow.split(ev.pane), afterglow.split(ev.pane), afterglow.split(ev.pane),
@@ -5054,7 +5054,7 @@ end }
         // The helper's default placement is right, which needs a target.
         "left, right, up and down need a target pane",
         "placement must be left, right, up, down, new-tab or new-window",
-        "new-tab and new-window take none", "cwd must be a string without NUL"};
+        "new-window takes no target pane", "cwd must be a string without NUL"};
     for (int i = 0; i < 10; ++i)
         EXPECT_TRUE(rec.results[i].second.contains(QLatin1String(reasons[i]))) << i << ": " << rec.results[i].second.toStdString();
     EXPECT_EQ(rec.results[10].second, "unknown effect \"\"");

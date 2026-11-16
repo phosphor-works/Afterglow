@@ -36,8 +36,14 @@ public:
         Held, ///< another process holds the path
         Failed, ///< this process cannot use the path (a bind error, a file that is not a socket)
     };
-    /// Listens on @p path. On Held or Failed the router has no socket.
+    /// Listens on @p path. On Held, or on Failed for @p path, the router has
+    /// no socket. Failed also when this object listens already: its socket
+    /// stays as it is.
     Listen listen(const QString& path);
+    /// Stops listening, and removes the socket file and its lock. The
+    /// targets stay registered, for a later listen(). The destructor calls
+    /// it; tests call it to free the path while the process runs on.
+    void close();
     bool listening() const { return !m_path.isEmpty(); }
     PhosphorIpc::IpcRouter& router() { return *m_router; }
 
@@ -46,7 +52,8 @@ public:
     /// them until a later process binds the same name.
     static void removeStaleSockets();
     /// The socket that this process listens on, for the panes'
-    /// AFTERGLOW_SOCKET. Empty when it listens on none.
+    /// AFTERGLOW_SOCKET and for the windows of mux sessions, which serve
+    /// `aglow run` in their panes through it. Empty when it listens on none.
     static QString processPath();
     /// The socket of the main process on this Wayland display. Empty without
     /// XDG_RUNTIME_DIR.

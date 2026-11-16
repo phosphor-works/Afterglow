@@ -88,6 +88,7 @@ A package declares its commands only in `package.json`. `metadata.commands` in a
 ```
 
 A command with `"remote": true` can also run from a remote host, with `aglow run` in an `afterglow ssh` session.
+It can also run with `aglow run` in a pane of a mux session of another host (see [MUX.md](MUX.md#script-commands-in-a-session-pane)).
 Remote commands are off until you set `Terminal.sshRemoteCommands`. [Remote commands](CONTROL.md#remote-commands) gives the other requirements.
 The handler gets `ev.source` `"remote"`, and `ev.cwd` is a directory on the remote host.
 Any process of the remote user can run the command. Check its arguments and stdin before you use them (see [Run a command](SCRIPTING.md#run-a-command)).

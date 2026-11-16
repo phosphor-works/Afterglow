@@ -6,6 +6,7 @@
 #include <AfterglowProto/Json.h>
 #include <AfterglowVt/Terminal.h>
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -13,34 +14,48 @@
 #include <utility>
 #include <vector>
 
-// The calls of the mux daemon's control target, and the values that they
-// carry. The client (afterglow mux) and the daemon (afterglow-mux) share this
-// code. They can still come from two builds: a daemon keeps running while
-// the user installs a new afterglow. ProtocolVersion tells them apart.
+// The calls of the mux daemon (Target), and the values that they carry. Its
+// clients (`afterglow mux`, the windows and the projects of afterglow, and
+// `aglow-mux proxy`) and the daemon (aglow-mux) share this code. They can
+// still come from two builds: a daemon keeps running while the user installs
+// a new afterglow. ProtocolVersion tells them apart.
 
 namespace AfterglowMux {
 
 /// Changes when a call, its arguments or its result change. Each end checks
 /// it: the client calls Fn::Version first on each connection, and the daemon
-/// refuses a newSession, an attach, a newPane or a breakOut of another
-/// version: the calls that take it as their first argument. The codecs of the
-/// attach stream (MuxStream.h), of the host calls on it (MuxHost.h) and of the
-/// state frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
-/// MuxProtocolTest pins the keys of the options to this number, so that a new
-/// key changes it too.
-inline constexpr int ProtocolVersion = 9;
+/// refuses a newSession, an attach, a newPane, a breakOut, a joinPane, a
+/// selectSession or a selectPane of another version: the calls that take it
+/// as their first argument. The codecs of the attach stream (MuxStream.h), of the
+/// host calls on it (MuxHost.h) and of the state frames in it
+/// (AfterglowVt::StateCodec, StateSync.h) change with it. MuxProtocolTest
+/// pins the keys of the options to this number, so that a new key changes it
+/// too.
+inline constexpr int ProtocolVersion = 24;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
 
+/// The events of the control target, of a window (ControlApi's signals) and
+/// of a session in the daemon, to which `afterglow ctl watch` subscribes.
+/// The application's ControlSocketTest checks that they are ControlApi's.
+inline constexpr std::array<std::string_view, 11> ControlEvents{
+    "paneCreated", "paneMoved",    "paneClosed",   "titleChanged",   "bell",          "commandStarted",
+    "commandFinished", "statusChanged", "focusChanged", "userVarChanged", "contextChanged"};
+
 namespace Fn {
 inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
-inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name}
+inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name, pane}: pane is its first pane's ID
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
-/// (protocol, name, {takeover, eventQueue, history}) -> {name, socket,
-/// environment}: the window connects to socket, where the session's stream
-/// starts (MuxStream.h). environment is the session's environment
+/// (protocol, name, {takeover, eventQueue, history}) -> {name, window,
+/// environment}: after the answer, the connection of the call carries the
+/// session's stream (MuxStream.h). The client sends nothing after the call
+/// until the answer came, and then starts the stream, which writes first:
+/// the daemon sends nothing after the answer until then. So neither side's
+/// line reader takes a byte of the stream, also through a proxy (`aglow-mux
+/// proxy`). window is the serial of the window, which its newPane and
+/// breakOut give. environment is the session's environment
 /// (SessionOptions::environment, environmentJson()), which the window's
 /// launches of new panes change, as the daemon does.
 inline constexpr const char* Attach = "attach";
@@ -53,29 +68,53 @@ inline constexpr const char* Detach = "detach";
 /// shell reported no directory that exists on its machine (OSC 7, 9;9, 633,
 /// 1337).
 inline constexpr const char* PaneDirectory = "paneDirectory";
-/// (protocol, name, launch, size) -> {pane}: starts a pane in the session, for
-/// a new tab or split of the window that shows it. The pane is a tab of its
-/// own in the session's layout until the window sends its layout. While a
-/// window shows the session, only its process may call it: a window that
-/// another one took the session from gets Error::Attached. A session of
-/// MaxSessionPanes panes gets Error::TooManyPanes.
+/// (protocol, name, launch, size[, window]) -> {pane}: starts a pane in the
+/// session, for a new tab or split of the window that shows it. The pane is
+/// a tab of its own in the session's layout until the window sends its
+/// layout. A window gives the window of its attach answer: a window that
+/// another one took the session from gets Error::Attached, and one that no
+/// longer shows the session, while none does, gets Error::NotAttached. A
+/// session of MaxSessionPanes panes gets Error::TooManyPanes.
 inline constexpr const char* NewPane = "newPane";
 /// (name, pane) -> string: the program in the foreground of the pane, for
 /// the question before a close (MuxPane::foregroundJob). Empty when none runs.
 inline constexpr const char* PaneJob = "paneJob";
-/// (protocol, name, layout) -> {name}: the panes of the layout leave the
+/// (protocol, name, layout[, window]) -> {name}: the panes of the layout leave the
 /// session for a new one, with that layout, the session's environment and
 /// terminal values, and the daemon's next number as its name. Their programs
 /// run on. The window that showed them drags them out, and shows the new
 /// session in a new window. Not every pane of the session: that would only
-/// give it another name. While a window shows the session, only its process
-/// may call it, as for newPane.
+/// give it another name. A window gives the window of its attach answer, as
+/// for newPane.
 inline constexpr const char* BreakOut = "breakOut";
+/// (protocol, name, pane, beside, placement[, window]) -> {name}: pane
+/// @p pane leaves session @p name for the session that holds pane @p beside,
+/// another session of the daemon, with its program running. placement is
+/// "left", "right", "up" or "down": beside that pane. "new-tab": in a tab of
+/// its own after its tab. name in the answer is the session that holds the
+/// pane now. The window that shows that session places the pane (the
+/// placePane call of the control target), and the window that showed it
+/// drags it out, as for breakOut. A session that loses its last pane ends.
+/// The session of @p beside takes no pane past MaxSessionPanes
+/// (Error::TooManyPanes). A window gives the window of its attach answer, as
+/// for newPane.
+inline constexpr const char* JoinPane = "joinPane";
 /// (pane) -> string: the name of the session that holds the pane now. A
-/// pane that broke out keeps the AFTERGLOW_SESSION of its first session, as
-/// no process changes the environment of another: a client in a session
-/// pane asks by its AFTERGLOW_PANE_ID.
+/// pane that broke out or joined another session keeps the
+/// AFTERGLOW_SESSION of its first session, as no process changes the
+/// environment of another: a client in a session pane asks by its
+/// AFTERGLOW_PANE_ID.
 inline constexpr const char* PaneSession = "paneSession";
+/// (protocol, name) -> {name, environment}: the calls of the control target
+/// on this connection act on session @p name (`afterglow ctl --session
+/// NAME`). environment is the session's environment (environmentJson()),
+/// for the programs that `afterglow ctl` prepares for its panes.
+inline constexpr const char* SelectSession = "selectSession";
+/// (protocol, pane) -> {name, environment}: the calls of the control target
+/// on this connection act on the session that holds the pane now
+/// (`afterglow ctl` in a session pane, by its AFTERGLOW_PANE_ID), as for
+/// selectSession.
+inline constexpr const char* SelectPane = "selectPane";
 } // namespace Fn
 
 /// The keys of the options of Fn::Attach. The daemon refuses another key.
@@ -102,17 +141,19 @@ inline constexpr const char* SpawnFailed = "SPAWN_FAILED";
 inline constexpr const char* Attached = "ATTACHED";
 /// No window shows the session.
 inline constexpr const char* NotAttached = "NOT_ATTACHED";
-/// The session has MaxSessionPanes panes (MuxLayout.h): newPane starts none.
+/// The session has MaxSessionPanes panes (MuxLayout.h): newPane, and the
+/// split and newTab of `afterglow ctl`, start none.
 inline constexpr const char* TooManyPanes = "TOO_MANY_PANES";
 } // namespace Error
 
-/// The environment variable with the descriptor of a pipe that `afterglow
-/// mux` gives a daemon that it starts in a session of its own, whose stderr
-/// is /dev/null. The daemon writes ReportListening there once it listens,
-/// else ReportHeld and why, or only why it cannot start, and closes it. An
-/// end of the pipe with none of them is a daemon that ended before it
-/// listened.
-inline constexpr const char* ReportFdVariable = "AFTERGLOW_MUX_REPORT_FD";
+/// The environment variable with the descriptor of a pipe that a client
+/// (connectOrStart: `afterglow mux`, the projects of afterglow from a worker
+/// thread, `aglow-mux proxy --start`) gives a daemon that it starts in a
+/// session of its own, whose stderr is /dev/null. The daemon writes
+/// ReportListening there once it listens, else ReportHeld and why, or only
+/// why it cannot start, and closes it. An end of the pipe with none of them
+/// is a daemon that ended before it listened.
+inline constexpr const char* ReportFdVariable = "AGLOW_MUX_REPORT_FD";
 /// A byte that no message has: the daemon listens.
 inline constexpr char ReportListening = '\0';
 /// A byte that no message has, before the message: another daemon holds
@@ -131,6 +172,9 @@ inline constexpr const char* SessionNameRule =
 /// kill`.
 bool validSessionName(std::string_view name);
 
+/// The longest Control.eventInterval, in milliseconds.
+inline constexpr std::int64_t MaxEventInterval = 10000;
+
 /// The bounds that the daemon takes for the terminal values of a session.
 /// They hold every value of the settings that they come from
 /// (Terminal.scrollback, Colors.minimumContrast, Graphics.quota): the
@@ -147,6 +191,11 @@ inline constexpr std::int64_t DefaultEventQueue = std::int64_t(4) << 20;
 /// The most history rows that an attach can name: Terminal.scrollback, as
 /// for a session's own terminal.
 inline constexpr std::int64_t MaxHistory = MaxScrollback;
+/// The bounds of Mux.keptNotifications, and its default: the most
+/// notifications that a pane keeps while no window shows its session
+/// (MuxPane::setKeptNotifications).
+inline constexpr std::int64_t MaxKeptNotifications = 100;
+inline constexpr std::int64_t DefaultKeptNotifications = 8;
 
 /// What runs in a new pane. The client prepares it from its configuration
 /// (the shell, shell integration, TERM and the environment of the launch),
@@ -165,6 +214,9 @@ struct Launch
     /// The program of a command launch, which counts as running while it is
     /// in the foreground. Empty for a shell.
     std::string launchedProgram;
+    /// The command that the pane was asked to run, as a project saves it
+    /// (Layout::values), within validPaneCommand. Empty for a shell.
+    std::vector<std::string> command;
 };
 
 AfterglowProto::Json::Value toJson(const Launch& launch);
@@ -180,6 +232,26 @@ struct PaneSize
     int cellHeight = 0;
 };
 
+/// The Control settings that the daemon follows for `afterglow ctl` calls to
+/// a session (the calls that it answers itself; a window that shows the
+/// session follows its own for the calls that it answers).
+struct ControlOptions
+{
+    bool enabled = true; ///< Control.enabled: off, the session takes no control calls
+    /// Control.allowReadText: get-text, screenshots, the command lines in ls,
+    /// and the command lines and user variables in the events of watch.
+    bool allowReadText = false;
+    /// Why the client's settings allow no remote commands, as the refusal
+    /// of a call says it ("remote commands are off (SETTING)"), or empty:
+    /// whether `afterglow ssh` in a session pane gets a socket.
+    std::string remoteCommandsOff{};
+    /// Control.eventInterval: the shortest time in milliseconds between two
+    /// events of one kind for one pane of `afterglow ctl watch`, 0 to
+    /// MaxEventInterval.
+    int eventInterval = 100;
+    bool operator==(const ControlOptions&) const = default;
+};
+
 AfterglowProto::Json::Value toJson(const PaneSize& size);
 /// nullopt for a value that is not a valid size: @p error says why. A size
 /// past what a terminal can be is clamped to it, as a Resize of the attach
@@ -190,8 +262,19 @@ struct SessionOptions
 {
     std::string name; ///< empty: the daemon's next number
     /// The environment of the client, which each pane of the session changes
-    /// with its launch: the daemon's own is not used.
+    /// with its launch: the daemon's own is not used. A local session
+    /// carries all of the client's environment: with the rest of the call,
+    /// it must fit one request line of 1 MiB (IpcConnection::MaxRequestBytes)
+    /// as JSON, with its escapes. With
+    /// callerEnvironment, the variables that it sets over the environment of
+    /// the caller.
     std::vector<std::pair<std::string, std::string>> environment;
+    /// The session's environment is that of the process that calls
+    /// newSession, with `environment` over it: for a session on another host,
+    /// `aglow-mux proxy` there, which runs in the user's ssh login. Its
+    /// panes without a command run the user's shell as a login shell, in
+    /// HOME without a directory.
+    bool callerEnvironment = false;
     /// The file mode creation mask of the client, which the programs get in
     /// place of the daemon's. -1 keeps the daemon's.
     int umask = -1;
@@ -204,6 +287,13 @@ struct SessionOptions
     /// The answer of a window to an OSC 99 query: what a program may ask of
     /// the desktop notifications of a window that later shows the session.
     std::string notificationCapabilities;
+    /// Control.enabled, Control.allowReadText and the remote commands of the
+    /// client: what `afterglow ctl` and `afterglow ssh` may do with the
+    /// session in the daemon.
+    ControlOptions control;
+    /// Mux.keptNotifications of the client: the most notifications that
+    /// each pane keeps for the next window, 0 to MaxKeptNotifications.
+    int keptNotifications = int(DefaultKeptNotifications);
 };
 
 /// The variables of an environment as SessionOptions and Launch send them:
@@ -217,6 +307,29 @@ std::optional<std::vector<std::pair<std::string, std::string>>> environmentFrom(
 AfterglowProto::Json::Value toJson(const SessionOptions& options);
 /// nullopt for a value that is not a valid options object: @p error says why.
 std::optional<SessionOptions> sessionOptions(const AfterglowProto::Json::Value& value, std::string* error);
+
+/// The settings of the window that shows a session, which it sends after
+/// its attach and after each change of them (Attach::InputType::Settings):
+/// the session follows them from then on, also while no window shows it.
+struct SessionSettings
+{
+    AfterglowVt::TerminalOptions terminal;
+    ControlOptions control;
+    /// The variables of Mux.updateEnvironment as the window's process has
+    /// them: a value replaces the session's, and none removes it. The
+    /// panes that start later get them.
+    std::vector<std::pair<std::string, std::optional<std::string>>> environment{};
+    /// Mux.keptNotifications, as in SessionOptions.
+    int keptNotifications = int(DefaultKeptNotifications);
+    bool operator==(const SessionSettings&) const = default;
+};
+/// The most variables that the settings of a window name.
+inline constexpr std::size_t MaxUpdatedVariables = 256;
+
+AfterglowProto::Json::Value toJson(const SessionSettings& settings);
+/// nullopt for a value that is not a valid settings object, by the rules of
+/// the terminal and control values of SessionOptions: @p error says why.
+std::optional<SessionSettings> sessionSettings(const AfterglowProto::Json::Value& value, std::string* error);
 
 /// A session in the result of listSessions.
 struct SessionInfo

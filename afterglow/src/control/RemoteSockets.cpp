@@ -22,6 +22,8 @@
 #include <algorithm>
 #include <cerrno>
 #include <climits>
+#include <utility>
+#include <vector>
 
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -35,7 +37,7 @@ namespace Remote = AfterglowProto::Remote;
 namespace {
 
 /// The options of `ssh -O cancel` that a client can give, at most.
-constexpr qsizetype MaxSshOptions = 256;
+constexpr qsizetype MaxSshOptions = qsizetype(Remote::MaxOptions);
 
 bool cleanText(const QString& text)
 {
@@ -67,6 +69,10 @@ struct RemoteSockets::Session
     quint32 pane = 0;
     quint64 order = 0;
     bool overlay = false; ///< runs in the pane's overlay, which answers for it
+    /// An endpoint(): no ssh session, no forward, no answer of the pane.
+    bool endpoint = false;
+    QString host; ///< of an endpoint
+    bool commandsTarget = false; ///< of an endpoint
     int pidfd = -1;
     int lock = -1; ///< InstanceSocket::lock of the local socket
     std::unique_ptr<QSocketNotifier> watch;
@@ -133,7 +139,7 @@ RemoteSockets::~RemoteSockets()
 {
     // Not inside a call of a session's router: the sessions go now.
     for (const std::shared_ptr<Session>& session : std::exchange(m_sessions, {})) {
-        if (!session->socket.isEmpty()) cancel(*session);
+        if (!session->socket.isEmpty() && !session->endpoint) cancel(*session);
         session->closeSocket(QStringLiteral("afterglow is quitting"), nullptr);
     }
 }
@@ -166,7 +172,7 @@ QString RemoteSockets::open(const Request& request, Opened& out)
     if (request.destination.isEmpty() || request.destination.startsWith(QLatin1Char('-')))
         return QStringLiteral("the ssh destination must not be empty or start with '-'");
     if (m_sessions.size() >= MaxSessions) return QStringLiteral("afterglow has %1 remote sessions already").arg(MaxSessions);
-    const auto ofPane = std::count_if(m_sessions.cbegin(), m_sessions.cend(), [&](const auto& s) { return s->pane == request.pane; });
+    const auto ofPane = std::count_if(m_sessions.cbegin(), m_sessions.cend(), [&](const auto& s) { return s->pane == request.pane && !s->endpoint; });
     if (ofPane >= MaxSessionsPerPane)
         return QStringLiteral("pane %1 has %2 remote sessions already").arg(request.pane).arg(MaxSessionsPerPane);
     const auto token = AfterglowProto::randomHex(Remote::TokenBytes);
@@ -190,36 +196,7 @@ QString RemoteSockets::open(const Request& request, Opened& out)
         session->answer.error = Remote::Error::Length;
         session->answering = true;
     } else {
-        const QString runtime = InstanceSocket::runtimeDirectory();
-        if (runtime.isEmpty()) return QStringLiteral("XDG_RUNTIME_DIR is not set, so there is no private place for the socket");
-        const QString local = runtime + QStringLiteral("/afterglow-remote-") + session->token + QStringLiteral(".sock");
-        if (std::size_t(QFile::encodeName(local).size()) > AfterglowProto::MaxSocketPathBytes)
-            return QStringLiteral("the socket path %1 is too long").arg(local);
-        if (!forwardable(local)) return QStringLiteral("XDG_RUNTIME_DIR %1 has a ':', a '\\' or a control character").arg(runtime);
-        // Held while the socket listens: another launch's removeStaleSockets passes it by.
-        session->lock = InstanceSocket::lock(local);
-        if (session->lock < 0) return QStringLiteral("cannot lock %1.lock").arg(local);
-        session->socket = local;
-        session->router = std::make_unique<PhosphorIpc::IpcRouter>();
-        // Every process of the remote user can connect: each connection is a
-        // descriptor here and a channel of the shared ssh connection.
-        session->router->setMaxConnections(MaxConnectionsPerSession);
-        connect(session->router.get(), &PhosphorIpc::IpcRouter::connectionRefused, this,
-                [host = request.host, refused = std::weak_ptr<Session>(session)] {
-                    const std::shared_ptr<Session> s = refused.lock();
-                    // Once for each time the socket is full, not for each client that a loop opens.
-                    if (!s || std::exchange(s->full, true)) return;
-                    qCWarning(lcCommands) << "the remote socket of the ssh session to" << host << "has"
-                                          << MaxConnectionsPerSession << "connections, and refuses more";
-                });
-        connect(session->router.get(), &PhosphorIpc::IpcRouter::connectionClosed, this,
-                [refused = std::weak_ptr<Session>(session)] {
-                    if (const std::shared_ptr<Session> s = refused.lock()) s->full = false;
-                });
-        // Only the user can connect: the router binds the socket with mode 0600.
-        if (!session->router->start(local)) return QStringLiteral("cannot listen on %1").arg(local);
-        session->commands = std::make_unique<CommandSocket>(m_control, m_scripts, m_settings, *session->router,
-                                                            CommandSocket::RemoteSession{request.pane, request.host}, m_budget);
+        if (const QString error = listen(*session, CommandSocket::RemoteSession{request.pane, request.host}); !error.isEmpty()) return error;
         session->answer.path = session->path.toStdString();
     }
 
@@ -242,10 +219,105 @@ QString RemoteSockets::open(const Request& request, Opened& out)
     return {};
 }
 
+QString RemoteSockets::listen(Session& session, const CommandSocket::RemoteSession& remote)
+{
+    const QString runtime = InstanceSocket::runtimeDirectory();
+    if (runtime.isEmpty()) return QStringLiteral("XDG_RUNTIME_DIR is not set, so there is no private place for the socket");
+    const QString local = runtime + QStringLiteral("/afterglow-remote-") + session.token + QStringLiteral(".sock");
+    if (std::size_t(QFile::encodeName(local).size()) > AfterglowProto::MaxSocketPathBytes)
+        return QStringLiteral("the socket path %1 is too long").arg(local);
+    if (!forwardable(local)) return QStringLiteral("XDG_RUNTIME_DIR %1 has a ':', a '\\' or a control character").arg(runtime);
+    // Held while the socket listens: another launch's removeStaleSockets passes it by.
+    session.lock = InstanceSocket::lock(local);
+    if (session.lock < 0) return QStringLiteral("cannot lock %1.lock").arg(local);
+    session.socket = local;
+    session.router = std::make_unique<PhosphorIpc::IpcRouter>();
+    // Every process of the remote user can connect: each connection is a
+    // descriptor here and a channel of the shared ssh connection.
+    session.router->setMaxConnections(MaxConnectionsPerSession);
+    const QString token = session.token;
+    connect(session.router.get(), &PhosphorIpc::IpcRouter::connectionRefused, this, [this, host = remote.host, token] {
+        const std::shared_ptr<Session> s = m_sessions.value(token);
+        // Once for each time the socket is full, not for each client that a loop opens.
+        if (!s || std::exchange(s->full, true)) return;
+        qCWarning(lcCommands) << "the remote socket of the ssh session to" << host << "has" << MaxConnectionsPerSession
+                              << "connections, and refuses more";
+    });
+    connect(session.router.get(), &PhosphorIpc::IpcRouter::connectionClosed, this, [this, token] {
+        if (const std::shared_ptr<Session> s = m_sessions.value(token)) s->full = false;
+    });
+    // Only the user can connect: the router binds the socket with mode 0600.
+    if (!session.router->start(local)) return QStringLiteral("cannot listen on %1").arg(local);
+    session.commands = std::make_unique<CommandSocket>(m_control, m_scripts, m_settings, *session.router, remote, m_budget);
+    return {};
+}
+
+QString RemoteSockets::endpoint(quint32 pane, const QString& host, bool commandsTarget, QString* error)
+{
+    if (const QString off = remoteCommandsOff(m_settings.settings()); !off.isEmpty()) {
+        *error = off;
+        return {};
+    }
+    if (host.isEmpty() || host.size() > MaxHostLength || !cleanText(host)) {
+        *error = QStringLiteral("the host is 1 to %1 characters of text with no control characters").arg(MaxHostLength);
+        return {};
+    }
+    for (const auto& session : std::as_const(m_sessions)) {
+        if (session->endpoint && session->pane == pane && session->host == host && session->commandsTarget == commandsTarget
+            && !session->socket.isEmpty()) {
+            // Handed out again: the last to make room for another host.
+            session->order = ++m_opened;
+            return session->socket;
+        }
+    }
+    // An endpoint lives as long as its pane: one pane that reaches many
+    // hosts would fill its places. The one handed out least lately goes,
+    // unless a client still uses it.
+    std::vector<const Session*> ofPane;
+    for (const auto& s : std::as_const(m_sessions)) {
+        if (s->endpoint && s->pane == pane) ofPane.push_back(s.get());
+    }
+    if (ofPane.size() >= std::size_t(MaxEndpointsPerPane)) {
+        const Session* idle = nullptr;
+        for (const Session* s : ofPane) {
+            if ((!s->router || s->router->connectionCount() == 0) && (!idle || s->order < idle->order)) idle = s;
+        }
+        if (!idle) {
+            *error = QStringLiteral("pane %1 has %2 remote command sockets in use already").arg(pane).arg(MaxEndpointsPerPane);
+            return {};
+        }
+        close(idle->token, QStringLiteral("another host took the place of its remote command socket"));
+    }
+    if (m_sessions.size() >= MaxSessions) {
+        *error = QStringLiteral("afterglow has %1 remote sessions already").arg(MaxSessions);
+        return {};
+    }
+    const auto token = AfterglowProto::randomHex(Remote::TokenBytes);
+    if (!token) {
+        *error = QStringLiteral("the kernel gave no random bytes for the token");
+        return {};
+    }
+    auto session = std::make_shared<Session>();
+    session->token = QString::fromStdString(*token);
+    session->pane = pane;
+    session->order = ++m_opened;
+    session->endpoint = true;
+    session->host = host;
+    session->commandsTarget = commandsTarget;
+    if (const QString why = listen(*session, CommandSocket::RemoteSession{pane, host, commandsTarget}); !why.isEmpty()) {
+        *error = why;
+        return {};
+    }
+    m_sessions.insert(session->token, session);
+    return session->socket;
+}
+
 QString RemoteSockets::forwarded(const QString& token)
 {
     const std::shared_ptr<Session> session = m_sessions.value(token);
     if (!session) return QStringLiteral("no remote socket %1: its session has ended").arg(token);
+    // An endpoint has no forward, and the pane's answer is not its own.
+    if (session->endpoint) return QStringLiteral("remote socket %1 has no forward").arg(token);
     if (session->socket.isEmpty()) return QStringLiteral("remote socket %1 is closed").arg(token);
     if (!session->answering) {
         session->answering = true;
@@ -259,7 +331,7 @@ QString RemoteSockets::failed(const QString& token, const QString& reason)
     const std::shared_ptr<Session> session = m_sessions.value(token);
     if (!session) return QStringLiteral("no remote socket %1").arg(token);
     if (reason != QLatin1String("forward")) return QStringLiteral("the reason of a failed forward is forward");
-    if (session->socket.isEmpty()) return QStringLiteral("remote socket %1 has no forward").arg(token);
+    if (session->socket.isEmpty() || session->endpoint) return QStringLiteral("remote socket %1 has no forward").arg(token);
     // Nothing to cancel: the forward was never added, or the client
     // cancelled it after its remoteSocketForwarded got no answer in time,
     // which can come before this.
@@ -272,11 +344,13 @@ QString RemoteSockets::failed(const QString& token, const QString& reason)
 
 void RemoteSockets::paneClosed(quint32 pane)
 {
-    QStringList ended;
+    QList<std::pair<QString, bool>> ended;
     for (const auto& session : std::as_const(m_sessions)) {
-        if (session->pane == pane) ended << session->token;
+        if (session->pane == pane) ended.append({session->token, session->endpoint});
     }
-    for (const QString& token : std::as_const(ended)) close(token, QStringLiteral("the pane of the ssh session closed"));
+    for (const auto& [token, endpoint] : std::as_const(ended)) {
+        close(token, endpoint ? QStringLiteral("the pane of the remote command closed") : QStringLiteral("the pane of the ssh session closed"));
+    }
 }
 
 QString RemoteSockets::socket(const QString& token) const
@@ -289,7 +363,8 @@ void RemoteSockets::close(const QString& token, const QString& reason)
 {
     const std::shared_ptr<Session> session = m_sessions.take(token);
     if (!session) return;
-    if (!session->socket.isEmpty()) cancel(*session);
+    // An endpoint has no forward.
+    if (!session->socket.isEmpty() && !session->endpoint) cancel(*session);
     session->closeSocket(reason, this);
     refresh(session->pane);
 }

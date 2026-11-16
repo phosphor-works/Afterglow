@@ -18,6 +18,7 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -40,6 +41,12 @@ session, but only in the foreground with standard output on the
 terminal. Else it uses the socket of the Wayland display. A run through
 the socket of an ssh session has the commands that a script marks
 remote, and acts on the pane of the ssh session.
+
+In a pane of a mux session, $AFTERGLOW_SOCKET is the socket of the mux
+daemon. The daemon passes the run to the window that shows the session,
+which runs the commands of its scripts. Pane IDs are those of the session.
+Without such a window, the run is refused. In a session of another host,
+a pane runs only the commands that a script marks remote.
 
 A command that reads standard input gets it only when standard input is not
 a terminal. Input that is not UTF-8 text is refused, and so is input over
@@ -279,9 +286,14 @@ public:
                 // pane of its ssh session.
                 fail("$AFTERGLOW_SOCKET is the socket of an ssh session on this computer. It takes commands only on the "
                      "remote host, where afterglow ssh forwards it as DIRECTORY/TOKEN.sock");
+            } else if (session()) {
+                // The daemon passes the connection to the window, whose
+                // Afterglow answers.
+                fail("the Afterglow of the window that shows this session " + off);
             } else if (afterglowName(m_socket.path)) {
-                // Every pane sets $AFTERGLOW_SOCKET to such a name: the hint
-                // below is for a socket that the user named by hand.
+                // Every pane of a window sets $AFTERGLOW_SOCKET to such a
+                // name: the hint below is for a socket that the user named
+                // by hand.
                 fail("the Afterglow at $AFTERGLOW_SOCKET " + off);
             } else {
                 fail("the Afterglow at $AFTERGLOW_SOCKET " + off
@@ -307,6 +319,16 @@ public:
     /// The target of the socket: Target, or Remote::Target on a remote host.
     const std::string& target() const { return m_target; }
     bool remote() const { return m_target == Remote::Target; }
+    /// A pane of a mux session: the daemon passes the connection on to the
+    /// window that shows the session.
+    bool session() const { return m_socket.own && m_socket.session; }
+    /// For a script or command that the list does not have: a session of
+    /// another host lists only the commands that a script marks remote, and
+    /// the client cannot tell such a session from one of this host.
+    std::string remoteHint() const
+    {
+        return session() ? ". In a session of another host, a pane runs only the commands that a script marks remote" : "";
+    }
     const Environment& env() const { return m_env; }
     /// The descriptors that the client writes standard output and error to:
     /// those of env(), or during a run descriptions of its own (OwnOutput).
@@ -350,15 +372,16 @@ private:
             m_signal = SIGINT;
             return false;
         case TerminalAnswer::Kind::Passthrough:
-            reason = "inside tmux, aglow cannot ask the terminal for the socket of an ssh session while allow-passthrough "
-                     "is off (tmux set -g allow-passthrough on)";
+            reason = "inside tmux, " + m_env.program
+                + " cannot ask the terminal for the socket of an ssh session while allow-passthrough is off (tmux set -g "
+                  "allow-passthrough on)";
             local = true;
             break;
         case TerminalAnswer::Kind::Reply:
             if (!answer.answer.path.empty()) {
                 const SocketFile file = socketFile(answer.answer.path);
                 if (file.own) {
-                    m_socket = {answer.answer.path, false, 0, {}};
+                    m_socket = {answer.answer.path, false, 0, false, {}};
                     m_target = Remote::Target;
                     return true;
                 }
@@ -421,12 +444,14 @@ private:
     /// Whether @p path names a socket that afterglow ssh forwarded:
     /// DIRECTORY/TOKEN.sock (Remote::socketPath), with a token of
     /// Remote::TokenBytes in hex. The sockets of an Afterglow are named
-    /// afterglow-*.sock.
+    /// afterglow-*.sock. Those of the mux daemon are in a directory of their
+    /// own, where the state socket of a computer without a machine ID has
+    /// the host name in its name, which can have that form too.
     static bool forwarded(std::string_view path)
     {
         const std::string_view name = path.substr(path.rfind('/') + 1);
         const std::size_t token = 2 * Remote::TokenBytes;
-        return name.size() == token + 5 && name.ends_with(".sock")
+        return name.size() == token + 5 && name.ends_with(".sock") && !inMuxDirectory(path)
             && std::all_of(name.begin(), name.begin() + std::ptrdiff_t(token),
                            [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
     }
@@ -441,12 +466,15 @@ private:
     }
 
     /// Whether @p path has the name of the local socket of an ssh session,
-    /// afterglow-remote-TOKEN.sock (RemoteSockets), which afterglow ssh
-    /// forwards to the remote host.
+    /// which afterglow ssh forwards to the remote host: that of a window,
+    /// afterglow-remote-TOKEN.sock (RemoteSockets), or that of a session
+    /// pane, remote-ID-TOKEN.sock beside the socket of the mux daemon, with
+    /// the ID of the daemon's host.
     static bool sessionName(std::string_view path)
     {
         const std::string_view name = path.substr(path.rfind('/') + 1);
-        return name.starts_with("afterglow-remote-") && name.ends_with(".sock");
+        if (!name.ends_with(".sock")) return false;
+        return name.starts_with("afterglow-remote-") || (name.starts_with("remote-") && inMuxDirectory(path));
     }
 
     /// Why the local lookup gives no socket to use.
@@ -454,11 +482,7 @@ private:
     {
         if (m_socket.path.empty()) return m_socket.error;
         const SocketFile file = socketFile(m_socket.path);
-        if (file.missing) {
-            return !m_socket.own   ? "no running Afterglow on this display"
-                 : m_socket.pane   ? "the Afterglow that runs this pane has exited"
-                                   : "no Afterglow at $AFTERGLOW_SOCKET";
-        }
+        if (file.missing) return noServerReason(m_socket);
         return std::string(m_socket.own ? "cannot use $AFTERGLOW_SOCKET, " : "cannot use the socket of this display, ") + m_socket.path
             + ": " + file.problem;
     }
@@ -468,8 +492,9 @@ private:
     std::string notAsked() const
     {
         if (!m_notAsked || m_socket.own) return {};
-        return ". On the host of an ssh session, aglow asks the terminal for its socket only in the foreground, with standard "
-               "output on the terminal. Else set AFTERGLOW_SOCKET to that socket";
+        return ". On the host of an ssh session, " + m_env.program
+            + " asks the terminal for its socket only in the foreground, with standard output on the terminal. Else set "
+              "AFTERGLOW_SOCKET to that socket";
     }
 
     /// Says why the connection failed, by what the lookup found.
@@ -483,16 +508,9 @@ private:
             // The forward is there, and the shared ssh connection behind it is not.
             fail("the socket of this ssh session does not answer (" + error.message + ")");
         } else if (error.noServer) {
-            fail(std::string(!m_socket.own   ? "no running Afterglow on this display"
-                             : m_socket.pane ? "the Afterglow that runs this pane has exited"
-                                             : "no Afterglow at $AFTERGLOW_SOCKET")
-                 + " (" + error.message + ")" + notAsked());
+            fail(noServerReason(m_socket) + " (" + error.message + ")" + notAsked());
         } else {
-            fail(std::string("cannot connect to ")
-                 + (!m_socket.own   ? "the Afterglow of this display"
-                    : m_socket.pane ? "the Afterglow that runs this pane"
-                                    : "the Afterglow at $AFTERGLOW_SOCKET")
-                 + ": " + error.message);
+            fail("cannot connect to " + socketOwner(m_socket) + ": " + error.message);
         }
     }
 
@@ -609,11 +627,52 @@ std::optional<Json::Value> answerTo(Client& client, std::int64_t id, IpcConnecti
             *error = {{}, client.ipc().closeReason(), false, false, false};
             return std::nullopt;
         }
-        // The router cannot name the request of a line that it could not read.
-        if (IpcConnection::answers(frame, id) || (frame["type"].toString() == "error" && !frame.find("id"))) {
+        if (IpcConnection::answers(frame, id) || IpcConnection::connectionError(frame)) {
             return IpcConnection::answer(std::move(frame), error);
         }
     }
+}
+
+/// Reads the frames that came while this client waits for no answer, and
+/// drops them: before its run the terminal sends only answers. 0 when no
+/// frame is left, else the exit status: after a signal, the end of the
+/// connection, or an error that answers no call, which says why the server
+/// ends the connection (the mux daemon, when the window of a session
+/// closes).
+int dropFrames(Client& client)
+{
+    while (true) {
+        Json::Value frame;
+        switch (client.ipc().next(frame, 0, g_wake[0])) {
+        case IpcConnection::Read::Timeout:
+            return 0;
+        case IpcConnection::Read::Woken:
+            return client.interrupted();
+        case IpcConnection::Read::Closed:
+            return client.lost();
+        case IpcConnection::Read::Frame:
+            if (IpcConnection::connectionError(frame)) {
+                IpcConnection::Error error;
+                (void)IpcConnection::answer(std::move(frame), &error);
+                client.report(error);
+                return 1;
+            }
+            break;
+        }
+    }
+}
+
+/// After a send that failed with @p error: a server that closed its end
+/// can have said why before it closed (IpcConnection::send()). Returns the
+/// exit status.
+int sendFailed(Client& client, const IpcConnection::Error& error)
+{
+    if (error.interrupted) return client.interrupted();
+    if (error.code.empty() && client.ipc().connected()) {
+        if (const int status = dropFrames(client)) return status;
+    }
+    client.report(error);
+    return 1;
 }
 
 /// Sends stdin in parts until it ends. Returns 0, or the exit status to stop
@@ -632,22 +691,18 @@ int sendInput(Client& client, const std::string& run)
             // A signal that comes between two reads must not wait for the
             // producer's next data.
             if (g_signal) return client.interrupted();
-            // The socket too: a terminal that went away shows while stdin
-            // stays idle.
+            // A read of an answer can take the frames after it too: they
+            // wait in the connection, and a poll of its socket does not see
+            // them.
+            if (const int status = dropFrames(client)) return status;
+            // The socket too: a terminal that went away, or a server that
+            // says why it ends the connection, shows while stdin stays idle.
+            // The top of the loop reads what came.
             pollfd fds[3] = {{input, POLLIN, 0}, {g_wake[0], POLLIN, 0}, {client.ipc().fd(), POLLIN, 0}};
             if (::poll(fds, 3, -1) < 0 && errno != EINTR) {
                 return client.fail(std::string("cannot read standard input: ") + std::strerror(errno));
             }
             if (g_signal || fds[1].revents) return client.interrupted();
-            if (fds[2].revents) {
-                // Before the run the terminal sends only answers, and this
-                // client waits for none: the frame is dropped, a close ends
-                // the run.
-                Json::Value frame;
-                const auto status = client.ipc().next(frame, 0, g_wake[0]);
-                if (status == IpcConnection::Read::Woken) return client.interrupted();
-                if (status == IpcConnection::Read::Closed) return client.lost();
-            }
             if (!fds[0].revents) continue;
             char chunk[65536];
             const ssize_t n = ::read(input, chunk, sizeof chunk);
@@ -669,7 +724,8 @@ int sendInput(Client& client, const std::string& run)
         // from a terminal that does not answer. A signal ends both waits,
         // and a lost terminal closes the connection.
         const auto id = client.ipc().send(client.target(), "input", {run, buffer.substr(0, size), last}, &error, g_wake[0]);
-        const auto accepted = id ? answerTo(client, *id, &error) : std::nullopt;
+        if (!id) return sendFailed(client, error);
+        const auto accepted = answerTo(client, *id, &error);
         if (!accepted) {
             if (error.interrupted) return client.interrupted();
             // Over Scripts.commandStdinLimit: the run cannot start, as with a
@@ -694,10 +750,11 @@ std::optional<std::string> workingDirectory(const Environment& env)
     return path;
 }
 
-std::string requestTooLong()
+/// @p longestPane: the check left room for the longest pane ID of a window.
+std::string requestTooLong(bool longestPane = false)
 {
     return "the arguments and the working directory make a request over " + std::to_string(IpcConnection::MaxRequestBytes >> 20)
-        + " MiB";
+        + " MiB" + (longestPane ? " with the longest pane ID of a window" : "");
 }
 
 /// The run, while @p signals watch for signals. @p request holds the
@@ -711,11 +768,7 @@ int watched(Client& client, const Signals& signals, const std::string& run, Json
     }
     IpcConnection::Error error;
     const auto id = client.ipc().send(client.target(), "run", std::move(request), &error, g_wake[0]);
-    if (!id) {
-        if (error.interrupted) return client.interrupted();
-        client.report(error);
-        return 1;
-    }
+    if (!id) return sendFailed(client, error);
     // Without waiting: after a signal the send gives up when it would
     // block, and the connection that closes at the exit cancels the run too.
     auto cancel = [&] {
@@ -755,6 +808,14 @@ int watched(Client& client, const Signals& signals, const std::string& run, Json
             return exit && *exit >= 0 && *exit <= 255 ? int(*exit) : 1;
         }
         const std::string& type = frame["type"].toString();
+        // An error that answers no call: the server ends the connection, and
+        // says why (the mux daemon, when the window of a session closes).
+        // An ack that the closed end refused leaves this frame to read.
+        if (IpcConnection::connectionError(frame)) {
+            (void)IpcConnection::answer(std::move(frame), &error);
+            client.report(error);
+            return 1;
+        }
         const std::string& event = frame["signal"].toString();
         const Json::Array& eventArgs = frame["args"].toArray();
         if (type != "event" || frame["target"].toString() != client.target() || eventArgs.size() != 2 || eventArgs[0].toString() != run)
@@ -796,7 +857,9 @@ int watched(Client& client, const Signals& signals, const std::string& run, Json
 /// waits for room or the wake. O_NONBLOCK on descriptors 1 and 2 themselves
 /// would change the description that the shell and other processes share.
 /// A file or a socket keeps the shared one: a file does not hold a write
-/// back, and a socket cannot be opened again.
+/// back, and a socket cannot be opened again. So does the master of a
+/// pseudo-terminal: an open of its path makes a new pair, whose master
+/// nobody reads.
 class OwnOutput
 {
 public:
@@ -825,6 +888,9 @@ private:
     {
         struct stat info{};
         if (::fstat(fd, &info) != 0 || !(S_ISFIFO(info.st_mode) || ::isatty(fd))) return -1;
+        // Only a master gives its pseudo-terminal's number.
+        unsigned int number = 0;
+        if (!S_ISFIFO(info.st_mode) && ::ioctl(fd, TIOCGPTN, &number) == 0) return -1;
         // A pipe with no reader left gives ENXIO: the shared one then gets
         // its EPIPE, as before.
         const std::string path = "/proc/self/fd/" + std::to_string(fd);
@@ -953,18 +1019,26 @@ int start(Client& client, const std::vector<std::string>& args)
     if (running && client.remote() && !pane) request[5] = std::int64_t(0);
     // A run call that the router would refuse for the target that the
     // lookup found: else all of the input would go, for a run that cannot
-    // start.
-    if (running && !IpcConnection::fits(client.target(), "run", request)) return client.fail(requestTooLong(), UsageError);
+    // start. A mux daemon passes the run of a session pane to the window
+    // that shows the session, which names the pane by its own ID: the call
+    // must fit with the longest one. So must a remote run that names a
+    // pane, as the far end can be the daemon of a session pane there too.
+    if (running) {
+        Json::Array widest = request;
+        const bool longestPane = (client.session() || client.remote()) && widest[5].toInteger().value_or(0) != 0;
+        if (longestPane) widest[5] = std::int64_t(0xffffffff);
+        if (!IpcConnection::fits(client.target(), "run", widest)) return client.fail(requestTooLong(longestPane), UsageError);
+    }
     if (at == args.size()) {
         const std::string out = listing(*commands, {});
         if (!out.empty()) return client.print(out);
         // The socket of an ssh session lists only the commands that a script marks remote.
-        return client.print(client.remote() ? "No script has commands that run from a remote host (remote = true).\n"
-                                            : "No script has commands.\n");
+        if (client.remote()) return client.print("No script has commands that run from a remote host (remote = true).\n");
+        return client.print("No script has commands" + client.remoteHint() + (client.session() ? " (remote = true).\n" : ".\n"));
     }
     const std::string& script = args[at];
     const bool known = std::any_of(commands->begin(), commands->end(), [&](const Command& c) { return c.script == script; });
-    const std::string noScript = "no script " + script + " with commands (" + environment.program + " lists them)";
+    const std::string noScript = "no script " + script + " with commands (" + environment.program + " lists them)" + client.remoteHint();
     if (!running) {
         if (!known) return client.fail(noScript, UsageError);
         // ID --help asks for the commands. ID alone is a usage error: the
@@ -982,7 +1056,7 @@ int start(Client& client, const std::vector<std::string>& args)
         // script, and only the refusal of its run says why. A command that
         // it does not know gets the message here, which says where to look.
         const std::string unknown = known ? "no command " + name + " in " + script + " (" + environment.program + " " + script
-                + " --help lists them)"
+                + " --help lists them)" + client.remoteHint()
                                           : noScript;
         return runCommand(client, run, std::move(request), false, unknown);
     }

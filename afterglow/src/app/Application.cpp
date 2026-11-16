@@ -10,6 +10,8 @@
 #include "../chrome/ChromeLayer.h"
 #include "../desktop/DragDrop.h"
 #include "../mux/MuxClient.h"
+#include "../mux/MuxRoute.h"
+#include "../control/SessionControl.h"
 
 #include <QIcon>
 #include <QStandardPaths>
@@ -27,16 +29,97 @@
 
 #include <algorithm>
 #include <functional>
+#include <initializer_list>
+#include <mutex>
+#include <string>
+#include <system_error>
+#include <thread>
+#include <vector>
 
 Q_LOGGING_CATEGORY(lcApp, "afterglow.app", QtInfoMsg)
 
 namespace Afterglow {
 
+/// What came of the calls of a session window's attach that wait for the
+/// daemon: the way there and the connection that answered, or an error.
+struct SessionAttached
+{
+    AfterglowMux::Route route;
+    std::shared_ptr<SessionLink> link;
+    QString error;
+};
+
+/// Where the attaches that run off the GUI thread give their outcome: the
+/// application while it lives. An attach over ssh can wait for minutes, and
+/// a quit waits for it only a bounded time (MuxClient::waitForCallThreads).
+struct LaunchMailbox
+{
+    std::mutex mutex;
+    Application* application = nullptr;
+};
+
 namespace {
 const QString QuickShortcutId = QStringLiteral("toggle-quick-terminal");
+
+/// What the attach of a session's window needs, read on the GUI thread,
+/// which changes the environment that muxSockets() reads (an activation
+/// token).
+struct SessionAttach
+{
+    QString session;
+    QString host; ///< the ssh destination, empty for this computer
+    bool takeover = true;
+    AfterglowProto::MuxSockets sockets; ///< for this computer
+    QString remoteCommand;
+    int controlPersist = 0;
+    std::size_t eventQueue = 0;
+    std::size_t history = 0;
+    /// Taken on the GUI thread, which changes it (an activation token).
+    AfterglowMux::Environment environment;
+};
+
+SessionAttach sessionAttach(const Settings& settings, const QString& session, const QString& host, bool takeover)
+{
+    return {session,
+            host,
+            takeover,
+            host.isEmpty() ? AfterglowProto::muxSockets() : AfterglowProto::MuxSockets{},
+            settings.mux.remoteCommand,
+            settings.sshControlPersist,
+            settings.mux.eventQueue,
+            std::size_t(settings.terminal.maxScrollback),
+            AfterglowMux::currentEnvironment()};
+}
+
+/// The calls of the attach that wait for the daemon, with no Qt object: for
+/// any thread.
+SessionAttached attachOnAnyThread(const SessionAttach& job)
+{
+    SessionAttached attached;
+    if (job.host.isEmpty()) {
+        attached.route.sockets = job.sockets;
+    } else if (auto remote = muxRoute(job.host, job.remoteCommand, job.controlPersist, job.environment, &attached.error)) {
+        attached.route = std::move(*remote);
+        // A window has no terminal: ssh joins the connection that a terminal
+        // signed in (afterglow mux --ssh), or signs in with keys alone. It
+        // never asks on the terminal that started this process.
+        std::vector<std::string>& proxy = attached.route.proxy;
+        if (!proxy.empty()) proxy.insert(proxy.begin() + 1, std::initializer_list<std::string>{"-o", "BatchMode=yes"});
+    } else {
+        return attached;
+    }
+    // The first answer gets a call's wait: with BatchMode, ssh waits for no
+    // one to sign in, and the launcher waits for this answer.
+    if (auto link = attachSession(job.session, job.takeover, &attached.error, attached.route, job.eventQueue, job.history,
+                                  AfterglowMux::CallTimeoutMs, &job.environment)) {
+        attached.link = std::make_shared<SessionLink>(std::move(*link));
+    }
+    return attached;
+}
 } // namespace
 
-Application::Application(InstanceSocket& socket, const QString& configPath, const QJsonObject& overrides)
+Application::Application(InstanceSocket& socket, const QString& configPath, const QJsonObject& overrides,
+                         ScriptDirectories scriptDirectories)
     : m_settings(configPath.isEmpty() ? SettingsStore::defaultPath() : configPath, overrides)
     , m_device(m_settings.settings().font)
     , m_chromeComponent(&m_engine)
@@ -58,11 +141,25 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
                       m_commandSocket.budget())
     , m_services{m_device, m_settings, m_chromeComponent, m_shaders, m_scripts, m_audio}
     , m_launch(*this)
+    , m_mailbox(std::make_shared<LaunchMailbox>())
 {
-    // Panes that leave a session's window go to a new session, in a window of
-    // its own; the session is new, so no other window shows it.
-    m_control.setSessionWindowOpener([this](const QString& session) {
-        return openLaunch({}, {}, {{QStringLiteral("session"), session}, {QStringLiteral("takeover"), false}});
+    m_mailbox->application = this;
+    // Panes that leave a session's window go to a new session, in a window
+    // of its own, and a project's session whose window closed gets a new
+    // one: no other window shows the session, which stays with another
+    // Afterglow that shows it. The attach waits off the GUI thread, as a
+    // launch's does, and Control finishes the move or the open then.
+    m_control.setSessionWindowOpener([this](const QString& session, const QString& host, Control::SessionOpened done) {
+        openLaunch({}, {},
+                   {{QStringLiteral("session"), session}, {QStringLiteral("sessionHost"), host}, {QStringLiteral("takeover"), false}},
+                   std::move(done));
+    });
+    m_control.setSessionLinkShower([this](const QString& session, SessionLink&& link) {
+        WindowOptions window;
+        QString error;
+        window.session = MuxClient::adopt(session, std::move(link), &error, m_settings.settings().mux.eventQueue);
+        if (!window.session) return error;
+        return newWindow(window) ? QString() : QStringLiteral("cannot show session '%1'").arg(session);
     });
     // Some platform-theme versions leave Qt Quick at its default Fusion style.
     // Prefer the desktop bridge on Plasma, preserving explicit style choices
@@ -109,8 +206,12 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
         return m_scripts.runCommand(command, pane, source);
     });
     m_control.setScriptDiagnostics([this] { return m_scripts.diagnostics(); });
-    auto scriptPaths = ScriptHost::defaultSearchPaths();
-    scriptPaths.last() = QFileInfo(m_settings.path()).absolutePath() + QStringLiteral("/scripts");
+    const QString ownScripts = QFileInfo(m_settings.path()).absolutePath() + QStringLiteral("/scripts");
+    QStringList scriptPaths{ownScripts};
+    if (scriptDirectories == ScriptDirectories::System) {
+        scriptPaths = ScriptHost::defaultSearchPaths();
+        scriptPaths.last() = ownScripts;
+    }
     m_scripts.setSearchPaths(scriptPaths);
     m_scripts.setStateDirectory(QFileInfo(m_settings.path()).absolutePath() + QStringLiteral("/state/scripts"));
     // After the command socket, whose slot for the same settings runs first.
@@ -139,6 +240,8 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
 
     bindShortcuts();
     // Last: from here launches that waited on the socket get their windows.
+    // The router is this process's, and nothing else registers the target:
+    // a refusal is a bug, which launches would see as NO_SUCH_TARGET.
     if (!m_socket.router().registerTarget(QLatin1String(LaunchApi::Target), &m_launch)) {
         qCWarning(lcApp) << "another object holds the launch target";
     }
@@ -146,6 +249,11 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
 
 Application::~Application()
 {
+    {
+        // The attaches that still wait drop their answers from here.
+        const std::lock_guard lock(m_mailbox->mutex);
+        m_mailbox->application = nullptr;
+    }
     QCoreApplication::instance()->removeEventFilter(this);
     // What quitting ends is no news: the script command runs without a
     // client, which the scripts end as they go, show no notice.
@@ -161,6 +269,9 @@ Application::~Application()
     // The scripts go before Control: its callbacks into them must not outlive them.
     m_control.setScriptCommandRunner({});
     m_control.setScriptDiagnostics({});
+    // Nor its callbacks into this object, which open windows.
+    m_control.setSessionWindowOpener({});
+    m_control.setSessionLinkShower({});
 }
 
 bool Application::eventFilter(QObject* watched, QEvent* event)
@@ -168,13 +279,14 @@ bool Application::eventFilter(QObject* watched, QEvent* event)
     if (event->type() != QEvent::Quit || watched != QCoreApplication::instance()) return QObject::eventFilter(watched, event);
     // A quit (QuitSignals, the end of the desktop session) is not the user
     // closing a session's window: every session keeps running, whatever
-    // Mux.onClose says. QGuiApplication handles the Quit by closing each
-    // window, so each one learns it before its Close.
+    // Mux.onClose says. Each window learns it before it closes: in
+    // ~Application, as this process is a QApplication, which closes only
+    // its widgets on a Quit.
     const QList<TerminalWindow*> windows = TerminalWindow::windows();
     for (TerminalWindow* window : windows) window->keepSessionOnClose();
-    // Qt's own handling, here so that its outcome shows: a window that does
-    // not close (a question before the close) ignores the event and
-    // interrupts the quit.
+    // Qt's own handling, here so that its outcome shows: a widget that does
+    // not close ignores the event and interrupts the quit. The windows then
+    // stay open.
     watched->event(event);
     if (!event->isAccepted()) {
         // No quit: Mux.onClose decides again for the windows that stay open.
@@ -216,6 +328,38 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     auto* window = new TerminalWindow(m_services, options);
     if (!options.empty && !window->focusedPane()) { delete window; return nullptr; }
     m_control.attachWindow(window);
+    // `afterglow ctl` for the session: the calls that only this window can
+    // answer, which the daemon passes it.
+    if (options.session) {
+        options.session->setControlHandler(
+            [this, shown = QPointer<TerminalWindow>(window)](const QString& fn, const QJsonArray& args, qint64 client, MuxClient::ControlReply reply) {
+                if (!shown) return reply({{}, QStringLiteral("the window of the session closed")});
+                answerSessionCall(m_control, m_settings.settings(), *shown, fn, args, client, std::move(reply));
+            });
+        // `aglow run` in a session pane: the commands target of this
+        // process serves it, as it serves a pane outside a session. A
+        // client of another host gets a socket of a remote session.
+        MuxCommands::Host commands;
+        commands.socket = [](QString* error) {
+            const QString path = InstanceSocket::processPath();
+            if (path.isEmpty()) *error = QStringLiteral("this afterglow listens on no socket, so it runs no commands for session panes");
+            return path;
+        };
+        commands.remote = [this](quint32 pane, const QString& host, bool commandsTarget, QString* error) {
+            return m_remoteSockets.endpoint(pane, host, commandsTarget, error);
+        };
+        commands.pane = [shown = QPointer<TerminalWindow>(window)](std::uint32_t id) -> std::optional<quint32> {
+            const Pane* pane = shown ? shown->sessionPane(id) : nullptr;
+            if (!pane) return std::nullopt;
+            return pane->id();
+        };
+        commands.focused = [shown = QPointer<TerminalWindow>(window)]() -> std::optional<quint32> {
+            const Pane* pane = shown ? shown->focusedPane() : nullptr;
+            if (!pane || !pane->isSessionPane()) return std::nullopt;
+            return pane->id();
+        };
+        options.session->setCommandsHost(std::move(commands));
+    }
     connect(window, &TerminalWindow::newWindowRequested, this,
             [this](const QString& cwd) { newWindow({cwd, {}, false, false, {}, false}); });
     connect(window, &QObject::destroyed, this, &Application::quitWhenNoWindowsRemain, Qt::QueuedConnection);
@@ -244,40 +388,117 @@ void withActivationToken(const QVariantMap& options, const std::function<void()>
 
 } // namespace
 
-QString Application::openLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+void Application::openLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& options, LaunchDone done)
 {
     WindowOptions window{workingDirectory, command, false, options.value(QStringLiteral("directoryGiven")).toBool(),
                          options.value(QStringLiteral("title")).toString(), options.value(QStringLiteral("hold")).toBool()};
     // afterglow mux attach: the window shows a session of the mux daemon.
     const QString session = options.value(QStringLiteral("session")).toString();
-    if (!session.isEmpty()) {
-        // A window of this process shows it already: the attach would take
-        // the session from it, while this thread, the only reader of its
-        // stream, waits for the daemon. That window comes to the front as it
-        // is, its tab and its focus kept, with the launcher's token that lets
-        // it take the focus. Panes of tabs only: a closed pane waits for its
-        // delete as a child too. A window that closes is no longer the
-        // session's: the attach goes on.
-        for (TerminalWindow* shown : TerminalWindow::windows()) {
-            if (shown->closing()) continue;
-            const QList<Pane*> panes = shown->panes();
-            if (std::none_of(panes.cbegin(), panes.cend(), [&session](const Pane* pane) { return pane->showsSession(session); })) continue;
-            withActivationToken(options, [shown] {
-                if (!shown->isVisible()) shown->show();
-                shown->raise();
-                shown->requestActivate();
-            });
-            return {};
-        }
-        QString error;
-        window.session = MuxClient::attach(session, options.value(QStringLiteral("takeover"), true).toBool(), &error,
-                                           AfterglowProto::muxSockets(), m_settings.settings().mux.eventQueue,
-                                           m_settings.settings().terminal.maxScrollback);
-        if (!window.session) return error;
+    if (session.isEmpty()) return done(showLaunch(window, options));
+    const QString host = options.value(QStringLiteral("sessionHost")).toString();
+    // A window of this process shows it already: that window comes to the
+    // front. An attach would take the session from it into a new window. A
+    // window that closes is no longer the session's: the attach goes on.
+    // Another name of the same host makes the attach take the session,
+    // which works too.
+    if (TerminalWindow* shown = sessionWindow(session, host)) {
+        raiseForLaunch(shown, options);
+        return done({});
     }
+    // An attach of this session waits already, for a launch a moment ago: its
+    // window answers this launch too. A second attach would take the session
+    // from that window, or fail for it. The attach that waits keeps its
+    // takeover.
+    for (SessionLaunch& waiting : m_sessionLaunches) {
+        if (waiting.session != session || waiting.host != host) continue;
+        waiting.joined.append({workingDirectory, command, options, std::move(done)});
+        return;
+    }
+    // The daemon of this computer, or of the ssh destination: the connection,
+    // which ssh can make, and the attach call wait off the GUI thread, which
+    // goes on drawing the other windows meanwhile.
+    SessionAttach job = sessionAttach(m_settings.settings(), session, host, options.value(QStringLiteral("takeover"), true).toBool());
+    const quint64 id = ++m_lastSessionLaunch;
+    m_sessionLaunches.insert(id, SessionLaunch{window, options, std::move(done), session, host, {}});
+    try {
+        std::thread([counted = MuxClient::CallThread(), mailbox = m_mailbox, id, job = std::move(job)]() mutable {
+            // Counted to the end of the body: a quit waits for it
+            // (MuxClient::waitForCallThreads), before the statics go.
+            const MuxClient::CallThread running = std::move(counted);
+            auto attached = std::make_shared<SessionAttached>(attachOnAnyThread(job));
+            const std::lock_guard lock(mailbox->mutex);
+            if (!mailbox->application) return;
+            QMetaObject::invokeMethod(
+                mailbox->application,
+                [application = mailbox->application, id, attached] { application->sessionAttached(id, *attached); },
+                Qt::QueuedConnection);
+        }).detach();
+    } catch (const std::system_error& e) {
+        m_sessionLaunches.take(id).done(QStringLiteral("cannot start the attach of session '%1': %2").arg(session, QString::fromLocal8Bit(e.what())));
+    }
+}
+
+void Application::sessionAttached(quint64 id, SessionAttached& attached)
+{
+    SessionLaunch launch = m_sessionLaunches.take(id);
+    if (!launch.done) return;
+    const QString error = showAttached(launch.session, attached, std::move(launch.window), launch.options);
+    launch.done(error);
+    const auto takesOver = [](const QVariantMap& options) { return options.value(QStringLiteral("takeover"), true).toBool(); };
+    for (auto& [workingDirectory, command, options, done] : launch.joined) {
+        if (!error.isEmpty()) {
+            // An attach without the takeover that this launch asks for can
+            // fail where this launch's own would not (another window shows
+            // the session): it tries again on its own.
+            if (takesOver(options) && !takesOver(launch.options)) {
+                openLaunch(workingDirectory, command, options, std::move(done));
+            } else {
+                done(error);
+            }
+            continue;
+        }
+        // Each launcher's token lets the window take the focus for it. The
+        // window can be gone again: its program ended at once.
+        TerminalWindow* shown = sessionWindow(launch.session, launch.host);
+        if (shown) raiseForLaunch(shown, options);
+        done(shown ? QString() : QStringLiteral("cannot show session '%1'").arg(launch.session));
+    }
+}
+
+TerminalWindow* Application::sessionWindow(const QString& session, const QString& host)
+{
+    // Panes of tabs only: a closed pane waits for its delete as a child too.
+    for (TerminalWindow* shown : TerminalWindow::windows()) {
+        if (shown->closing()) continue;
+        const QList<Pane*> panes = shown->panes();
+        if (std::any_of(panes.cbegin(), panes.cend(), [&](const Pane* pane) { return pane->showsSession(session, host); })) return shown;
+    }
+    return nullptr;
+}
+
+void Application::raiseForLaunch(TerminalWindow* window, const QVariantMap& options)
+{
+    withActivationToken(options, [window] {
+        if (!window->isVisible()) window->show();
+        window->raise();
+        window->requestActivate();
+    });
+}
+
+QString Application::showAttached(const QString& session, SessionAttached& attached, WindowOptions window, const QVariantMap& options)
+{
+    if (!attached.link) return attached.error;
+    QString error;
+    window.session = MuxClient::adopt(session, std::move(*attached.link), &error, m_settings.settings().mux.eventQueue);
+    if (!window.session) return error;
+    return showLaunch(window, options);
+}
+
+QString Application::showLaunch(const WindowOptions& window, const QVariantMap& options)
+{
     TerminalWindow* w = newWindow(window);
-    if (!w && window.session) return QStringLiteral("cannot show session '%1'").arg(session);
-    if (!w) return QStringLiteral("cannot start %1").arg(command.isEmpty() ? QStringLiteral("the shell") : command.first());
+    if (!w && window.session) return QStringLiteral("cannot show session '%1'").arg(window.session->session());
+    if (!w) return QStringLiteral("cannot start %1").arg(window.command.isEmpty() ? QStringLiteral("the shell") : window.command.first());
     withActivationToken(options, [w] { w->requestActivate(); });
     return {};
 }
@@ -306,9 +527,18 @@ LaunchApi::LaunchApi(Application& application)
 
 void LaunchApi::newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
 {
-    if (const QString error = m_application.openLaunch(workingDirectory, command, options); !error.isEmpty()) {
-        sendErrorReply(error);
-    }
+    // The launcher waits for the window, which for a session shows after
+    // this returns. A pending reply goes on the GUI thread, as the
+    // application's answers do.
+    auto reply = std::make_shared<PhosphorIpc::IpcPendingReply>(deferReply());
+    // Past the router's limit of waiting calls, the router fails the call,
+    // and the launcher reports that failure: no window opens for it. A call
+    // from no connection has nobody to answer, and opens its window.
+    if (!reply->isValid() && connectionId() != 0) return;
+    m_application.openLaunch(workingDirectory, command, options, [reply](const QString& error) {
+        if (error.isEmpty()) reply->finish();
+        else reply->fail(error);
+    });
 }
 
 void LaunchApi::toggleQuickTerminal()

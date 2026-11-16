@@ -1815,7 +1815,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         if (kind == QLatin1String("read_text") || kind == QLatin1String("read_region")) {
             const QVariant limit = raw.value(QStringLiteral("max_bytes"), 65536);
             if (!integer(limit, 1, MaxReadTextBytes))
-                error = QStringLiteral("max_bytes must be a whole number from 1 to %1").arg(MaxReadTextBytes);
+                error = maxBytesError();
             // The helpers' default, also for an effect built by hand.
             effect.insert(QStringLiteral("max_bytes"), limit.toDouble());
         }
@@ -1875,8 +1875,10 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 error = QStringLiteral("target must be a pane ID or zero");
             else if (!beside && !away)
                 error = QStringLiteral("placement must be left, right, up, down, new-tab or new-window");
-            else if (beside == (target == 0))
-                error = QStringLiteral("left, right, up and down need a target pane. new-tab and new-window take none");
+            else if (beside && target == 0)
+                error = QStringLiteral("left, right, up and down need a target pane");
+            else if (placement == QLatin1String("new-window") && target != 0)
+                error = QStringLiteral("new-window takes no target pane");
         }
         if (kind == QLatin1String("overlay")) {
             // The helper passes the options through whole: OverlaySpec, the
@@ -2025,8 +2027,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             error = QStringLiteral("move_tab needs a tab index of 0 or more");
         } else if (kind == QLatin1String("pulse") && pulseEffect(str(effect, "effect")) == 0) {
             error = QStringLiteral("pulse effect must be portal, flash, shake or a number from 1 to 255");
-        } else if (kind == QLatin1String("pulse") && !(effect.value(QStringLiteral("duration_ms")).toDouble() >= 50
-                                                      && effect.value(QStringLiteral("duration_ms")).toDouble() <= 10000
+        } else if (kind == QLatin1String("pulse") && !(integer(effect.value(QStringLiteral("duration_ms")), 50, 10000)
                                                       && integer(effect.value(QStringLiteral("color")), 0, 255))) {
             error = QStringLiteral("pulse needs 50 to 10000 ms and a palette color from 0 to 255");
         } else if (kind == QLatin1String("sleep") && !request.startsWith(AwaitPrefix)) {
@@ -2132,7 +2133,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             }
         } else if (kind == QLatin1String("timer") || kind == QLatin1String("cancel") || kind == QLatin1String("exec")
                    || kind == QLatin1String("read_file") || kind == QLatin1String("watch_file")) {
-            result = m_tasks->apply(script->owner, effect, completion(script, request, kind, eventPane),
+            result = m_tasks->apply(script->owner, effect, completion(script, request, kind, eventPane, false),
                 [this, weak = std::weak_ptr<Script>(script), eventPane](const QString& handler, QVariantMap event, quint64 task) {
                     if (auto script = weak.lock()) emitOwned(script, handler, std::move(event), eventPane, task);
                     else m_tasks->claim(task);
@@ -2142,7 +2143,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 // Named or numbered, the window takes the effect's number.
                 effect.insert(QStringLiteral("effect"), QString::number(pulseEffect(str(effect, "effect"))));
             }
-            result = m_callbacks.applyOwned ? m_callbacks.applyOwned(script->owner, effect, completion(script, request, kind, eventPane))
+            result = m_callbacks.applyOwned ? m_callbacks.applyOwned(script->owner, effect, completion(script, request, kind, eventPane, true))
                                             : m_callbacks.apply(effect);
             if (!result.error.isEmpty() && result.code.isEmpty()) {
                 result.code = QStringLiteral("operation_failed");
@@ -2171,15 +2172,20 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
 }
 
 std::function<void(ScriptHost::EffectResult)> ScriptHost::completion(const ScriptPtr& script, const QString& request,
-                                                                     const QString& kind, quint32 eventPane)
+                                                                     const QString& kind, quint32 eventPane, bool logged)
 {
-    return [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane, timeout = script->callTimeoutMs](EffectResult finished) {
+    return [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane, logged,
+            timeout = script->callTimeoutMs](EffectResult finished) {
         if (auto script = weak.lock()) {
             // A user who closes a dialog, or a run that ends, is not a fault of the
-            // script. A disabled script keeps the reason of its disable.
+            // script. A disabled script keeps the reason of its disable. A
+            // window's effect that fails later reaches the log as one at once
+            // does.
             if (!finished.error.isEmpty() && finished.code != QLatin1String("cancelled")) {
+                const QString shown = loggable(finished.error, MaxLogCharacters);
                 ++script->effectErrors;
-                if (!script->disabled) script->lastError = loggable(finished.error, MaxLogCharacters);
+                if (!script->disabled) script->lastError = shown;
+                if (logged) qCWarning(lcScripts).noquote() << script->id + QLatin1Char(':') << shown;
             }
             if (!request.isEmpty()) queueResult(script, request, kind, finished, eventPane, timeout);
         }

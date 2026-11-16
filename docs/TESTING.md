@@ -51,8 +51,10 @@ When the tools are there and its own sshd cannot start, the test fails.
 | `BUILD_TESTING` | `ON` | Builds the unit and renderer tests. Requires GTest. |
 | `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng`, the headless conformance host and the [TUI fuzzer](#tui-fuzzing). Adds the regression tests of the host and the fuzzer, [`afterglow_kitten_icat`](#kitten-icat) and `aglow_icat_render` to CTest. |
 | `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`, and with `AFTERGLOW_BUILD_AGLOW` also `afterglow_transfer_kitty`. Requires Python 3 and the native test dependencies. |
-| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the image decoders that `aglow` and `afterglow-mux` share, and the attach stream of `afterglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
-| `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries (see [BUILD.md](BUILD.md#required-software)). Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests, the `RunBinaryTest.*` tests and the `sshd` test of `RemoteCommandsTest.*` report Skipped. |
+| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the image decoders that `aglow` and `aglow-mux` share, and the attach stream of `aglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
+| `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries (see [BUILD.md](BUILD.md#required-software)). Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests, the `RunBinaryTest.*` tests and the `sshd` test of `RemoteCommandsTest.*` report Skipped. So do the native tests `AglowRunInASessionPaneRunsTheCommandsOfItsWindow`, `AglowRunInASessionOfAnotherHostGetsOnlyRemoteCommands` and `AnSshSessionInASessionPaneRunsRemoteCommandsThroughTheDaemon`. |
+| `AFTERGLOW_AGLOW_ONLY` | `OFF` | Builds only `aglow` and `aglow-mux`, with no Qt (see [BUILD.md](BUILD.md#build-aglow-and-aglow-mux-alone)). The tests are then only those of the libraries that they link, of `aglow` and of `mux/`. The configuration stops when `AFTERGLOW_BUILD_TOOLS`, `AFTERGLOW_BUILD_FUZZERS`, `AFTERGLOW_BUILD_VTDIFF` or `AFTERGLOW_NATIVE_TESTS` is on. |
+| `AFTERGLOW_BUILD_MUX` | `ON` | Shows only with `AFTERGLOW_AGLOW_ONLY`. Builds `aglow-mux` and adds `afterglow_mux_tests` (`Mux.*`). Requires PCRE2 and the PlasmaZones checkout. When it is `OFF`, the build has no tests of `aglow-mux`, `afterglow-vt` or `afterglow-pty`. |
 | `AFTERGLOW_BUILD_VTDIFF` | `OFF` | Builds `afterglow_vtdiff`, which compares the terminal core with libghostty-vt. Requires libghostty-vt 1.0 in `CMAKE_PREFIX_PATH`. See [Differences with libghostty-vt](#differences-with-libghostty-vt). |
 
 With `AFTERGLOW_NATIVE_TESTS=ON`, run only the native suite:
@@ -103,7 +105,7 @@ Run the sanitizer build before a pull request that changes a parser, a protocol 
 
 `UBSAN_OPTIONS=halt_on_error=1` makes a test fail at the first finding. Without it, the test prints the finding and passes.
 A finding in a child process that decodes an image ends only that process, as a corrupt image does.
-`afterglow-mux` writes a line about it on its standard error, and `aglow` reports that the decoder crashed.
+`aglow-mux` writes a line about it on its standard error, and `aglow` reports that the decoder crashed.
 A test that expects a refusal of the image can still pass. `Image.ImageDecode.*` runs the decoders on corrupt files in the test process, where a finding fails the test.
 
 | Leaks that the leak run does not report | Reason |
@@ -280,8 +282,8 @@ The fuzz targets need clang for C and C++, and a separate build directory.
 The targets compile these parts with the sanitizers:
 
 - the terminal core and the protocol library, with zlib-ng and xxHash
-- the image decoders that `aglow` and `afterglow-mux` share, with libpng, libjpeg-turbo and libwebp
-- the codecs of the attach stream of `afterglow-mux`, and the JSON values of its calls
+- the image decoders that `aglow` and `aglow-mux` share, with libpng, libjpeg-turbo and libwebp
+- the codecs of the attach stream of `aglow-mux`, and the JSON values of its calls
 
 Build only the fuzz targets in a fuzz build directory.
 The commands below turn off the tests and build the four targets by name.
@@ -292,8 +294,8 @@ A fuzz build does not build `aglow`.
 | --- | --- |
 | `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. One control record sends the rest of the input as a state frame to the reader of a replica terminal. A second replica (the mirror) gets a frame of a writer after each control record. About a quarter of these frames leave out the screens, as for a pane that you cannot see. About an eighth of the records mark the text, as a read does. When the writer says that the frames carried a mark, the mirror must have the rows of that mark. At the end, at the 1 MiB budget, the writer must catch up within 4,096 frames. The mirror must then show the text of the terminal, and the same images with the same frame counts. The writer must say that the frames carried the last mark. |
 | `afterglow_protofuzz` | The protocol readers for remote input. The first byte selects the reader. |
-| `afterglow_imagefuzz` | An image file to the image decoders of `aglow` and `afterglow-mux` (`libs/afterglow-image`). These are its GIF and BMP readers, and libpng, libjpeg-turbo and libwebp. It also stops at a result that breaks what `Decode.h` promises. |
-| `afterglow_muxfuzz` | The readers of the attach stream of `afterglow-mux`, and of the JSON values of its calls. The first byte selects the reader. The stream readers take host calls, events and input. The JSON readers take layouts, launches and pane sizes. A host call or a JSON value that reads must read the same after it is written again. A layout must stay a valid layout while its panes leave it. The state frames of panes are in `afterglow_vtfuzz`. |
+| `afterglow_imagefuzz` | An image file to the image decoders of `aglow` and `aglow-mux` (`libs/afterglow-image`). These are its GIF and BMP readers, and libpng, libjpeg-turbo and libwebp. It also stops at a result that breaks what `Decode.h` promises. |
+| `afterglow_muxfuzz` | The readers of the attach stream of `aglow-mux`, and of the JSON values of its calls. The first byte selects the reader. The stream readers take host calls, events and input. The JSON readers take layouts, launches and pane sizes. A host call or a JSON value that reads must read the same after it is written again. A layout must stay a valid layout while its panes leave it. The state frames of panes are in `afterglow_vtfuzz`. |
 
 Build the targets:
 
@@ -694,21 +696,24 @@ See [native test dependencies](#native-test-dependencies).
 Run the tests of the control socket, `afterglow ctl`, the `commands` target and `aglow run`:
 
 ```sh
-ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|CtlBinaryTest|CtlOverlayTest|CtlScreenshotTest|CommandSocketTest|RunBinaryTest|AfterglowRunWithoutAglowTest|RemoteCommandsTest|Proto\.RunClient|Proto\.RunInput|Proto\.RunRemote|Proto\.Socket|Proto\.Remote|Proto\.Ipc)\.|RemoteSocket|aglow_run_pty|aglow_tmux_pty'
+ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|ControlEvents|AfterglowHelpTest|CtlBinaryTest|CtlOverlayTest|CtlScreenshotTest|CommandSocketTest|RunBinaryTest|AfterglowRunWithoutAglowTest|RemoteCommandsTest|MuxCommandsLine|Proto\.RunClient|Proto\.RunInput|Proto\.RunRemote|Proto\.Socket|Proto\.Remote|Proto\.Ipc)\.|RemoteSocket|aglow_run_pty|aglow_tmux_pty'
 ```
 
 | Tests | Binary | What they run |
 | --- | --- | --- |
 | `ControlSocketTest.*` | `afterglow_control_tests` | The `control` target: calls and errors, `overlay` and its `overlayInput` parts, and the refusals of `screenshot`. The socket lookup, stale sockets and merged events. |
+| `ControlEvents.AreTheSignalsOfTheControlTarget` | `afterglow_control_tests` | The events of a session of the mux daemon are the signals of the `control` target. Thus `afterglow ctl watch` can subscribe to each of them. |
+| `AfterglowHelpTest.HelpAndVersionNeedNoDesktop` | `afterglow_command_tests` | `afterglow --help` and `--version` print without a display |
 | `CtlBinaryTest.*`, `CtlOverlayTest.*` and `CtlScreenshotTest.*` | `afterglow_command_tests` | `afterglow ctl` against a socket that the test makes: usage errors, `afterglow ctl overlay` with its options and standard input, and `afterglow ctl screenshot` with a `FILE`, `-`, a pipe, a FIFO that a program reads, a socket, a terminal and a directory that takes no new file |
 | `CommandSocketTest.*` | `afterglow_command_tests` | The `commands` target of the socket: the list, runs, standard input, flow control, cancel and the limits |
+| `MuxCommandsLine.*` | `afterglow_command_tests` | How a window passes the lines of a client of a mux session to its Afterglow. The cases are the pane IDs of runs, the target, and the lines that it refuses. |
 | `RunBinaryTest.*` | `afterglow_command_tests` | `aglow run` against a socket that the test makes. They check the exit status, the output, standard input, the pane, signals and the socket lookup. |
 | `AfterglowRunWithoutAglowTest.*` | `afterglow_command_tests` | `afterglow run` in a build without `aglow`. The test checks the error and exit status 127. |
 | `Proto.RunClient.*` and `Proto.RunInput.*` | `afterglow_proto_tests` | The client of `aglow run` against a server that the test plays, and the parts of standard input that it sends |
 | `Proto.RunRemote.*` | `afterglow_proto_tests` | How the client of `aglow run` uses the answer of the terminal to OSC 24569, and its messages when there is no socket |
 | `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run`, and the sockets of the mux daemon: their order and the name of the state socket |
 | `Proto.Remote.*` | `afterglow_proto_tests` | OSC 24569, the remote directory and `aglow remote-prune` |
-| `RemoteCommandsTest.*` | `afterglow_remote_tests` | The sockets of remote commands, the probe of `afterglow ssh` with a fake `ssh`, and an acceptance test with `sshd` |
+| `RemoteCommandsTest.*` | `afterglow_remote_tests` | The sockets of remote commands, also those that a window gives the clients of a mux session. The probe of `afterglow ssh` with a fake `ssh`, and an acceptance test with `sshd`. |
 | `Proto.Ipc.*` | `afterglow_proto_tests` | The phosphor-ipc client of the protocol library |
 | `Extensions.*RemoteSocket*` | `afterglow_vt_tests` | The answer of the pane to OSC 24569: the path or the reason, and the order of the answer before DA1 |
 | `aglow_run_pty` and `aglow_tmux_pty` | Python scripts | The OSC 24569 query of `aglow run` in a pseudo-terminal, also in a private tmux server. See [aglow tests](#aglow-tests) |
@@ -738,19 +743,22 @@ Run the test in the `debug` preset, which has the sanitizers, to see it every ti
 Run the tests of the [mux daemon](MUX.md), of `afterglow mux` and of the server side of its protocol:
 
 ```sh
-ctest --test-dir build --output-on-failure -j4 -R '^((Proto\.(IpcServer|Socket)|Mux|MuxClient|MuxCommandTest|StateSync|Image|WindowImageDecode)\.|PaneLaunch\.ASessionsPaneReadsTheSessionsEnvironment$|ShellIntegration\.ReadsTheInheritedEnvironmentWhenGiven$|SplitTree\.PreorderGoesBothWays$)'
+ctest --test-dir build --output-on-failure -j4 -R '^((Proto\.(IpcServer|Socket)|Mux|MuxClient|MuxCommandTest|StateSync|Image|WindowImageDecode)\.|PaneLaunch\.ASessionsPaneReadsTheSessionsEnvironment$|ConfigTest\.ReadsTheVariablesThatASessionUpdates$|ProjectStore\.(TheSessionOfAProjectIsTrueOrFalse|TheFirstPaneIsTheFirstLeafOfTheFirstTab|ThePanesComeInTheOrderOfTheLayout)$|ShellIntegration\.ReadsTheInheritedEnvironmentWhenGiven$|SplitTree\.PreorderGoesBothWays$)'
 ```
 
 | Tests | Binary | What they run |
 | --- | --- | --- |
-| `Proto.IpcServer.*` | `afterglow_proto_tests` | The server side of the phosphor-ipc wire format that `afterglow-mux` uses: requests, errors, the listener and long lines |
+| `Proto.IpcServer.*` | `afterglow_proto_tests` | The server side of the phosphor-ipc wire format that `aglow-mux` uses: requests, errors, the listener and long lines |
 | `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run`, and the sockets of the mux daemon: their order and the name of the state socket |
-| `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `afterglow-mux`, and session names. The keys and fields that belong to the protocol version. The bytes of the attach stream and of each host call, and the frames and calls that its decoders refuse. |
-| `Mux.MuxLayout.*` | `afterglow_mux_tests` | The tabs and splits of a session (`mux/protocol/MuxLayout.cpp`). A layout goes to text and back. The reader refuses what is not a layout, more than 256 panes and titles longer than 1,024 bytes. An error names its cause, and shows a key from the wire safely. The largest layout fits one frame of the attach stream. A tree of 256 panes needs no deep JSON. A closed pane gives its place to the other side of its split, and a tab without panes goes. The daemon's reconcile drops the panes that went, adds the new ones and moves the current tab as a close does. |
-| `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `afterglow-mux` with a runtime directory and a state directory of its own. The cases are sessions, the environment of a pane, the answers to queries, the refused control calls, and when the daemon exits. The daemon sets the `AFTERGLOW_` variables over those of the client. A session that panes moved to has the terminal values of their first session. |
+| `Mux.MuxProtocol.*` | `afterglow_mux_tests` | The values of the calls of `aglow-mux`, and session names. The keys and fields that belong to the protocol version. The bytes of the attach stream, of each host call and of the relay frames that pass a client to a window. The frames and calls that its decoders refuse. |
+| `Mux.MuxLayout.*` | `afterglow_mux_tests` | The tabs and splits of a session (`mux/protocol/MuxLayout.cpp`). A layout goes to text and back. The reader refuses what is not a layout, more than 256 panes and titles longer than 1,024 bytes. An error names its cause, and shows a key from the wire safely. The largest layout fits one frame of the attach stream. A tree of 256 panes needs no deep JSON. A closed pane gives its place to the other side of its split, and a tab without panes goes. The daemon's reconcile drops the panes that went, adds the new ones and moves the current tab as a close does. The daemon's own edits for `afterglow ctl --session`. A split puts the new pane on its side with the focus. A new tab goes after the tab of its pane and shows. A focus shows the tab of its pane. The panes keep their titles and commands. |
+| `Mux.MuxDaemon.*` | `afterglow_mux_tests` | `aglow-mux` with a runtime directory and a state directory of its own. The cases are sessions, the environment of a pane, the answers to queries, the refused control calls, and when the daemon exits. The daemon sets the `AFTERGLOW_` variables over those of the client. A session that panes moved to has the terminal values of their first session. |
 | `Mux.MuxAttach.*` | `afterglow_mux_tests` | A window of a session, played without Qt. The cases are listed below the table. |
-| `Mux.MuxImageDecoder.*` | `afterglow_mux_tests` | The image decoder of `afterglow-mux`. It decodes the pixels of a PNG with alpha, a JPEG, a WebP and a BMP. It decodes the first frame of a GIF and of a WebP animation. It refuses a format other than PNG for Kitty graphics and formats that it does not read. It refuses a cut PNG, Apple's CgBI PNG, a side of 10,001 pixels and more than 320 MiB of pixels. A side of 10,000 pixels decodes. A server that is missing does not start again for a minute, and neither do two in a row that end before they answer. A server that ended after it answered starts again, and so does a server killed before its first image. One that did not answer by its deadline starts again too. A decode ends at its deadline, and when its pane closes, also while it waits for another pane's decode. A pane that closes while its request waits leaves the same server to the other panes, and the process of its image ends. A decoding process has no new privileges, the filter of its system calls and limits on its memory, its CPU time and its core file. Four panes decode at once. The server runs only as the child of its daemon. |
-| `Mux.MuxPane.*` | `afterglow_mux_tests` | A pane of `afterglow-mux` while its program's image decodes. The daemon's calls return at once, and a resize that waited reaches the next frame, for which the pane wakes the daemon. A change of visibility waits for the decode. Input waits in the pane behind a resize and a clear, and reaches the program after them. The pane keeps no more input than half of the PTY's queue, with what the PTY still holds. A pane that closes ends its decode at once. The tests stop the decoder's server (SIGSTOP) to make a decode wait. They skip when the kernel does not list the children of a process. |
+| `Mux.MuxControl.*` | `afterglow_mux_tests` | The control target of the daemon for `afterglow ctl --session`. A call needs a selected session. Without a window, the daemon answers the calls on panes, text and layout with its own pane IDs, and refuses what only a window does. With a window, the window places the new panes and answers its calls. Overlays and screenshots go to the window with their client, and a screenshot needs read access. `watch` gets the events of a session, merged, and ends with the session or with `Control.enabled` off. The session follows the settings of its window. `afterglow ssh` in a session pane gets a socket of the daemon, unless remote commands are off. A move beside a pane of another session joins that session, with or without a window. |
+| `Mux.MuxImageDecoder.*` | `afterglow_mux_tests` | The image decoder of `aglow-mux`. It decodes the pixels of a PNG with alpha, a JPEG, a WebP and a BMP. It decodes the first frame of a GIF and of a WebP animation. It refuses a format other than PNG for Kitty graphics and formats that it does not read. It refuses a cut PNG, Apple's CgBI PNG, a side of 10,001 pixels and more than 320 MiB of pixels. A side of 10,000 pixels decodes. A server that is missing does not start again for a minute, and neither do two in a row that end before they answer. A server that ended after it answered starts again, and so does a server killed before its first image. One that did not answer by its deadline starts again too. A decode ends at its deadline, and when its pane closes, also while it waits for another pane's decode. A pane that closes while its request waits leaves the same server to the other panes, and the process of its image ends. A decoding process has no new privileges, the filter of its system calls and limits on its memory, its CPU time and its core file. Four panes decode at once. The server runs only as the child of its daemon. |
+| `Mux.MuxPane.*` | `afterglow_mux_tests` | A pane of `aglow-mux` while its program's image decodes. The daemon's calls return at once, and a resize that waited reaches the next frame, for which the pane wakes the daemon. A change of visibility waits for the decode. Input waits in the pane behind a resize and a clear, and reaches the program after them. The pane keeps no more input than half of the PTY's queue, with what the PTY still holds. A pane that closes ends its decode at once. The tests stop the decoder's server (SIGSTOP) to make a decode wait. They skip when the kernel does not list the children of a process. |
+| `Mux.MuxStart.*` | `afterglow_mux_tests` | The start of the daemon through a systemd user manager, with a fake manager that runs no systemd program. A manager that does not answer starts no second daemon. A daemon that another command started answers. |
+| `Mux.MuxProxy.*` and `Mux.MuxConnect.*` | `afterglow_mux_tests` | `aglow-mux proxy` against a fake daemon: what it holds for a daemon that does not read, the end of either side, and a client that stops reading. The proxy commands of a connection to another host: their error output, their sign-in wait, and the next candidate. |
 | `Image.ImageDecode.*` | `afterglow_image_tests` | The image decoders of `libs/afterglow-image` in the test process. PNG of each kind: RGBA, RGB, gray and gray with alpha, 2 bits, 16 bits, a palette, transparency, interlace and a gAMA chunk. JPEG: color, gray, progressive, Adobe CMYK, warnings, a fatal error after a warning, 12 bits, the scan limit and a side past the limit. WebP: lossless, lossy, with alpha, and animated, with the frames before damage and the end of a long animation. GIF: the frames and delays of an animation, the transparent canvas, the blocks and the cut files. BMP of each depth and header. The format from the signature, the size from each header, and the files that they refuse. |
 | `WindowImageDecode.*` | `afterglow_imagedecode_tests` | The decoder of a pane outside a session (Qt), with the files of `Image.ImageDecode.*`. It applies the gAMA chunk of a PNG, as Kitty does. It counts the gAMA, sRGB and cICP chunks as libpng does. It reads a top-down BMP. |
 | `StateSync.*` | `afterglow_vt_tests` | The state codec of the mux (`afterglow.state.v1`). A replica terminal that gets only its frames must equal the terminal that parsed the output. The cases are listed below the table. |
@@ -759,6 +767,9 @@ ctest --test-dir build --output-on-failure -j4 -R '^((Proto\.(IpcServer|Socket)|
 | `PaneLaunch.ASessionsPaneReadsTheSessionsEnvironment` | `afterglow_pane_tests` | A new pane of a session's window reads `TERMINFO_DIRS` from the environment of the session, not from the environment of Afterglow |
 | `ShellIntegration.ReadsTheInheritedEnvironmentWhenGiven` | `afterglow_shell_tests` | Shell integration of a session pane reads `SHELL`, `ZDOTDIR` and `AFTERGLOW_SHELL_INTEGRATION` from the environment of the session |
 | `SplitTree.PreorderGoesBothWays` | `afterglow_app_tests` | The split tree of a tab goes to the preorder list of a session layout and back |
+| `ConfigTest.ReadsTheVariablesThatASessionUpdates` | `afterglow_config_tests` | The variables of `Mux.updateEnvironment`: the default names, or the names of the user without those that are not variable names or that Afterglow keeps |
+| `ProjectStore.TheSessionOfAProjectIsTrueOrFalse` | `afterglow_app_tests` | The `session` key of a project is true or false, and false when it is not there |
+| `ProjectStore.TheFirstPaneIsTheFirstLeafOfTheFirstTab` and `ProjectStore.ThePanesComeInTheOrderOfTheLayout` | `afterglow_app_tests` | The panes of a project in the order of its layout, in which a session starts them before its window shows them |
 
 The `StateSync.*` tests cover these cases:
 
@@ -804,7 +815,7 @@ The `StateSync.*` tests cover these cases:
 - A frame that fails after its status and contexts tells the replica's host nothing, and bad modes leave the modes and the screen
 - The reader tells a frame of output from one of history that catches up
 - The rows of either screen that wait for a later frame count as rows that wait, and history and image pixels do not
-- A reload of the window changes only the view options of the replica: word separators, bidirectional layout, bold as bright and minimum contrast. The colors, the cursor and the history stay those of the writer.
+- A reload of the window changes only the view options of the replica. These are word separators, bidirectional layout, bold as bright, minimum contrast, the width of ambiguous characters and the length of the history. The colors, the cursor and the images stay those of the writer.
 - A held frame brings the title, the directory, the status and the marks. The screens, the history, the images and the region scrolls wait for the next update, which matches the terminal.
 - A held frame frees the pixels of an image that the program deleted while they went
 - A mark of the text is reached while the program writes more rows than the frames carry. The replica then has every row of the mark. A new mark waits for the rows that came since, and a reset forgets the mark.
@@ -812,14 +823,14 @@ The `StateSync.*` tests cover these cases:
 
 The `Mux.MuxAttach.*` tests cover these cases:
 
-- The attach call, its keys and its socket, which only the caller may connect to, and which goes after the connect wait
+- The attach call and its keys, and the window's stream on the connection of the call. The connect wait, after which the session is free.
 - The screen, the input, the size of the window, and the channel of a pane
 - Reset and Clear, which change the terminal of the session
 - A takeover, a detach, also one before the window connects, and a window that leaves
 - The last output of a program that exits, before its exit, and a kill
 - A window that reads slowly: fewer frames, and no lost output
 - Input that a full PTY refuses: it waits and arrives whole, and a Kill goes past it
-- The attach sockets that an earlier daemon left, and calls that the daemon refuses
+- A stream that comes together with the attach call, which the daemon refuses, and other calls that it refuses
 - The calls of the pane's terminal to its host reach the window: a bell, an OSC 52 write and a file transfer, in their order
 - With a window, the daemon writes no refusal of a file transfer or a drag and drop query to the program
 - A frame that waits for a decode holds the calls of the pane behind it: a bell comes after the frame with its text
@@ -849,8 +860,12 @@ The `Mux.MuxAttach.*` tests cover these cases:
 - Panes that move to a new session run on there with their layout, and the daemon refuses bad calls to move them
 - A request that waits when its pane moves to a new session gets the answer of a session that no window shows
 - A session starts no more than 256 panes. A window whose stream takes fewer channels gets as many panes as it takes, and the others wait.
+- While no window shows a session, its panes keep a bell, a flash and their newest notifications, and the next window gets them, marked missed. The session keeps no clipboard write.
+- The calls that a window that goes did not get go to the next window in their order, and a close of an OSC 99 notification still takes it away
+- A pane joins another session with its program running, and the daemon refuses bad calls to move it there. A session of 256 panes takes no more.
+- A pane that left a window goes back into it only after that window let it go
 - A pane whose program reads nothing does not stop the input of the other panes
-- A window changes no pane of another session, and only the process of the window that shows a session changes its panes
+- A window changes no pane of another session. Only the window that shows a session changes its panes: a call names that window by the serial of its attach answer.
 - `newPane`, `paneJob` and `paneSession` refuse bad calls
 - A pane that the window does not show gets no screens while it floods, but its title, its bell, its report and its exit. A refresh brings its current screen and history, and the window shows it again on Visible.
 - What the window says about which panes you can see, and its reads of the text of a pane, go past input that waits for a full PTY. Each read gets its answer.
@@ -871,6 +886,13 @@ The `MuxCommandTest.*` tests cover these cases, with the daemon that `afterglow 
 - The largest and smallest values of the settings that a session takes
 - `afterglow mux detach` of a named session, and in a session pane. A name goes before the pane, and a pane ID without `AFTERGLOW_SESSION` is no session pane.
 - `afterglow mux detach` in a pane that moved to another session finds the session that holds the pane now
+- `--ssh` through a fake ssh that runs `aglow-mux proxy` here: `ls`, `detach` and `kill` of the sessions of another host, and no daemon there
+- A new session of another host has the environment of that host, with the variables of the terminal over it
+- A host without `aglow-mux` gives a message that says so
+- `aglow-mux proxy` carries one connection to the daemon, and starts it with `--start`
+- `afterglow ctl --session` acts on a session that no window shows, with the pane IDs of the daemon. So does `afterglow ctl` in a pane of the session.
+- `afterglow ctl --session NAME watch` prints the events of a session that no window shows
+- A session that no window shows has the cell size of the font of the settings. It answers a query of the cell size (CSI 16 t) and places Sixel and iTerm2 images.
 
 These tests in the [native window suite](#native-window-tests) show a session in a real window, with a daemon of the test:
 
@@ -897,11 +919,25 @@ These tests in the [native window suite](#native-window-tests) show a session in
 | `NativeWindow.ClosingAPaneOfASessionsWindowEndsOnlyItsProgram` | Closing a pane or a tab asks about its programs, which the daemon names, and ends only those programs. The close of the window ends the session (`Mux.onClose` kill). |
 | `NativeWindow.AnExitInASessionsWindowClosesOnlyThatPane` | A program that exits closes its pane, with its status. The window and the other pane stay. |
 | `NativeWindow.ATabDetachedFromASessionsWindowBecomesANewSession` | A tab or a pane leaves the window by a drag, a key or the menu. It goes to a new session in a new window. Its programs run on. Moves into and out of the window are refused. |
-| `NativeWindow.ASessionsWindowIsNotSavedAsAProject` | Save Project, from the menu and from `afterglow ctl`, refuses the window of a session and saves nothing |
 | `NativeWindow.APaneOfASessionsWindowStartsInTheSessionsEnvironment` | A new pane starts in the environment of the session, at the size that the window shows it at |
 | `NativeWindow.AQuitLeavesTheSessionsOfItsWindowsRunning` | A quit keeps the sessions running with `Mux.onClose` kill, and asks nothing about their programs. A quit that a window stops keeps `Mux.onClose`. |
 | `NativeWindow.ASessionKeepsTheTabOrderAndTheMovedPanesOfItsWindow` | The window sends its layout after a change of the tab order and a move of a pane to its own tab. A detach by the daemon keeps them for the next window. |
 | `NativeWindow.ALargePasteReachesTheProgramOfASessionWhole` | Input larger than a frame goes in parts, in order |
+| `NativeWindow.AglowRunInASessionPaneRunsTheCommandsOfItsWindow` | `aglow run` in a session pane runs a command of the window's scripts on the window's pane. The command gets its arguments and input, and gives its exit status and 6 MiB of output, also under `setsid -w`. A detach while a command runs ends it with the reason. A session that no window shows refuses the command. The test makes the socket of the test process listen in a directory of its own, and closes it at the end. |
+| `NativeWindow.AglowRunInASessionOfAnotherHostGetsOnlyRemoteCommands` | `aglow run` runs in a pane of a session of another host, through a fake ssh. It runs a command that a script marks remote, with the host as `ev.remote.host`. A command that is not marked remote fails with status 2. |
+| `NativeWindow.AProjectOpensIntoASessionAndAgainIntoTheSameOne` | A project with `"session": true` opens into a session of the test's daemon with its tabs, splits and commands. The open answers after the daemon starts, and a second open meanwhile gets the same window. The window saves the project again with `"session": true`. After its window closed, the project shows the same session, whose new window saves the same commands and titles. `--no-session` opens it into a window. |
+| `NativeWindow.ASplitFromAfterglowCtlDoesNotShowItsWindow` | A split from `afterglow ctl` or a script shows the tab of its pane and gives the new pane the focus. It does not show a hidden window. |
+| `NativeWindow.AWindowShowsASessionOfAnotherHost` | A window shows a session of another host through a fake ssh. A new tab starts there through another proxy call. |
+| `NativeWindow.ASessionFollowsTheSettingsOfItsWindow` | A change of `Colors.background` reaches the terminal of the daemon, which answers OSC 11 with it, and its frames bring it to the pane |
+| `NativeWindow.ASessionTakesTheVariablesOfTheAfterglowThatShowsIt` | A pane that starts after the window attached has the value of a `Mux.updateEnvironment` variable from the Afterglow of the window |
+| `NativeWindow.ASessionsWindowRunsOverlaysAndTakesScreenshotsForCtl` | `afterglow ctl --session overlay` and `screenshot` while a window shows the session. The window runs the overlay over the session pane with the input of the client, and takes the picture. The overlay of a client that goes closes. |
+| `NativeWindow.ASessionOfAnotherHostRunsNoProgramHere` | The window of a session of another host refuses `overlay`, `overlayInput` and `newWindow` with a command. It refuses a script command that a script does not mark remote. |
+| `NativeWindow.CtlForASessionReachesItsWindow` | `afterglow ctl --session` while a window shows the session. The window places the panes that the daemon starts, and answers what only a window can do, such as a title. |
+| `NativeWindow.RemoteSocketsOpenOnlyForTheProcessesOfTheirPane` | The window tells the processes of a pane by their terminal session, and refuses `openRemoteSocket` from a process of no pane |
+| `NativeWindow.AnSshSessionInASessionPaneRunsRemoteCommandsThroughTheDaemon` | `afterglow ssh` runs in a session pane, with a fake ssh whose forward is a link. The daemon keeps the socket and answers the query of `aglow run`. The remote command of `aglow run` runs in the window. At the end the daemon cancels the forward. |
+| `NativeWindow.APaneJoinsTheSessionOfAnotherWindow` | A pane of one session window moves beside a pane of another session window, with the same program and its title. Its last pane moves as a new tab, and its first session ends. A local window takes no session pane and gives none. |
+| `NativeWindow.APaneThatJoinsAnotherSessionComesStraightBack` | A pane moves to another session window and back at once. A move that comes too soon is refused, then the pane comes back, and both windows keep their sessions. |
+| `NativeWindow.AWindowShowsTheNotificationsOfItsDetachedSession` | The window that attaches shows the notifications of a detached session, also for the pane that has the focus, within `Notifications.rateLimit`. |
 
 Not every test starts a daemon. A test that starts one gives it an `XDG_RUNTIME_DIR`, an `XDG_STATE_HOME` and a `HOME` of the test.
 The `Mux.*` tests, the `MuxClient.*` tests and the native tests above do this with `mux/tests/TestDaemon.h`.
@@ -947,7 +983,7 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service, also with `--confirm-paths` answered with y and n | Python 3 |
 | `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |
 | `aglow_static` | Checks that `readelf -d` lists no shared library for `aglow` | `readelf`, and a static `aglow` |
-| `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY`), with `find_package(Qt6)` disabled and no Phosphor directory. Builds it and installs it into the build directory. Checks that the installation holds only `bin/aglow`, its license notices and its completions. Uses the compilers, the build type and the flags of the build, also the flags of each build type. Has the label `slow` | A full build, and the source archives of `cmake/AfterglowDependencies.cmake` or a network connection |
+| `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY` without `AFTERGLOW_BUILD_MUX`), with `find_package(Qt6)` disabled and no Phosphor directory, and checks that the configuration reads neither. Then configures `aglow` and `aglow-mux` alone with `find_package(Qt6)` disabled and the PlasmaZones checkout of the build. Configures them once more with their tests, without building the tests. Builds them and installs them into the build directory. Checks that the installation holds only the two programs, the private libraries of `aglow-mux`, the completions of `aglow` and the license notices. Checks that the installed programs run. Uses the compilers, the build type and the flags of the build, also the flags of each build type. Has the label `slow` | A full build, and the source archives of `cmake/AfterglowDependencies.cmake` or a network connection |
 | `aglow_clipboard_pty` | Plays a terminal for `aglow clipboard` in a pseudo-terminal | Python 3.9 or later |
 | `aglow_run_pty` | Plays a terminal and a terminal socket for the OSC 24569 query of `aglow run`. Checks when `aglow run` does not ask, the modes of the terminal after signals and `Ctrl+C`, and what `aglow remote-prune` removes | Python 3.9 or later |
 | `aglow_tmux_pty` | Runs `aglow icat` and `aglow run` in a private tmux server (`tmux -L`, its own configuration and socket directory) in a pseudo-terminal, with `allow-passthrough` on and off | Python 3.9 or later and tmux 3.3 or later. With no tmux, or a tmux older than 3.3, it reports Skipped |
@@ -956,20 +992,22 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `aglow_icat_render` | Draws the output of `aglow icat` with `afterglow_renderpng` | Python 3.9 or later, `AFTERGLOW_BUILD_TOOLS`, a Wayland display and a Vulkan device |
 
 Without `readelf`, the configuration prints a message and leaves out `aglow_static`.
-`aglow_only_build` compiles zlib-ng, xxHash and the image codecs again, which takes some minutes.
+`aglow_only_build` compiles zlib-ng, xxHash, the image codecs, `afterglow-vt`, `afterglow-pty`, phosphor-channel and `mux/` again, which takes some minutes.
 Run the suite without it:
 
 ```sh
 ctest --test-dir build --output-on-failure -LE slow
 ```
 
-A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` and `Image.*` tests and these tests of the table:
+A [build of aglow and aglow-mux alone](BUILD.md#build-aglow-and-aglow-mux-alone) has the `Proto.*`, `Image.*`, `PtyLib.*` and `Mux.*` tests, and the terminal core tests of `afterglow_vt_tests`.
+It also has these tests of the table:
 
 - `aglow_version`, `aglow_run_usage`, `aglow_no_command`, `aglow_unknown_command` and `aglow_help_unknown_command`
 - The three `aglow_remote_prune_*` tests, and `Aglow.*`
 - `aglow_static`, `aglow_clipboard_pty`, `aglow_run_pty`, `aglow_tmux_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`
 
 It has no test that runs `afterglow`.
+With `AFTERGLOW_BUILD_MUX` off, it has no test of the terminal core, `PtyLib.*` or `Mux.*`.
 
 The Python test scripts need Python 3.9 or later.
 Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skipped.

@@ -4,10 +4,10 @@
 # libFuzzer targets (clang only, for C and C++): afterglow_vtfuzz for the
 # terminal core and the reader of its state frames, afterglow_protofuzz for
 # the protocol readers that take what a remote program sends,
-# afterglow_imagefuzz for the image decoders of aglow and afterglow-mux
+# afterglow_imagefuzz for the image decoders of aglow and aglow-mux
 # (libs/afterglow-image: its GIF and BMP readers, and libpng, libjpeg-turbo
 # and libwebp behind it), and
-# afterglow_muxfuzz for the readers of the attach stream of afterglow-mux and
+# afterglow_muxfuzz for the readers of the attach stream of aglow-mux and
 # of the values of its calls.
 # afterglow_muxfuzz compiles code of mux/, which is GPL-3.0-or-later, so its
 # source is too, and no other target links it. The
@@ -76,8 +76,10 @@ target_link_libraries(afterglow_vtfuzz PRIVATE afterglow_fuzz_proto PkgConfig::P
 add_executable(afterglow_protofuzz protofuzz.cpp)
 target_link_libraries(afterglow_protofuzz PRIVATE afterglow_fuzz_proto)
 
-# The codecs of the attach stream and the readers of the calls' values, as
-# afterglow_mux_protocol compiles them.
+# The codecs of the attach stream and the readers of the calls' values: four
+# sources of afterglow_mux_protocol (MuxHost, MuxLayout, MuxProtocol and
+# MuxStream), compiled again. MuxConnect and MuxStart, which reach and start
+# the daemon, are left out.
 add_executable(afterglow_muxfuzz muxfuzz.cpp "${PROJECT_SOURCE_DIR}/mux/protocol/MuxHost.cpp"
     "${PROJECT_SOURCE_DIR}/mux/protocol/MuxLayout.cpp" "${PROJECT_SOURCE_DIR}/mux/protocol/MuxProtocol.cpp"
     "${PROJECT_SOURCE_DIR}/mux/protocol/MuxStream.cpp")
