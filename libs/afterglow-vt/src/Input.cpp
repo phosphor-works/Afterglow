@@ -623,6 +623,19 @@ std::string encodeKey(const KeyEvent& e, const Modes& modes)
 
 std::string encodeMouse(const MouseEvent& e, const Modes& modes)
 {
+    if (e.action == MouseAction::Leave) {
+        // kitty's mouse leave: the SGR pixel format only, whatever the
+        // tracking mode, as kitty sends it. Bit 8 is the leave, 32 a motion,
+        // with the modifiers; a program ignores the position.
+        if (modes.mouseFormat != MouseFormat::SgrPixels) return {};
+        int cb = 256 | 32;
+        if (e.mods & Mod::Shift) cb |= 4;
+        if (e.mods & Mod::Alt) cb |= 8;
+        if (e.mods & Mod::Ctrl) cb |= 16;
+        char buf[64];
+        const int n = std::snprintf(buf, sizeof buf, "\x1b[<%d;%d;%dM", cb, e.pixelX + 1, e.pixelY + 1);
+        return std::string(buf, std::size_t(n));
+    }
     const MouseTracking t = modes.mouseTracking;
     if (t == MouseTracking::None) {
         return {};

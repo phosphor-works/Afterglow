@@ -1056,6 +1056,10 @@ private:
     /// Copies @p pane's new selection where Terminal.copyOnSelect says.
     void copyOnSelect(Pane* pane);
     bool sendMouse(Pane* pane, const QPointF& pos, int button, int action, Qt::KeyboardModifiers mods);
+    /// Follows the pane whose cells are under the pointer at @p pos (none
+    /// for a position outside the window), and reports kitty's mouse leave
+    /// to the one that it leaves. Not in a drag, as in kitty.
+    void updatePointerPane(const QPointF& pos, Qt::KeyboardModifiers mods);
 
     AfterglowRender::GpuDevice& m_device;
     SettingsStore& m_settings;
@@ -1234,6 +1238,8 @@ private:
     void leaveChrome();
     Qt::MouseButtons m_reportedButtons;
     QPointer<Pane> m_reportedPane; ///< the pane whose program got the reported press
+    QPointer<Pane> m_pointerPane; ///< the pane whose cells are under the pointer (updatePointerPane())
+    QPoint m_pointerPanePixel; ///< the last position in its grid, in pixels
     Qt::MouseButtons m_overviewButtons; ///< the overview took their presses: it takes their releases
 
     // Links under the pointer (while the link modifier is held). Outside

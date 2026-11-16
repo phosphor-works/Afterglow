@@ -467,6 +467,43 @@ TEST(Conformance, RectangleAttributes)
     EXPECT_FALSE(styleAt(2, 1).has(Attr::Inverse));
 }
 
+TEST(Conformance, RectangleAttributesTakeEverySgrCode)
+{
+    // kitty extends DECCARA to every SGR code (deccara.rst): its example
+    // sets a blue background in a rectangle.
+    Term t(10, 3);
+    t.feed("abcdefghij\r\nabcdefghij\r\n");
+    // A protected character and a link on the last row.
+    t.feed("\x1b[1\"qP\x1b[0\"q\x1b]8;;http://example.com\x1b\\L\x1b]8;;\x1b\\");
+    auto styleAt = [&](int x, int y) { return t.t.screen().styles().get(t.t.screen().row(y).at(x).styleId()); };
+    t.feed("\x1b[2*x\x1b[1;2;2;3;44;3;38:2::1:2:3$r\x1b[*x");
+    EXPECT_EQ(styleAt(1, 0).bg, Color::palette(4));
+    EXPECT_EQ(styleAt(2, 1).fg, Color::rgb(1, 2, 3));
+    EXPECT_TRUE(styleAt(2, 1).has(Attr::Italic));
+    EXPECT_EQ(styleAt(3, 0).bg, Color{});
+    EXPECT_EQ(styleAt(1, 2).bg, Color{});
+    // 0 resets every rendition, as SGR 0 does, and leaves the link and
+    // DECSCA's protection.
+    t.feed("\x1b[2*x\x1b[1;1;3;10;7;31$r\x1b[1;1;3;10;0$r");
+    EXPECT_EQ(styleAt(1, 0), Style{});
+    EXPECT_TRUE(styleAt(0, 2).has(Attr::Protected));
+    EXPECT_NE(styleAt(1, 2).link, 0u);
+    EXPECT_FALSE(styleAt(1, 2).has(Attr::Inverse));
+    EXPECT_EQ(styleAt(1, 2).fg, Color{});
+}
+
+TEST(Conformance, KittyBoldOffAndFaintOffAlone)
+{
+    // kitty's SGR 221 and 222 (misc-protocol.rst): 22 turns off both.
+    Term t(10, 3);
+    t.feed("\x1b[1;2m\x1b[221m");
+    EXPECT_FALSE(t.t.screen().cursor.pen.has(Attr::Bold));
+    EXPECT_TRUE(t.t.screen().cursor.pen.has(Attr::Faint));
+    t.feed("\x1b[1;2m\x1b[222m");
+    EXPECT_TRUE(t.t.screen().cursor.pen.has(Attr::Bold));
+    EXPECT_FALSE(t.t.screen().cursor.pen.has(Attr::Faint));
+}
+
 TEST(Conformance, ThemeVisibilityAndSizeReports)
 {
     Term t(10, 3);

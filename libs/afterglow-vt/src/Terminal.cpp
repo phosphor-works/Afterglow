@@ -416,6 +416,168 @@ void Terminal::reportSize()
     reply(std::string_view(buf, std::size_t(n)));
 }
 
+namespace {
+
+/// Applies the SGR codes of @p p from index @p from to @p s: the pen's SGR,
+/// and kitty's DECCARA, which takes every SGR code.
+void applySgr(Style& s, const Params& p, int from)
+{
+    // Reads an extended colour (38/48/58) starting at index i; returns the
+    // index of the last parameter consumed. A component above 255 leaves the
+    // colour unchanged rather than wrapping to another one.
+    auto palette = [](int index, Color& out) {
+        if (index <= 255) {
+            out = Color::palette(std::uint8_t(index));
+        }
+    };
+    auto rgb = [](int r, int g, int b, Color& out) {
+        if (r <= 255 && g <= 255 && b <= 255) {
+            out = Color::rgb(std::uint8_t(r), std::uint8_t(g), std::uint8_t(b));
+        }
+    };
+    auto extendedColor = [&p, &palette, &rgb](int i, Color& out) -> int {
+        if (p.isSub(i + 1)) {
+            int end = i + 1;
+            while (p.isSub(end + 1)) {
+                ++end;
+            }
+            const int subs = end - i;
+            const int kind = p.at(i + 1);
+            if (kind == 5 && subs >= 2) {
+                palette(p.at(i + 2), out);
+            } else if (kind == 2 && subs >= 5) {
+                rgb(p.at(i + 3), p.at(i + 4), p.at(i + 5), out);
+            } else if (kind == 2 && subs == 4) {
+                rgb(p.at(i + 2), p.at(i + 3), p.at(i + 4), out);
+            }
+            return end;
+        }
+        const int kind = p.at(i + 1);
+        if (kind == 5 && i + 2 < p.count) {
+            palette(p.at(i + 2), out);
+            return i + 2;
+        }
+        if (kind == 2 && i + 4 < p.count) {
+            rgb(p.at(i + 2), p.at(i + 3), p.at(i + 4), out);
+            return i + 4;
+        }
+        return p.count;
+    };
+
+    for (int i = from; i < p.count; ++i) {
+        const int v = p.values[i];
+        switch (v) {
+        case 0:
+            s = Style{};
+            break;
+        case 1:
+            s.attrs |= Attr::Bold;
+            break;
+        case 2:
+            s.attrs |= Attr::Faint;
+            break;
+        case 3:
+            s.attrs |= Attr::Italic;
+            break;
+        case 4:
+            if (p.isSub(i + 1)) {
+                const int kind = p.at(++i);
+                s.underline = kind <= 5 ? UnderlineStyle(kind) : UnderlineStyle::Single;
+                while (p.isSub(i + 1)) {
+                    ++i;
+                }
+            } else {
+                s.underline = UnderlineStyle::Single;
+            }
+            break;
+        case 5:
+        case 6:
+            s.attrs |= Attr::Blink;
+            break;
+        case 7:
+            s.attrs |= Attr::Inverse;
+            break;
+        case 8:
+            s.attrs |= Attr::Invisible;
+            break;
+        case 9:
+            s.attrs |= Attr::Strikethrough;
+            break;
+        case 21:
+            s.underline = UnderlineStyle::Double;
+            break;
+        case 22:
+            s.attrs &= std::uint16_t(~(Attr::Bold | Attr::Faint));
+            break;
+        case 221: // kitty: bold off, faint stays
+            s.attrs &= std::uint16_t(~Attr::Bold);
+            break;
+        case 222: // kitty: faint off, bold stays
+            s.attrs &= std::uint16_t(~Attr::Faint);
+            break;
+        case 23:
+            s.attrs &= std::uint16_t(~Attr::Italic);
+            break;
+        case 24:
+            s.underline = UnderlineStyle::None;
+            break;
+        case 25:
+            s.attrs &= std::uint16_t(~Attr::Blink);
+            break;
+        case 27:
+            s.attrs &= std::uint16_t(~Attr::Inverse);
+            break;
+        case 28:
+            s.attrs &= std::uint16_t(~Attr::Invisible);
+            break;
+        case 29:
+            s.attrs &= std::uint16_t(~Attr::Strikethrough);
+            break;
+        case 38:
+            i = extendedColor(i, s.fg);
+            break;
+        case 39:
+            s.fg = Color{};
+            break;
+        case 48:
+            i = extendedColor(i, s.bg);
+            break;
+        case 49:
+            s.bg = Color{};
+            break;
+        case 53:
+            s.attrs |= Attr::Overline;
+            break;
+        case 55:
+            s.attrs &= std::uint16_t(~Attr::Overline);
+            break;
+        case 58:
+            i = extendedColor(i, s.underlineColor);
+            break;
+        case 59:
+            s.underlineColor = Color{};
+            break;
+        default:
+            if (v >= 30 && v <= 37) {
+                s.fg = Color::palette(std::uint8_t(v - 30));
+            } else if (v >= 40 && v <= 47) {
+                s.bg = Color::palette(std::uint8_t(v - 40));
+            } else if (v >= 90 && v <= 97) {
+                s.fg = Color::palette(std::uint8_t(v - 90 + 8));
+            } else if (v >= 100 && v <= 107) {
+                s.bg = Color::palette(std::uint8_t(v - 100 + 8));
+            }
+            break;
+        }
+        // Skip stray sub-parameters of codes that take none.
+        while (p.isSub(i + 1)) {
+            ++i;
+        }
+    }
+}
+
+} // namespace
+
 void Terminal::changeRectAttributes(const Params& p, bool reverse)
 {
     // DECCARA (set) / DECRARA (toggle): Pt;Pl;Pb;Pr;Ps... over a rectangle,
@@ -424,30 +586,23 @@ void Terminal::changeRectAttributes(const Params& p, bool reverse)
     if (!rectFromParams(p, 0, top, left, bottom, right, m_attributeChangeExtent != 2)) {
         return;
     }
-    std::uint16_t setAttrs = 0;
-    std::uint16_t clearAttrs = 0;
-    bool setUnderline = false;
-    bool clearUnderline = false;
-    for (int i = 4; i < std::max(p.count, 5); ++i) {
-        switch (p.at(i)) {
-        case 0:
-            if (reverse) {
-                setAttrs |= Attr::Bold | Attr::Blink | Attr::Inverse;
-                setUnderline = true;
-            } else {
-                clearAttrs |= Attr::Bold | Attr::Blink | Attr::Inverse;
-                clearUnderline = true;
+    // DECRARA toggles DEC's attributes: bold, underline, blink and inverse,
+    // all four for 0. DECCARA takes every SGR code, as kitty extends it.
+    std::uint16_t toggleAttrs = 0;
+    bool toggleUnderline = false;
+    if (reverse) {
+        for (int i = 4; i < std::max(p.count, 5); ++i) {
+            switch (p.at(i)) {
+            case 0:
+                toggleAttrs |= Attr::Bold | Attr::Blink | Attr::Inverse;
+                toggleUnderline = true;
+                break;
+            case 1: toggleAttrs |= Attr::Bold; break;
+            case 4: toggleUnderline = true; break;
+            case 5: toggleAttrs |= Attr::Blink; break;
+            case 7: toggleAttrs |= Attr::Inverse; break;
+            default: break;
             }
-            break;
-        case 1: setAttrs |= Attr::Bold; break;
-        case 4: setUnderline = true; break;
-        case 5: setAttrs |= Attr::Blink; break;
-        case 7: setAttrs |= Attr::Inverse; break;
-        case 22: if (!reverse) clearAttrs |= Attr::Bold; break;
-        case 24: if (!reverse) clearUnderline = true; break;
-        case 25: if (!reverse) clearAttrs |= Attr::Blink; break;
-        case 27: if (!reverse) clearAttrs |= Attr::Inverse; break;
-        default: break;
         }
     }
     StyleTable& styles = m_active->styles();
@@ -466,18 +621,21 @@ void Terminal::changeRectAttributes(const Params& p, bool reverse)
         }
         Style st = styles.get(c.styleId());
         if (reverse) {
-            st.attrs ^= setAttrs;
-            if (setUnderline) {
+            st.attrs ^= toggleAttrs;
+            if (toggleUnderline) {
                 st.underline = st.underline == UnderlineStyle::None ? UnderlineStyle::Single : UnderlineStyle::None;
             }
         } else {
-            st.attrs = std::uint16_t((st.attrs | setAttrs) & ~clearAttrs);
-            if (setUnderline) {
-                st.underline = UnderlineStyle::Single;
+            // As SGR does it to the pen: the link and DECSCA's protection
+            // are no graphic rendition, and no Ps is 0.
+            const Style before = st;
+            if (p.count <= 4) {
+                st = Style{};
+            } else {
+                applySgr(st, p, 4);
             }
-            if (clearUnderline) {
-                st.underline = UnderlineStyle::None;
-            }
+            st.link = before.link;
+            st.attrs = std::uint16_t((st.attrs & ~Attr::Protected) | (before.attrs & Attr::Protected));
         }
         const std::uint32_t id = styles.acquire(st);
         lastOld = c.styleId();
@@ -601,7 +759,7 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
     const auto imageAnchors = anchors.size();
     std::vector<int> columns = m_graphics[0].anchorColumns();
     std::vector<SemanticPosition> positions;
-    for (const auto* mark : {&m_inputStart, &m_outputStart, &m_outputEnd}) {
+    for (const auto* mark : {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt}) {
         positions.push_back({mark->row, mark->col});
     }
     for (const auto& region : m_semanticRegions) {
@@ -641,7 +799,7 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
     // does, it goes with its end.
     if (m_outputEnd.valid && destroyed[2]) destroyed[1] = true;
     std::size_t index = 0;
-    for (auto* mark : {&m_inputStart, &m_outputStart, &m_outputEnd}) {
+    for (auto* mark : {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt}) {
         const auto i = index++;
         if (destroyed[i]) {
             *mark = {};
@@ -2041,7 +2199,7 @@ void Terminal::scrollRegion(const Region& r, int n, bool up, bool intoHistory)
     if (!m_modes.altScreen) {
         // Shell marks are kept for the primary screen only. One whose cell
         // left the region is gone, as its text is.
-        for (Mark* mark : {&m_inputStart, &m_outputStart, &m_outputEnd}) {
+        for (Mark* mark : {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt}) {
             if (!mark->valid) {
                 continue;
             }
@@ -2284,6 +2442,8 @@ void Terminal::fullReset()
     m_modes.columns132 = wide && cols() == 132;
     m_conformance = 5;
     m_savedDecModes.clear();
+    m_savedQuietModes.clear();
+    m_haveSavedQuietModes = false;
     // A command still running stays so: the shell owns the OSC 133 cycle, and
     // its D (or next A) finishes the command after a reset in the middle.
     m_inputStart = m_outputEnd = {};
@@ -2853,6 +3013,55 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
         softReset();
         return;
     }
+
+    if (inter.count == 1 && inter.bytes[0] == '+' && inter.marker == 0 && final == 'T') {
+        unscroll(p.atOr(0, 1));
+        return;
+    }
+}
+
+void Terminal::unscroll(int n)
+{
+    n = std::clamp(n, 1, rows());
+    // kitty's unscroll (CSI n + T): SD that fills the new rows from the
+    // scrollback. The history adjoins the region only on the main screen,
+    // with the region at the top. Afterglow fills a region of the whole
+    // screen, where the rows that stay keep their ids; any other region
+    // gets blank rows, as SD gives.
+    const bool whole = m_margins.top == 0 && m_margins.bottom == rows() - 1 && m_margins.left == 0
+        && m_margins.right == cols() - 1;
+    if (m_modes.altScreen || !whole || m_primary->historySize() == 0) {
+        scrollDown(n);
+        return;
+    }
+    Screen& scr = *m_primary;
+    const int back = int(std::min<std::size_t>(std::size_t(n), scr.historySize()));
+    // The last rows of the screen go: anything on them goes as with a
+    // scroll that moves them out of a region of their own.
+    const std::uint64_t end = scr.rowsDropped() + scr.historySize() + std::uint64_t(rows());
+    RegionScroll gone;
+    gone.top = end - std::uint64_t(back);
+    gone.bottom = end - 1;
+    gone.left = 0;
+    gone.right = cols() - 1;
+    gone.delta = back;
+    m_graphics[0].scrollRegion(gone, scr, m_cellWidth, m_cellHeight);
+    for (Mark* mark : {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt}) {
+        if (mark->valid && !gone.map({mark->row, mark->col})) {
+            if (mark == &m_outputEnd) m_outputStart = {};
+            *mark = {};
+        }
+    }
+    std::erase_if(m_semanticRegions, [&](const SemanticRegion& region) {
+        return !gone.map({region.start.row, region.start.col})
+            || (!region.open && !gone.map({region.end.row, region.end.col}));
+    });
+    m_host.regionScrolled(gone);
+    scr.unscroll(back);
+    // Rows the history did not have come in blank above the others.
+    if (n > back) {
+        scrollDown(n - back);
+    }
 }
 
 void Terminal::vt52Dispatch(std::uint8_t final)
@@ -3066,8 +3275,29 @@ void Terminal::setColumnMode(bool wide)
     setCursor(0, 0);
 }
 
+namespace {
+
+// kitty's XTSAVE and XTRESTORE without modes take "all side-effect free
+// modes": the list of kitty's copy_specific_modes(), by number. Every mouse
+// tracking mode and format, as kitty saves its tracking mode and protocol.
+constexpr int QuietDecModes[] = {1, 5, 7, 8, 25, 9, 1000, 1002, 1003, 1005, 1006, 1015, 1016, 1004, 2004, 2031, 2033,
+                                 2048, 5522};
+
+} // namespace
+
 void Terminal::saveDecModes(const Params& p)
 {
+    if (p.count == 0) {
+        m_savedQuietModes.clear();
+        for (const int mode : QuietDecModes) {
+            const int state = decModeState(mode);
+            if (state == 1 || state == 2) m_savedQuietModes.emplace_back(mode, state == 1);
+        }
+        m_savedInsert = m_modes.insert;
+        m_savedNewline = m_modes.newline;
+        m_haveSavedQuietModes = true;
+        return;
+    }
     for (int i = 0; i < p.count; ++i) {
         if (p.values[i] == 1048) {
             // An action, not a state (xterm): XTSAVE saves the cursor, and
@@ -3085,6 +3315,19 @@ void Terminal::saveDecModes(const Params& p)
 
 void Terminal::restoreDecModes(const Params& p)
 {
+    if (p.count == 0) {
+        if (!m_haveSavedQuietModes) return;
+        // The resets first: a mouse mode or format that is set after them
+        // stays, though one reset of the same kind would turn it off.
+        for (const bool on : {false, true}) {
+            for (const auto& [mode, saved] : m_savedQuietModes) {
+                if (saved == on) setDecMode(mode, on);
+            }
+        }
+        m_modes.insert = m_savedInsert;
+        m_modes.newline = m_savedNewline;
+        return;
+    }
     for (int i = 0; i < p.count; ++i) {
         if (auto it = m_savedDecModes.find(p.values[i]); it != m_savedDecModes.end()) {
             setDecMode(it->first, it->second);
@@ -3192,153 +3435,7 @@ void Terminal::selectGraphicRendition(const Params& p)
     if (p.count == 0) {
         s = Style{};
     }
-
-    // Reads an extended colour (38/48/58) starting at index i; returns the
-    // index of the last parameter consumed. A component above 255 leaves the
-    // colour unchanged rather than wrapping to another one.
-    auto palette = [](int index, Color& out) {
-        if (index <= 255) {
-            out = Color::palette(std::uint8_t(index));
-        }
-    };
-    auto rgb = [](int r, int g, int b, Color& out) {
-        if (r <= 255 && g <= 255 && b <= 255) {
-            out = Color::rgb(std::uint8_t(r), std::uint8_t(g), std::uint8_t(b));
-        }
-    };
-    auto extendedColor = [&p, &palette, &rgb](int i, Color& out) -> int {
-        if (p.isSub(i + 1)) {
-            int end = i + 1;
-            while (p.isSub(end + 1)) {
-                ++end;
-            }
-            const int subs = end - i;
-            const int kind = p.at(i + 1);
-            if (kind == 5 && subs >= 2) {
-                palette(p.at(i + 2), out);
-            } else if (kind == 2 && subs >= 5) {
-                rgb(p.at(i + 3), p.at(i + 4), p.at(i + 5), out);
-            } else if (kind == 2 && subs == 4) {
-                rgb(p.at(i + 2), p.at(i + 3), p.at(i + 4), out);
-            }
-            return end;
-        }
-        const int kind = p.at(i + 1);
-        if (kind == 5 && i + 2 < p.count) {
-            palette(p.at(i + 2), out);
-            return i + 2;
-        }
-        if (kind == 2 && i + 4 < p.count) {
-            rgb(p.at(i + 2), p.at(i + 3), p.at(i + 4), out);
-            return i + 4;
-        }
-        return p.count;
-    };
-
-    for (int i = 0; i < p.count; ++i) {
-        const int v = p.values[i];
-        switch (v) {
-        case 0:
-            s = Style{};
-            break;
-        case 1:
-            s.attrs |= Attr::Bold;
-            break;
-        case 2:
-            s.attrs |= Attr::Faint;
-            break;
-        case 3:
-            s.attrs |= Attr::Italic;
-            break;
-        case 4:
-            if (p.isSub(i + 1)) {
-                const int kind = p.at(++i);
-                s.underline = kind <= 5 ? UnderlineStyle(kind) : UnderlineStyle::Single;
-                while (p.isSub(i + 1)) {
-                    ++i;
-                }
-            } else {
-                s.underline = UnderlineStyle::Single;
-            }
-            break;
-        case 5:
-        case 6:
-            s.attrs |= Attr::Blink;
-            break;
-        case 7:
-            s.attrs |= Attr::Inverse;
-            break;
-        case 8:
-            s.attrs |= Attr::Invisible;
-            break;
-        case 9:
-            s.attrs |= Attr::Strikethrough;
-            break;
-        case 21:
-            s.underline = UnderlineStyle::Double;
-            break;
-        case 22:
-            s.attrs &= std::uint16_t(~(Attr::Bold | Attr::Faint));
-            break;
-        case 23:
-            s.attrs &= std::uint16_t(~Attr::Italic);
-            break;
-        case 24:
-            s.underline = UnderlineStyle::None;
-            break;
-        case 25:
-            s.attrs &= std::uint16_t(~Attr::Blink);
-            break;
-        case 27:
-            s.attrs &= std::uint16_t(~Attr::Inverse);
-            break;
-        case 28:
-            s.attrs &= std::uint16_t(~Attr::Invisible);
-            break;
-        case 29:
-            s.attrs &= std::uint16_t(~Attr::Strikethrough);
-            break;
-        case 38:
-            i = extendedColor(i, s.fg);
-            break;
-        case 39:
-            s.fg = Color{};
-            break;
-        case 48:
-            i = extendedColor(i, s.bg);
-            break;
-        case 49:
-            s.bg = Color{};
-            break;
-        case 53:
-            s.attrs |= Attr::Overline;
-            break;
-        case 55:
-            s.attrs &= std::uint16_t(~Attr::Overline);
-            break;
-        case 58:
-            i = extendedColor(i, s.underlineColor);
-            break;
-        case 59:
-            s.underlineColor = Color{};
-            break;
-        default:
-            if (v >= 30 && v <= 37) {
-                s.fg = Color::palette(std::uint8_t(v - 30));
-            } else if (v >= 40 && v <= 47) {
-                s.bg = Color::palette(std::uint8_t(v - 40));
-            } else if (v >= 90 && v <= 97) {
-                s.fg = Color::palette(std::uint8_t(v - 90 + 8));
-            } else if (v >= 100 && v <= 107) {
-                s.bg = Color::palette(std::uint8_t(v - 100 + 8));
-            }
-            break;
-        }
-        // Skip stray sub-parameters of codes that take none.
-        while (p.isSub(i + 1)) {
-            ++i;
-        }
-    }
+    applySgr(s, p, 0);
     s.link = link;
     s.attrs = std::uint16_t((s.attrs & ~Attr::Protected) | (cursor().pen.attrs & Attr::Protected));
     m_active->setPen(s);

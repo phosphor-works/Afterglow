@@ -712,6 +712,26 @@ bool Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
     return true;
 }
 
+int Screen::unscroll(int n)
+{
+    const int k = int(std::min<std::size_t>(std::size_t(std::clamp(n, 0, m_rowCount)), historySize()));
+    if (k == 0) {
+        return 0;
+    }
+    // A block across the cut would lose its lower rows.
+    eraseMulticellsCrossing(0, m_rowCount - 1, 0, m_cols - 1, m_rowCount - k);
+    for (int i = 0; i < k; ++i) {
+        releaseRow(m_rows.back());
+        m_rows.pop_back();
+    }
+    for (int y = 0; y < k; ++y) {
+        expand(row(y)); // history rows return to the screen
+    }
+    // A view scrolled back stays on its rows, as kitty's does.
+    m_viewportOffset = m_viewportOffset > std::size_t(k) ? m_viewportOffset - std::size_t(k) : 0;
+    return k;
+}
+
 bool Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
 {
     const int height = r.bottom - r.top + 1;

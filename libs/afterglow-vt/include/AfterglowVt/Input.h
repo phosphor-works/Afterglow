@@ -139,7 +139,9 @@ struct KeyEvent
 AFTERGLOWVT_EXPORT std::string encodeKey(const KeyEvent& event, const Modes& modes);
 
 enum class MouseButton : std::uint8_t { Left, Middle, Right, None, WheelUp, WheelDown, WheelLeft, WheelRight };
-enum class MouseAction : std::uint8_t { Press, Release, Motion };
+/// Leave: the pointer left the pane (kitty's extension of the SGR pixel
+/// format; no other format reports it).
+enum class MouseAction : std::uint8_t { Press, Release, Motion, Leave };
 
 struct MouseEvent
 {

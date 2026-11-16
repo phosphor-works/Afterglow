@@ -533,6 +533,7 @@ private:
     void eraseChars(int n);
     void scrollUp(int n);
     void scrollDown(int n);
+    void unscroll(int n);
     /// Scrolls the active screen's region @p r by @p n rows (up when @p up),
     /// and moves what is anchored to the rows that moved with them.
     void scrollRegion(const Region& r, int n, bool up, bool intoHistory = false);
@@ -625,6 +626,12 @@ private:
     Protection m_protection = Protection::Off;
     int m_attributeChangeExtent = 0; ///< DECSACE: whether DECCARA/DECRARA cover a stream or a rectangle
     std::unordered_map<int, bool> m_savedDecModes; ///< XTSAVE
+    /// XTSAVE without modes (kitty): the modes without side effects, with
+    /// IRM and LNM.
+    std::vector<std::pair<int, bool>> m_savedQuietModes;
+    bool m_savedInsert = false;
+    bool m_savedNewline = false;
+    bool m_haveSavedQuietModes = false;
     void setExtraCursors(const Params&);
     ExtraCursorColor m_extraCursorColor, m_extraCursorTextColor;
     std::map<std::pair<int, int>, int> m_extraCursors; ///< (row, column), protocol shape

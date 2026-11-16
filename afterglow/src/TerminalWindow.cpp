@@ -3343,6 +3343,7 @@ bool TerminalWindow::event(QEvent* e)
         if (m_readsMouse) scheduleRender();
         break;
     case QEvent::Leave:
+        updatePointerPane(QPointF(-1, -1), QGuiApplication::keyboardModifiers());
         // Packs read a position outside the window as "no pointer".
         m_renderer->setMousePosition(QPointF(-1, -1));
         m_hover = {};
@@ -6039,6 +6040,31 @@ bool TerminalWindow::sendMouse(Pane* pane, const QPointF& pos, int button, int a
     return true;
 }
 
+void TerminalWindow::updatePointerPane(const QPointF& pos, Qt::KeyboardModifiers mods)
+{
+    Pane* over = nullptr;
+    if (pos.x() >= 0 && pos.y() >= 0 && !m_overview.open && !dockAt(pos)) {
+        if (Pane* pane = paneUnder(pos)) {
+            if (Pane* target = pointerTarget(pane, pos); target && overCells(target, pos)) over = target;
+        }
+    }
+    const QPoint leftAt = m_pointerPanePixel;
+    if (over) m_pointerPanePixel = cellPixel(over, pos);
+    if (over == m_pointerPane) return;
+    Pane* left = m_pointerPane.data();
+    m_pointerPane = over;
+    if (!left || !takesInput(left)) return;
+    // kitty's leave event: only the SGR pixel format has it, with the last
+    // position, which a program ignores.
+    const AfterglowVt::Modes modes = left->withTerminal([](Terminal& t) { return t.modes(); });
+    AfterglowVt::MouseEvent ev;
+    ev.action = AfterglowVt::MouseAction::Leave;
+    ev.mods = mapModifiers(mods);
+    ev.pixelX = leftAt.x();
+    ev.pixelY = leftAt.y();
+    if (const std::string bytes = AfterglowVt::encodeMouse(ev, modes); !bytes.empty()) left->sendInput(bytes);
+}
+
 int TerminalWindow::rawRowAt(Pane* pane, const QPointF& pos) const
 {
     const auto& m = m_renderer->fonts().fonts->metrics();
@@ -6433,6 +6459,7 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     if (!fromTouch(e) && std::exchange(m_pointerHidden, false)) applyPointerShape();
     m_renderer->setMousePosition(e->position() * devicePixelRatio());
     m_pointer = e->position();
+    if (e->buttons() == Qt::NoButton) updatePointerPane(e->position(), e->modifiers());
     // A pack that reads the pointer moves with it, with nothing else changing.
     if (m_readsMouse) scheduleRender();
     // Over the overview too, where a dock press can start one. A release

@@ -1517,6 +1517,74 @@ TEST(Terminal, MalformedPrivateCsiLeavesTheNextSgrIntact)
     }
 }
 
+TEST(Terminal, XtsaveWithoutModesSavesTheQuietModes)
+{
+    // kitty: XTSAVE and XTRESTORE without modes take every mode that has no
+    // side effect (misc-protocol.rst), with IRM and LNM. DECOM moves the
+    // cursor and stays out.
+    Term t(10, 3);
+    t.feed("\x1b[?1h\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[4h\x1b[20h\x1b[?6h\x1b[?s");
+    t.feed("\x1b[?1l\x1b[?1003h\x1b[?1015h\x1b[?2004l\x1b[4l\x1b[20l\x1b[?25l\x1b[?6l\x1b[?5h");
+    t.feed("\x1b[?r");
+    const Modes& m = t.t.modes();
+    EXPECT_TRUE(m.cursorKeysApp);
+    EXPECT_EQ(m.mouseTracking, MouseTracking::Normal);
+    EXPECT_EQ(m.mouseFormat, MouseFormat::Sgr);
+    EXPECT_TRUE(m.bracketedPaste);
+    EXPECT_TRUE(m.insert);
+    EXPECT_TRUE(m.newline);
+    EXPECT_TRUE(m.cursorVisible);
+    EXPECT_FALSE(m.reverseVideo);
+    EXPECT_FALSE(m.originMode);
+    // A list of modes still saves only those.
+    t.feed("\x1b[?2004l\x1b[?2004s\x1b[?2004h\x1b[?1l\x1b[?2004r");
+    EXPECT_FALSE(t.t.modes().bracketedPaste);
+    EXPECT_FALSE(t.t.modes().cursorKeysApp);
+}
+
+TEST(Terminal, UnscrollFillsTheTopFromTheScrollback)
+{
+    // kitty's unscroll, CSI n + T: SD whose new rows come from the history.
+    Term t(10, 3);
+    t.t.resize(10, 3, 10, 20);
+    t.feed("1\r\n2\r\n3\r\n4\r\n");
+    t.feed(KittyPixel); // anchored on the last row, which the unscroll drops
+    t.feed("\x1b[2;1H");
+    t.feed("\x1b_Ga=T,f=24,s=1,v=1,i=7,C=1;AAAA\x1b\\"); // on "4", which stays
+    t.feed("\x1b[3;3H");
+    ASSERT_EQ(rowText(t.t, 0), "3");
+    ASSERT_EQ(t.t.screen().historySize(), 2u);
+    ASSERT_EQ(t.t.graphics().placements().size(), 2u);
+    const std::uint64_t idOf4 = t.t.screen().rowsDropped() + t.t.screen().historySize() + 1;
+    t.feed("\x1b[+T");
+    EXPECT_EQ(rowText(t.t, 0), "2");
+    EXPECT_EQ(rowText(t.t, 1), "3");
+    EXPECT_EQ(rowText(t.t, 2), "4");
+    EXPECT_EQ(t.t.screen().historySize(), 1u);
+    // The cursor stays where it was, as with SD.
+    EXPECT_EQ(t.t.screen().cursor.y, 2);
+    EXPECT_EQ(t.t.screen().cursor.x, 2);
+    // The image on the dropped row went; the other kept its row, now lower.
+    ASSERT_EQ(t.t.graphics().placements().size(), 1u);
+    EXPECT_EQ(t.t.graphics().placements()[0].row, idOf4);
+    // More than the history has: the rest come in blank above it.
+    t.feed("\x1b[3+T");
+    EXPECT_EQ(rowText(t.t, 0), "");
+    EXPECT_EQ(rowText(t.t, 1), "");
+    EXPECT_EQ(rowText(t.t, 2), "1");
+    EXPECT_EQ(t.t.screen().historySize(), 0u);
+    // With margins, and on the alternate screen, it is a plain SD.
+    Term m(10, 3);
+    m.feed("1\r\n2\r\n3\r\n4\r\n5\x1b[2;3r\x1b[+T");
+    EXPECT_EQ(rowText(m.t, 0), "3");
+    EXPECT_EQ(rowText(m.t, 1), "");
+    EXPECT_EQ(rowText(m.t, 2), "4");
+    EXPECT_EQ(m.t.screen().historySize(), 2u);
+    m.feed("\x1b[r\x1b[?1049hA\r\nB\x1b[+T");
+    EXPECT_EQ(rowText(m.t, 0), "");
+    EXPECT_EQ(rowText(m.t, 1), "A");
+}
+
 TEST(Terminal, ResetClearsKeyboardStacksAndImagesOfBothScreens)
 {
     Term t(10, 3);

@@ -19,6 +19,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Text attributes, including curly, dotted and dashed underlines, underline colors, overlines and OSC 8 hyperlinks.
 - Rectangular editing (DECFRA, DECCRA), character repeat (REP) and cursor shapes (DECSCUSR).
 - Kitty's ED 22, which moves the lines of the screen into the scrollback before it erases the screen.
+- Kitty's unscroll (`CSI n + T`), which brings lines back from the scrollback, and Kitty's SGR 221 and 222, which turn off bold or faint alone.
+- DECCARA with every SGR code, as Kitty extends it, and XTSAVE and XTRESTORE without modes for the modes that have no side effects.
 - Status queries: DECRQM, DECRQSS, XTGETTCAP and XTWINOPS size reports.
 - Synchronized output (mode 2026), grapheme clustering (mode 2027) and in-band resize reports (mode 2048).
 - Color-scheme change reports (mode 2031) and visibility reports (mode 2033).
@@ -28,7 +30,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 ### Keyboard and mouse
 
 - The Kitty keyboard protocol, with a flag stack for each screen, alternate keys with the base layout key, and the level and media keys, and xterm `modifyOtherKeys`.
-- Mouse reporting in X10, normal, button-event and any-event modes, with UTF-8, SGR, urxvt and SGR-pixel encodings.
+- Mouse reporting in X10, normal, button-event and any-event modes, with UTF-8, SGR, urxvt and SGR-pixel encodings. With SGR pixels, a program learns when the pointer leaves its pane, as in Kitty.
 - Focus reports, bracketed paste and alternate-scroll mode.
 - `Keybinds.remapModifiers`, which makes one modifier act as another in Afterglow, as `remap_modifiers` does in Kitty. Bindings, the link modifier, mouse selection and programs get the modifier that a key becomes.
 - Keypad keys with Num Lock off, which the Kitty protocol reports as keypad keys, and the function keys F13 to F35.

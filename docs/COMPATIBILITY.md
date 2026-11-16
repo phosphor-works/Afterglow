@@ -36,12 +36,13 @@ The table below lists the protocols that Afterglow supports, each with the tests
 | Hyperlinks (OSC 8) | Links with and without an id, across wrapped lines and reflow | `Reflow.StyleAndLinkRunAcrossWrapsKeepItsReferences`, `StateSync.TextStylesLinksAndText` |
 | Window operations (XTWINOPS) | 4 and 8 (resize), 11 and 13 (state and position), 14, 15, 16, 18 and 19 (sizes in pixels and cells), 22 and 23 (title stack), 24 or more (DECSLPP) | `Terminal.Reports`, `Terminal.TitleStackPushesAndPops`, `Extensions.PixelReportsAndImagePercentagesUseWideGeometry` |
 | Status reports | DA1, DA2, DA3, XTVERSION, DECRQM, DECRQSS, XTGETTCAP | `Terminal.Reports`, `Conformance.TertiaryAttributesAndTerminalParameters`, `Terminal.XtversionReportsTheProjectVersion`, `Conformance.ModeReports`, `Terminal.Decrqss`, `Terminal.Xtgettcap` |
-| Mouse modes | 9, 1000, 1002, 1003 and 1004 (focus); the formats 1005, 1006, 1015 and 1016 (SGR pixels); 1007 (alternate scroll) | `Input.MouseLegacyFormats`, `Terminal.MouseFormatResetsOnlyItsOwn`, `Input.*` |
+| Mouse modes | 9, 1000, 1002, 1003 and 1004 (focus); the formats 1005, 1006, 1015 and 1016 (SGR pixels), with Kitty's event when the pointer leaves a pane; 1007 (alternate scroll) | `Input.MouseLegacyFormats`, `Terminal.MouseFormatResetsOnlyItsOwn`, `Input.*`, `NativeWindow.APaneLearnsThatThePointerLeftIt` |
 | Synchronized output | Mode 2026, and `DCS = 1 s` and `DCS = 2 s` | `Conformance.EachSynchronizedBlockHasItsOwnSerial`, `Conformance.LegacySynchronizedUpdatesAndFlash` |
 | Grapheme clusters, color scheme, visibility and size reports | Modes 2027, 2031 with `CSI ? 996 n`, 2033 and 2048 | `Conformance.ThemeVisibilityAndSizeReports`, [character widths](#character-widths) |
-| Color and mode stacks | XTPUSHCOLORS, XTPOPCOLORS, XTREPORTCOLORS; XTSAVE and XTRESTORE | `Conformance.ColorStack`, `Conformance.SaveAndRestoreModes` |
+| Color and mode stacks | XTPUSHCOLORS, XTPOPCOLORS, XTREPORTCOLORS; XTSAVE and XTRESTORE, without modes for the modes that have no side effects, as in Kitty | `Conformance.ColorStack`, `Conformance.SaveAndRestoreModes`, `Terminal.XtsaveWithoutModesSavesTheQuietModes` |
 | Sixel | Transparent backgrounds (P2 = 1), XTSMGRAPHICS | `Sixel.*`, `Extensions.SixelThroughTheTerminal`, `Conformance.SixelGraphicsAttributesHonourTheAction` |
-| Text attributes | Curly, dotted and dashed underlines and underline colors (SGR 4:x, 58, 59); ED 22; DECCARA and DECRARA | `Terminal.SgrColorsAndAttributes`, `Terminal.EraseDisplay22MovesTheScreenIntoTheHistory`, `Conformance.RectangleAttributes` |
+| Text attributes | Curly, dotted and dashed underlines and underline colors (SGR 4:x, 58, 59); Kitty's SGR 221 and 222 (bold or faint off alone); ED 22; DECCARA with every SGR code, as Kitty extends it, and DECRARA | `Terminal.SgrColorsAndAttributes`, `Conformance.KittyBoldOffAndFaintOffAlone`, `Terminal.EraseDisplay22MovesTheScreenIntoTheHistory`, `Conformance.RectangleAttributes`, `Conformance.RectangleAttributesTakeEverySgrCode` |
+| Kitty unscroll (`CSI n + T`) | SD that fills the new lines from the scrollback | `Terminal.UnscrollFillsTheTopFromTheScrollback` |
 
 ## Relative images
 
@@ -357,6 +358,7 @@ The permissions of the socket are the only boundary.
 | Ctrl+Shift, Super or Ctrl+Alt+Shift with a letter, digit or punctuation key, without the Kitty keyboard protocol | xterm's bytes: Ctrl+Shift+I sends a tab (0x09), Super+A sends `a`. A program without the Kitty protocol reads these. | Kitty sends a CSI u code, such as `CSI 105;6u` for Ctrl+Shift+I. |
 | A temporary image file (`t=t`) | Deleted only when `tty-graphics-protocol` is in its path below the temporary directory. | Kitty looks for the tag anywhere in the path. |
 | Sized text (OSC 66) at a resize that reflows | The text stays, at the normal size, because a block of several rows cannot wrap. | The Kitty specification does not say what a reflow does with sized text. |
+| Unscroll (`CSI n + T`) with a scrolling region smaller than the screen | Blank lines, as SD gives. Afterglow fills from the scrollback only when the region is the whole screen. | Kitty also fills a region that starts at the top line. |
 | The end message of a drag (`t=e:x=4`) | Has the key `o`, the action that the drop took. A move to another application is reported as a copy. | Kitty sends no `o`. |
 
 The differences of `aglow` from `kitten` are in [aglow interoperability](#aglow-interoperability).

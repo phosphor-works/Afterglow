@@ -95,6 +95,12 @@ TEST(Extensions, PromptClickModesSpecialKeyAndSecondaryPrompt)
     EXPECT_EQ(t.promptClickInput(4, 0), "\x1b[<0;5;0M\x1b[<0;5;0m");
     EXPECT_EQ(t.promptClickInput(4, 1), "\x1b[<0;5;0M\x1b[<0;5;0m");
     EXPECT_EQ(t.promptClickInput(4, 2), "\x1b[<0;5;1M\x1b[<0;5;1m");
+    // The secondary prompt moves with its row, as the prompt does: after SD
+    // the prompt is on row 1 and the secondary prompt on row 2.
+    t.feed("\x1b[T");
+    EXPECT_EQ(t.promptClickInput(4, 1), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    EXPECT_EQ(t.promptClickInput(4, 2), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    t.feed("\x1b[S");
     // The secondary prompt is no new prompt: the command typed before it stays.
     t.feed("\r\n\x1b]133;C\x07");
     ASSERT_EQ(host.commandsStarted.size(), 1u);

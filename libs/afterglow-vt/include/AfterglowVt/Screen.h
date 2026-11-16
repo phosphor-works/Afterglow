@@ -164,6 +164,11 @@ public:
     std::size_t viewportOffset() const noexcept { return m_viewportOffset; }
     void scrollViewport(long delta) noexcept;
     void resetViewport() noexcept { m_viewportOffset = 0; }
+    /// kitty's unscroll: the last @p n rows of the history, at most a
+    /// screen, come back to the top of the screen, and the screen's last
+    /// rows go. Every row that stays keeps its stable id. Returns how many
+    /// rows came back.
+    int unscroll(int n);
     /// Absolute index of the first row shown in the viewport.
     std::size_t viewportTop() const noexcept { return historySize() - m_viewportOffset; }
     /// Cells stored for history rows (trailing blanks are not).

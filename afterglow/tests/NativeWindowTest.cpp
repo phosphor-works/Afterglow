@@ -2456,6 +2456,63 @@ TEST_F(NativeWindow, AClickThroughABentWindowReachesThePaneDrawnThere) {
     EXPECT_EQ(fileContent(middleReports).mid(middleBefore), QByteArray("\x1b[<0;0;0Mdone"));
 }
 
+// A program that turns on only the SGR pixel format (1016), with no mouse
+// tracking, and writes what it gets to @p file.
+QStringList pixelFormatReporter(const QString& file) {
+    return {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+            QStringLiteral("stty raw -echo; printf '\\033[?1016h'; exec cat > \"$0\""), file};
+}
+
+TEST_F(NativeWindow, APaneLearnsThatThePointerLeftIt) {
+    // kitty's mouse leave (misc-protocol.rst): with the SGR pixel format, a
+    // pane learns that the pointer left it, for another pane or out of the
+    // window: bit 8 (256) and the motion bit (32), whatever the tracking
+    // mode, as kitty sends it. A drag sends none.
+    const QString leftReports = directory.filePath(QStringLiteral("left-leave"));
+    const QString rightReports = directory.filePath(QStringLiteral("right-leave"));
+    restartApplication(QStringLiteral("leave.conf"), testSettings(), pixelFormatReporter(leftReports));
+    if (HasFatalFailure()) return;
+    Pane* left = window->focusedPane();
+    ASSERT_NE(left, nullptr);
+    PaneLaunchOptions launch;
+    launch.command = pixelFormatReporter(rightReports);
+    Pane* right = window->splitPane(left, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    const auto pixels = [](Pane* pane) {
+        return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.modes().mouseFormat == AfterglowVt::MouseFormat::SgrPixels; });
+    };
+    ASSERT_TRUE(waitFor([&] { return pixels(left) && pixels(right); }));
+    expectIdle(window);
+    const QPointF onLeft = gridOf(window, left).center(), onRight = gridOf(window, right).center();
+    // Reports with the leave bit (256) and the motion bit (32). The other
+    // bits carry the modifiers, which a program ignores here (the spec), and
+    // which an earlier test's keys can leave in Qt's state.
+    const auto leaves = [](const QByteArray& reports) {
+        int count = 0;
+        for (const QByteArray& report : reports.split('M')) {
+            if (!report.startsWith("\x1b[<")) continue;
+            const int code = report.mid(3).split(';').value(0).toInt();
+            if ((code & 256) && (code & 32)) ++count;
+        }
+        return count;
+    };
+    hoverAt(window, onLeft);
+    hoverAt(window, onRight);
+    ASSERT_TRUE(waitFor([&] { return leaves(fileContent(leftReports)) == 1; })) << fileContent(leftReports).toStdString();
+    EXPECT_EQ(fileContent(leftReports).count("M"), 1);
+    // Out of the window: the right pane's turn.
+    QEvent leave(QEvent::Leave);
+    QCoreApplication::sendEvent(window, &leave);
+    ASSERT_TRUE(waitFor([&] { return leaves(fileContent(rightReports)) == 1; })) << fileContent(rightReports).toStdString();
+    // A drag from the left pane into the right one: no leave while the button is down.
+    hoverAt(window, onLeft);
+    mouseAt(window, QEvent::MouseButtonPress, onLeft, Qt::LeftButton, Qt::LeftButton);
+    mouseAt(window, QEvent::MouseMove, onRight, Qt::NoButton, Qt::LeftButton);
+    mouseAt(window, QEvent::MouseButtonRelease, onRight, Qt::LeftButton, Qt::NoButton);
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(fileContent(leftReports).count("M"), 1) << fileContent(leftReports).toStdString();
+}
+
 TEST_F(NativeWindow, APaneDockIsClickedWhereTheWindowChainDrawsIt) {
     // A pane's dock is drawn through the window chain: under CRT Curve, the
     // dock at the top of the pane shows well inside the window, and a click
