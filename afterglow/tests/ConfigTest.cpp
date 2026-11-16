@@ -879,6 +879,28 @@ TEST_F(ConfigTest, ReadsTheEventQueueOfASessionWithinTheDaemonsBounds)
     }
 }
 
+// The notifications that a pane of a session keeps while no window shows
+// it: the daemon's default and bounds, which it checks in the settings of a
+// window, and the clamp of the store.
+TEST_F(ConfigTest, ReadsTheKeptNotificationsOfASessionWithinTheDaemonsBounds)
+{
+    EXPECT_EQ(std::int64_t(MuxSettings{}.keptNotifications), AfterglowMux::DefaultKeptNotifications);
+    EXPECT_EQ(AfterglowMux::SessionSettings{}.keptNotifications, MuxSettings{}.keptNotifications);
+    const QJsonObject kept = SettingsStore::reference()
+                                 .value(QStringLiteral("groups"))
+                                 .toObject()
+                                 .value(QStringLiteral("Mux"))
+                                 .toObject()
+                                 .value(QStringLiteral("keptNotifications"))
+                                 .toObject();
+    EXPECT_EQ(kept.value(QStringLiteral("minimum")).toInteger(), 0);
+    EXPECT_EQ(kept.value(QStringLiteral("maximum")).toInteger(), AfterglowMux::MaxKeptNotifications);
+    for (const auto& [given, expected] : std::vector<std::pair<int, int>>{{3, 3}, {0, 0}, {-5, 0}, {1000, 100}}) {
+        SettingsStore store(write(QStringLiteral("kept.json"), QStringLiteral(R"({"Mux": {"keptNotifications": %1}})").arg(given).toUtf8()));
+        EXPECT_EQ(store.settings().mux.keptNotifications, expected) << given;
+    }
+}
+
 // The variables that a session takes from Afterglow: tmux 3.8's without
 // MSYSTEM, WINDOWID and the XDG_ desktop names, or the user's names, without
 // the ones that are not variable names or that Afterglow keeps for itself.

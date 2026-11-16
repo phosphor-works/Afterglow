@@ -171,6 +171,10 @@ struct MuxSettings
     /// AfterglowMux::CallTimeoutMs, with ssh in BatchMode, which asks for
     /// nothing.
     int signInTimeout = 120;
+    /// The most notifications that each pane of a session keeps while no
+    /// window shows the session, for the next window. The default equals
+    /// AfterglowMux::DefaultKeptNotifications, which ConfigTest checks.
+    int keptNotifications = 8;
     bool operator==(const MuxSettings&) const = default;
 };
 

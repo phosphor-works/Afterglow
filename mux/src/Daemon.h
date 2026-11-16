@@ -293,6 +293,38 @@ private:
     /// keeps that layout: its name, or nothing with @p error.
     std::optional<std::string> breakOutPanes(Session& from, Layout layout, std::string* error);
 
+    // A pane that joins another session of the daemon, in DaemonJoin.cpp.
+    /// Fn::JoinPane, which the window of the session that the pane leaves
+    /// sends.
+    std::string joinPane(const AfterglowProto::IpcRequest& request);
+    /// Whether a pane of @p size has room for another one on @p side, as half
+    /// of it: two columns or one row at least, as the daemon makes a split.
+    static bool roomBeside(const PaneSize& size, Side side)
+    {
+        return side == Side::Right || side == Side::Left ? size.cols >= 4 : size.rows >= 2;
+    }
+    /// The refusal of a move of a pane of @p from to session @p to, on
+    /// @p placement of pane @p beside of @p to, else empty with the side in
+    /// @p side (none for a new tab): a placement that is not left, right,
+    /// up, down or new-tab, @p to at MaxSessionPanes, the window of @p to
+    /// that has no room for the call that places the pane, and without such
+    /// a window, no room beside @p beside. With @p tellFrom, the window of
+    /// @p from must have room for the call that tells it (joinPanes()).
+    /// Pane @p id cannot go back into the window of @p to while that window
+    /// still holds it from before (Attachment::stillLeaving).
+    std::string joinRefusal(const AfterglowProto::IpcRequest& request, const Session& from, std::uint32_t id, const Session& to,
+                            std::uint32_t beside, const std::string& placement, bool tellFrom, std::optional<Side>* side) const;
+    /// Moves pane @p id of @p from, with its program running, to @p to: on
+    /// @p side of pane @p beside of @p to, else in a tab of its own after the
+    /// tab of @p beside. Its title and command go with it. The window of
+    /// @p from drags it out, as for a break out, and the window of @p to
+    /// places it (placePane). With @p tellFrom, the window of @p from hears
+    /// first that the pane left (paneLeft): a move that it did not ask for.
+    /// When it was the last pane of @p from, that session ends: the caller
+    /// uses @p from no more. A failure (out of memory) leaves the pane
+    /// where it was.
+    void joinPanes(Session& from, std::uint32_t id, Session& to, std::uint32_t beside, std::optional<Side> side, bool tellFrom);
+
     // The control target (`afterglow ctl` for a session), in DaemonControl.cpp.
     /// selectSession and selectPane: the session that the control calls of
     /// @p connection act on.

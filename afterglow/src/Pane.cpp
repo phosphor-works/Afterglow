@@ -1172,8 +1172,8 @@ void Pane::applySessionHostCall(const AfterglowMux::Host::Call& call)
     switch (call.kind) {
     case Kind::Bell: bell(); break;
     case Kind::Flash: flash(); break;
-    case Kind::Notify: notify(call.title, call.text); break;
-    case Kind::DesktopNotification: desktopNotification(call.notification); break;
+    case Kind::Notify: queueNotification(call.title, call.text, call.missed); break;
+    case Kind::DesktopNotification: queueDesktopNotification(call.notification, call.missed); break;
     case Kind::ClipboardWrite: clipboardWrite(call.title, call.text); break;
     case Kind::ClipboardRequest:
         // The terminal answers a request that its host does not take.
@@ -1225,10 +1225,11 @@ bool Pane::sessionLost(MuxLoss loss, bool notice)
         NotificationCenter::instance().showNotice(this, tr("Session %1 is gone from this window").arg(name),
                                                   tr("This window lost its link to session %1. Run %2 to see whether the session still runs.").arg(name, list));
     } else if (notice && loss == MuxLoss::MovedOut) {
-        // A break out whose answer did not come in time: the daemon moved
-        // the pane all the same, to a session that no window shows.
-        NotificationCenter::instance().showNotice(this, tr("Pane moved to a new session"),
-                                                  tr("The mux daemon moved the pane to a session of its own, but its answer came too late. Run %1 to find the session.").arg(list));
+        // A break out or a join whose answer did not come in time: the
+        // daemon moved the pane all the same, to a new session that no
+        // window shows, or to the session that it joined.
+        NotificationCenter::instance().showNotice(this, tr("Pane moved to another session"),
+                                                  tr("The mux daemon moved the pane to another session, but its answer came too late. Run %1 to find the session.").arg(list));
     }
     m_leftSession = true;
     QMetaObject::invokeMethod(this, [this] { Q_EMIT sessionLeft(); }, Qt::QueuedConnection);
@@ -1635,11 +1636,16 @@ void Pane::tickAnimations()
 
 void Pane::notify(std::string_view title, std::string_view body)
 {
+    queueNotification(title, body, false);
+}
+
+void Pane::queueNotification(std::string_view title, std::string_view body, bool missed)
+{
     QString heading = QString::fromUtf8(title.data(), qsizetype(title.size()));
     QString text = QString::fromUtf8(body.data(), qsizetype(body.size()));
     const std::size_t bytes = std::size_t(heading.size() + text.size()) * sizeof(QChar);
-    queueEvent([this, heading = std::move(heading), text = std::move(text)] { Q_EMIT notificationRequested(heading, text); }, bytes,
-               m_requestBudget);
+    queueEvent([this, heading = std::move(heading), text = std::move(text), missed] { Q_EMIT notificationRequested(heading, text, missed); },
+               bytes, m_requestBudget);
 }
 
 void Pane::pointerShapeChanged(std::string_view shape)
@@ -1658,8 +1664,13 @@ void Pane::pointerShapeChanged(std::string_view shape)
 
 void Pane::desktopNotification(const AfterglowVt::NotificationRequest& request)
 {
+    queueDesktopNotification(request, false);
+}
+
+void Pane::queueDesktopNotification(const AfterglowVt::NotificationRequest& request, bool missed)
+{
     // The icon data is what can be large.
-    const bool queued = queueEvent([this, request] { Q_EMIT desktopNotificationRequested(request); },
+    const bool queued = queueEvent([this, request, missed] { Q_EMIT desktopNotificationRequested(request, missed); },
                                    request.title.size() + request.body.size() + request.iconData.size(), m_requestBudget);
     // A query that finds the queue full still gets an answer, as a program
     // waits for it: none that the window did not show.

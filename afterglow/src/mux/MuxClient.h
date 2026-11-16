@@ -91,8 +91,9 @@ enum class MuxLoss : std::uint8_t {
     Detached, ///< `afterglow mux detach`
     TakenOver, ///< another window shows the session now
     Broken, ///< the daemon ended or failed, or sent a frame that does not apply
-    /// the pane went to a session of its own (MuxClient::breakOutLater), but the
-    /// answer of the daemon did not come in time
+    /// the pane went to a session of its own (MuxClient::breakOutLater) or to
+    /// another session (joinLater), but the answer of the daemon did not come
+    /// in time; or `afterglow ctl --session` moved it to another session
     MovedOut,
 };
 
@@ -258,6 +259,17 @@ public:
     /// order: the daemon answers those that did not leave it at once, so
     /// those answers can come first.
     QString breakOutLater(const AfterglowMux::Layout& layout, BrokenOut done);
+    /// Moves session pane @p id to the session of pane @p beside, another
+    /// session of the same daemon (Fn::JoinPane), with its program running:
+    /// on @p placement of that pane ("left", "right", "up" or "down"), or
+    /// with "new-tab" in a tab after its tab. As breakOutLater() for one
+    /// pane: @p done gets the name of the session that holds the pane now.
+    /// The window that shows that session places the pane. When it was the
+    /// last pane of this session, the session ends.
+    QString joinLater(std::uint32_t id, std::uint32_t beside, const QString& placement, BrokenOut done);
+    /// The session of @p other runs under the daemon of this one: a pane can
+    /// join it (joinLater). Pane IDs are those of one daemon.
+    bool sameDaemon(const MuxClient& other) const;
 
     /// False when the link ended, or the input of pane @p id that waits
     /// would pass MaxWaitingInput.
@@ -396,6 +408,9 @@ private:
     /// Pane @p id is no longer the window's: its frames are read and dropped
     /// until its channel closes, and its calls go nowhere.
     void letGo(std::uint32_t id);
+    /// Pane @p id is gone from every table of the window: when it went to
+    /// another session, the daemon hears that it may come back.
+    void forgotten(std::uint32_t id);
     /// Queues @p frame after the input that waits: pane @p id's input, or for
     /// 0 a frame of the window's own, which counts against no pane: its
     /// layout with @p layout, its settings and its answers to the daemon
@@ -457,6 +472,9 @@ private:
     /// What a breakOutLater() of @p layout makes of @p answer: the name of
     /// the new session, or nothing with @p error.
     std::optional<QString> brokeOut(const AfterglowMux::Layout& layout, const DaemonAnswer& answer, QString* error);
+    /// breakOutLater() and joinLater(): the call @p fn with @p args, which
+    /// moves the panes of @p layout out of the session.
+    QString leaveLater(const AfterglowMux::Layout& layout, const char* fn, AfterglowProto::Json::Array args, BrokenOut done);
     /// The panes of m_unclaimed end: no newPaneLater() waits any more, so
     /// none of them is the window's.
     void releaseUnclaimed();
@@ -606,8 +624,16 @@ private:
     /// leaves as MuxLoss::MovedOut, not as an exit of its program.
     std::set<std::uint32_t> m_maybeMovedOut;
     bool m_movedOutShown = false; ///< a pane of m_maybeMovedOut said why it left
-    /// The panes of a breakOutLater() whose answer did not come yet: their
-    /// exit waits for it (paneExited), as they may have moved.
+    /// The panes that `afterglow ctl --session` moved to another session
+    /// (the daemon's paneLeft): their PaneClosed of -1 is no exit of their
+    /// programs, and they close with no word.
+    std::set<std::uint32_t> m_joinedAway;
+    /// The panes that went to another session (PaneClosed of -1) and that
+    /// the window still knows: once it forgets one, it tells the daemon,
+    /// which may then bring the pane back (InputType::PaneForgotten).
+    std::set<std::uint32_t> m_leftSession;
+    /// The panes of a breakOutLater() or a joinLater() whose answer did not
+    /// come yet: their exit waits for it (paneExited), as they may have moved.
     std::multiset<std::uint32_t> m_leaving;
     /// The newPaneLater() calls whose answer did not come yet.
     int m_newPanesWaiting = 0;

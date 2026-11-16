@@ -879,7 +879,7 @@ TEST(MuxClient, ARefusalWithoutWordsNamesTheCall)
 
 // The settings that a window sends its session: the variables of
 // Mux.updateEnvironment as this process has them, set or unset, only for a
-// session of this computer, and the Control values.
+// session of this computer, the Control values and Mux.keptNotifications.
 TEST(MuxSessionSettings, TakesTheUpdatedVariablesOfThisProcess)
 {
     const Afterglow::Test::Saved set("AG_TEST_SET", "value");
@@ -889,7 +889,9 @@ TEST(MuxSessionSettings, TakesTheUpdatedVariablesOfThisProcess)
     settings.mux.updateEnvironment = {QStringLiteral("AG_TEST_SET"), QStringLiteral("AG_TEST_UNSET")};
     settings.control.eventInterval = 250;
     settings.control.allowReadText = true;
+    settings.mux.keptNotifications = 5;
     const AfterglowMux::SessionSettings local = Afterglow::sessionSettings(settings, true);
+    EXPECT_EQ(local.keptNotifications, 5);
     EXPECT_TRUE(local.environment
                 == (std::vector<std::pair<std::string, std::optional<std::string>>>{{"AG_TEST_SET", "value"}, {"AG_TEST_UNSET", std::nullopt}}));
     EXPECT_EQ(local.control.eventInterval, 250);

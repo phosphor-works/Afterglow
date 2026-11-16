@@ -188,10 +188,12 @@ public:
     /// session, unless this object goes first: the calls to the mux daemon,
     /// which can start it, run off the GUI thread.
     void openProject(const QString& name, bool newInstance, const QString& mode, ProjectOpened done);
-    /// Moves @p pane beside @p target, to a new tab, or to a new window.
-    /// @p done gets the outcome once, before this returns, or later for a
-    /// pane of a mux session's window that goes to a new window, unless this
-    /// object goes first: the pane goes to a new session, and the calls to
+    /// Moves @p pane beside @p target, to a new tab, or to a new window. A
+    /// new tab with a target is in the window of the target, else in the
+    /// pane's own. @p done gets the outcome once, before this returns, or
+    /// later for a pane of a mux session's window that goes to a new window
+    /// or to the window of another session, unless this object goes first:
+    /// the pane goes to a new session or joins that one, and the calls to
     /// its daemon, and the attach of the window that shows it, run off the
     /// GUI thread.
     void movePane(quint32 pane, quint32 target, const QString& placement, PaneMoved done);
@@ -392,6 +394,13 @@ private:
     /// window, which has another ID, once: a refusal at once, else later.
     /// An error when no window shows it.
     void breakOut(TerminalWindow* source, Pane* pane, bool tab, PaneMoved done);
+    /// Moves @p pane of @p source, the window of a mux session, into
+    /// @p destination, the window of another session: on @p placement of
+    /// @p beside, a side or new-tab. The daemon moves its program
+    /// (TerminalWindow::joinSession), and @p destination takes what @p source
+    /// kept for the pane. @p done gets the pane in @p destination, which has
+    /// another ID, once: a refusal at once, else later.
+    void joinSession(TerminalWindow* source, Pane* pane, TerminalWindow* destination, Pane* beside, const QString& placement, PaneMoved done);
 
     SettingsStore& m_settings;
     WindowFactory m_newWindow;

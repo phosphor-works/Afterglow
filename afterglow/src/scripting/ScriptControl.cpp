@@ -222,7 +222,8 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                 return {QStringLiteral("no pane %1").arg(target), {}, QStringLiteral("no_pane")};
             }
             // A pane of a mux session that moves to a new window leaves in a
-            // new session, off the GUI thread, and the pane of the window
+            // new session, and one that moves to the window of another
+            // session joins it, off the GUI thread, and the pane of the window
             // that shows it has another id: the result comes then. Control
             // fails when no window shows it.
             return deferrable(

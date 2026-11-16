@@ -429,10 +429,14 @@ void MuxClient::letGo(std::uint32_t id)
     if (auto waiting = m_waitingHostCalls.extract(id); !waiting.empty()) m_waitingHostBytes -= waiting.mapped().bytes;
     m_hostParts.erase(id);
     m_maybeMovedOut.erase(id);
+    m_joinedAway.erase(id);
     if (m_closedChannels.contains(id)) {
         // Its channel ended. Its exit came whole, and nothing more of it
         // comes, or its PaneClosed still comes, and paneExited forgets it.
-        if (!m_channels.contains(id)) m_closedChannels.erase(id);
+        if (!m_channels.contains(id)) {
+            m_closedChannels.erase(id);
+            forgotten(id);
+        }
         return;
     }
     // Its frames still come until the daemon closes its channel: after a
@@ -440,6 +444,17 @@ void MuxClient::letGo(std::uint32_t id)
     // PaneOpened did not come yet: a split that closes at once. Once the
     // stream is gone, nothing more comes.
     if (m_stream && !m_streamGone) m_released.insert(id);
+}
+
+void MuxClient::forgotten(std::uint32_t id)
+{
+    // Its ID can come into the stream again: as a pane that moves back from
+    // another session, which the daemon holds until then.
+    if (m_leftSession.erase(id) == 0 || !showing()) return;
+    Attach::Input input;
+    input.type = Attach::InputType::PaneForgotten;
+    input.pane = id;
+    sendAction(input);
 }
 
 void MuxClient::release(std::uint32_t id, MuxRelease release)
@@ -595,6 +610,30 @@ QString MuxClient::breakOutLater(const AfterglowMux::Layout& layout, BrokenOut d
     QString error;
     auto args = breakOutArguments(layout, &error);
     if (!args) return error;
+    return leaveLater(layout, AfterglowMux::Fn::BreakOut, std::move(*args), std::move(done));
+}
+
+QString MuxClient::joinLater(std::uint32_t id, std::uint32_t beside, const QString& placement, BrokenOut done)
+{
+    AfterglowMux::Layout moved;
+    moved.addTab(id);
+    Json::Array args{AfterglowMux::ProtocolVersion, m_session.toStdString(), std::int64_t(id), std::int64_t(beside), placement.toStdString(),
+                     std::int64_t(m_window)};
+    return leaveLater(moved, AfterglowMux::Fn::JoinPane, std::move(args), std::move(done));
+}
+
+bool MuxClient::sameDaemon(const MuxClient& other) const
+{
+    // The first socket that the lookup found is the daemon's: a test's
+    // daemon has sockets of its own.
+    const auto first = [](const AfterglowMux::Route& route) {
+        return route.sockets.candidates.empty() ? std::string() : route.sockets.candidates.front().path;
+    };
+    return m_route.host == other.m_route.host && m_route.proxy == other.m_route.proxy && first(m_route) == first(other.m_route);
+}
+
+QString MuxClient::leaveLater(const AfterglowMux::Layout& layout, const char* fn, Json::Array args, BrokenOut done)
+{
     WaitingCall call;
     call.finish = [this, layout, done](DaemonAnswer answer) {
         for (const std::uint32_t id : layout.panes()) {
@@ -608,9 +647,9 @@ QString MuxClient::breakOutLater(const AfterglowMux::Layout& layout, BrokenOut d
         done(name, name ? QString() : why);
     };
     call.abandon = [done](const QString& why) { done(std::nullopt, why); };
-    const auto work = [sent = std::move(*args)](const AfterglowMux::Route& route, const QString& session,
-                                                const AfterglowMux::Environment& environment) {
-        return callRoute(route, session, AfterglowMux::Fn::BreakOut, sent, AfterglowMux::CallTimeoutMs, environment);
+    const auto work = [fn, sent = std::move(args)](const AfterglowMux::Route& route, const QString& session,
+                                                   const AfterglowMux::Environment& environment) {
+        return callRoute(route, session, fn, sent, AfterglowMux::CallTimeoutMs, environment);
     };
     if (const QString refused = callLater(work, std::move(call)); !refused.isEmpty()) return refused;
     // The answer comes from the event loop, after this.
@@ -1340,9 +1379,20 @@ void MuxClient::handleFrames()
                         const auto pane = std::uint32_t(placed);
                         if (!m_panes.contains(pane) && !m_released.contains(pane) && !m_closedChannels.contains(pane)) m_unbound.insert(pane);
                     }
-                    m_controlCalls.push_back({id.toInteger(), call.value(QLatin1String("fn")).toString(), call.value(QLatin1String("args")).toArray(),
-                                              call.value(QLatin1String("client")).toInteger(0)});
-                    if (!std::exchange(m_controlCallsQueued, true)) QMetaObject::invokeMethod(this, &MuxClient::answerControlCalls, Qt::QueuedConnection);
+                    if (call.value(QLatin1String("fn")).toString() == QLatin1String("paneLeft")) {
+                        // `afterglow ctl --session` moved the pane to another
+                        // session: its PaneClosed comes behind this event.
+                        // Also while a move of this window's own waits: that
+                        // one then fails, and the pane still closes with no
+                        // word (a move that went lets it go, letGo()). The
+                        // window has nothing to answer.
+                        const auto pane = std::uint32_t(placed);
+                        if (placed > 0 && placed <= 0xffffffffLL && m_panes.contains(pane)) m_joinedAway.insert(pane);
+                    } else {
+                        m_controlCalls.push_back({id.toInteger(), call.value(QLatin1String("fn")).toString(), call.value(QLatin1String("args")).toArray(),
+                                                  call.value(QLatin1String("client")).toInteger(0)});
+                        if (!std::exchange(m_controlCallsQueued, true)) QMetaObject::invokeMethod(this, &MuxClient::answerControlCalls, Qt::QueuedConnection);
+                    }
                 }
             } else if (event && event->type == Attach::EventType::PaneOpened) {
                 bad = bad || !m_layoutCame;
@@ -1372,6 +1422,7 @@ void MuxClient::handleFrames()
             } else if (event && event->type == Attach::EventType::PaneClosed) {
                 bad = !m_channels.contains(event->pane) || m_exits.contains(event->pane);
                 if (!bad) {
+                    if (event->status == -1) m_leftSession.insert(event->pane);
                     m_exits[event->pane] = event->status;
                     paneExited(event->pane);
                 }
@@ -1498,6 +1549,9 @@ void MuxClient::paneExited(std::uint32_t id)
     m_framesRead.erase(id);
     // A breakOutLater whose answer did not come moved it, and its program runs on.
     const bool movedOut = m_maybeMovedOut.erase(id) > 0 && status == -1;
+    // `afterglow ctl --session` moved it to another session, whose window
+    // shows it now.
+    const bool joined = m_joinedAway.erase(id) > 0 && status == -1;
     const auto it = m_panes.find(id);
     // Its last frame came: a Refresh that waits has all that it gets.
     if (const auto refreshes = m_refreshes.extract(id); !refreshes.empty() && it != m_panes.end() && it->second) {
@@ -1507,10 +1561,13 @@ void MuxClient::paneExited(std::uint32_t id)
     // closed channel until the window lets it go (letGo).
     if (it == m_panes.end()) {
         m_closedChannels.erase(id);
+        forgotten(id);
         return;
     }
     if (!it->second) return;
-    if (!movedOut) {
+    if (joined) {
+        it->second->sessionLost(Loss::MovedOut, false);
+    } else if (!movedOut) {
         it->second->sessionPaneExited(status);
     } else if (it->second->sessionLost(Loss::MovedOut, !m_movedOutShown)) {
         // One notice for the panes of the break out.

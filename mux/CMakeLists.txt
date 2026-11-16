@@ -44,6 +44,7 @@ add_library(afterglow_mux_daemon STATIC
     src/Daemon.cpp
     src/DaemonCommands.cpp
     src/DaemonControl.cpp
+    src/DaemonJoin.cpp
     src/DaemonRemote.cpp
     src/DaemonWatch.cpp
     src/MuxPane.cpp

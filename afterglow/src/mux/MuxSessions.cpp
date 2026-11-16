@@ -81,7 +81,7 @@ std::vector<std::string> launchCommand(const QStringList& command)
 }
 
 /// What a session takes from @p settings besides its first launch: the
-/// size, the terminal and the Control settings.
+/// size, the terminal and the Control settings, and Mux.keptNotifications.
 void followSettings(AfterglowMux::SessionOptions& session, const Settings& settings)
 {
     // No window measured the panes: the size of a new window, which the
@@ -91,6 +91,7 @@ void followSettings(AfterglowMux::SessionOptions& session, const Settings& setti
     session.terminal = followed.terminal;
     session.notificationCapabilities = NotificationCenter::capabilities();
     session.control = followed.control;
+    session.keptNotifications = followed.keptNotifications;
 }
 
 } // namespace
@@ -157,6 +158,7 @@ AfterglowMux::SessionSettings sessionSettings(const Settings& settings, bool env
     AfterglowMux::SessionSettings out{settings.terminal,
                                       {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString(),
                                        settings.control.eventInterval}};
+    out.keptNotifications = settings.mux.keptNotifications;
     if (!environment) return out;
     for (const QString& name : settings.mux.updateEnvironment) {
         // The bytes that are looked up are the name that goes: JSON carries

@@ -36,7 +36,9 @@ namespace AfterglowMux {
 /// window: bells, notifications, the clipboard, transfers, drags, downloads,
 /// and the reports that answer queries (DA1, DSR, colors, sizes). Without a
 /// window, the pane answers them as a terminal with no user: a report goes to
-/// the program, a request gets a denial, the rest go. The query of the socket
+/// the program, a request gets a denial, the rest go. Only a bell, a flash
+/// and the newest notifications wait for the next window
+/// (setKeptNotifications()). The query of the socket
 /// of an ssh session gets its answer here always. PNG and iTerm2 images
 /// decode in a process of their own (ImageDecoder), also while no window
 /// shows the pane: the store keeps their pixels. Sixel and iTerm2 images
@@ -208,8 +210,9 @@ public:
     /// A call that finds nothing else waiting goes up to Host::MaxCall,
     /// whatever the queue holds. A new
     /// window gets the pointer shape, the user variables and the running
-    /// command again. The calls that wait for a window that goes get
-    /// answerWithoutWindow().
+    /// command again, and what the pane kept while no window showed it
+    /// (setKeptNotifications()). The calls that wait for a window that goes
+    /// get answerWithoutWindow().
     void setWindow(std::uint64_t window, std::size_t queueBytes);
     /// The calls that wait for @p window, encoded, oldest first: those pushed
     /// before the last frame() that left no rows of the screen pending, as
@@ -224,8 +227,27 @@ public:
     bool callsWaiting(std::uint64_t window) const;
     /// Answers @p encoded, a call that its window did not get, as a pane that
     /// no window shows: a request gets its denial, a report goes to the
-    /// program, the others go.
+    /// program, the others go. A bell, a flash and a notification wait for
+    /// the window that the pane has now, else for the next one
+    /// (setKeptNotifications()).
     void answerWithoutWindow(std::string_view encoded);
+    /// The most bytes of the notifications that the pane keeps while no
+    /// window shows it, encoded: one over it keeps no icon, and one that
+    /// is still over it goes. A quarter of the smallest Mux.eventQueue: the
+    /// next window takes them in its queue (setWindow()), and the answers
+    /// of the program's queries still fit there.
+    static constexpr std::size_t MaxKeptBytes = std::size_t(MinEventQueue) / 4;
+    /// Mux.keptNotifications: the most notifications (OSC 9, OSC 777 and
+    /// OSC 99) that the pane keeps while no window shows it, 0 for none,
+    /// within MaxKeptBytes. The oldest go first. An OSC 99 notification
+    /// with the id of a kept one replaces it, and a close of that id takes
+    /// it away, as on a screen. The pane also keeps whether a bell and a
+    /// flash rang. The next window (setWindow()) gets the bell, the flash
+    /// and then the notifications in their order, marked missed
+    /// (Host::Call::missed), and so do the calls of these kinds that a
+    /// window that went did not get. Clipboard writes are not kept: a late
+    /// one would replace what the user copied since.
+    void setKeptNotifications(std::size_t count);
 
     // ITerminalHost
     void writeToPty(std::string_view bytes) override;
@@ -333,7 +355,8 @@ private:
     /// it. Bells, flashes, the pointer shape, user variables and ProtocolLost
     /// pass the limit too, through pushLocked(): one of each kind waits at
     /// most, and one for each name of a user variable (MaxUserVars). So does
-    /// the CommandStarted that a new window gets (setWindow()).
+    /// the CommandStarted that a new window gets (setWindow()), and the
+    /// notifications that the pane kept for it (setKeptNotifications()).
     enum class Fit : std::uint8_t { Queue, Always };
     enum class Forward : std::uint8_t {
         Queued,
@@ -355,6 +378,23 @@ private:
     /// Writes the answer of a pane that no window shows to @p call
     /// (Host::answerWithoutWindow), if it has one.
     void answerLocally(const Host::Call& call);
+    /// answerWithoutWindow() without the keep: m_hostMutex may be held.
+    void answerUnsent(std::string_view encoded);
+    /// What answerWithoutWindow() keeps of @p encoded. Without m_hostMutex.
+    void keepUnsent(std::string_view encoded);
+    /// Keeps @p call, a notification or an OSC 99 close that forward() found
+    /// no window for, or that a window did not get (keepUnsent())
+    /// (setKeptNotifications()). A window that came since forward() gets it
+    /// as a call that waits for it.
+    void keep(const Host::Call& call);
+    /// @p call as the next window gets it: a notification marked missed,
+    /// without its icon when it would not fit MaxKeptBytes.
+    static std::string keptEncoding(const Host::Call& call);
+    /// keep() with m_hostMutex held, for @p encoded (keptEncoding()).
+    void keepLocked(const Host::Call& call, std::string encoded);
+    /// Keeps what @p waiting, a call that its window did not get, holds for
+    /// the next window: a bell, a flash or a notification. m_hostMutex held.
+    void keepWaitingLocked(const WaitingCall& waiting);
 
     /// Guards m_remoteSocket alone: the reader thread asks for it while it
     /// holds m_mutex.
@@ -400,6 +440,19 @@ private:
     bool m_protocolLostWaiting = false;
     int m_protocolLost = Host::LostNothing;
     bool m_protocolLostReset = false;
+    /// What waits for the next window while none shows the pane
+    /// (setKeptNotifications()): the notifications, encoded, oldest first.
+    struct KeptCall
+    {
+        Host::Kind kind = Host::Kind::Notify;
+        std::string encoded;
+        std::string id; ///< of an OSC 99 notification, which a later one replaces
+    };
+    std::size_t m_keptLimit = std::size_t(DefaultKeptNotifications);
+    std::deque<KeptCall> m_kept;
+    std::size_t m_keptBytes = 0; ///< of m_kept
+    bool m_bellKept = false;
+    bool m_flashKept = false;
 };
 
 } // namespace AfterglowMux

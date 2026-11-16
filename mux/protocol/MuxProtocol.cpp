@@ -431,6 +431,7 @@ Json::Value toJson(const SessionOptions& o)
         {"terminal", toJson(o.terminal)},
         {"notificationCapabilities", o.notificationCapabilities},
         {"control", toJson(o.control)},
+        {"keptNotifications", o.keptNotifications},
     };
 }
 
@@ -438,7 +439,10 @@ Json::Value toJson(const SessionSettings& s)
 {
     Json::Array environment;
     for (const auto& [name, value] : s.environment) environment.push_back(Json::Array{name, value ? Json::Value(*value) : Json::Value(nullptr)});
-    return Json::Object{{"terminal", toJson(s.terminal)}, {"control", toJson(s.control)}, {"environment", std::move(environment)}};
+    return Json::Object{{"terminal", toJson(s.terminal)},
+                        {"control", toJson(s.control)},
+                        {"environment", std::move(environment)},
+                        {"keptNotifications", s.keptNotifications}};
 }
 
 std::optional<SessionSettings> sessionSettings(const Json::Value& value, std::string* error)
@@ -470,6 +474,7 @@ std::optional<SessionSettings> sessionSettings(const Json::Value& value, std::st
             }
         }
     }
+    if (const auto kept = r.integer("keptNotifications", 0, MaxKeptNotifications)) s.keptNotifications = int(*kept);
     r.noOtherKeys();
     if (r.failed()) return std::nullopt;
     return s;
@@ -497,6 +502,7 @@ std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::stri
     else r.fail("terminal", "is missing");
     r.string("notificationCapabilities", o.notificationCapabilities);
     if (const Json::Value* control = r.get("control", Json::Value::Type::Object)) readControl(r, *control, o.control);
+    if (const auto kept = r.integer("keptNotifications", 0, MaxKeptNotifications)) o.keptNotifications = int(*kept);
     r.noOtherKeys();
     if (r.failed()) return std::nullopt;
     return o;

@@ -266,6 +266,8 @@ void Attachment::panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane
         }
         const auto it = m_panes.find(id);
         if (it == m_panes.end()) continue;
+        // The window knows its ID until it says that it let it go.
+        if (pane) m_leftPanes.insert(id);
         it->second.writer->close();
         m_panes.erase(it);
         Attach::Event closed;
@@ -373,6 +375,7 @@ bool Attachment::deliver(Session* session, const Attach::Input& message, bool wi
         break;
     case Attach::InputType::Kill:
     case Attach::InputType::ClosePane:
+    case Attach::InputType::PaneForgotten:
     case Attach::InputType::Layout:
     case Attach::InputType::ControlReply:
     case Attach::InputType::ControlReplyPart:
@@ -438,6 +441,10 @@ void Attachment::readInput(Session& session)
             }
             if (action->type == Attach::InputType::Kill) {
                 m_kill = true;
+                continue;
+            }
+            if (action->type == Attach::InputType::PaneForgotten) {
+                m_leftPanes.erase(action->pane);
                 continue;
             }
             if (action->type != Attach::InputType::ClosePane) {
@@ -595,6 +602,7 @@ void Attachment::readLate(Session* session)
         case Attach::InputType::Refresh:
         case Attach::InputType::Kill:
         case Attach::InputType::ClosePane:
+        case Attach::InputType::PaneForgotten:
         case Attach::InputType::ControlReply:
         case Attach::InputType::ControlReplyPart:
         case Attach::InputType::Settings:

@@ -63,7 +63,8 @@ enum class EventType : std::uint8_t {
     PaneOpened = 1, ///< a pane exists, and its state comes on `channel`
     /// the program of a pane exited, with its status; or the pane left the
     /// window, with -1: the window closed it (ClosePane), or it went to
-    /// another session (Fn::BreakOut)
+    /// another session (Fn::BreakOut, Fn::JoinPane, or the movePane of the
+    /// control target, after a paneLeft call)
     PaneClosed = 2,
     SessionEnded = 3, ///< the last program ended, or `afterglow mux kill` ended it
     TakenOver = 4, ///< another window attached: this one detaches
@@ -77,7 +78,11 @@ enum class EventType : std::uint8_t {
     /// for the session): {"id", "fn", "args", "client"} as JSON in
     /// `payload`, with the daemon's pane IDs. "client" numbers the
     /// connection of the call, the same for its calls. The window answers
-    /// with ControlReply.
+    /// with ControlReply. Calls with the ID 0 are the daemon's own, and get
+    /// no answer: focus (pane), placePane (pane, beside pane, right, down,
+    /// left, up or tab, command, title) for a pane that the daemon started or
+    /// moved into the session, and paneLeft (pane, session) before the
+    /// PaneClosed of a pane that `afterglow ctl` moved to another session.
     Control = 9,
     /// A part of a command connection that the window serves: an encoded
     /// RelayFrame in `payload`.
@@ -140,6 +145,11 @@ enum class InputType : std::uint8_t {
     /// A part of a ControlReply larger than one frame, such as a screenshot:
     /// the parts, then the ControlReply with the rest, make its JSON.
     ControlReplyPart = 12,
+    /// The window let go of a pane that left the session (PaneClosed after
+    /// a move to another session): its ID may come into the stream again.
+    /// Until then the daemon moves that pane back into this session for no
+    /// one (ActionChannel only).
+    PaneForgotten = 13,
 };
 
 /// The bytes of a ControlReply in each ControlReplyPart, when the reply does
@@ -164,7 +174,8 @@ struct Input
 /// The inputs that come on ActionChannel, and never on the control channel.
 constexpr bool isAction(InputType type)
 {
-    return type == InputType::Kill || type == InputType::ClosePane || type == InputType::Visible || type == InputType::Refresh;
+    return type == InputType::Kill || type == InputType::ClosePane || type == InputType::Visible || type == InputType::Refresh
+        || type == InputType::PaneForgotten;
 }
 
 std::string encode(const Input& input);

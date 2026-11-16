@@ -66,7 +66,14 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 23) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 24) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 24 added Mux.keptNotifications to the options and the settings
+    // of a session, and the missed flag of the Notify and DesktopNotification
+    // host calls: the notifications that a pane kept while no window showed
+    // the session (AttachTest). It also added the joinPane call, which moves
+    // a pane to another session of the daemon, and the paneLeft call of the
+    // daemon to the window that showed it (AttachTest).
+    EXPECT_EQ(std::string(Fn::JoinPane), "joinPane");
     // Version 23 lets a pane value leave out "command" so that the daemon
     // keeps the one it has (keepsCommand), and gives the environment of the
     // session in the answers of selectSession and selectPane.
@@ -115,15 +122,25 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     followed.control.remoteCommandsOff = "off";
     followed.control.eventInterval = 250;
     followed.terminal.defaultBackground = {1, 2, 3};
-    EXPECT_EQ(keys(toJson(followed)), (std::vector<std::string>{"terminal", "control", "environment"}));
+    followed.keptNotifications = 3;
+    EXPECT_EQ(keys(toJson(followed)), (std::vector<std::string>{"terminal", "control", "environment", "keptNotifications"}));
     EXPECT_EQ(keys(toJson(followed)["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
-    [[maybe_unused]] auto& [followedTerminal, followedControl, followedEnvironment] = followed;
+    [[maybe_unused]] auto& [followedTerminal, followedControl, followedEnvironment, followedKept] = followed;
     std::string settingsError;
     const auto settingsBack = sessionSettings(Json::parse(Json::write(toJson(followed))).value(), &settingsError);
     ASSERT_TRUE(settingsBack) << settingsError;
     EXPECT_TRUE(*settingsBack == followed);
     EXPECT_FALSE(sessionSettings(Json::Object{{"terminal", toJson(followed)["terminal"]}}, &settingsError));
     EXPECT_NE(settingsError.find("control"), std::string::npos) << settingsError;
+    for (const Json::Value& kept : {Json::Value(-1), Json::Value(MaxKeptNotifications + 1), Json::Value("8")}) {
+        Json::Object object = toJson(followed).toObject();
+        for (auto& [key, value] : object) {
+            if (key == "keptNotifications") value = kept;
+        }
+        settingsError.clear();
+        EXPECT_FALSE(sessionSettings(Json::Value(object), &settingsError)) << Json::write(kept);
+        EXPECT_NE(settingsError.find("keptNotifications"), std::string::npos) << settingsError;
+    }
     Attach::Input settingsInput;
     settingsInput.type = Attach::InputType::Settings;
     settingsInput.bytes = "{}";
@@ -207,9 +224,10 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     refreshed.frames = 300;
     EXPECT_EQ(Attach::encode(refreshed), std::string("\x08\x03\x00\x00\xac\x02", 6));
     // The Visible input and the Refresh go on the action channel: neither
-    // waits behind the input of a program. Each of the twelve input types
+    // waits behind the input of a program. Each of the thirteen input types
     // is on one channel or the other.
-    for (const auto type : {Attach::InputType::Kill, Attach::InputType::ClosePane, Attach::InputType::Visible, Attach::InputType::Refresh})
+    for (const auto type : {Attach::InputType::Kill, Attach::InputType::ClosePane, Attach::InputType::Visible, Attach::InputType::Refresh,
+                            Attach::InputType::PaneForgotten})
         EXPECT_TRUE(Attach::isAction(type)) << int(type);
     for (const auto type : {Attach::InputType::Bytes, Attach::InputType::Resize, Attach::InputType::Reset, Attach::InputType::Clear,
                             Attach::InputType::Layout, Attach::InputType::ControlReply, Attach::InputType::Settings,
@@ -269,7 +287,10 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
              {Host::Kind::CommandFinished, 11}, {Host::Kind::Download, 12}, {Host::Kind::Report, 13}, {Host::Kind::ProtocolLost, 14}}) {
         EXPECT_EQ(int(kind), number);
     }
-    EXPECT_EQ(Host::encode(Host::make(Host::Kind::Notify, "t", "b")), std::string("\x03\x01t\x01" "b"));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::Notify, "t", "b")), std::string("\x03\x01t\x01" "b\x00", 6));
+    Host::Call missed = Host::make(Host::Kind::Notify, "t", "b");
+    missed.missed = true;
+    EXPECT_EQ(Host::encode(missed), std::string("\x03\x01t\x01" "b\x01", 6));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::UserVar, "n", "v")), std::string("\x09\x01n\x01v"));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::TerminalProtocol, {}, "x", 5113)), std::string("\x07\xf2\x4f\x01x"));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::Report, {}, "\x1b[?62c")), std::string("\x0d\x06\x1b[?62c"));
@@ -282,7 +303,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     Host::Call alive = Host::make(Host::Kind::DesktopNotification);
     alive.notification.kind = AfterglowVt::NotificationRequest::Kind::Alive;
     alive.notification.id = "a";
-    EXPECT_EQ(Host::encode(alive), std::string("\x04\x02\x01" "a" "\x00\x00\x00\x00\x00\x00\x00\x00\x06system\x01\x00\x00\x00\x02\x01", 25));
+    EXPECT_EQ(Host::encode(alive), std::string("\x04\x02\x01" "a" "\x00\x00\x00\x00\x00\x00\x00\x00\x06system\x01\x00\x00\x00\x02\x01\x00", 26));
     Host::Call read = Host::make(Host::Kind::ClipboardRequest);
     read.clipboard.id = "r";
     read.clipboard.mimes = {"text/plain"};
@@ -290,7 +311,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // The calls name every field of what they carry: a new field stops this
     // test compiling until MuxHost.cpp carries it and the version changes.
     Host::Call call;
-    [[maybe_unused]] auto& [callKind, title, text, number, value, notification, clipboard] = call;
+    [[maybe_unused]] auto& [callKind, title, text, number, value, notification, clipboard, callMissed] = call;
     [[maybe_unused]] auto& [nKind, nId, nTitle, nBody, buttons, iconNames, iconData, iconCacheId, appName, types, sound, focusOnActivate,
                             reportActivation, reportClose, occasion, urgency, expireMs] = call.notification;
     [[maybe_unused]] auto& [cKind, primary, cId, password, cName, mimes, data, aliases, osc52, osc52Bel, osc52Selection] = call.clipboard;
@@ -347,7 +368,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // until it has its key, its place in the round trip and a new version.
     SessionOptions fields;
     [[maybe_unused]] auto& [name, sessionEnvironment, callerEnvironment, umask, launch, size, terminal, notificationCapabilities,
-                            controlOptions] = fields;
+                            controlOptions, keptNotifications] = fields;
     [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff, eventInterval] = fields.control;
     [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram, command] = fields.launch;
     [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
@@ -360,7 +381,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     const Json::Value options = toJson(SessionOptions{});
     EXPECT_EQ(keys(options),
               (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
-                                        "notificationCapabilities", "control"}));
+                                        "notificationCapabilities", "control", "keptNotifications"}));
     EXPECT_EQ(keys(options["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
     EXPECT_EQ(keys(options["launch"]), (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram", "command"}));
     EXPECT_EQ(keys(options["size"]), (std::vector<std::string>{"cols", "rows", "cellWidth", "cellHeight"}));
@@ -389,6 +410,9 @@ TEST(MuxProtocol, HostCallsRoundTrip)
     calls.push_back(Host::make(Host::Kind::Bell));
     calls.push_back(Host::make(Host::Kind::Flash));
     calls.push_back(Host::make(Host::Kind::Notify, "title", "body \xe2\x80\xa8 line"));
+    Host::Call missedNotify = Host::make(Host::Kind::Notify, "kept", "while detached");
+    missedNotify.missed = true;
+    calls.push_back(missedNotify);
     calls.push_back(Host::make(Host::Kind::ClipboardWrite, "cp", std::string("data\0with nul", 13)));
     calls.push_back(Host::make(Host::Kind::TerminalProtocol, {}, "ac=send;id=x", 5113));
     calls.push_back(Host::make(Host::Kind::TerminalProtocol, {}, "t=q", 72));
@@ -434,6 +458,10 @@ TEST(MuxProtocol, HostCallsRoundTrip)
     flags.notification.reportActivation = false;
     flags.notification.reportClose = true;
     calls.push_back(flags);
+    Host::Call missedShow = flags;
+    missedShow.notification.kind = AfterglowVt::NotificationRequest::Kind::Show;
+    missedShow.missed = true;
+    calls.push_back(missedShow);
     Host::Call clipboard = Host::make(Host::Kind::ClipboardRequest);
     clipboard.clipboard.kind = AfterglowVt::ClipboardRequest::Kind::Write;
     clipboard.clipboard.primary = true;
@@ -465,6 +493,7 @@ TEST(MuxProtocol, HostCallsRoundTrip)
         EXPECT_EQ(back->text, call.text);
         EXPECT_EQ(back->number, call.number);
         EXPECT_EQ(back->value, call.value);
+        EXPECT_EQ(back->missed, call.missed) << int(call.kind);
         EXPECT_TRUE(fieldsOf(back->notification) == fieldsOf(call.notification)) << int(call.kind);
         EXPECT_TRUE(back->clipboard == call.clipboard) << int(call.kind);
         EXPECT_TRUE(Host::encode(*back) == bytes) << int(call.kind);
@@ -523,6 +552,14 @@ TEST(MuxProtocol, HostCallsThatTheParserNeverMakesAreRefused)
     ASSERT_LE(int(std::uint8_t(flag[differ[0]])), 1);
     flag[differ[0]] = 2;
     EXPECT_FALSE(Host::decode(flag));
+    // The missed flag is the last byte of a notification, of either kind.
+    for (Host::Call missed : {good, Host::make(Host::Kind::Notify, "t", "b")}) {
+        missed.missed = true;
+        std::string bytes = Host::encode(missed);
+        ASSERT_EQ(bytes.back(), '\x01');
+        bytes.back() = '\x02';
+        EXPECT_FALSE(Host::decode(bytes)) << int(missed.kind);
+    }
 
     Host::Call request = Host::make(Host::Kind::ClipboardRequest);
     request.clipboard.id = "c";
@@ -571,6 +608,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     o.size = {132, 43, 9, 18};
     o.notificationCapabilities = "a=focus:p=title";
     o.control = {false, true, "remote commands are off (Terminal.sshRemoteCommands)", 250};
+    o.keptNotifications = 0;
     AfterglowVt::TerminalOptions& t = o.terminal;
     t.maxScrollback = 1234;
     t.defaultForeground = {4, 5, 6};
@@ -627,6 +665,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     EXPECT_EQ(back->control.remoteCommandsOff, "remote commands are off (Terminal.sshRemoteCommands)");
     EXPECT_EQ(back->control.eventInterval, 250);
     EXPECT_TRUE(back->control == o.control);
+    EXPECT_EQ(back->keptNotifications, 0);
     EXPECT_TRUE(back->terminal == o.terminal);
     // Unset colors go as null and come back unset.
     SessionOptions unset;
@@ -659,6 +698,9 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         {"size", Json::Array{}},
         {"terminal", 3},
         {"notificationCapabilities", nullptr},
+        {"keptNotifications", -1},
+        {"keptNotifications", MaxKeptNotifications + 1},
+        {"keptNotifications", "8"},
         // A key of another version.
         {"argv", Json::Array{}},
     };
@@ -667,7 +709,8 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         EXPECT_FALSE(sessionOptions(with(good, key, value), &error)) << key << " " << Json::write(value);
         EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
     }
-    for (const char* key : {"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal", "notificationCapabilities", "control"}) {
+    for (const char* key : {"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal", "notificationCapabilities", "control",
+                            "keptNotifications"}) {
         error.clear();
         EXPECT_FALSE(sessionOptions(without(good, key), &error)) << key;
         EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
@@ -1071,7 +1114,7 @@ TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)
     EXPECT_EQ(back->type, Attach::InputType::Bytes);
     EXPECT_EQ(back->bytes, bytes.bytes);
     for (const auto type : {Attach::InputType::Reset, Attach::InputType::Clear, Attach::InputType::Kill, Attach::InputType::ClosePane,
-                            Attach::InputType::Refresh}) {
+                            Attach::InputType::Refresh, Attach::InputType::PaneForgotten}) {
         for (const std::uint32_t pane : {2u, 0xffffffffu}) {
             Attach::Input action;
             action.type = type;
@@ -1133,7 +1176,8 @@ TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
 {
     const std::string_view bad[] = {
         {},
-        std::string_view("\x0d\x01", 2),         // the type after ControlReplyPart
+        std::string_view("\x0e\x01", 2),         // the type after PaneForgotten
+        std::string_view("\x0d\x01\x00", 3),     // a byte after a PaneForgotten
         std::string_view("\x0a\x01", 2),         // ControlReply of a pane
         std::string_view("\x0b\x01", 2),         // Settings of a pane
         std::string_view("\x0c\x01", 2),         // ControlReplyPart of a pane

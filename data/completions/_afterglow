@@ -219,7 +219,7 @@ _afterglow_ctl() {
             '1:PNG file (- for standard output):_files' ;;
     split) _arguments $pane '(--left --right --up --down)'{--left,--right,--up,--down} ;;
     move-pane)
-        _arguments $pane '1:target pane ID (0 for new-tab and new-window):' \
+        _arguments $pane '1:target pane ID (0 for new-window, and for new-tab in its own window):' \
             '2:placement:(left right up down new-tab new-window)' ;;
     new-tab) _arguments $pane '--cwd[working directory]:directory:_directories' ;;
     new-window) _arguments '--cwd[working directory]:directory:_directories' ;;

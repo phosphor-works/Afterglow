@@ -1336,11 +1336,11 @@ TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
     for (int i = 0; i < 300; ++i) variables += (i ? ",\"V" : "\"V") + std::to_string(i) + "\"";
     for (const auto& [json, upper] :
          {std::pair{R"({"Terminal": {"scrollback": 1000000000}, "Colors": {"minimumContrast": 100}, "Graphics": {"quota": 1000000}, )"
-                        R"("Control": {"eventInterval": 1000000}, "Mux": {"updateEnvironment": [)"
+                        R"("Control": {"eventInterval": 1000000}, "Mux": {"keptNotifications": 1000000, "updateEnvironment": [)"
                         + variables + "]}}",
                     true},
           std::pair{std::string(R"({"Terminal": {"scrollback": -5}, "Colors": {"minimumContrast": -1}, "Graphics": {"quota": 0}, )"
-                                R"("Control": {"eventInterval": -5}})"),
+                                R"("Control": {"eventInterval": -5}, "Mux": {"keptNotifications": -5}})"),
                     false}}) {
         const std::string path = m_dir + "/config.json";
         std::ofstream(path, std::ios::trunc) << json;
@@ -1349,6 +1349,7 @@ TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
         AfterglowMux::SessionOptions options;
         options.terminal = settings.terminal;
         options.control = {settings.control.enabled, settings.control.allowReadText, {}, settings.control.eventInterval};
+        options.keptNotifications = settings.mux.keptNotifications;
         // The configuration took the values, at its bounds.
         const AfterglowVt::TerminalOptions defaults;
         EXPECT_NE(options.terminal.maxScrollback, defaults.maxScrollback) << json;
@@ -1356,6 +1357,7 @@ TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
         // 100 takes the upper bound; -1 the lower one, which is the default.
         EXPECT_DOUBLE_EQ(options.terminal.minimumContrast, upper ? 21.0 : 1.0) << json;
         EXPECT_EQ(options.control.eventInterval, upper ? int(AfterglowMux::MaxEventInterval) : 0) << json;
+        EXPECT_EQ(options.keptNotifications, upper ? int(AfterglowMux::MaxKeptNotifications) : 0) << json;
         std::string error;
         EXPECT_TRUE(AfterglowMux::sessionOptions(AfterglowMux::toJson(options), &error)) << json << ": " << error;
 
@@ -1364,6 +1366,7 @@ TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
         AfterglowMux::SessionSettings sent;
         sent.terminal = options.terminal;
         sent.control = options.control;
+        sent.keptNotifications = options.keptNotifications;
         for (const QString& name : settings.mux.updateEnvironment) sent.environment.emplace_back(name.toStdString(), std::nullopt);
         if (upper) {
             EXPECT_EQ(sent.environment.size(), AfterglowMux::MaxUpdatedVariables);
@@ -1373,6 +1376,7 @@ TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
         EXPECT_TRUE(taken) << json << ": " << error;
         if (taken) {
             EXPECT_EQ(taken->control.eventInterval, options.control.eventInterval);
+            EXPECT_EQ(taken->keptNotifications, options.keptNotifications);
             EXPECT_EQ(taken->environment.size(), sent.environment.size());
         }
     }

@@ -174,7 +174,8 @@ The same is true in a window that a project opened into its session, and while A
 In these windows, `close` of the last pane and `close_tab` of the last tab leave the programs of the session running.
 `exec`, `select`, `prompt` and `overlay` deliver their results when the process or the dialog finishes.
 `open_project` for a project that opens into a mux session delivers its result when the window of the session opens.
-In the window of a mux session, `split`, `new_tab`, `detach_tab` and `move_pane` to `new-window` deliver their results when the pane shows (see [launch options](#launch-options)).
+In the window of a mux session, `split`, `new_tab` and `detach_tab` deliver their results when the pane shows (see [launch options](#launch-options)).
+This is also true for `move_pane` to `new-window`, and for `move_pane` into the window of another session.
 Use direct creation helpers when you need a returned pane ID.
 
 `copy` fails when the text is longer than 4,194,304 UTF-16 units. Afterglow does not cut it.
@@ -789,7 +790,8 @@ When its handler waits at that moment, these steps occur:
 
 1. The dialogs, selectors and [overlays](#overlays) that the handler waits for close. The program of an overlay gets `SIGHUP`.
    An `open_project` that the handler waits for does not stop. Its session and its window still open.
-   A `split`, `new_tab`, `detach_tab` or `move_pane` to `new-window` in the window of a mux session does not stop either. The pane still opens or moves.
+   In the window of a mux session, a `split`, `new_tab` or `detach_tab` does not stop either. The pane still opens or moves.
+   The same is true for a `move_pane` to `new-window` or to another session.
 2. The processes (`exec`) and file reads (`read_file`) that it waits for stop. Its sleeps stop. Their task names and sleep slots are free again.
 3. The handler resumes once, as from `afterglow.await`, with `nil` and the error code `cancelled`. The error message tells why the run ended.
 4. `afterglow.await_all` gives the results that came before the end, and `cancelled` for the others. An effect that applied, but that had no result yet, also gives `cancelled`.
@@ -1161,19 +1163,21 @@ The pane that it opens from can close in that time, or the split can lose its ro
 
 `move_pane(pane, target?, placement?)` moves a pane. The default placement is `right`.
 `left`, `right`, `up` and `down` place the pane beside `target`, which is required.
-`new-tab` and `new-window` take no target.
-A beside placement without a target, or `new-tab` or `new-window` with one, is refused with `invalid_effect`.
-`new-tab` is refused with `operation_failed` for a pane that is alone in its tab.
+`new-tab` puts the pane in a new tab after the tab of `target`, in the window of `target`. Without a target, the tab is in the pane's own window.
+`new-window` takes no target.
+A beside placement without a target, or `new-window` with one, is refused with `invalid_effect`.
+`new-tab` into the pane's own window is refused with `operation_failed` for a pane that is alone in its tab. This is true with a target in that window too.
 In the window of a mux session, `new-window` and `detach_tab` move the pane or the tab to a new session.
+A pane of a mux session that moves into the window of another session of the same daemon joins that session.
 The pane then gets a new pane ID (see [MUX.md](MUX.md#move-panes-and-tabs)).
-The result comes when the window of the new session shows the pane.
+The result comes when the window of the other session shows the pane.
 Until then, the pane stays in its window and takes input, and another move of it fails.
 A target pane that has closed fails with `no_pane`.
 Some moves of panes of mux sessions fail with `operation_failed`.
-A pane of a session cannot move beside a pane of another window.
+A pane of a session cannot move into a window that shows no session. It cannot move into the window of a session of another host or of another mux daemon either.
 A pane of another window cannot move into the window of a session.
 The only pane of a session, and a tab that holds all the panes of a session, cannot go to a new window.
-See [move panes and tabs](MUX.md#move-panes-and-tabs).
+See [move panes and tabs](MUX.md#move-panes-and-tabs) and [move a pane to another session](MUX.md#move-a-pane-to-another-session).
 
 Set an environment value to `false` to remove it.
 Other environment values must be strings.

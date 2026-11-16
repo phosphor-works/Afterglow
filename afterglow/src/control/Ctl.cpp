@@ -71,8 +71,9 @@ the default config file, not the --config or -o of a running Afterglow.
                                         Control.allowReadText)
   split [--left|--right|--up|--down] [-- CMD...]
                                         split, run CMD or the shell, and print the new pane
-  move-pane TARGET PLACEMENT            move beside pane TARGET (left, right, up or down)
-                                        or to a new-tab or new-window with TARGET 0
+  move-pane TARGET PLACEMENT            move beside pane TARGET (left, right, up or down),
+                                        to a new-tab in the window of TARGET (0: its own),
+                                        or to a new-window with TARGET 0
   detach-tab                            move the pane's whole tab to a new window
   new-tab [--cwd DIR] [-- CMD...]       open a tab and print its pane
   new-window [--cwd DIR] [-- CMD...]    open a window and print its pane

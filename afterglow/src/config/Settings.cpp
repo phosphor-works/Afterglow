@@ -750,6 +750,14 @@ PhosphorConfig::Schema buildSchema()
                               "host. In that time, ssh can ask for a password or a passphrase. The window of a session of "
                               "another host waits %1 seconds, and ssh asks for nothing there.")
                    .arg(AfterglowMux::CallTimeoutMs / 1000)),
+        intKey(QStringLiteral("keptNotifications"), d.mux.keptNotifications, 0, int(AfterglowMux::MaxKeptNotifications),
+               QStringLiteral("The largest number of notifications that each pane of a mux session keeps while no window "
+                              "shows the session. The next window that shows the session shows them, oldest first. "
+                              "Notifications.enabled and Notifications.rateLimit apply to them, so a value above the rate "
+                              "limit only drops the newest. When a pane has more, the oldest goes. The notifications of a pane "
+                              "take at most 256 KiB, and a larger one keeps no icon. A pane also keeps a bell and a flash, "
+                              "whatever this value. The session does not keep clipboard writes. The value 0 keeps no "
+                              "notifications. A change applies at once to a session that a window shows.")),
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
@@ -1977,6 +1985,7 @@ Settings SettingsStore::read()
         s.mux.remoteCommand = command;
     }
     s.mux.signInTimeout = st.read<int>(MuxGroup, QStringLiteral("signInTimeout"));
+    s.mux.keptNotifications = st.read<int>(MuxGroup, QStringLiteral("keptNotifications"));
 
     // Control
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));

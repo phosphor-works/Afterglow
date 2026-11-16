@@ -84,6 +84,7 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     AfterglowPty::unsetVariable(spawn, "AFTERGLOW_OVERLAY");
     auto pane = std::make_unique<MuxPane>(id, m_options.terminal, size, m_options.notificationCapabilities, m_images, std::move(wake));
     pane->setTemporaryDirectory(temporaryDirectory);
+    pane->setKeptNotifications(std::size_t(m_options.keptNotifications));
     // Before the program runs: a bell or a clipboard request that it makes
     // at once waits for the window that asked for the pane.
     pane->setWindow(window, windowQueue);
@@ -170,6 +171,17 @@ void Session::adopt(std::vector<std::unique_ptr<MuxPane>> panes, Layout layout) 
     for (const auto& pane : m_panes) pane->setWatched(m_watched);
 }
 
+void Session::join(std::unique_ptr<MuxPane> pane) noexcept
+{
+    // This session's watch, as for adopt(), and its bound of kept
+    // notifications. The calls that the old window did not get yet are kept
+    // when the daemon gives the pane this session's window
+    // (MuxPane::setWindow), which then gets them, or the next one does.
+    pane->setWatched(m_watched);
+    pane->setKeptNotifications(std::size_t(m_options.keptNotifications));
+    m_panes.push_back(std::move(pane));
+}
+
 void Session::kill()
 {
     m_panes.clear();
@@ -179,6 +191,10 @@ void Session::kill()
 void Session::applySettings(const SessionSettings& settings)
 {
     m_options.control = settings.control;
+    if (m_options.keptNotifications != settings.keptNotifications) {
+        m_options.keptNotifications = settings.keptNotifications;
+        for (const auto& pane : m_panes) pane->setKeptNotifications(std::size_t(settings.keptNotifications));
+    }
     for (const auto& [name, value] : settings.environment) {
         std::erase_if(m_options.environment, [&name](const auto& variable) { return variable.first == name; });
         if (value) m_options.environment.emplace_back(name, *value);

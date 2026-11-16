@@ -156,16 +156,21 @@ public:
     /// channel closes and PaneClosed follows.
     void paneClosed(std::unique_ptr<MuxPane> pane);
     /// Pane @p id left the session, at the window's ClosePane or for another
-    /// session (Fn::BreakOut): the window no longer shows it, so its channel
-    /// closes at once and PaneClosed follows, with no status. The host calls
-    /// of a pane that goes on in another session, @p moved, get the answers
-    /// of a pane that no window shows: this window does not get them. The
-    /// bytes that it holds for @p moved, and those that the window sends it
-    /// before it hears, still go to its program (setPaneFinder()), also
-    /// once the attachment finished.
+    /// session (Fn::BreakOut, Fn::JoinPane, the movePane of the control
+    /// target): the window no longer shows it, so its channel closes at once
+    /// and PaneClosed follows, with no status. The host calls of a pane that
+    /// goes on in another session, @p moved, get the answers of a pane that
+    /// no window shows, and its bells and notifications go to the window of
+    /// the session that holds it then (MuxPane::keepUnsent): this window does
+    /// not get them. The bytes that it holds for @p moved, and those that the
+    /// window sends it before it hears, still go to its program
+    /// (setPaneFinder()), also once the attachment finished.
     void paneRemoved(std::uint32_t id, MuxPane* moved = nullptr) { panesRemoved({{id, moved}}); }
     /// paneRemoved() for each pane, with one pass over what waits.
     void panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane*>>& panes);
+    /// Whether pane @p id left this window for another session, and the
+    /// window still holds it: it cannot come back into this stream yet.
+    bool stillLeaving(std::uint32_t id) const { return m_leftPanes.contains(id); }
     /// Ends the attachment: its input for the session no longer counts but
     /// as takeLate() says, and once the panes that closed sent their last
     /// frames, @p type is the last event. A window that did not connect yet
@@ -342,6 +347,9 @@ private:
     /// The panes that went to another session while this window showed them,
     /// while they run.
     std::set<std::uint32_t> m_movedPanes;
+    /// The panes that went to another session while this window showed
+    /// them, until the window let them go (InputType::PaneForgotten).
+    std::set<std::uint32_t> m_leftPanes;
     /// The panes whose bytes a PTY refused after the window left: their
     /// bytes after those go nowhere, so that a paste cut in the middle does
     /// not run with the Enter after it.

@@ -281,7 +281,10 @@ public:
     void setProjectDirectory(const QString& path) { m_projectDirectory = path; }
     QString projectName() const { return m_projectName; }
     void setProjectName(const QString& name) { m_projectName = name; }
-    QString movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction);
+    /// Without @p beside, the pane goes to a new tab: after the tab of
+    /// @p after when it is given, else at the end, as the daemon places a
+    /// tab with a target.
+    QString movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction, Pane* after = nullptr);
     QString detachTabTo(Pane* pane, TerminalWindow* destination);
     /// The window shows a mux session: all of its panes are the session's.
     bool showsSession() const { return m_session != nullptr; }
@@ -320,6 +323,15 @@ public:
     /// takes them. A pane that closes meanwhile does not go: its program
     /// ends, or runs on in the new session when the daemon moved it first.
     QString breakOutOfSession(Pane* pane, bool wholeTab, BrokeOut done);
+    /// Moves @p pane, with its program running, into the session of
+    /// @p destination, the window of another session of the same mux daemon:
+    /// on @p side of @p beside, or without a side in a tab after the tab of
+    /// @p beside (MuxClient::joinLater). As breakOutOfSession(): a refusal at
+    /// once, else empty, and @p done gets the outcome later, once, with the
+    /// name of the session that holds the pane now. The daemon tells
+    /// @p destination to place the pane. When the pane was the last of this
+    /// window's session, that session ends, and this window closes.
+    QString joinSession(Pane* pane, TerminalWindow* destination, Pane* beside, std::optional<SplitTree::Direction> side, BrokeOut done);
     /// The panes of this window that show what broke out of another
     /// window's session get what that window kept for them: their split
     /// titles, notify on finish, clipboard grants, the looks that scripts
@@ -445,7 +457,9 @@ private:
     /// were a tab, which closes as one when it still holds only them.
     std::shared_ptr<const BreakOut> finishBreakOut(const QList<QPointer<Pane>>& moved, bool wholeTab);
     /// Why a pane or a tab of this window cannot move to @p destination, else
-    /// empty: a session's window keeps its panes, and takes no others.
+    /// empty: a session's window takes no pane of a window without a session,
+    /// and its panes go only to the window of another session of the same
+    /// daemon (joinSession).
     QString sessionMoveError(const TerminalWindow* destination) const;
     /// Says what closing @p closing ends of the session (setSessionRelease):
     /// when they are all the window's panes, the window's close

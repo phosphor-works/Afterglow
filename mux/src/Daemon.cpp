@@ -481,6 +481,7 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller, IpcServerCon
     if (request.fn == Fn::NewPane) return newPane(request);
     if (request.fn == Fn::PaneJob) return paneJob(request, caller);
     if (request.fn == Fn::BreakOut) return breakOut(request);
+    if (request.fn == Fn::JoinPane) return joinPane(request);
     if (request.fn == Fn::PaneSession) return paneSession(request);
     if (request.fn == Fn::SelectSession || request.fn == Fn::SelectPane) return select(request, connection);
     return ipcError(request.id, IpcErrorCode::NoSuchFn, "no function '" + request.fn + "' on target '" + request.target + "'");

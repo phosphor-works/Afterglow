@@ -56,7 +56,8 @@ afterglow ctl detach-tab --pane 12
 
 A move can cross tab and window boundaries.
 Use target `0` with the placement `new-tab` or `new-window`, as in `afterglow ctl move-pane 0 new-tab --pane 12`.
-Afterglow refuses a move to a new tab for a pane that is alone in its tab.
+With a target pane, `new-tab` puts the pane in a new tab after the tab of that target, in the window of that target.
+Afterglow refuses a move to a new tab of its own window for a pane that is alone in its tab.
 The `move_pane_to_tab` action then shows a notice, and `afterglow ctl action` reports an error.
 A held key tries the move one time.
 Luau supplies matching `move_pane` and `detach_tab` effects.
@@ -67,8 +68,10 @@ In the window of a [mux session](MUX.md#move-panes-and-tabs), a pane or a tab th
 A new window shows that session, and the programs keep running.
 The pane gets a new pane ID, and the tab gets a new tab ID.
 Control clients and scripts get a closure event and then a creation event, not a move event.
-Afterglow refuses a move of the last panes of a session out of its window.
-It also refuses a move of a session pane into another window, and a move of another pane into the window of a session.
+Afterglow refuses a move of the last panes of a session out of its window to a new window.
+Afterglow also refuses a move of a session pane into a window that shows no session or a session of another daemon.
+It refuses a move of another pane into the window of a session too.
+A pane that moves into the window of another session of the same daemon joins that session (see [move a pane to another session](MUX.md#move-a-pane-to-another-session)).
 
 ## Save and open projects
 

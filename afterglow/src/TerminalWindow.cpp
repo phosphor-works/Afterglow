@@ -698,12 +698,15 @@ void TerminalWindow::bindPane(Pane* pane)
             ringBell(guard);
         }
     });
-    connect(pane, &Pane::notificationRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& title, const QString& body) {
-        // Only when the user is not looking at that pane (or the overlay on it) already.
-        if (guard && takesInput(guard) && m_settings.settings().notifications && (!isActive() || hostOf(guard) != m_focused)) {
-            NotificationCenter::instance().showSimple(guard, title.isEmpty() ? guard->title() : title, body);
-        }
-    });
+    connect(pane, &Pane::notificationRequested, this,
+            [this, guard = QPointer<Pane>(pane)](const QString& title, const QString& body, bool missed) {
+                // Only when the user is not looking at that pane (or the overlay on it) already. No user
+                // saw a session pane when its program sent a missed one, whatever has the focus now.
+                if (guard && takesInput(guard) && m_settings.settings().notifications
+                    && (missed || !isActive() || hostOf(guard) != m_focused)) {
+                    NotificationCenter::instance().showSimple(guard, title.isEmpty() ? guard->title() : title, body);
+                }
+            });
     connect(pane, &Pane::clipboardRequested, this,
             [this, guard = QPointer<Pane>(pane)](const AfterglowVt::ClipboardRequest& request) {
                 if (!guard) return;
@@ -718,7 +721,7 @@ void TerminalWindow::bindPane(Pane* pane)
                 if (!guard->closeEndsProgram()) guard->sendReply(request.refusal("EPERM"));
             });
     connect(pane, &Pane::desktopNotificationRequested, this,
-            [this, guard = QPointer<Pane>(pane)](const AfterglowVt::NotificationRequest& request) {
+            [this, guard = QPointer<Pane>(pane)](const AfterglowVt::NotificationRequest& request, bool missed) {
                 if (!guard) {
                     return;
                 }
@@ -732,12 +735,14 @@ void TerminalWindow::bindPane(Pane* pane)
                         return;
                     }
                     // The program's occasion: when the user is not on the pane, or cannot see it.
-                    // An overlay's program is on its host, which shows it.
+                    // An overlay's program is on its host, which shows it. A missed one met it: no
+                    // window showed the session then.
                     Pane* const place = hostOf(guard);
                     const bool focused = isActive() && place == m_focused;
                     const bool visible = paneSeen(place, overviewCards());
-                    if ((request.occasion == Occasion::Unfocused && focused)
-                        || (request.occasion == Occasion::Invisible && visible)) {
+                    if (!missed
+                        && ((request.occasion == Occasion::Unfocused && focused)
+                            || (request.occasion == Occasion::Invisible && visible))) {
                         return;
                     }
                 }
@@ -1238,6 +1243,45 @@ QString TerminalWindow::breakOutOfSession(Pane* pane, bool wholeTab, BrokeOut do
             // The panes run on in the new session, which a new window can
             // show also when this one closed meanwhile.
             done({}, *name, window ? window->finishBreakOut(watched, wholeTab) : nullptr);
+        });
+    if (!refused.isEmpty()) return refused;
+    m_leavingPanes.append(watched);
+    return {};
+}
+
+QString TerminalWindow::joinSession(Pane* pane, TerminalWindow* destination, Pane* beside, std::optional<SplitTree::Direction> side,
+                                    BrokeOut done)
+{
+    if (!m_session || tabOf(pane) < 0 || !destination || destination == this || !beside || destination->tabOf(beside) < 0)
+        return QStringLiteral("Invalid pane destination");
+    if (const QString refused = sessionMoveError(destination); !refused.isEmpty()) return refused;
+    if (m_closing) return closingRefusal();
+    if (destination->m_closing) return destination->closingRefusal();
+    // A window whose link to its session ended could not show the pane: the
+    // daemon would move it into a session that no window here shows.
+    if (!destination->m_session->showing()) {
+        return QStringLiteral("The window of session %1 no longer shows it").arg(destination->m_session->session());
+    }
+    // One move at a time takes a pane: the daemon would get it twice.
+    if (m_leavingPanes.contains(pane)) return QStringLiteral("This pane is leaving session %1 already").arg(m_session->session());
+    // A pane whose channel did not open yet (it came a moment ago) would
+    // open here after it left: it moves once it arrived.
+    if (!m_session->heard(pane->sessionPaneId()).opened) {
+        return QStringLiteral("This pane is still arriving in session %1").arg(m_session->session());
+    }
+    static constexpr std::array<const char*, 4> SideNames{"right", "down", "left", "up"};
+    const QString placement = side ? QString::fromLatin1(SideNames[std::size_t(*side)]) : QStringLiteral("new-tab");
+    const QList<QPointer<Pane>> watched{pane};
+    const QString refused = m_session->joinLater(
+        pane->sessionPaneId(), beside->sessionPaneId(), placement,
+        [window = QPointer<TerminalWindow>(this), watched, done](std::optional<QString> name, const QString& error) {
+            if (window) {
+                window->m_leavingPanes.removeIf([&watched](const QPointer<Pane>& p) { return !p || watched.contains(p); });
+            }
+            if (!name) return done(error, {}, nullptr);
+            // What this window kept for the pane goes to the window that
+            // shows it now, as for a break out.
+            done({}, *name, window ? window->finishBreakOut(watched, false) : nullptr);
         });
     if (!refused.isEmpty()) return refused;
     m_leavingPanes.append(watched);

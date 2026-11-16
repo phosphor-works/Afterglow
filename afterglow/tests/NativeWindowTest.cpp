@@ -12280,7 +12280,7 @@ TEST_F(NativeWindow, ATabDetachedFromASessionsWindowBecomesANewSession) {
     EXPECT_EQ(plain->movePaneTo(plain->focusedPane(), shown, pane, SplitTree::Direction::Right),
               QStringLiteral("A pane cannot move into the window of session drag"));
     EXPECT_EQ(shown->movePaneTo(pane, plain, plain->focusedPane(), SplitTree::Direction::Right),
-              QStringLiteral("A pane of session drag cannot leave its window"));
+              QStringLiteral("A pane of session drag can move only into the window of another session"));
     EXPECT_EQ(shown->panes().size(), 1);
     EXPECT_EQ(plain->panes().size(), 1);
     delete plain;
@@ -12288,6 +12288,172 @@ TEST_F(NativeWindow, ATabDetachedFromASessionsWindowBecomesANewSession) {
     delete moved;
     delete shown;
     EXPECT_TRUE(waitFor([&] { return MuxTest::names(daemon.sessions()) == std::vector<std::string>{"keep"}; }, 5000));
+}
+
+// A pane of a session's window joins the session of another window of the
+// same daemon (Control::movePane, which a script's move_pane and afterglow
+// ctl move-pane run): its program runs on, and the other window shows it with
+// what the first one kept for it. A pane of a window without a session does
+// not join, and a pane of a session goes to no such window. The session that
+// loses its last pane ends, and its window closes.
+TEST_F(NativeWindow, APaneJoinsTheSessionOfAnotherWindow) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "from")) << daemon.lastError();
+    ASSERT_TRUE(shellSession(daemon, "to")) << daemon.lastError();
+    QString error;
+    auto [source, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("from"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    auto [target, beside] = showSessionAtPrompt(*application, daemon, QStringLiteral("to"), &error);
+    ASSERT_NE(beside, nullptr) << error.toStdString();
+    // Its PID in a file: the same program must answer in the other window.
+    const QString pidFile = QString::fromStdString(daemon.dir()) + QStringLiteral("/joined-pid");
+    const QPointer<Pane> moving = source->splitPane(pane, SplitTree::Direction::Right,
+        launchIn(daemon.dir(), {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                QStringLiteral("echo $$ > joined-pid.part && mv joined-pid.part joined-pid; exec cat")}),
+        &error);
+    ASSERT_NE(moving, nullptr) << error.toStdString();
+    ASSERT_TRUE(echoes(moving, QStringLiteral("before")));
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(pidFile); }));
+    const pid_t pid = pid_t(fileContent(pidFile).trimmed().toInt());
+    ASSERT_GT(pid, 0);
+    const std::uint32_t movingId = moving->sessionPaneId();
+    moving->setUserTitle(QStringLiteral("carried"));
+    ASSERT_EQ(sessionPaneCount(daemon, "from"), 2);
+    Control& control = application->control();
+    using Outcome = std::optional<std::pair<QString, QVariantMap>>;
+    const auto move = [&control](quint32 id, quint32 to, const QString& placement) {
+        auto outcome = std::make_shared<Outcome>();
+        control.movePane(id, to, placement, [outcome](const QString& e, const QVariantMap& r) { *outcome = std::make_pair(e, r); });
+        return outcome;
+    };
+
+    // A window without a session takes no pane of it, and gives none.
+    WindowOptions options;
+    options.workingDirectory = QString::fromStdString(daemon.dir());
+    options.command = {QStringLiteral("/bin/cat")};
+    QPointer<TerminalWindow> plain = application->newWindow(options);
+    ASSERT_NE(plain, nullptr);
+    ASSERT_NE(plain->focusedPane(), nullptr);
+    const auto into = move(plain->focusedPane()->id(), beside->id(), QStringLiteral("right"));
+    ASSERT_TRUE(into->has_value());
+    EXPECT_EQ((*into)->first, QStringLiteral("A pane cannot move into the window of session to"));
+    const auto out = move(moving->id(), plain->focusedPane()->id(), QStringLiteral("right"));
+    ASSERT_TRUE(out->has_value());
+    EXPECT_EQ((*out)->first, QStringLiteral("A pane of session from can move only into the window of another session"));
+    EXPECT_EQ(plain->panes().size(), 1);
+    delete plain;
+
+    // Below a pane of the other session's window.
+    const auto joined = move(moving->id(), beside->id(), QStringLiteral("down"));
+    ASSERT_TRUE(waitFor([&] { return joined->has_value(); }, 10000));
+    ASSERT_EQ((*joined)->first, QString());
+    ASSERT_TRUE(waitDeleting([&] { return !moving; }, 5000));
+    ASSERT_NE(target, nullptr);
+    ASSERT_NE(source, nullptr);
+    const QPointer<Pane> shown = target->sessionPane(movingId);
+    ASSERT_NE(shown, nullptr);
+    EXPECT_EQ((*joined)->second.value(QStringLiteral("id")).toUInt(), shown->id());
+    EXPECT_EQ(target->tabIndexOf(shown), target->tabIndexOf(beside));
+    EXPECT_EQ(shown->userTitle(), QStringLiteral("carried"));
+    EXPECT_EQ(source->panes().size(), 1);
+    EXPECT_EQ(target->panes().size(), 2);
+    EXPECT_EQ(sessionPaneCount(daemon, "from"), 1);
+    EXPECT_EQ(sessionPaneCount(daemon, "to"), 2);
+    // The same program: cat echoes in the other window, with the same PID.
+    EXPECT_TRUE(echoes(shown, QStringLiteral("after")));
+    EXPECT_EQ(::kill(pid, 0), 0);
+    EXPECT_EQ(pid_t(fileContent(pidFile).trimmed().toInt()), pid);
+
+    // The last pane of the first session goes to a tab of its own there: that
+    // session ends, and its window closes.
+    const std::uint32_t lastId = pane->sessionPaneId();
+    const auto last = move(pane->id(), beside->id(), QStringLiteral("new-tab"));
+    ASSERT_TRUE(waitFor([&] { return last->has_value(); }, 10000));
+    ASSERT_EQ((*last)->first, QString());
+    ASSERT_TRUE(waitDeleting([&] { return !source; }, 5000));
+    EXPECT_TRUE(waitFor([&] { return !sessionNamed(daemon, "from"); }, 5000));
+    ASSERT_NE(target, nullptr);
+    EXPECT_EQ(target->tabs().size(), 2);
+    EXPECT_NE(target->sessionPane(lastId), nullptr);
+    EXPECT_EQ(sessionPaneCount(daemon, "to"), 3);
+    EXPECT_EQ(::kill(pid, 0), 0);
+    delete target;
+    EXPECT_TRUE(waitFor([&] { return MuxTest::names(daemon.sessions()) == std::vector<std::string>{"keep"}; }, 5000));
+}
+
+// A pane that joins another session and comes straight back: the window that
+// it left takes it again once it let go of it (PaneForgotten). Until then the
+// daemon refuses the move back, and the window keeps its session.
+TEST_F(NativeWindow, APaneThatJoinsAnotherSessionComesStraightBack) {
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "here")) << daemon.lastError();
+    ASSERT_TRUE(shellSession(daemon, "there")) << daemon.lastError();
+    QString error;
+    auto [source, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("here"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    auto [target, beside] = showSessionAtPrompt(*application, daemon, QStringLiteral("there"), &error);
+    ASSERT_NE(beside, nullptr) << error.toStdString();
+    const QString pidFile = QString::fromStdString(daemon.dir()) + QStringLiteral("/back-pid");
+    QPointer<Pane> moving = source->splitPane(pane, SplitTree::Direction::Right,
+        launchIn(daemon.dir(), {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                QStringLiteral("echo $$ > back-pid.part && mv back-pid.part back-pid; exec cat")}),
+        &error);
+    ASSERT_NE(moving, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(pidFile); }));
+    const pid_t pid = pid_t(fileContent(pidFile).trimmed().toInt());
+    ASSERT_GT(pid, 0);
+    const std::uint32_t movingId = moving->sessionPaneId();
+    Control& control = application->control();
+    using Outcome = std::optional<std::pair<QString, QVariantMap>>;
+    // There, and back from the answer of the first move: the window here
+    // may still hold the pane then.
+    auto back = std::make_shared<Outcome>();
+    auto away = std::make_shared<Outcome>();
+    const quint32 home = pane->id();
+    control.movePane(moving->id(), beside->id(), QStringLiteral("down"), [&control, away, back, home](const QString& e, const QVariantMap& r) {
+        *away = std::make_pair(e, r);
+        if (!e.isEmpty()) return;
+        control.movePane(r.value(QStringLiteral("id")).toUInt(), home, QStringLiteral("right"),
+                         [back](const QString& e2, const QVariantMap& r2) { *back = std::make_pair(e2, r2); });
+    });
+    ASSERT_TRUE(waitFor([&] { return away->has_value() && back->has_value(); }, 10000));
+    ASSERT_EQ((*away)->first, QString());
+    // Refused at once, as the pane has not arrived there yet, or the window
+    // here still holds it, or taken back: never a lost session.
+    const QStringList refusals{QStringLiteral("This pane is still arriving in session there"),
+                               QStringLiteral("pane %1 is still leaving the window of session 'here'").arg(movingId)};
+    EXPECT_TRUE((*back)->first.isEmpty() || refusals.contains((*back)->first)) << (*back)->first.toStdString();
+    // Once the window here let it go, the move back goes.
+    ASSERT_TRUE(waitFor([&] {
+        if (source && source->sessionPane(movingId)) return true;
+        if (!back->has_value() || (*back)->first.isEmpty()) return false;
+        const QPointer<Pane> there = target ? target->sessionPane(movingId) : nullptr;
+        if (!there) return false;
+        back->reset();
+        control.movePane(there->id(), home, QStringLiteral("right"), [back](const QString& e, const QVariantMap& r) { *back = std::make_pair(e, r); });
+        return false;
+    }, 10000)) << (back->has_value() ? (*back)->first.toStdString() : std::string("no answer"));
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(target, nullptr);
+    const QPointer<Pane> returned = source->sessionPane(movingId);
+    ASSERT_NE(returned, nullptr);
+    EXPECT_TRUE(source->showsSession());
+    EXPECT_EQ(source->panes().size(), 2);
+    // The pane that left goes from the other window once its delete runs.
+    EXPECT_TRUE(waitDeleting([&] { return target && target->panes().size() == 1; }, 5000)) << [&] {
+        std::string ids;
+        for (Pane* p : target->panes()) ids += std::to_string(p->sessionPaneId()) + " ";
+        return ids + "moving " + std::to_string(movingId);
+    }();
+    EXPECT_EQ(sessionPaneCount(daemon, "here"), 2);
+    EXPECT_EQ(sessionPaneCount(daemon, "there"), 1);
+    // The same program answers here again.
+    EXPECT_TRUE(echoes(returned, QStringLiteral("home")));
+    EXPECT_EQ(::kill(pid, 0), 0);
+    delete target;
+    delete source;
 }
 
 namespace {
@@ -13460,6 +13626,46 @@ TEST_F(NativeWindow, ASessionOfAnotherHostRunsNoProgramHere) {
     ASSERT_TRUE(split->sendInput("echo \"<${TEST_UPDATED-unset}>\"\n"));
     EXPECT_TRUE(waitFor([&] { return split && screenOf(split).contains(QStringLiteral("\n<unset>")); }, 5000))
         << (split ? screenOf(split).toStdString() : std::string("the pane closed"));
+}
+
+// The notifications that a session's program sent while no window showed the
+// session show when a window attaches, also for the pane that has the focus
+// then: no user saw that pane when they came. Notifications.rateLimit counts
+// them as it counts the others, and the window drops what is over it.
+TEST_F(NativeWindow, AWindowShowsTheNotificationsOfItsDetachedSession) {
+    restartApplication(QStringLiteral("kept-notices.conf"),
+                       testSettings({{QStringLiteral("Notifications"), QJsonObject{{QStringLiteral("rateLimit"), 2}}}}),
+                       {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    RegisteredNotificationServer notices;
+    ASSERT_TRUE(notices.registered);
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    AfterglowMux::SessionOptions options = MuxTest::shellOptions(daemon, "kept");
+    options.control.allowReadText = true;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    SessionCtl ctl(daemon, "kept");
+    ASSERT_TRUE(ctl.ready()) << ctl.failure().message;
+    // Three notifications where the pane may show two. The text after them
+    // says that the daemon parsed them: the quotes keep it off the command
+    // line.
+    ASSERT_TRUE(ctl.call("sendText", MuxTest::Json::Array{0, R"(for n in one two three; do printf '\033]9;%s\a' "$n"; done; echo r''eady)" "\n"}))
+        << ctl.failure().message;
+    ASSERT_TRUE(waitFor([&] {
+        const auto text = ctl.call("getText", MuxTest::Json::Array{0, "screen"});
+        return text && text->toString().find("\nready") != std::string::npos;
+    }, 5000)) << ctl.failure().message;
+    EXPECT_EQ(noticeBodies(notices), QStringList());
+    QString error;
+    // Its screen holds the commands above, not a lone prompt.
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("kept"), &error);
+    const auto closeFirst = qScopeGuard([&shown] { delete shown; });
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return shown && shown->isExposed() && shown->submittedFrames() > 0; }));
+    const QPointer<Pane> pane = shown->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    EXPECT_TRUE(waitFor([&] { return notices.server.bodies.size() >= 2; }, 5000)) << notices.server.bodies.join(QLatin1Char(',')).toStdString();
+    EXPECT_EQ(noticeBodies(notices), (QStringList{QStringLiteral("one"), QStringLiteral("two")}));
 }
 
 // `afterglow ctl --session` while a window shows the session: the window

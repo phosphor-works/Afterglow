@@ -416,7 +416,9 @@ Q_SIGNALS:
     void shaderSignalsChanged();
     void bellRang();
     void clipboardWriteRequested(const QString& text, bool primarySelection);
-    void notificationRequested(const QString& title, const QString& body);
+    /// OSC 9 and OSC 777. @p missed: a session pane's program sent it while
+    /// no window showed the session (AfterglowMux::Host::Call::missed).
+    void notificationRequested(const QString& title, const QString& body, bool missed);
     void inputRejected();
     void pointerShapeRequested(const QString& shape);
     /// Program status records changed; read them with status().
@@ -427,8 +429,9 @@ Q_SIGNALS:
     /// requests below, emitted on the GUI thread (queueEvent).
     void commandBegan(const QString& command);
     void commandEnded(const QString& command, int exitCode, qint64 durationMs);
-    /// An OSC 99 desktop notification request.
-    void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request);
+    /// An OSC 99 desktop notification request. @p missed as for
+    /// notificationRequested.
+    void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request, bool missed);
     /// An OSC 5522 or OSC 52 clipboard read, or an OSC 5522 write.
     void clipboardRequested(const AfterglowVt::ClipboardRequest& request);
     /// An OSC 72 or OSC 5113 command, or a terminal reset (code 0).
@@ -484,6 +487,10 @@ private:
     /// after its start) and is never refused: a start must not wait for an
     /// end that never comes.
     bool queueEvent(std::function<void()> event, std::size_t bytes, EventBudget& budget, bool paired = false);
+    /// notify() and desktopNotification(), and the same calls of a session
+    /// pane with their missed flag. m_mutex held.
+    void queueNotification(std::string_view title, std::string_view body, bool missed);
+    void queueDesktopNotification(const AfterglowVt::NotificationRequest& request, bool missed);
     /// Posts one deliverEvents() unless one is posted already.
     void postEvents();
     /// GUI thread: emits the queued events in order.

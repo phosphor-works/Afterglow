@@ -1156,16 +1156,20 @@ void Control::movePane(quint32 id, quint32 target, const QString& placement, Pan
         return done(QStringLiteral("placement must be left, right, up, down, new-tab or new-window"), {});
     const bool newTab = placement == QLatin1String("new-tab");
     const bool newWindow = placement == QLatin1String("new-window");
-    if ((newTab || newWindow) && target) return done(QStringLiteral("new-tab and new-window need target 0"), {});
+    if (newWindow && target) return done(QStringLiteral("new-window takes no target pane"), {});
     if (!newTab && !newWindow && !beside) return done(QStringLiteral("a target pane is required"), {});
-    if (pane == beside) return done(QStringLiteral("cannot move a pane beside itself"), {});
-    if (newTab) destination = source;
+    if (!newTab && pane == beside) return done(QStringLiteral("cannot move a pane beside itself"), {});
+    // A new tab goes to the window of its target, else to the pane's own.
+    if (newTab && !beside) destination = source;
     // A session's panes run under its daemon: they leave in a session of
     // their own, which a window of its own shows.
     if (newWindow && source->showsSession()) return breakOut(source, pane, false, std::move(done));
+    // Or they join the session of another window, whose daemon moves them.
+    if (destination && destination != source && source->showsSession() && destination->showsSession())
+        return joinSession(source, pane, destination, beside, placement, std::move(done));
     if (newWindow) destination = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
     if (!destination) return done(QStringLiteral("cannot open a window"), {});
-    const auto error = source->movePaneTo(pane, destination, beside, direction);
+    const auto error = source->movePaneTo(pane, destination, newTab ? nullptr : beside, direction, newTab ? beside : nullptr);
     // A window made for the move must not stay hidden and keep afterglow running.
     if (!error.isEmpty() && newWindow) destination->deleteLater();
     QVariantMap result;
@@ -1237,6 +1241,41 @@ void Control::breakOut(TerminalWindow* source, Pane* pane, bool tab, PaneMoved d
         });
     };
     if (const QString refused = source->breakOutOfSession(pane, tab, showIt); !refused.isEmpty()) done(refused, {});
+}
+
+void Control::joinSession(TerminalWindow* source, Pane* pane, TerminalWindow* destination, Pane* beside, const QString& placement,
+                          PaneMoved done)
+{
+    // None for new-tab.
+    const std::optional<SplitTree::Direction> side = splitDirection(placement);
+    const std::uint32_t daemonPane = pane->sessionPaneId();
+    // A project of the other session saves the command, as this one did.
+    const QStringList command = pane->launchCommand();
+    // The daemon's call runs off the GUI thread. What answers later finds
+    // this object gone when Afterglow quits: the caller then hears nothing.
+    const auto placed = [self = QPointer<Control>(this), destination = QPointer<TerminalWindow>(destination), beside = QPointer<Pane>(beside),
+                         side, daemonPane, command, done](const QString& error, const QString& session,
+                                                          std::shared_ptr<const TerminalWindow::BreakOut> kept) {
+        if (!self) return;
+        if (!error.isEmpty()) return done(error, {});
+        if (!destination || destination->closing() || destination->sessionName() != session) {
+            return done(QStringLiteral("the pane went to session %1, but its window no longer shows it").arg(session), {});
+        }
+        // The daemon tells the window to place the pane too (placePane): the
+        // first of the two places it, and the other finds it there.
+        Pane* shown = destination->sessionPane(daemonPane);
+        if (!shown) {
+            Pane* const next = beside && destination->tabIndexOf(beside) >= 0 ? beside.data() : nullptr;
+            shown = destination->placeSessionPane(daemonPane, next, side, command);
+        }
+        if (!shown) return done(QStringLiteral("the pane went to session %1, but its window cannot show it").arg(session), {});
+        destination->adoptBreakOut(kept);
+        destination->requestActivate();
+        QVariantMap result;
+        if (const auto info = self->paneInfo(shown->id())) result = paneMap(*info);
+        done({}, result);
+    };
+    if (const QString refused = source->joinSession(pane, destination, beside, side, placed); !refused.isEmpty()) done(refused, {});
 }
 
 void Control::showNew(TerminalWindow* window) const

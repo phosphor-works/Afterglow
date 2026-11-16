@@ -88,7 +88,9 @@ struct Window
         IpcConnection::Error error;
         const int fd = connection->release(&error);
         if (fd < 0) return "no stream: " + error.message;
-        stream = std::make_unique<PhosphorChannel::Stream>(fd);
+        PhosphorChannel::Stream::Options options;
+        if (streamWindow) options.window = streamWindow;
+        stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
         std::string why;
         input = stream->openWriter(Attach::ControlChannel, Attach::InputCodec, &why);
         if (input) actions = stream->openWriter(Attach::ActionChannel, Attach::ActionCodec, &why);
@@ -150,11 +152,13 @@ struct Window
                 if (event->type == Attach::EventType::PaneOpened) {
                     // The first event is the layout, which names the pane.
                     if (layouts.empty()) ADD_FAILURE() << "a pane opened before the layout came";
-                    // A pane opens once in a window: one that closed does not
-                    // come back, and a second PaneOpened would make it twice.
-                    if (std::find(opened.begin(), opened.end(), event->pane) != opened.end()) {
+                    // A pane opens once in a window while it is there: one
+                    // that closed comes back only when it went to another
+                    // session and the window let it go (forget()).
+                    if (std::find(opened.begin(), opened.end(), event->pane) != opened.end() && !forgotten.contains(event->pane)) {
                         ADD_FAILURE() << "pane " << event->pane << " opened twice";
                     }
+                    forgotten.erase(event->pane);
                     opened.push_back(event->pane);
                     // The test reads the frames of the session's first pane
                     // into replica, and those of the others into their own.
@@ -397,6 +401,16 @@ struct Window
 
     bool closedPane(std::uint32_t id) const { return std::find(closed.begin(), closed.end(), id) != closed.end(); }
 
+    /// The window let go of pane @p id, which went to another session.
+    [[nodiscard]] bool forget(std::uint32_t id)
+    {
+        forgotten.insert(id);
+        Attach::Input message;
+        message.type = Attach::InputType::PaneForgotten;
+        message.pane = id;
+        return send(message);
+    }
+
     [[nodiscard]] bool action(Attach::InputType type)
     {
         Attach::Input message;
@@ -441,6 +455,7 @@ struct Window
     std::vector<Attach::Event> events;
     std::vector<Layout> layouts; ///< the Layout events
     std::vector<std::uint32_t> opened; ///< the panes of PaneOpened, in order
+    std::set<std::uint32_t> forgotten; ///< the panes that forget() let go, until they open again
     std::vector<std::uint32_t> closed; ///< the panes of PaneClosed, in order
     /// A Refreshed event: its pane, and the frames that it names.
     struct Refreshed
@@ -457,6 +472,9 @@ struct Window
     /// Off, the window reads no events: their channel gets no more credit,
     /// and the calls wait in the daemon.
     bool readEvents = true;
+    /// The window that the stream grants each channel that it reads, 0 for
+    /// the default: a small one makes the daemon's events wait sooner.
+    std::size_t streamWindow = 0;
     bool answerReports = true;
     NullHost host;
     AfterglowVt::Terminal replica{20, 5, host};
@@ -2777,6 +2795,98 @@ TEST(MuxControl, TheDaemonAnswersWithoutAWindow)
     EXPECT_EQ(w.layouts[0].current, 1u);
 }
 
+// While no window shows a session, each pane keeps whether a bell rang and
+// its newest notifications, up to Mux.keptNotifications, for the next window:
+// it gets them marked missed, in their order. An OSC 99 notification with the
+// id of a kept one replaces it, and a close of that id takes it away. A
+// clipboard write is not kept.
+TEST(MuxAttach, TheNextWindowGetsTheBellAndTheNewestNotificationsOfADetachedSession)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions options = shellOptions(daemon, "kept");
+    options.control.allowReadText = true;
+    options.keptNotifications = 3;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("kept"), "");
+    const std::uint32_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0u);
+    // The program's text after the sequences: the daemon parsed them all
+    // once it shows. The quotes keep the word off the command line.
+    const auto run = [&](const std::string& command, const std::string& word) {
+        if (!ctl.call("sendText", Json::Array{std::int64_t(pane), command + "; echo " + word.substr(0, 1) + "''" + word.substr(1) + "\n"})) {
+            return false;
+        }
+        return waitFor([&] {
+            const auto text = ctl.call("getText", Json::Array{std::int64_t(pane), "screen"});
+            return text && contains(text->toString(), "\n" + word);
+        });
+    };
+    // A bell, five OSC 9 notifications, an OSC 99 one with id x, an OSC 777
+    // one, a clipboard write, an OSC 99 one that the program then closes,
+    // and a new x. Three are kept at most: the OSC 777 one and the new x
+    // remain.
+    ASSERT_TRUE(run(R"(printf '\a'; for n in 1 2 3 4 5; do printf '\033]9;note%s\a' "$n"; done; )"
+                    R"(printf '\033]99;i=x;first\033\\'; printf '\033]777;notify;title;last\a'; )"
+                    R"(printf '\033]52;c;aGVsbG8=\a'; printf '\033]99;i=gone;closed\033\\'; )"
+                    R"(printf '\033]99;i=gone:p=close;\033\\'; printf '\033]99;i=x;keep\033\\')",
+                    "ready"))
+        << ctl.error.message;
+    // The calls that tell the user something, oldest first.
+    const auto alerts = [](const Window& w) {
+        std::vector<Host::Call> out;
+        std::copy_if(w.calls.begin(), w.calls.end(), std::back_inserter(out), [](const Host::Call& c) {
+            return c.kind == Host::Kind::Bell || c.kind == Host::Kind::Flash || c.kind == Host::Kind::Notify
+                || c.kind == Host::Kind::DesktopNotification || c.kind == Host::Kind::ClipboardWrite;
+        });
+        return out;
+    };
+    SessionSettings settings{options.terminal, options.control};
+    {
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "kept"), "");
+        ASSERT_TRUE(w.until([&] { return w.pane != 0 && alerts(w).size() >= 3; })) << alerts(w).size();
+        // Nothing more comes.
+        ASSERT_TRUE(w.roundTrip());
+        const std::vector<Host::Call> got = alerts(w);
+        ASSERT_EQ(got.size(), 3u);
+        EXPECT_EQ(got[0].kind, Host::Kind::Bell);
+        EXPECT_EQ(got[1].kind, Host::Kind::Notify);
+        EXPECT_EQ(got[1].title, "title");
+        EXPECT_EQ(got[1].text, "last");
+        EXPECT_TRUE(got[1].missed);
+        EXPECT_EQ(got[2].kind, Host::Kind::DesktopNotification);
+        EXPECT_EQ(got[2].notification.kind, AfterglowVt::NotificationRequest::Kind::Show);
+        EXPECT_EQ(got[2].notification.id, "x");
+        EXPECT_EQ(got[2].notification.title, "keep");
+        EXPECT_TRUE(got[2].missed);
+        // While the window shows the session, a notification goes at once,
+        // and is no missed one.
+        ASSERT_TRUE(w.type("printf '\\033]9;live\\a'\n"));
+        ASSERT_TRUE(w.until([&] { return alerts(w).size() == 4; }));
+        EXPECT_EQ(alerts(w).back().text, "live");
+        EXPECT_FALSE(alerts(w).back().missed);
+        // A window that keeps none: the session follows it once it detaches.
+        settings.keptNotifications = 0;
+        ASSERT_TRUE(w.sendSettings(settings));
+        ASSERT_TRUE(w.roundTrip());
+    }
+    ASSERT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "kept");
+        return info && !info->attached;
+    }));
+    ASSERT_TRUE(run(R"(printf '\033]9;dropped\a\a')", "again")) << ctl.error.message;
+    Window next;
+    ASSERT_EQ(next.attach(daemon, "kept"), "");
+    ASSERT_TRUE(next.until([&] { return next.pane != 0 && !alerts(next).empty(); }));
+    ASSERT_TRUE(next.roundTrip());
+    // The bell, and no notification: the window got the kept ones before.
+    const std::vector<Host::Call> got = alerts(next);
+    ASSERT_EQ(got.size(), 1u);
+    EXPECT_EQ(got[0].kind, Host::Kind::Bell);
+}
+
 // OSC 7 reports file://host/path, percent encoded. The daemon gives the path
 // to `afterglow ctl ls` and starts a new tab there, as a window does: the URL
 // itself is no directory to start in. A directory of another host is none
@@ -3639,7 +3749,8 @@ TEST(MuxAttach, AnInputOnTheWrongChannelLosesTheSession)
         ASSERT_TRUE(waitFor(detached));
         EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 2);
     };
-    for (const auto type : {Attach::InputType::Kill, Attach::InputType::ClosePane, Attach::InputType::Visible, Attach::InputType::Refresh}) {
+    for (const auto type : {Attach::InputType::Kill, Attach::InputType::ClosePane, Attach::InputType::Visible, Attach::InputType::Refresh,
+                            Attach::InputType::PaneForgotten}) {
         onTheInput(type);
     }
     {
@@ -5072,7 +5183,7 @@ TEST(MuxControl, MovesWithoutAWindowPlaceThePaneOrRefuseAsAWindowDoes)
         {{id(right), 0}, IpcErrorCode::InvalidArg, "movePane takes (pane, target, placement)"},
         {{id(right), id(first), "sideways"}, IpcErrorCode::CallFailed, "placement must be left, right, up, down, new-tab or new-window"},
         {{id(right), 0, "down"}, IpcErrorCode::CallFailed, "a target pane is required"},
-        {{id(right), id(first), "new-tab"}, IpcErrorCode::CallFailed, "new-tab and new-window need target 0"},
+        {{id(right), id(first), "new-window"}, IpcErrorCode::CallFailed, "new-window takes no target pane"},
         {{id(right), id(right), "left"}, IpcErrorCode::CallFailed, "cannot move a pane beside itself"},
         {{id(right), 9999, "left"}, IpcErrorCode::CallFailed, "no pane 9999 in session 'm'"},
         {{id(tab), 0, "new-tab"}, IpcErrorCode::CallFailed, "The pane is alone in its tab already"},
@@ -5234,4 +5345,417 @@ TEST(MuxAttach, AWindowThatNoLongerShowsTheSessionChangesNoPane)
     EXPECT_EQ(error.code, Error::NotAttached) << error.message;
     EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 2);
     EXPECT_EQ(names(daemon.sessions()), (std::vector<std::string>{"keep", "s"}));
+}
+
+namespace {
+
+/// The visible text of @p terminal, one line for each row, as
+/// Window::screen() gives it for the first pane.
+std::string textOf(const AfterglowVt::Terminal& terminal)
+{
+    std::string text;
+    const AfterglowVt::Screen& s = terminal.screen();
+    for (int y = 0; y < s.rows(); ++y) {
+        for (const AfterglowVt::Cell& c : s.row(y).cells) {
+            if (c.width() == 0) continue;
+            const char32_t cp = c.codepoint() ? c.codepoint() : U' ';
+            text.push_back(cp < 0x80 ? char(cp) : '?');
+        }
+        text.push_back('\n');
+    }
+    return text;
+}
+
+/// The place in the events of @p w of the first Control event that calls
+/// @p fn for pane @p id, else the number of the events.
+std::size_t controlAt(const Window& w, const std::string& fn, std::uint32_t id)
+{
+    for (std::size_t i = 0; i < w.events.size(); ++i) {
+        if (w.events[i].type != Attach::EventType::Control) continue;
+        const auto json = Json::parse(w.events[i].payload);
+        if (!json || (*json)["fn"].toString() != fn) continue;
+        const Json::Array& args = (*json)["args"].toArray();
+        if (!args.empty() && args[0].toInteger() == std::int64_t(id)) return i;
+    }
+    return w.events.size();
+}
+
+/// The place of the first event of @p type for pane @p id, else the number
+/// of the events.
+std::size_t eventAt(const Window& w, Attach::EventType type, std::uint32_t id)
+{
+    for (std::size_t i = 0; i < w.events.size(); ++i) {
+        if (w.events[i].type == type && w.events[i].pane == id) return i;
+    }
+    return w.events.size();
+}
+
+/// Fn::JoinPane of pane @p id of session @p from to the session of pane
+/// @p beside, from window @p window (0: a call of no window).
+std::optional<Json::Value> joinPane(TestDaemon& daemon, const std::string& from, std::uint32_t id, std::uint32_t beside,
+                                    const std::string& placement, std::int64_t window, IpcConnection::Error* error = nullptr)
+{
+    Json::Array args{ProtocolVersion, from, std::int64_t(id), std::int64_t(beside), placement};
+    if (window != 0) args.push_back(window);
+    return daemon.call(Fn::JoinPane, std::move(args), error);
+}
+
+bool openedIn(const Window& w, std::uint32_t id)
+{
+    return std::find(w.opened.begin(), w.opened.end(), id) != w.opened.end();
+}
+
+} // namespace
+
+// A pane of the window of one session joins the session that another window
+// shows, beside one of its panes, with its program running: the window that
+// showed it drags it out, and the other one places it, then gets its frames
+// and sends its input. The session that loses its last pane ends.
+TEST(MuxAttach, APaneJoinsAnotherSessionWithItsProgram)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "a"))) << daemon.lastError();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "b"))) << daemon.lastError();
+    Window wa;
+    Window wb;
+    ASSERT_EQ(wa.attach(daemon, "a"), "");
+    ASSERT_EQ(wb.attach(daemon, "b"), "");
+    ASSERT_TRUE(wa.until([&] { return wa.pane != 0; }));
+    ASSERT_TRUE(wb.until([&] { return wb.pane != 0; }));
+    const std::string pidFile = daemon.dir() + "/pid";
+    const auto moving =
+        newPane(daemon, "a", launchOf({"/bin/sh", "-c", "echo $$ > '" + pidFile + ".part' && mv '" + pidFile + ".part' '" + pidFile + "'; exec cat"}, daemon));
+    ASSERT_TRUE(moving) << daemon.lastError();
+    ASSERT_TRUE(waitFor([&] { return readFile(pidFile).find('\n') != std::string::npos; }));
+    const pid_t program = pid_t(std::strtol(readFile(pidFile).c_str(), nullptr, 10));
+    ASSERT_GT(program, 0);
+    ASSERT_TRUE(wa.until([&] { return openedIn(wa, *moving); }));
+
+    IpcConnection::Error error;
+    const auto joined = joinPane(daemon, "a", *moving, wb.pane, "down", wa.serial, &error);
+    ASSERT_TRUE(joined) << error.message;
+    std::vector<std::string> keys;
+    for (const auto& [key, value] : joined->toObject()) keys.push_back(key);
+    EXPECT_EQ(keys, std::vector<std::string>{"name"});
+    EXPECT_EQ((*joined)["name"].toString(), "b");
+    // The window of the first session no longer shows it, and the session
+    // keeps its first pane. That window asked: no paneLeft tells it.
+    ASSERT_TRUE(wa.until([&] { return wa.closedPane(*moving); }));
+    EXPECT_FALSE(wa.got(Attach::EventType::SessionEnded));
+    EXPECT_EQ(controlAt(wa, "paneLeft", *moving), wa.events.size());
+    EXPECT_EQ(sessionNamed(daemon, "a").value_or(SessionInfo{}).panes, 1);
+    EXPECT_EQ(sessionNamed(daemon, "b").value_or(SessionInfo{}).panes, 2);
+    EXPECT_TRUE(running(program));
+    const auto holder = daemon.call(Fn::PaneSession, Json::Array{std::int64_t(*moving)});
+    ASSERT_TRUE(holder) << daemon.lastError();
+    EXPECT_EQ(holder->toString(), "b");
+    // The window of the other session hears where to place it before its
+    // PaneOpened, as for a split of `afterglow ctl`.
+    ASSERT_TRUE(wb.until([&] { return openedIn(wb, *moving); }));
+    const std::size_t placed = controlAt(wb, "placePane", *moving);
+    ASSERT_LT(placed, wb.events.size());
+    EXPECT_LT(placed, eventAt(wb, Attach::EventType::PaneOpened, *moving));
+    const auto place = Json::parse(wb.events[placed].payload);
+    ASSERT_TRUE(place);
+    EXPECT_EQ((*place)["id"].toInteger(), 0);
+    EXPECT_EQ(Json::write((*place)["args"]),
+              Json::write(Json::Value(Json::Array{std::int64_t(*moving), std::int64_t(wb.pane), "down", Json::Array{}, ""})));
+    // The daemon's layout of the other session holds it below its pane.
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("b"), "");
+    EXPECT_EQ(tabOf(ctl, *moving), 0);
+    // The same program answers through the other window.
+    Attach::Input typed;
+    typed.pane = *moving;
+    typed.bytes = "joined-b\n";
+    ASSERT_TRUE(wb.send(typed));
+    ASSERT_TRUE(wb.until([&] {
+        const auto it = wb.others.find(*moving);
+        return it != wb.others.end() && contains(textOf(it->second->replica), "joined-b");
+    }));
+    EXPECT_TRUE(running(program));
+    EXPECT_EQ(pid_t(std::strtol(readFile(pidFile).c_str(), nullptr, 10)), program);
+
+    // The last pane of the first session goes to a tab of its own: that
+    // session ends, as when its last program exits.
+    const std::uint32_t last = wa.pane;
+    ASSERT_TRUE(joinPane(daemon, "a", last, *moving, "new-tab", wa.serial, &error)) << error.message;
+    ASSERT_TRUE(wa.until([&] { return wa.got(Attach::EventType::SessionEnded); }));
+    EXPECT_FALSE(sessionNamed(daemon, "a"));
+    EXPECT_EQ(sessionNamed(daemon, "b").value_or(SessionInfo{}).panes, 3);
+    ASSERT_TRUE(wb.until([&] { return openedIn(wb, last); }));
+    const std::size_t tab = controlAt(wb, "placePane", last);
+    ASSERT_LT(tab, wb.events.size());
+    EXPECT_EQ((*Json::parse(wb.events[tab].payload))["args"].toArray().at(2).toString(), "tab");
+    EXPECT_EQ(tabOf(ctl, last), 1);
+    EXPECT_TRUE(running(program));
+}
+
+TEST(MuxAttach, JoinPaneRefusesBadCalls)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "t"))) << daemon.lastError();
+    const std::uint32_t first = firstPaneOf(daemon, "s");
+    const std::uint32_t target = firstPaneOf(daemon, "t");
+    ASSERT_NE(first, 0u);
+    ASSERT_NE(target, 0u);
+    const auto second = newPane(daemon, "s", launchOf(Waiting, daemon));
+    ASSERT_TRUE(second) << daemon.lastError();
+    const auto pane = [](std::uint32_t id) { return std::int64_t(id); };
+    const std::pair<Json::Array, std::string> bad[] = {
+        {Json::Array{ProtocolVersion, "none", pane(*second), pane(target), "right"}, Error::NoSuchSession},
+        {Json::Array{ProtocolVersion - 1, "s", pane(*second), pane(target), "right"}, Error::VersionMismatch},
+        {Json::Array{ProtocolVersion, "s", pane(*second), pane(target)}, IpcErrorCode::InvalidArg},
+        {Json::Array{ProtocolVersion, "s", pane(*second), pane(target), 1}, IpcErrorCode::InvalidArg},
+        {Json::Array{ProtocolVersion, "s", 0, pane(target), "right"}, IpcErrorCode::InvalidArg},
+        // A window is a whole number from 1.
+        {Json::Array{ProtocolVersion, "s", pane(*second), pane(target), "right", 0}, IpcErrorCode::InvalidArg},
+        // The pane of another session.
+        {Json::Array{ProtocolVersion, "s", pane(target), pane(first), "right"}, Error::NoSuchPane},
+        // A pane that no session has.
+        {Json::Array{ProtocolVersion, "s", pane(*second), 9999, "right"}, Error::NoSuchPane},
+        // A pane of the same session: its window moves it.
+        {Json::Array{ProtocolVersion, "s", pane(*second), pane(first), "right"}, IpcErrorCode::CallFailed},
+        {Json::Array{ProtocolVersion, "s", pane(*second), pane(target), "sideways"}, IpcErrorCode::CallFailed},
+        // A new window is a new session (Fn::BreakOut).
+        {Json::Array{ProtocolVersion, "s", pane(*second), pane(target), "new-window"}, IpcErrorCode::CallFailed},
+    };
+    for (const auto& [args, code] : bad) {
+        IpcConnection::Error error;
+        EXPECT_FALSE(daemon.call(Fn::JoinPane, args, &error)) << Json::write(Json::Value(args));
+        EXPECT_EQ(error.code, code) << Json::write(Json::Value(args)) << ": " << error.message;
+    }
+    // A window that another one took the session from moves none of its
+    // panes, and neither does one that no longer shows it.
+    Window old;
+    ASSERT_EQ(old.attach(daemon, "s"), "");
+    ASSERT_TRUE(old.until([&] { return old.pane != 0; }));
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Layout); }));
+    IpcConnection::Error error;
+    EXPECT_FALSE(joinPane(daemon, "s", *second, target, "right", old.serial, &error));
+    EXPECT_EQ(error.code, Error::Attached) << error.message;
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"s"})) << daemon.lastError();
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
+    ASSERT_TRUE(waitFor([&] { return !sessionNamed(daemon, "s").value_or(SessionInfo{}).attached; }));
+    EXPECT_FALSE(joinPane(daemon, "s", *second, target, "right", w.serial, &error));
+    EXPECT_EQ(error.code, Error::NotAttached) << error.message;
+    EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 2);
+    EXPECT_EQ(sessionNamed(daemon, "t").value_or(SessionInfo{}).panes, 1);
+    // A call of no window may, while no window shows either session.
+    ASSERT_TRUE(joinPane(daemon, "s", *second, target, "right", 0, &error)) << error.message;
+    EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 1);
+    EXPECT_EQ(sessionNamed(daemon, "t").value_or(SessionInfo{}).panes, 2);
+}
+
+// A session of MaxSessionPanes panes takes no pane of another session, from
+// a window or from `afterglow ctl --session`.
+TEST(MuxAttach, ASessionThatIsFullTakesNoJoinedPane)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "full"))) << daemon.lastError();
+    for (std::size_t panes = 1; panes < MaxSessionPanes; ++panes) {
+        ASSERT_TRUE(newPane(daemon, "full", launchOf(Waiting, daemon))) << panes << " " << daemon.lastError();
+    }
+    const std::uint32_t target = firstPaneOf(daemon, "full");
+    ASSERT_NE(target, 0u);
+    const auto second = newPane(daemon, "s", launchOf(Waiting, daemon));
+    ASSERT_TRUE(second) << daemon.lastError();
+    IpcConnection::Error error;
+    EXPECT_FALSE(joinPane(daemon, "s", *second, target, "right", 0, &error));
+    EXPECT_EQ(error.code, Error::TooManyPanes) << error.message;
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    EXPECT_FALSE(ctl.call("movePane", Json::Array{std::int64_t(*second), std::int64_t(target), "right"}));
+    EXPECT_EQ(ctl.error.code, Error::TooManyPanes) << ctl.error.message;
+    EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 2);
+    EXPECT_EQ(sessionNamed(daemon, "full").value_or(SessionInfo{}).panes, int(MaxSessionPanes));
+}
+
+// `afterglow ctl --session` moves a pane beside a pane of another session:
+// the daemon joins it there. The window of the first session did not ask,
+// and hears that the pane left before its PaneClosed. The other session,
+// which no window shows, keeps it in its layout for the next window.
+TEST(MuxControl, AMoveBesideAPaneOfAnotherSessionJoinsIt)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "a"))) << daemon.lastError();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "b"))) << daemon.lastError();
+    Window wa;
+    ASSERT_EQ(wa.attach(daemon, "a"), "");
+    ASSERT_TRUE(wa.until([&] { return wa.pane != 0; }));
+    const auto moving = newPane(daemon, "a", launchOf(Waiting, daemon));
+    ASSERT_TRUE(moving) << daemon.lastError();
+    ASSERT_TRUE(wa.until([&] { return openedIn(wa, *moving); }));
+    const std::uint32_t target = firstPaneOf(daemon, "b");
+    ASSERT_NE(target, 0u);
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("a"), "");
+    EXPECT_FALSE(ctl.call("movePane", Json::Array{std::int64_t(*moving), std::int64_t(target), "new-window"}));
+    EXPECT_EQ(ctl.error.message, "new-window takes no target pane");
+
+    const auto moved = ctl.call("movePane", Json::Array{std::int64_t(*moving), std::int64_t(target), "up"});
+    ASSERT_TRUE(moved) << ctl.error.message;
+    EXPECT_EQ((*moved)["id"].toInteger(), std::int64_t(*moving));
+    EXPECT_EQ((*moved)["tab"].toInteger(), 0);
+    ASSERT_TRUE(wa.until([&] { return wa.closedPane(*moving); }));
+    const std::size_t left = controlAt(wa, "paneLeft", *moving);
+    ASSERT_LT(left, wa.events.size());
+    EXPECT_LT(left, eventAt(wa, Attach::EventType::PaneClosed, *moving));
+    EXPECT_EQ(Json::write((*Json::parse(wa.events[left].payload))["args"]), Json::write(Json::Value(Json::Array{std::int64_t(*moving), "b"})));
+    EXPECT_EQ(sessionNamed(daemon, "a").value_or(SessionInfo{}).panes, 1);
+    EXPECT_EQ(sessionNamed(daemon, "b").value_or(SessionInfo{}).panes, 2);
+    const auto holder = daemon.call(Fn::PaneSession, Json::Array{std::int64_t(*moving)});
+    ASSERT_TRUE(holder) << daemon.lastError();
+    EXPECT_EQ(holder->toString(), "b");
+
+    // The next window of the other session shows it above the target, with
+    // the focus.
+    Window wb;
+    ASSERT_EQ(wb.attach(daemon, "b"), "");
+    ASSERT_TRUE(wb.until([&] { return wb.opened.size() == 2; }));
+    ASSERT_EQ(wb.layouts.size(), 1u);
+    ASSERT_EQ(wb.layouts[0].tabs.size(), 1u);
+    EXPECT_EQ(wb.layouts[0].panes(), (std::vector<std::uint32_t>{*moving, target}));
+    EXPECT_EQ(wb.layouts[0].tabs[0].focused, *moving);
+
+    // The last pane of the first session: that session ends, and the window
+    // of the other one places the pane in a tab after the tab of the target.
+    const std::uint32_t last = wa.pane;
+    ASSERT_TRUE(ctl.call("movePane", Json::Array{std::int64_t(last), std::int64_t(target), "new-tab"})) << ctl.error.message;
+    ASSERT_TRUE(wa.until([&] { return wa.got(Attach::EventType::SessionEnded); }));
+    EXPECT_LT(controlAt(wa, "paneLeft", last), wa.events.size());
+    EXPECT_FALSE(sessionNamed(daemon, "a"));
+    ASSERT_TRUE(wb.until([&] { return openedIn(wb, last); }));
+    EXPECT_LT(controlAt(wb, "placePane", last), eventAt(wb, Attach::EventType::PaneOpened, last));
+    EXPECT_EQ(sessionNamed(daemon, "b").value_or(SessionInfo{}).panes, 3);
+}
+
+// A window that goes leaves the calls that it did not get, in the queue of
+// its session and in that of the pane, for the next window: those of the
+// session's queue are older, and go first. So the next window gets the
+// newest notifications in the program's order, and a close of an OSC 99
+// notification that waited behind its show still takes it away.
+TEST(MuxAttach, TheCallsThatAWindowDidNotGetGoToTheNextOneInTheirOrder)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions options = shellOptions(daemon, "order");
+    options.control.allowReadText = true;
+    options.keptNotifications = int(MaxKeptNotifications);
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("order"), "");
+    const std::uint32_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0u);
+    {
+        // A window that reads its events through a small window, then none:
+        // the daemon's queue of the session fills, then that of the pane.
+        Window w;
+        w.streamWindow = std::size_t(16) << 10;
+        ASSERT_EQ(w.attach(daemon, "order", true, std::size_t(MinEventQueue)), "");
+        ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+        w.readEvents = false;
+        // An OSC 99 notification first, its close last, and between them
+        // notifications of 1 KiB. A call waits in the pane's queue until the
+        // frame before it went, so the session's queue takes the first ones,
+        // and the pane's queue (Mux.eventQueue) the newer ones, all of them.
+        ASSERT_TRUE(ctl.call("sendText", Json::Array{std::int64_t(pane),
+                                                     "printf '\\033]99;i=x;shown\\033\\\\'; pad=$(printf '%01000d' 0); "
+                                                     "n=1; while [ $n -le 900 ]; do printf '\\033]9;%04d %s\\a' $n $pad; n=$((n+1)); done; "
+                                                     "printf '\\033]99;i=x:p=close;\\033\\\\'; echo do''ne\n"}))
+            << ctl.error.message;
+        ASSERT_TRUE(waitFor([&] {
+            const auto text = ctl.call("getText", Json::Array{std::int64_t(pane), "screen"});
+            return text && contains(text->toString(), "\ndone");
+        }, 20s));
+        ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"order"})) << daemon.lastError();
+    }
+    ASSERT_TRUE(waitFor([&] {
+        const auto info = sessionNamed(daemon, "order");
+        return info && !info->attached;
+    }));
+    Window next;
+    ASSERT_EQ(next.attach(daemon, "order"), "");
+    ASSERT_TRUE(next.until([&] { return next.pane != 0; }));
+    ASSERT_TRUE(next.roundTrip());
+    std::vector<int> numbers;
+    for (const Host::Call& call : next.calls) {
+        EXPECT_FALSE(call.kind == Host::Kind::DesktopNotification && call.notification.kind == AfterglowVt::NotificationRequest::Kind::Show)
+            << "the closed OSC 99 notification came back";
+        if (call.kind == Host::Kind::Notify) numbers.push_back(std::atoi(call.text.substr(0, 4).c_str()));
+    }
+    ASSERT_FALSE(numbers.empty());
+    EXPECT_TRUE(std::is_sorted(numbers.begin(), numbers.end()));
+    // The newest of all: the last one that the program sent.
+    EXPECT_EQ(numbers.back(), 900) << numbers.front() << " to " << numbers.back();
+}
+
+// A pane ID comes into a window's stream once: a pane that went to another
+// session comes back into the window that it left only after that window let
+// it go (PaneForgotten). Until then the move back is refused, and nothing
+// moves.
+TEST(MuxControl, APaneComesBackIntoTheWindowThatItLeftOnceThatWindowLetItGo)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "a"))) << daemon.lastError();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "b"))) << daemon.lastError();
+    Window wa;
+    ASSERT_EQ(wa.attach(daemon, "a"), "");
+    ASSERT_TRUE(wa.until([&] { return wa.pane != 0; }));
+    const std::uint32_t stays = wa.pane;
+    const auto moving = newPane(daemon, "a", launchOf(Waiting, daemon));
+    ASSERT_TRUE(moving) << daemon.lastError();
+    ASSERT_TRUE(wa.until([&] { return openedIn(wa, *moving); }));
+    const std::uint32_t target = firstPaneOf(daemon, "b");
+    ASSERT_NE(target, 0u);
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("a"), "");
+    ASSERT_TRUE(ctl.call("movePane", Json::Array{std::int64_t(*moving), std::int64_t(target), "right"})) << ctl.error.message;
+    ASSERT_TRUE(wa.until([&] { return wa.closedPane(*moving); }));
+    // Back at once: the window of session a still holds the pane.
+    ControlClient back(daemon);
+    ASSERT_EQ(back.select("b"), "");
+    EXPECT_FALSE(back.call("movePane", Json::Array{std::int64_t(*moving), std::int64_t(stays), "right"}));
+    EXPECT_EQ(back.error.message, "pane " + std::to_string(*moving) + " is still leaving the window of session 'a'");
+    EXPECT_EQ(sessionNamed(daemon, "b").value_or(SessionInfo{}).panes, 2);
+    const auto opens = [&] { return std::count(wa.opened.begin(), wa.opened.end(), *moving); };
+    EXPECT_EQ(opens(), 1);
+    // The window let it go: the move back goes, and the window gets the pane
+    // again, placed before it opens.
+    ASSERT_TRUE(wa.forget(*moving));
+    ASSERT_TRUE(waitFor([&] {
+        return back.call("movePane", Json::Array{std::int64_t(*moving), std::int64_t(stays), "right"}).has_value()
+            || back.error.message.find("still leaving") == std::string::npos;
+    })) << back.error.message;
+    ASSERT_TRUE(wa.until([&] { return opens() == 2; }));
+    EXPECT_EQ(sessionNamed(daemon, "a").value_or(SessionInfo{}).panes, 2);
+    EXPECT_EQ(sessionNamed(daemon, "b").value_or(SessionInfo{}).panes, 1);
+    std::size_t placed = wa.events.size();
+    for (std::size_t i = wa.events.size(); i-- > 0;) {
+        const auto& event = wa.events[i];
+        if (event.type != Attach::EventType::Control) continue;
+        const auto call = Json::parse(event.payload);
+        if (call && (*call)["fn"].toString() == "placePane" && (*call)["args"].toArray().at(0).toInteger() == std::int64_t(*moving)) {
+            placed = i;
+            break;
+        }
+    }
+    ASSERT_LT(placed, wa.events.size());
+    std::size_t reopened = wa.events.size();
+    for (std::size_t i = wa.events.size(); i-- > 0;) {
+        if (wa.events[i].type == Attach::EventType::PaneOpened && wa.events[i].pane == *moving) {
+            reopened = i;
+            break;
+        }
+    }
+    EXPECT_LT(placed, reopened);
 }

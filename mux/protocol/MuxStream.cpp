@@ -112,7 +112,8 @@ std::optional<Input> decodeInput(std::string_view frame)
         return input;
     }
     if (type == std::uint8_t(InputType::Reset) || type == std::uint8_t(InputType::Clear) || type == std::uint8_t(InputType::Kill)
-        || type == std::uint8_t(InputType::ClosePane) || type == std::uint8_t(InputType::Refresh)) {
+        || type == std::uint8_t(InputType::ClosePane) || type == std::uint8_t(InputType::Refresh)
+        || type == std::uint8_t(InputType::PaneForgotten)) {
         if (!r.done()) return std::nullopt;
         input.type = InputType(type);
         return input;

@@ -323,12 +323,17 @@ void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
         if (m_window == window) return;
         // The window went before it got them. Answered under the lock, before
         // the answers to newer calls (Pty::write calls nothing back). Each one
-        // goes once answered: a failure leaves the rest for the next try.
+        // leaves the queue first, so it goes once: a failure loses that one
+        // and leaves the rest for the next try, never one twice.
         while (!m_hostCalls.empty()) {
-            const WaitingCall& waiting = m_hostCalls.front();
-            if (!waiting.encoded.empty()) answerWithoutWindow(waiting.encoded);
+            const WaitingCall waiting = std::move(m_hostCalls.front());
             m_hostBytes -= waiting.cost;
             m_hostCalls.pop_front();
+            // No user saw it: the next window gets it, also the one that
+            // comes now. Kept before the answer, which only the kinds that
+            // are not kept have.
+            keepWaitingLocked(waiting);
+            if (!waiting.encoded.empty()) answerUnsent(waiting.encoded);
         }
         m_bellWaiting = m_flashWaiting = m_pointerWaiting = false;
         m_userVarsWaiting.clear();
@@ -348,6 +353,25 @@ void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
             if (m_commandRunning) {
                 wake = pushLocked(WaitingCall{Host::Kind::CommandStarted, Host::encode(Host::make(Host::Kind::CommandStarted, {}, m_command)), {}, 0}) || wake;
                 m_commandForwarded = true;
+            }
+            // What rang and what the program notified while no window showed
+            // the pane. Each one leaves what is kept once it waits: a failure
+            // leaves the rest for the next try.
+            if (m_bellKept) {
+                wake = pushLocked(WaitingCall{Host::Kind::Bell, Host::encode(Host::make(Host::Kind::Bell)), {}, 0}) || wake;
+                m_bellWaiting = true;
+                m_bellKept = false;
+            }
+            if (m_flashKept) {
+                wake = pushLocked(WaitingCall{Host::Kind::Flash, Host::encode(Host::make(Host::Kind::Flash)), {}, 0}) || wake;
+                m_flashWaiting = true;
+                m_flashKept = false;
+            }
+            while (!m_kept.empty()) {
+                const KeptCall& kept = m_kept.front();
+                wake = pushLocked(WaitingCall{kept.kind, kept.encoded, {}, 0}) || wake;
+                m_keptBytes -= kept.encoded.size();
+                m_kept.pop_front();
             }
         }
         // Last: a failure above leaves the old window, and the next pass tries
@@ -469,6 +493,12 @@ bool MuxPane::callsWaiting(std::uint64_t window) const
 
 void MuxPane::answerWithoutWindow(std::string_view encoded)
 {
+    answerUnsent(encoded);
+    keepUnsent(encoded);
+}
+
+void MuxPane::answerUnsent(std::string_view encoded)
+{
     // Only these get an answer: the others go undecoded, a clipboard write
     // or a download of many megabytes among them.
     if (encoded.empty()) return;
@@ -492,7 +522,9 @@ void MuxPane::bell()
         // One bell waits at a time, as a window rings one for a burst.
         std::lock_guard lock(m_hostMutex);
         if (m_watched) watched = watchLocked({WatchEvent::Kind::Bell});
-        if (m_window && !m_bellWaiting) {
+        if (!m_window) {
+            m_bellKept = true;
+        } else if (!m_bellWaiting) {
             m_bellWaiting = true;
             wake = pushLocked(WaitingCall{Host::Kind::Bell, Host::encode(Host::make(Host::Kind::Bell)), {}, 0});
         }
@@ -505,7 +537,11 @@ void MuxPane::flash()
     bool wake = false;
     {
         std::lock_guard lock(m_hostMutex);
-        if (!m_window || m_flashWaiting) return;
+        if (!m_window) {
+            m_flashKept = true;
+            return;
+        }
+        if (m_flashWaiting) return;
         m_flashWaiting = true;
         wake = pushLocked(WaitingCall{Host::Kind::Flash, Host::encode(Host::make(Host::Kind::Flash)), {}, 0});
     }
@@ -514,7 +550,8 @@ void MuxPane::flash()
 
 void MuxPane::notify(std::string_view title, std::string_view body)
 {
-    forward(Host::make(Host::Kind::Notify, std::string(title), std::string(body)));
+    const Host::Call call = Host::make(Host::Kind::Notify, std::string(title), std::string(body));
+    if (forward(call) == Forward::NoWindow) keep(call);
 }
 
 void MuxPane::clipboardWrite(std::string_view selection, std::string_view data)
@@ -645,7 +682,10 @@ void MuxPane::desktopNotification(const AfterglowVt::NotificationRequest& reques
 {
     Host::Call call = Host::make(Host::Kind::DesktopNotification);
     call.notification = request;
-    if (forward(call) != Forward::Queued) answerLocally(call);
+    const Forward forwarded = forward(call);
+    // A query of the notifications on screen gets its answer at once: none.
+    if (forwarded == Forward::NoWindow && request.kind != AfterglowVt::NotificationRequest::Kind::Alive) keep(call);
+    else if (forwarded != Forward::Queued) answerLocally(call);
 }
 
 bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
@@ -701,6 +741,122 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
 void MuxPane::answerLocally(const Host::Call& call)
 {
     if (const std::string answer = Host::answerWithoutWindow(call); !answer.empty()) writeDirect(answer);
+}
+
+void MuxPane::setKeptNotifications(std::size_t count)
+{
+    std::lock_guard lock(m_hostMutex);
+    m_keptLimit = count;
+    while (m_kept.size() > m_keptLimit) {
+        m_keptBytes -= m_kept.front().encoded.size();
+        m_kept.pop_front();
+    }
+}
+
+std::string MuxPane::keptEncoding(const Host::Call& call)
+{
+    const bool shows = call.kind == Host::Kind::Notify
+        || (call.kind == Host::Kind::DesktopNotification && call.notification.kind == AfterglowVt::NotificationRequest::Kind::Show);
+    if (!shows) return Host::encode(call);
+    Host::Call missed = call;
+    missed.missed = true;
+    std::string encoded = Host::encode(missed);
+    // An icon can be megabytes, and the text is what tells the user what
+    // happened.
+    if (encoded.size() > MaxKeptBytes && !missed.notification.iconData.empty()) {
+        missed.notification.iconData.clear();
+        encoded = Host::encode(missed);
+    }
+    return encoded;
+}
+
+void MuxPane::keep(const Host::Call& call)
+{
+    // Encoded outside the lock, as forward() does: an icon can be megabytes.
+    std::string encoded = keptEncoding(call);
+    bool wake = false;
+    {
+        std::lock_guard lock(m_hostMutex);
+        // A window came since forward() found none, and got what was kept
+        // before: this one waits behind them, one bounded call past the
+        // queue's limit, as the kept ones went.
+        if (m_window) queueLocked(std::move(encoded), call.kind, Fit::Always, &wake);
+        else keepLocked(call, std::move(encoded));
+    }
+    if (wake) m_wake();
+}
+
+void MuxPane::keepLocked(const Host::Call& call, std::string encoded)
+{
+    using Request = AfterglowVt::NotificationRequest;
+    std::string id;
+    if (call.kind == Host::Kind::DesktopNotification) {
+        if (call.notification.kind == Request::Kind::Alive) return;
+        // As on a screen: a notification with the id of a kept one replaces
+        // it, and a close of that id takes it away.
+        if (!call.notification.id.empty()) {
+            for (auto it = m_kept.begin(); it != m_kept.end();) {
+                if (it->kind == Host::Kind::DesktopNotification && it->id == call.notification.id) {
+                    m_keptBytes -= it->encoded.size();
+                    it = m_kept.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        if (call.notification.kind == Request::Kind::Close) return;
+        id = call.notification.id;
+    } else if (call.kind != Host::Kind::Notify) {
+        return;
+    }
+    if (m_keptLimit == 0 || encoded.size() > MaxKeptBytes) return;
+    while (!m_kept.empty() && (m_kept.size() >= m_keptLimit || m_keptBytes + encoded.size() > MaxKeptBytes)) {
+        m_keptBytes -= m_kept.front().encoded.size();
+        m_kept.pop_front();
+    }
+    const std::size_t bytes = encoded.size();
+    m_kept.push_back(KeptCall{call.kind, std::move(encoded), std::move(id)});
+    m_keptBytes += bytes;
+}
+
+void MuxPane::keepUnsent(std::string_view encoded)
+{
+    if (encoded.empty()) return;
+    // The others go undecoded, as in answerUnsent().
+    const auto kind = Host::Kind(std::uint8_t(encoded.front()));
+    // Every caller changes the pane's window later in the same pass (the
+    // window went, or the pane went to another session): kept, not queued
+    // for the window that the pane still names. These calls are older than
+    // those that wait in the pane's queue, which setWindow() keeps after
+    // them, so the next window gets all of them in the program's order, and
+    // a close of an OSC 99 notification still takes it away.
+    if (kind == Host::Kind::Bell || kind == Host::Kind::Flash) {
+        std::lock_guard lock(m_hostMutex);
+        (kind == Host::Kind::Bell ? m_bellKept : m_flashKept) = true;
+        return;
+    }
+    if (kind != Host::Kind::Notify && kind != Host::Kind::DesktopNotification) return;
+    const std::optional<Host::Call> call = Host::decode(encoded);
+    if (!call || (call->kind == Host::Kind::DesktopNotification && call->notification.kind == AfterglowVt::NotificationRequest::Kind::Alive)) {
+        return;
+    }
+    // Encoded outside the lock, as keep() does: an icon can be large.
+    std::string kept = keptEncoding(*call);
+    std::lock_guard lock(m_hostMutex);
+    keepLocked(*call, std::move(kept));
+}
+
+void MuxPane::keepWaitingLocked(const WaitingCall& waiting)
+{
+    switch (waiting.kind) {
+    case Host::Kind::Bell: m_bellKept = true; break;
+    case Host::Kind::Flash: m_flashKept = true; break;
+    case Host::Kind::Notify:
+    case Host::Kind::DesktopNotification:
+        if (const std::optional<Host::Call> call = Host::decode(waiting.encoded)) keepLocked(*call, keptEncoding(*call));
+        break;
+    default: break;
+    }
 }
 
 void MuxPane::ptyData(std::string_view bytes)

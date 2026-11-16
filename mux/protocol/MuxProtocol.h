@@ -24,14 +24,14 @@ namespace AfterglowMux {
 
 /// Changes when a call, its arguments or its result change. Each end checks
 /// it: the client calls Fn::Version first on each connection, and the daemon
-/// refuses a newSession, an attach, a newPane, a breakOut, a selectSession
-/// or a selectPane of another version: the calls that take it as their
-/// first argument. The codecs of the attach stream (MuxStream.h), of the
+/// refuses a newSession, an attach, a newPane, a breakOut, a joinPane, a
+/// selectSession or a selectPane of another version: the calls that take it
+/// as their first argument. The codecs of the attach stream (MuxStream.h), of the
 /// host calls on it (MuxHost.h) and of the state frames in it
 /// (AfterglowVt::StateCodec, StateSync.h) change with it. MuxProtocolTest
 /// pins the keys of the options to this number, so that a new key changes it
 /// too.
-inline constexpr int ProtocolVersion = 23;
+inline constexpr int ProtocolVersion = 24;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -87,10 +87,23 @@ inline constexpr const char* PaneJob = "paneJob";
 /// give it another name. A window gives the window of its attach answer, as
 /// for newPane.
 inline constexpr const char* BreakOut = "breakOut";
+/// (protocol, name, pane, beside, placement[, window]) -> {name}: pane
+/// @p pane leaves session @p name for the session that holds pane @p beside,
+/// another session of the daemon, with its program running. placement is
+/// "left", "right", "up" or "down": beside that pane. "new-tab": in a tab of
+/// its own after its tab. name in the answer is the session that holds the
+/// pane now. The window that shows that session places the pane (the
+/// placePane call of the control target), and the window that showed it
+/// drags it out, as for breakOut. A session that loses its last pane ends.
+/// The session of @p beside takes no pane past MaxSessionPanes
+/// (Error::TooManyPanes). A window gives the window of its attach answer, as
+/// for newPane.
+inline constexpr const char* JoinPane = "joinPane";
 /// (pane) -> string: the name of the session that holds the pane now. A
-/// pane that broke out keeps the AFTERGLOW_SESSION of its first session, as
-/// no process changes the environment of another: a client in a session
-/// pane asks by its AFTERGLOW_PANE_ID.
+/// pane that broke out or joined another session keeps the
+/// AFTERGLOW_SESSION of its first session, as no process changes the
+/// environment of another: a client in a session pane asks by its
+/// AFTERGLOW_PANE_ID.
 inline constexpr const char* PaneSession = "paneSession";
 /// (protocol, name) -> {name, environment}: the calls of the control target
 /// on this connection act on session @p name (`afterglow ctl --session
@@ -178,6 +191,11 @@ inline constexpr std::int64_t DefaultEventQueue = std::int64_t(4) << 20;
 /// The most history rows that an attach can name: Terminal.scrollback, as
 /// for a session's own terminal.
 inline constexpr std::int64_t MaxHistory = MaxScrollback;
+/// The bounds of Mux.keptNotifications, and its default: the most
+/// notifications that a pane keeps while no window shows its session
+/// (MuxPane::setKeptNotifications).
+inline constexpr std::int64_t MaxKeptNotifications = 100;
+inline constexpr std::int64_t DefaultKeptNotifications = 8;
 
 /// What runs in a new pane. The client prepares it from its configuration
 /// (the shell, shell integration, TERM and the environment of the launch),
@@ -273,6 +291,9 @@ struct SessionOptions
     /// client: what `afterglow ctl` and `afterglow ssh` may do with the
     /// session in the daemon.
     ControlOptions control;
+    /// Mux.keptNotifications of the client: the most notifications that
+    /// each pane keeps for the next window, 0 to MaxKeptNotifications.
+    int keptNotifications = int(DefaultKeptNotifications);
 };
 
 /// The variables of an environment as SessionOptions and Launch send them:
@@ -298,6 +319,8 @@ struct SessionSettings
     /// them: a value replaces the session's, and none removes it. The
     /// panes that start later get them.
     std::vector<std::pair<std::string, std::optional<std::string>>> environment{};
+    /// Mux.keptNotifications, as in SessionOptions.
+    int keptNotifications = int(DefaultKeptNotifications);
     bool operator==(const SessionSettings&) const = default;
 };
 /// The most variables that the settings of a window name.

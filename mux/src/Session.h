@@ -101,6 +101,14 @@ public:
     /// caller resolved (keepCommands()): the panes of a session that has none
     /// yet. Allocates nothing.
     void adopt(std::vector<std::unique_ptr<MuxPane>> panes, Layout layout) noexcept;
+    /// Room for one more pane, for join(): made before the pane leaves its
+    /// session, so that a failure (out of memory) leaves it there.
+    void reservePane() { m_panes.reserve(m_panes.size() + 1); }
+    /// Takes pane @p pane, which another session gave up (take()), with its
+    /// program running: Fn::JoinPane. The caller made room for it
+    /// (reservePane()) and puts it in the layout (changeLayout()).
+    /// Allocates nothing.
+    void join(std::unique_ptr<MuxPane> pane) noexcept;
 
     const Layout& layout() const { return m_layout; }
     /// For the calls of `afterglow ctl` that change the layout while no
@@ -129,7 +137,8 @@ public:
     /// value of @p layout keeps a command after it, and none is empty.
     static void keepCommands(Layout& layout, const Layout& kept);
     /// The settings of the window that shows the session: its panes, and
-    /// those that start later, take the terminal values, the calls of
+    /// those that start later, take the terminal values and
+    /// Mux.keptNotifications, the calls of
     /// `afterglow ctl` and `afterglow ssh` follow the control values, and
     /// the panes that start later get the variables.
     void applySettings(const SessionSettings& settings);

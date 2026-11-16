@@ -109,13 +109,6 @@ std::optional<Side> sideOf(const Json::Value& value)
     return std::nullopt;
 }
 
-/// Whether a pane of @p size has room for another one on @p side, as half
-/// of it: two columns or one row at least, as the daemon makes a split.
-bool roomBeside(const PaneSize& size, Side side)
-{
-    return side == Side::Right || side == Side::Left ? size.cols >= 4 : size.rows >= 2;
-}
-
 /// What `afterglow ctl ls` says of @p pane, as a window's control target says
 /// it: the window is 0, and the ID of a tab is its place from 1.
 Json::Value paneMap(const Session& session, const MuxPane& pane, bool readText)
@@ -338,8 +331,7 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         if (split) layout.split(pane->id(), id, side);
         else layout.insertTab(std::move(alone), pane->id());
         if (values) layout.values.insert(std::move(values));
-        static constexpr std::array<const char*, 4> SideNames{"right", "down", "left", "up"};
-        const char* const place = split ? SideNames[std::size_t(side)] : "tab";
+        const char* const place = split ? sideName(side) : "tab";
         tellWindow(session, "placePane", Json::Array{std::int64_t(id), std::int64_t(pane->id()), place, std::move(command)});
         return ipcReply(request.id.value_or(0), std::int64_t(id));
     }
@@ -362,6 +354,29 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         session.changeLayout().focus(pane->id());
         tellWindow(session, "focus", Json::Array{std::int64_t(pane->id())});
         return ipcReply(request.id.value_or(0), nullptr);
+    }
+    if (fn == "movePane" && args.size() == 3 && args[2].isString()) {
+        // A target in another session of the daemon: the pane joins that
+        // session with its program running (DaemonJoin.cpp), whether a
+        // window shows either session or not. Its window did not ask, and
+        // hears it (paneLeft).
+        const auto target = paneArg(args[1]);
+        Session* const other = target && *target != 0 && !session.pane(*target) ? sessionOfPane(*target) : nullptr;
+        if (other) {
+            if (!other->options().control.enabled) {
+                return failed(request, "session '" + other->name() + "' takes no control calls (Control.enabled)");
+            }
+            const std::uint32_t id = pane->id();
+            std::optional<Side> side;
+            if (std::string refused = joinRefusal(request, session, id, *other, *target, args[2].toString(), true, &side); !refused.empty()) {
+                return refused;
+            }
+            // The session ends when that was its last pane: `session` and
+            // `it` are used no more. The pane answers as the other session's.
+            const bool otherReadText = other->options().control.allowReadText;
+            joinPanes(session, id, *other, *target, side, true);
+            return ipcReply(request.id.value_or(0), paneMap(*other, *other->pane(id), otherReadText));
+        }
     }
     if (fn == "movePane" || fn == "detachTab") {
         // The window moves its panes, a new window included, and sends its
@@ -401,16 +416,20 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         if (!side && placement != "new-tab" && placement != "new-window") {
             return failed(request, "placement must be left, right, up, down, new-tab or new-window");
         }
-        if (!target || ((placement == "new-tab" || placement == "new-window") != (*target == 0))) {
-            return failed(request, side ? "a target pane is required" : "new-tab and new-window need target 0");
-        }
+        if (!target) return ipcError(request.id, IpcErrorCode::InvalidArg, "a pane ID is a whole number from 0 to 4294967295");
+        if (side && *target == 0) return failed(request, "a target pane is required");
+        if (placement == "new-window" && *target != 0) return failed(request, "new-window takes no target pane");
         if (placement == "new-window") {
             Layout moved;
             moved.addTab(id);
             return movedOut(std::move(moved));
         }
         if (placement == "new-tab") {
-            std::uint32_t beside = 0;
+            // After the tab of the target, else after its own tab.
+            std::uint32_t beside = *target != id ? *target : 0;
+            if (beside != 0 && !session.pane(beside)) {
+                return failed(request, "no pane " + std::to_string(beside) + " in session '" + session.name() + "'");
+            }
             for (const LayoutNode& node : current.tabs.at(tab).tree) {
                 if (node.pane != 0 && node.pane != id && beside == 0) beside = node.pane;
             }

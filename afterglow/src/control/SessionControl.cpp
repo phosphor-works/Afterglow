@@ -16,6 +16,7 @@
 #include <QMetaMethod>
 
 #include <cmath>
+#include <limits>
 
 namespace Afterglow {
 
@@ -243,9 +244,17 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
         for (const QJsonValue& word : args.at(3).toArray()) command << word.toString();
         // A refusal goes back for a call that waits for an answer: the
         // daemon's own placement (ID 0) gets none.
-        if (!window.placeSessionPane(std::uint32_t(id), paneAt(window, args, 1), direction, command) && !window.sessionPane(std::uint32_t(id))) {
+        Pane* placed = window.placeSessionPane(std::uint32_t(id), paneAt(window, args, 1), direction, command);
+        if (!placed) placed = window.sessionPane(std::uint32_t(id));
+        if (!placed) {
             return failed(window.closing() ? QStringLiteral("this window of session %1 is closing").arg(window.sessionName())
                                            : QStringLiteral("the window cannot show pane %1").arg(id));
+        }
+        // A pane that joined from another session brings the title that the
+        // user gave it there, which any client of a session can set: cleaned
+        // as a title of the layout is.
+        if (const QString title = args.at(4).toString(); !title.isEmpty()) {
+            placed->setUserTitle(sanitizedLine(title, std::numeric_limits<qsizetype>::max()));
         }
         return {};
     }

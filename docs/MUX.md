@@ -218,6 +218,7 @@ For it, the window does not ask the daemon, because scripts read every pane ofte
 ### Move panes and tabs
 
 A pane or a tab moves in the window of a session as in any window, to another tab or beside another pane.
+A pane can also join another session (see [move a pane to another session](#move-a-pane-to-another-session)).
 A pane or a tab that you move to a new window leaves the session. These moves take a pane or a tab to a new window:
 
 - A drag of a tab out of the tab bar
@@ -258,8 +259,11 @@ These moves are not possible:
 | --- | --- |
 | The only pane of a session to a new window | `This pane is the only pane of session NAME, and it stays in its window` |
 | A tab that holds all the panes of a session to a new window | `This tab holds all the panes of session NAME, and they stay in its window` |
-| A pane of a session into another window | `A pane of session NAME cannot leave its window` |
+| A pane of a session into a window that shows no session | `A pane of session NAME can move only into the window of another session` |
 | A pane of another window into the window of a session | `A pane cannot move into the window of session NAME` |
+| A pane of a session into the window of a session on another host | `A pane of session NAME cannot move to session OTHER, which runs on another host` |
+| A pane of a session into the window of a session of another daemon on this computer | `A pane of session NAME cannot move to session OTHER, which runs under another mux daemon` |
+| A pane into a session that has 256 panes | `session 'OTHER' has 256 panes, the most that a session can have` |
 
 A move that is not possible shows a notice. `afterglow ctl` and the script effects fail with the message.
 The palette does not show **Detach Tab to New Window** and **Move Pane to New Window** when they are not possible.
@@ -270,6 +274,51 @@ The windows go on responding while the daemon moves the panes and the new window
 When no window can show the new session, the move fails with `the pane went to session NAME, but no window can show it (REASON)`.
 For a tab, the message starts with `the tab`.
 The new session keeps running, and `afterglow mux attach NAME` shows it.
+
+### Move a pane to another session
+
+A pane of a session can join another session of the same daemon, as `tmux join-pane` does.
+Both sessions must run on this computer, or both on the same host.
+These moves take a pane into another session:
+
+- `afterglow ctl move-pane TARGET PLACEMENT` through the socket of a window, with a pane `TARGET` in the window of the other session. `TARGET` is a pane ID of the windows.
+- The script effect `move_pane`, with a target pane in the window of the other session
+- `afterglow ctl --session NAME move-pane TARGET PLACEMENT`, with a pane `TARGET` of another session. `TARGET` is a pane ID in the daemon.
+- `afterglow ctl move-pane TARGET PLACEMENT` in a session pane, with a pane `TARGET` of another session. `TARGET` is a pane ID in the daemon.
+
+| Placement | Where the pane goes |
+| --- | --- |
+| `left`, `right`, `up`, `down` | Beside the target pane, in half of its room |
+| `new-tab` | In a new tab after the tab of the target pane |
+
+When a window shows the other session and the target pane has no room for the split, the pane goes in a new tab after the tab of the target pane.
+
+The daemon moves the pane with its program, its history and its terminal state. The program keeps running, with the same process.
+The window of the other session shows the pane. When no window shows that session, the next window shows the pane.
+When the pane was the last pane of its session, that session ends, and its window closes.
+The windows go on responding while the daemon moves the pane.
+Until the daemon has moved the pane, the pane stays in its window, and another move of it fails.
+
+The pane gets a new pane ID in the window, as for a move to a new session.
+The pane ID in the daemon stays the same, and so does `AFTERGLOW_PANE_ID`.
+`AFTERGLOW_SESSION` still names the session where the pane started.
+The pane takes the terminal settings of the other session.
+After a move from a window, the items of the pane stay or go as the table for a move to a new session says.
+After a move by `afterglow ctl --session`, the window of the first session closes the pane with no notice.
+The title that you gave to the pane goes with it. Other things that the window kept for the pane go.
+`afterglow ctl --session` also needs `Control.enabled` of the other session. Else the move fails with `session 'OTHER' takes no control calls (Control.enabled)`.
+When no window shows the other session, the target pane needs 4 columns for `left` and `right`, and 2 rows for `up` and `down`. Else the move fails with `There is not enough room beside that pane`.
+
+A pane comes into a window once at a time.
+A pane that left a window goes back into it only after that window let it go, which takes a moment.
+Until then, a move of it back fails with `pane N is still leaving the window of session 'NAME'`.
+A pane that came into a window a moment ago moves only after its window shows it.
+Until then, a move of it fails with `This pane is still arriving in session NAME`.
+Try the move again.
+
+When the window of the other session closed during the move, the move fails with `the pane went to session NAME, but its window no longer shows it`.
+When that window cannot place the pane, the move fails with `the pane went to session NAME, but its window cannot show it`.
+In both cases, the pane is in session `NAME`, and `afterglow mux attach NAME` shows it.
 
 ### Session panes
 
@@ -535,6 +584,7 @@ A session pane takes some settings from the session, which follows the window th
 | `Terminal.shell`, `Terminal.env`, `Terminal.term`, `Terminal.shellIntegration`, `Terminal.sshIntegration`, `Terminal.sshTerminfo` | The window, when it starts a new tab or split. The program starts in the environment of the session. A session of another host does not use them. Its panes run your login shell there, with the `TERM` that `afterglow mux new --ssh` gave the session. | At the next new tab or split |
 | `Terminal.wordSeparators`, `Colors.boldIsBright`, `Colors.minimumContrast` | The window | At once |
 | `Terminal.bell`, `Terminal.clipboardRead` and the other settings of requests | The window (see [what a window answers](#what-a-window-answers)) | At once |
+| `Mux.keptNotifications` | The session, as for the terminal values | At once, for each pane of the session |
 
 ### Control of a session
 
@@ -577,7 +627,7 @@ A window that answers a command follows its own settings too.
 | `split` | The daemon starts the program. The pane goes beside its pane, on the side that the command names, and gets the focus. | The daemon starts the program, and the window places the pane in the same way |
 | `new-tab` | The daemon starts the program. The pane gets a new tab after the tab of its pane, and that tab shows. | The daemon starts the program, and the window places the pane in the same way |
 | `focus` | The daemon keeps the focus for the next window | The window focuses the pane |
-| `move-pane`, `detach-tab` | The daemon moves the pane in its layout. A move to a new window makes a new session, as in a window (see [move panes and tabs](#move-panes-and-tabs)). No window shows the new session. | The window moves the pane, as a drag in the window does |
+| `move-pane`, `detach-tab` | The daemon moves the pane in its layout. A move to a new window makes a new session, as in a window (see [move panes and tabs](#move-panes-and-tabs)). No window shows the new session. A move to a pane of another session joins that session (see [move a pane to another session](#move-a-pane-to-another-session)). | The window moves the pane, as a drag in the window does. A move to a pane of another session joins that session, as without a window. |
 | `get-text --selection` | Empty: only a window has a selection | The window answers |
 | `set-title`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
 | `overlay`, `screenshot` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window runs the overlay or takes the picture, and answers when it is done |
@@ -608,6 +658,8 @@ The standard input of `afterglow ctl overlay` goes to the window in parts.
 
 A move to a new window (`afterglow ctl move-pane 0 new-window`) and `afterglow ctl detach-tab` end the pane for the watchers of the old session.
 They get `paneClosed`. The new session has events of its own.
+A move to another session ends the pane for them too, and they get `paneClosed`.
+The watchers of the other session get `paneCreated`. The pane ID in the daemon stays the same.
 
 The daemon merges the events as a window does.
 It uses `Control.eventInterval` of the window that showed the session last, else of the Afterglow that started the session.
@@ -722,12 +774,37 @@ While no window shows the session, the daemon also answers these requests.
 | --- | --- |
 | Queries that the terminal answers itself (DA1, DSR, color queries) | The daemon answers |
 | Query of the notifications on screen (OSC 99 `p=alive`) | The daemon answers with an empty list, because no notification is on screen |
-| Bell, flash, notification, clipboard write | The daemon drops it. A clipboard write that asks for a status (OSC 5522) gets `EPERM`. |
+| Bell (BEL) and flash (OSC 555) | Each pane keeps one bell and one flash for the next window (see [requests for the next window](#requests-for-the-next-window)) |
+| Notification (OSC 9, OSC 777, OSC 99) | Each pane keeps the newest ones for the next window, up to `Mux.keptNotifications` (see [requests for the next window](#requests-for-the-next-window)) |
+| Clipboard write (OSC 52 and OSC 5522) | The daemon drops it, because a late write would replace what you copied since. A clipboard write that asks for a status (OSC 5522) gets `EPERM`. |
 | Clipboard read (OSC 52 and OSC 5522) | Refused, as when you deny the request |
 | File transfer (OSC 5113) | Refused with `EPERM`, as when you deny the request. A transfer with `q=2` asks for no status and gets no answer. |
 | Drag and drop (OSC 72) | A program that asks which types the terminal supports gets the answer of a window. A drag offer (`t=o`) gets `EPERM`. No drop arrives, and no drag starts. |
 | File download (OSC 1337 `File`) | Dropped |
 | Pointer shape (OSC 22), user variables (OSC 1337 `SetUserVar`), commands of shell integration (OSC 133) | The daemon keeps the last pointer shape, the user variables and the running command for the next window |
+
+### Requests for the next window
+
+While no window shows the session, no one sees its bells and notifications.
+Each pane keeps them, and the next window that shows the session gets them.
+
+| Request of a program | What the pane keeps |
+| --- | --- |
+| Bell (BEL) | One bell for any number of bells. The window rings it, as `Terminal.bell` sets. |
+| Flash (OSC 555) | One flash for any number of flashes. The window flashes the pane. |
+| Notification (OSC 9, OSC 777, OSC 99) | The newest notifications, up to `Mux.keptNotifications` (0 to 100, 8 by default). When a pane has more, the oldest goes. All of them together are at most 256 KiB in each pane, a quarter of the smallest `Mux.eventQueue`. A notification of more than 256 KiB keeps no icon. |
+| OSC 99 notification with the ID of a kept one | It replaces the kept one, as on the screen |
+| OSC 99 close (`p=close`) | It removes the kept notification with its ID |
+
+The window gets the bell and the flash first, then the notifications in the order that the programs sent them.
+It shows each notification also when the pane has the focus, because you did not see the pane when the program sent it.
+`Notifications.enabled` applies as for the other notifications.
+Each kept notification counts against `Notifications.rateLimit` of its pane when the window shows it. The window drops the notifications over the limit.
+A session of another host keeps them in its own daemon.
+Its window shows them under `Notifications.enabled` and `Notifications.rateLimit` of that window, as the other notifications of that host.
+A window that goes before it got a bell, a flash or a notification leaves it for the next window.
+`Mux.keptNotifications` comes from the settings of the window that shows the session, else of its last window, else of the Afterglow that started it.
+A change applies at once to a session that a window shows.
 
 ## What a window answers
 
@@ -766,10 +843,13 @@ These requests do not take more room when more come:
 - The end of a command always goes when its start went.
 
 When the window goes, the requests that still wait get the answer of a session that no window shows.
+Bells, flashes and notifications that still wait go to the next window (see [requests for the next window](#requests-for-the-next-window)).
 A request that the window got already gets no answer from the daemon.
 A clipboard read that waits for your answer gets the denial when its window closes and the session keeps running.
 When a session pane closes in the window, a file transfer that the window ran gets no more answers.
-A pane can move to a new session while a request of its program waits for the window. That request gets the answer of a session that no window shows.
+A pane can move to a new session or to another session while a request of its program waits for the window.
+A bell, a flash and a notification then go to the window that shows the session of the pane now, else to the next window of that session.
+Another request gets the answer of a session that no window shows.
 
 ## Limits
 
@@ -800,6 +880,7 @@ A pane can move to a new session while a request of its program waits for the wi
 | Region scrolls in one frame | 256 | Every row from the top of the highest region that scrolled to the bottom of the lowest leaves its region. A selection or a search match in those rows goes. |
 | Requests that wait for a window | `Mux.eventQueue` (1 to 64 MiB, 4 MiB by default) in the queue of the session, and as much in the queue of each pane. A request that finds the queue of its pane empty passes the limit. The queue of the session also takes one request of any size while it is below the limit. | The answer of a session that no window shows (see [requests that wait](#requests-that-wait)) |
 | One request to a window | 129 MiB: the largest clipboard write that a terminal takes, and its types | The answer of a session that no window shows |
+| Notifications that a pane keeps while no window shows the session | `Mux.keptNotifications` (0 to 100, 8 by default), and 256 KiB | The oldest goes. A notification of more than 256 KiB keeps no icon. |
 | Watch events of a pane that wait for the daemon | 1,024 events or 4 MiB | A new title, status or value of a user variable replaces the last one of its kind that waits. Other new events are dropped. |
 | Variables of `Mux.updateEnvironment` | 256 names | Afterglow uses the first 256 and reports the others as a problem of the configuration |
 | First answer of the daemon of another host, through ssh, to an `afterglow mux` command | `Mux.signInTimeout` (5 to 600 seconds, 120 by default) | The command stops with an error |

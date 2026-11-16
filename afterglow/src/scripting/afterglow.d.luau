@@ -291,7 +291,7 @@ declare afterglow: {
     save_project: (pane: PaneRef, name: string, overwrite: boolean?) -> Effect,
     open_project: (name: string, newInstance: boolean?) -> Effect,
     list_projects: () -> Effect,
-    -- left, right, up and down need a target; new-tab and new-window take none.
+    -- left, right, up and down need a target. new-tab goes to the window of its target, else to the pane's own. new-window takes none.
     move_pane: (pane: PaneRef, target: PaneRef?, placement: ("left" | "right" | "up" | "down" | "new-tab" | "new-window")?) -> Effect,
     detach_tab: (pane: PaneRef) -> Effect,
     timer: (name: string, delay_ms: number, repeat_ms: number?) -> Effect,
