@@ -79,6 +79,11 @@ public:
     {
         return Afterglow::decodeBoundedImage(data, "", width, height, rgba);
     }
+    bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
+                           std::vector<std::uint32_t>& delays) override
+    {
+        return Afterglow::decodeBoundedFrames(data, maxBytes, frames, delays);
+    }
 };
 
 /// Parses "A,B" (or "AxB" with @p separator) into two numbers within range.

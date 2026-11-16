@@ -25,7 +25,18 @@ inline constexpr std::string_view DecodeServerArgument = "--decode-images";
 /// The formats that a program may send.
 enum class ImageFormats : std::uint8_t {
     Png, ///< kitty graphics f=100: PNG only
-    Common, ///< iTerm2 inline images: PNG, JPEG, GIF and WebP (their first frame) and BMP
+    Common, ///< PNG, JPEG, GIF and WebP (their first frame) and BMP
+    CommonFrames, ///< iTerm2 inline images: Common, with each frame of a GIF or WebP animation
+};
+
+/// One frame of decodeFrames(): RGBA8 with straight alpha, and the
+/// milliseconds that it shows.
+struct DecodedFrame
+{
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> rgba;
+    std::uint32_t delayMs = 0;
 };
 
 /// Decodes the images of the programs of sessions into RGBA8 with straight
@@ -76,8 +87,17 @@ public:
     /// descriptor, or -1) is readable: the pane that waits for it closes.
     bool decode(std::string_view data, ImageFormats formats, std::uint32_t& width, std::uint32_t& height,
                 std::vector<std::uint8_t>& rgba, int cancel);
+    /// decode() of ImageFormats::CommonFrames: each frame of an animation,
+    /// a whole canvas, and the milliseconds that it shows, at most
+    /// AfterglowProto::GraphicsMaxFrames of them and @p maxBytes of pixels
+    /// together. An animation that the process could not finish (corrupt
+    /// data, its CPU limit) keeps the frames that came.
+    bool decodeFrames(std::string_view data, std::size_t maxBytes, std::vector<DecodedFrame>& frames, int cancel);
 
 private:
+    /// Decodes @p data in a process: the frames that it writes, up to
+    /// @p maxBytes of pixels.
+    bool run(std::string_view data, ImageFormats formats, std::size_t maxBytes, std::vector<DecodedFrame>& frames, int cancel);
     /// Starts the server. m_mutex held.
     bool startLocked();
     /// Ends the server and reaps it. m_mutex held.

@@ -1430,6 +1430,12 @@ bool Pane::decodeImage(std::string_view data, std::uint32_t& width, std::uint32_
     return decodeBoundedImage(data, "", width, height, rgba);
 }
 
+bool Pane::decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
+                             std::vector<std::uint32_t>& delays)
+{
+    return decodeBoundedFrames(data, maxBytes, frames, delays);
+}
+
 void Pane::contextChanged()
 {
     // m_mutex held: on the pty thread, or for a session pane on the GUI thread

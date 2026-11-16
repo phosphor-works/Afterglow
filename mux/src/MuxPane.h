@@ -276,6 +276,8 @@ public:
                    std::vector<std::uint8_t>& rgba) override;
     bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
                      std::vector<std::uint8_t>& rgba) override;
+    bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
+                           std::vector<std::uint32_t>& delays) override;
     /// The answer that the daemon gave the pane for its ssh sessions
     /// (setRemoteSocket): without one, `aglow run` hears that it is off, not
     /// that the terminal does not know the query.
@@ -297,6 +299,9 @@ private:
     void setVisibleLocked(bool visible, std::uint64_t window);
     bool decodeOutsideLock(std::string_view data, ImageFormats formats, std::uint32_t& width, std::uint32_t& height,
                            std::vector<std::uint8_t>& rgba);
+    /// Runs @p decode on the reader thread with m_mutex let go, as a decode
+    /// can take seconds.
+    bool outsideLock(const std::function<bool()>& decode);
     static std::pair<std::string, std::string> statusOf(const AfterglowVt::ProgramStatus& status);
     /// Keeps @p event for the daemon, which watches (m_watched): true when
     /// the daemon must wake for it, as nothing waited before. m_hostMutex

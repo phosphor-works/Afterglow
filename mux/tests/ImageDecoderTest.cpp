@@ -161,6 +161,28 @@ TEST(MuxImageDecoder, AnItermImageCanBeJpegGifWebPOrBmp)
     EXPECT_EQ(d.width, 4u);
     EXPECT_EQ(d.height, 4u);
     EXPECT_EQ(d.rgba, repeat({255, 0, 0, 255}, 16));
+    // Each frame for iTerm2's animations, with its time, as the window
+    // decodes them (WindowImageDecode.AnimationsGiveEachFrameWithinTheBudget).
+    {
+        static ImageDecoder decoder(AFTERGLOW_MUX);
+        for (const std::string* file : {&Gif, &WebpAnimated}) {
+            std::vector<AfterglowMux::DecodedFrame> frames;
+            ASSERT_TRUE(decoder.decodeFrames(*file, 1 << 20, frames, -1));
+            ASSERT_EQ(frames.size(), 2u);
+            EXPECT_EQ(frames[0].delayMs, 100u);
+            EXPECT_EQ(frames[1].delayMs, 100u);
+            EXPECT_EQ(frames[0].rgba, repeat({255, 0, 0, 255}, 16));
+            EXPECT_EQ(frames[1].rgba, repeat({0, 0, 255, 255}, 16));
+            frames.clear();
+            ASSERT_TRUE(decoder.decodeFrames(*file, 100, frames, -1));
+            ASSERT_EQ(frames.size(), 1u);
+            EXPECT_EQ(frames[0].delayMs, 0u);
+        }
+        std::vector<AfterglowMux::DecodedFrame> frames;
+        ASSERT_TRUE(decoder.decodeFrames(Png, 1 << 20, frames, -1));
+        ASSERT_EQ(frames.size(), 1u);
+        EXPECT_EQ(frames[0].delayMs, 0u);
+    }
     d = decode(Webp, ImageFormats::Common);
     ASSERT_TRUE(d.ok);
     EXPECT_EQ(d.width, 2u);

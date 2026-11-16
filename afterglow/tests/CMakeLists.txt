@@ -92,7 +92,7 @@ add_dependencies(afterglow_mux_command_tests afterglow aglow-mux)
 gtest_discover_tests(afterglow_mux_command_tests PROPERTIES TIMEOUT 120)
 
 qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp PaneSelectionTest.cpp NestedLoopTest.cpp PaneLaunchTest.cpp)
-target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)
+target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app afterglow_image_test_files GTest::gtest)
 gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # A window's link to a session (MuxClient), with panes and no window, against

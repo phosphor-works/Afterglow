@@ -49,7 +49,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Kitty images sent as a file, a temporary file or shared memory, unless `Terminal.graphicsFileTransfer` is `deny`.
 - An image memory limit for the main and the alternate screen of each pane (`Graphics.quota`, 320 MiB each by default). Images without a placement go first: those sent with the transient hint (`N=1`), then the oldest.
 - Sixel images.
-- iTerm2 inline images and file downloads (OSC 1337), with a native Save dialog. The dialog moves with its pane to another window. It closes when its pane of a mux session moves to a new session.
+- iTerm2 inline images, which play when they are animated GIF or WebP images, and file downloads (OSC 1337), with a native Save dialog. The dialog moves with its pane to another window. It closes when its pane of a mux session moves to a new session.
 - Kitty text sizing (OSC 66).
 - The Kitty multiple-cursors protocol, with mixed block and beam layering.
 

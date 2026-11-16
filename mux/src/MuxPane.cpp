@@ -642,15 +642,36 @@ bool MuxPane::decodeImage(std::string_view data, std::uint32_t& width, std::uint
     return decodeOutsideLock(data, ImageFormats::Common, width, height, rgba);
 }
 
+bool MuxPane::decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
+                                std::vector<std::uint32_t>& delays)
+{
+    std::vector<DecodedFrame> decoded;
+    if (!outsideLock([&] { return m_images.decodeFrames(data, maxBytes, decoded, m_stopDecode.get()); })) return false;
+    for (DecodedFrame& d : decoded) {
+        AfterglowVt::ImageFrame frame;
+        frame.width = d.width;
+        frame.height = d.height;
+        frame.rgba = std::move(d.rgba);
+        frames.push_back(std::move(frame));
+        delays.push_back(d.delayMs);
+    }
+    return true;
+}
+
 bool MuxPane::decodeOutsideLock(std::string_view data, ImageFormats formats, std::uint32_t& width, std::uint32_t& height,
                                 std::vector<std::uint8_t>& rgba)
+{
+    return outsideLock([&] { return m_images.decode(data, formats, width, height, rgba, m_stopDecode.get()); });
+}
+
+bool MuxPane::outsideLock(const std::function<bool()>& decode)
 {
     // Reader thread, in the feed of ptyData(), m_mutex held. A decode can
     // take seconds, and the daemon's one thread takes m_mutex for the frames
     // and the changes of this pane: it lets m_mutex go while it decodes.
     // The terminal stays the reader's, whose parse is in the middle of a
     // command: the daemon's thread sees m_decoding and leaves it alone.
-    if (!m_feedLock) return m_images.decode(data, formats, width, height, rgba, m_stopDecode.get());
+    if (!m_feedLock) return decode();
     m_decoding = true;
     m_feedLock->unlock();
     struct Relock
@@ -662,7 +683,7 @@ bool MuxPane::decodeOutsideLock(std::string_view data, ImageFormats formats, std
             pane.m_decoding = false;
         }
     } relock{*this};
-    return m_images.decode(data, formats, width, height, rgba, m_stopDecode.get());
+    return decode();
 }
 
 void MuxPane::regionScrolled(const AfterglowVt::RegionScroll& scroll)

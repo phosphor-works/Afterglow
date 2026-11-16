@@ -594,6 +594,8 @@ private:
     void downloadFile(std::string_view name, std::string_view data) override;
     bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
                      std::vector<std::uint8_t>& rgba) override;
+    bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
+                           std::vector<std::uint32_t>& delays) override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
     std::string notificationCapabilities() override;
     std::optional<AfterglowProto::Remote::Answer> remoteSocket() override { return m_remoteSocket; }

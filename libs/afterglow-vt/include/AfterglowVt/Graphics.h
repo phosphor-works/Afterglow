@@ -302,6 +302,12 @@ public:
     /// An image larger than the quota is not stored, and replaces nothing.
     void addSixel(ImageFrame frame, const Screen& screen, int row, int col, int cellWidth, int cellHeight,
                   std::uint32_t displayWidth = 0, std::uint32_t displayHeight = 0);
+    /// addSixel() with the frames of an animation (an iTerm2 GIF), which
+    /// runs and loops while it shows. @p gaps holds the milliseconds of
+    /// each frame. Every frame has the size of the first.
+    void addInternalImage(std::vector<ImageFrame> frames, std::vector<std::uint32_t> gaps, const Screen& screen, int row,
+                          int col, int cellWidth, int cellHeight, std::uint32_t displayWidth = 0,
+                          std::uint32_t displayHeight = 0);
 
     const std::map<std::uint32_t, Image>& images() const noexcept { return m_images; }
     const std::vector<Placement>& placements() const noexcept { return m_placements; }

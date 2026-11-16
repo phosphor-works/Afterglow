@@ -1222,13 +1222,28 @@ std::uint32_t GraphicsStore::allocateInternalId()
 void GraphicsStore::addSixel(ImageFrame frame, const Screen& screen, int row, int col, int cellWidth, int cellHeight,
                              std::uint32_t displayWidth, std::uint32_t displayHeight)
 {
-    if (cellWidth <= 0 || cellHeight <= 0) {
+    std::vector<ImageFrame> frames;
+    frames.push_back(std::move(frame));
+    addInternalImage(std::move(frames), {0}, screen, row, col, cellWidth, cellHeight, displayWidth, displayHeight);
+}
+
+void GraphicsStore::addInternalImage(std::vector<ImageFrame> frames, std::vector<std::uint32_t> gaps, const Screen& screen,
+                                     int row, int col, int cellWidth, int cellHeight, std::uint32_t displayWidth,
+                                     std::uint32_t displayHeight)
+{
+    if (cellWidth <= 0 || cellHeight <= 0 || frames.empty() || gaps.size() != frames.size()) {
         return;
     }
     // Kept, it would evict every other image and still not fit.
-    if (frame.byteSize() > m_quota) {
+    std::size_t bytes = 0;
+    for (const ImageFrame& f : frames) {
+        if (f.width != frames.front().width || f.height != frames.front().height) return;
+        bytes += f.byteSize();
+    }
+    if (bytes > m_quota) {
         return;
     }
+    ImageFrame& frame = frames.front();
     pruneDead(screen, cellWidth, cellHeight);
     const std::uint32_t width = displayWidth ? displayWidth : frame.width;
     const std::uint32_t height = displayHeight ? displayHeight : frame.height;
@@ -1276,8 +1291,10 @@ void GraphicsStore::addSixel(ImageFrame frame, const Screen& screen, int row, in
     img.isSixel = true;
     img.width = frame.width;
     img.height = frame.height;
-    img.frames.push_back(std::make_shared<const ImageFrame>(std::move(frame)));
-    img.gaps.push_back(0);
+    for (ImageFrame& f : frames) img.frames.push_back(std::make_shared<const ImageFrame>(std::move(f)));
+    img.gaps = std::move(gaps);
+    // An animation runs from its first frame and loops, as iTerm2's.
+    if (img.frames.size() > 1) img.animation = Image::Animation::Running;
     img.sequence = ++m_sequence;
     img.order = img.sequence;
     const std::uint32_t id = img.id;

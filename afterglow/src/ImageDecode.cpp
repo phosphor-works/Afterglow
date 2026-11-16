@@ -12,6 +12,7 @@
 #include <QImage>
 #include <QImageReader>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -106,6 +107,42 @@ bool imageFormatAllowed(const QByteArray& format)
 }
 
 } // namespace
+
+bool decodeBoundedFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
+                         std::vector<std::uint32_t>& delays)
+{
+    if (data.size() > AfterglowVt::GraphicsStore::DefaultQuota) return false;
+    QByteArray bytes = QByteArray::fromRawData(data.data(), qsizetype(data.size()));
+    QBuffer input(&bytes);
+    if (!input.open(QIODevice::ReadOnly)) return false;
+    const QByteArray detected = QImageReader::imageFormat(&input);
+    if (!imageFormatAllowed(detected)) return false;
+    QImageReader reader(&input, detected);
+    QSize size = reader.size();
+    size.setHeight(std::abs(size.height()));
+    if (!size.isValid() || size.isEmpty() || std::uint32_t(size.width()) > AfterglowProto::GraphicsMaxSide
+        || std::uint32_t(size.height()) > AfterglowProto::GraphicsMaxSide
+        || std::uint64_t(size.width()) * size.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
+    std::size_t total = 0;
+    // QMovie's reading: each read() gives the next whole frame, and
+    // nextImageDelay() how long it shows.
+    while (frames.size() < AfterglowProto::GraphicsMaxFrames) {
+        AfterglowVt::ImageFrame frame;
+        if (!toRgba(reader.read(), frame.width, frame.height, frame.rgba)) break;
+        if (!frames.empty() && (frame.width != frames.front().width || frame.height != frames.front().height)) break;
+        if (frame.byteSize() > maxBytes - total) break;
+        total += frame.byteSize();
+        frames.push_back(std::move(frame));
+        delays.push_back(std::uint32_t(std::max(0, reader.nextImageDelay())));
+        if (!reader.supportsAnimation() || !reader.canRead()) break;
+    }
+    if (frames.empty()) return false;
+    if (frames.size() == 1) delays.front() = 0;
+    if (detected.toLower() == "png") {
+        if (const auto gamma = pngGamma(data)) applyGamma(frames.front().rgba, *gamma);
+    }
+    return true;
+}
 
 bool decodeBoundedImage(std::string_view data, const char* format, std::uint32_t& width, std::uint32_t& height,
                         std::vector<std::uint8_t>& rgba)

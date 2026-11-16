@@ -363,6 +363,7 @@ A session pane differs from a pane outside a session in these ways:
   - A pane outside a session shows a compressed BMP (run-length encoding) and a GIF whose screen has an empty side. A session pane does not show them.
   - A session pane shows a BMP with a header of 52 or 56 bytes, or with its masks after the header (compression 6). A pane outside a session does not show it.
   - Where the first frame of a GIF does not draw, a session pane shows nothing, as Kitty and browsers do. A pane outside a session can show the background color of the GIF there.
+  - The decoding process of a session pane has a CPU limit for each image. A long animation can stop at the frame where the limit stops it. A pane outside a session decodes each frame.
 - The session follows the terminal settings and the colors of the window that shows it.
   While no window shows it, it keeps those of its last window (see [settings of a session pane](#settings-of-a-session-pane)).
 

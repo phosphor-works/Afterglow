@@ -180,7 +180,7 @@ qt_add_library(afterglow_imagedecode STATIC src/ImageDecode.cpp src/ImageDecode.
 target_include_directories(afterglow_imagedecode PUBLIC src)
 target_compile_definitions(afterglow_imagedecode PRIVATE QT_NO_CAST_FROM_ASCII)
 # Its header holds only standard types: the libraries it decodes with stay inside.
-target_link_libraries(afterglow_imagedecode PRIVATE Qt6::Gui Afterglow::Vt Afterglow::Proto)
+target_link_libraries(afterglow_imagedecode PUBLIC Afterglow::Vt PRIVATE Qt6::Gui Afterglow::Proto)
 
 # The script host, shared with its tests. The Control binding lives in the app.
 qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h

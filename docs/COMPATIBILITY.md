@@ -32,7 +32,7 @@ The table below lists the protocols that Afterglow supports, each with the tests
 | Kitty file transfer (OSC 5113), drag and drop (OSC 72) | See [Kitty file transfer](DESKTOP.md#kitty-file-transfer) and [Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop) | `Transfer.*`, `Dnd.*`, `afterglow_transfer_kitten_relay`, `NativeWindow.Kitty*` |
 | Shell integration (OSC 133 and OSC 633), contexts (OSC 3008), the working directory (OSC 7) | Prompt, command and output marks, `click_events`, `cmdline` and `cmdline_url`; the context stack; `file://` directories | `Terminal.ShellIntegrationCommands`, `Extensions.VSCodeShellIntegration`, `Extensions.SystemdContexts`, `Terminal.WorkingDirectoryReportsOnlyChanges` |
 | Program status (OSC 7501), ConEmu progress and directory (OSC 9;4, OSC 9;9) | Status, progress and the working directory | `ProgramStatus.*`, `Extensions.ConEmuCommands` |
-| iTerm2 (OSC 1337) | `File`, `MultipartFile`, `FilePart`, `FileEnd`, `SetUserVar`, `CurrentDir`, `ClearScrollback`, `ReportCellSize`, `SetMark`, `RemoteHost`, `Copy`, `RequestAttention`, `CursorShape` | `Extensions.ITerm2Commands`, `Extensions.ITerm2SetMarkMarksTheCursorRowOnTheMainScreen`, `Extensions.Downloads*`, `Terminal.BellsRingOnlyForBel` |
+| iTerm2 (OSC 1337) | `File` with animated GIF and WebP images, `MultipartFile`, `FilePart`, `FileEnd`, `SetUserVar`, `CurrentDir`, `ClearScrollback`, `ReportCellSize`, `SetMark`, `RemoteHost`, `Copy`, `RequestAttention`, `CursorShape` | `Extensions.ITerm2Commands`, `Extensions.ITerm2AnimatedImagesPlayAndLoop`, `PaneAnimation.AnITerm2GifPlaysThroughThePanesDecoder`, `Extensions.ITerm2SetMarkMarksTheCursorRowOnTheMainScreen`, `Extensions.Downloads*`, `Terminal.BellsRingOnlyForBel` |
 | Hyperlinks (OSC 8) | Links with and without an id, across wrapped lines and reflow | `Reflow.StyleAndLinkRunAcrossWrapsKeepItsReferences`, `StateSync.TextStylesLinksAndText` |
 | Window operations (XTWINOPS) | 4 and 8 (resize), 11 and 13 (state and position), 14, 15, 16, 18 and 19 (sizes in pixels and cells), 22 and 23 (title stack), 24 or more (DECSLPP) | `Terminal.Reports`, `Terminal.TitleStackPushesAndPops`, `Extensions.PixelReportsAndImagePercentagesUseWideGeometry` |
 | Status reports | DA1, DA2, DA3, XTVERSION, DECRQM, DECRQSS, XTGETTCAP | `Terminal.Reports`, `Conformance.TertiaryAttributesAndTerminalParameters`, `Terminal.XtversionReportsTheProjectVersion`, `Conformance.ModeReports`, `Terminal.Decrqss`, `Terminal.Xtgettcap` |
@@ -76,6 +76,9 @@ With left and right margins, only images and marks in those columns move.
 
 Afterglow stores an iTerm2 inline image at its own size, or smaller when the requested size is smaller.
 The renderer enlarges it to the requested size.
+An animated GIF or WebP plays and loops while it shows, as in iTerm2 and WezTerm.
+A frame of 10 ms or less shows for 100 ms, as browsers play old GIFs.
+An animation keeps at most 1,024 frames, and its frames together fit in `Graphics.quota`: it stops at the last frame that fits.
 
 To refuse Kitty transmissions from files, temporary files and shared memory (`t=f`, `t=t`, `t=s`), set `Terminal.graphicsFileTransfer` to `"deny"`.
 The program then gets an `EPERM` error, and Afterglow opens no file.

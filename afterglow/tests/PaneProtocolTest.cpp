@@ -3,6 +3,9 @@
 
 #include "Pane.h"
 #include "desktop/FileTransfer.h"
+#include "ImageFiles.h"
+
+#include <AfterglowProto/Base64.h>
 
 #include <QElapsedTimer>
 #include <QFile>
@@ -459,6 +462,42 @@ TEST(PaneEvents, TheEndOfACommandWhoseStartWasDroppedIsDroppedToo)
     pane.withTerminal([&](AfterglowVt::Terminal& terminal) { terminal.feed(CommandEnd); });
     QCoreApplication::sendPostedEvents(&pane, QEvent::MetaCall);
     EXPECT_EQ(events.size(), 256) << events.constLast().toStdString();
+}
+
+TEST(PaneAnimation, AnITerm2GifPlaysThroughThePanesDecoder)
+{
+    // OSC 1337 with an animated GIF, decoded by the pane as the window does:
+    // red, then blue after its 100 ms, as iTerm2 plays it.
+    Pane pane { AfterglowVt::TerminalOptions {} };
+    pane.resize(20, 10, 10, 20);
+    const auto shown = [&] {
+        const auto& images = pane.snapshot().images;
+        return images.size() == 1 && images[0].frame ? images[0].frame->rgba : std::vector<std::uint8_t> {};
+    };
+    const auto pixels = [](std::initializer_list<std::uint8_t> px) {
+        std::vector<std::uint8_t> v;
+        for (int i = 0; i < 16; ++i) v.insert(v.end(), px);
+        return v;
+    };
+    // Output that moves the viewport first, so that the first refresh ticks
+    // the animation, as the output of a program does (ptyData).
+    pane.withTerminal([](AfterglowVt::Terminal& terminal) {
+        terminal.feed(std::string(20, '\n'));
+        terminal.feed("\x1b]1337;File=inline=1:" + AfterglowProto::base64Encode(AfterglowImage::TestFiles::Gif) + "\x07");
+    });
+    pane.refreshSnapshot();
+    ASSERT_EQ(shown(), pixels({255, 0, 0, 255}));
+    ASSERT_TRUE(waitFor([&] {
+        QCoreApplication::sendPostedEvents(&pane, QEvent::MetaCall);
+        pane.refreshSnapshot();
+        return shown() == pixels({0, 0, 255, 255});
+    }));
+    // And it loops: red again.
+    ASSERT_TRUE(waitFor([&] {
+        QCoreApplication::sendPostedEvents(&pane, QEvent::MetaCall);
+        pane.refreshSnapshot();
+        return shown() == pixels({255, 0, 0, 255});
+    }));
 }
 
 TEST(PaneAnimation, AnImageScrolledBackIntoViewShowsItsCurrentFrameAtOnce)

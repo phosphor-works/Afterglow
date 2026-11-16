@@ -57,10 +57,12 @@ static_assert(AfterglowImage::MaxSide == int(AfterglowProto::GraphicsMaxSide), "
 constexpr std::size_t MaxBytes = ImageDecoder::MaxBytes;
 
 /// What a decoding process writes before the pixels.
+/// Before the pixels of each frame that a decoding process writes.
 struct Header
 {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t delayMs = 0;
 };
 
 bool fits(std::uint64_t width, std::uint64_t height)
@@ -244,7 +246,9 @@ bool allowOnlyDecoding()
 }
 
 /// A decoding process: reads the image from @p input, a memory file, and
-/// writes the header and the pixels of its first frame to @p output. It ends
+/// writes the header and the pixels of its first frame to @p output, or of
+/// each frame for ImageFormats::CommonFrames, at most GraphicsMaxFrames and
+/// MaxBytes of pixels together. It ends
 /// with the server @p server, and exits at once: no handler of the server
 /// runs in it.
 [[noreturn]] void decodeProcess(int input, int output, ImageFormats formats, pid_t server)
@@ -302,21 +306,25 @@ bool allowOnlyDecoding()
     const std::uint64_t frameBytes = std::uint64_t(width) * std::uint64_t(height) * 4;
     AfterglowProto::limit(RLIMIT_AS, memoryFor(frameBytes), memoryFor(frameBytes));
     AfterglowProto::limit(RLIMIT_CPU, secondsFor(frameBytes), secondsFor(frameBytes) + 1);
+    // The pixels of one frame at a time: an animation needs no more memory,
+    // only more CPU time, so its later frames can run into the CPU limit.
+    // The daemon keeps the frames that came.
     bool written = false;
+    std::size_t frames = 0;
+    std::uint64_t bytes = 0;
     try {
         std::string error;
         std::string warning;
-        // The first frame of an animation, as the window shows it.
-        AfterglowImage::decode(data, [&](const unsigned char* pixels, int w, int h, int) {
-            if (fits(std::uint64_t(w), std::uint64_t(h))) {
-                const Header header{std::uint32_t(w), std::uint32_t(h)};
-                written = writeAll(STDOUT_FILENO, &header, sizeof header)
-                    && writeAll(STDOUT_FILENO, pixels, std::size_t(w) * std::size_t(h) * 4);
-            }
-            return false;
+        AfterglowImage::decode(data, [&](const unsigned char* pixels, int w, int h, int delayMs) {
+            const std::uint64_t size = std::uint64_t(w) * std::uint64_t(h) * 4;
+            if (!fits(std::uint64_t(w), std::uint64_t(h)) || bytes + size > MaxBytes) return false;
+            const Header header{std::uint32_t(w), std::uint32_t(h), std::uint32_t(std::max(0, delayMs))};
+            if (!writeAll(STDOUT_FILENO, &header, sizeof header) || !writeAll(STDOUT_FILENO, pixels, std::size_t(size))) return false;
+            written = true;
+            bytes += size;
+            return formats == ImageFormats::CommonFrames && ++frames < AfterglowProto::GraphicsMaxFrames;
         }, error, warning);
     } catch (const std::bad_alloc&) {
-        written = false;
     }
     ::_exit(written ? 0 : RefusedStatus);
 }
@@ -346,7 +354,9 @@ bool receiveRequest(int socket, ImageFormats& formats, AfterglowProto::UniqueFd&
         input.reset(fds[0]);
         output.reset(fds[1]);
     }
-    formats = byte == std::uint8_t(ImageFormats::Png) ? ImageFormats::Png : ImageFormats::Common;
+    formats = byte == std::uint8_t(ImageFormats::Png)        ? ImageFormats::Png
+        : byte == std::uint8_t(ImageFormats::CommonFrames) ? ImageFormats::CommonFrames
+                                                            : ImageFormats::Common;
     return true;
 }
 
@@ -720,6 +730,23 @@ AfterglowProto::UniqueFd ImageDecoder::requestLocked(ImageFormats formats, int i
 bool ImageDecoder::decode(std::string_view data, ImageFormats formats, std::uint32_t& width, std::uint32_t& height,
                           std::vector<std::uint8_t>& rgba, int cancel)
 {
+    std::vector<DecodedFrame> frames;
+    // One frame: the process of Png and Common writes no more.
+    if (formats == ImageFormats::CommonFrames || !run(data, formats, MaxBytes, frames, cancel)) return false;
+    width = frames.front().width;
+    height = frames.front().height;
+    rgba = std::move(frames.front().rgba);
+    return true;
+}
+
+bool ImageDecoder::decodeFrames(std::string_view data, std::size_t maxBytes, std::vector<DecodedFrame>& frames, int cancel)
+{
+    return run(data, ImageFormats::CommonFrames, std::min(maxBytes, MaxBytes), frames, cancel);
+}
+
+bool ImageDecoder::run(std::string_view data, ImageFormats formats, std::size_t maxBytes, std::vector<DecodedFrame>& frames,
+                       int cancel)
+{
     const int waitMs = m_waitMs;
     // A pane that closes decodes nothing more: its feed may hold images.
     if (data.empty() || data.size() > MaxBytes || !allowed(data, formats) || readable(cancel)) return false;
@@ -780,23 +807,35 @@ bool ImageDecoder::decode(std::string_view data, ImageFormats formats, std::uint
     const auto late = [this, waitMs](Read read) {
         if (read == Read::Late) reportOnce(m_lastReport, "an image decoder took more than " + std::to_string(waitMs) + " ms: the image does not show");
     };
-    Header header;
-    Read read = readUntil(reader.get(), &header, sizeof header, deadline, cancel);
-    late(read);
-    if (read != Read::Done || !fits(header.width, header.height)) return false;
-    std::vector<std::uint8_t> pixels;
-    try {
-        pixels.resize(std::size_t(header.width) * header.height * 4);
-    } catch (const std::bad_alloc&) {
-        return false;
+    // Frames until the process closes its end: a frame cut short, by its
+    // end or the deadline, goes, and those before it stay. Each frame has
+    // the size of the first, and they fit in maxBytes together.
+    std::size_t total = 0;
+    while (frames.size() < AfterglowProto::GraphicsMaxFrames) {
+        Header header;
+        Read read = readUntil(reader.get(), &header, sizeof header, deadline, cancel);
+        late(read);
+        if (read != Read::Done || !fits(header.width, header.height)) break;
+        if (!frames.empty() && (header.width != frames.front().width || header.height != frames.front().height)) break;
+        const std::size_t size = std::size_t(header.width) * header.height * 4;
+        if (size > maxBytes - total) break;
+        DecodedFrame frame;
+        try {
+            frame.rgba.resize(size);
+        } catch (const std::bad_alloc&) {
+            break;
+        }
+        read = readUntil(reader.get(), frame.rgba.data(), frame.rgba.size(), deadline, cancel);
+        late(read);
+        if (read != Read::Done) break;
+        frame.width = header.width;
+        frame.height = header.height;
+        frame.delayMs = header.delayMs;
+        total += size;
+        frames.push_back(std::move(frame));
     }
-    read = readUntil(reader.get(), pixels.data(), pixels.size(), deadline, cancel);
-    late(read);
-    if (read != Read::Done) return false;
-    width = header.width;
-    height = header.height;
-    rgba = std::move(pixels);
-    return true;
+    if (frames.size() == 1) frames.front().delayMs = 0;
+    return !frames.empty();
 }
 
 } // namespace AfterglowMux

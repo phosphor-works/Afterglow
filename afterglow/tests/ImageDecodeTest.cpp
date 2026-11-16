@@ -124,3 +124,46 @@ TEST(WindowImageDecode, ATopDownBmpDecodes)
     // The file holds blue, white first: now the top row.
     EXPECT_EQ(rgba, (std::vector<std::uint8_t>{0, 0, 255, 255, 255, 255, 255, 255, 255, 0, 0, 255, 0, 255, 0, 255}));
 }
+
+// iTerm2 animations (decodeBoundedFrames): each frame of a GIF and of an
+// animated WebP, with its time, within a budget of bytes. A still image has
+// one frame of no time.
+TEST(WindowImageDecode, AnimationsGiveEachFrameWithinTheBudget)
+{
+    using namespace AfterglowImage::TestFiles;
+    const std::vector<std::uint8_t> red = [] {
+        std::vector<std::uint8_t> v;
+        for (int i = 0; i < 16; ++i) v.insert(v.end(), {255, 0, 0, 255});
+        return v;
+    }();
+    const std::vector<std::uint8_t> blue = [] {
+        std::vector<std::uint8_t> v;
+        for (int i = 0; i < 16; ++i) v.insert(v.end(), {0, 0, 255, 255});
+        return v;
+    }();
+    for (const std::string* file : {&Gif, &WebpAnimated}) {
+        std::vector<AfterglowVt::ImageFrame> frames;
+        std::vector<std::uint32_t> delays;
+        ASSERT_TRUE(Afterglow::decodeBoundedFrames(*file, 1 << 20, frames, delays));
+        ASSERT_EQ(frames.size(), 2u);
+        EXPECT_EQ(delays, (std::vector<std::uint32_t>{100, 100}));
+        EXPECT_EQ(frames[0].width, 4u);
+        EXPECT_EQ(frames[0].rgba, red);
+        EXPECT_EQ(frames[1].rgba, blue);
+        // Room for one frame of 64 bytes: the animation stops there.
+        frames.clear();
+        delays.clear();
+        ASSERT_TRUE(Afterglow::decodeBoundedFrames(*file, 100, frames, delays));
+        EXPECT_EQ(frames.size(), 1u);
+        EXPECT_EQ(delays, (std::vector<std::uint32_t>{0}));
+    }
+    std::vector<AfterglowVt::ImageFrame> frames;
+    std::vector<std::uint32_t> delays;
+    ASSERT_TRUE(Afterglow::decodeBoundedFrames(Png, 1 << 20, frames, delays));
+    EXPECT_EQ(frames.size(), 1u);
+    EXPECT_EQ(delays, (std::vector<std::uint32_t>{0}));
+    frames.clear();
+    delays.clear();
+    EXPECT_FALSE(Afterglow::decodeBoundedFrames(Png, 4, frames, delays));
+    EXPECT_TRUE(frames.empty());
+}

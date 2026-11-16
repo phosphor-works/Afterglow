@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <AfterglowVt/Graphics.h>
+
 #include <cstdint>
 #include <string_view>
 #include <vector>
@@ -18,5 +20,13 @@ namespace Afterglow {
 /// afterglow_renderpng decodes as they do.
 bool decodeBoundedImage(std::string_view data, const char* format, std::uint32_t& width, std::uint32_t& height,
                         std::vector<std::uint8_t>& rgba);
+
+/// decodeBoundedImage() of a common format, with each frame of an
+/// animation (GIF, WebP) and the milliseconds that it shows: whole canvases,
+/// at most AfterglowProto::GraphicsMaxFrames of them and @p maxBytes of
+/// RGBA8 together. An animation stops at the last frame that fits, or before
+/// a frame that does not decode. A still image has one frame of 0 ms.
+bool decodeBoundedFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
+                         std::vector<std::uint32_t>& delays);
 
 } // namespace Afterglow

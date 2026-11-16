@@ -4916,26 +4916,41 @@ void Terminal::iterm2File(std::string_view args, std::string_view base64)
         return;
     }
     if (m_cellWidth <= 0 || m_cellHeight <= 0) return;
-    ImageFrame frame;
-    if (!m_host.decodeImage(base64Decode(base64), frame.width, frame.height, frame.rgba) || frame.width == 0
-        || frame.height == 0 || frame.rgba.size() != std::size_t(frame.width) * frame.height * 4) {
+    // Each frame of an animation (GIF, WebP), as iTerm2 and WezTerm play it.
+    std::vector<ImageFrame> frames;
+    std::vector<std::uint32_t> delays;
+    if (!m_host.decodeImageFrames(base64Decode(base64), m_options.graphicsQuota, frames, delays) || frames.empty()
+        || delays.size() != frames.size()) {
         return;
+    }
+    const std::uint32_t naturalWidth = frames.front().width;
+    const std::uint32_t naturalHeight = frames.front().height;
+    for (const ImageFrame& f : frames) {
+        if (f.width == 0 || f.height == 0 || f.width != naturalWidth || f.height != naturalHeight
+            || f.rgba.size() != std::size_t(f.width) * f.height * 4) {
+            return;
+        }
     }
     std::uint32_t width = 0;
     std::uint32_t height = 0;
-    if (!detail::iterm2ImageSize(file, frame.width, frame.height, m_cellWidth, m_cellHeight, cols(), rows(), width, height)) {
+    if (!detail::iterm2ImageSize(file, naturalWidth, naturalHeight, m_cellWidth, m_cellHeight, cols(), rows(), width, height)) {
         return;
     }
     // Stored at its natural size, shrunk only: an enlargement is drawn by the
     // renderer at the display size, so it costs no quota and stays sharp.
-    frame = detail::scaleFrame(frame, std::min(width, frame.width), std::min(height, frame.height));
+    for (ImageFrame& f : frames) f = detail::scaleFrame(f, std::min(width, f.width), std::min(height, f.height));
+    // A GIF frame of 10 ms or less shows for 100 ms, as browsers and iTerm2
+    // play it: old GIFs count on that. A still image has no time.
+    if (frames.size() > 1) {
+        for (std::uint32_t& delay : delays) delay = delay <= 10 ? 100 : delay;
+    }
     Cursor& cur = cursor();
     const int cellsWide = int((width + std::uint32_t(m_cellWidth) - 1) / std::uint32_t(m_cellWidth));
     const int cellsHigh = int((height + std::uint32_t(m_cellHeight) - 1) / std::uint32_t(m_cellHeight));
     const int col = cur.x;
     const int row = cur.y;
-    m_graphics[m_modes.altScreen ? 1 : 0].addSixel(std::move(frame), *m_active, row, col, m_cellWidth, m_cellHeight,
-                                                   width, height);
+    m_graphics[m_modes.altScreen ? 1 : 0].addInternalImage(std::move(frames), std::move(delays), *m_active, row, col,
+                                                           m_cellWidth, m_cellHeight, width, height);
     if (file.doNotMoveCursor) {
         return;
     }

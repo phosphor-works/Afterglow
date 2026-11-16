@@ -224,6 +224,21 @@ public:
     {
         return decodePng(data, width, height, rgba);
     }
+    /// Decodes an iTerm2 inline image with each frame of an animation (GIF,
+    /// WebP), as iTerm2 and WezTerm show it: every frame of the image's
+    /// size, in @p frames, and the milliseconds that each shows, in
+    /// @p delays. All the frames together hold at most @p maxBytes of RGBA8:
+    /// an animation stops at the last frame that fits. Defaults to the first
+    /// frame (decodeImage()).
+    virtual bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<ImageFrame>& frames,
+                                   std::vector<std::uint32_t>& delays)
+    {
+        ImageFrame frame;
+        if (!decodeImage(data, frame.width, frame.height, frame.rgba) || frame.byteSize() > maxBytes) return false;
+        frames.push_back(std::move(frame));
+        delays.push_back(0);
+        return true;
+    }
 };
 
 struct TerminalOptions

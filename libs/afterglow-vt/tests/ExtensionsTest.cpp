@@ -51,9 +51,67 @@ struct Host : RecordingHost
         }
         return true;
     }
+    // "animation": three 4x2 frames, red, green and blue, of 0, 50 and 5 ms.
+    bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<ImageFrame>& frames,
+                           std::vector<std::uint32_t>& delays) override
+    {
+        if (data != "animation") return RecordingHost::decodeImageFrames(data, maxBytes, frames, delays);
+        lastMaxBytes = maxBytes;
+        for (const std::uint8_t channel : {0, 1, 2}) {
+            ImageFrame f;
+            f.width = 4;
+            f.height = 2;
+            for (int i = 0; i < 8; ++i) {
+                std::uint8_t px[4] = {0, 0, 0, 255};
+                px[channel] = 255;
+                f.rgba.insert(f.rgba.end(), px, px + 4);
+            }
+            frames.push_back(std::move(f));
+        }
+        delays = {0, 50, 5};
+        return true;
+    }
+    std::size_t lastMaxBytes = 0;
 };
 
 } // namespace
+
+TEST(Extensions, ITerm2AnimatedImagesPlayAndLoop)
+{
+    // An animated GIF in OSC 1337 plays, as in iTerm2 and WezTerm: every
+    // frame, a frame of 10 ms or less for 100 ms (as browsers play old
+    // GIFs), looping while it shows. The decode gets the graphics quota.
+    Host host;
+    TerminalOptions options;
+    options.graphicsQuota = 1 << 20;
+    Terminal t(20, 6, host, options);
+    t.resize(20, 6, 8, 16);
+    t.feed("\x1b]1337;File=inline=1:" + base64Encode("animation") + "\x07");
+    EXPECT_EQ(host.lastMaxBytes, std::size_t(1) << 20);
+    ASSERT_EQ(t.graphics().placements().size(), 1u);
+    const Image& img = t.graphics().images().at(t.graphics().placements()[0].imageId);
+    ASSERT_EQ(img.frames.size(), 3u);
+    EXPECT_EQ(img.gaps, (std::vector<std::uint32_t>{100, 50, 100}));
+    EXPECT_EQ(img.animation, Image::Animation::Running);
+    EXPECT_EQ(img.maxLoops, 0u);
+    EXPECT_EQ(img.frames[1]->rgba[1], 255); // green
+    // It moves on while it shows: the second frame after 100 ms, then the
+    // third, then the first again.
+    t.advanceAnimations(1000);
+    EXPECT_EQ(img.currentFrame, 0u);
+    t.advanceAnimations(1100);
+    EXPECT_EQ(img.currentFrame, 1u);
+    t.advanceAnimations(1150);
+    EXPECT_EQ(img.currentFrame, 2u);
+    t.advanceAnimations(1250);
+    EXPECT_EQ(img.currentFrame, 0u);
+    // A still image gets no time and does not run.
+    t.feed("\x1b[4;1H\x1b]1337;File=inline=1:" + base64Encode("picture") + "\x07");
+    ASSERT_EQ(t.graphics().placements().size(), 2u);
+    const Image& still = t.graphics().images().at(t.graphics().placements()[1].imageId);
+    EXPECT_EQ(still.frames.size(), 1u);
+    EXPECT_EQ(still.animation, Image::Animation::Stopped);
+}
 
 TEST(Extensions, ShellReportedCommandLine)
 {
