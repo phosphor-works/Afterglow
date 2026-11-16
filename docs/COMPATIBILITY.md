@@ -282,7 +282,7 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 - A pane decodes the images that programs send in processes of their own, with `aglow-mux --decode-images` from next to `afterglow`, with limits on their memory, time and system calls. Without that program, such images do not show, and a warning says so once. A long animation can stop at the frame where the limit of its process stops it.
 - `aglow icat` accepts `--silent` and ignores it, as `kitten icat` does.
 - `aglow icat` compresses pixels with zlib only when it sends them through the terminal connection. A file or shared memory holds raw pixels.
-- `aglow clipboard` does not convert between image formats when it reads the clipboard.
+- `aglow clipboard` makes a PNG from a JPEG, GIF, WebP, BMP, TIFF or netPBM image on the clipboard, as `kitten clipboard` does. It does not make other image formats.
 - `aglow dnd` has the option `--confirm-drop-timeout`, which `kitten dnd` does not have.
 - `aglow clipboard` has the option `--detection-timeout`, which `kitten clipboard` does not have.
 - `aglow icat --image-id` refuses a number outside 0 to 4294967295. `kitten icat` wraps it.

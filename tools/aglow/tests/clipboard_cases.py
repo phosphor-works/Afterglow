@@ -10,22 +10,26 @@ file, that arguments a write cannot take are refused before the terminal sees
 them (two files of one MIME type, standard output as an input, standard input
 twice, a MIME type with a space), that inputs too large together say so, that
 an OSC 52 read which the terminal never answers ends after the timeout, that
-the list of types comes from the reply for "." only, and that Ctrl+C ends a
-write to a FIFO that has no reader.
+the list of types comes from the reply for "." only, that a PNG asked for is
+made of another image on the clipboard, and that Ctrl+C ends a write to a
+FIFO that has no reader.
 """
 import os
 import re
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import clipboard_pty  # noqa: E402
 from clipboard_pty import b64, check, run  # noqa: E402
+from icat_decode import JPEG_ADOBE, bmp  # noqa: E402
 
 
 # The numbers of open and openat, for a kernel that shows no wait channel.
@@ -101,6 +105,28 @@ class ExtraReply:
         return os.write(fd, data)
 
 
+def png_pixels(data):
+    """The (r, g, b, a) pixels of a PNG of 8-bit RGBA whose rows have filter 0, as aglow writes it."""
+    check(data.startswith(b"\x89PNG\r\n\x1a\n"), data[:8])
+    at, chunks = 8, {}
+    while at < len(data):
+        length = struct.unpack(">I", data[at:at + 4])[0]
+        kind = data[at + 4:at + 8]
+        check(zlib.crc32(data[at + 4:at + 8 + length]) == struct.unpack(">I", data[at + 8 + length:at + 12 + length])[0], kind)
+        chunks[kind] = chunks.get(kind, b"") + data[at + 8:at + 8 + length]
+        at += 12 + length
+    width, height, depth, colour = struct.unpack(">IIBB", chunks[b"IHDR"][:10])
+    check(depth == 8 and colour == 6, depth, colour)
+    raw = zlib.decompress(chunks[b"IDAT"])
+    row = 1 + width * 4
+    out = []
+    for y in range(height):
+        check(raw[y * row] == 0)
+        line = raw[y * row + 1:(y + 1) * row]
+        out += [tuple(line[x:x + 4]) for x in range(0, len(line), 4)]
+    return width, height, out
+
+
 def main():
     aglow = str(Path(sys.argv[1]).resolve())
     with tempfile.TemporaryDirectory(prefix="aglow-clipboard-") as temporary:
@@ -135,6 +161,23 @@ def main():
         err = result.stderr.decode(errors="replace")
         check(result.returncode == 1 and "with the inputs before it" in err and "128.0 MiB" in err, result.returncode, err)
         print("inputs too large together: passed", flush=True)
+
+        # A PNG asked for and none on the clipboard: aglow makes one of another image there, the
+        # lossless one first, and a JPEG's profile converts to sRGB.
+        picture = bmp(2, [[(10, 20, 30), (200, 100, 50)]])
+        images = {"image/jpeg": JPEG_ADOBE, "image/bmp": picture}
+        check(run(aglow, ["--get-clipboard", "from-bmp.png"], root, images) == 0)
+        check(png_pixels((root / "from-bmp.png").read_bytes()) == (2, 1, [(10, 20, 30, 255), (200, 100, 50, 255)]))
+        check(run(aglow, ["--get-clipboard", "from-jpeg.png"], root, {"image/jpeg": JPEG_ADOBE}) == 0)
+        width, height, got = png_pixels((root / "from-jpeg.png").read_bytes())
+        check(width * height == 64 and all(all(abs(a - b) <= 1 for a, b in zip(px, (66, 151, 202, 255))) for px in got), got[:2])
+        # The type itself when it is there, and an image that does not decode: an error, and no file.
+        check(run(aglow, ["--get-clipboard", "as-is.jpg"], root, images) == 0)
+        check((root / "as-is.jpg").read_bytes() == JPEG_ADOBE)
+        check(run(aglow, ["--get-clipboard", "broken.png"], root, {"image/jpeg": b"\xff\xd8\xff not a jpeg"}) == 1)
+        check(not (root / "broken.png").exists())
+        check(run(aglow, ["--get-clipboard", "none.png"], root, clipboard) == 1)
+        print("a PNG made of another image: passed", flush=True)
 
         # A terminal without OSC 5522 that answers DA1 but never the OSC 52 read.
         start = time.monotonic()

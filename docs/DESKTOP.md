@@ -364,6 +364,11 @@ A read waits as long as the permission prompt of the terminal stays open. Press 
 `aglow clipboard` writes an output file as a shell redirection does.
 It truncates an existing file, and the file keeps its owner, mode and links.
 
+When you read a PNG (`image/png`) and the clipboard holds none, `aglow clipboard` makes one from another image on the clipboard.
+It takes TIFF, BMP, WebP, APNG, GIF, netPBM and JPEG, in this order, so that a lossless image comes first.
+It decodes the image in a child process with limits, as `aglow icat` does, and writes the first frame.
+For example, `aglow clipboard --get-clipboard picture.png` writes a PNG of a JPEG that a browser copied.
+
 | Item | Limit | At the limit |
 | --- | --- | --- |
 | MIME types in one read or one write | 64 | `aglow clipboard` refuses the request with a message. |

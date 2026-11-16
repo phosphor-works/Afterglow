@@ -641,6 +641,46 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
     return image;
 }
 
+std::string encodePng(std::string_view rgba, int width, int height)
+{
+    // Each row with filter 0 (none) before it.
+    const std::size_t row = std::size_t(width) * 4;
+    std::string raw;
+    raw.reserve((row + 1) * std::size_t(height));
+    for (int y = 0; y < height; ++y) {
+        raw.push_back('\0');
+        raw.append(rgba.substr(std::size_t(y) * row, row));
+    }
+    const std::string data = AfterglowProto::zlibCompress(raw);
+    if (data.empty()) {
+        return {};
+    }
+    std::string png("\x89PNG\r\n\x1a\n", 8);
+    const auto chunk = [&](std::string_view type, std::string_view body) {
+        const auto put32 = [&](std::uint32_t value) {
+            for (int shift = 24; shift >= 0; shift -= 8) {
+                png.push_back(char(value >> shift));
+            }
+        };
+        put32(std::uint32_t(body.size()));
+        const std::size_t start = png.size();
+        png.append(type);
+        png.append(body);
+        put32(AfterglowProto::crc32Of(std::string_view(png).substr(start)));
+    };
+    std::string header;
+    for (const std::uint32_t value : { std::uint32_t(width), std::uint32_t(height) }) {
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            header.push_back(char(value >> shift));
+        }
+    }
+    header.append(std::string("\x08\x06\x00\x00\x00", 5)); // 8 bits, RGBA, deflate, filters, no interlace
+    chunk("IHDR", header);
+    chunk("IDAT", data);
+    chunk("IEND", {});
+    return png;
+}
+
 Resizer::Resizer(int width, int height, int newWidth, int newHeight)
     : m_width(width)
     , m_height(height)

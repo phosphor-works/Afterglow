@@ -56,6 +56,10 @@ bool isPng(std::string_view bytes);
 std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std::string& error,
                                  std::size_t maxFrames = SIZE_MAX);
 
+/// A PNG of @p rgba, @p width by @p height pixels of 8-bit RGBA with
+/// straight alpha. Empty when zlib has no memory.
+std::string encodePng(std::string_view rgba, int width, int height);
+
 /// Scales RGBA frames of one size to another. The filter weights are worked
 /// out once, for all the frames of an animation.
 class Resizer

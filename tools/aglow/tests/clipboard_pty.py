@@ -28,8 +28,8 @@ def check(condition, *detail):
         raise AssertionError(*detail)
 
 
-def b64(text):
-    return base64.b64encode(text.encode()).decode()
+def b64(data):
+    return base64.b64encode(data if isinstance(data, bytes) else data.encode()).decode()
 
 
 def run(aglow, arguments, cwd, clipboard, modern=True, prompt=0.0, osc52_reply=None, umask=0o022, timeout=20,
