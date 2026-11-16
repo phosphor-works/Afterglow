@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 # The image decoders of aglow and aglow-mux (no Qt): libpng, libjpeg-turbo
-# (the TurboJPEG 3 API) and libwebp, and GIF and BMP readers of its own. The
-# three libraries are built from the archives that
+# (the TurboJPEG 3 API) and libwebp, and GIF and BMP readers of its own, with
+# Little CMS for the colour conversion to sRGB. The libraries are built from
+# the archives that
 # cmake/AfterglowDependencies.cmake pins, as static libraries, and not taken
 # from the system: a static aglow then runs on a remote host whatever image
 # libraries that host has, and both programs decode with the same code on
@@ -201,10 +202,25 @@ function(afterglow_add_libjpeg_turbo)
     set(AFTERGLOW_LIBJPEG_TURBO_SOURCE_DIR "${libjpeg-turbo_SOURCE_DIR}" PARENT_SCOPE)
 endfunction()
 
+# Little CMS from its own sources (src/*.c): the colour conversion of images
+# with an ICC profile or a cICP chunk to sRGB. Its plugins are not built. No
+# threads of its own: it converts in the decoding process, one image at a time.
+function(afterglow_add_lcms2)
+    afterglow_fetch_dependency(lcms2)
+    file(GLOB sources "${lcms2_SOURCE_DIR}/src/*.c")
+    add_library(afterglow_lcms2 STATIC ${sources})
+    target_compile_definitions(afterglow_lcms2 PRIVATE CMS_NO_PTHREADS=1)
+    target_include_directories(afterglow_lcms2 PRIVATE "${lcms2_SOURCE_DIR}/src")
+    target_include_directories(afterglow_lcms2 SYSTEM PUBLIC "${lcms2_SOURCE_DIR}/include")
+    target_link_libraries(afterglow_lcms2 PRIVATE m)
+    set(AFTERGLOW_LCMS2_SOURCE_DIR "${lcms2_SOURCE_DIR}" PARENT_SCOPE)
+endfunction()
+
 afterglow_add_libpng()
 afterglow_add_libwebp()
 afterglow_add_libjpeg_turbo()
-afterglow_third_party_target(afterglow_png afterglow_webp)
+afterglow_add_lcms2()
+afterglow_third_party_target(afterglow_png afterglow_webp afterglow_lcms2)
 
 # The codecs are linked into aglow and aglow-mux, so their notices go
 # with the binaries (afterglow_install_bundled_notices in
@@ -220,7 +236,8 @@ set(AFTERGLOW_IMAGE_NOTICES
     "${AFTERGLOW_LIBJPEG_TURBO_SOURCE_DIR}/README.ijg=README.ijg"
     "${CMAKE_CURRENT_SOURCE_DIR}/notices/IJG.txt=NOTICE.IJG"
     "${AFTERGLOW_LIBWEBP_SOURCE_DIR}/COPYING=LICENSE.libwebp"
-    "${AFTERGLOW_LIBWEBP_SOURCE_DIR}/PATENTS=PATENTS.libwebp")
+    "${AFTERGLOW_LIBWEBP_SOURCE_DIR}/PATENTS=PATENTS.libwebp"
+    "${AFTERGLOW_LCMS2_SOURCE_DIR}/LICENSE=LICENSE.lcms2")
 foreach(notice IN LISTS AFTERGLOW_IMAGE_NOTICES)
     string(REGEX REPLACE "=[^=]+$" "" file "${notice}")
     if(NOT EXISTS "${file}")
@@ -231,6 +248,7 @@ set(AFTERGLOW_IMAGE_NOTICES "${AFTERGLOW_IMAGE_NOTICES}" PARENT_SCOPE)
 
 add_library(AfterglowImage STATIC
     src/Bmp.cpp
+    src/Color.cpp
     src/Decode.cpp
     src/Gif.cpp
     src/Jpeg.cpp
@@ -239,7 +257,7 @@ add_library(AfterglowImage STATIC
 )
 add_library(Afterglow::Image ALIAS AfterglowImage)
 target_include_directories(AfterglowImage PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
-target_link_libraries(AfterglowImage PRIVATE afterglow_png afterglow_turbojpeg afterglow_webp)
+target_link_libraries(AfterglowImage PRIVATE afterglow_png afterglow_turbojpeg afterglow_webp afterglow_lcms2 afterglow_zlib)
 # PIC: aglow links it into a static position-independent program
 # (-static-pie, tools/aglow) where the C library allows one, also with a
 # compiler that makes no PIE by default. aglow-mux links it too.

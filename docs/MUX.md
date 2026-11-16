@@ -360,6 +360,7 @@ A session pane differs from a pane outside a session in these ways:
   A read of the selection does this too. The read gets at least the text that the pane had when the window asked. It can also get text that the program wrote after that.
 - A pane outside a session decodes images with Qt, and a session pane with the decoders of its daemon. They show some images in a different way:
   - A pane outside a session shows a WebP image only when the Qt Image Formats plugin is installed. A session pane always shows it.
+  - A session pane converts an image with an ICC color profile or a cICP color space to sRGB. A pane outside a session shows its samples as sRGB.
   - A pane outside a session shows a compressed BMP (run-length encoding) and a GIF whose screen has an empty side. A session pane does not show them.
   - A session pane shows a BMP with a header of 52 or 56 bytes, or with its masks after the header (compression 6). A pane outside a session does not show it.
   - Where the first frame of a GIF does not draw, a session pane shows nothing, as Kitty and browsers do. A pane outside a session can show the background color of the GIF there.

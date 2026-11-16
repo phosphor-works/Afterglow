@@ -158,12 +158,12 @@ set(expected bin/aglow share/bash-completion/completions/aglow share/fish/vendor
     share/licenses/aglow/LICENSE.xxHash share/licenses/aglow/LICENSE.zlib-ng
     share/licenses/aglow/LICENSE.libpng share/licenses/aglow/LICENSE.libjpeg-turbo share/licenses/aglow/README.ijg
     share/licenses/aglow/NOTICE.IJG share/licenses/aglow/LICENSE.libwebp share/licenses/aglow/PATENTS.libwebp
-    share/licenses/aglow/LICENSE.Unicode
+    share/licenses/aglow/LICENSE.lcms2 share/licenses/aglow/LICENSE.Unicode
     bin/aglow-mux share/licenses/aglow-mux/GPL-3.0-or-later.txt share/licenses/aglow-mux/LGPL-2.1-or-later.txt
     share/licenses/aglow-mux/LICENSE.xxHash share/licenses/aglow-mux/LICENSE.zlib-ng
     share/licenses/aglow-mux/LICENSE.libpng share/licenses/aglow-mux/LICENSE.libjpeg-turbo
     share/licenses/aglow-mux/README.ijg share/licenses/aglow-mux/NOTICE.IJG share/licenses/aglow-mux/LICENSE.libwebp
-    share/licenses/aglow-mux/PATENTS.libwebp share/licenses/aglow-mux/LICENSE.Unicode)
+    share/licenses/aglow-mux/PATENTS.libwebp share/licenses/aglow-mux/LICENSE.lcms2 share/licenses/aglow-mux/LICENSE.Unicode)
 if(static AND glibc)
     list(APPEND expected share/licenses/aglow/LICENSE.glibc)
 endif()

@@ -183,6 +183,18 @@ TEST(MuxImageDecoder, AnItermImageCanBeJpegGifWebPOrBmp)
         ASSERT_EQ(frames.size(), 1u);
         EXPECT_EQ(frames[0].delayMs, 0u);
     }
+    // An ICC profile and a cICP chunk convert to sRGB in the decoding
+    // process too, under its system call filter.
+    d = decode(JpegAdobe, ImageFormats::Common);
+    ASSERT_TRUE(d.ok);
+    EXPECT_NEAR(d.rgba[0], 66, 1);
+    EXPECT_NEAR(d.rgba[1], 151, 1);
+    EXPECT_NEAR(d.rgba[2], 202, 1);
+    d = decode(PngCicpP3, ImageFormats::Png);
+    ASSERT_TRUE(d.ok);
+    EXPECT_NEAR(d.rgba[0], 83, 1);
+    EXPECT_NEAR(d.rgba[1], 152, 1);
+    EXPECT_NEAR(d.rgba[2], 205, 1);
     d = decode(Webp, ImageFormats::Common);
     ASSERT_TRUE(d.ok);
     EXPECT_EQ(d.width, 2u);

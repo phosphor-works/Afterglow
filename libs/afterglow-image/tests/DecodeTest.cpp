@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <array>
 #include <cstdlib>
 #include <initializer_list>
 #include <string>
@@ -269,6 +270,47 @@ TEST(ImageDecode, JpegOfEachKind)
     EXPECT_NEAR(px[1], 100, 16);
     EXPECT_NEAR(px[2], 50, 16);
     EXPECT_EQ(px[px.size() - 1], 255);
+}
+
+namespace {
+/// Each pixel of the one frame of @p bytes is one of @p want, in order and
+/// repeated, within 1 of each sample: Little CMS against Pillow's rounds.
+::testing::AssertionResult convertsTo(std::string_view bytes, int width, int height,
+                                      const std::vector<std::array<int, 3>>& want)
+{
+    const Result r = run(bytes);
+    if (!r.ok || r.frames.size() != 1 || r.frames[0].width != width || r.frames[0].height != height)
+        return ::testing::AssertionFailure() << "decode: " << r.error;
+    const auto& px = r.frames[0].rgba;
+    for (std::size_t i = 0; i < px.size() / 4; ++i) {
+        const auto& w = want[i % want.size()];
+        for (int c = 0; c < 3; ++c) {
+            if (std::abs(int(px[i * 4 + std::size_t(c)]) - w[std::size_t(c)]) > 1)
+                return ::testing::AssertionFailure() << "pixel " << i << ": " << text({px.begin() + std::ptrdiff_t(i * 4), px.begin() + std::ptrdiff_t(i * 4 + 4)});
+        }
+        if (px[i * 4 + 3] != 255) return ::testing::AssertionFailure() << "pixel " << i << " lost its alpha";
+    }
+    return ::testing::AssertionSuccess();
+}
+} // namespace
+
+TEST(ImageDecode, AnIccProfileConvertsToSrgb)
+{
+    // An Adobe RGB (1998) compatible profile in each format that carries one.
+    EXPECT_TRUE(convertsTo(JpegAdobe, 8, 8, {{66, 151, 202}}));
+    EXPECT_TRUE(convertsTo(WebpAdobe, 4, 4, {{66, 151, 203}}));
+    // The PNG's gAMA does not apply too: the profile comes before it.
+    EXPECT_TRUE(convertsTo(PngAdobe, 2, 1, {{66, 151, 203}, {0, 201, 0}}));
+    // No profile that converts: the pixels stay.
+    EXPECT_TRUE(convertsTo(PngBadIcc, 2, 1, {{100, 150, 200}, {10, 200, 30}}));
+}
+
+TEST(ImageDecode, ACicpChunkConvertsToSrgbBeforeAProfile)
+{
+    // Display P3 with the sRGB transfer, over an iCCP that it comes before.
+    EXPECT_TRUE(convertsTo(PngCicpP3, 2, 1, {{83, 152, 205}, {0, 204, 0}}));
+    // BT.2020 with PQ: 203 cd/m² is the white of sRGB.
+    EXPECT_TRUE(convertsTo(PngCicpPq, 2, 1, {{181, 181, 181}, {0, 161, 230}}));
 }
 
 TEST(ImageDecode, JpegWarningsShowThePictureAndErrorsDoNot)

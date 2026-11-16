@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include "Color.h"
 #include "Formats.h"
 
 #include <algorithm>
 #include <climits>
+#include <vector>
 
 namespace AfterglowImage {
 
@@ -65,12 +67,34 @@ Probe probe(std::string_view bytes, int& width, int& height)
 
 bool decode(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning)
 {
-    switch (format(bytes)) {
-    case Format::Png: return detail::decodePng(bytes, sink, error);
-    case Format::Jpeg: return detail::decodeJpeg(bytes, sink, error);
-    case Format::Gif: return detail::decodeGif(bytes, sink, error, warning);
-    case Format::WebP: return detail::decodeWebP(bytes, sink, error, warning);
-    case Format::Bmp: return detail::decodeBmp(bytes, sink, error);
+    // A file with an ICC profile or a cICP chunk converts to sRGB, frame by
+    // frame, as kitty converts the images that it decodes. A PNG then goes
+    // to libpng without its colour chunks, so that no curve applies twice.
+    const Format kind = format(bytes);
+    const detail::SrgbConverter converter(detail::colorSpaceOf(kind, bytes));
+    std::string stripped;
+    std::vector<unsigned char> converted;
+    FrameSink colored;
+    const FrameSink* out = &sink;
+    if (converter.active()) {
+        if (kind == Format::Png) {
+            stripped = detail::withoutColorChunks(bytes);
+            bytes = stripped;
+        }
+        colored = [&](const unsigned char* rgba, int width, int height, int delayMs) {
+            const std::size_t pixels = std::size_t(width) * std::size_t(height);
+            converted.resize(pixels * 4);
+            converter.convert(rgba, converted.data(), pixels);
+            return sink(converted.data(), width, height, delayMs);
+        };
+        out = &colored;
+    }
+    switch (kind) {
+    case Format::Png: return detail::decodePng(bytes, *out, error);
+    case Format::Jpeg: return detail::decodeJpeg(bytes, *out, error);
+    case Format::Gif: return detail::decodeGif(bytes, *out, error, warning);
+    case Format::WebP: return detail::decodeWebP(bytes, *out, error, warning);
+    case Format::Bmp: return detail::decodeBmp(bytes, *out, error);
     case Format::Unknown: break;
     }
     error = "not an image that this decoder reads";
