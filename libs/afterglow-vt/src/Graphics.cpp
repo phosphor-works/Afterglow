@@ -15,7 +15,9 @@
 #include <climits>
 #include <cmath>
 #include <filesystem>
+#include <tuple>
 #include <type_traits>
+#include <utility>
 #include <unordered_set>
 
 #include <fcntl.h>
@@ -134,6 +136,10 @@ struct DisplaySize
 {
     int width;
     int height;
+    /// Where the image starts inside its c x r cells when it keeps its
+    /// aspect there (letterboxed or pillarboxed), in pixels.
+    int insetX = 0;
+    int insetY = 0;
 };
 
 /// The part of the image a placement shows, clipped to the image.
@@ -152,6 +158,13 @@ SourceRect sourceRect(const Placement& pl, const Image& img)
             pl.srcH > 0 ? std::min<std::int64_t>(pl.srcH, restH) : restH};
 }
 
+/// A placement's pixel offset inside its first cell. It stays below the cell
+/// size, as in kitty, also when the cell size changes after the placement.
+int cellOffset(int offset, int cell)
+{
+    return cell > 0 ? std::clamp(offset, 0, cell - 1) : std::clamp(offset, 0, 1 << 28);
+}
+
 DisplaySize displaySize(const Placement& pl, const Image& img, int cw, int ch)
 {
     const SourceRect src = sourceRect(pl, img);
@@ -163,7 +176,30 @@ DisplaySize displaySize(const Placement& pl, const Image& img, int cw, int ch)
     if (pl.rows > 0) h = std::int64_t(pl.rows) * ch;
     if (pl.cols > 0 && pl.rows <= 0) h = srcW > 0 ? std::int64_t(std::clamp(double(srcH) * double(w) / double(srcW), 0.0, double(limit))) : 0;
     if (pl.rows > 0 && pl.cols <= 0) w = srcH > 0 ? std::int64_t(std::clamp(double(srcW) * double(h) / double(srcH), 0.0, double(limit))) : 0;
-    return {int(std::clamp(w, std::int64_t(0), limit)), int(std::clamp(h, std::int64_t(0), limit))};
+    w = std::clamp(w, std::int64_t(0), limit);
+    h = std::clamp(h, std::int64_t(0), limit);
+    if (pl.cols > 0 && pl.rows > 0 && !pl.displayWidth && !pl.displayHeight && srcW > 0 && srcH > 0) {
+        // Both c and r: the image keeps its aspect in those cells, centred,
+        // as kitty's spec says ("letterboxed/pillarboxed to prevent
+        // distortion"). An explicit display size (iTerm2, a cut) keeps its own.
+        const double scale = std::min(double(w) / double(srcW), double(h) / double(srcH));
+        const auto fw = std::clamp(std::int64_t(std::lround(double(srcW) * scale)), std::int64_t(1), w);
+        const auto fh = std::clamp(std::int64_t(std::lround(double(srcH) * scale)), std::int64_t(1), h);
+        return {int(fw), int(fh), int((w - fw) / 2), int((h - fh) / 2)};
+    }
+    return {int(w), int(h)};
+}
+
+/// The cells that @p pl covers: its c and r when given, as kitty's spec
+/// has it ("a start cell offset via the X,Y keys ... is not added to the
+/// number of rows/columns"), else its size with its offset in the first cell.
+std::pair<long long, long long> cellSpan(const Placement& pl, const DisplaySize& size, int cw, int ch)
+{
+    const long long cols = pl.cols > 0 ? pl.cols
+        : (static_cast<long long>(size.width) + cellOffset(pl.offsetX, cw) + cw - 1) / std::max(1, cw);
+    const long long rows = pl.rows > 0 ? pl.rows
+        : (static_cast<long long>(size.height) + cellOffset(pl.offsetY, ch) + ch - 1) / std::max(1, ch);
+    return {std::max(1LL, cols), std::max(1LL, rows)};
 }
 
 std::uint64_t placementKey(std::uint32_t image, std::uint32_t placement)
@@ -171,12 +207,6 @@ std::uint64_t placementKey(std::uint32_t image, std::uint32_t placement)
     return (std::uint64_t(image) << 32) | placement;
 }
 
-/// A placement's pixel offset inside its first cell. It stays below the cell
-/// size, as in kitty, also when the cell size changes after the placement.
-int cellOffset(int offset, int cell)
-{
-    return cell > 0 ? std::clamp(offset, 0, cell - 1) : std::clamp(offset, 0, 1 << 28);
-}
 
 /// The stable row of a non-virtual root placement as a signed absolute
 /// index: negative once the row has left the scrollback, while the image's
@@ -1149,9 +1179,7 @@ void GraphicsStore::place(const Command& cmdIn, Context& ctx, Image* image)
 
     if (!pl.isVirtual && !pl.parentImage && cmd.C == 0 && ctx.cellWidth > 0 && ctx.cellHeight > 0) {
         // The cursor moves past the image: down to its last row, right of its last column.
-        const DisplaySize size = displaySize(pl, *img, ctx.cellWidth, ctx.cellHeight);
-        const long long cellsWide = (static_cast<long long>(size.width) + pl.offsetX + ctx.cellWidth - 1) / ctx.cellWidth;
-        const long long cellsHigh = (static_cast<long long>(size.height) + pl.offsetY + ctx.cellHeight - 1) / ctx.cellHeight;
+        const auto [cellsWide, cellsHigh] = cellSpan(pl, displaySize(pl, *img, ctx.cellWidth, ctx.cellHeight), ctx.cellWidth, ctx.cellHeight);
         const long long targetX = pl.col + cellsWide;
         const bool wraps = targetX >= scr.cols();
         // The size comes from the application; bound the line feeds to
@@ -1298,10 +1326,7 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
         Rect r{at->second - static_cast<long long>(scr.historySize()), at->first, 1, 1};
         const auto it = m_images.find(p.imageId);
         if (it != m_images.end() && ctx.cellWidth > 0 && ctx.cellHeight > 0) {
-            const DisplaySize size = displaySize(p, it->second, ctx.cellWidth, ctx.cellHeight);
-            const long long ox = cellOffset(p.offsetX, ctx.cellWidth), oy = cellOffset(p.offsetY, ctx.cellHeight);
-            r.cols = std::max(1LL, (static_cast<long long>(size.width) + ox + ctx.cellWidth - 1) / ctx.cellWidth);
-            r.rows = std::max(1LL, (static_cast<long long>(size.height) + oy + ctx.cellHeight - 1) / ctx.cellHeight);
+            std::tie(r.cols, r.rows) = cellSpan(p, displaySize(p, it->second, ctx.cellWidth, ctx.cellHeight), ctx.cellWidth, ctx.cellHeight);
         }
         return r;
     };
@@ -1743,8 +1768,8 @@ std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int c
         if (src.width <= 0 || src.height <= 0 || size.width <= 0 || size.height <= 0) {
             continue;
         }
-        const long long px = col * cw + cellOffset(p.offsetX, cw);
-        const long long py = (abs - top) * ch + cellOffset(p.offsetY, ch);
+        const long long px = col * cw + cellOffset(p.offsetX, cw) + size.insetX;
+        const long long py = (abs - top) * ch + cellOffset(p.offsetY, ch) + size.insetY;
         // The view can be taller than an int counts pixels: such positions
         // are off the drawn area anyway.
         if (px < -size.width || px >= static_cast<long long>(screen.cols()) * cw || py < -size.height || py >= viewH
@@ -1849,9 +1874,7 @@ long long GraphicsStore::rowsCovered(const Placement& p, int cellWidth, int cell
     if (it == m_images.end() || cellWidth <= 0 || cellHeight <= 0) {
         return 1;
     }
-    const DisplaySize size = displaySize(p, it->second, cellWidth, cellHeight);
-    return std::max(1LL, (static_cast<long long>(size.height) + cellOffset(p.offsetY, cellHeight) + cellHeight - 1)
-                             / cellHeight);
+    return cellSpan(p, displaySize(p, it->second, cellWidth, cellHeight), cellWidth, cellHeight).second;
 }
 
 void GraphicsStore::pruneDead(const Screen& screen, int cellWidth, int cellHeight)
@@ -1901,22 +1924,6 @@ void GraphicsStore::clearPlacements(const Screen& screen, int cellWidth, int cel
         const long long top = anchorIndex(p, screen);
         const long long bottom = top + rowsCovered(p, cellWidth, cellHeight);
         return bottom > history || bottom <= 0 || top >= total;
-    });
-    settle();
-}
-
-void GraphicsStore::eraseRows(int firstRow, int lastRow, const Screen& screen, int cellWidth, int cellHeight)
-{
-    // The erased screen rows, as buffer rows: the top of the screen is the
-    // first row after the history.
-    const long long history = static_cast<long long>(screen.historySize());
-    const long long eraseTop = history + firstRow;
-    const long long eraseBottom = history + lastRow;
-    std::erase_if(m_placements, [&](const Placement& p) {
-        if (p.parentImage || p.isVirtual) return false;
-        const long long top = anchorIndex(p, screen);
-        const long long bottom = top + rowsCovered(p, cellWidth, cellHeight);
-        return top <= eraseBottom && bottom > eraseTop;
     });
     settle();
 }
@@ -1974,6 +1981,10 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
     const std::uint64_t lastRow =
         screen.rowsDropped() + screen.historySize() + std::uint64_t(std::max(0, screen.rows() - 1));
     const bool cutBelow = scroll.delta > 0 || scroll.bottom < lastRow;
+    // A region smaller than the screen: page margins. A scroll of the whole
+    // screen moves every image, also one that reaches below the last row.
+    const bool margins = !scroll.fullWidth || scroll.bottom < lastRow
+        || scroll.top > screen.rowsDropped() + screen.historySize();
     const long long regionRows = static_cast<long long>(scroll.bottom - scroll.top) + 1;
     const long long regionPixels = regionRows * ch;
     // Cuts @p p, whose top-left cell is @p rel rows below the region's top
@@ -1989,11 +2000,25 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
             if (rel < 0 || rel >= regionRows) return std::nullopt;
             return rel;
         }
-        const long long y0 = rel * ch + cellOffset(p.offsetY, ch);
+        const long long y0 = rel * ch + cellOffset(p.offsetY, ch) + size.insetY;
         const long long cutTop = std::max(0LL, -y0);
         const long long cutBottom = cutBelow ? std::max(0LL, y0 + size.height - regionPixels) : 0;
         const long long kept = size.height - cutTop - cutBottom;
         if (kept <= 0) return std::nullopt;
+        if ((cutTop || cutBottom) && (size.insetX || size.insetY)) {
+            // A letterboxed image that the cut changes becomes an image of its
+            // own size where it shows, which the cut below then measures.
+            const long long x = cellOffset(p.offsetX, cw) + size.insetX;
+            const long long y = cellOffset(p.offsetY, ch) + size.insetY;
+            p.col += int(x / cw);
+            p.offsetX = int(x % cw);
+            rel += y / ch;
+            p.offsetY = int(y % ch);
+            p.cols = 0;
+            p.rows = 0;
+            p.displayWidth = std::uint32_t(size.width);
+            p.displayHeight = std::uint32_t(size.height);
+        }
         long long anchorRel = rel;
         if (rel < 0) {
             // The top-left cell left the top: the first row still shown becomes it.
@@ -2035,6 +2060,19 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
         if (p.isVirtual || !scroll.contains(anchor)) {
             state[i] = State::Still;
             continue;
+        }
+        if (margins) {
+            // kitty's spec: with page margins, "only images that are entirely
+            // within the page area" scroll. One that reaches past a margin stays.
+            const auto img = m_images.find(p.imageId);
+            if (img != m_images.end() && cw > 0 && ch > 0) {
+                const auto [cols, rows] = cellSpan(p, displaySize(p, img->second, cw, ch), cw, ch);
+                if (p.row + std::uint64_t(rows) - 1 > scroll.bottom
+                    || (!scroll.fullWidth && p.col + cols - 1 > scroll.right)) {
+                    state[i] = State::Still;
+                    continue;
+                }
+            }
         }
         changed = true;
         movedRow[i] = static_cast<long long>(p.row - scroll.top) + scroll.delta;

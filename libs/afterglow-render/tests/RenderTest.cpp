@@ -1060,13 +1060,19 @@ TEST_F(Render, KittyImageIsTopDown)
     const std::string rgba("\xff\x00\x00\xff\x00\xff\x00\xff\x00\x00\xff\xff\xff\xff\xff\xff", 16);
     const std::string enc = AfterglowProto::base64Encode(rgba);
     const QImage img = render("\x1b[?25l\x1b[2;2H\x1b_Ga=T,f=32,s=2,v=2,c=2,r=2,q=2;" + enc + "\x1b\\");
-    // Each image pixel covers one cell of the 2x2-cell placement at (1, 1).
-    // The image is filtered, so cell centres off texel centres blend a little.
-    EXPECT_PIXEL_NEAR(img, cellCenter(1, 1), qRgb(255, 0, 0), 40);
-    EXPECT_PIXEL_NEAR(img, cellCenter(2, 1), qRgb(0, 255, 0), 40);
-    EXPECT_PIXEL_NEAR(img, cellCenter(1, 2), qRgb(0, 0, 255), 40);
-    EXPECT_PIXEL_NEAR(img, cellCenter(2, 2), qRgb(255, 255, 255), 40);
+    // With c and r the square keeps its aspect, centred in the 2x2 cells at
+    // (1, 1). Each image pixel is a quarter of it; sample their centres. The
+    // image is filtered, so points off texel centres blend a little.
+    const int side = std::min(2 * cw, 2 * ch);
+    const int left = cw + (2 * cw - side) / 2, top = ch + (2 * ch - side) / 2;
+    auto quarter = [&](int qx, int qy) { return QPoint(left + side * (2 * qx + 1) / 4, top + side * (2 * qy + 1) / 4); };
+    EXPECT_PIXEL_NEAR(img, quarter(0, 0), qRgb(255, 0, 0), 40);
+    EXPECT_PIXEL_NEAR(img, quarter(1, 0), qRgb(0, 255, 0), 40);
+    EXPECT_PIXEL_NEAR(img, quarter(0, 1), qRgb(0, 0, 255), 40);
+    EXPECT_PIXEL_NEAR(img, quarter(1, 1), qRgb(255, 255, 255), 40);
     EXPECT_PIXEL(img, cellCenter(0, 0), rgb(snapshot.defaultBg));
+    // The cells' rows above and below the square stay empty.
+    if (2 * ch > side) EXPECT_PIXEL(img, QPoint(left + side / 4, ch + 1), rgb(snapshot.defaultBg));
 }
 
 TEST_F(Render, IndexedImagesTakeTheColoursOfThePane)

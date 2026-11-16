@@ -344,41 +344,24 @@ TEST(Graphics, ClearScreenDropsImagesThatReachItFromTheScrollback)
     EXPECT_TRUE(t.g().placements().empty());
 }
 
-TEST(Graphics, EraseLineDropsAnImageOnThatLine)
+TEST(Graphics, PartialErasesKeepImagesAsTheSpecSays)
 {
-    Term t(20, 10);
-    // A 25x45 image at 10x20 cells covers three rows from the top.
+    // kitty's spec: "The other commands to erase text must have no effect on
+    // graphics" than ED 2 and ED 3. Programs that manage their own
+    // placements redraw text over them with EL. A 25x45 image at 10x20
+    // cells covers three rows from the top.
+    for (const char* erase : {"\x1b[H\x1b[K", "\x1b[H\x1b[2K", "\x1b[H\x1b[J", "\x1b[4;1H\x1b[1J", "\x1b[2;30H\x1b[K"}) {
+        Term t(40, 10);
+        t.t.feed(apc("a=T,f=32,s=25,v=45,i=5", base64Encode(rgba(25, 45, 0, 0, 255))));
+        ASSERT_EQ(t.g().placements().size(), 1u);
+        t.t.feed(erase);
+        EXPECT_EQ(t.g().placements().size(), 1u) << erase;
+    }
+    // ED 2 clears them, so that the clear command works.
+    Term t(40, 10);
     t.t.feed(apc("a=T,f=32,s=25,v=45,i=5", base64Encode(rgba(25, 45, 0, 0, 255))));
-    ASSERT_EQ(t.g().placements().size(), 1u);
-    t.t.feed("\x1b[H\x1b[K");
+    t.t.feed("\x1b[2J");
     EXPECT_TRUE(t.g().placements().empty());
-}
-
-TEST(Graphics, EraseToEndOfScreenDropsImagesBelowTheCursor)
-{
-    Term t(20, 10);
-    t.t.feed(apc("a=T,f=32,s=25,v=45,i=5", base64Encode(rgba(25, 45, 0, 0, 255))));
-    ASSERT_EQ(t.g().placements().size(), 1u);
-    t.t.feed("\x1b[H\x1b[J");
-    EXPECT_TRUE(t.g().placements().empty());
-}
-
-TEST(Graphics, EraseFromTopDropsImagesAboveTheCursor)
-{
-    Term t(20, 10);
-    t.t.feed(apc("a=T,f=32,s=25,v=45,i=5", base64Encode(rgba(25, 45, 0, 0, 255))));
-    ASSERT_EQ(t.g().placements().size(), 1u);
-    t.t.feed("\x1b[4;1H\x1b[1J");
-    EXPECT_TRUE(t.g().placements().empty());
-}
-
-TEST(Graphics, EraseOfANonOverlappingRowKeepsTheImage)
-{
-    Term t(20, 10);
-    t.t.feed(apc("a=T,f=32,s=25,v=45,i=5", base64Encode(rgba(25, 45, 0, 0, 255))));
-    ASSERT_EQ(t.g().placements().size(), 1u);
-    t.t.feed("\x1b[6;1H\x1b[K"); // the image ends on row 2; row 5 is below it
-    EXPECT_EQ(t.g().placements().size(), 1u);
 }
 
 TEST(Graphics, SixelAllocationAndCoveragePreserveKittyImagesInInternalRange)
@@ -645,17 +628,52 @@ TEST(Graphics, UpwardRegionScrollClipsAnImageToTheRowsLeftInside)
     EXPECT_EQ(vis[0].srcH, 20);
     t.t.feed("\n"); // no row is left inside
     EXPECT_TRUE(t.g().placements().empty());
-    // An image anchored in the region loses the rows the scroll takes below
-    // its bottom margin: they would cover the rows outside the region.
+    // kitty's spec: with page margins, "only images that are entirely within
+    // the page area" scroll. One anchored in the region that reaches past
+    // its bottom margin stays as it is.
     t.t.feed("\x1b[3;1H");
     t.t.feed(apc("a=T,f=32,s=10,v=80,i=2,C=1,q=2", base64Encode(rgba(10, 80, 0, 0, 0)))); // rows 2 to 5
     t.t.feed("\x1b[4;1H\n");
     vis = t.g().visible(t.t.screen(), 10, 20);
     ASSERT_EQ(vis.size(), 1u);
-    EXPECT_EQ(vis[0].y, 20);
-    EXPECT_EQ(vis[0].height, 60);
+    EXPECT_EQ(vis[0].y, 40);
+    EXPECT_EQ(vis[0].height, 80);
     EXPECT_EQ(vis[0].srcY, 0);
-    EXPECT_EQ(vis[0].srcH, 60);
+    EXPECT_EQ(vis[0].srcH, 80);
+}
+
+TEST(Graphics, BothColumnsAndRowsKeepTheAspectAndTheOffsetsAddNoCells)
+{
+    // kitty's spec: with c and r "the image is letterboxed/pillarboxed to
+    // prevent distortion", and X, Y are "not added to the number of
+    // rows/columns". A 20x10 image in 4x4 cells of 10x20: 40x80 of room, so
+    // it is 40x20, centred 30 pixels down.
+    Term t(20, 10);
+    t.t.feed("\x1b[2;3H");
+    t.t.feed(apc("a=T,f=32,s=20,v=10,i=1,c=4,r=4,X=5,Y=5,q=2", base64Encode(rgba(20, 10, 0, 0, 0))));
+    auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].x, 2 * 10 + 5);
+    EXPECT_EQ(vis[0].y, 1 * 20 + 5 + 30);
+    EXPECT_EQ(vis[0].width, 40);
+    EXPECT_EQ(vis[0].height, 20);
+    // The cursor moves past the 4x4 cells, not one more for the offsets.
+    EXPECT_EQ(t.t.screen().cursor.x, 2 + 4);
+    EXPECT_EQ(t.t.screen().cursor.y, 1 + 3);
+    // A delete of the cell just past the box leaves the image; one inside takes it.
+    t.t.feed(apc("a=d,d=p,x=7,y=2,q=2"));
+    EXPECT_EQ(t.g().placements().size(), 1u);
+    t.t.feed(apc("a=d,d=p,x=6,y=5,q=2"));
+    EXPECT_TRUE(t.g().placements().empty());
+    // A tall image in wide cells is pillarboxed: 10x40 in 4x1 cells (40x20).
+    t.t.feed("\x1b[H");
+    t.t.feed(apc("a=T,f=32,s=10,v=40,i=2,c=4,r=1,q=2", base64Encode(rgba(10, 40, 0, 0, 0))));
+    vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].width, 5);
+    EXPECT_EQ(vis[0].height, 20);
+    EXPECT_EQ(vis[0].x, 17);
+    EXPECT_EQ(vis[0].y, 0);
 }
 
 TEST(Graphics, ChildOfAClippedImageMovesWithTheRows)

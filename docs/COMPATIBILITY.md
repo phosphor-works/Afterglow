@@ -63,9 +63,8 @@ Relative placements do not move the terminal cursor.
 | ED 2 (erase the screen) | Images that reach into the screen go, also when their top row is in the scrollback. |
 | ED 22 (move the screen into the scrollback, then erase it, as in Kitty) | The lines down to the last line with text go into the scrollback with their images. Then ED 2 erases the screen. On the alternate screen, or with a scrolling region, ED 22 is the same as ED 2. |
 | ED 3 (erase the scrollback) | Images whose top row is in the scrollback go. Images on the screen stay, like the text. |
-| EL (erase part of a line) | An image whose rows include that line goes. |
-| ED 0 and ED 1 (erase to the end or to the start of the screen) | An image whose rows include an erased line goes. |
-| SU, SD, IL, DL, or a line feed or reverse index at a scroll-region margin | An image whose top-left cell is in the region moves with its rows. It shows only its rows that are in the region after the scroll. It goes when none of its rows is in the region. Rows below the last row of the screen stay when the scroll is up: they come into view as the image moves. A relative child image moves with its parent, and the same rule cuts it. It goes when its parent goes. |
+| EL, ED 0 and ED 1 (erase part of a line or of the screen) | Images stay, as the Kitty specification says: a program deletes them with the delete commands. A program that draws over an image without the alternate screen, such as `top`, leaves it on the screen, as in Kitty. |
+| SU, SD, IL, DL, or a line feed or reverse index at a scroll-region margin | An image whose top-left cell is in the region moves with its rows. With a region smaller than the screen, only an image that lies entirely inside the region moves, as the Kitty specification says. One that reaches past a margin stays. It shows only its rows that are in the region after the scroll. It goes when none of its rows is in the region. Rows below the last row of the screen stay when the scroll is up: they come into view as the image moves. A relative child image moves with its parent, and the same rule cuts it. It goes when its parent goes. |
 
 The same scrolls move shell-integration marks (OSC 133) with their rows.
 A command or prompt region goes when its start or end leaves the scroll region.
@@ -95,6 +94,8 @@ These cases give that error:
 - The file holds less data than `s` × `v` raw or indexed pixels.
 - The data is PNG (`f=100`) or compressed (`o=z`), and the part to read is longer than 320 MiB.
 
+With both `c` and `r`, an image keeps its aspect ratio in those cells, centered, as the Kitty specification says.
+`X` and `Y` then add no cell to the `c` × `r` cells: the cursor moves past them, and delete commands by cell find the image in them.
 A feature query (`a=q` with `e`) gets the keys of that action that Afterglow supports.
 The transient usage hint (`N=1`) applies to a transmission (`a=t`, `a=T`). It does not apply to a frame (`a=f`).
 When Afterglow must delete an image to make room, it first deletes an image with the hint that has no placement.
