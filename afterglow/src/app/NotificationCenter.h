@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "../config/NotificationFilter.h"
+
 #include <AfterglowVt/Notifications.h>
 
 #include <QElapsedTimer>
@@ -45,6 +47,10 @@ public:
         m_rateLimit = count;
         m_rateWindowMs = windowMs;
     }
+
+    /// Notifications.filter: the rules of the notifications that programs
+    /// send and that are not shown.
+    void setFilters(std::vector<NotificationFilter> filters) { m_filters = std::move(filters); }
 
     /// An OSC 99 request from @p pane. The window has already applied the
     /// request's occasion (always / unfocused / invisible).
@@ -122,10 +128,14 @@ private:
     QSet<const Pane*> m_tracked; ///< panes whose destruction clears their state
     QElapsedTimer m_clock; ///< monotonic: a clock step must not silence a pane
     int m_rateLimit = 20; ///< until Application sets it from Notifications.rateLimit
+    std::vector<NotificationFilter> m_filters;
+    bool filtered(const NotificationFilter::Fields& fields) const;
     qint64 m_rateWindowMs = 10000; ///< until Application sets it from Notifications.rateWindow
     bool m_bodyMarkup = true; ///< the server reads markup in bodies (GetCapabilities)
     quint64 m_generation = 0;
     quint64 m_server = 0; ///< counts servers that went away: an id from an earlier one names nothing
+    /// The icons that m_iconCache keeps, the least recently used going first.
+    static constexpr qsizetype MaxCachedIcons = 32;
     QHash<QString, QImage> m_iconCache; ///< OSC 99 'g' ids
     QStringList m_iconCacheOrder;
 };

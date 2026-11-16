@@ -191,6 +191,10 @@ void Session::kill()
 void Session::applySettings(const SessionSettings& settings)
 {
     m_options.control = settings.control;
+    if (m_options.notificationCapabilities != settings.notificationCapabilities) {
+        m_options.notificationCapabilities = settings.notificationCapabilities;
+        for (const auto& pane : m_panes) pane->setNotificationCapabilities(settings.notificationCapabilities);
+    }
     if (m_options.keptNotifications != settings.keptNotifications) {
         m_options.keptNotifications = settings.keptNotifications;
         for (const auto& pane : m_panes) pane->setKeptNotifications(std::size_t(settings.keptNotifications));

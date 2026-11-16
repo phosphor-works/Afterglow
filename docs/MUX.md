@@ -242,7 +242,7 @@ Their `AFTERGLOW_SESSION` still names the session where the pane started, becaus
 | --- | --- |
 | The title that you gave to the pane | Stays |
 | Notify When the Next Command Finishes | Stays |
-| The clipboard reads that you allowed for a password (OSC 5522) | Stay |
+| The clipboard reads and writes that you allowed for a password (OSC 5522) | Stay |
 | What scripts set with `override` and `status` | Stays |
 | The shader signals of the pane, from `afterglow ctl signal` and scripts | Go back to 0 |
 | The shader parameters that scripts set for the pane (`shader_parameters`) | Go |

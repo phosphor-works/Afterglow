@@ -31,7 +31,7 @@ namespace AfterglowMux {
 /// (AfterglowVt::StateCodec, StateSync.h) change with it. MuxProtocolTest
 /// pins the keys of the options to this number, so that a new key changes it
 /// too.
-inline constexpr int ProtocolVersion = 25;
+inline constexpr int ProtocolVersion = 26;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -321,6 +321,9 @@ struct SessionSettings
     std::vector<std::pair<std::string, std::optional<std::string>>> environment{};
     /// Mux.keptNotifications, as in SessionOptions.
     int keptNotifications = int(DefaultKeptNotifications);
+    /// The answer to OSC 99's query, as in SessionOptions: empty while the
+    /// window shows no notifications (Notifications.enabled).
+    std::string notificationCapabilities{};
     bool operator==(const SessionSettings&) const = default;
 };
 /// The most variables that the settings of a window name.

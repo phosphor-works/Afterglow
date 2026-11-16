@@ -6,6 +6,7 @@
 #include "Keybinds.h"
 #include "KeyModes.h"
 #include "ModifierRemap.h"
+#include "NotificationFilter.h"
 #include "Theme.h"
 #include "../audio/AudioSettings.h"
 #include "../shaders/ShaderRefs.h"
@@ -311,6 +312,8 @@ struct Settings
     int notificationRateWindow = 10; ///< seconds that notificationRateLimit counts over
     /// Milliseconds between two program status notifications of one pane.
     int statusNotificationInterval = 3000;
+    /// Notifications.filter: a notification that one of these matches is not shown.
+    std::vector<NotificationFilter> notificationFilters;
     bool confirmUnsafePaste = true; ///< ask before pasting or dropping lines a shell would run
     bool confirmClose = true; ///< ask before closing where a program is running
     bool hideMouseWhileTyping = false;

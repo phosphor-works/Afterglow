@@ -917,6 +917,13 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("statusInterval"), d.statusNotificationInterval, 0, 600000,
                QStringLiteral("Shortest time in milliseconds between two program status notifications (OSC 7501) of one pane. "
                               "A value of 0 shows each one.")),
+        {QStringLiteral("filter"), QVariantList{}, QMetaType::QVariantList,
+         QStringLiteral("Rules for notifications that programs send and that Afterglow does not show, as filter_notification "
+                        "in Kitty. A rule has terms of the form field:pattern, where the field is title, body, app or type "
+                        "and the pattern is a regular expression that can match any part of the field. Put a pattern with "
+                        "spaces in double quotes. Join terms with and, or and not, and group them with parentheses. The "
+                        "rule all matches every notification. An example is app:\"[ng]?vim\" and not body:\"(?i)update\". "
+                        "OSC 9 and OSC 777 notifications have no app and no type.")},
     };
     schema.groups[Shaders] = {
         {QStringLiteral("background"), stringList(d.shaders.background), QMetaType::QVariantList,
@@ -1893,6 +1900,12 @@ Settings SettingsStore::read()
     s.notificationRateLimit = st.read<int>(NotificationsGroup, QStringLiteral("rateLimit"));
     s.notificationRateWindow = st.read<int>(NotificationsGroup, QStringLiteral("rateWindow"));
     s.statusNotificationInterval = st.read<int>(NotificationsGroup, QStringLiteral("statusInterval"));
+    s.notificationFilters.clear();
+    for (const QString& rule : strings(NotificationsGroup, QStringLiteral("filter"))) {
+        QString error;
+        if (auto filter = NotificationFilter::parse(rule, &error)) s.notificationFilters.push_back(std::move(*filter));
+        else problem(QStringLiteral("Notifications.filter has the rule %1, which Afterglow ignores: %2").arg(rule, error));
+    }
 
     // Window
     s.window.padding = st.read<int>(Window, QStringLiteral("padding"));

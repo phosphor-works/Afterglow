@@ -129,6 +129,7 @@ qt_add_library(afterglow_config STATIC
     src/config/KeyModes.cpp
     src/config/KeyModes.h
     src/config/ModifierRemap.cpp
+    src/config/NotificationFilter.cpp
     src/config/ModifierRemap.h
     src/config/Settings.cpp
     src/config/Settings.h

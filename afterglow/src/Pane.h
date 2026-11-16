@@ -197,6 +197,10 @@ public:
     bool hasDragDrop() const noexcept { return m_dragDrop != nullptr; }
     /// Terminal.dragAnswerWait, for the drag and drop handler now and later.
     void setDragAnswerWait(int ms);
+    /// Notifications.enabled: without it, OSC 99's query gets no answer, as
+    /// from a terminal without the protocol, so that a program does not
+    /// count on notifications that the window will not show.
+    void setNotificationsEnabled(bool on) { m_notificationsEnabled = on; }
     /// GUI thread: delivers the program's protocol commands that wait for the
     /// GUI thread, and no other events. With @p waitMs above 0 and nothing to
     /// deliver, first waits up to that long for the next one. Runs no event
@@ -502,6 +506,8 @@ private:
     EventBudget m_requestBudget; ///< notifications and clipboard requests
     EventBudget m_commandBudget; ///< command starts and ends (OSC 133)
     std::atomic_bool m_eventsPosted{false};
+    /// setNotificationsEnabled(); read on the PTY reader thread.
+    std::atomic_bool m_notificationsEnabled{true};
     /// GUI thread: titleUpdated when the title to show changed.
     void announceTitle();
     std::atomic_bool m_bellQueued{false};

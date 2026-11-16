@@ -2097,7 +2097,10 @@ TEST_F(NativeWindow, AccessibleDockItemsAreButtonsThatSendTheirClick) {
     EXPECT_EQ(heard.count(QAccessible::ObjectReorder, root), 1);
     EXPECT_EQ(findDock(), nullptr);
 }
-TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
+// OSC 99's g cache is the application's (the spec: "the cache should exist
+// for as long as the terminal emulator remains running"): another pane's
+// notification shows the icon, also after the pane that sent it closed.
+TEST_F(NativeWindow, NotificationReplacementAndApplicationImageCache) {
     RegisteredNotificationServer notices;
     ASSERT_TRUE(notices.registered);
     auto& server = notices.server;
@@ -2129,7 +2132,7 @@ TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
     request.id = "another-pane";
     center.handle(second, request);
     ASSERT_TRUE(waitFor([&] { return server.count == 3; }));
-    EXPECT_TRUE(server.images.last().isEmpty());
+    EXPECT_FALSE(server.images.last().isEmpty());
     // Past the 200 ms expiry of the notice that was replaced. A close would
     // come before the next notice: the calls of one connection arrive in
     // the order sent.
@@ -2138,6 +2141,23 @@ TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
     center.handle(second, request);
     ASSERT_TRUE(waitFor([&] { return server.count == 4; }));
     EXPECT_EQ(server.closes, 0);
+    // The pane that sent the icon closes: it stays. Its cat runs, so the
+    // window asks first.
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(window->runAction(first, Action::ClosePane));
+    if (chrome->confirmPromptOpen()) chrome->answerConfirm(true);
+    ASSERT_TRUE(waitFor([&] { return window->panes().size() == 1; }));
+    request.id = "after-close";
+    center.handle(second, request);
+    ASSERT_TRUE(waitFor([&] { return server.count == 5; }));
+    EXPECT_FALSE(server.images.last().isEmpty());
+    // An unknown id shows none.
+    request.id = "unknown";
+    request.iconCacheId = "never-sent";
+    center.handle(second, request);
+    ASSERT_TRUE(waitFor([&] { return server.count == 6; }));
+    EXPECT_TRUE(server.images.last().isEmpty());
 }
 // Shows @p window full screen for the runner's compositor input, whose
 // pointer goes to screen positions: a Wayland client does not know where its
@@ -2946,6 +2966,44 @@ TEST_F(NativeWindow, KittenClipboardReportsAReadOverTheLimit) {
     const KittenRun run = finishKitten(cwd);
     EXPECT_NE(run.status, 0);
     EXPECT_TRUE(run.errors.contains("EFBIG")) << run.errors.toStdString();
+}
+
+// OSC 5522's password (kitty's clipboard.rst): "Always" allows "all future
+// requests using that password", writes too, while Terminal.clipboardWrite
+// asks. Another password still asks. The program waits for a Z between its
+// writes, one byte at a time: the terminal's answers come on its input too.
+TEST_F(NativeWindow, AnAllowedClipboardPasswordAllowsLaterWrites) {
+    const QString script = QStringLiteral(
+        "stty raw -echo\n"
+        "w() { printf '\\033]5522;type=write:id=%s:pw=%s:name=dmlt\\033\\\\"
+        "\\033]5522;type=wdata:mime=dGV4dC9wbGFpbg==;%s\\033\\\\\\033]5522;type=wdata\\033\\\\' \"$1\" \"$2\" \"$3\"; }\n"
+        "z() { while [ \"$(head -c 1)\" != Z ]; do :; done; }\n"
+        "w one c2VjcmV0 b25l; z; w two c2VjcmV0 dHdv; z; w three b3RoZXI= dGhyZWU=; exec cat >/dev/null\n");
+    restartApplication(QStringLiteral("clipboard-password.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("clipboardWrite"), QStringLiteral("ask")}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"), script});
+    if (HasFatalFailure()) return;
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    Pane* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    const auto cleared = qScopeGuard([] { QGuiApplication::clipboard()->clear(); });
+    const auto clipboardIs = [](const char* text) { return QGuiApplication::clipboard()->text() == QLatin1String(text); };
+    // The first write asks, with the program's name ("vim"), and the user allows it always.
+    ASSERT_TRUE(waitFor([&] { return chrome->clipboardPromptOpen(); }, 10000));
+    EXPECT_TRUE(chrome->clipboardPromptText().contains(QStringLiteral("vim"))) << chrome->clipboardPromptText().toStdString();
+    chrome->answerClipboard(2);
+    ASSERT_TRUE(waitFor([&] { return clipboardIs("one"); })) << QGuiApplication::clipboard()->text().toStdString();
+    // The second, with the same password, writes without a question.
+    ASSERT_TRUE(pane->sendInput("Z"));
+    ASSERT_TRUE(waitFor([&] { return clipboardIs("two"); })) << QGuiApplication::clipboard()->text().toStdString();
+    EXPECT_FALSE(chrome->clipboardPromptOpen());
+    // Another password asks again; denied, the clipboard stays.
+    ASSERT_TRUE(pane->sendInput("Z"));
+    ASSERT_TRUE(waitFor([&] { return chrome->clipboardPromptOpen(); }, 10000));
+    chrome->answerClipboard(0);
+    ASSERT_TRUE(settleQueued());
+    EXPECT_TRUE(clipboardIs("two")) << QGuiApplication::clipboard()->text().toStdString();
 }
 
 // Selected text that drags out of a pane (Mouse.dragSelection), and text that

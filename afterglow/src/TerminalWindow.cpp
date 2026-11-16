@@ -406,19 +406,17 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
             return;
         }
         const AfterglowVt::ClipboardRequest& r = pending->request;
-        if (pending->write) {
-            if (answer != 0) writeClipboard(pending->pane, r);
-            else pending->pane->sendReply(r.refusal("EPERM"));
-            return;
-        }
         if (answer == 0) {
             pending->pane->sendReply(r.refusal("EPERM"));
             return;
         }
+        // Always: the password allows the program's later reads and writes
+        // (the spec: "all future requests using that password").
         if (answer == 2 && !r.password.empty() && !r.name.empty()) {
             m_clipboardGrants[pending->pane][QByteArray::fromStdString(r.password)] = ClipboardGrant{};
         }
-        answerClipboardRead(pending->pane, r);
+        if (pending->write) writeClipboard(pending->pane, r);
+        else answerClipboardRead(pending->pane, r);
     });
     connect(m_controller, &ChromeController::pasteAnswered, this, [this](bool paste) {
         const QByteArray text = std::exchange(m_pendingPaste, {});
@@ -749,6 +747,7 @@ void TerminalWindow::bindPane(Pane* pane)
                 NotificationCenter::instance().handle(guard, request);
             });
     pane->setDragAnswerWait(m_settings.settings().dragAnswerWait);
+    pane->setNotificationsEnabled(m_settings.settings().notifications);
     connect(pane, &Pane::terminalProtocolRequested, this, [this, guard = QPointer<Pane>(pane)](int code, const QByteArray& payload) {
         if (!guard) return;
         // A reset reaches only the handlers a program started.
@@ -5238,6 +5237,9 @@ void TerminalWindow::applySettings(const Settings& previous)
     if (now.dragAnswerWait != previous.dragAnswerWait) {
         for (Pane* p : findChildren<Pane*>()) p->setDragAnswerWait(now.dragAnswerWait);
     }
+    if (now.notifications != previous.notifications) {
+        for (Pane* p : findChildren<Pane*>()) p->setNotificationsEnabled(now.notifications);
+    }
     if (now.fileTransferDeltaLimit != previous.fileTransferDeltaLimit) {
         for (Pane* p : findChildren<Pane*>()) {
             if (p->hasFileTransfers()) p->fileTransfers()->setDeltaLimit(now.fileTransferDeltaLimit);
@@ -5759,12 +5761,25 @@ void TerminalWindow::clipboardWrite(Pane* pane, const AfterglowVt::ClipboardRequ
     case Settings::Permission::Ask:
         break;
     }
+    // A password that the user allowed always, for a read or a write,
+    // allows the write. A paste's one-time password reads only.
+    if (!r.password.empty()) {
+        const auto& grants = m_clipboardGrants[pane];
+        if (const auto it = grants.constFind(QByteArray::fromStdString(r.password)); it != grants.cend() && !it->oneTime) {
+            writeClipboard(pane, r);
+            return;
+        }
+    }
     if (m_pendingClipboardRead) {
         pane->sendReply(r.refusal("EBUSY"));
         return;
     }
+    // The name, when the program gave one with a password, can be remembered.
+    const QString name = r.password.empty() ? QString() : sanitizedText(QString::fromStdString(r.name), 80);
     m_pendingClipboardRead = PendingClipboardRead{pane, r, true};
-    m_controller->askClipboard(tr("%1 wants to replace the %2.").arg(clipboardAsker(pane), r.primary ? tr("primary selection") : tr("clipboard")), {});
+    m_controller->askClipboard(tr("%1 wants to replace the %2.")
+                                   .arg(clipboardAsker(pane, name), r.primary ? tr("primary selection") : tr("clipboard")),
+                               name);
     if (!isActive()) alert(0);
 }
 

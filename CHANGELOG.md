@@ -79,8 +79,9 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 ### Clipboard, notifications and files
 
 - Clipboard access through OSC 52 and the Kitty clipboard protocol (OSC 5522).
-- Clipboard reads ask first by default, and the prompt starts on Deny. `Terminal.clipboardWrite` allows, asks for or denies writes.
-- Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99), which `Notifications.enabled` turns on and off.
+- Clipboard reads ask first by default, and the prompt starts on Deny. `Terminal.clipboardWrite` allows, asks for or denies writes. **Always allow** for a program's password allows its later reads and writes.
+- Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99), which `Notifications.enabled` turns on and off. With notifications off, programs that ask learn that the terminal shows none.
+- `Notifications.filter`, rules for the notifications that Afterglow does not show, as `filter_notification` in Kitty. A rule matches the title, body, application and type of a notification.
 - A notification limit for each pane (`Notifications.rateLimit` in `Notifications.rateWindow`, 20 in 10 seconds by default). Notices from Afterglow itself do not count, and neither do `afterglow ctl notify` and script notifications. The notice at the end of a script command that has no client counts.
 - Settings for the shortest time between two bell sounds (`Terminal.bellSoundInterval`) and between two status notifications of a pane (`Notifications.statusInterval`).
 - `Control.eventInterval` sets the shortest time between two control events of one kind for a pane.

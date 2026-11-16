@@ -378,6 +378,18 @@ TEST_F(PaneProtocol, ADeviceReportAfterACanceledDownloadIsAnswered)
     EXPECT_TRUE(read(DeviceAttributes)) << input.right(200).toStdString();
 }
 
+TEST(PaneEvents, AClipboardRequestThatFindsTheQueueFullIsBusy)
+{
+    // More clipboard reads than the queue holds, before the GUI thread
+    // runs: those over get EBUSY, which a program may try again after.
+    // ENOSYS would tell it that the terminal has no clipboard.
+    Pane pane { AfterglowVt::TerminalOptions {} };
+    const QByteArray input = answers(pane,
+        R"(i=0; while [ $i -lt 400 ]; do printf '\033]5522;type=read:id=x;Lg==\033\\'; i=$((i+1)); done; printf x)",
+        { "type=read:status=EBUSY:id=x" });
+    EXPECT_FALSE(input.contains("ENOSYS")) << input.left(200).toStdString();
+}
+
 TEST(PaneEvents, AFloodOfNotificationsDoesNotDropTheCommandEvents)
 {
     // More notifications than the queue holds, then a command, in one read:

@@ -1885,6 +1885,60 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     EXPECT_TRUE(mentions(moved.problems(), QStringLiteral("Unknown setting Terminal.notifications")));
 }
 
+// Notifications.filter, as kitty's filter_notification: field:regexp terms
+// with and, or, not, parentheses and all. A rule that does not parse is a
+// problem, and the others stay.
+TEST_F(ConfigTest, NotificationFilterRules)
+{
+    using Fields = NotificationFilter::Fields;
+    const auto rule = [](const char* text) {
+        QString error;
+        auto filter = NotificationFilter::parse(QString::fromUtf8(text), &error);
+        EXPECT_TRUE(filter) << text << ": " << error.toStdString();
+        return filter.value_or(*NotificationFilter::parse(QStringLiteral("all"), nullptr));
+    };
+    const Fields vimUpdate{QStringLiteral("vim"), QStringLiteral("An Update is ready"), QStringLiteral("nvim"), {}};
+    const Fields vimSaved{QStringLiteral("vim"), QStringLiteral("saved"), QStringLiteral("gvim"), {}};
+    const Fields mail{QStringLiteral("hello there"), QStringLiteral("abc then def"), QStringLiteral("mutt"),
+                      {QStringLiteral("im.received"), QStringLiteral("x")}};
+    // kitty's examples.
+    const NotificationFilter vim = rule(R"(app:"[ng]?vim" and not body:"(?i)update")");
+    EXPECT_FALSE(vim.matches(vimUpdate));
+    EXPECT_TRUE(vim.matches(vimSaved));
+    EXPECT_FALSE(vim.matches(mail));
+    const NotificationFilter either = rule(R"(title:hello or body:"abc.*def")");
+    EXPECT_TRUE(either.matches(mail));
+    EXPECT_FALSE(either.matches(vimSaved));
+    EXPECT_TRUE(rule("all").matches(Fields{}));
+    // A search anywhere in the field; terms side by side join with and;
+    // parentheses group; a type matches any of the types.
+    EXPECT_TRUE(rule("title:ell").matches(mail));
+    EXPECT_FALSE(rule("title:ell app:vim").matches(mail));
+    EXPECT_TRUE(rule("not (app:vim or app:emacs) type:^im\\.").matches(mail));
+    EXPECT_TRUE(rule("type:(im|x)$").matches(mail));
+    EXPECT_FALSE(rule("type:im").matches(vimSaved));
+    // Rules that do not parse, with their reasons.
+    for (const char* bad : {"", "titl:x", "title:", "title:(", "(title:x", "title:x)", "title:x and", "hello",
+                            "title:\"open", "not"}) {
+        QString error;
+        EXPECT_FALSE(NotificationFilter::parse(QString::fromUtf8(bad), &error)) << bad;
+        EXPECT_FALSE(error.isEmpty()) << bad;
+    }
+    QString deep;
+    for (int i = 0; i < 40; ++i) deep += QLatin1Char('(');
+    deep += QStringLiteral("title:x");
+    for (int i = 0; i < 40; ++i) deep += QLatin1Char(')');
+    EXPECT_FALSE(NotificationFilter::parse(deep, nullptr));
+
+    SettingsStore store(write(QStringLiteral("filter.json"),
+                              R"({"Notifications": {"filter": ["app:vim", "titl:bad", 3, "  "]}})"));
+    ASSERT_EQ(store.settings().notificationFilters.size(), 1u);
+    EXPECT_EQ(store.settings().notificationFilters[0].text(), QStringLiteral("app:vim"));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Notifications.filter has the rule titl:bad")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Notifications.filter[2] must be a string")));
+    EXPECT_TRUE(SettingsStore(write(QStringLiteral("none.json"), "{}")).settings().notificationFilters.empty());
+}
+
 TEST(Config, SchemaDefaultsHaveTheirDeclaredTypes)
 {
     // PhosphorConfig::Store asserts this in debug builds; release builds would not notice.
@@ -2984,6 +3038,8 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
                 value = QStringLiteral("~/afterglow-test");
             } else if (name == QLatin1String("Mux.updateEnvironment")) {
                 value = QJsonArray{QStringLiteral("TEST_VARIABLE")};
+            } else if (name == QLatin1String("Notifications.filter")) {
+                value = QJsonArray{QStringLiteral("app:afterglow-test")};
             } else if (def.expectedType == QMetaType::QVariantMap) {
                 // Not AFTERGLOW_: Afterglow keeps those names for itself.
                 value = QJsonObject{{QStringLiteral("TEST_VARIABLE"), QStringLiteral("1")}};

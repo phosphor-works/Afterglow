@@ -27,8 +27,8 @@ The table below lists the protocols that Afterglow supports, each with the tests
 | Kitty keyboard protocol | Flags 1, 2, 4, 8 and 16; push, pop, set and query, with a stack for each screen that DECSTR clears; event types, alternate keys with the base layout key, and associated text; AltGr and the fifth level key (ISO_Level3_Shift, ISO_Level5_Shift), and the media and volume keys that reach the window | `Terminal.KittyKeyboardStack*`, `Input.*`, `KeyMapping.BaseLayoutKeysLevelKeysAndHeldModifiers`; [keyboard protocols](INPUT.md#keyboard-protocols) |
 | Kitty text sizing (OSC 66) | Scale, width, fraction and alignment; the erase, scroll, overwrite and insert and delete rules of the specification | `TextSizing.*` |
 | Kitty color control (OSC 21), color stack (OSC 30001, 30101), pointer shapes (OSC 22) | See [color escape codes and pointer shapes](#color-escape-codes-and-pointer-shapes) | `Extensions.PointerShapeStacksQueriesAndReset`, `Extensions.OklchAndLabColorsInTheColorEscapeCodes`, `Conformance.ColorStack` |
-| Kitty notifications (OSC 99), with OSC 9 and OSC 777 | Chunks, icons, buttons, sounds, close and activation reports, the capability query | `Notification.*`, `Extensions.LegacyNotificationsRejectControlsAndBadUtf8` |
-| Kitty clipboard (OSC 5522), OSC 52 and paste events (mode 5522) | Several MIME types, passwords, the primary selection | `Clipboard.*`, `Clipboard.PasteEventsModeIsReported`, `NativeWindow.KittenClipboard*` |
+| Kitty notifications (OSC 99), with OSC 9 and OSC 777 | Chunks, icons with one icon cache (`g`) for the whole application, buttons, sounds, close and activation reports, the capability query; filter rules as Kitty's `filter_notification` (`Notifications.filter`) | `Notification.*`, `Extensions.LegacyNotificationsRejectControlsAndBadUtf8`, `ConfigTest.NotificationFilterRules`, `NativeWindow.NotificationReplacementAndApplicationImageCache` |
+| Kitty clipboard (OSC 5522), OSC 52 and paste events (mode 5522) | Several MIME types, passwords for reads and writes, the primary selection | `Clipboard.*`, `Clipboard.PasteEventsModeIsReported`, `NativeWindow.KittenClipboard*`, `NativeWindow.AnAllowedClipboardPasswordAllowsLaterWrites` |
 | Kitty file transfer (OSC 5113), drag and drop (OSC 72) | See [Kitty file transfer](DESKTOP.md#kitty-file-transfer) and [Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop) | `Transfer.*`, `Dnd.*`, `afterglow_transfer_kitten_relay`, `NativeWindow.Kitty*` |
 | Shell integration (OSC 133 and OSC 633), contexts (OSC 3008), the working directory (OSC 7) | Prompt, command and output marks, `click_events`, `cmdline` and `cmdline_url`; the context stack; `file://` directories | `Terminal.ShellIntegrationCommands`, `Extensions.VSCodeShellIntegration`, `Extensions.SystemdContexts`, `Terminal.WorkingDirectoryReportsOnlyChanges` |
 | Program status (OSC 7501), ConEmu progress and directory (OSC 9;4, OSC 9;9) | Status, progress and the working directory | `ProgramStatus.*`, `Extensions.ConEmuCommands` |
@@ -164,6 +164,8 @@ OSC 99 notification bodies can contain more than one line. Tabs become spaces.
 OSC 9 and OSC 777 notification text gets the same check as OSC 99 text.
 The text must be valid UTF-8 with no C0, DEL or C1 control characters.
 Afterglow ignores a notification that fails the check.
+When `Notifications.enabled` is off, the OSC 99 query (`p=?`) gets no answer, as from a terminal without the protocol.
+The Kitty specification tells a program to read that as no support.
 A base64 payload can be divided at any character between chunks.
 OSC 0 and OSC 2 titles lose C0, DEL and C1 controls, U+2028, U+2029 and the controls of bidirectional text.
 A byte that is not UTF-8 becomes U+FFFD.

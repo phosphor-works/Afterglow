@@ -248,11 +248,14 @@ public:
     /// window that went did not get. Clipboard writes are not kept: a late
     /// one would replace what the user copied since.
     void setKeptNotifications(std::size_t count);
+    /// The answer to OSC 99's query, the window's (SessionSettings): empty
+    /// while the window shows no notifications, so that the query gets none.
+    void setNotificationCapabilities(std::string capabilities);
 
     // ITerminalHost
     void writeToPty(std::string_view bytes) override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
-    std::string notificationCapabilities() override { return m_notificationCapabilities; }
+    std::string notificationCapabilities() override;
     bool clipboardRequest(const AfterglowVt::ClipboardRequest& request) override;
     void terminalProtocol(int code, std::string_view payload) override;
     void bell() override;
@@ -306,7 +309,7 @@ private:
     std::function<void()> m_wake;
     std::atomic<bool> m_changed{false};
     std::atomic<int> m_exitStatus{0};
-    const std::string m_notificationCapabilities;
+    std::string m_notificationCapabilities; ///< under m_hostMutex
     ImageDecoder& m_images;
     /// Readable once the pane closes: a decode that runs, and any after it,
     /// ends at once.

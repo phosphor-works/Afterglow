@@ -22,6 +22,8 @@
 #include <QLoggingCategory>
 #include <QTimer>
 
+#include <algorithm>
+
 Q_LOGGING_CATEGORY(lcNotifications, "afterglow.notifications", QtInfoMsg)
 
 namespace {
@@ -166,15 +168,11 @@ void NotificationCenter::track(const Pane* pane)
 {
     if (!pane || m_tracked.contains(pane)) return;
     m_tracked.insert(pane);
-    connect(pane, &QObject::destroyed, this, [this, pane, prefix = QString::number(pane->id()) + QLatin1Char(':')] {
+    connect(pane, &QObject::destroyed, this, [this, pane] {
         m_tracked.remove(pane);
         m_recent.remove(pane);
         m_entries.removeIf([pane](const auto& it) { return it.value().owner == pane; });
         m_inFlight.removeIf([pane](const auto& it) { return it.key().first == pane; });
-        for (auto it = m_iconCache.begin(); it != m_iconCache.end();) {
-            if (it.key().startsWith(prefix)) { m_iconCacheOrder.removeAll(it.key()); it = m_iconCache.erase(it); }
-            else ++it;
-        }
     });
 }
 
@@ -239,6 +237,9 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
         pane->sendReply(r.aliveReply(open.join(QLatin1Char(',')).toStdString()));
         return;
     }
+    NotificationFilter::Fields fields{fromUtf8(r.title), fromUtf8(r.body), fromUtf8(r.appName), {}};
+    for (const std::string& type : r.types) fields.types.append(fromUtf8(type));
+    if (filtered(fields)) return;
     // An update of a notification already on screen adds none.
     const uint replaces = idFor(pane, clientId);
     if (pending == m_inFlight.end() && !replaces && rateLimited(pane)) {
@@ -269,21 +270,21 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
     QVariantMap hints{{QStringLiteral("desktop-entry"), DesktopEntry}, {QStringLiteral("urgency"), QVariant::fromValue(uchar(r.urgency))}};
     // OSC 99 types use the freedesktop category names ("im.received", "transfer.complete").
     if (!r.types.empty()) hints.insert(QStringLiteral("category"), fromUtf8(r.types.front()));
+    // The g cache is the application's, as the spec has it: an icon sent
+    // once serves every later notification, from any pane, for as long as
+    // Afterglow runs. The icon used last stays longest.
     QImage image;
+    const QString cacheKey = fromUtf8(r.iconCacheId);
     if (!r.iconData.empty()) {
         image = decodeIcon(r.iconData);
-        if (!image.isNull() && !r.iconCacheId.empty()) {
-            track(pane);
-            const QString key = QString::number(pane->id()) + QLatin1Char(':') + fromUtf8(r.iconCacheId);
-            m_iconCache.insert(key, image);
-            m_iconCacheOrder.removeAll(key);
-            m_iconCacheOrder.append(key);
-            while (m_iconCacheOrder.size() > 32) {
-                m_iconCache.remove(m_iconCacheOrder.takeFirst());
-            }
-        }
-    } else if (!r.iconCacheId.empty()) {
-        image = m_iconCache.value(QString::number(pane->id()) + QLatin1Char(':') + fromUtf8(r.iconCacheId));
+        if (!image.isNull() && !cacheKey.isEmpty()) m_iconCache.insert(cacheKey, image);
+    } else if (!cacheKey.isEmpty()) {
+        image = m_iconCache.value(cacheKey);
+    }
+    if (!cacheKey.isEmpty() && m_iconCache.contains(cacheKey)) {
+        m_iconCacheOrder.removeAll(cacheKey);
+        m_iconCacheOrder.append(cacheKey);
+        while (m_iconCacheOrder.size() > MaxCachedIcons) m_iconCache.remove(m_iconCacheOrder.takeFirst());
     }
     if (iconName.isEmpty() && !r.appName.empty() && QIcon::hasThemeIcon(fromUtf8(r.appName))) {
         iconName = fromUtf8(r.appName);
@@ -334,9 +335,14 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
     send(request, replaces);
 }
 
+bool NotificationCenter::filtered(const NotificationFilter::Fields& fields) const
+{
+    return std::any_of(m_filters.begin(), m_filters.end(), [&](const NotificationFilter& f) { return f.matches(fields); });
+}
+
 void NotificationCenter::showSimple(Pane* pane, const QString& title, const QString& body, int urgency)
 {
-    if (rateLimited(pane)) {
+    if (filtered({title, body, {}, {}}) || rateLimited(pane)) {
         return;
     }
     showNotice(pane, title, body, urgency);

@@ -1176,8 +1176,7 @@ void Pane::applySessionHostCall(const AfterglowMux::Host::Call& call)
     case Kind::DesktopNotification: queueDesktopNotification(call.notification, call.missed); break;
     case Kind::ClipboardWrite: clipboardWrite(call.title, call.text); break;
     case Kind::ClipboardRequest:
-        // The terminal answers a request that its host does not take.
-        if (!clipboardRequest(call.clipboard)) writeToPty(call.clipboard.refusal("ENOSYS"));
+        clipboardRequest(call.clipboard);
         break;
     case Kind::TerminalProtocol: terminalProtocol(call.number, call.text); break;
     case Kind::PointerShape: pointerShapeChanged(call.text); break;
@@ -1679,16 +1678,19 @@ void Pane::queueDesktopNotification(const AfterglowVt::NotificationRequest& requ
 
 bool Pane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
 {
-    // A request that finds the queue full gets the answer of a terminal
-    // with no clipboard support, as the program expects some answer.
+    // A request that finds the queue full gets EBUSY: the program may ask
+    // again. ENOSYS, the answer to a false return, would tell it that the
+    // terminal has no clipboard, and a client remembers that.
     std::size_t bytes = 0;
     for (const auto& [mime, data] : request.data) bytes += mime.size() + data.size();
-    return queueEvent([this, request] { Q_EMIT clipboardRequested(request); }, bytes, m_requestBudget);
+    if (!queueEvent([this, request] { Q_EMIT clipboardRequested(request); }, bytes, m_requestBudget))
+        writeToPty(request.refusal("EBUSY"));
+    return true;
 }
 
 std::string Pane::notificationCapabilities()
 {
-    return NotificationCenter::capabilities();
+    return m_notificationsEnabled ? NotificationCenter::capabilities() : std::string();
 }
 
 void Pane::flash()

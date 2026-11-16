@@ -693,7 +693,11 @@ bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
     // The window asks the user and answers, as for a terminal of its own.
     Host::Call call = Host::make(Host::Kind::ClipboardRequest);
     call.clipboard = request;
-    if (forward(call) != Forward::Queued) answerLocally(call);
+    // A window whose queue is full is busy: the program may ask again.
+    // Without a window there is no clipboard to give (answerWithoutWindow).
+    const Forward forwarded = forward(call);
+    if (forwarded == Forward::NoRoom) writeDirect(request.refusal("EBUSY"));
+    else if (forwarded == Forward::NoWindow) answerLocally(call);
     return true;
 }
 
@@ -741,6 +745,18 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
 void MuxPane::answerLocally(const Host::Call& call)
 {
     if (const std::string answer = Host::answerWithoutWindow(call); !answer.empty()) writeDirect(answer);
+}
+
+void MuxPane::setNotificationCapabilities(std::string capabilities)
+{
+    std::lock_guard lock(m_hostMutex);
+    m_notificationCapabilities = std::move(capabilities);
+}
+
+std::string MuxPane::notificationCapabilities()
+{
+    std::lock_guard lock(m_hostMutex);
+    return m_notificationCapabilities;
 }
 
 void MuxPane::setKeptNotifications(std::size_t count)

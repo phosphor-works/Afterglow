@@ -423,10 +423,13 @@ A paste into a program that does not use paste events (OSC 5522), and each drop 
 ## Clipboard requests
 
 Programs read the clipboard with OSC 52 and OSC 5522. `Terminal.clipboardRead` sets the policy: `ask`, `allow` or `deny`.
+`Terminal.clipboardWrite` sets the policy of writes in the same way.
 With `ask`, a prompt names the tab of the program. The window stays on the current tab.
 The prompt starts on Deny, so a Return typed for the shell denies the request.
 An OSC 5522 request with a name and a password also offers **Always allow**.
 An `a` key alone chooses it. A held or modified `a` does not.
+**Always allow** allows the later reads and writes of the pane that use the same password, as the Kitty specification says.
+A request that comes while the pane has too many requests that wait gets `EBUSY`. The program can try again.
 After a paste, the program can read the clipboard with the password of the paste event for
 `Terminal.pasteReadTimeout` seconds (10 by default).
 

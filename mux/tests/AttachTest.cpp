@@ -530,6 +530,32 @@ TEST(MuxAttach, AWindowSeesTheScreenAndTypes)
     EXPECT_TRUE(info->attached);
 }
 
+// The answer to OSC 99's query follows the window's settings: none while
+// the window shows no notifications (Notifications.enabled), as from a
+// terminal without the protocol. DA1 after it shows that the query was read.
+TEST(MuxAttach, TheNotificationQueryFollowsTheWindowsSettings)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string answers = daemon.dir() + "/answers";
+    SessionOptions o = daemon.options(ask("\\x1b]99;i=n:p=?;\\x1b\\\\\\x1b[c", "c", answers, true), "s");
+    o.notificationCapabilities = "p=title";
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "go?"); })) << w.screen();
+    SessionSettings settings{o.terminal, o.control};
+    settings.notificationCapabilities.clear();
+    ASSERT_TRUE(w.sendSettings(settings));
+    // After the settings, on the same stream: the program asks now. The
+    // window passes DA1's answer on (AReportFollowsTheCommandsBeforeIt).
+    ASSERT_TRUE(w.type("x"));
+    ASSERT_TRUE(w.until([&] { return exists(answers); })) << daemon.errors();
+    EXPECT_TRUE(readFile(answers).starts_with("\x1b[?")) << readFile(answers);
+    EXPECT_EQ(readFile(answers).find("99;"), std::string::npos) << readFile(answers);
+}
+
 TEST(MuxAttach, APaneTakesTheLowestFreeChannel)
 {
     // The daemon's "keep" session has pane 1, so this session's pane is 2 or

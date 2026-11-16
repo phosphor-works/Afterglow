@@ -66,7 +66,10 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 25) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 26) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 26 added the answer to OSC 99's query to the settings of a
+    // window, empty while the window shows no notifications: a session
+    // follows Notifications.enabled (below).
     // Version 25 changed the shell marks of the state frames: the byte of a
     // click on the command line holds the click_events mode and kitty's
     // special key, and the marks end with the secondary prompt (OSC 133
@@ -127,9 +130,11 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     followed.control.eventInterval = 250;
     followed.terminal.defaultBackground = {1, 2, 3};
     followed.keptNotifications = 3;
-    EXPECT_EQ(keys(toJson(followed)), (std::vector<std::string>{"terminal", "control", "environment", "keptNotifications"}));
+    followed.notificationCapabilities = "p=title";
+    EXPECT_EQ(keys(toJson(followed)),
+              (std::vector<std::string>{"terminal", "control", "environment", "keptNotifications", "notificationCapabilities"}));
     EXPECT_EQ(keys(toJson(followed)["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
-    [[maybe_unused]] auto& [followedTerminal, followedControl, followedEnvironment, followedKept] = followed;
+    [[maybe_unused]] auto& [followedTerminal, followedControl, followedEnvironment, followedKept, followedCapabilities] = followed;
     std::string settingsError;
     const auto settingsBack = sessionSettings(Json::parse(Json::write(toJson(followed))).value(), &settingsError);
     ASSERT_TRUE(settingsBack) << settingsError;

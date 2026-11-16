@@ -189,6 +189,7 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     m_audio.configure(m_settings.settings().audio);
     NotificationCenter::instance().setRateLimit(m_settings.settings().notificationRateLimit,
                                                 qint64(m_settings.settings().notificationRateWindow) * 1000);
+    NotificationCenter::instance().setFilters(m_settings.settings().notificationFilters);
     DragTrees::instance().setLifetime(std::chrono::minutes(m_settings.settings().dragTreeLifetime));
     QStringList iconPaths = QIcon::themeSearchPaths();
     for (const auto& path : QStandardPaths::locateAll(QStandardPaths::GenericDataLocation,
@@ -230,6 +231,7 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
         }
         NotificationCenter::instance().setRateLimit(m_settings.settings().notificationRateLimit,
                                                     qint64(m_settings.settings().notificationRateWindow) * 1000);
+        NotificationCenter::instance().setFilters(m_settings.settings().notificationFilters);
         DragTrees::instance().setLifetime(std::chrono::minutes(m_settings.settings().dragTreeLifetime));
     });
 

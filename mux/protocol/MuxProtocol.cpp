@@ -442,7 +442,8 @@ Json::Value toJson(const SessionSettings& s)
     return Json::Object{{"terminal", toJson(s.terminal)},
                         {"control", toJson(s.control)},
                         {"environment", std::move(environment)},
-                        {"keptNotifications", s.keptNotifications}};
+                        {"keptNotifications", s.keptNotifications},
+                        {"notificationCapabilities", s.notificationCapabilities}};
 }
 
 std::optional<SessionSettings> sessionSettings(const Json::Value& value, std::string* error)
@@ -475,6 +476,7 @@ std::optional<SessionSettings> sessionSettings(const Json::Value& value, std::st
         }
     }
     if (const auto kept = r.integer("keptNotifications", 0, MaxKeptNotifications)) s.keptNotifications = int(*kept);
+    r.string("notificationCapabilities", s.notificationCapabilities);
     r.noOtherKeys();
     if (r.failed()) return std::nullopt;
     return s;
