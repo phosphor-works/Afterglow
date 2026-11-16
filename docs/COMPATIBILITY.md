@@ -7,7 +7,9 @@ Afterglow targets Linux and Wayland with Vulkan.
 The terminal core in `libs/afterglow-vt` parses the protocols.
 The message formats of file transfer, drag and drop, graphics and clipboard are in `libs/afterglow-proto`.
 Renderer tests also check GPU pixels.
-The following table describes tested features. It does not claim complete xterm, Kitty or iTerm2 compatibility.
+The table below lists the protocols that Afterglow supports, each with the tests that check it.
+[Differences from other terminals](#differences-from-other-terminals) lists what Afterglow does in another way on purpose.
+[Safety limits](#safety-limits) lists the limits that keep a program from taking all the memory or time of the terminal.
 
 ## Supported protocol features
 
@@ -21,22 +23,29 @@ The following table describes tested features. It does not claim complete xterm,
 | Local file drop | Local absolute paths quoted for Bash/Zsh/Fish, targeted pane, bracketed paste, no automatic Enter | `FileDrop.*`; [file-drop workflow](DESKTOP.md#drop-files-and-text-into-a-pane) |
 | Text drop and selection drag | Dropped text pasted with the size limit and the question of a paste, selected text dragged to another pane or application (`Mouse.dragSelection`) | `NativeWindow.Dropped*`, `NativeWindow.DropsThatAPaneRefusesPasteNothing`, `NativeWindow.ASelection*`, `NativeWindow.*InsideTheSelection*`; [text drops](DESKTOP.md#drop-files-and-text-into-a-pane), [selection drag](INPUT.md#drag-selected-text-out-of-a-pane) |
 | Kitty indexed images | `f=8` and `f=16`; the special indices 248 to 255; a new color of the pane draws the image again; no frames | `Graphics.Indexed*`, `Render.IndexedImages*`, `SnapshotImages.Indexed*`; [indexed images](#indexed-images) |
+| Kitty graphics | Transmission inline, from a file, a temporary file and shared memory; PNG, raw and zlib data; placements, z-order, animation and composition; Unicode placeholders; feature queries (`a=q`, `e`) | `Graphics.*`, `Render.*`; `afterglow_kitten_icat` with `kitten icat` |
+| Kitty keyboard protocol | Flags 1, 2, 4, 8 and 16; push, pop, set and query, with a stack for each screen; event types, alternate keys and associated text | `Terminal.KittyKeyboardStack*`, `Input.*`; [keyboard protocols](INPUT.md#keyboard-protocols) |
+| Kitty text sizing (OSC 66) | Scale, width, fraction and alignment; erase, scroll and overwrite rules | `TextSizing.*` |
+| Kitty color control (OSC 21), color stack (OSC 30001, 30101), pointer shapes (OSC 22) | See [color escape codes and pointer shapes](#color-escape-codes-and-pointer-shapes) | `Extensions.PointerShapeStacksQueriesAndReset`, `Extensions.OklchAndLabColorsInTheColorEscapeCodes`, `Conformance.ColorStack` |
+| Kitty notifications (OSC 99), with OSC 9 and OSC 777 | Chunks, icons, buttons, sounds, close and activation reports, the capability query | `Notification.*`, `Extensions.LegacyNotificationsRejectControlsAndBadUtf8` |
+| Kitty clipboard (OSC 5522), OSC 52 and paste events (mode 5522) | Several MIME types, passwords, the primary selection | `Clipboard.*`, `Clipboard.PasteEventsModeIsReported`, `NativeWindow.KittenClipboard*` |
+| Kitty file transfer (OSC 5113), drag and drop (OSC 72) | See [Kitty file transfer](DESKTOP.md#kitty-file-transfer) and [Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop) | `Transfer.*`, `Dnd.*`, `afterglow_transfer_kitten_relay`, `NativeWindow.Kitty*` |
+| Shell integration (OSC 133 and OSC 633), contexts (OSC 3008), the working directory (OSC 7) | Prompt, command and output marks, `click_events`, `cmdline` and `cmdline_url`; the context stack; `file://` directories | `Terminal.ShellIntegrationCommands`, `Extensions.VSCodeShellIntegration`, `Extensions.SystemdContexts`, `Terminal.WorkingDirectoryReportsOnlyChanges` |
+| Program status (OSC 7501), ConEmu progress and directory (OSC 9;4, OSC 9;9) | Status, progress and the working directory | `ProgramStatus.*`, `Extensions.ConEmuCommands` |
+| iTerm2 (OSC 1337) | `File`, `MultipartFile`, `FilePart`, `FileEnd`, `SetUserVar`, `CurrentDir`, `ClearScrollback`, `ReportCellSize`, `SetMark`, `RemoteHost`, `Copy`, `RequestAttention`, `CursorShape` | `Extensions.ITerm2Commands`, `Extensions.ITerm2SetMarkMarksTheCursorRowOnTheMainScreen`, `Extensions.Downloads*`, `Terminal.BellsRingOnlyForBel` |
+| Hyperlinks (OSC 8) | Links with and without an id, across wrapped lines and reflow | `Reflow.StyleAndLinkRunAcrossWrapsKeepItsReferences`, `StateSync.TextStylesLinksAndText` |
+| Window operations (XTWINOPS) | 4 and 8 (resize), 11 and 13 (state and position), 14, 15, 16, 18 and 19 (sizes in pixels and cells), 22 and 23 (title stack), 24 or more (DECSLPP) | `Terminal.Reports`, `Terminal.TitleStackPushesAndPops`, `Extensions.PixelReportsAndImagePercentagesUseWideGeometry` |
+| Status reports | DA1, DA2, DA3, XTVERSION, DECRQM, DECRQSS, XTGETTCAP | `Terminal.Reports`, `Conformance.TertiaryAttributesAndTerminalParameters`, `Terminal.XtversionReportsTheProjectVersion`, `Conformance.ModeReports`, `Terminal.Decrqss`, `Terminal.Xtgettcap` |
+| Mouse modes | 9, 1000, 1002, 1003 and 1004 (focus); the formats 1005, 1006, 1015 and 1016 (SGR pixels); 1007 (alternate scroll) | `Input.MouseLegacyFormats`, `Terminal.MouseFormatResetsOnlyItsOwn`, `Input.*` |
+| Synchronized output | Mode 2026, and `DCS = 1 s` and `DCS = 2 s` | `Conformance.EachSynchronizedBlockHasItsOwnSerial`, `Conformance.LegacySynchronizedUpdatesAndFlash` |
+| Grapheme clusters, color scheme, visibility and size reports | Modes 2027, 2031 with `CSI ? 996 n`, 2033 and 2048 | `Conformance.ThemeVisibilityAndSizeReports`, [character widths](#character-widths) |
+| Color and mode stacks | XTPUSHCOLORS, XTPOPCOLORS, XTREPORTCOLORS; XTSAVE and XTRESTORE | `Conformance.ColorStack`, `Conformance.SaveAndRestoreModes` |
+| Sixel | Transparent backgrounds (P2 = 1), XTSMGRAPHICS | `Sixel.*`, `Extensions.SixelThroughTheTerminal`, `Conformance.SixelGraphicsAttributesHonourTheAction` |
+| Text attributes | Curly, dotted and dashed underlines and underline colors (SGR 4:x, 58, 59); ED 22; DECCARA and DECRARA | `Terminal.SgrColorsAndAttributes`, `Terminal.EraseDisplay22MovesTheScreenIntoTheHistory`, `Conformance.RectangleAttributes` |
 
 ## Relative images
 
 Relative placement chains permit 32 parent links.
-
-The main screen and the alternate screen have separate image stores.
-Each store has these limits:
-
-| Item | Limit | At the limit |
-| --- | --- | --- |
-| Images | 4,096 | Afterglow deletes an image without a placement: first an image with the transient hint (`N=1`), then the oldest. When every image has a placement, a Kitty command gets an `ENOSPC` error. |
-| Placements | 4,096 | A Kitty command gets an `ENOSPC` error. A new Sixel or iTerm2 image removes the oldest Sixel or iTerm2 placement. When there is none, Afterglow does not keep the new image. |
-| Frames per image | 1,024 | A Kitty command gets an `ENOSPC` error. |
-| Frames of all images | 16,384 | Afterglow deletes images as for image data. A frame of one pixel costs far more to keep than its 4 bytes. |
-| Image data | `Graphics.quota`, 320 MiB by default, at 4 bytes for each pixel | Afterglow deletes images without a placement: first those with the transient hint (`N=1`), then the oldest. When none is left, it deletes the oldest image with a placement. |
-| Pending transmissions | 320 MiB | The transmission fails with an `EFBIG` error. |
 
 An omitted parent placement ID selects the first matching placement at creation.
 Displayed Unicode placeholders determine a virtual parent's origin, including implied diacritics.
@@ -86,22 +95,6 @@ These cases give that error:
 - The file holds less data than `s` × `v` raw or indexed pixels.
 - The data is PNG (`f=100`) or compressed (`o=z`), and the part to read is longer than 320 MiB.
 
-The main screen and the alternate screen of a pane each have their own image work budget.
-The budget is 1 GiB, and it fills again at 1 GiB each second.
-
-| Work over the budget | Error |
-| --- | --- |
-| A read from a file (`t=f`), a temporary file (`t=t`) or shared memory (`t=s`) | `EBUSY:too much image data read` |
-| A frame edit (`a=f`, `a=c`) | `EBUSY:too much frame editing` |
-
-The error ends with `, try again later` when the program can send the same command again.
-When Afterglow deletes the temporary file or the shared memory object by the rules above, the error has no `, try again later`.
-A command that tries again with the same name then gets `EBADF:failed to read image file`.
-
-Afterglow reads the file in the thread that reads the program's output.
-While a read waits, for example on a network mount that does not answer, the pane does not change.
-To prevent this, set `Terminal.graphicsFileTransfer` to `"deny"`.
-
 A feature query (`a=q` with `e`) gets the keys of that action that Afterglow supports.
 The transient usage hint (`N=1`) applies to a transmission (`a=t`, `a=T`). It does not apply to a frame (`a=f`).
 When Afterglow must delete an image to make room, it first deletes an image with the hint that has no placement.
@@ -109,26 +102,6 @@ A feature query reports `N` for the transmit and query actions.
 The delete commands `d=f` and `d=F` delete one frame of an animation for each command.
 The `r` key selects the frame (the first frame is 1). Without `r`, the command deletes the first frame.
 On an image with one frame, `d=F` deletes the image, and `d=f` keeps it.
-
-Afterglow checks the size that a Kitty transmission declares before it reads or decompresses the data.
-Raw pixels (`f=24` or `f=32`) use 3 or 4 bytes for each pixel, and Afterglow keeps 4.
-Indexed pixels (`f=8` or `f=16`) use 1 or 2 bytes for each pixel, and Afterglow keeps the same number.
-The limits count 4 bytes for each pixel of all these formats, because Afterglow draws every image as RGBA.
-
-| Case | Result |
-| --- | --- |
-| `o` has a value that is not `z` | The program gets an `EINVAL` error. |
-| `f=0` | Afterglow reads it as the default, `f=32`, as Kitty does. |
-| `f` is not 0, 8, 16, 24, 32 or 100 | The program gets an `EINVAL` error. |
-| Raw or indexed pixels without `s` or `v`, or with a value above 10,000 | The program gets an `EINVAL` error. |
-| Raw or indexed pixels where `s` × `v` × 4 bytes is more than 320 MiB | The program gets an `EFBIG` error. |
-| Raw or indexed pixels where `s` × `v` × 4 bytes is more than `Graphics.quota` | The program gets an `ENOSPC` error. |
-| Uncompressed raw or indexed pixels from a file or shared memory | Afterglow reads `s` × `v` pixels and no more of the file. |
-| Raw or indexed pixels with `o=z` that decompress to more than `s` × `v` pixels | The program gets an `EINVAL` error. |
-| PNG data (`f=100`) or `o=z` data that is longer than 320 MiB, inline | The program gets an `EFBIG` error. |
-| PNG data with `o=z` that decompresses to more than `Graphics.quota` or 320 MiB | The program gets an `EINVAL` error. |
-| A PNG image whose decoded pixels (width × height × 4 bytes) are more than 320 MiB | The program gets an `EBADPNG` error. |
-| A PNG image whose decoded pixels (width × height × 4 bytes) are more than `Graphics.quota` | The program gets an `ENOSPC` error. |
 
 ## Indexed images
 
@@ -173,11 +146,6 @@ Capability queries return `1;2;3;29;30;40;100;101`. Clients must inspect the res
 Query 100 gives the cursors as rectangles (type 4). A run of cursors on one row is one rectangle.
 Equal runs on the rows below join it. A cursor alone is a point (type 2).
 
-CSI parsing permits 4,096 numeric parameters per sequence.
-An overflow rejects the complete command. Divide larger point sets across sequences.
-The terminal keeps at most 4,096 extra cursors. It ignores new positions after this limit.
-At this limit, the terminal keeps the positions of the rectangles that start nearest the top, then nearest the left.
-The order of the rectangles in the sequence does not matter.
 Full reset restores default colors. Clear and screen switches remove positions.
 Positions use screen coordinates and do not scroll with output.
 Cursors disappear while viewing scrollback. Resize clips positions to the screen.
@@ -195,15 +163,10 @@ OSC 9 and OSC 777 notification text gets the same check as OSC 99 text.
 The text must be valid UTF-8 with no C0, DEL or C1 control characters.
 Afterglow ignores a notification that fails the check.
 A base64 payload can be divided at any character between chunks.
-OSC 8 links of each screen have a 16 MiB limit. Above it, new text prints without a link.
-Each link counts its URI, its id and 160 bytes for its entry. A link with an id counts its URI and id two times.
-An OSC 8 sequence longer than 8,192 bytes ends the open link. The text after it has no link.
 OSC 0 and OSC 2 titles lose C0, DEL and C1 controls, U+2028, U+2029 and the controls of bidirectional text.
 A byte that is not UTF-8 becomes U+FFFD.
 A C1 control sent as UTF-8 (U+0080 to U+009F) prints nothing.
 
-OSC 133 marks have no length limit. A `cmdline` or `cmdline_url` value over 65,536 bytes is ignored, and the mark still counts.
-The command line is then the text typed after the `B` mark.
 The command line keeps no control characters except line feeds and tabs. A byte that is not UTF-8 becomes U+FFFD.
 A command that erases the whole screen (ED 2) moves the start of its output to the top of the screen.
 OSC 3008 contexts form a stack. A `start` for a context that is open ends the contexts inside it.
@@ -211,9 +174,6 @@ A terminal reset (RIS or the Reset command) keeps the context stack, as the [con
 
 ## Downloads, input methods and bidirectional text
 
-Downloads permit 8 MiB of decoded data and one pending application request.
-A `MultipartFile` download stops when its data passes the 8 MiB limit. An inline image in parts can have 96 MiB of base64 data.
-`MultipartFile` arguments have a 4,096-byte limit. Longer arguments refuse the file.
 A new `MultipartFile`, a terminal reset or the end of the pane's program ends a file that has no `FileEnd`.
 A new shell prompt is a prompt mark (OSC 133 `A` or `N`, or OSC 633 `A`) after a command start mark (`C`).
 One new prompt does not end the file, because a job in the background can still send it.
@@ -284,10 +244,8 @@ Unknown color keys produce the protocol's encoded `unknown` response.
 
 OSC 22 supports the [Kitty mouse-pointer protocol](https://sw.kovidgoyal.net/kitty/pointer-shapes/).
 Programs can replace, push, pop and query shapes.
-The main screen and alternate screen have separate stacks, each with 32 entries.
-A full stack discards its oldest entry when a new entry is pushed.
 All protocol shape names are supported, including zoom, cell and vertical-text pointers.
-A terminal reset clears both stacks and restores the default text pointer.
+A terminal reset clears the stacks of both screens and restores the default text pointer.
 
 ## aglow interoperability
 
@@ -385,6 +343,106 @@ The reply is not a secret. Any remote program can send the query.
 When no program reads the reply, it goes to the shell as input.
 The permissions of the socket are the only boundary.
 
+## Differences from other terminals
+
+| Area | Afterglow | Other terminals |
+| --- | --- | --- |
+| Character widths | A grapheme cluster takes the cells that glibc's `wcwidth` gives it, at most two. See [character widths](#character-widths). | Kitty gives a letter with a spacing mark one cell, and a prepended mark none. |
+| `#rgb` in a color escape code | Each digit gives the high bits of its channel, as in xterm: `#fff` is `#f0f0f0`. | Kitty reads `#fff` as white. |
+| OKLCH and LAB colors | The code and the gamut mapping of CSS Color 4. See [color escape codes](#color-escape-codes-and-pointer-shapes). | Kitty clips colors outside sRGB, and gives other values for LAB. |
+| Caps Lock and Num Lock in the Kitty keyboard protocol | Reported only in the "report all keys" mode, so that a program reads Num Lock+Up as Up. | The Kitty specification also reports them in the disambiguate mode, for keys without text. |
+| F13 to F35 without the Kitty keyboard protocol | The sequences of xterm's terminfo entry, as the Kitty specification lets a terminal do. | Kitty sends its own CSI u codes. |
+| Ctrl with a key of a non-Latin layout | The key of the first Latin layout, as Qt's shortcuts do: Ctrl+С on a Russian layout is Ctrl+C, also in the Kitty keyboard protocol. | In the Kitty keyboard protocol, Kitty sends the key of the layout, such as `CSI 1089;5u`. |
+| Ctrl+Shift, Super or Ctrl+Alt+Shift with a letter, digit or punctuation key, without the Kitty keyboard protocol | xterm's bytes: Ctrl+Shift+I sends a tab (0x09), Super+A sends `a`. A program without the Kitty protocol reads these. | Kitty sends a CSI u code, such as `CSI 105;6u` for Ctrl+Shift+I. |
+| A temporary image file (`t=t`) | Deleted only when `tty-graphics-protocol` is in its path below the temporary directory. | Kitty looks for the tag anywhere in the path. |
+| Sized text (OSC 66) at a resize that reflows | The text stays, at the normal size, because a block of several rows cannot wrap. | The Kitty specification does not say what a reflow does with sized text. |
+| The end message of a drag (`t=e:x=4`) | Has the key `o`, the action that the drop took. A move to another application is reported as a copy. | Kitty sends no `o`. |
+
+The differences of `aglow` from `kitten` are in [aglow interoperability](#aglow-interoperability).
+
+## Safety limits
+
+These limits keep a program from taking all the memory or time of the terminal.
+Real programs stay far below them.
+
+### Images
+
+The main screen and the alternate screen have separate image stores.
+Each store has these limits:
+
+| Item | Limit | At the limit |
+| --- | --- | --- |
+| Images | 4,096 | Afterglow deletes an image without a placement: first an image with the transient hint (`N=1`), then the oldest. When every image has a placement, a Kitty command gets an `ENOSPC` error. |
+| Placements | 4,096 | A Kitty command gets an `ENOSPC` error. A new Sixel or iTerm2 image removes the oldest Sixel or iTerm2 placement. When there is none, Afterglow does not keep the new image. |
+| Frames per image | 1,024 | A Kitty command gets an `ENOSPC` error. |
+| Frames of all images | 16,384 | Afterglow deletes images as for image data. A frame of one pixel costs far more to keep than its 4 bytes. |
+| Image data | `Graphics.quota`, 320 MiB by default, at 4 bytes for each pixel | Afterglow deletes images without a placement: first those with the transient hint (`N=1`), then the oldest. When none is left, it deletes the oldest image with a placement. |
+| Pending transmissions | 320 MiB | The transmission fails with an `EFBIG` error. |
+
+The main screen and the alternate screen of a pane each have their own image work budget.
+The budget is 1 GiB, and it fills again at 1 GiB each second.
+
+| Work over the budget | Error |
+| --- | --- |
+| A read from a file (`t=f`), a temporary file (`t=t`) or shared memory (`t=s`) | `EBUSY:too much image data read` |
+| A frame edit (`a=f`, `a=c`) | `EBUSY:too much frame editing` |
+
+The error ends with `, try again later` when the program can send the same command again.
+When Afterglow deletes the temporary file or the shared memory object by the rules above, the error has no `, try again later`.
+A command that tries again with the same name then gets `EBADF:failed to read image file`.
+
+Afterglow reads the file in the thread that reads the program's output.
+While a read waits, for example on a network mount that does not answer, the pane does not change.
+To prevent this, set `Terminal.graphicsFileTransfer` to `"deny"`.
+
+Afterglow checks the size that a Kitty transmission declares before it reads or decompresses the data.
+Raw pixels (`f=24` or `f=32`) use 3 or 4 bytes for each pixel, and Afterglow keeps 4.
+Indexed pixels (`f=8` or `f=16`) use 1 or 2 bytes for each pixel, and Afterglow keeps the same number.
+The limits count 4 bytes for each pixel of all these formats, because Afterglow draws every image as RGBA.
+
+| Case | Result |
+| --- | --- |
+| `o` has a value that is not `z` | The program gets an `EINVAL` error. |
+| `f=0` | Afterglow reads it as the default, `f=32`, as Kitty does. |
+| `f` is not 0, 8, 16, 24, 32 or 100 | The program gets an `EINVAL` error. |
+| Raw or indexed pixels without `s` or `v`, or with a value above 10,000 | The program gets an `EINVAL` error. |
+| Raw or indexed pixels where `s` × `v` × 4 bytes is more than 320 MiB | The program gets an `EFBIG` error. |
+| Raw or indexed pixels where `s` × `v` × 4 bytes is more than `Graphics.quota` | The program gets an `ENOSPC` error. |
+| Uncompressed raw or indexed pixels from a file or shared memory | Afterglow reads `s` × `v` pixels and no more of the file. |
+| Raw or indexed pixels with `o=z` that decompress to more than `s` × `v` pixels | The program gets an `EINVAL` error. |
+| PNG data (`f=100`) or `o=z` data that is longer than 320 MiB, inline | The program gets an `EFBIG` error. |
+| PNG data with `o=z` that decompresses to more than `Graphics.quota` or 320 MiB | The program gets an `EINVAL` error. |
+| A PNG image whose decoded pixels (width × height × 4 bytes) are more than 320 MiB | The program gets an `EBADPNG` error. |
+| A PNG image whose decoded pixels (width × height × 4 bytes) are more than `Graphics.quota` | The program gets an `ENOSPC` error. |
+
+### Multiple cursors
+
+CSI parsing permits 4,096 numeric parameters per sequence.
+An overflow rejects the complete command. Divide larger point sets across sequences.
+The terminal keeps at most 4,096 extra cursors. It ignores new positions after this limit.
+At this limit, the terminal keeps the positions of the rectangles that start nearest the top, then nearest the left.
+The order of the rectangles in the sequence does not matter.
+
+### Links and shell marks
+
+OSC 8 links of each screen have a 16 MiB limit. Above it, new text prints without a link.
+Each link counts its URI, its id and 160 bytes for its entry. A link with an id counts its URI and id two times.
+An OSC 8 sequence longer than 8,192 bytes ends the open link. The text after it has no link.
+OSC 133 marks have no length limit. A `cmdline` or `cmdline_url` value over 65,536 bytes is ignored, and the mark still counts.
+The command line is then the text typed after the `B` mark.
+
+### Downloads
+
+Downloads permit 8 MiB of decoded data and one pending application request.
+A `MultipartFile` download stops when its data passes the 8 MiB limit. An inline image in parts can have 96 MiB of base64 data.
+`MultipartFile` arguments have a 4,096-byte limit. Longer arguments refuse the file.
+
+### Pointer shapes
+
+Each screen has its own stack of pointer shapes.
+Each stack has 32 entries.
+A full stack discards its oldest entry when a new entry is pushed.
+
 ## Protocol definitions
 
 - [Kitty relative graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/#relative-placements).
@@ -408,7 +466,6 @@ The suite also checks these features:
 
 See `libs/afterglow-vt/tests` for exact accepted sequences.
 See `libs/afterglow-proto/tests` for the message formats.
-Support for a protocol does not imply support for every optional operation.
 
 Run focused tests:
 

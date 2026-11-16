@@ -529,7 +529,7 @@ TEST(Terminal, ShellIntegrationCommands)
     EXPECT_EQ(host.commandsFinished[1], -1);
     EXPECT_EQ(t.text(Terminal::TextScope::Screen), "$ make test\nok 1\nok 2\n$ sleep 9");
     // A negative code is not reported: -1, as the region has none.
-    t.feed("\x1b]133;B\x07false\r\n\x1b]133;C\x07\x1b]133;D;-7\x07");
+    t.feed("\x1b]133;B\x07" "false\r\n\x1b]133;C\x07\x1b]133;D;-7\x07");
     ASSERT_EQ(host.commandsFinished.size(), 3u);
     EXPECT_EQ(host.commandsFinished[2], -1);
     ASSERT_FALSE(t.semanticRegions().empty());
@@ -1122,6 +1122,21 @@ TEST(Terminal, XtversionReportsTheProjectVersion)
     Term t(10, 3);
     t.feed("\x1b[>q");
     EXPECT_EQ(t.host.written, std::string("\x1bP>|afterglow ") + AFTERGLOW_VT_VERSION + "\x1b\\");
+}
+
+TEST(Terminal, TitleStackPushesAndPops)
+{
+    // XTWINOPS 22 saves the title and 23 restores it, as xterm does: vim
+    // saves the shell's title when it starts and gives it back when it ends.
+    Term t(10, 3);
+    t.feed("\x1b]2;shell\x07\x1b[22;0t\x1b]2;vim\x07");
+    EXPECT_EQ(t.t.title(), "vim");
+    t.feed("\x1b[23;0t");
+    EXPECT_EQ(t.t.title(), "shell");
+    EXPECT_EQ(t.host.title, "shell");
+    // A pop with nothing saved changes nothing.
+    t.feed("\x1b[23;0t");
+    EXPECT_EQ(t.t.title(), "shell");
 }
 
 TEST(Terminal, PromptRedrawWithoutScrollback)

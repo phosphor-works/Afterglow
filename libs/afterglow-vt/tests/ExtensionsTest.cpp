@@ -267,6 +267,19 @@ TEST(Extensions, HostSessionsAreBoundedAndReset)
     EXPECT_EQ(host.calls[7], (std::pair<int, std::string>{0, ""}));
 }
 
+TEST(Extensions, ITerm2SetMarkMarksTheCursorRowOnTheMainScreen)
+{
+    // A mark that jump-to-prompt finds, as iTerm2's marks are.
+    Host host;
+    Terminal t(20, 4, host);
+    t.feed("one\r\ntwo\x1b]1337;SetMark\x07");
+    EXPECT_FALSE(t.screen().row(0).promptStart);
+    EXPECT_TRUE(t.screen().row(1).promptStart);
+    // The alternate screen keeps no marks: a full-screen program redraws it.
+    t.feed("\x1b[?1049h\x1b[2;1H\x1b]1337;SetMark\x07");
+    EXPECT_FALSE(t.screen().row(1).promptStart);
+}
+
 TEST(Extensions, ITerm2Commands)
 {
     Host host;
