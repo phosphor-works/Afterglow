@@ -223,7 +223,7 @@ It uses `Terminal.pager`, which defaults to `less -R`.
 A notice identifies truncation.
 The pager reads a temporary file. Afterglow removes the file when the pane closes.
 In the window of a mux session, the pager runs in the session, and can keep running after the window closes.
-There, the pager gets the file already open, as `/dev/fd/3`, and the file is removed before the pager starts.
+There, the pager gets the file already open, as `/dev/fd/4`, and the file is removed before the pager starts.
 The pager command uses arguments without shell expansion.
 Missing shell markers cause a notification.
 If the pager is not installed, or the output cannot be shown, a notification gives the reason.

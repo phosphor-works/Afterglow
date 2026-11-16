@@ -360,6 +360,16 @@ TEST(MuxProxy, WhatWaitsGoesWhenStandardInputEnds)
     EXPECT_EQ(proxy.exitStatus(), 0) << proxy.errors();
 }
 
+// Whether the proxy relays: a line of the client reaches the daemon. Until
+// then the proxy checks its answer, and bytes of the daemon that came with
+// that answer are an error (aglow-mux proxy refuses them).
+bool relays(ProxyRun& proxy, FakeDaemon& fake)
+{
+    const std::string line = "relay\n";
+    // Standard input is a pipe: write(2), as send(2) takes only sockets.
+    return writeSome(proxy.input, line) == ssize_t(line.size()) && readBytes(fake.client, line.size(), 5s) == line;
+}
+
 // The daemon's close ends the proxy after the daemon's last bytes, while the
 // client's side is still open.
 TEST(MuxProxy, TheDaemonsCloseEndsTheProxyAfterItsLastBytes)
@@ -370,6 +380,7 @@ TEST(MuxProxy, TheDaemonsCloseEndsTheProxyAfterItsLastBytes)
     ProxyRun proxy(daemon);
     ASSERT_GT(proxy.pid, 0);
     ASSERT_TRUE(fake.answer()) << proxy.errors();
+    ASSERT_TRUE(relays(proxy, fake)) << proxy.errors();
     ASSERT_TRUE(sendAll(fake.client, "last\n"));
     fake.closeClient();
     EXPECT_EQ(readToEnd(proxy.output, 5s), std::optional<std::string>("last\n"));
@@ -385,6 +396,7 @@ TEST(MuxProxy, AClientThatStopsReadingEndsTheProxy)
     ProxyRun proxy(daemon);
     ASSERT_GT(proxy.pid, 0);
     ASSERT_TRUE(fake.answer()) << proxy.errors();
+    ASSERT_TRUE(relays(proxy, fake)) << proxy.errors();
     proxy.closeOutput();
     ASSERT_TRUE(sendAll(fake.client, std::string(4096, 'x')));
     EXPECT_EQ(proxy.exitStatus(), 0) << proxy.errors();
@@ -405,8 +417,8 @@ TEST(MuxConnect, TheErrorOutputOfAProxyIsTheMessage)
 }
 
 // A proxy command that does not answer within the wait of its first answer
-// (Mux.signInTimeout) is no daemon, and ends: a hangup first, a kill when it
-// does not end.
+// (Mux.signInTimeout) is no daemon, and ends: the end of its connection
+// first, then SIGTERM, then a kill when it still does not end.
 TEST(MuxConnect, AProxyThatDoesNotAnswerEndsAfterItsWait)
 {
     TestDaemon daemon;

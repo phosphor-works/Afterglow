@@ -72,8 +72,9 @@ inline constexpr const char* PaneDirectory = "paneDirectory";
 /// session, for a new tab or split of the window that shows it. The pane is
 /// a tab of its own in the session's layout until the window sends its
 /// layout. A window gives the window of its attach answer: a window that
-/// another one took the session from gets Error::Attached. A session of
-/// MaxSessionPanes panes gets Error::TooManyPanes.
+/// another one took the session from gets Error::Attached, and one that no
+/// longer shows the session, while none does, gets Error::NotAttached. A
+/// session of MaxSessionPanes panes gets Error::TooManyPanes.
 inline constexpr const char* NewPane = "newPane";
 /// (name, pane) -> string: the program in the foreground of the pane, for
 /// the question before a close (MuxPane::foregroundJob). Empty when none runs.

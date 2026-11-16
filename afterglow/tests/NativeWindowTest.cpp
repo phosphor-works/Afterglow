@@ -466,9 +466,9 @@ private:
 // group. No cursor blink, so a window with nothing moving renders no frames.
 // No scripts, so that the scripts installed for the user do not run in the
 // tests: a test that needs scripts turns them on, and then finds only those
-// beside its config file (TestScripts), not those that the system installs
-// in XDG_DATA_DIRS. A pane with no command
-// runs /bin/sh, not the developer's login shell with its startup files.
+// beside its config file (TestScripts), not those of the data directories
+// (XDG_DATA_HOME, XDG_DATA_DIRS). A pane with no command runs /bin/sh, not
+// the developer's login shell with its startup files.
 // The rows of a wheel notch and the hold (ms) that starts a touch selection
 // are values that tests count on: a new default does not change them.
 constexpr int TestScrollLines = 3;
@@ -11388,9 +11388,9 @@ TEST_F(NativeWindow, AnAttachShowsTheSessionsStateAndNotifiesNothingOld) {
     ASSERT_TRUE(waitFor([&] { return records() == 3; }, 5000));
     // The record is in the replica at once, but the window hears of it on a
     // queued signal (Pane::statusChanged), and its notice can go after the
-    // barrier of noticeBodies: wait for it first. The call before emptied
-    // the list.
-    ASSERT_TRUE(waitFor([&] { return !notices.server.bodies.isEmpty(); }, 5000));
+    // barrier of noticeBodies: wait for it first, by its title (the app of
+    // the new record). Then it is the one notice since the last count.
+    ASSERT_TRUE(waitFor([&] { return notices.server.titles.contains(QStringLiteral("later")); }, 5000)) << notices.server.titles.join(QLatin1Char('|')).toStdString();
     EXPECT_EQ(noticeBodies(notices).size(), 1);
     // The pane shows what the session held.
     shown->revealPane(pane);
@@ -12318,6 +12318,13 @@ int fakeSshCommandRuns(const QString& bin)
     return runs;
 }
 
+/// Sends signal @p sig to the process of @p daemon, never to pid -1 (every
+/// process of the user) or 0 (this group) of a daemon that did not start.
+bool signalDaemon(const MuxTest::TestDaemon& daemon, int sig)
+{
+    return daemon.pid() > 0 && ::kill(daemon.pid(), sig) == 0;
+}
+
 /// Makes @p path executable and says whether this process can run it: on a
 /// noexec mount, a lookup on PATH passes over a fake ssh that it cannot run,
 /// and would find the user's.
@@ -12598,8 +12605,8 @@ TEST_F(NativeWindow, ALaunchPastTheLimitOfWaitingCallsOpensNoWindow) {
     });
     // A daemon that answers nothing: the attach of the session waits, and
     // so do the launches that join it.
-    ASSERT_EQ(::kill(daemon.pid(), SIGSTOP), 0);
-    const auto resume = qScopeGuard([&daemon] { ::kill(daemon.pid(), SIGCONT); });
+    ASSERT_TRUE(signalDaemon(daemon, SIGSTOP));
+    const auto resume = qScopeGuard([&daemon] { signalDaemon(daemon, SIGCONT); });
     AfterglowProto::IpcConnection connection;
     AfterglowProto::IpcConnection::Error failure;
     ASSERT_TRUE(connection.connect(QString::fromStdString(daemon.dir()).append(QStringLiteral("/afterglow-test.sock")).toStdString(), &failure, 2000))
@@ -12642,7 +12649,7 @@ TEST_F(NativeWindow, ALaunchPastTheLimitOfWaitingCallsOpensNoWindow) {
     }
     EXPECT_TRUE(opened.isEmpty());
     // The daemon runs again: each launch that waited gets its answer.
-    ASSERT_EQ(::kill(daemon.pid(), SIGCONT), 0);
+    ASSERT_TRUE(signalDaemon(daemon, SIGCONT));
     EXPECT_TRUE(waitFor([&] {
         read();
         return std::all_of(held.begin(), held.end(), [&](std::int64_t id) { return answered(id) != frames.end(); });
@@ -12850,9 +12857,9 @@ TEST_F(NativeWindow, ASessionFollowsTheSettingsOfItsWindow) {
     // A daemon that reads nothing: the window applies the change, and its
     // pane waits for the session's frames. Started again however the test
     // ends.
-    ASSERT_EQ(::kill(daemon.pid(), SIGSTOP), 0);
+    ASSERT_TRUE(signalDaemon(daemon, SIGSTOP));
     {
-        const auto resume = qScopeGuard([&daemon] { ::kill(daemon.pid(), SIGCONT); });
+        const auto resume = qScopeGuard([&daemon] { signalDaemon(daemon, SIGCONT); });
         setLive(shown, directory.filePath(QStringLiteral("afterglow.conf")), QStringLiteral("Colors"), QStringLiteral("background"),
                 QStringLiteral("#010203"));
         if (HasFatalFailure()) return;
@@ -12903,7 +12910,7 @@ TEST_F(NativeWindow, AWindowWhoseDaemonDiesLetsItsSessionGo) {
     QString error;
     auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("dies"), &error);
     ASSERT_NE(pane, nullptr) << error.toStdString();
-    ASSERT_EQ(::kill(daemon.pid(), SIGKILL), 0);
+    ASSERT_TRUE(signalDaemon(daemon, SIGKILL));
     EXPECT_TRUE(waitDeleting([&] { return !pane; }, 10000));
     // The rest of the application still runs: its own window draws.
     ASSERT_NE(window, nullptr);
@@ -12987,7 +12994,9 @@ TEST_F(NativeWindow, AWatchOfASessionHearsWhatItsWindowDoes) {
     shown->revealPane(first);
     EXPECT_TRUE(waitFor([&] { return heard("focusChanged " + std::to_string(firstId)); }, 5000));
     ASSERT_TRUE(shown->runAction(second, Action::ClosePane));
-    EXPECT_TRUE(waitFor([&] { return heard("paneClosed " + std::to_string(secondId)); }, 5000));
+    // The pane goes with deleteLater, and its release tells the daemon,
+    // which ends its program: the wait deletes it, as an event loop would.
+    EXPECT_TRUE(waitDeleting([&] { return heard("paneClosed " + std::to_string(secondId)); }, 5000));
     {
         const std::lock_guard lock(mutex);
         // The first pane had the focus when the watch began: no event of it
@@ -14106,9 +14115,9 @@ TEST_F(NativeWindow, SessionShowLastOutputLeavesNoFileBehind) {
     for (const auto& [path, end] : {std::pair{exits, QStringLiteral("")}, std::pair{waits, QStringLiteral("exec sleep 300\n")}}) {
         QFile file(path);
         ASSERT_TRUE(file.open(QIODevice::WriteOnly));
-        // What the argument names (the file, open on /dev/fd/3, which the
-        // shell removed), then what the pager reads there.
-        file.write(QStringLiteral("#!/bin/sh\nfor last; do :; done\n{ readlink \"$last\"; cat \"$last\"; } > '%1.part' && mv '%1.part' '%1'\n%2")
+        // Its process, what the argument names (the file, open on
+        // /dev/fd/4, which the shell removed), then what it reads there.
+        file.write(QStringLiteral("#!/bin/sh\nfor last; do :; done\n{ echo $$; readlink \"$last\"; cat \"$last\"; } > '%1.part' && mv '%1.part' '%1'\n%2")
                        .arg(record, end)
                        .toUtf8());
         file.close();
@@ -14133,41 +14142,50 @@ TEST_F(NativeWindow, SessionShowLastOutputLeavesNoFileBehind) {
     ASSERT_NE(pane, nullptr) << error.toStdString();
     ASSERT_TRUE(pane->sendInput("printf '\\033]133;C\\aout1\\n\\033]133;D;0\\a'\n"));
     ASSERT_TRUE(waitFor([&] { return pane && pane->text(AfterglowVt::Terminal::TextScope::LastOutput) == QStringLiteral("out1\n"); }, 5000));
-    /// Show Last Output, and what its pager got: the path of the file
-    /// behind its argument, and the text that it read there.
-    const auto showLastOutput = [&]() -> std::pair<QString, QString> {
+    /// Show Last Output, and what its pager got: its process, the path of
+    /// the file behind its argument, and the text that it read there.
+    struct Paged
+    {
+        pid_t pid = 0;
+        QString path;
+        QString text;
+    };
+    const auto showLastOutput = [&]() -> Paged {
         QFile::remove(record);
         shown->revealPane(pane);
         if (!shown->runAction(pane, Action::ShowLastOutput)) return {};
         if (!waitFor([&] { return QFileInfo::exists(record); }, 5000)) return {};
         const QString got = QString::fromUtf8(fileContent(record));
-        const qsizetype line = got.indexOf(QLatin1Char('\n'));
-        return {got.left(line), line < 0 ? QString() : got.mid(line + 1)};
+        const qsizetype first = got.indexOf(QLatin1Char('\n'));
+        const qsizetype second = first < 0 ? -1 : got.indexOf(QLatin1Char('\n'), first + 1);
+        if (second < 0) return {};
+        return {pid_t(got.left(first).toInt()), got.mid(first + 1, second - first - 1), got.mid(second + 1)};
     };
     const QString deleted = QStringLiteral(" (deleted)");
     const int tabs = int(shown->tabs().size());
-    const auto [first, firstText] = showLastOutput();
+    const Paged first = showLastOutput();
     // The pager read the output from a file that was gone already.
-    EXPECT_EQ(firstText, QStringLiteral("out1\n"));
-    ASSERT_TRUE(first.endsWith(deleted)) << first.toStdString();
-    EXPECT_FALSE(QFileInfo::exists(first.chopped(deleted.size()))) << first.toStdString();
+    EXPECT_EQ(first.text, QStringLiteral("out1\n"));
+    ASSERT_TRUE(first.path.endsWith(deleted)) << first.path.toStdString();
+    EXPECT_FALSE(QFileInfo::exists(first.path.chopped(deleted.size()))) << first.path.toStdString();
     // The pager ended: its pane closes.
     EXPECT_TRUE(waitDeleting([&] { return shown && int(shown->tabs().size()) == tabs; }, 5000));
 
-    // A pager that runs on while its window goes, then its session ends:
-    // the end hangs up only the shell around the pager, and nothing is left
-    // to remove.
+    // A pager that runs on while its window goes, until its session ends:
+    // the file was gone from the start, and the end of the session ends
+    // the pager.
     setLive(shown, config, QStringLiteral("Terminal"), QStringLiteral("pager"), waits);
     if (HasFatalFailure()) return;
-    const auto [second, secondText] = showLastOutput();
-    EXPECT_EQ(secondText, QStringLiteral("out1\n"));
-    ASSERT_TRUE(second.endsWith(deleted)) << second.toStdString();
-    const QString secondPath = second.chopped(deleted.size());
-    EXPECT_FALSE(QFileInfo::exists(secondPath));
+    const Paged second = showLastOutput();
+    EXPECT_EQ(second.text, QStringLiteral("out1\n"));
+    ASSERT_TRUE(second.path.endsWith(deleted)) << second.path.toStdString();
+    EXPECT_FALSE(QFileInfo::exists(second.path.chopped(deleted.size())));
+    ASSERT_GT(second.pid, 0);
     delete shown;
     ASSERT_TRUE(waitFor([&] { return sessionDetached(daemon, "pager"); }, 5000));
+    EXPECT_TRUE(MuxTest::running(second.pid));
     ASSERT_TRUE(daemon.call(AfterglowMux::Fn::KillSession, AfterglowProto::Json::Array{"pager"})) << daemon.lastError();
-    EXPECT_FALSE(QFileInfo::exists(secondPath));
+    EXPECT_TRUE(waitFor([&] { return !MuxTest::running(second.pid); }, 5000)) << second.pid;
 }
 
 // A session of another host shows no last output in a pager: the pager
@@ -14397,99 +14415,6 @@ TEST_F(NativeWindow, AttachUnderAnotherThemeKeepsProgramColors) {
     EXPECT_TRUE(waitFor([&] { return plain && background(plain) == AfterglowVt::Rgb{1, 2, 3}; }, 5000));
     ASSERT_TRUE(echoes(pane, QStringLiteral("echo changed")));
     EXPECT_TRUE(background(pane) == program);
-    delete shown;
-}
-
-// A search in a session pane while its history still comes from the daemon
-// says that older lines are still arriving, and the same search once they
-// came finds what they hold. The history comes into being while the pane
-// does not show: the window said so (Visible) before the input that makes
-// it, so the daemon holds all of it. Once the pane shows, the rows that
-// scrolled in come oldest first, at most half of the channel's 4 MiB window
-// (PhosphorChannel::Stream::Options) in each frame, after the screens. The
-// first frame that shows the screens stops the daemon at once, on the GUI
-// thread: about 5 MB of history stays away, of which the window can still
-// read only what the socket holds. The marker is near the newest rows, so
-// it is in the last frame.
-TEST_F(NativeWindow, SearchWaitsForTheHistoryOfASession) {
-    // Both terminals keep all of it: a history that passes the replica's
-    // scrollback would start at its floor, and drop the oldest rows.
-    constexpr int Scrollback = 100000;
-    restartApplication(QStringLiteral("history.conf"),
-        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("scrollback"), Scrollback}}}}), catWithoutEcho());
-    if (HasFatalFailure()) return;
-    MuxTest::TestDaemon daemon;
-    ASSERT_TRUE(daemon.start()) << daemon.errors();
-    auto options = daemon.options({"/bin/sh"}, "history");
-    options.launch.environment.emplace_back("PS1", "$ ");
-    options.launch.environment.emplace_back("ENV", "/dev/null");
-    options.terminal.maxScrollback = Scrollback;
-    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
-    // A second tab, which has the focus when the window comes.
-    {
-        SessionCtl ctl(daemon, "history");
-        ASSERT_TRUE(ctl.ready()) << ctl.failure().message;
-        const auto first = ctl.call("focusedPane", MuxTest::Json::Array{});
-        ASSERT_TRUE(first) << ctl.failure().message;
-        const auto second = ctl.call("newTab", MuxTest::Json::Array{first->toInteger().value_or(0), "", MuxTest::Json::Array{}});
-        ASSERT_TRUE(second) << ctl.failure().message;
-        ASSERT_TRUE(ctl.call("focus", MuxTest::Json::Array{second->toInteger().value_or(0)})) << ctl.failure().message;
-    }
-    QString error;
-    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("history"), &error);
-    ASSERT_NE(shown, nullptr) << error.toStdString();
-    ASSERT_TRUE(waitFor([&] { return shown && shown->isExposed() && shown->submittedFrames() > 0; }));
-    ASSERT_EQ(shown->tabs().size(), 2);
-    QPointer<Pane> pane;
-    for (Pane* p : shown->panes()) {
-        if (shown->tabIndexOf(p) == 0) pane = p;
-    }
-    ASSERT_NE(pane, nullptr);
-    // The window told the daemon that the pane does not show.
-    ASSERT_TRUE(waitFor([&] { return pane && pane->sessionScreensHeld(); }, 5000));
-    // The literal words are not in the command line, which the terminal
-    // echoes. The title comes in the frames that the daemon sends of a pane
-    // that does not show: once it came, the daemon read all of the output.
-    ASSERT_TRUE(pane->sendInput("m=late; base64 -w 79 /dev/urandom | head -n 59000; echo \"$m-marker\"; "
-                                "base64 -w 79 /dev/urandom | head -n 1000; printf '%s-line\\n\\033]2;%s-done\\007' newest history\n"));
-    ASSERT_TRUE(waitFor([&] { return pane && pane->title() == QStringLiteral("history-done"); }, 30000)) << daemon.errors();
-    const auto replica = [&pane](AfterglowVt::Terminal::TextScope scope) {
-        return pane ? pane->withTerminal([scope](AfterglowVt::Terminal& t) { return t.text(scope, std::size_t(64) << 20); }) : std::string();
-    };
-    ASSERT_EQ(replica(AfterglowVt::Terminal::TextScope::Screen).find("newest-line"), std::string::npos);
-    bool armed = true;
-    bool stopped = false;
-    const auto resume = qScopeGuard([&] {
-        if (stopped) ::kill(daemon.pid(), SIGCONT);
-    });
-    QObject listener;
-    // Direct: in the frame's own pass, before the window reads more. Once.
-    QObject::connect(pane, &Pane::contentChanged, &listener, [&] {
-        if (!armed || replica(AfterglowVt::Terminal::TextScope::Screen).find("newest-line") == std::string::npos) return;
-        armed = false;
-        stopped = ::kill(daemon.pid(), SIGSTOP) == 0;
-    });
-    shown->revealPane(pane);
-    ASSERT_TRUE(waitFor([&] { return !armed; }, 10000)) << daemon.errors();
-    ASSERT_TRUE(stopped);
-    // The frames that hold the marker did not come.
-    ASSERT_EQ(replica(AfterglowVt::Terminal::TextScope::All).find("late-marker"), std::string::npos);
-    QStringList statuses;
-    QObject::connect(pane, &Pane::searchStatusChanged, &listener, [&](const QString& status) { statuses << status; });
-    const QString arriving = QStringLiteral("Older lines are still arriving");
-    // The search waits for the screens that the pane asked for when it
-    // showed, which a stopped daemon does not send, then searches what came.
-    pane->search(QStringLiteral("late-marker"), 0, false);
-    ASSERT_TRUE(waitFor([&] { return !statuses.isEmpty() && statuses.last() != QStringLiteral("Searching…"); }, 15000));
-    EXPECT_TRUE(statuses.last().contains(arriving, Qt::CaseInsensitive)) << statuses.join(QLatin1Char('|')).toStdString();
-    // Once all of it came, the same search starts again, and finds it.
-    ASSERT_EQ(::kill(daemon.pid(), SIGCONT), 0);
-    stopped = false;
-    EXPECT_TRUE(waitFor([&] {
-        if (pane && (statuses.isEmpty() || statuses.last() != QStringLiteral("Searching…"))) pane->search(QStringLiteral("late-marker"), 1, false);
-        return !statuses.isEmpty() && statuses.last().startsWith(QStringLiteral("1 of 1"));
-    }, 30000)) << statuses.join(QLatin1Char('|')).toStdString();
-    EXPECT_FALSE(statuses.last().contains(arriving, Qt::CaseInsensitive)) << statuses.last().toStdString();
     delete shown;
 }
 

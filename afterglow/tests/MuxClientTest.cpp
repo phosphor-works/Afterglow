@@ -4,7 +4,8 @@
 // A window's link to a session (MuxClient) against a daemon of the test's
 // own (TestDaemon.h), with panes and no window: the channels of the panes
 // that come and go, a detach, the jobs of panes, the screens that the
-// daemon holds and their refresh, the answers to control calls that wait,
+// daemon holds and their refresh, a search while the history still comes,
+// the answers to control calls that wait,
 // panes that start and move out without a wait of the GUI thread, and a
 // daemon that refuses the attach.
 
@@ -472,8 +473,11 @@ TEST(MuxClient, ADetachSendsTheLayoutThatWaitsBeforeTheInputAndTheAnswers)
         // As much input as the window keeps for a pane, to a daemon that
         // reads nothing: the answer waits behind it.
         const std::string chunk(std::size_t(64) << 10, 'a');
-        for (std::size_t sent = 0; sent < 2 * MuxClient::MaxWaitingInput && pane->sendInput(chunk, false); sent += chunk.size()) {
-        }
+        std::size_t sent = 0;
+        while (sent < 2 * MuxClient::MaxWaitingInput && pane->sendInput(chunk, false)) sent += chunk.size();
+        // The premise: the window's queue filled, so the layout waits behind
+        // input, and only the rotate of release() sends it first.
+        EXPECT_GE(sent + chunk.size(), MuxClient::MaxWaitingInput) << sent;
         reply(MuxClient::ControlAnswer{});
         // After the answer queued: a newer layout, then the detach, which
         // the daemon reads once it runs again.
@@ -590,6 +594,94 @@ TEST(MuxClient, AReadAfterALateRefreshDoesNotWaitAgain)
         return next > ticket;
     })) << daemon.errors();
     EXPECT_TRUE(shown.client->waitRefreshed({{pane.sessionPaneId(), next}}, 5000));
+}
+
+// A search in a session pane while its history still comes from the daemon
+// says that older lines are still arriving, and the same search once they
+// came finds what they hold. A window that attaches gets the screens in the
+// first frame, then the history from the newest row back. The daemon sends
+// no more of a pane than the channel's window (4 MiB,
+// PhosphorChannel::Stream::Options) until the window returns what it read,
+// which it does as it reads. The test reads the stream only until the
+// screens came, at most one window, and stops the daemon before it reads
+// more: no more than two windows can come, whatever the timing, and the
+// history holds more. The marker is the oldest row.
+TEST(MuxClient, ASearchWaitsForTheHistoryOfASession)
+{
+    using AfterglowVt::Terminal;
+    // About 12.8 MB of rows, in wide rows: fewer rows for the same bytes.
+    // Both terminals keep all of them.
+    constexpr std::size_t Scrollback = 100000;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_GT(daemon.pid(), 0);
+    AfterglowMux::SessionOptions options = daemon.options(
+        {"/bin/sh", "-c",
+         "echo late-marker; base64 -w 319 /dev/urandom | head -n 40000; printf 'newest-line\\n\\033]2;done\\007'; exec cat"},
+        "history");
+    options.size.cols = 320;
+    options.terminal.maxScrollback = Scrollback;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    const AfterglowMux::Route route{daemon.sockets(), {}, {}};
+    QString error;
+    // A window that keeps no history waits for the title, which the program
+    // prints last: then the daemon's terminal holds all of the output.
+    const auto first = MuxClient::attach(QStringLiteral("history"), false, &error, route, std::size_t(1) << 20, 0);
+    ASSERT_TRUE(first) << error.toStdString();
+    ASSERT_EQ(first->layout().panes().size(), 1u);
+    Pane early(AfterglowVt::TerminalOptions{});
+    early.showSession(first, first->layout().panes().front());
+    ASSERT_TRUE(waitFor([&] { return early.title() == QStringLiteral("done"); }, 30000)) << daemon.errors();
+
+    // From here on, the event loop does not run until the daemon stopped:
+    // only waitForHostCalls() reads the stream.
+    const auto shown = MuxClient::attach(QStringLiteral("history"), true, &error, route, std::size_t(1) << 20, Scrollback);
+    ASSERT_TRUE(shown) << error.toStdString();
+    ASSERT_EQ(shown->layout().panes().size(), 1u);
+    AfterglowVt::TerminalOptions keepAll;
+    keepAll.maxScrollback = Scrollback;
+    Pane pane(keepAll);
+    pane.showSession(shown, shown->layout().panes().front());
+    const auto replica = [&pane](Terminal::TextScope scope) {
+        return pane.withTerminal([scope](Terminal& t) { return t.text(scope, std::size_t(64) << 20); });
+    };
+    ASSERT_TRUE(shown->waitForHostCalls(10000, [&] { return replica(Terminal::TextScope::Screen).find("newest-line") != std::string::npos; }))
+        << daemon.errors();
+    bool stopped = signalDaemon(daemon.pid(), SIGSTOP);
+    const auto resume = qScopeGuard([&] {
+        if (stopped) signalDaemon(daemon.pid(), SIGCONT);
+    });
+    ASSERT_TRUE(stopped);
+    // Stopped for certain before the window returns what it read: the state
+    // in /proc is T then.
+    ASSERT_TRUE(MuxTest::waitFor([&] {
+        const std::string stat = MuxTest::readFile("/proc/" + std::to_string(daemon.pid()) + "/stat");
+        const auto state = stat.rfind(") ");
+        return state != std::string::npos && state + 2 < stat.size() && stat[state + 2] == 'T';
+    }));
+    ASSERT_EQ(replica(Terminal::TextScope::All).find("late-marker"), std::string::npos);
+
+    QObject listener;
+    QStringList statuses;
+    QObject::connect(&pane, &Pane::searchStatusChanged, &listener, [&](const QString& status) { statuses << status; });
+    const QString searching = QStringLiteral("Searching…");
+    const QString arriving = QStringLiteral("Older lines are still arriving");
+    // The window reads what the socket holds meanwhile, which is less than
+    // the history. The search covers the rows that the pane had when it
+    // started. Its text has a limit (searchText), which the history passes:
+    // the notice can follow "Limited results".
+    pane.search(QStringLiteral("late-marker"), 0, false);
+    ASSERT_TRUE(waitFor([&] { return !statuses.isEmpty() && statuses.last() != searching; }, 15000));
+    EXPECT_TRUE(statuses.last().startsWith(QStringLiteral("No matches"))) << statuses.join(QLatin1Char('|')).toStdString();
+    EXPECT_TRUE(statuses.last().contains(arriving, Qt::CaseInsensitive)) << statuses.join(QLatin1Char('|')).toStdString();
+    // Once all of it came, the same search starts again, and finds it.
+    ASSERT_TRUE(signalDaemon(daemon.pid(), SIGCONT));
+    stopped = false;
+    EXPECT_TRUE(waitFor([&] {
+        if (statuses.last() != searching) pane.search(QStringLiteral("late-marker"), 1, false);
+        return statuses.last().startsWith(QStringLiteral("1 of 1"));
+    }, 30000)) << statuses.join(QLatin1Char('|')).toStdString();
+    EXPECT_FALSE(statuses.last().contains(arriving, Qt::CaseInsensitive)) << statuses.last().toStdString();
 }
 
 // The PaneOpened of a pane that newPaneLater() asked for can come before

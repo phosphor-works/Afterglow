@@ -1832,8 +1832,10 @@ TEST_F(RemoteCommandsTest, OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThro
     QLocalServer local;
     const QString target = sshd.path(QStringLiteral("l.sock"));
     ASSERT_TRUE(local.listen(target));
-    ASSERT_TRUE(sshd.startMaster(QStringLiteral("allow"))) << qPrintable(sshd.log(QStringLiteral("allow")));
-    ASSERT_TRUE(sshd.startMaster(QStringLiteral("refuse"))) << qPrintable(sshd.log(QStringLiteral("refuse")));
+    ASSERT_TRUE(sshd.startMaster(QStringLiteral("allow")))
+        << qPrintable(sshd.log(QStringLiteral("allow")) + sshd.log(QStringLiteral("allow.master")));
+    ASSERT_TRUE(sshd.startMaster(QStringLiteral("refuse")))
+        << qPrintable(sshd.log(QStringLiteral("refuse")) + sshd.log(QStringLiteral("refuse.master")));
     // With -M, past the config's ControlMaster auto, a session joins no
     // master that runs on its ControlPath: it signs in on its own and shares
     // nothing. Thus afterglow ssh -M forwards no socket on a master of its

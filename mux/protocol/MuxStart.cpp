@@ -521,15 +521,15 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
             }
             // The daemon of a unit that this command started and that still
             // runs holds its own locks: its error is in the journal. The looks
-            // for this message have a short wait of their own, the last look
-            // at the sockets included.
+            // for this message have a short wait of their own. A look that
+            // used it up leaves the last look at the sockets a wait of its own.
             const auto look = std::chrono::steady_clock::now() + LookWait;
             const std::optional<bool> runs = ours ? unitLoaded(manager, look) : std::optional<bool>(false);
-            if (!runs) return noAnswer(look);
+            if (!runs) return noAnswer(std::chrono::steady_clock::now() + LookWait);
             if (!*runs && lockHeldElsewhere(sockets)) {
                 *error = "aglow-mux did not start: another aglow-mux holds a socket and does not answer";
             } else if (const std::optional<std::string> state = unitProperty("ActiveState", manager, look); !state) {
-                return noAnswer(look);
+                return noAnswer(std::chrono::steady_clock::now() + LookWait);
             } else if (*state == "deactivating") {
                 *error = std::string("aglow-mux did not start: the daemon of ") + Unit
                     + ".service is ending. Try again when it has ended";

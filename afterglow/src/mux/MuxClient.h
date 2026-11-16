@@ -211,10 +211,10 @@ public:
     void endUnbound(std::uint32_t id);
 
     /// Counts a thread that calls a daemon off the GUI thread while it
-    /// lives (callLater(), the attach of Application): made on the GUI
-    /// thread before the thread starts, and moved into it as the first local
-    /// of its body, so that it goes after the body's other locals. The
-    /// captures go after it: they must use no static.
+    /// lives (callLater(), the attach of Application, Control::offThread):
+    /// made on the GUI thread before the thread starts, and moved into it as
+    /// the first local of its body, so that it goes after the body's other
+    /// locals. The captures go after it: they must use no static.
     class CallThread
     {
     public:

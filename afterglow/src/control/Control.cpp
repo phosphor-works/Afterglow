@@ -349,6 +349,12 @@ Control::~Control()
 
 QString Control::startOffThread(std::function<OffThreadResult()> work, std::function<void(OffThreadResult)> then)
 {
+    // Each call waits for the daemon on a thread of its own, for seconds at
+    // most: a bound, as the pool before it had, for clients and scripts
+    // that open projects in a loop.
+    if (m_offThread.size() >= MaxOffThreadCalls) {
+        return QStringLiteral("cannot call the mux daemon: %1 calls wait for it already").arg(MaxOffThreadCalls);
+    }
     const quint64 id = ++m_lastOffThread;
     m_offThread.insert(id, std::move(then));
     try {

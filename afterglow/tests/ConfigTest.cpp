@@ -2961,7 +2961,8 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
             } else if (name == QLatin1String("Mux.updateEnvironment")) {
                 value = QJsonArray{QStringLiteral("TEST_VARIABLE")};
             } else if (def.expectedType == QMetaType::QVariantMap) {
-                value = QJsonObject{{QStringLiteral("AFTERGLOW_TEST"), QStringLiteral("1")}};
+                // Not AFTERGLOW_: Afterglow keeps those names for itself.
+                value = QJsonObject{{QStringLiteral("TEST_VARIABLE"), QStringLiteral("1")}};
             } else if (def.expectedType == QMetaType::QVariantList) {
                 value = QJsonArray{QStringLiteral("afterglow-test")};
             } else {

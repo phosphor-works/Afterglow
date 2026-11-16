@@ -101,6 +101,7 @@ std::optional<Config> resolve(const QString& destination, const std::vector<std:
 /// nothing and runs no LocalCommand. ssh -G runs with @p environment
 /// (resolve()). Empty, with @p error, when ssh cannot read the destination
 /// (ssh -G), or there is no private XDG_RUNTIME_DIR for that connection.
+/// The form in one step; muxRoute() resolves first, and keeps the Config.
 QByteArrayList sharedCommand(const QString& destination, int controlPersist, const std::vector<std::string>& environment,
                              QString* error);
 /// sharedCommand() with @p config, which resolve() read for @p destination
@@ -132,11 +133,11 @@ struct InstallResult {
 /// --ssh`, as `afterglow ssh` does, once per entry version, over the
 /// connection of sharedCommand(), which the session then shares. @p config
 /// is what resolve() read for @p destination, for the route there: ssh -G
-/// does not run again. infocmp
-/// reads the entry with @p terminfoDirs as its TERMINFO_DIRS (the pane's,
-/// for an entry in the build tree), empty for this process's. ssh can ask
-/// for a password on the terminal meanwhile: an interrupt there ends ssh
-/// and not this process, which then ends with endAs().
+/// does not run again. infocmp reads the entry with @p terminfoDirs as its
+/// TERMINFO_DIRS (the pane's, for an entry in the build tree), empty for
+/// this process's. ssh can ask for a password on the terminal meanwhile: an
+/// interrupt there ends ssh and not this process, which then ends with
+/// endAs().
 InstallResult installTerminfo(const QString& destination, const Config& config, int controlPersist, const QByteArray& terminfoDirs);
 
 /// Ends this process the way a run with wait status @p status ended: by the

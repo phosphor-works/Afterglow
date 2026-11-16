@@ -3848,14 +3848,16 @@ bool TerminalWindow::performAction(Action action)
         if (m_session) {
             // The pager runs under the daemon, and can outlive this window and
             // Afterglow. A shell opens the file, removes it, and gives the
-            // pager the open file (/dev/fd/3): nothing is left whatever ends
+            // pager the open file (/dev/fd/4): nothing is left whatever ends
             // the pager. A trap could not do it: the end of a session hangs
             // up only the shell, which runs no trap while it waits for the
-            // pager, and the shell gets SIGKILL soon after. The path and the
-            // pager's words go as arguments, never into the script.
+            // pager, and the shell gets SIGKILL soon after. The pager gets
+            // the file through a redirection of its own command, which every
+            // sh passes on (ksh closes what a bare exec opened). The path and
+            // the pager's words go as arguments, never into the script.
             command = QStringList{QStringLiteral("/bin/sh"), QStringLiteral("-c"),
-                                  QStringLiteral("exec 3<\"$1\"; rm -f -- \"$1\"; shift; exec \"$@\" /dev/fd/3"), QStringLiteral("sh"),
-                                  path}
+                                  QStringLiteral("exec 3<\"$1\"; rm -f -- \"$1\"; shift; exec \"$@\" /dev/fd/4 4<&3 3<&-"),
+                                  QStringLiteral("sh"), path}
                 + command;
         } else {
             command << path;

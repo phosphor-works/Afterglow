@@ -173,6 +173,9 @@ public:
     /// a frame and its PNG. A client that goes does not stop its frame or
     /// encode, so the count drops only as they end.
     static constexpr int MaxScreenshots = 4;
+    /// Calls of the mux daemon that wait on threads of their own (the opens
+    /// of projects into sessions): past this, a call fails at once.
+    static constexpr int MaxOffThreadCalls = 16;
     /// Whether process @p process runs in pane @p pane, or in its overlay with
     /// @p overlay: the program leads the terminal session of the process, or
     /// of a process above it, at most 64 up (a shell in an editor's
@@ -366,7 +369,8 @@ private:
     /// Runs @p work on a thread of its own, then @p then with its result on
     /// this object's thread, unless this object went first: @p then stays
     /// here, and @p work must capture nothing that this thread must free.
-    /// An error when no thread starts, and then neither runs.
+    /// An error when no thread starts, or MaxOffThreadCalls calls wait
+    /// already, and then neither runs.
     template<typename Result>
     QString offThread(std::function<Result()> work, std::function<void(Result)> then);
     using OffThreadResult = std::shared_ptr<void>;
