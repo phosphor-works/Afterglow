@@ -4844,6 +4844,62 @@ TEST(KeyMapping, RemapsTheModifiersKeyAndTextOfKeyEvents) {
     EXPECT_EQ(remappedModifierKey(superC, Key::Text, *remap), Key::Text);
 }
 
+// kitty's base layout key, the level keys and the modifiers of a modifier
+// key, from the keymap: layouts of xkeyboard-config stand in for the
+// compositor's US layout. The keycodes are xkb's (evdev + 8).
+TEST(KeyMapping, BaseLayoutKeysLevelKeysAndHeldModifiers) {
+    using AfterglowVt::KittyFlag::Disambiguate;
+    using AfterglowVt::KittyFlag::ReportAlternates;
+    XkbKeyboard& xkb = XkbKeyboard::instance();
+    struct Restore {
+        ~Restore()
+        {
+            XkbKeyboard::instance().useLayoutsForTest(nullptr, 0);
+            XkbKeyboard::instance().setHeldKeysForTest({});
+        }
+    } restore;
+    QByteArray storage;
+    AfterglowVt::Modes modes;
+    // Ctrl+С on the Russian layout: Ctrl+C for flag 1, CSI 1089::99;5u with alternate keys.
+    ASSERT_TRUE(xkb.useLayoutsForTest("us,ru", 1));
+    const QKeyEvent ctrlEs(QEvent::KeyPress, 0x421, Qt::ControlModifier, 54, 0, 0, QStringLiteral("\x03"));
+    AfterglowVt::KeyEvent ev = mapKeyEvent(&ctrlEs, storage);
+    EXPECT_EQ(ev.unshifted, U'c');
+    EXPECT_EQ(ev.layoutUnshifted, U'\u0441');
+    EXPECT_EQ(ev.base, U'c');
+    modes.kittyKeyboard = Disambiguate;
+    EXPECT_EQ(AfterglowVt::encodeKey(ev, modes), "\x1b[99;5u");
+    modes.kittyKeyboard = Disambiguate | ReportAlternates;
+    EXPECT_EQ(AfterglowVt::encodeKey(ev, modes), "\x1b[1089::99;5u");
+    const QKeyEvent altEs(QEvent::KeyPress, 0x421, Qt::AltModifier, 54, 0, 0, QString(QChar(0x441)));
+    ev = mapKeyEvent(&altEs, storage);
+    EXPECT_EQ(AfterglowVt::encodeKey(ev, modes), "\x1b[1089::99;3u");
+    // The German layout swaps Y and Z: its z is the US layout's y key.
+    ASSERT_TRUE(xkb.useLayoutsForTest("de", 0));
+    const QKeyEvent ctrlZ(QEvent::KeyPress, Qt::Key_Z, Qt::ControlModifier, 29, 0, 0, QStringLiteral("\x1a"));
+    ev = mapKeyEvent(&ctrlZ, storage);
+    EXPECT_EQ(ev.unshifted, U'z');
+    EXPECT_EQ(ev.base, U'y');
+    EXPECT_EQ(AfterglowVt::encodeKey(ev, modes), "\x1b[122::121;5u");
+    // Its AltGr is ISO_Level3_Shift: a key of its own that sets no modifier bit.
+    const QKeyEvent altGr(QEvent::KeyPress, Qt::Key_AltGr, Qt::NoModifier, 108, 0, 0, {});
+    ev = mapKeyEvent(&altGr, storage);
+    EXPECT_EQ(ev.key, AfterglowVt::Key::IsoLevel3Shift);
+    EXPECT_EQ(ev.mods & ~AfterglowVt::Mod::Locks, 0);
+    // The release of the left Ctrl key while the right one is down keeps the
+    // Ctrl bit, as kitty's spec says. Qt's own report drops it.
+    ASSERT_TRUE(xkb.useLayoutsForTest("us", 0));
+    const QKeyEvent leftUp(QEvent::KeyRelease, Qt::Key_Control, Qt::ControlModifier, 37, 0, 0, {});
+    EXPECT_FALSE(leftUp.modifiers() & Qt::ControlModifier);
+    xkb.setHeldKeysForTest({105});
+    EXPECT_TRUE(modifiersAfter(leftUp) & Qt::ControlModifier);
+    xkb.setHeldKeysForTest({});
+    EXPECT_FALSE(modifiersAfter(leftUp) & Qt::ControlModifier);
+    // A press has it, whatever else is down.
+    const QKeyEvent rightDown(QEvent::KeyPress, Qt::Key_Control, Qt::NoModifier, 105, 0, 0, {});
+    EXPECT_TRUE(modifiersAfter(rightDown) & Qt::ControlModifier);
+}
+
 // A remap that takes Shift away or adds it gives the key of the new level.
 TEST(KeyMapping, ARemapOfShiftGivesTheKeyOfTheNewLevel) {
     const auto remap = ModifierRemap::parse(QStringLiteral("shift:alt alt:shift"));

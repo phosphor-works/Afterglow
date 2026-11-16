@@ -440,6 +440,14 @@ TEST(Terminal, KittyKeyboardStack)
     t.host.written.clear();
     t.feed("\x1b[?1049h\x1b[?u\x1b[>8u\x1b[?1049l\x1b[?u");
     EXPECT_EQ(t.host.written, "\x1b[?0u\x1b[?1u");
+    // The alternate screen's stack stays from one visit to the next, as in kitty.
+    t.host.written.clear();
+    t.feed("\x1b[?1049h\x1b[?u\x1b[?1049l");
+    EXPECT_EQ(t.host.written, "\x1b[?8u");
+    // DECSTR clears both stacks, as kitty's soft reset does.
+    t.host.written.clear();
+    t.feed("\x1b[!p\x1b[?u\x1b[?1049h\x1b[?u\x1b[?1049l");
+    EXPECT_EQ(t.host.written, "\x1b[?0u\x1b[?0u");
     // plain CSI u is still restore-cursor
     t.feed("\x1b[1;5H\x1b[s\x1b[2;1H\x1b[u");
     EXPECT_EQ(t.t.screen().cursor.x, 4);

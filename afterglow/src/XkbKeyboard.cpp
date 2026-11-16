@@ -9,6 +9,8 @@
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include <algorithm>
+
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -18,9 +20,6 @@ namespace Afterglow {
 
 namespace {
 
-void onEnter(void*, wl_keyboard*, std::uint32_t, wl_surface*, wl_array*) { }
-void onLeave(void*, wl_keyboard*, std::uint32_t, wl_surface*) { }
-void onKey(void*, wl_keyboard*, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) { }
 void onRepeatInfo(void*, wl_keyboard*, std::int32_t, std::int32_t) { }
 
 } // namespace
@@ -50,7 +49,8 @@ XkbKeyboard::XkbKeyboard()
     m_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     m_keyboard = wl_seat_get_keyboard(wayland->seat());
     static const wl_keyboard_listener listener = {
-        &XkbKeyboard::onKeymap, onEnter, onLeave, onKey, &XkbKeyboard::onModifiers, onRepeatInfo,
+        &XkbKeyboard::onKeymap, &XkbKeyboard::onEnter, &XkbKeyboard::onLeave, &XkbKeyboard::onKey,
+        &XkbKeyboard::onModifiers, onRepeatInfo,
     };
     wl_keyboard_add_listener(m_keyboard, &listener, this);
     // The keymap arrives through Qt's own event dispatch shortly after; a
@@ -69,6 +69,12 @@ XkbKeyboard::~XkbKeyboard()
     }
     if (m_keymap) {
         xkb_keymap_unref(m_keymap);
+    }
+    if (m_compositorKeymap) {
+        xkb_keymap_unref(m_compositorKeymap);
+    }
+    if (m_baseKeymap) {
+        xkb_keymap_unref(m_baseKeymap);
     }
     if (m_context) {
         xkb_context_unref(m_context);
@@ -94,19 +100,112 @@ void XkbKeyboard::onKeymap(void* data, wl_keyboard*, std::uint32_t format, int f
         qCWarning(lcXkb) << "failed to compile the compositor's keymap";
         return;
     }
-    if (self->m_scratch) {
-        xkb_state_unref(self->m_scratch);
-        self->m_scratch = nullptr;
+    if (self->m_testKeymap) {
+        // A test's keymap is in use: it stays until the test puts this back.
+        if (self->m_compositorKeymap) xkb_keymap_unref(self->m_compositorKeymap);
+        self->m_compositorKeymap = keymap;
+        return;
     }
-    if (self->m_state) {
-        xkb_state_unref(self->m_state);
-    }
-    if (self->m_keymap) {
-        xkb_keymap_unref(self->m_keymap);
-    }
-    self->m_keymap = keymap;
-    self->m_state = xkb_state_new(keymap);
+    self->install(keymap);
     qCInfo(lcXkb) << "keymap loaded," << xkb_keymap_num_layouts(keymap) << "layout(s)";
+}
+
+void XkbKeyboard::install(xkb_keymap* keymap)
+{
+    if (m_scratch) {
+        xkb_state_unref(m_scratch);
+        m_scratch = nullptr;
+    }
+    if (m_state) {
+        xkb_state_unref(m_state);
+    }
+    if (m_keymap) {
+        xkb_keymap_unref(m_keymap);
+    }
+    m_keymap = keymap;
+    m_state = keymap ? xkb_state_new(keymap) : nullptr;
+}
+
+void XkbKeyboard::onEnter(void* data, wl_keyboard*, std::uint32_t, wl_surface*, wl_array* keys)
+{
+    auto* self = static_cast<XkbKeyboard*>(data);
+    self->m_held.clear();
+    const auto* key = static_cast<const std::uint32_t*>(keys->data);
+    for (std::size_t i = 0; i < keys->size / sizeof(std::uint32_t); ++i) {
+        self->m_held.push_back(key[i] + 8); // evdev code to xkb keycode
+    }
+}
+
+void XkbKeyboard::onLeave(void* data, wl_keyboard*, std::uint32_t, wl_surface*)
+{
+    auto* self = static_cast<XkbKeyboard*>(data);
+    self->m_held.clear();
+    self->m_recent.clear();
+}
+
+void XkbKeyboard::onKey(void* data, wl_keyboard*, std::uint32_t, std::uint32_t time, std::uint32_t key,
+                        std::uint32_t state)
+{
+    auto* self = static_cast<XkbKeyboard*>(data);
+    const std::uint32_t keycode = key + 8;
+    // Pressed, or repeated (version 10): down either way.
+    const bool pressed = state != WL_KEYBOARD_KEY_STATE_RELEASED;
+    std::erase(self->m_held, keycode);
+    if (pressed) self->m_held.push_back(keycode);
+    // Enough for the events of one read, which Qt delivers after it.
+    constexpr std::size_t Kept = 32;
+    if (self->m_recent.size() == Kept) self->m_recent.erase(self->m_recent.begin());
+    self->m_recent.push_back({time, keycode, pressed, self->m_held});
+}
+
+std::vector<std::uint32_t> XkbKeyboard::heldKeysAfter(std::uint32_t time, std::uint32_t keycode, bool pressed) const
+{
+    // The oldest match: Qt delivers the events in their order, and two of
+    // the same key and state within one millisecond do not come from hands.
+    for (const KeyRecord& record : m_recent) {
+        if (record.time == time && record.keycode == keycode && record.pressed == pressed) return record.held;
+    }
+    return m_held;
+}
+
+bool XkbKeyboard::useLayoutsForTest(const char* layouts, std::uint32_t group)
+{
+    if (!layouts) {
+        if (m_testKeymap) {
+            install(m_compositorKeymap);
+            m_compositorKeymap = nullptr;
+            m_testKeymap = false;
+        }
+        return true;
+    }
+    if (!m_context && !(m_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS))) return false;
+    const xkb_rule_names names{"evdev", "pc105", layouts, "", ""};
+    xkb_keymap* keymap = xkb_keymap_new_from_names(m_context, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    if (!keymap) return false;
+    if (!m_testKeymap) {
+        m_compositorKeymap = m_keymap ? xkb_keymap_ref(m_keymap) : nullptr;
+        m_testKeymap = true;
+    }
+    install(keymap);
+    xkb_state_update_mask(m_state, 0, 0, 0, 0, 0, group);
+    return true;
+}
+
+char32_t XkbKeyboard::baseLayoutCodepoint(std::uint32_t keycode) const
+{
+    if (!m_baseKeymapTried) {
+        m_baseKeymapTried = true;
+        if (m_context) {
+            const xkb_rule_names names{"evdev", "pc105", "us", "", ""};
+            m_baseKeymap = xkb_keymap_new_from_names(m_context, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
+            if (!m_baseKeymap) qCWarning(lcXkb) << "no US keymap from xkeyboard-config: no base layout keys";
+        }
+    }
+    const xkb_keysym_t* syms = nullptr;
+    if (!m_baseKeymap || xkb_keymap_key_get_syms_by_level(m_baseKeymap, keycode, 0, 0, &syms) < 1) {
+        return 0;
+    }
+    return char32_t(xkb_keysym_to_utf32(syms[0]));
 }
 
 void XkbKeyboard::onModifiers(void* data, wl_keyboard*, std::uint32_t, std::uint32_t depressed,

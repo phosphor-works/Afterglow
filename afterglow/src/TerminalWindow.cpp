@@ -5591,6 +5591,10 @@ void TerminalWindow::sendKey(QKeyEvent* e, Pane* pane, std::optional<AfterglowVt
     }
     QByteArray storage;
     AfterglowVt::KeyEvent ev = mapKeyEvent(e, storage);
+    // A modifier key's own event has the modifiers after it, also while the
+    // key of the other side is down (kitty's spec). For other keys they are
+    // the event's.
+    ev.mods = std::uint8_t(mapModifiers(modifiersAfterKey(e)) | (ev.mods & AfterglowVt::Mod::Locks));
     // The key event is remapped already (event()); the terminal's name of a
     // modifier key comes from the layout, so it is remapped here. A release
     // names the key as its press did, also across a change of the remap.

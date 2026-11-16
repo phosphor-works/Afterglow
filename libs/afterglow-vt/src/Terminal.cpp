@@ -3033,6 +3033,10 @@ void Terminal::softReset()
     m_active->styles().release(m_active->savedCursor.penId);
     m_active->savedCursor.penId = StyleTable::DefaultId;
     m_active->hasSavedCursor = false;
+    // kitty resets the keyboard flags of both screens on a soft reset too.
+    m_kittyStack[0].clear();
+    m_kittyStack[1].clear();
+    syncKittyFlags();
 }
 
 void Terminal::setColumnMode(bool wide)

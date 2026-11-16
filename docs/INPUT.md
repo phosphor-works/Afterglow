@@ -447,6 +447,17 @@ The keypad 5 key (Begin) sends `CSI E`.
 The decimal key of a layout with a decimal comma is the keypad separator.
 F13 to F35 send the sequences of xterm's terminfo entry, and the Kitty protocol codes 57376 to 57398.
 
+Ctrl with a key of a non-Latin layout uses the key of the first Latin layout, as Qt's shortcuts do.
+Ctrl+С on a Russian layout sends Ctrl+C in legacy modes and in the Kitty protocol.
+When a program asks for alternate keys (flag 4), the Kitty protocol sends the key of the active layout and the base layout key, such as `CSI 1089::99;5u`.
+The base layout key is the key in the US layout.
+Afterglow sends it when it is not the same as the key.
+
+The Kitty protocol reports AltGr and the fifth level key as ISO_Level3_Shift and ISO_Level5_Shift.
+They set no modifier bit.
+It also reports the media and volume keys, when the desktop does not take them first for its own shortcuts.
+When one of two keys of a modifier is released, such as the left Ctrl key while the right one is down, the event keeps the bit of the modifier.
+
 ## Shell integration
 
 New panes automatically integrate interactive Bash 4.4 or later, Zsh and Fish.

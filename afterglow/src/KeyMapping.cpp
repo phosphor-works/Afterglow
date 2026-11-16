@@ -12,6 +12,8 @@
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include <algorithm>
+
 namespace Afterglow {
 
 using AfterglowVt::Key;
@@ -128,8 +130,11 @@ Key modifierKeyFromKeysym(std::uint32_t keysym)
         return Key::LeftAlt;
     case XKB_KEY_Alt_R:
     case XKB_KEY_Meta_R:
-    case XKB_KEY_ISO_Level3_Shift: // AltGr, as the keycode table had it
         return Key::RightAlt;
+    case XKB_KEY_ISO_Level3_Shift: // AltGr
+        return Key::IsoLevel3Shift;
+    case XKB_KEY_ISO_Level5_Shift:
+        return Key::IsoLevel5Shift;
     case XKB_KEY_Super_L:
         return Key::LeftSuper;
     case XKB_KEY_Super_R:
@@ -290,6 +295,42 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
     }
 
     switch (k) {
+    case Qt::Key_MediaPlay:
+        out.key = Key::MediaPlay;
+        break;
+    case Qt::Key_MediaPause:
+        out.key = Key::MediaPause;
+        break;
+    case Qt::Key_MediaTogglePlayPause:
+        out.key = Key::MediaPlayPause;
+        break;
+    case Qt::Key_MediaStop:
+        out.key = Key::MediaStop;
+        break;
+    case Qt::Key_AudioForward:
+        out.key = Key::MediaFastForward;
+        break;
+    case Qt::Key_AudioRewind:
+        out.key = Key::MediaRewind;
+        break;
+    case Qt::Key_MediaNext:
+        out.key = Key::MediaTrackNext;
+        break;
+    case Qt::Key_MediaPrevious:
+        out.key = Key::MediaTrackPrevious;
+        break;
+    case Qt::Key_MediaRecord:
+        out.key = Key::MediaRecord;
+        break;
+    case Qt::Key_VolumeDown:
+        out.key = Key::LowerVolume;
+        break;
+    case Qt::Key_VolumeUp:
+        out.key = Key::RaiseVolume;
+        break;
+    case Qt::Key_VolumeMute:
+        out.key = Key::MuteVolume;
+        break;
     case Qt::Key_Return:
         out.key = Key::Enter;
         break;
@@ -350,12 +391,16 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
             char32_t shifted = xkb.shiftedCodepoint(e->nativeScanCode());
             // Ctrl+C under a Cyrillic or Greek layout is still ^C: control
             // characters come from the Latin layout, as Qt's shortcuts do.
+            // kitty's alternate keys report the layout's own characters.
             if ((e->modifiers() & Qt::ControlModifier) && out.unshifted >= 0x80) {
                 if (const auto latin = xkb.latinCodepoints(e->nativeScanCode()); latin.first != 0) {
+                    out.layoutUnshifted = out.unshifted;
+                    out.layoutShifted = shifted;
                     out.unshifted = latin.first;
                     shifted = latin.second;
                 }
             }
+            out.base = xkb.baseLayoutCodepoint(e->nativeScanCode());
             if (out.unshifted == 0 && k >= 0x20 && k < 0x7F) {
                 out.unshifted = (k >= 'A' && k <= 'Z') ? char32_t(k - 'A' + 'a') : char32_t(k);
             }
@@ -489,9 +534,16 @@ Qt::KeyboardModifiers modifiersAfter(const QKeyEvent& event)
     if (role.modifier == Qt::NoModifier) return event.modifiers();
     // The state that Qt stores, from before the key, with the key's own bit:
     // Qt flips that bit only for the keys that it names Shift, Control, Alt
-    // and Meta, and drops it when the key of the other side is held.
+    // and Meta, and drops it when the key of the other side is held. The bit
+    // stays while another key of the modifier is down, as kitty's spec says
+    // for a release of one of two Ctrl keys.
     Qt::KeyboardModifiers modifiers = static_cast<const QInputEvent&>(event).modifiers();
-    modifiers.setFlag(role.modifier, event.type() != QEvent::KeyRelease);
+    const std::vector<std::uint32_t> held = XkbKeyboard::instance().heldKeysAfter(
+        std::uint32_t(event.timestamp()), event.nativeScanCode(), event.type() != QEvent::KeyRelease);
+    const bool otherHeld = std::any_of(held.begin(), held.end(), [&](std::uint32_t keycode) {
+        return keycode != event.nativeScanCode() && modifierRoleOf(keycode).modifier == role.modifier;
+    });
+    modifiers.setFlag(role.modifier, event.type() != QEvent::KeyRelease || otherHeld);
     return modifiers;
 }
 

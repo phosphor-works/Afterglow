@@ -27,7 +27,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 ### Keyboard and mouse
 
-- The Kitty keyboard protocol, with a flag stack for each screen, and xterm `modifyOtherKeys`.
+- The Kitty keyboard protocol, with a flag stack for each screen, alternate keys with the base layout key, and the level and media keys, and xterm `modifyOtherKeys`.
 - Mouse reporting in X10, normal, button-event and any-event modes, with UTF-8, SGR, urxvt and SGR-pixel encodings.
 - Focus reports, bracketed paste and alternate-scroll mode.
 - `Keybinds.remapModifiers`, which makes one modifier act as another in Afterglow, as `remap_modifiers` does in Kitty. Bindings, the link modifier, mouse selection and programs get the modifier that a key becomes.

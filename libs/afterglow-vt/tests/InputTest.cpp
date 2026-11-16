@@ -233,6 +233,56 @@ TEST(Input, KittyDisambiguate)
     EXPECT_EQ(encodeKey(key(Key::Text, 0, "a", U'a', KeyAction::Release), m), "");
 }
 
+TEST(Input, KittyBaseLayoutKeyAndTheLatinCtrlKey)
+{
+    // Ctrl+С on a Cyrillic layout: the window gives the Latin layout's c for
+    // Ctrl, the layout's own С, and the US layout's c as the base key.
+    KeyEvent ctrlEs = key(Key::Text, Mod::Ctrl, "", U'c');
+    ctrlEs.layoutUnshifted = U'\u0441';
+    ctrlEs.layoutShifted = U'\u0421';
+    ctrlEs.base = U'c';
+    Modes m;
+    // Without alternate keys Ctrl+С is Ctrl+C, so that a program that sets
+    // only flag 1 sees it; legacy and modifyOtherKeys send ^C too.
+    EXPECT_EQ(encodeKey(ctrlEs, m), "\x03");
+    m.kittyKeyboard = KittyFlag::Disambiguate;
+    EXPECT_EQ(encodeKey(ctrlEs, m), "\x1b[99;5u");
+    // The spec's example: CSI 1089::99;5u, and the shifted key with Shift.
+    m.kittyKeyboard = KittyFlag::Disambiguate | KittyFlag::ReportAlternates;
+    EXPECT_EQ(encodeKey(ctrlEs, m), "\x1b[1089::99;5u");
+    ctrlEs.mods |= Mod::Shift;
+    EXPECT_EQ(encodeKey(ctrlEs, m), "\x1b[1089:1057:99;6u");
+    // Alt+С has the layout's character already.
+    KeyEvent altEs = key(Key::Text, Mod::Alt, "\xd1\x81", U'\u0441');
+    altEs.base = U'c';
+    EXPECT_EQ(encodeKey(altEs, m), "\x1b[1089::99;3u");
+    // On the US layout the base key is the key's own: it is left out.
+    KeyEvent ctrlC = key(Key::Text, Mod::Ctrl, "", U'c');
+    ctrlC.base = U'c';
+    EXPECT_EQ(encodeKey(ctrlC, m), "\x1b[99;5u");
+    // Plain typing stays text.
+    EXPECT_EQ(encodeKey(key(Key::Text, 0, "\xd1\x81", U'\u0441'), m), "\xd1\x81");
+}
+
+TEST(Input, KittyLevelShiftAndMediaKeys)
+{
+    Modes m;
+    // Legacy mode sends none of them.
+    for (const Key k : {Key::IsoLevel3Shift, Key::IsoLevel5Shift, Key::MediaPlay, Key::MuteVolume}) {
+        EXPECT_EQ(encodeKey(key(k), m), "") << int(k);
+    }
+    // AltGr and the fifth level are modifier keys: only "report all keys" sends them.
+    m.kittyKeyboard = KittyFlag::Disambiguate;
+    EXPECT_EQ(encodeKey(key(Key::IsoLevel3Shift), m), "");
+    EXPECT_EQ(encodeKey(key(Key::MediaPlay), m), "\x1b[57428u");
+    EXPECT_EQ(encodeKey(key(Key::MediaPlayPause), m), "\x1b[57430u");
+    EXPECT_EQ(encodeKey(key(Key::LowerVolume), m), "\x1b[57438u");
+    EXPECT_EQ(encodeKey(key(Key::MuteVolume, Mod::Ctrl), m), "\x1b[57440;5u");
+    m.kittyKeyboard = KittyFlag::Disambiguate | KittyFlag::ReportAllKeys;
+    EXPECT_EQ(encodeKey(key(Key::IsoLevel3Shift), m), "\x1b[57453u");
+    EXPECT_EQ(encodeKey(key(Key::IsoLevel5Shift), m), "\x1b[57454u");
+}
+
 TEST(Input, KittyEventTypes)
 {
     Modes m;

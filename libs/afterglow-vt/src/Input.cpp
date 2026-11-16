@@ -461,8 +461,18 @@ bool kittyFunctional(Key k, KittyKey& out)
     case Key::KeypadBegin:
         out = {1, 'E'};
         return true;
+    case Key::IsoLevel3Shift:
+        out = {57453, 'u'};
+        return true;
+    case Key::IsoLevel5Shift:
+        out = {57454, 'u'};
+        return true;
     default:
         break;
+    }
+    if (k >= Key::MediaPlay && k <= Key::MuteVolume) {
+        out = {57428u + std::uint32_t(int(k) - int(Key::MediaPlay)), 'u'};
+        return true;
     }
     if (k >= Key::F13 && k <= Key::F35) {
         out = {57376u + std::uint32_t(int(k) - int(Key::F13)), 'u'};
@@ -481,8 +491,9 @@ bool kittyFunctional(Key k, KittyKey& out)
 
 bool isModifierKey(Key k)
 {
-    return k >= Key::CapsLock && k <= Key::RightSuper && k != Key::PrintScreen && k != Key::Pause && k != Key::Menu
-        && k != Key::ScrollLock;
+    return (k >= Key::CapsLock && k <= Key::RightSuper && k != Key::PrintScreen && k != Key::Pause && k != Key::Menu
+            && k != Key::ScrollLock)
+        || k == Key::IsoLevel3Shift || k == Key::IsoLevel5Shift;
 }
 
 void appendTextCodepoints(std::string& out, std::string_view utf8)
@@ -526,9 +537,15 @@ std::string encodeKittyKey(const KeyEvent& e, const Modes& modes)
 
     KittyKey kk{0, 'u'};
     const bool functional = kittyFunctional(e.key, kk);
+    // With alternate keys the code is the active layout's own character, and
+    // the base layout key tells which key it is (Ctrl+С: 1089::99). Without
+    // them Ctrl takes the Latin layout's, as Qt's shortcuts do, so that a
+    // program that knows only flag 1 sees Ctrl+C.
+    const bool alternates = (flags & KittyFlag::ReportAlternates) != 0 && !functional;
+    const bool ownLayout = alternates && e.layoutUnshifted != 0;
     if (!functional) {
         // A text key: its code is the unshifted character.
-        char32_t code = e.unshifted;
+        char32_t code = ownLayout ? e.layoutUnshifted : e.unshifted;
         if (code == 0) {
             code = firstCodepoint(e.text);
         }
@@ -570,9 +587,13 @@ std::string encodeKittyKey(const KeyEvent& e, const Modes& modes)
     if (!(letterFinal && kk.number == 1 && modifierParam == 1 && !withEvent)) {
         out += std::to_string(kk.number);
     }
-    if (kk.final == 'u' && (flags & KittyFlag::ReportAlternates) && !functional && (mods & Mod::Shift) && e.shifted != 0
-        && std::uint32_t(e.shifted) != kk.number) {
-        out += ':' + std::to_string(std::uint32_t(e.shifted));
+    if (alternates) {
+        const char32_t shifted = ownLayout ? e.layoutShifted : e.shifted;
+        const bool withShifted = (mods & Mod::Shift) && shifted != 0 && std::uint32_t(shifted) != kk.number;
+        const bool withBase = e.base >= 0x20 && e.base < 0x7F && std::uint32_t(e.base) != kk.number;
+        if (withShifted || withBase) out += ':';
+        if (withShifted) out += std::to_string(std::uint32_t(shifted));
+        if (withBase) out += ':' + std::to_string(std::uint32_t(e.base));
     }
     if (modifierParam != 1 || withEvent || !text.empty()) {
         out += ';' + std::to_string(modifierParam);
