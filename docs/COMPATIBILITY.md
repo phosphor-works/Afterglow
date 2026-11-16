@@ -274,12 +274,12 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 `aglow transfer`, `aglow dnd`, `aglow icat` and `aglow clipboard` take the options of the `kitten` command of the same name, with the differences below.
 
 - `aglow transfer` sends the permission password only in the SHA-256 form, which Afterglow and Kitty accept. It does not use Kitty's own form, which encrypts the password with `KITTY_PUBLIC_KEY`.
-- `aglow icat` decodes PNG, APNG, JPEG, GIF, WebP, BMP, TIFF and netPBM images with libpng, libjpeg-turbo, libwebp and readers of its own. It does not use ImageMagick or download images from URLs.
+- `aglow icat` decodes PNG, APNG, JPEG, GIF, WebP, BMP, TIFF and netPBM images with libpng, libjpeg-turbo, libwebp and readers of its own, with any `--engine`. It sends only the other formats to ImageMagick (AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO, CUR and compressed BMP), on standard input and with a policy of its own. `--engine magick` is the same as `--engine auto`. Of an animation in such a format, it shows the first frame.
+- `aglow icat` downloads URLs with `curl`, which must be installed, where `kitten icat` has its own HTTP client.
 - `aglow icat` converts an image with an embedded color profile (ICC) or a cICP color space to sRGB with Little CMS, as the builtin engine of `kitten icat` does. A PNG that it sends as it is keeps its profile, for the terminal. The two can differ by 1 in a sample: an Adobe RGB JPEG of `100,150,200` gives `66,151,202` in `kitten icat`, and `66,151,203` in `aglow icat` and in Pillow.
 - cICP: the primaries BT.709, BT.2020 and Display P3, with the sRGB, linear, PQ and HLG transfers, in full range. PQ and HLG map 203 cd/m², their reference white (BT.2408), to the white of sRGB, and clip what is brighter. Other cICP values leave the pixels as they are.
 - A pane converts an image that a program sends with an ICC profile or a cICP color space to sRGB, as Kitty applies the profile of a PNG.
 - A pane decodes the images that programs send in processes of their own, with `aglow-mux --decode-images` from next to `afterglow`, with limits on their memory, time and system calls. Without that program, such images do not show, and a warning says so once. A long animation can stop at the frame where the limit of its process stops it.
-- The `--engine` option of `aglow icat` takes `auto` and `builtin`, which mean the same. It refuses `magick`.
 - `aglow icat` accepts `--silent` and ignores it, as `kitten icat` does.
 - `aglow icat` compresses pixels with zlib only when it sends them through the terminal connection. A file or shared memory holds raw pixels.
 - `aglow clipboard` does not convert between image formats when it reads the clipboard.

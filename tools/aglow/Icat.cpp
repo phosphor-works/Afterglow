@@ -9,8 +9,11 @@
 
 #include "Cli.h"
 #include "Commands.h"
+#include "External.h"
 #include "Image.h"
 #include "Tty.h"
+
+#include <AfterglowImage/Decode.h>
 
 #include <AfterglowProto/Color.h>
 #include <AfterglowProto/DndUri.h>
@@ -122,9 +125,10 @@ const Cli::Command command {
           "The graphics protocol id of the image. More images take the ids that follow it. 0 picks one when it is "
           "needed.",
           0, 4294967295.0 },
-        { "--engine", Cli::Option::Kind::String, "auto", {},
-          "The engine that decodes images: auto or builtin, which are the same in aglow. aglow has no ImageMagick "
-          "engine (magick)." },
+        { "--engine", Cli::Option::Kind::Choice, "auto", { "auto", "builtin", "magick" },
+          "The engine that decodes images. aglow decodes PNG, JPEG, GIF, WebP, BMP, TIFF and netPBM itself with any "
+          "engine. auto and magick read AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and compressed BMP images with "
+          "ImageMagick (magick) when it is installed. builtin never runs ImageMagick." },
         { "--silent", Cli::Option::Kind::Flag, "", {}, "Not used. kitten icat keeps it for compatibility, and so does aglow." },
         { "--no-trailing-newline -n", Cli::Option::Kind::Flag, "", {},
           "Leave the cursor after the image, not on the next line. Has no effect with --place." },
@@ -166,6 +170,7 @@ struct Settings
     bool tmux = false;
     bool noNewline = false;
     Medium medium = Medium::Stream;
+    std::string engine = "auto";
 };
 
 bool parseInt(std::string_view text, int& value)
@@ -224,7 +229,9 @@ std::optional<std::array<std::uint8_t, 3>> parseColour(const std::string& text, 
     return std::nullopt;
 }
 
-bool hasImageExtension(const std::string& name)
+/// Whether @p name has the extension of an image that aglow reads, or with
+/// @p external of one that it reads with ImageMagick.
+bool hasImageExtension(const std::string& name, bool external)
 {
     const auto dot = name.rfind('.');
     if (dot == std::string::npos) {
@@ -233,15 +240,18 @@ bool hasImageExtension(const std::string& name)
     std::string ext = name.substr(dot + 1);
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
     static const char* known[] = { "png", "apng", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "pbm", "pgm", "ppm", "pnm", "pam" };
-    return std::any_of(std::begin(known), std::end(known), [&](const char* k) { return ext == k; });
+    static const char* magick[] = { "avif", "heic", "heif", "jxl", "qoi", "svg", "tga", "ico", "cur" };
+    const auto is = [&](const char* k) { return ext == k; };
+    return std::any_of(std::begin(known), std::end(known), is) || (external && std::any_of(std::begin(magick), std::end(magick), is));
 }
 
 // The image files under @p path, in name order. A directory that a link leads
 // back to is read once: @p seen holds the directories read so far. Only the
 // directory that the command names must be readable (@p top): a subdirectory
-// that cannot be read is left out, with the reason in @p skipped.
+// that cannot be read is left out, with the reason in @p skipped. With
+// @p external, the files that ImageMagick reads count too.
 bool walk(const std::string& path, std::vector<std::string>& out, std::set<std::pair<dev_t, ino_t>>& seen,
-          std::vector<std::string>& skipped, std::string& error, bool top = true)
+          std::vector<std::string>& skipped, std::string& error, bool external, bool top = true)
 {
     struct stat self { };
     if (::stat(path.c_str(), &self) != 0 || !seen.emplace(self.st_dev, self.st_ino).second) {
@@ -273,8 +283,8 @@ bool walk(const std::string& path, std::vector<std::string>& out, std::set<std::
             continue;
         }
         if (S_ISDIR(st.st_mode)) {
-            walk(child, out, seen, skipped, error, false);
-        } else if (S_ISREG(st.st_mode) && hasImageExtension(name)) {
+            walk(child, out, seen, skipped, error, external, false);
+        } else if (S_ISREG(st.st_mode) && hasImageExtension(name, external)) {
             // A pipe or a device in the tree is no image file: opening a
             // pipe with no writer would wait for one.
             out.push_back(child);
@@ -471,7 +481,8 @@ public:
 
     // Shows one image; an error message on failure. @p warning tells what
     // did not show, for an image that did.
-    std::string show(std::string_view bytes, std::uint32_t id, std::string& warning);
+    /// Shows @p bytes, the image file @p name (empty for standard input).
+    std::string show(std::string_view bytes, std::string_view name, std::uint32_t id, std::string& warning);
     bool interrupted() const { return m_interrupted; }
     /// Whether a write to the terminal failed: no later image can reach it.
     bool cutOff() const { return m_cutOff; }
@@ -564,11 +575,25 @@ bool Icat::transmit(GraphicsCommand command, std::string_view data, std::string&
     return true;
 }
 
-std::string Icat::show(std::string_view bytes, std::uint32_t id, std::string& warning)
+std::string Icat::show(std::string_view bytes, std::string_view name, std::uint32_t id, std::string& warning)
 {
     int width = 0;
     int height = 0;
     std::string error;
+    // A format that aglow does not read goes through ImageMagick, and its PNG
+    // through aglow's own decoder and checks.
+    std::string converted;
+    if (const std::string coder = magickCoder(bytes, name);
+        !coder.empty() && (coder == "BMP" || AfterglowImage::format(bytes) == AfterglowImage::Format::Unknown)) {
+        if (m_s.engine == "builtin") {
+            return "aglow reads " + std::string(magickFormat(coder)) + " images only with ImageMagick, which --engine builtin turns off";
+        }
+        if (!magickToPng(bytes, coder, converted, error, m_stop)) {
+            m_interrupted = error == "interrupted";
+            return error;
+        }
+        bytes = converted;
+    }
     if (!imageSize(bytes, width, height, error)) {
         return error;
     }
@@ -1063,10 +1088,7 @@ int runIcat(int argc, char** argv)
         settings.z = std::int32_t(std::clamp<std::int64_t>(std::int64_t(value) + origin, INT32_MIN, INT32_MAX));
     }
     settings.loops = parsed->integer("loop");
-    if (const auto engine = parsed->value("engine"); engine != "auto" && engine != "builtin") {
-        report("icat", "--engine must be auto or builtin. aglow decodes images itself and has no " + engine + " engine.");
-        return 1;
-    }
+    settings.engine = parsed->value("engine");
     settings.noNewline = parsed->flag("no-trailing-newline");
     const auto passthrough = parsed->value("passthrough");
     settings.tmux = passthrough == "tmux" || (passthrough == "detect" && std::getenv("TMUX") && *std::getenv("TMUX"));
@@ -1134,6 +1156,7 @@ int runIcat(int argc, char** argv)
     {
         std::string path; ///< empty for standard input
         std::string bytes; ///< standard input, read already
+        bool url = false; ///< path is an http, https or ftp URL
     };
     std::vector<Source> sources;
     const auto stdinMode = parsed->value("stdin");
@@ -1153,6 +1176,10 @@ int runIcat(int argc, char** argv)
     // the images that can be shown, as a file that cannot be read does.
     bool unread = false;
     for (const auto& arg : parsed->args) {
+        if (isRemoteUrl(arg)) {
+            sources.push_back({ arg, {}, true });
+            continue;
+        }
         std::string path = arg;
         if (path.starts_with("file:")) {
             const auto uris = AfterglowProto::parseDndUriList(arg);
@@ -1171,7 +1198,9 @@ int runIcat(int argc, char** argv)
             std::vector<std::string> found;
             std::set<std::pair<dev_t, ino_t>> seen;
             std::vector<std::string> skipped;
-            if (!walk(path, found, seen, skipped, error)) {
+            // The formats of ImageMagick only when it can show them: a
+            // directory of SVG icons is no error without it.
+            if (!walk(path, found, seen, skipped, error, settings.engine != "builtin" && magickInstalled())) {
                 report("icat", error);
                 return 1;
             }
@@ -1299,7 +1328,17 @@ int runIcat(int argc, char** argv)
             break;
         }
         const std::string name = source.path.empty() ? std::string("<stdin>") : printable(source.path);
-        if (!source.path.empty()) {
+        if (source.url) {
+            // One download at a time, as one image in memory.
+            if (!download(source.path, MaxInput, source.bytes, error, stop)) {
+                if (interrupted) {
+                    break;
+                }
+                report("icat", "Could not download " + name + ": " + error);
+                code = 1;
+                continue;
+            }
+        } else if (!source.path.empty()) {
             // O_NONBLOCK: a named pipe opens at once, and readSource() waits
             // for its data where Ctrl+C can stop it.
             const int fd = ::open(source.path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
@@ -1320,7 +1359,7 @@ int runIcat(int argc, char** argv)
             }
         }
         std::string warning;
-        const auto failure = icat.show(source.bytes, id, warning);
+        const auto failure = icat.show(source.bytes, source.url ? std::string_view() : std::string_view(source.path), id, warning);
         // One image at a time in memory.
         std::string().swap(source.bytes);
         if (!warning.empty()) {

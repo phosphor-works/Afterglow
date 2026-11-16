@@ -130,6 +130,8 @@ add_executable(aglow
     Clipboard.cpp
     Commands.h
     Dnd.cpp
+    External.cpp
+    External.h
     Icat.cpp
     Image.cpp
     Image.h
@@ -296,7 +298,7 @@ if(BUILD_TESTING)
     find_package(Python3 3.9 COMPONENTS Interpreter)
     if(NOT Python3_Interpreter_FOUND)
         message(STATUS "aglow: Python 3.9 or later was not found, so the tests aglow_clipboard_pty, aglow_run_pty, aglow_tmux_pty, "
-                       "aglow_icat_decode, aglow_clipboard_cases and aglow_icat_render are left out")
+                       "aglow_icat_decode, aglow_icat_external, aglow_clipboard_cases and aglow_icat_render are left out")
     else()
         # aglow clipboard against a terminal that the test plays in a pseudo-terminal.
         add_test(NAME aglow_clipboard_pty
@@ -322,6 +324,13 @@ if(BUILD_TESTING)
         set(AGLOW_FOREIGN_TMUX "TMUX=${CMAKE_CURRENT_BINARY_DIR}/no-tmux-server,0,0")
         # It skips (77) after the other cases when the user reads a directory of mode 0 (root).
         set_tests_properties(aglow_icat_decode PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT "${AGLOW_FOREIGN_TMUX}")
+        # aglow icat with the programs that it runs: ImageMagick for the
+        # formats that it does not read, and curl for URLs, against a local
+        # HTTP server. It skips (77) after the other cases without magick or
+        # curl, or a format that magick cannot write.
+        add_test(NAME aglow_icat_external
+                 COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/icat_external.py $<TARGET_FILE:aglow>)
+        set_tests_properties(aglow_icat_external PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 ENVIRONMENT "${AGLOW_FOREIGN_TMUX}")
         add_test(NAME aglow_clipboard_cases
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/clipboard_cases.py $<TARGET_FILE:aglow>)
         # It skips (77) on a kernel that does not show a process that waits in

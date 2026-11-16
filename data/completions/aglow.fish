@@ -221,7 +221,7 @@ complete -c aglow -n $i -l hold -d 'Wait for a key press'
 complete -c aglow -n $i -l unicode-placeholder -d 'Show images through placeholder characters'
 complete -c aglow -n $i -l passthrough -x -a 'detect tmux none' -d 'Pass through tmux'
 complete -c aglow -n $i -l image-id -x -d 'Graphics protocol id'
-complete -c aglow -n $i -l engine -x -a 'auto builtin' -d 'Engine that decodes images'
+complete -c aglow -n $i -l engine -x -a 'auto builtin magick' -d 'Engine that decodes images'
 complete -c aglow -n $i -l silent -d 'Not used, for compatibility'
 complete -c aglow -n $i -s n -l no-trailing-newline -d 'Leave the cursor after the image'
 

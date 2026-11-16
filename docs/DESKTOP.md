@@ -290,6 +290,32 @@ An APNG plays the frames before a damaged frame, or before a frame whose chunks 
 An APNG whose first image is not a frame plays its frames without that image, as browsers play it.
 With `--loop 0`, `aglow icat` decodes the first frame only.
 
+#### Other formats and URLs
+
+`aglow icat` shows AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and CUR images, and BMP images that are compressed, with ImageMagick.
+It needs the `magick` program of ImageMagick 7 on `PATH`.
+`--engine builtin` turns this off.
+`--engine auto` and `--engine magick` do the same in `aglow`: the formats that `aglow` reads itself never go to ImageMagick.
+
+`aglow icat` keeps ImageMagick away from the file name and from other files:
+
+1. It reads the file itself, and finds the format from the first bytes. A TGA has no such bytes: `aglow icat` takes a file with the `.tga` extension, or with the TGA footer.
+2. It gives `magick` the data on standard input, with the name of the format.
+3. It gives `magick` a policy that lets it read only that format and write only PNG. The policy also stops all delegate programs, such as Inkscape and Ghostscript, and sets limits on memory, disk, time and image size.
+4. `magick` runs in a child process with limits on its memory and CPU time.
+5. `aglow icat` shows the first frame of the PNG that `magick` gives, and checks it as any other image.
+
+Thus an SVG image does not show the files that it names.
+
+`aglow icat` downloads an image from an `http`, `https` or `ftp` URL with `curl`, when `curl` is installed:
+
+- `curl` does not read `.curlrc`.
+- It follows redirects only to `http`, `https` and `ftp` URLs.
+- It stops a file over the size limit of an image file, and a download that takes more than 5 minutes.
+- The URL comes after `--`, so that `curl` never reads it as an option.
+
+A `file` URL names a file of this computer, and `aglow icat` reads it without `curl`.
+
 For a directory, `aglow icat` shows the image files in it and in its subdirectories, in name order.
 It finds them by the file name extension.
 It shows only regular files: a named pipe or a device file is not an image file.
@@ -318,6 +344,9 @@ Inside tmux, `aglow icat` works in a different way:
 | Pixels of all frames at the size that they show (width × height × 4 bytes) | 320 MiB | `aglow icat` shows the first frame only, with a warning. |
 | Frames of an animation | 1,024 | `aglow icat` shows the first frame only, with a warning. |
 | Memory of the child process that decodes | The memory of `aglow`, and 8 times the decoded frame and 64 MiB more | The decode fails, and `aglow icat` reports that the image needs more memory. |
+| `magick`: address space, CPU time, time | 4 GiB, 60 seconds, 90 seconds | `aglow icat` stops `magick` and reports an error. |
+| `magick`: memory, memory map, disk, threads (in its policy) | 512 MiB, 1 GiB, 1 GiB, 2 | ImageMagick stops and reports an error. |
+| Download time | 5 minutes, and 30 seconds to connect | `curl` stops, and `aglow icat` reports an error. |
 | CPU time of the child process that decodes | 5 seconds, plus 1 second for each 16 MiB of the frames that it can decode | The decode stops, and `aglow icat` reports that it takes too long. |
 | Scans of a progressive JPEG | 1,000 | `aglow icat` refuses the image. |
 | Side in cells with Unicode placeholders (`--unicode-placeholder`, and always inside tmux) | 297 cells | `aglow icat` refuses the image and exits with status 1. |

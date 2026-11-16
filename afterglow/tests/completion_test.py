@@ -428,7 +428,7 @@ def command_cases(program, options):
     yield f'{program} dnd --confirm-drop-t', {'--confirm-drop-timeout'}
     yield f'{program} dnd --drop-dest ', {'adir'}
     yield f'{program} icat --no-trailing', {'--no-trailing-newline'}
-    yield f'{program} icat --engine ', {'auto', 'builtin'}
+    yield f'{program} icat --engine ', {'auto', 'builtin', 'magick'}
     # A file named like a command is a file: its options are not those of transfer.
     yield f'{program} icat transfer --dir', set()
     yield f'{program} clipboard -', has('--help')
