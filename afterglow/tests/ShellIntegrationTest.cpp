@@ -47,7 +47,10 @@ struct Output : IPtyListener, AfterglowVt::ITerminalHost {
     void commandFinished(int value) override { lastExit = value; }
     AfterglowVt::Terminal terminal{80, 24, *this};
     void writeToPty(std::string_view bytes) override {
-        if (pty) EXPECT_TRUE(pty->write(bytes)); else pending += bytes;
+        // The terminal's answers to the shell's queries. One can come after
+        // the shell left (fish asks as it exits): it goes nowhere then, as
+        // in a terminal, and the write fails.
+        if (pty) (void)pty->write(bytes); else pending += bytes;
     }
     void attach(Pty* value) {
         std::lock_guard lock(mutex); pty = value; EXPECT_TRUE(pty->write(std::exchange(pending, {})));
@@ -212,9 +215,12 @@ TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
 // entry is not the system's.
 class ShellFeatures : public testing::TestWithParam<std::string> {
 protected:
+    // The output first: the members go in the reverse order, so the PTY
+    // stops its reader thread, which writes to the output, before the
+    // output goes.
     struct Started {
-        std::unique_ptr<Pty> pty;
         std::unique_ptr<Output> output;
+        std::unique_ptr<Pty> pty;
     };
     // Starts @p shell in a temporary home with Terminal.shellIntegration
     // @p switches, waiting for its first prompt (AG_READY>).

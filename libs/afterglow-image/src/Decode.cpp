@@ -41,16 +41,6 @@ std::string libraryMessage(std::string_view text)
 
 } // namespace detail
 
-Format format(std::string_view bytes)
-{
-    if (bytes.starts_with("\x89PNG\r\n\x1a\n")) return Format::Png;
-    if (bytes.starts_with("\xff\xd8\xff")) return Format::Jpeg;
-    if (bytes.starts_with("GIF87a") || bytes.starts_with("GIF89a")) return Format::Gif;
-    if (bytes.size() >= 12 && bytes.starts_with("RIFF") && bytes.substr(8, 4) == "WEBP") return Format::WebP;
-    if (bytes.starts_with("BM")) return Format::Bmp;
-    return Format::Unknown;
-}
-
 Probe probe(std::string_view bytes, int& width, int& height)
 {
     width = height = 0;

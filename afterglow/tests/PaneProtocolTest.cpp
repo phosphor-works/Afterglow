@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "Pane.h"
+#include "ProgramImages.h"
 #include "desktop/FileTransfer.h"
 #include "ImageFiles.h"
 
@@ -18,7 +19,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -536,6 +539,42 @@ TEST(PaneDownload, TheProgramWaitsForTheAnswerAndTheFileStreamsToItsPlace)
     EXPECT_EQ(QDir(dir.path()).entryList(QDir::Files).size(), 2);
 }
 
+TEST(PaneImages, ProgramImagesDecodeInTheDecoderProcessWithTheirColours)
+{
+    // A pane decodes the images of its program as a session pane does: in
+    // aglow-mux's decoding processes, which convert an ICC profile and a
+    // cICP colour space to sRGB. Qt in the window took the samples as sRGB.
+    Pane pane { AfterglowVt::TerminalOptions {} };
+    pane.resize(20, 10, 10, 20);
+    const auto near = [](const std::vector<std::uint8_t>& px, std::size_t at, int r, int g, int b) {
+        return px.size() >= at + 4 && std::abs(px[at] - r) <= 1 && std::abs(px[at + 1] - g) <= 1 && std::abs(px[at + 2] - b) <= 1;
+    };
+    // Whether an image of the snapshot starts with @p first, then @p second.
+    // The snapshot keeps no order of arrival.
+    const auto shows = [&](std::array<int, 3> first, std::array<int, 3> second) {
+        pane.refreshSnapshot();
+        for (const auto& image : pane.snapshot().images) {
+            if (image.frame && near(image.frame->rgba, 0, first[0], first[1], first[2])
+                && near(image.frame->rgba, 4, second[0], second[1], second[2]))
+                return true;
+        }
+        return false;
+    };
+    // A Kitty PNG (f=100) in Adobe RGB, then an iTerm2 PNG in Display P3 (cICP).
+    pane.withTerminal([](AfterglowVt::Terminal& terminal) {
+        terminal.feed("\x1b_Ga=T,f=100,q=2;" + AfterglowProto::base64Encode(AfterglowImage::TestFiles::PngAdobe) + "\x1b\\");
+        terminal.feed("\x1b[5;1H\x1b]1337;File=inline=1:" + AfterglowProto::base64Encode(AfterglowImage::TestFiles::PngCicpP3) + "\x07");
+    });
+    EXPECT_TRUE(shows({66, 151, 203}, {0, 201, 0}));
+    EXPECT_TRUE(shows({83, 152, 205}, {0, 204, 0}));
+    // A WebP, which Qt read only with its plugin.
+    pane.withTerminal([](AfterglowVt::Terminal& terminal) {
+        terminal.feed("\x1b[8;1H\x1b]1337;File=inline=1:" + AfterglowProto::base64Encode(AfterglowImage::TestFiles::WebpAdobe) + "\x07");
+    });
+    EXPECT_TRUE(shows({66, 151, 203}, {66, 151, 203}));
+    EXPECT_EQ(pane.snapshot().images.size(), 3u);
+}
+
 TEST(PaneAnimation, AnITerm2GifPlaysThroughThePanesDecoder)
 {
     // OSC 1337 with an animated GIF, decoded by the pane as the window does:
@@ -624,6 +663,7 @@ int main(int argc, char** argv)
     qputenv("QT_QPA_PLATFORM", "offscreen");
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
     QGuiApplication app(argc, argv);
+    Afterglow::ProgramImages::setServerExecutable(AFTERGLOW_MUX);
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }

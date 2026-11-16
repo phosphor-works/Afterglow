@@ -29,8 +29,17 @@ enum class Format {
     Bmp,
 };
 
-/// The format of @p bytes from its signature.
-Format format(std::string_view bytes);
+/// The format of @p bytes from its signature. Inline: a client of a decoding
+/// process (mux/src/ImageDecoder.cpp) checks it without the decoders.
+inline Format format(std::string_view bytes)
+{
+    if (bytes.starts_with("\x89PNG\r\n\x1a\n")) return Format::Png;
+    if (bytes.starts_with("\xff\xd8\xff")) return Format::Jpeg;
+    if (bytes.starts_with("GIF87a") || bytes.starts_with("GIF89a")) return Format::Gif;
+    if (bytes.size() >= 12 && bytes.starts_with("RIFF") && bytes.substr(8, 4) == "WEBP") return Format::WebP;
+    if (bytes.starts_with("BM")) return Format::Bmp;
+    return Format::Unknown;
+}
 
 enum class Probe {
     Image, ///< a format that the decoders read, with a size in the header

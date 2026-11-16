@@ -74,8 +74,9 @@ public:
     /// The server is @p executable with DecodeServerArgument: the daemon
     /// passes /proc/self/exe. It starts now, with the daemon, and again
     /// with a decode after it ended. A decode waits @p waitMs for the
-    /// server's answer and the pixels.
-    explicit ImageDecoder(std::string executable, int waitMs = WaitMs);
+    /// server's answer and the pixels. Its reports on standard error start
+    /// with @p reporter, the program that decodes.
+    explicit ImageDecoder(std::string executable, int waitMs = WaitMs, std::string reporter = "aglow-mux");
     /// Ends the server, which ends the decodes that still run.
     ~ImageDecoder();
     ImageDecoder(const ImageDecoder&) = delete;
@@ -124,6 +125,7 @@ private:
     void oweLocked(std::chrono::steady_clock::time_point due);
 
     const std::string m_executable;
+    const std::string m_reporter;
     const int m_waitMs;
     std::timed_mutex m_mutex; ///< guards the server: its socket takes one request, then its answer
     AfterglowProto::UniqueFd m_socket;

@@ -44,7 +44,6 @@ The notice of libjpeg-turbo covers them, and a fix of either comes with a releas
 | `qqc2-desktop-style` | Draws tabs, menus and prompts in the Plasma style | The controls use the Fusion style. |
 | `bash-completion` | Loads the Bash completions of `afterglow` and `aglow` | Bash does not complete `afterglow` and `aglow` arguments. |
 | NASM | Builds the SIMD code of libjpeg-turbo on x86-64 computers | `aglow` and `aglow-mux` decode JPEG images more slowly. The configuration says so. |
-| Qt Image Formats | Decodes WebP images that a program shows in a pane outside a session | Such a pane does not show WebP images. A session pane shows them. |
 | Python 3 (3.9 or later for the tests of `aglow`) | Runs the Python tests in CTest | These tests are not added to CTest. The configuration names the tests of `aglow` that it leaves out. With `AFTERGLOW_NATIVE_TESTS=ON`, the configuration stops with an error. |
 
 ## Source archives

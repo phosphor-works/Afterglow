@@ -358,13 +358,7 @@ A session pane differs from a pane outside a session in these ways:
 - The screen with its cursor, the history and the images of a pane that you cannot see wait in the daemon. They come when you can see the pane again. Until they come, the pane shows its older screen. They also come before each bell, notification or other request of the program, and before the program exits. Thus the window does not get the rows that a program in a background tab writes until it needs them.
 - Before a read of the text of a pane that you cannot see, the window gets its screen and history from the daemon. It does this also for a pane that shows again before its screen came, and before a screenshot. The window waits for them for a limited time (see [limits](#limits)).
   A read of the selection does this too. The read gets at least the text that the pane had when the window asked. It can also get text that the program wrote after that.
-- A pane outside a session decodes images with Qt, and a session pane with the decoders of its daemon. They show some images in a different way:
-  - A pane outside a session shows a WebP image only when the Qt Image Formats plugin is installed. A session pane always shows it.
-  - A session pane converts an image with an ICC color profile or a cICP color space to sRGB. A pane outside a session shows its samples as sRGB.
-  - A pane outside a session shows a compressed BMP (run-length encoding) and a GIF whose screen has an empty side. A session pane does not show them.
-  - A session pane shows a BMP with a header of 52 or 56 bytes, or with its masks after the header (compression 6). A pane outside a session does not show it.
-  - Where the first frame of a GIF does not draw, a session pane shows nothing, as Kitty and browsers do. A pane outside a session can show the background color of the GIF there.
-  - The decoding process of a session pane has a CPU limit for each image. A long animation can stop at the frame where the limit stops it. A pane outside a session decodes each frame.
+- A session pane decodes images with the decoders of its daemon, and a pane outside a session with the same decoders, in processes of the window: both show the same images alike.
 - The session follows the terminal settings and the colors of the window that shows it.
   While no window shows it, it keeps those of its last window (see [settings of a session pane](#settings-of-a-session-pane)).
 

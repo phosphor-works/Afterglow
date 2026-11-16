@@ -278,7 +278,8 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 - `aglow icat` shows the first frame of an animated PNG, and does not show netPBM images. The builtin engine of `kitten icat` plays the one and shows the other.
 - `aglow icat` converts an image with an embedded color profile (ICC) or a cICP color space to sRGB with Little CMS, as the builtin engine of `kitten icat` does. A PNG that it sends as it is keeps its profile, for the terminal. The two can differ by 1 in a sample: an Adobe RGB JPEG of `100,150,200` gives `66,151,202` in `kitten icat`, and `66,151,203` in `aglow icat` and in Pillow.
 - cICP: the primaries BT.709, BT.2020 and Display P3, with the sRGB, linear, PQ and HLG transfers, in full range. PQ and HLG map 203 cd/m², their reference white (BT.2408), to the white of sRGB, and clip what is brighter. Other cICP values leave the pixels as they are.
-- A pane outside a mux session does not apply the profile of an image that a program sends, where Kitty applies the profile of a PNG. A session pane converts it, with the decoders of its daemon.
+- A pane converts an image that a program sends with an ICC profile or a cICP color space to sRGB, as Kitty applies the profile of a PNG.
+- A pane decodes the images that programs send in processes of their own, with `aglow-mux --decode-images` from next to `afterglow`, with limits on their memory, time and system calls. Without that program, such images do not show, and a warning says so once. A long animation can stop at the frame where the limit of its process stops it.
 - The `--engine` option of `aglow icat` takes `auto` and `builtin`, which mean the same. It refuses `magick`.
 - `aglow icat` accepts `--silent` and ignores it, as `kitten icat` does.
 - `aglow icat` compresses pixels with zlib only when it sends them through the terminal connection. A file or shared memory holds raw pixels.

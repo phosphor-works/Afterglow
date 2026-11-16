@@ -15,6 +15,8 @@ qt_add_library(afterglow_app STATIC
     src/DockArea.h
     src/NestedLoop.h
     src/Pane.cpp
+    src/ProgramImages.cpp
+    src/ProgramImages.h
     src/mux/MuxClient.cpp
     src/mux/MuxClient.h
     src/mux/MuxCommands.cpp
@@ -264,7 +266,7 @@ foreach(windows afterglow_native_tests afterglow_native_bench)
     endif()
 endforeach()
 target_include_directories(afterglow_app PUBLIC src)
-target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio afterglow_imagedecode Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
+target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio afterglow_mux_image Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::CorePrivate Qt6::GuiPrivate Qt6::QuickPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorIpc::PhosphorIpc PhosphorScripting::PhosphorScripting

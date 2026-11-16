@@ -5,6 +5,7 @@
 #include "desktop/DragDrop.h"
 #include "desktop/TerminalText.h"
 
+#include <AfterglowProto/Fd.h>
 #include <AfterglowPty/Pty.h>
 #include <AfterglowRender/GridRenderer.h>
 #include <AfterglowRender/Snapshot.h>
@@ -681,6 +682,8 @@ private:
     AfterglowProto::Remote::Answer m_remoteSocket; ///< guarded by m_mutex
     std::chrono::steady_clock::time_point m_commandStart;
     AfterglowVt::Terminal m_terminal;
+    /// Readable once the pane closes: an image decode that runs ends at once.
+    AfterglowProto::UniqueFd m_stopDecode;
     QString m_title; ///< guarded by m_mutex
     QString m_shownTitle; ///< the title to show, guarded by m_mutex
     QString m_announcedTitle; ///< the last titleUpdated, GUI thread

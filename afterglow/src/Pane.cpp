@@ -6,7 +6,9 @@
 #include "desktop/DragDrop.h"
 #include "desktop/Accessibility.h"
 #include "DockArea.h" // IWYU pragma: keep (~Pane deletes the docks: unique_ptr needs the type)
-#include "ImageDecode.h"
+#include "ProgramImages.h"
+
+#include <ImageDecoder.h>
 #include "PaneLaunch.h"
 #include "PaneDialog.h"
 #include "PaneOverlay.h"
@@ -42,6 +44,7 @@
 
 #include <fcntl.h>
 #include <pwd.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 
 #include <sys/wait.h>
@@ -79,6 +82,7 @@ Pane::Pane(const AfterglowVt::TerminalOptions& options, QObject* parent)
     : QObject(parent)
     , m_id(s_nextPaneId++)
     , m_terminal(InitialCols, InitialRows, *this, options)
+    , m_stopDecode(::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK))
 {
     qRegisterMetaType<AfterglowVt::NotificationRequest>();
     qRegisterMetaType<AfterglowVt::ClipboardRequest>();
@@ -93,6 +97,11 @@ Pane::~Pane()
     // program gets SIGHUP.
     delete m_overlay;
     if (m_searchJob) m_searchJob->cancelled = true;
+    // A decode that runs ends at once, and so does each one after it.
+    if (m_stopDecode.valid()) {
+        const std::uint64_t one = 1;
+        (void)!::write(m_stopDecode.get(), &one, sizeof one);
+    }
     // A reader thread that waits for a download's answer ends its wait.
     {
         std::lock_guard lock(m_mutex);
@@ -1438,21 +1447,40 @@ QString localUser()
 
 } // namespace
 
+// The images that programs send decode in processes of their own
+// (ProgramImages), on this reader thread with m_mutex held, as the Qt decode
+// in this process did: the window draws the pane after the decode. The
+// process's CPU limit and the decoder's wait bound it, and the pane's end
+// stops it at once (m_stopDecode).
+
 bool Pane::decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
-    return decodeBoundedImage(png, "PNG", width, height, rgba);
+    AfterglowMux::ImageDecoder* decoder = ProgramImages::decoder();
+    return decoder && decoder->decode(png, AfterglowMux::ImageFormats::Png, width, height, rgba, m_stopDecode.get());
 }
 
 bool Pane::decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
     // The common formats by their content; an animation shows its first frame.
-    return decodeBoundedImage(data, "", width, height, rgba);
+    AfterglowMux::ImageDecoder* decoder = ProgramImages::decoder();
+    return decoder && decoder->decode(data, AfterglowMux::ImageFormats::Common, width, height, rgba, m_stopDecode.get());
 }
 
 bool Pane::decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
                              std::vector<std::uint32_t>& delays)
 {
-    return decodeBoundedFrames(data, maxBytes, frames, delays);
+    AfterglowMux::ImageDecoder* decoder = ProgramImages::decoder();
+    std::vector<AfterglowMux::DecodedFrame> decoded;
+    if (!decoder || !decoder->decodeFrames(data, maxBytes, decoded, m_stopDecode.get())) return false;
+    for (AfterglowMux::DecodedFrame& d : decoded) {
+        AfterglowVt::ImageFrame frame;
+        frame.width = d.width;
+        frame.height = d.height;
+        frame.rgba = std::move(d.rgba);
+        frames.push_back(std::move(frame));
+        delays.push_back(d.delayMs);
+    }
+    return true;
 }
 
 void Pane::contextChanged()

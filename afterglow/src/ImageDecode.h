@@ -16,8 +16,9 @@ namespace Afterglow {
 /// sides and the decoded size, each checked before the pixels are decoded.
 /// @p format names the format ("PNG"), or is empty to take it from the
 /// content, among the common formats only (PNG, JPEG, GIF, BMP and WebP).
-/// An animation gives its first frame. The panes decode with this, and
-/// afterglow_renderpng decodes as they do.
+/// An animation gives its first frame. afterglow_renderpng decodes with
+/// this, in its own process: the panes decode with ProgramImages, in
+/// processes with limits.
 bool decodeBoundedImage(std::string_view data, const char* format, std::uint32_t& width, std::uint32_t& height,
                         std::vector<std::uint8_t>& rgba);
 

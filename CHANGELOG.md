@@ -49,6 +49,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Kitty images sent as a file, a temporary file or shared memory, unless `Terminal.graphicsFileTransfer` is `deny`.
 - An image memory limit for the main and the alternate screen of each pane (`Graphics.quota`, 320 MiB each by default). Images without a placement go first: those sent with the transient hint (`N=1`), then the oldest.
 - Sixel images.
+- The images that programs send decode in processes of their own, with limits on their memory, time and system calls, in local and in session panes alike. PNG, JPEG, GIF, WebP and BMP images show, and an image with an ICC color profile or a cICP color space shows in sRGB, as in Kitty.
 - iTerm2 inline images, which play when they are animated GIF or WebP images, and file downloads (OSC 1337) of any size, as `it2dl` sends them. Afterglow asks before the data comes, with the name and the size of the file, and the program waits for the answer (`Terminal.downloads`, `Terminal.downloadDirectory`). The dialog moves with its pane to another window. It closes when its pane of a mux session moves to a new session.
 - Kitty text sizing (OSC 66).
 - The Kitty multiple-cursors protocol, with mixed block and beam layering.
