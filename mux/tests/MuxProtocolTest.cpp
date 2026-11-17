@@ -310,7 +310,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
              {Host::Kind::ClipboardWrite, 5}, {Host::Kind::ClipboardRequest, 6}, {Host::Kind::TerminalProtocol, 7},
              {Host::Kind::PointerShape, 8}, {Host::Kind::UserVar, 9}, {Host::Kind::CommandStarted, 10},
              {Host::Kind::CommandFinished, 11}, {Host::Kind::DownloadBegin, 12}, {Host::Kind::Report, 13}, {Host::Kind::ProtocolLost, 14},
-             {Host::Kind::DownloadData, 15}, {Host::Kind::DownloadEnd, 16}}) {
+             {Host::Kind::DownloadData, 15}, {Host::Kind::DownloadEnd, 16}, {Host::Kind::UploadRequest, 17}}) {
         EXPECT_EQ(int(kind), number);
     }
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::Notify, "t", "b")), std::string("\x03\x01t\x01" "b\x00", 6));
@@ -318,6 +318,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     missed.missed = true;
     EXPECT_EQ(Host::encode(missed), std::string("\x03\x01t\x01" "b\x01", 6));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::UserVar, "n", "v")), std::string("\x09\x01n\x01v"));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::UploadRequest)), std::string("\x11"));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::TerminalProtocol, {}, "x", 5113)), std::string("\x07\xf2\x4f\x01x"));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::Report, {}, "\x1b[?62c")), std::string("\x0d\x06\x1b[?62c"));
     Host::Call finished = Host::make(Host::Kind::CommandFinished, {}, {}, -1);
@@ -456,6 +457,7 @@ TEST(MuxProtocol, HostCallsRoundTrip)
     calls.push_back(begin);
     calls.push_back(Host::make(Host::Kind::DownloadData, {}, std::string("cont\0ents", 9)));
     calls.push_back(Host::make(Host::Kind::DownloadEnd, {}, {}, 1));
+    calls.push_back(Host::make(Host::Kind::UploadRequest));
     calls.push_back(Host::make(Host::Kind::Report, {}, "\x1b[?62;22c"));
     for (const int held : {Host::LostNothing, Host::LostReset, Host::LostPackets}) {
         Host::Call lost = Host::make(Host::Kind::ProtocolLost, {}, {}, held);

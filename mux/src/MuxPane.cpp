@@ -589,6 +589,19 @@ void MuxPane::bell()
     if (wake || watched) m_wake();
 }
 
+bool MuxPane::uploadRequested()
+{
+    bool wake = false;
+    bool queued = false;
+    {
+        std::lock_guard lock(m_hostMutex);
+        if (!m_window) return false;
+        queued = queueLocked(Host::encode(Host::make(Host::Kind::UploadRequest)), Host::Kind::UploadRequest, Fit::Queue, &wake);
+    }
+    if (wake) m_wake();
+    return queued;
+}
+
 void MuxPane::flash()
 {
     bool wake = false;

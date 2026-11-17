@@ -105,6 +105,8 @@ const Choice<Settings::Bell> BellChoices[] = {{"none", Settings::Bell::None},
 const Choice<Settings::Permission> PermissionChoices[] = {{"allow", Settings::Permission::Allow},
                                                               {"ask", Settings::Permission::Ask},
                                                               {"deny", Settings::Permission::Deny}};
+const Choice<Settings::Permission> UploadChoices[] = {{"ask", Settings::Permission::Ask},
+                                                      {"deny", Settings::Permission::Deny}};
 const Choice<Settings::Permission> GraphicsTransferChoices[] = {{"allow", Settings::Permission::Allow},
                                                                 {"deny", Settings::Permission::Deny}};
 const Choice<WindowSettings::StartMode> StartModeChoices[] = {{"normal", WindowSettings::StartMode::Normal},
@@ -617,6 +619,13 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("downloadDirectory"), d.downloadDirectory, QMetaType::QString,
          QStringLiteral("The folder for the files that programs send (Terminal.downloads). Empty for the download folder of the "
                         "desktop. A ~ at the start is the home folder.")},
+        enumKey(QStringLiteral("uploads"), UploadChoices, d.uploads,
+                QStringLiteral("Files that programs ask for with the iTerm2 protocol (OSC 1337 RequestUpload), as it2ul does. "
+                               "The ask value shows a file picker, and the program gets the files that you choose. The deny "
+                               "value refuses each request.")),
+        intKey(QStringLiteral("uploadLimit"), d.uploadLimit, 1, Settings::MaxUploadLimit,
+               QStringLiteral("The largest upload in MiB, after compression (Terminal.uploads). The program reads it as typed "
+                              "input, which holds 32 MiB. Send larger files with aglow transfer.")),
         enumKey(QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices,
                 term.graphicsFileTransfer ? Settings::Permission::Allow : Settings::Permission::Deny,
                 QStringLiteral("Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared "
@@ -1902,6 +1911,8 @@ Settings SettingsStore::read()
     s.clipboardWrite = readEnum(st, Terminal, QStringLiteral("clipboardWrite"), PermissionChoices, s.clipboardWrite);
     s.downloads = readEnum(st, Terminal, QStringLiteral("downloads"), PermissionChoices, s.downloads);
     s.downloadDirectory = st.read<QString>(Terminal, QStringLiteral("downloadDirectory")).trimmed();
+    s.uploads = readEnum(st, Terminal, QStringLiteral("uploads"), UploadChoices, s.uploads);
+    s.uploadLimit = st.read<int>(Terminal, QStringLiteral("uploadLimit"));
     // The terminal core enforces these two itself, and Graphics.quota below.
     // t holds the default here, the one the schema has.
     t.graphicsFileTransfer = readEnum(st, Terminal, QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices,

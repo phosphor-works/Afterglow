@@ -3113,6 +3113,38 @@ TEST(MuxControl, TheDaemonTypesKeysAndTellsThePanesFacts)
     }
 }
 
+// it2ul (OSC 1337 RequestUpload) in a session: the window that shows it
+// asks the user. Without a window nobody can choose the files: the
+// program gets Ctrl+C at once, as for a cancel, and does not wait.
+TEST(MuxAttach, AnUploadRequestGoesToTheWindowOrIsCancelled)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "u")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("u"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    // What the program reads after its request, one byte in hexadecimal.
+    const std::string request = "stty raw -echo; printf '\\033]1337;RequestUpload=format=tgz\\a'; head -c1 | od -An -tx1; stty sane\n";
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, request})) << ctl.error.message;
+    EXPECT_TRUE(waitFor([&] {
+        const auto text = ctl.call("getText", Json::Array{pane, "screen"});
+        return text && contains(text->toString(), " 03");
+    }));
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "u"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    ASSERT_TRUE(w.type(request));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::UploadRequest); }));
+    // The window answers as typed input; here a byte.
+    ASSERT_TRUE(w.type("x"));
+    EXPECT_TRUE(waitFor([&] {
+        const auto text = ctl.call("getText", Json::Array{pane, "screen"});
+        return text && contains(text->toString(), " 78");
+    }));
+}
+
 // The colours, user variables and signals of a session's panes are the
 // daemon's: it has their terminals and programs, also without a window. The
 // window's font, opacity and state need a window.

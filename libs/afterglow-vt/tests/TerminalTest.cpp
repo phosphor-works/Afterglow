@@ -1785,3 +1785,29 @@ TEST(Terminal, TheHostSetsAndResetsColoursByName)
     EXPECT_FALSE(named("selection_background"));
     EXPECT_EQ(named("background"), t.t.options().defaultBackground);
 }
+
+// it2ul (OSC 1337 RequestUpload): a host that cannot ask the user, and a
+// format other than tgz, get Ctrl+C, iTerm2's answer to a cancel.
+TEST(Terminal, AnUploadRequestThatNoHostTakesIsCancelled)
+{
+    Term t(10, 2);
+    t.feed("\x1b]1337;RequestUpload=format=tgz;version=dGFy\a");
+    EXPECT_EQ(t.host.written, "\x03");
+    t.host.written.clear();
+    struct Asking : RecordingHost
+    {
+        int asked = 0;
+        bool uploadRequested() override
+        {
+            ++asked;
+            return true;
+        }
+    } asking;
+    Terminal terminal(10, 2, asking);
+    terminal.feed("\x1b]1337;RequestUpload=format=tgz\a");
+    EXPECT_EQ(asking.asked, 1);
+    EXPECT_EQ(asking.written, "");
+    terminal.feed("\x1b]1337;RequestUpload=format=zip\a");
+    EXPECT_EQ(asking.asked, 1);
+    EXPECT_EQ(asking.written, "\x03");
+}

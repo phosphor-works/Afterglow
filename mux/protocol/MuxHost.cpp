@@ -207,6 +207,7 @@ std::string encode(const Call& call)
     switch (call.kind) {
     case Kind::Bell:
     case Kind::Flash:
+    case Kind::UploadRequest:
         break;
     case Kind::Notify:
         o.string(call.title);
@@ -258,11 +259,12 @@ std::optional<Call> decode(std::string_view bytes)
     In in(bytes);
     Call call;
     const std::uint8_t kind = in.byte();
-    if (kind < std::uint8_t(Kind::Bell) || kind > std::uint8_t(Kind::DownloadEnd)) return std::nullopt;
+    if (kind < std::uint8_t(Kind::Bell) || kind > std::uint8_t(Kind::UploadRequest)) return std::nullopt;
     call.kind = Kind(kind);
     switch (call.kind) {
     case Kind::Bell:
     case Kind::Flash:
+    case Kind::UploadRequest:
         break;
     case Kind::Notify:
         call.title = in.string();

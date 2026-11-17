@@ -1005,6 +1005,11 @@ private:
     /// A program in @p pane wants to save a file (Pane::downloadRequested):
     /// Terminal.downloads decides, or the user does, before its data comes.
     void askDownload(Pane* pane, const QString& name, qint64 size);
+    /// A program asks for files (it2ul): a question, a file picker, then the
+    /// archive, made off the GUI thread, as the pane's input.
+    void askUpload(Pane* pane);
+    /// Makes the archive of @p paths and answers @p pane with it.
+    void sendUpload(Pane* pane, const QStringList& paths);
     void saveDownloadAs(Pane* pane, const QString& directory, const QString& name);
     /// A program's clipboard write (OSC 52 or 5522), as Terminal.clipboardWrite says.
     void clipboardWrite(Pane* pane, const AfterglowVt::ClipboardRequest& request);

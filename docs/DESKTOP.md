@@ -197,6 +197,38 @@ Closing the source pane refuses the download and removes its `.part` file.
 The protocol has no success acknowledgment.
 Afterglow does not open or execute received files automatically.
 
+## Send files to a terminal application
+
+A program asks for files with OSC 1337 `RequestUpload=format=tgz`, as iTerm2's `it2ul` does.
+Afterglow asks you first, then the program gets the files that you choose.
+
+1. Select **Choose Files…** to choose one or more files.
+2. Or select **Choose a Folder…** to choose a folder with all that it holds.
+3. Or select **Refuse**. The program gets Ctrl+C, as from iTerm2.
+
+The question starts on **Refuse**, so a Return that you type for the shell refuses.
+`Terminal.uploads` sets the policy: `ask` (the default), or `deny`, which refuses each request with no question.
+
+The program gets the files as iTerm2 sends them:
+
+| Part | Content |
+| --- | --- |
+| First line | `ok` |
+| Then | A tar archive compressed with gzip, in base64 lines of 76 characters, each ended with a carriage return |
+| Last | An empty line |
+
+Each path in the archive starts with `./`, below the deepest folder that holds all the chosen files.
+A folder chosen alone is in the archive with its name.
+Symbolic links stay links.
+
+The answer goes to the program as typed input, in one piece.
+Typed input holds 32 MiB, so `Terminal.uploadLimit` sets the largest archive after compression: 16 MiB by default, at most 23 MiB.
+Files that make a larger archive are refused with a notification, and the program gets Ctrl+C.
+Use [`aglow transfer`](#the-aglow-client) for larger files: it resumes, and it sends only the changed parts of a file.
+
+A second request while the question is open gets Ctrl+C.
+In a mux session, the window that shows the session asks. Without a window, the session cancels the request with Ctrl+C at once.
+
 ## The aglow client
 
 `aglow` is a client of four Kitty protocols: file transfer, drag and drop, graphics and the clipboard.

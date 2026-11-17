@@ -251,6 +251,8 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `sshTerminfo` | `"install"` | `"install"`, `"fallback"` | What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use xterm-256color there instead. New panes and new mux sessions use this value. A session of another host does not use it. |
 | `term` | `"xterm-256color"` |  | Value of TERM for the programs in the panes. An empty value uses the default. New panes and new mux sessions use this value. A session of another host keeps the value that afterglow mux new --ssh gave it. |
 | `textBlinkInterval` | `500` | 100–5000 | Duration in milliseconds for each visible and hidden phase of blinking text (SGR 5). |
+| `uploadLimit` | `16` | 1–23 | The largest upload in MiB, after compression (Terminal.uploads). The program reads it as typed input, which holds 32 MiB. Send larger files with aglow transfer. |
+| `uploads` | `"ask"` | `"ask"`, `"deny"` | Files that programs ask for with the iTerm2 protocol (OSC 1337 RequestUpload), as it2ul does. The ask value shows a file picker, and the program gets the files that you choose. The deny value refuses each request. |
 | `wordSeparators` | `` "`\"'│\|:;,()[]{}<>" `` |  | Characters that end a word for double-click selection, besides spaces. With an empty value, only spaces end a word. |
 
 ## Window

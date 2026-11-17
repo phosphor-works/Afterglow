@@ -189,6 +189,12 @@ public:
     virtual void contextChanged() { }
     /// iTerm2's SetUserVar (OSC 1337): a named value for the host to keep.
     virtual void userVarChanged(std::string_view name, std::string_view value) { }
+    /// iTerm2's RequestUpload (OSC 1337, it2ul): the program asks for files,
+    /// as a tar archive compressed with gzip. True when the host asks the
+    /// user and answers on the program's input later: "ok", then the
+    /// archive in base64 lines, then an empty line. False refuses at once:
+    /// the terminal sends Ctrl+C, as iTerm2 does for a cancel.
+    virtual bool uploadRequested() { return false; }
     /// The most user variables that a host keeps for a terminal: it ignores
     /// new names after them.
     static constexpr std::size_t MaxUserVars = 256;

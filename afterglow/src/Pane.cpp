@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "Pane.h"
+
+#include "desktop/UploadArchive.h"
 #include "desktop/FileTransfer.h"
 #include "desktop/DragDrop.h"
 #include "desktop/Accessibility.h"
@@ -951,6 +953,23 @@ bool Pane::signalProgram(int signal)
     return m_pty && m_pty->signalForeground(signal);
 }
 
+bool Pane::uploadRequested()
+{
+    // m_mutex held, on the reader thread or for a session pane the GUI thread.
+    if (m_uploadAsked.exchange(true)) return false;
+    QMetaObject::invokeMethod(this, [this] { Q_EMIT uploadAsked(); }, Qt::QueuedConnection);
+    return true;
+}
+
+bool Pane::answerUpload(const std::optional<std::string>& answer)
+{
+    m_uploadAsked.store(false);
+    // One write: the answer goes whole, or the program gets the cancel.
+    if (answer && sendInput(*answer, false)) return true;
+    sendInput(UploadArchive::Cancel, false);
+    return !answer;
+}
+
 void Pane::setUserVar(const QString& name, const QString& value)
 {
     const QByteArray n = name.toUtf8(), v = value.toUtf8();
@@ -1346,6 +1365,11 @@ void Pane::applySessionHostCall(const AfterglowMux::Host::Call& call)
         }
         break;
     case Kind::DownloadEnd: downloadEnd(call.number == 1); break;
+    // The daemon's terminal let the window answer: a request that waits
+    // already is cancelled, as the terminal of a window cancels it.
+    case Kind::UploadRequest:
+        if (!uploadRequested()) writeToPty(UploadArchive::Cancel);
+        break;
     case Kind::Report: writeToPty(call.text); break;
     case Kind::ProtocolLost:
         loseProtocolCommands(call.number == AfterglowMux::Host::LostPackets ? DragDrop::Lost::Packets

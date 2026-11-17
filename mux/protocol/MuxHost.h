@@ -64,6 +64,9 @@ enum class Kind : std::uint8_t {
     ProtocolLost = 14,
     DownloadData = 15, ///< text: data of the accepted download
     DownloadEnd = 16, ///< number: 1 when the download is whole
+    /// iTerm2's RequestUpload (OSC 1337, it2ul): the window asks the user
+    /// for files and types the answer as the pane's input.
+    UploadRequest = 17,
 };
 
 /// ProtocolLost: what the lost commands held, in the order that the program

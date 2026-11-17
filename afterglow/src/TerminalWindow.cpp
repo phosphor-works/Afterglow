@@ -9,6 +9,7 @@
 #include "desktop/PointerShape.h"
 #include "desktop/FileTransfer.h"
 #include "desktop/DragDrop.h"
+#include "desktop/UploadArchive.h"
 #include <QMessageBox>
 #include "desktop/Accessibility.h"
 #include <QAccessible>
@@ -750,6 +751,9 @@ void TerminalWindow::bindPane(Pane* pane)
             });
     connect(pane, &Pane::downloadRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& name, qint64 size) {
         if (guard) askDownload(guard, name, size);
+    });
+    connect(pane, &Pane::uploadAsked, this, [this, guard = QPointer<Pane>(pane)] {
+        if (guard) askUpload(guard);
     });
     connect(pane, &Pane::downloadFinished, this, [guard = QPointer<Pane>(pane)](const QString& path, bool ok, const QString& error) {
         NotificationCenter::instance().showNotice(guard, ok ? tr("Download saved") : tr("Download not saved"),
@@ -5956,6 +5960,89 @@ void TerminalWindow::askDownload(Pane* pane, const QString& name, qint64 size)
     connect(pane, &QObject::destroyed, dialog, &QDialog::reject);
     dialog->open();
     if (!isActive()) alert(0);
+}
+
+void TerminalWindow::askUpload(Pane* pane)
+{
+    const Settings& settings = m_settings.settings();
+    if (settings.uploads == Settings::Permission::Deny) {
+        pane->answerUpload(std::nullopt);
+        return;
+    }
+    // The picker is the consent, as in iTerm2. A question first: a folder
+    // and files are two pickers, and Refuse is the default, so a Return
+    // typed for the shell refuses.
+    const QString text = tr("%1 asks for files (it2ul). The files that you choose go to it as typed input, at most %2 MiB "
+                            "compressed.")
+                             .arg(clipboardAsker(pane))
+                             .arg(settings.uploadLimit);
+    auto* dialog = new QMessageBox(QMessageBox::Question, tr("Upload"), text, QMessageBox::NoButton);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setOption(QMessageBox::Option::DontUseNativeDialog);
+    dialog->setTextFormat(Qt::PlainText);
+    QPushButton* files = dialog->addButton(tr("Choose Files…"), QMessageBox::AcceptRole);
+    QPushButton* folder = dialog->addButton(tr("Choose a Folder…"), QMessageBox::ActionRole);
+    QPushButton* refuse = dialog->addButton(tr("Refuse"), QMessageBox::RejectRole);
+    dialog->setDefaultButton(refuse);
+    dialog->setEscapeButton(refuse);
+    keepDialogOverPane(dialog, pane);
+    const QPointer<Pane> guard(pane);
+    connect(dialog, &QDialog::finished, dialog, [this, guard, dialog, files, folder] {
+        if (!guard) return;
+        const bool directory = dialog->clickedButton() == folder;
+        if (!directory && dialog->clickedButton() != files) {
+            guard->answerUpload(std::nullopt);
+            return;
+        }
+        auto* picker = new QFileDialog(nullptr, tr("Files to upload to %1").arg(sanitizedText(guard->title(), 100)));
+        picker->setAttribute(Qt::WA_DeleteOnClose);
+        picker->setAcceptMode(QFileDialog::AcceptOpen);
+        picker->setFileMode(directory ? QFileDialog::Directory : QFileDialog::ExistingFiles);
+        picker->setDirectory(QDir::homePath());
+        keepDialogOverPane(picker, guard);
+        // Answered once: the files, or a cancel when it closes without them.
+        auto answered = std::make_shared<bool>(false);
+        connect(picker, &QFileDialog::filesSelected, picker, [this, guard, answered](const QStringList& paths) {
+            *answered = true;
+            if (guard) sendUpload(guard, paths);
+        });
+        connect(picker, &QDialog::finished, picker, [guard, answered] {
+            if (!*answered && guard) guard->answerUpload(std::nullopt);
+        });
+        connect(guard, &QObject::destroyed, picker, &QDialog::reject);
+        picker->open();
+    });
+    connect(pane, &QObject::destroyed, dialog, &QDialog::reject);
+    dialog->open();
+    if (!isActive()) alert(0);
+}
+
+void TerminalWindow::sendUpload(Pane* pane, const QStringList& paths)
+{
+    const std::size_t limit = std::size_t(m_settings.settings().uploadLimit) << 20;
+    struct Made
+    {
+        std::optional<std::string> answer;
+        QString error;
+    };
+    auto* watcher = new QFutureWatcher<Made>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [watcher, guard = QPointer<Pane>(pane)] {
+        const Made made = watcher->result();
+        watcher->deleteLater();
+        if (!guard) return;
+        if (!made.answer) {
+            guard->answerUpload(std::nullopt);
+            NotificationCenter::instance().showNotice(guard, tr("Upload refused"), made.error);
+        } else if (!guard->answerUpload(made.answer)) {
+            NotificationCenter::instance().showNotice(guard, tr("Upload refused"),
+                                                      tr("The program has not read its input, or it ended. It got Ctrl+C."));
+        }
+    });
+    watcher->setFuture(QtConcurrent::run([paths, limit] {
+        Made made;
+        if (const auto archive = UploadArchive::build(paths, limit, made.error)) made.answer = UploadArchive::answer(*archive);
+        return made;
+    }));
 }
 
 void TerminalWindow::saveDownloadAs(Pane* pane, const QString& directory, const QString& name)

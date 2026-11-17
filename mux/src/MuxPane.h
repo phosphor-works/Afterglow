@@ -300,6 +300,9 @@ public:
     void clipboardWrite(std::string_view selection, std::string_view data) override;
     void pointerShapeChanged(std::string_view shape) override;
     void userVarChanged(std::string_view name, std::string_view value) override;
+    /// Asks the window that shows the pane: without one, nobody can choose
+    /// the files, and the terminal cancels the request.
+    bool uploadRequested() override;
     void commandStarted(std::string_view command) override;
     void commandFinished(int exitCode) override;
     bool downloadBegin(std::string_view name, std::int64_t size) override;

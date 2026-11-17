@@ -207,6 +207,11 @@ public:
     /// download as, which it streams to ("name.part" until it is whole), or
     /// empty to refuse it. Its program goes on then.
     void answerDownload(const QString& path);
+    /// The window's answer to uploadAsked(): @p answer goes to the program
+    /// as input (UploadArchive::answer), and nothing cancels the request
+    /// with Ctrl+C. False when the program cannot take the answer now: its
+    /// input is full, or it ended.
+    bool answerUpload(const std::optional<std::string>& answer);
     /// GUI thread: delivers the program's protocol commands that wait for the
     /// GUI thread, and no other events. With @p waitMs above 0 and nothing to
     /// deliver, first waits up to that long for the next one. Runs no event
@@ -456,6 +461,9 @@ Q_SIGNALS:
     /// output waits for answerDownload(). @p name is clean to show and to
     /// keep; @p size is as declared, or -1.
     void downloadRequested(const QString& name, qint64 size);
+    /// The program asks for files (iTerm2's RequestUpload, it2ul): the
+    /// window asks the user, then answers with answerUpload(). One at a time.
+    void uploadAsked();
     /// The download that the window asks about ended before the answer.
     void downloadCancelled();
     /// The download to @p path ended: saved, or not, for @p error.
@@ -663,6 +671,7 @@ private:
     void contextChanged() override;
     void regionScrolled(const AfterglowVt::RegionScroll& scroll) override;
     void userVarChanged(std::string_view name, std::string_view value) override;
+    bool uploadRequested() override;
     bool downloadBegin(std::string_view name, std::int64_t size) override;
     bool downloadData(std::string_view bytes) override;
     void downloadEnd(bool complete) override;
@@ -706,6 +715,8 @@ private:
     QString m_launchDirectory;
     std::atomic<bool> m_scrollOnOutput{false}; ///< read on the pty thread
     std::atomic<bool> m_hold{false};
+    /// An upload request waits for the window's answer: another is refused.
+    std::atomic<bool> m_uploadAsked{false};
     std::atomic<bool> m_holdOnFailure{false};
     std::atomic<bool> m_held{false}; ///< exited and held open
     bool m_scrollOnInput = true;

@@ -5239,6 +5239,18 @@ void Terminal::iterm2(std::string_view args, bool bel)
             }
             endITerm2Multipart();
         }
+    } else if (key == "RequestUpload") {
+        // format=tgz;version=BASE64 (the program's tar --version). iTerm2
+        // sends tgz alone. Another format, or a host that cannot ask, gets
+        // the answer of a cancel, so that the program does not wait.
+        std::string_view format = "tgz";
+        for (std::size_t at = 0; at <= value.size();) {
+            const std::size_t end = std::min(value.find(';', at), value.size());
+            const std::string_view item = value.substr(at, end - at);
+            if (item.starts_with("format=")) format = item.substr(7);
+            at = end + 1;
+        }
+        if (format != "tgz" || !m_host.uploadRequested()) reply("\x03");
     } else if (key == "SetUserVar") {
         const auto eq2 = value.find('=');
         if (eq2 != std::string_view::npos && eq2 > 0 && eq2 <= 128) {

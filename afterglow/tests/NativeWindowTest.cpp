@@ -5,6 +5,7 @@
 #include "app/Startup.h"
 #include "desktop/DragDrop.h"
 #include "desktop/FileTransfer.h"
+#include "desktop/UploadArchive.h"
 #include <QAbstractButton>
 #include <QFileDialog>
 #include <QLineEdit>
@@ -15320,4 +15321,60 @@ TEST_F(NativeWindow, ControlSetsColoursFontOpacityVariablesSignalsAndTheWindow) 
     EXPECT_TRUE(waitFor([&] { return pane->cols() == 40 && pane->rows() == 10; })) << pane->cols() << "x" << pane->rows();
     EXPECT_EQ(control.setWindowState(pane->id(), QStringLiteral("tiny"), 0, 0), QStringLiteral("the state is fullscreen, maximized or normal"));
     EXPECT_EQ(control.setWindowState(pane->id(), QString(), 40, 0), QStringLiteral("a size is COLSxROWS, each from 1 to 10000"));
+}
+
+TEST_F(NativeWindow, AProgramThatAsksForFilesGetsTheArchiveOrCtrlC) {
+    // it2ul (iTerm2's RequestUpload): the program reads "ok", base64 lines
+    // up to an empty one, and unpacks them, as it2ul does. A second request
+    // while one waits, and Terminal.uploads deny, get Ctrl+C at once.
+    QTemporaryDir files;
+    ASSERT_TRUE(files.isValid());
+    QFile file(files.filePath(QStringLiteral("notes.txt")));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("upload body\n");
+    file.close();
+    const QString reader = QStringLiteral(
+        "stty -echo; printf '\\033]1337;RequestUpload=format=tgz;version=dGFy\\a'; read s; echo \"status=$s\"; d=; "
+        "while read l; do [ -z \"$l\" ] && break; d=\"$d$l\"; done; printf %s \"$d\" | base64 -d | tar -xzOf - ./notes.txt; "
+        "echo end; sleep 60");
+    restartApplication(QStringLiteral("upload.conf"), testSettings({}), {QStringLiteral("/bin/sh"), QStringLiteral("-c"), reader});
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    // The window's question shows: the request reached it.
+    const auto questionShown = [] {
+        for (QWidget* widget : QApplication::topLevelWidgets())
+            if (auto* box = qobject_cast<QMessageBox*>(widget); box && box->isVisible() && box->windowTitle() == QStringLiteral("Upload")) return true;
+        return false;
+    };
+    ASSERT_TRUE(waitFor(questionShown, 5000));
+    // The window's question is open; the answer comes here as the picker gives it.
+    QString error;
+    const auto archive = UploadArchive::build({file.fileName()}, 1 << 20, error);
+    ASSERT_TRUE(archive) << error.toStdString();
+    EXPECT_TRUE(pane->answerUpload(UploadArchive::answer(*archive)));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("upload body\nend")); }, 10000)) << screenOf(pane).toStdString();
+    EXPECT_TRUE(screenOf(pane).contains(QStringLiteral("status=ok"))) << screenOf(pane).toStdString();
+
+    // A request while one waits: Ctrl+C for the second, which the
+    // program sees as a byte.
+    // Raw first: Ctrl+C is then a byte, not a SIGINT that ends the shell.
+    const QString twice = QStringLiteral(
+        "stty raw -echo; printf '\\033]1337;RequestUpload=format=tgz\\a\\033]1337;RequestUpload=format=tgz\\a'; "
+        "head -c1 | od -An -tx1; stty sane; sleep 60");
+    restartApplication(QStringLiteral("upload2.conf"), testSettings({}), {QStringLiteral("/bin/sh"), QStringLiteral("-c"), twice});
+    if (HasFatalFailure()) return;
+    EXPECT_TRUE(waitFor([&] { return screenOf(window->focusedPane()).contains(QStringLiteral(" 03")); })) << screenOf(window->focusedPane()).toStdString();
+    EXPECT_TRUE(waitFor(questionShown));
+
+    // Refused by the settings: no question, Ctrl+C.
+    const QString once = QStringLiteral(
+        "stty raw -echo; printf '\\033]1337;RequestUpload=format=tgz\\a'; head -c1 | od -An -tx1; stty sane; sleep 60");
+    restartApplication(QStringLiteral("upload3.conf"),
+                       testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("uploads"), QStringLiteral("deny")}}}}),
+                       {QStringLiteral("/bin/sh"), QStringLiteral("-c"), once});
+    if (HasFatalFailure()) return;
+    EXPECT_TRUE(waitFor([&] { return screenOf(window->focusedPane()).contains(QStringLiteral(" 03")); })) << screenOf(window->focusedPane()).toStdString();
+    ASSERT_TRUE(settleQueued());
+    EXPECT_FALSE(questionShown());
 }

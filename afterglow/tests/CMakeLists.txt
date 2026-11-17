@@ -47,6 +47,10 @@ target_link_libraries(afterglow_config_tests PRIVATE afterglow_config afterglow_
 target_compile_definitions(afterglow_config_tests PRIVATE AFTERGLOW_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes")
 gtest_discover_tests(afterglow_config_tests)
 
+qt_add_executable(afterglow_upload_tests UploadArchiveTest.cpp)
+target_link_libraries(afterglow_upload_tests PRIVATE afterglow_app Afterglow::Proto GTest::gtest_main)
+gtest_discover_tests(afterglow_upload_tests)
+
 qt_add_executable(afterglow_control_tests ControlSocketTest.cpp)
 target_link_libraries(afterglow_control_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_control_tests PROPERTIES TIMEOUT 60)

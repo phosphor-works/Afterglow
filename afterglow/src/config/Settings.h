@@ -356,6 +356,13 @@ struct Settings
     Permission downloads = Permission::Ask;
     /// Where downloads go: empty for the desktop's download folder.
     QString downloadDirectory;
+    /// Files that programs ask for with iTerm2's protocol (OSC 1337
+    /// RequestUpload, it2ul): Ask opens a file picker, Deny refuses.
+    Permission uploads = Permission::Ask;
+    /// The largest upload, in MiB of compressed archive: its answer goes to
+    /// the program's input in one piece, which holds 32 MiB.
+    int uploadLimit = 16;
+    static constexpr int MaxUploadLimit = 23; ///< its answer, with base64 and line ends, fits in 32 MiB
     // Terminal.graphicsFileTransfer, Terminal.allowScreenReadback and
     // Graphics.quota live in terminal, which enforces them.
     /// Each a map of pattern, action and command, checked when read.

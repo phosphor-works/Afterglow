@@ -51,6 +51,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Sixel images.
 - The images that programs send decode in processes of their own, with limits on their memory, time and system calls, in local and in session panes alike. PNG, APNG, JPEG, GIF, WebP, BMP, TIFF and netPBM images show, and an image with an ICC color profile or a cICP color space shows in sRGB, as in Kitty.
 - iTerm2 inline images, which play when they are animated GIF, WebP or APNG images, and file downloads (OSC 1337) of any size, as `it2dl` sends them. Afterglow asks before the data comes, with the name and the size of the file, and the program waits for the answer (`Terminal.downloads`, `Terminal.downloadDirectory`). The dialog moves with its pane to another window. It closes when its pane of a mux session moves to a new session.
+- File uploads that a program asks for with OSC 1337 `RequestUpload`, as `it2ul` does. Afterglow asks, then sends the chosen files or folder as iTerm2 does: a tar archive compressed with gzip, in base64 as typed input (`Terminal.uploads`, `Terminal.uploadLimit`).
 - Kitty text sizing (OSC 66).
 - The Kitty multiple-cursors protocol, with mixed block and beam layering.
 
