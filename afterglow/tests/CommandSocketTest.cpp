@@ -1631,6 +1631,34 @@ TEST(CtlBinaryTest, TextAndLaunchOptionsCheckTheirArguments)
     }
 }
 
+// The commands of kitten @ for colours, fonts, the window and the program:
+// their usage errors come before any connection.
+TEST(CtlBinaryTest, WindowAndProgramCommandsCheckTheirArguments)
+{
+    const QString ctl = QStringLiteral("ctl");
+    const auto words = [&ctl](const char* line) {
+        return QStringList{ctl} + QString::fromUtf8(line).split(QLatin1Char(' '));
+    };
+    for (const auto& [args, message] :
+         {std::pair{words("set-colors"), QStringLiteral("set-colors needs NAME=COLOR, a theme or --reset")},
+          std::pair{words("set-colors color1=nope"), QStringLiteral("nope is no colour")},
+          std::pair{words("set-colors colour1=#fff"), QStringLiteral("no colour is named colour1")},
+          std::pair{words("set-colors a b"), QStringLiteral("set-colors takes one theme")},
+          std::pair{words("set-font-size big"), QStringLiteral("set-font-size takes a size in points, or +N or -N")},
+          std::pair{words("set-opacity 1.5"), QStringLiteral("set-opacity takes a number from 0 to 1")},
+          std::pair{words("set-user-var x"), QStringLiteral("set-user-var takes NAME=VALUE, with a name of 1 to 128 bytes")},
+          std::pair{words("signal-program SIGNOPE"), QStringLiteral("signal-program takes a signal: a name such as INT or TERM, or a number")},
+          std::pair{words("signal-program 0"), QStringLiteral("signal-program takes a signal: a name such as INT or TERM, or a number")},
+          std::pair{words("window"), QStringLiteral("window needs --fullscreen, --maximized, --normal or --size")},
+          std::pair{words("window --normal --maximized"), QStringLiteral("window takes one of --fullscreen, --maximized and --normal")},
+          std::pair{words("window --size 80"), QStringLiteral("--size takes COLSxROWS, each from 1 to 10000")},
+          std::pair{words("window --size 0x24"), QStringLiteral("--size takes COLSxROWS, each from 1 to 10000")}}) {
+        const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
+        EXPECT_EQ(r.status, 2) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.err);
+        EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n").arg(message))) << qPrintable(r.err);
+    }
+}
+
 // With standard input closed, Qt's first descriptor would be number 0, and a
 // read of standard input would wait on it for ever.
 TEST(CtlBinaryTest, AClosedStandardInputReadsAsEmpty)
@@ -1866,6 +1894,55 @@ TEST(CtlBinaryTest, TextAndLaunchOptionsGoInTheirCalls)
     ASSERT_GE(r.calls.size(), 1);
     EXPECT_EQ(r.calls.first().value(QStringLiteral("fn")).toString(), QStringLiteral("getText"));
     EXPECT_EQ(r.calls.first().value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("scrollback")}));
+}
+
+// Colours go as #rrggbb, those of NAME=COLOR over a theme's; get-colors
+// prints the named colours first, and none that follows another.
+TEST(CtlBinaryTest, WindowAndProgramCommandsSendTheirCalls)
+{
+    const QJsonObject done{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), QJsonValue::Null}};
+    const auto args = [](const AgainstTarget& r) {
+        return r.calls.isEmpty() ? QJsonArray() : r.calls.last().value(QStringLiteral("args")).toArray();
+    };
+    const QStringList three{QStringLiteral("--pane"), QStringLiteral("3")};
+    // A kitty theme file, then a colour by name over it.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QFile theme(dir.filePath(QStringLiteral("t.conf")));
+    ASSERT_TRUE(theme.open(QIODevice::WriteOnly));
+    theme.write("foreground #101010\nbackground #202020\ncolor1 #300000\n");
+    theme.close();
+    AgainstTarget r = ctlAgainst(done, three + QStringList{QStringLiteral("--reset"), theme.fileName(), QStringLiteral("color1=red")}, {}, -1, {},
+                                 QStringLiteral("set-colors"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(r.calls.last().value(QStringLiteral("fn")).toString(), QStringLiteral("setColors"));
+    EXPECT_EQ(args(r), (QJsonArray{3,
+                                   QJsonObject{{QStringLiteral("foreground"), QStringLiteral("#101010")},
+                                               {QStringLiteral("background"), QStringLiteral("#202020")},
+                                               {QStringLiteral("color1"), QStringLiteral("#ff0000")}},
+                                   true}));
+    const QJsonObject colors{{QStringLiteral("type"), QStringLiteral("reply")},
+                             {QStringLiteral("result"), QJsonObject{{QStringLiteral("color0"), QStringLiteral("#000000")},
+                                                                    {QStringLiteral("cursor"), QJsonValue::Null},
+                                                                    {QStringLiteral("foreground"), QStringLiteral("#d8d8d8")}}}};
+    r = ctlAgainst(colors, three, {}, -1, {}, QStringLiteral("colors"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(r.outcome.out, QStringLiteral("foreground            #d8d8d8\ncolor0                #000000\n"));
+    for (const auto& [command, words, fn, expected] :
+         {std::tuple{QStringLiteral("set-font-size"), QStringList{QStringLiteral("-2")}, QStringLiteral("setFontSize"),
+                     QJsonArray{3, QStringLiteral("-2")}},
+          std::tuple{QStringLiteral("set-opacity"), QStringList{QStringLiteral("0.75")}, QStringLiteral("setOpacity"), QJsonArray{3, 0.75}},
+          std::tuple{QStringLiteral("signal-program"), QStringList{QStringLiteral("TERM")}, QStringLiteral("signalProgram"),
+                     QJsonArray{3, QStringLiteral("TERM")}},
+          std::tuple{QStringLiteral("set-user-var"), QStringList{QStringLiteral("k=a=b")}, QStringLiteral("setUserVar"),
+                     QJsonArray{3, QStringLiteral("k"), QStringLiteral("a=b")}},
+          std::tuple{QStringLiteral("window"), QStringList{QStringLiteral("--normal"), QStringLiteral("--size"), QStringLiteral("80x24")},
+                     QStringLiteral("setWindowState"), QJsonArray{3, QStringLiteral("normal"), 80, 24}}}) {
+        r = ctlAgainst(done, three + words, {}, -1, {}, command);
+        EXPECT_EQ(r.outcome.status, 0) << qPrintable(command) << qPrintable(r.outcome.err);
+        EXPECT_EQ(r.calls.isEmpty() ? QString() : r.calls.last().value(QStringLiteral("fn")).toString(), fn);
+        EXPECT_EQ(args(r), expected) << qPrintable(command);
+    }
 }
 
 // Each command is one call, with its arguments in their JSON types.

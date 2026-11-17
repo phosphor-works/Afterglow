@@ -585,6 +585,12 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     yield 'afterglow ctl send-key ', has('ctrl+c', 'enter', 'page_up', 'f5')
     yield 'afterglow ctl send-key ctrl+c ', has('ctrl+c', 'enter')
     yield 'afterglow ctl set-tab-title -', {'--pane'}
+    yield 'afterglow ctl colors -', {'--pane', '--json'}
+    yield 'afterglow ctl set-colors -', {'--pane', '--all', '--reset'}
+    yield 'afterglow ctl signal-program ', {'INT', 'TERM', 'HUP', 'KILL', 'QUIT', 'USR1', 'USR2', 'STOP', 'CONT', 'TSTP', 'WINCH'}
+    yield 'afterglow ctl window -', {'--pane', '--fullscreen', '--maximized', '--normal', '--size'}
+    yield 'afterglow ctl window --normal -', {'--pane', '--size'}
+    yield 'afterglow ctl window --size ', set()
     yield 'afterglow ctl focus --pane ', set()
     yield 'afterglow ctl get-text --screen ', {'--pane', '--ansi', '--cursor', '--wrap-markers'}
     yield 'afterglow ctl get-text --ansi -', has('--pane', '--screen', '--first-output-on-screen', '--last-visited-output', '--cursor')

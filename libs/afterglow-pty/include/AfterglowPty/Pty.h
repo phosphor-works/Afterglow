@@ -83,6 +83,10 @@ AFTERGLOWPTY_EXPORT std::optional<ProcessStat> parseProcessStat(std::string_view
 /// process is gone or the file does not parse.
 AFTERGLOWPTY_EXPORT std::optional<ProcessStat> processStat(pid_t pid);
 
+/// The number of signal @p name: "INT", "SIGINT", "sigint" or "2", from 1
+/// to the last real-time signal. Nothing for another name or number.
+AFTERGLOWPTY_EXPORT std::optional<int> signalNumber(std::string_view name);
+
 /// The leader of the foreground process group of a terminal, as `afterglow
 /// ctl ls` and kitty's `ls` show it.
 struct ForegroundProcess
@@ -174,6 +178,11 @@ public:
     /// once the child exited, while no group has the terminal, and when the
     /// leader of the group exited or is in another session. It reads only /proc.
     std::optional<ForegroundProcess> foreground() const;
+    /// Sends @p signal to the foreground process group, as a key such as
+    /// Ctrl+C does through the terminal (`afterglow ctl signal-program`).
+    /// False once the child exited, while no group of its session has the
+    /// terminal, or when kill() fails.
+    bool signalForeground(int signal) const;
 
 private:
     Pty(int masterFd, int wakeFd, int pidFd, pid_t pid, IPtyListener& listener);

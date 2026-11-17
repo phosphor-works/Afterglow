@@ -263,6 +263,49 @@ void ControlApi::setTabTitle(double pane, const QString& title)
     if (const auto id = paneId(pane)) failed(m_control.setTabTitle(*id, title));
 }
 
+QVariantMap ControlApi::getColors(double pane)
+{
+    QVariantMap colors;
+    if (const auto id = paneId(pane)) failed(m_control.colors(*id, colors));
+    return colors;
+}
+
+void ControlApi::setColors(double pane, const QVariantMap& colors, bool reset)
+{
+    if (const auto id = paneId(pane)) failed(m_control.setColors(*id, colors, reset));
+}
+
+void ControlApi::setFontSize(double pane, const QString& size)
+{
+    if (const auto id = paneId(pane)) failed(m_control.setFontSize(*id, size));
+}
+
+void ControlApi::setOpacity(double pane, double opacity)
+{
+    if (const auto id = paneId(pane)) failed(m_control.setOpacity(*id, opacity));
+}
+
+void ControlApi::setUserVar(double pane, const QString& name, const QString& value)
+{
+    if (const auto id = paneId(pane)) failed(m_control.setUserVar(*id, name, value));
+}
+
+void ControlApi::signalProgram(double pane, const QString& signal)
+{
+    if (const auto id = paneId(pane)) failed(m_control.signalProgram(*id, signal));
+}
+
+void ControlApi::setWindowState(double pane, const QString& state, double cols, double rows)
+{
+    const auto id = paneId(pane);
+    if (!id) return;
+    if (!isWhole(cols) || !isWhole(rows) || cols < 0 || rows < 0 || cols > Control::MaxWindowCells || rows > Control::MaxWindowCells) {
+        failed(QStringLiteral("a size is COLSxROWS, each from 1 to %1").arg(Control::MaxWindowCells));
+        return;
+    }
+    failed(m_control.setWindowState(*id, state, int(cols), int(rows)));
+}
+
 void ControlApi::signal(double pane, double channel, double value)
 {
     const auto id = paneId(pane);

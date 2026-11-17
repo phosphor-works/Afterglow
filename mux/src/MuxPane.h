@@ -224,6 +224,17 @@ public:
     /// The terminal's modes, which say how a key is sent: nothing while an
     /// image decodes, as text().
     std::optional<AfterglowVt::Modes> modes() const;
+    /// The colours of the terminal by name (Terminal::namedColors). Nothing
+    /// while an image decodes.
+    std::optional<std::vector<AfterglowVt::Terminal::NamedColor>> colors() const;
+    /// Applies the colour OSCs @p payloads as the program's own, and the
+    /// next frame takes them to the window. False while an image decodes,
+    /// and for a payload that is no colour, which goes with those after it.
+    bool applyColors(const std::vector<std::string>& payloads);
+    /// Sets a user variable as the program would (`afterglow ctl set-user-var`).
+    void setUserVar(const std::string& name, const std::string& value) { userVarChanged(name, value); }
+    /// Sends @p signal to the foreground process group of the program.
+    bool signalProgram(int signal) const { return m_pty && !m_exited && m_pty->signalForeground(signal); }
 
     /// The window that shows the pane, by Attachment::serial(), or 0 for
     /// none. The calls of its terminal to its host (MuxHost.h) wait for that

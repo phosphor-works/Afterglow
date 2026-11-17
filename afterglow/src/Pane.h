@@ -282,6 +282,17 @@ public:
     /// Sets a user variable as the program would (`afterglow ctl split
     /// --var`): scripts and control clients hear of it.
     void setUserVar(const QString& name, const QString& value);
+    /// The colours of the terminal by name (Terminal::namedColors): "#rrggbb",
+    /// or null for one that follows another.
+    QVariantMap colors() const;
+    /// Applies the colour OSCs @p payloads as the program's own
+    /// (Terminal::applyColorOsc), and draws again. False for a payload that
+    /// is no colour, which goes with the ones after it.
+    bool applyColors(const std::vector<std::string>& payloads);
+    /// Sends @p signal to the foreground process group of the program. False
+    /// for a session pane, whose program runs in the daemon, and when the
+    /// signal cannot go.
+    bool signalProgram(int signal);
     /// The cursor is in a shell prompt or its input (OSC 133 A or B, before C).
     bool atShellPrompt() const;
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it

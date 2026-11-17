@@ -290,6 +290,21 @@ public:
     QString scroll(quint32 pane, const QString& unit, qint64 amount);
     static constexpr qint64 MaxScrollAmount = 1'000'000'000;
     QString setTabTitle(quint32 pane, const QString& title);
+    /// The colours of @p pane by the names of Terminal::namedColors.
+    QString colors(quint32 pane, QVariantMap& out);
+    /// Sets the colours of @p colors (a name to a colour as a theme writes
+    /// it) on @p pane as its program would, after the configured ones come
+    /// back with @p reset. Not for a session pane, whose daemon has its
+    /// terminal.
+    QString setColors(quint32 pane, const QVariantMap& colors, bool reset);
+    /// @p size: points, or "+N" and "-N" points more or fewer.
+    QString setFontSize(quint32 pane, const QString& size);
+    QString setOpacity(quint32 pane, double opacity);
+    QString setUserVar(quint32 pane, const QString& name, const QString& value);
+    /// @p signal: a name such as INT or SIGTERM, or a number.
+    QString signalProgram(quint32 pane, const QString& signal);
+    QString setWindowState(quint32 pane, const QString& state, int cols, int rows);
+    static constexpr int MaxWindowCells = 10000;
     /// Sets shader signal @p channel (0-7, uSignal in shaders) on the pane.
     QString signal(quint32 pane, int channel, double value);
     static constexpr int MaxSignalPanes = 128;

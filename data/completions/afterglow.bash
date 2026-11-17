@@ -12,7 +12,7 @@
 
 _afterglow_ctl_commands="ls send-text get-text split move-pane detach-tab new-tab new-window focus close set-title
 set-tab-title resize send-key scroll signal notify scripts open-directory projects save-project open-project action
-watch overlay screenshot"
+watch overlay screenshot colors set-colors set-font-size set-opacity set-user-var signal-program window"
 # Key names that ctl send-key takes, of many more.
 _afterglow_keys="enter escape tab backspace space up down left right home end page_up page_down insert delete f1 f2 f3
 f4 f5 f6 f7 f8 f9 f10 f11 f12 ctrl+c ctrl+d ctrl+l ctrl+z"
@@ -128,7 +128,7 @@ _afterglow_ctl()
             # Text follows, or the command takes nothing after it.
             return
             ;;
-        --pane | --cwd | --layout | --direction | --cells | --pages | --prompt | --env | --var | --stdin-text)
+        --pane | --cwd | --layout | --direction | --cells | --pages | --prompt | --env | --var | --stdin-text | --size)
             ((i++))
             ;;
         --capture | --title | -w | --width | -h | --height | --position)
@@ -158,7 +158,7 @@ _afterglow_ctl()
         esac
     done
     case $prev in
-    --pane | --layout | --cells | --pages | --prompt | --env | --var) return ;;
+    --pane | --layout | --cells | --pages | --prompt | --env | --var | --size) return ;;
     --stdin-text)
         _afterglow_matching screen scrollback selection last-output first-output-on-screen last-visited-output
         return
@@ -205,6 +205,10 @@ _afterglow_ctl()
             ;;
         signal:0)
             _afterglow_matching 0 1 2 3 4 5 6 7
+            return
+            ;;
+        signal-program:0)
+            _afterglow_matching INT TERM HUP KILL QUIT USR1 USR2 STOP CONT TSTP WINCH
             return
             ;;
         send-key:*)
@@ -259,6 +263,9 @@ _afterglow_ctl()
         _afterglow_matching --env --var
         ;;
     focus) _afterglow_unused $pane --direction ;;
+    colors) _afterglow_unused $pane --json ;;
+    set-colors) _afterglow_unused $pane --all --reset ;;
+    window) _afterglow_unused $pane "--fullscreen|--maximized|--normal" --size ;;
     resize) _afterglow_unused $pane --direction --cells ;;
     scroll)
         # LINES or one of the options.

@@ -1533,7 +1533,7 @@ void TerminalWindow::closePane(Pane* pane)
     dropPanePrompts(pane);
     // The closing frame keeps the opacity a script gave the pane.
     AfterglowRender::FrameBuilder::PaneParams last;
-    applyScriptOverrides(pane, last, std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255)));
+    applyScriptOverrides(pane, last, std::uint8_t(std::lround(backgroundOpacity() * 255)));
     m_shaderControls.removePane(pane->id());
     std::erase_if(m_scriptAppearance, [pane](const auto& item) { return item.pane == pane; });
     if (index < 0) {
@@ -2525,6 +2525,50 @@ void TerminalWindow::setNextPaneLaunch(bool hold, std::optional<std::string> inp
     m_inputNextPane = std::move(input);
 }
 
+double TerminalWindow::backgroundOpacity() const
+{
+    return m_opacityOverride.value_or(m_settings.settings().window.backgroundOpacity);
+}
+
+void TerminalWindow::setFontSize(double points, bool relative)
+{
+    if (relative) {
+        m_device.adjustFontSize(float(points));
+        return;
+    }
+    AfterglowRender::FontSpec spec = m_device.fontSpec();
+    spec.sizePoints = std::clamp(float(points), AfterglowRender::FontSpec::MinPoints, AfterglowRender::FontSpec::MaxPoints);
+    m_device.setFontSpec(spec);
+}
+
+void TerminalWindow::setOpacityOverride(double opacity)
+{
+    m_opacityOverride = std::clamp(opacity, 0.0, 1.0);
+    applyWindowEffects();
+}
+
+QString TerminalWindow::setWindowState(const QString& state, int cols, int rows)
+{
+    if (m_quick) return QStringLiteral("the quick terminal has its own size and place");
+    if (state == QLatin1String("fullscreen")) showFullScreen();
+    else if (state == QLatin1String("maximized")) showMaximized();
+    else if (state == QLatin1String("normal")) showNormal();
+    else if (!state.isEmpty()) return QStringLiteral("the state is fullscreen, maximized or normal");
+    if (cols > 0 && rows > 0) {
+        if (windowState() & (Qt::WindowFullScreen | Qt::WindowMaximized)) {
+            return QStringLiteral("a full-screen or maximized window takes no size: give --normal with it");
+        }
+        // As the first size of a window: the grid of one pane with its
+        // padding, below the tab bar.
+        const auto& m = m_renderer->fonts().fonts->metrics();
+        const double dpr = devicePixelRatio();
+        const int pad = int(std::lround(m_settings.settings().window.padding * dpr));
+        const QSize pixels(cols * m.cellWidth + 2 * pad, rows * m.cellHeight + 2 * pad + tabBarHeight());
+        resize(int(std::lround(pixels.width() / dpr)), int(std::lround(pixels.height() / dpr)));
+    }
+    return {};
+}
+
 void TerminalWindow::keepFocus(Pane* pane)
 {
     const int tab = pane ? tabOf(pane) : -1;
@@ -2793,7 +2837,7 @@ void TerminalWindow::renderNow()
     bool holding = false;
     m_holdWait = std::numeric_limits<qint64>::max();
     bool animating = m_shaderControls.advance();
-    const auto backgroundAlpha = std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255));
+    const auto backgroundAlpha = std::uint8_t(std::lround(backgroundOpacity() * 255));
     bool anyBlinkingText = false;
     bool focusedCursorBlinks = false;
     m_anyPaneAway = false;
@@ -5366,6 +5410,8 @@ void TerminalWindow::applySettings(const Settings& previous)
     // A coast under way goes on with the new value.
     m_momentum.setFriction(now.mouse.momentumScroll);
     if (now.window.backgroundOpacity != previous.window.backgroundOpacity || now.window.blur != previous.window.blur) {
+        // A new setting ends what `afterglow ctl set-opacity` chose.
+        if (now.window.backgroundOpacity != previous.window.backgroundOpacity) m_opacityOverride.reset();
         applyWindowEffects();
     }
     if (m_quick
@@ -5390,7 +5436,7 @@ void TerminalWindow::applySearchColors(Pane* pane)
 void TerminalWindow::applyWindowEffects()
 {
     const WindowSettings& w = m_settings.settings().window;
-    const bool translucent = w.backgroundOpacity < 1.0;
+    const bool translucent = backgroundOpacity() < 1.0;
     // Content that was translucent once keeps the swapchain translucent (see renderNow).
     m_renderer->setTranslucent(translucent || m_contentTranslucent);
     // Blur needs the native window; before that, exposeEvent applies it.

@@ -282,6 +282,13 @@ Another number fails with `CALL_FAILED`.
 | `close` | pane | None. The pane closes without a question, also when a program runs in it. |
 | `setTitle` | pane, title | None. An empty title gives the title back to the programs. |
 | `setTabTitle` | pane, title | None. Sets the title of the pane's tab. An empty title gives the title back to the focused pane of the tab. |
+| `getColors` | pane | An object of the pane's colours as `#rrggbb`: `foreground`, `background`, `cursor`, `selection_foreground`, `selection_background`, and `color0` to `color255`. `null` for a colour that follows another: the cursor that has the text's colour, and a selection that inverts the cells. |
+| `setColors` | pane, colours, reset | None. Sets colours by the names of `getColors`, as the pane's program does with OSC 4, 10, 11, 12, 17 and 19. A colour is a string as a [theme](APPEARANCE.md) writes it, such as `#ff0000`, `red`, `rgb:ff/00/00` or `oklch(0.6 0.2 30)`. With `reset` true, the configured colours come back first. A program that asked for colour reports (mode 2031) hears of the change. A bad name or colour fails the call, and no colour changes. |
+| `setFontSize` | pane, size | None. The font size in points from 4 to 96, or `+N` or `-N` points more or fewer, as `font_bigger` and `font_smaller` change it. It changes the font of every window. `font_reset` gives back `Font.size`. |
+| `setOpacity` | pane, opacity | None. The background opacity of the pane's window, from 0 to 1, until `Window.backgroundOpacity` changes. |
+| `setUserVar` | pane, name, value | None. Sets a user variable of the pane, as its program does with OSC 1337 `SetUserVar`. Scripts and `userVarChanged` hear of it. A name has 1 to 128 bytes and no `=`. |
+| `signalProgram` | pane, signal | None. Sends a signal to the foreground process group of the pane, as Ctrl+C sends `INT`. The signal is a name such as `INT`, `SIGTERM` or `hup`, or a number. Fails when the pane has no program in the foreground. |
+| `setWindowState` | pane, state, cols, rows | None. The state of the pane's window: `fullscreen`, `maximized`, `normal`, or empty to keep it. Then, with cols and rows above 0, the size of a window whose one pane has that many cells, with the padding and the tab bar. A full-screen or maximized window takes no size. 0 and 0 change no size. |
 | `focusNeighbour` | pane, direction | The pane to the `left`, `right`, `up` or `down` of the pane in its tab, which gets the focus. At the edge of the tab it fails with `no pane to the left of pane N`, and the focus stays. |
 | `resizePane` | pane, direction, cells | None. Moves a split edge of the pane by a number of cells from 1 to 10000 toward the direction, as the resize actions do with 2 cells, and as tmux's `resize-pane` does. That is the edge on that side of the pane, else the edge on the other side: `left` on the leftmost pane makes it narrower. The tab of the pane shows, and a zoom ends. Fails with `pane N has no edge that can move left` when the pane has no split edge across that direction, or when the edge is at its limit. |
 | `sendKeys` | pane, keys | None. Types the keys of a list of [key names](#key-names), as the pane's program reads typed keys. A name that names no key fails the call, and no key goes. |
@@ -901,6 +908,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `run` calls that wait, on one connection | 256 | `run` fails with `CALL_FAILED`. |
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `setTabTitle` title | 256 UTF-16 units | The title is cut. |
+| The cells of `setWindowState` | 10000 columns and 10000 rows | The call fails. `afterglow ctl window` exits with status 2 before it connects. |
 | The text of `getText` and of `stdin_text` | 1 MiB of UTF-8, with the escape sequences of `ansi` and `cursor` | The text is cut after the last whole character or escape sequence that fits. |
 | Keys of one `sendKeys` call | 4096 | The call fails, and no key goes. `afterglow ctl send-key` exits with status 2 before it connects. |
 | Cells of one `resizePane` call | 10000 | The call fails. `afterglow ctl resize` exits with status 2 before it connects. |

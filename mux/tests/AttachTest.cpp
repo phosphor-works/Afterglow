@@ -3113,6 +3113,64 @@ TEST(MuxControl, TheDaemonTypesKeysAndTellsThePanesFacts)
     }
 }
 
+// The colours, user variables and signals of a session's panes are the
+// daemon's: it has their terminals and programs, also without a window. The
+// window's font, opacity and state need a window.
+TEST(MuxControl, TheDaemonSetsColoursVariablesAndSignals)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "c")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("c"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    const auto color = [&](const std::string& name) {
+        const auto colors = ctl.call("getColors", Json::Array{pane});
+        return colors ? Json::write((*colors)[name]) : std::string("no answer: ") + ctl.error.message;
+    };
+    const std::string configured = color("color1");
+    ASSERT_TRUE(ctl.call("setColors", Json::Array{pane, Json::Object{{"color1", "#ff0010"}, {"background", "rgb:01/02/03"}}, false}))
+        << ctl.error.message;
+    EXPECT_EQ(color("color1"), "\"#ff0010\"");
+    EXPECT_EQ(color("background"), "\"#010203\"");
+    EXPECT_EQ(color("cursor"), "null");
+    // A bad colour or name sets none.
+    EXPECT_FALSE(ctl.call("setColors", Json::Array{pane, Json::Object{{"color2", "#00ff00"}, {"color3", "nope"}}, false}));
+    EXPECT_EQ(ctl.error.message, "nope is no colour");
+    EXPECT_FALSE(ctl.call("setColors", Json::Array{pane, Json::Object{{"colour4", "#00ff00"}}, false}));
+    EXPECT_EQ(ctl.error.message, "no colour is named colour4");
+    ASSERT_TRUE(ctl.call("setColors", Json::Array{pane, Json::Object{}, true})) << ctl.error.message;
+    EXPECT_EQ(color("color1"), configured);
+
+    ASSERT_TRUE(ctl.call("setUserVar", Json::Array{pane, "role", "build"})) << ctl.error.message;
+    const auto listed = ctl.call("listPanes", {});
+    ASSERT_TRUE(listed) << ctl.error.message;
+    EXPECT_EQ(Json::write(listed->toArray()[0]["user_vars"]), R"({"role":"build"})");
+    EXPECT_FALSE(ctl.call("setUserVar", Json::Array{pane, "a=b", "c"}));
+
+    // INT ends the sleep in the foreground: the next command runs at once.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "sleep 60\n"}));
+    ASSERT_TRUE(waitFor([&] {
+        const auto listed = ctl.call("listPanes", {});
+        return listed && contains(Json::write(listed->toArray()[0]["foreground"]["cmdline"]), "sleep");
+    }));
+    ASSERT_TRUE(ctl.call("signalProgram", Json::Array{pane, "SIGINT"})) << ctl.error.message;
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "echo af''ter\n"}));
+    EXPECT_TRUE(waitFor([&] {
+        const auto text = ctl.call("getText", Json::Array{pane, "screen"});
+        return text && contains(text->toString(), "\nafter");
+    }));
+    EXPECT_FALSE(ctl.call("signalProgram", Json::Array{pane, "SIGNOPE"}));
+    EXPECT_EQ(ctl.error.message, "no signal is named SIGNOPE");
+
+    for (const auto& call : {Json::Array{pane, "+2"}, Json::Array{pane, 0.5}}) {
+        const std::string fn = call[1].isString() ? "setFontSize" : "setOpacity";
+        EXPECT_FALSE(ctl.call(fn, call)) << fn;
+        EXPECT_NE(ctl.error.message.find("only a window can do " + fn), std::string::npos) << ctl.error.message;
+    }
+}
+
 // get-text with the options of kitten @ get-text: the daemon writes its own
 // terminal's text with styles, and finds the first output on its screen.
 // What a window's view knows (the last visited output) is empty without one.

@@ -1750,3 +1750,38 @@ TEST(Terminal, StyledTextCutsNoEscapeSequence)
         }
     }
 }
+
+// set-colors of afterglow ctl: the OSCs of a program's colours, from the
+// host, and only those, with no query.
+TEST(Terminal, TheHostSetsAndResetsColoursByName)
+{
+    Term t(10, 2);
+    const auto named = [&t](std::string_view name) -> std::optional<Rgb> {
+        for (const auto& color : t.t.namedColors())
+            if (color.name == name) return color.rgb;
+        ADD_FAILURE() << "no colour " << name;
+        return std::nullopt;
+    };
+    const Rgb configured = *named("color1");
+    ASSERT_EQ(t.t.namedColors().size(), 5u + 256u);
+    EXPECT_FALSE(named("cursor"));
+    for (const auto& [name, rgb] : {std::pair{"background", Rgb{1, 2, 3}}, std::pair{"color1", Rgb{0xff, 0, 0x10}},
+                                    std::pair{"cursor", Rgb{9, 9, 9}}, std::pair{"selection_background", Rgb{4, 5, 6}}}) {
+        const auto osc = Terminal::colorOscOf(name, rgb);
+        ASSERT_TRUE(osc) << name;
+        EXPECT_TRUE(t.t.applyColorOsc(*osc)) << *osc;
+        EXPECT_EQ(named(name), rgb) << name;
+    }
+    EXPECT_EQ(*Terminal::colorOscOf("color1", Rgb{0xff, 0, 0x10}), "4;1;#ff0010");
+    for (const char* bad : {"color256", "color01", "color-1", "colour1", "bg"}) EXPECT_FALSE(Terminal::colorOscOf(bad, Rgb{})) << bad;
+    // Only colours, and no query, which would answer the program.
+    EXPECT_FALSE(t.t.applyColorOsc("4;1;?"));
+    EXPECT_FALSE(t.t.applyColorOsc("52;c;aGk="));
+    EXPECT_FALSE(t.t.applyColorOsc("0;title"));
+    EXPECT_TRUE(t.host.written.empty());
+    for (const std::string& reset : Terminal::colorResetOscs()) EXPECT_TRUE(t.t.applyColorOsc(reset)) << reset;
+    EXPECT_EQ(named("color1"), configured);
+    EXPECT_FALSE(named("cursor"));
+    EXPECT_FALSE(named("selection_background"));
+    EXPECT_EQ(named("background"), t.t.options().defaultBackground);
+}

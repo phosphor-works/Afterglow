@@ -148,6 +148,18 @@ public:
     /// Gives the focus back to @p pane after a launch that took it, in its
     /// tab, which shows.
     void keepFocus(Pane* pane);
+    /// Window.backgroundOpacity, or what `afterglow ctl set-opacity` chose
+    /// for this window until the setting changes.
+    double backgroundOpacity() const;
+    void setOpacityOverride(double opacity);
+    /// The font size in points, as font_bigger and font_smaller change it:
+    /// @p points itself, or added to the size with @p relative. For every
+    /// window, which share one font. Font.size comes back with font_reset.
+    void setFontSize(double points, bool relative);
+    /// `afterglow ctl window`: @p state fullscreen, maximized, normal or
+    /// empty, then a size of @p cols x @p rows cells for one pane when both
+    /// are above 0. The reason when it cannot, else empty.
+    QString setWindowState(const QString& state, int cols, int rows);
 
     // For the control interface and scripts.
     quint32 id() const noexcept { return m_id; }
@@ -1544,6 +1556,7 @@ private:
     /// restored project that asks for it.
     bool m_holdNextPane = false;
     std::optional<std::string> m_inputNextPane;
+    std::optional<double> m_opacityOverride;
     /// What the next pane that this window starts gets before its program
     /// starts, which may exit at once: PaneLaunchOptions::hold and input.
     /// A launch clears it after, as it may fail first.

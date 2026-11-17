@@ -11,6 +11,7 @@
 #include "../app/WindowStart.h"
 #include "../config/Keybinds.h"
 #include "../config/Settings.h"
+#include "../config/Theme.h"
 #include "../mux/MuxClient.h"
 #include "../scripting/ScriptHost.h"
 
@@ -1028,6 +1029,88 @@ QString Control::scroll(quint32 id, const QString& unit, qint64 amount)
     Pane* p = find(id, &w);
     if (!p) return noPane(id);
     return w->scrollFromControl(p, unit, amount);
+}
+
+QString Control::colors(quint32 id, QVariantMap& out)
+{
+    Pane* p = find(id);
+    if (!p) return noPane(id);
+    out = p->colors();
+    return {};
+}
+
+QString Control::setColors(quint32 id, const QVariantMap& colors, bool reset)
+{
+    Pane* p = find(id);
+    if (!p) return noPane(id);
+    if (p->isSessionPane()) return QStringLiteral("the colours of a pane of a mux session are its daemon's: use afterglow ctl --session");
+    // Every colour first: a bad one sets none.
+    std::vector<std::string> payloads = reset ? AfterglowVt::Terminal::colorResetOscs() : std::vector<std::string>();
+    for (auto it = colors.cbegin(); it != colors.cend(); ++it) {
+        const auto rgb = it.value().typeId() == QMetaType::QString ? Themes::rgbFromName(it.value().toString()) : std::nullopt;
+        if (!rgb) return QStringLiteral("%1 is no colour").arg(it.value().toString());
+        auto payload = AfterglowVt::Terminal::colorOscOf(it.key().toStdString(), *rgb);
+        if (!payload) return QStringLiteral("no colour is named %1").arg(it.key());
+        payloads.push_back(std::move(*payload));
+    }
+    p->applyColors(payloads);
+    return {};
+}
+
+QString Control::setFontSize(quint32 id, const QString& size)
+{
+    TerminalWindow* w = nullptr;
+    if (!find(id, &w)) return noPane(id);
+    const bool relative = size.startsWith(QLatin1Char('+')) || size.startsWith(QLatin1Char('-'));
+    bool ok = false;
+    const double points = size.toDouble(&ok);
+    const double min = AfterglowRender::FontSpec::MinPoints, max = AfterglowRender::FontSpec::MaxPoints;
+    if (!ok || !std::isfinite(points) || (!relative && (points < min || points > max)) || (relative && std::abs(points) > max))
+        return QStringLiteral("a font size is %1 to %2 points, or +N or -N points more or fewer").arg(min).arg(max);
+    w->setFontSize(points, relative);
+    return {};
+}
+
+QString Control::setOpacity(quint32 id, double opacity)
+{
+    TerminalWindow* w = nullptr;
+    if (!find(id, &w)) return noPane(id);
+    if (!std::isfinite(opacity) || opacity < 0 || opacity > 1) return QStringLiteral("the opacity is from 0 to 1");
+    w->setOpacityOverride(opacity);
+    return {};
+}
+
+QString Control::setUserVar(quint32 id, const QString& name, const QString& value)
+{
+    Pane* p = find(id);
+    if (!p) return noPane(id);
+    // As OSC 1337 SetUserVar names one.
+    const qsizetype bytes = name.toUtf8().size();
+    if (bytes == 0 || bytes > MaxUserVarName || name.contains(QLatin1Char('=')))
+        return QStringLiteral("a user variable's name has 1 to %1 bytes and no =").arg(MaxUserVarName);
+    if (p->isSessionPane()) return QStringLiteral("the user variables of a pane of a mux session are its daemon's: use afterglow ctl --session");
+    p->setUserVar(name, value);
+    return {};
+}
+
+QString Control::signalProgram(quint32 id, const QString& signal)
+{
+    const auto number = AfterglowPty::signalNumber(signal.toStdString());
+    if (!number) return QStringLiteral("no signal is named %1").arg(signal);
+    Pane* p = find(id);
+    if (!p) return noPane(id);
+    if (p->isSessionPane()) return QStringLiteral("the program of a pane of a mux session runs in its daemon: use afterglow ctl --session");
+    if (!p->signalProgram(*number)) return QStringLiteral("pane %1 has no program to signal").arg(id);
+    return {};
+}
+
+QString Control::setWindowState(quint32 id, const QString& state, int cols, int rows)
+{
+    TerminalWindow* w = nullptr;
+    if (!find(id, &w)) return noPane(id);
+    if (cols < 0 || rows < 0 || cols > MaxWindowCells || rows > MaxWindowCells || (cols > 0) != (rows > 0))
+        return QStringLiteral("a size is COLSxROWS, each from 1 to %1").arg(MaxWindowCells);
+    return w->setWindowState(state, cols, rows);
 }
 
 QString Control::setTabTitle(quint32 id, const QString& title)

@@ -162,6 +162,13 @@ _afterglow_ctl() {
         'resize:move an edge of the pane'
         'send-key:type keys by name'
         'scroll:scroll the pane'
+        'colors:print the pane'"'"'s colours'
+        'set-colors:set colours of the pane'
+        'set-font-size:set the font size'
+        'set-opacity:set the window'"'"'s background opacity'
+        'set-user-var:set user variables of the pane'
+        'signal-program:send a signal to the program in the foreground'
+        'window:change the pane'"'"'s window'
         'signal:set a shader signal'
         'notify:show a desktop notification'
         'scripts:show script diagnostics'
@@ -248,6 +255,15 @@ _afterglow_ctl() {
             '(--border --no-border)--border[draw a border]' '(--border --no-border)--no-border[draw no border]' \
             "${reads[@]}" ;;
     set-title|set-tab-title) _arguments -S $pane '*:title:' ;;
+    colors) _arguments $pane '--json[print JSON]' ;;
+    set-colors) _arguments -S $pane '--all[every pane]' '--reset[the configured colours first]' '*:theme or NAME=COLOR:' ;;
+    set-font-size) _arguments $pane '1:points, or +N or -N:' ;;
+    set-opacity) _arguments $pane '1:opacity from 0 to 1:' ;;
+    set-user-var) _arguments -S $pane '*:NAME=VALUE:' ;;
+    signal-program) _arguments $pane '1:signal:(INT TERM HUP KILL QUIT USR1 USR2 STOP CONT TSTP WINCH)' ;;
+    window)
+        _arguments $pane '(--fullscreen --maximized --normal)'{--fullscreen,--maximized,--normal} \
+            '--size[the cells of one pane]:COLSxROWS:' ;;
     focus) _arguments $pane '--direction[focus the pane on that side]:direction:(left right up down)' ;;
     resize) _arguments $pane '--direction[the edge that moves]:direction:(left right up down)' '--cells[cells to move it (2)]:cells:' ;;
     send-key)

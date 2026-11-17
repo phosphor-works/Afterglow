@@ -333,6 +333,21 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
         if (const QString error = control.scroll(id, args.at(1).toString(), qint64(amount)); !error.isEmpty()) return failed(error);
         return {};
     }
+    if (fn == QLatin1String("setFontSize")) {
+        if (const QString error = control.setFontSize(id, args.at(1).toString()); !error.isEmpty()) return failed(error);
+        return {};
+    }
+    if (fn == QLatin1String("setOpacity")) {
+        if (const QString error = control.setOpacity(id, args.at(1).toDouble(-1)); !error.isEmpty()) return failed(error);
+        return {};
+    }
+    if (fn == QLatin1String("setWindowState")) {
+        // As the control target reads a size: whole numbers, which Control bounds.
+        const double cols = args.at(2).toDouble(-1), rows = args.at(3).toDouble(-1);
+        const auto whole = [](double v) { return std::isfinite(v) && std::floor(v) == v && v >= 0 && v <= Control::MaxWindowCells ? int(v) : -1; };
+        if (const QString error = control.setWindowState(id, args.at(1).toString(), whole(cols), whole(rows)); !error.isEmpty()) return failed(error);
+        return {};
+    }
     if (fn == QLatin1String("setTabTitle")) {
         if (const QString error = control.setTabTitle(id, args.at(1).toString()); !error.isEmpty()) return failed(error);
         return {};

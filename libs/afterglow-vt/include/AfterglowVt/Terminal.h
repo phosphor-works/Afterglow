@@ -438,6 +438,29 @@ public:
     std::string promptClickInput(int col, int row) const;
     const ShellContexts& contexts() const noexcept { return m_contexts; }
 
+    /// Sets or resets colours as a program does with OSC 4, 10, 11, 12, 17
+    /// and 19, and OSC 104, 110, 111, 112, 117 and 119: for the host
+    /// (`afterglow ctl set-colors`). @p payload is the text of the OSC
+    /// without ESC ] and its end, such as "4;1;#ff0000" or "110". The
+    /// program hears of the change as of its own (mode 2031). False, with
+    /// nothing done, for another OSC and for a query, which would answer the
+    /// program.
+    bool applyColorOsc(std::string_view payload);
+    /// A colour by the names of kitty's get-colors and set-colors:
+    /// foreground, background, cursor, selection_foreground,
+    /// selection_background, and color0 to color255. Unset for a colour that
+    /// follows another (the cursor the text, the selection the inverse).
+    struct NamedColor
+    {
+        std::string name;
+        std::optional<Rgb> rgb;
+    };
+    std::vector<NamedColor> namedColors() const;
+    /// The payload of applyColorOsc() that sets the colour of NamedColor
+    /// @p name to @p rgb. Nothing for another name.
+    static std::optional<std::string> colorOscOf(std::string_view name, Rgb rgb);
+    /// The payloads that give each colour back its configured value.
+    static std::vector<std::string> colorResetOscs();
     Rgb paletteColor(int index) const noexcept { return m_palette[std::size_t(index & 0xFF)]; }
     Rgb defaultForeground() const noexcept { return m_defaultFg; }
     Rgb defaultBackground() const noexcept { return m_defaultBg; }

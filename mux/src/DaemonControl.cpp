@@ -12,6 +12,8 @@
 
 #include "Daemon.h"
 
+#include <AfterglowProto/Color.h>
+#include <AfterglowPty/Pty.h>
 #include <AfterglowVt/KeyNames.h>
 
 #include <algorithm>
@@ -76,7 +78,8 @@ bool takesPane(std::string_view fn)
 {
     return among(fn, {"sendText", "getText", "split", "newTab", "focus", "close", "setTitle", "signal", "notify", "runAction", "movePane",
                       "detachTab", "saveProject", "overlay", "screenshot", "focusNeighbour", "resizePane", "sendKeys", "scroll",
-                      "setTabTitle"});
+                      "setTabTitle", "getColors", "setColors", "setFontSize", "setOpacity", "setUserVar", "signalProgram",
+                      "setWindowState"});
 }
 
 /// The calls that only a window answers.
@@ -84,7 +87,7 @@ bool windowCall(std::string_view fn)
 {
     return among(fn, {"setTitle", "signal", "notify", "runAction", "newWindow", "openDirectory", "projects", "saveProject", "openProject",
                       "scriptDiagnostics", "overlay", "overlayInput", "screenshot", "focusNeighbour", "resizePane", "scroll",
-                      "setTabTitle"});
+                      "setTabTitle", "setFontSize", "setOpacity", "setWindowState"});
 }
 
 /// The number of arguments of a call that the daemon takes only as a
@@ -284,6 +287,55 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         if (shownWindow && shownWindow->holdsInput(pane->id())) return failed(request, "program closed or input queue full");
         if (bytes.empty() || pane->input(bytes) == MuxPane::Input::Written) return ipcReply(request.id.value_or(0), nullptr);
         return failed(request, "program closed or input queue full");
+    }
+    if (fn == "getColors") {
+        if (args.size() != 1) return ipcError(request.id, IpcErrorCode::InvalidArg, "getColors takes (pane)");
+        const auto colors = pane->colors();
+        if (!colors) return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
+        Json::Object out;
+        for (const auto& color : *colors) {
+            char hex[8];
+            if (color.rgb) std::snprintf(hex, sizeof hex, "#%02x%02x%02x", color.rgb->r, color.rgb->g, color.rgb->b);
+            out.emplace_back(color.name, color.rgb ? Json::Value(std::string(hex)) : Json::Value(nullptr));
+        }
+        return ipcReply(request.id.value_or(0), std::move(out));
+    }
+    if (fn == "setColors") {
+        if (args.size() != 3 || !args[1].isObject() || !args[2].isBool()) {
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "setColors takes (pane, colors, reset)");
+        }
+        // Every colour first, as a window reads them: a bad one sets none.
+        std::vector<std::string> payloads = args[2].toBool() ? AfterglowVt::Terminal::colorResetOscs() : std::vector<std::string>();
+        for (const auto& [name, value] : args[1].toObject()) {
+            AfterglowVt::Rgb rgb;
+            if (!value.isString() || !AfterglowProto::parseColorSpec(value.toString(), rgb.r, rgb.g, rgb.b)) {
+                return failed(request, (value.isString() ? value.toString() : Json::write(value)) + " is no colour");
+            }
+            auto payload = AfterglowVt::Terminal::colorOscOf(name, rgb);
+            if (!payload) return failed(request, "no colour is named " + name);
+            payloads.push_back(std::move(*payload));
+        }
+        if (!pane->applyColors(payloads)) return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
+        return ipcReply(request.id.value_or(0), nullptr);
+    }
+    if (fn == "setUserVar") {
+        if (args.size() != 3 || !args[1].isString() || !args[2].isString()) {
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "setUserVar takes (pane, name, value)");
+        }
+        const std::string& name = args[1].toString();
+        // As OSC 1337 SetUserVar names one, and a window's control target.
+        if (name.empty() || name.size() > 128 || name.find('=') != std::string::npos) {
+            return failed(request, "a user variable's name has 1 to 128 bytes and no =");
+        }
+        pane->setUserVar(name, args[2].toString());
+        return ipcReply(request.id.value_or(0), nullptr);
+    }
+    if (fn == "signalProgram") {
+        if (args.size() != 2 || !args[1].isString()) return ipcError(request.id, IpcErrorCode::InvalidArg, "signalProgram takes (pane, signal)");
+        const auto number = AfterglowPty::signalNumber(args[1].toString());
+        if (!number) return failed(request, "no signal is named " + args[1].toString());
+        if (!pane->signalProgram(*number)) return failed(request, "pane " + std::to_string(pane->id()) + " has no program to signal");
+        return ipcReply(request.id.value_or(0), nullptr);
     }
     if (fn == "getText") {
         if (args.size() < 2 || args.size() > 3 || !args[1].isString() || (args.size() == 3 && !args[2].isObject())) {

@@ -5,6 +5,7 @@
 #include <AfterglowPty/Pty.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cerrno>
 #include <cstdlib>
 #include <chrono>
@@ -616,6 +617,39 @@ std::string Pty::currentWorkingDirectory() const
         if (auto directory = directoryOf(group)) return *directory;
     }
     return directoryOf(child).value_or(std::string());
+}
+
+std::optional<int> signalNumber(std::string_view name)
+{
+    if (!name.empty() && std::all_of(name.begin(), name.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+        int number = 0;
+        if (name.size() > 2 || std::from_chars(name.data(), name.data() + name.size(), number).ec != std::errc{}) return std::nullopt;
+        return number >= 1 && number <= SIGRTMAX ? std::optional(number) : std::nullopt;
+    }
+    std::string upper;
+    for (const char c : name) upper += (c >= 'a' && c <= 'z') ? char(c - 'a' + 'A') : c;
+    if (upper.starts_with("SIG")) upper.erase(0, 3);
+    static constexpr std::pair<std::string_view, int> Names[] = {
+        {"HUP", SIGHUP},   {"INT", SIGINT},     {"QUIT", SIGQUIT}, {"ILL", SIGILL},   {"TRAP", SIGTRAP}, {"ABRT", SIGABRT},
+        {"BUS", SIGBUS},   {"FPE", SIGFPE},     {"KILL", SIGKILL}, {"USR1", SIGUSR1}, {"SEGV", SIGSEGV}, {"USR2", SIGUSR2},
+        {"PIPE", SIGPIPE}, {"ALRM", SIGALRM},   {"TERM", SIGTERM}, {"CHLD", SIGCHLD}, {"CONT", SIGCONT}, {"STOP", SIGSTOP},
+        {"TSTP", SIGTSTP}, {"TTIN", SIGTTIN},   {"TTOU", SIGTTOU}, {"URG", SIGURG},   {"XCPU", SIGXCPU}, {"XFSZ", SIGXFSZ},
+        {"VTALRM", SIGVTALRM}, {"PROF", SIGPROF}, {"WINCH", SIGWINCH}, {"IO", SIGIO}, {"PWR", SIGPWR}, {"SYS", SIGSYS},
+    };
+    for (const auto& [n, number] : Names) {
+        if (upper == n) return number;
+    }
+    return std::nullopt;
+}
+
+bool Pty::signalForeground(int signal) const
+{
+    const pid_t child = m_pid.load();
+    if (child <= 0) return false;
+    const pid_t group = tcgetpgrp(m_master);
+    // Only a group of the pane's session: a stale number could name another.
+    if (group <= 0 || (group != child && !inSession(group, child))) return false;
+    return ::kill(-group, signal) == 0;
 }
 
 std::optional<ForegroundProcess> Pty::foreground() const

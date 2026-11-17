@@ -4424,6 +4424,54 @@ void Terminal::windowOp(const Params& p)
 
 // --- OSC / DCS / APC -------------------------------------------------------
 
+bool Terminal::applyColorOsc(std::string_view payload)
+{
+    const std::string_view number = payload.substr(0, payload.find(';'));
+    static constexpr std::string_view Colors[] = {"4", "10", "11", "12", "17", "19", "104", "110", "111", "112", "117", "119"};
+    if (std::find(std::begin(Colors), std::end(Colors), number) == std::end(Colors)) return false;
+    if (payload.find('?') != std::string_view::npos) return false;
+    oscDispatch(payload, false);
+    return true;
+}
+
+std::vector<Terminal::NamedColor> Terminal::namedColors() const
+{
+    const auto value = [](const Rgb* rgb) { return rgb ? std::optional<Rgb>(*rgb) : std::nullopt; };
+    std::vector<NamedColor> out{{"foreground", m_defaultFg},
+                                {"background", m_defaultBg},
+                                {"cursor", value(cursorColor())},
+                                {"selection_foreground", value(selectionForeground())},
+                                {"selection_background", value(selectionBackground())}};
+    for (int i = 0; i < 256; ++i) out.push_back({"color" + std::to_string(i), m_palette[std::size_t(i)]});
+    return out;
+}
+
+std::optional<std::string> Terminal::colorOscOf(std::string_view name, Rgb rgb)
+{
+    char hex[8];
+    std::snprintf(hex, sizeof hex, "#%02x%02x%02x", rgb.r, rgb.g, rgb.b);
+    if (name == "foreground") return std::string("10;") + hex;
+    if (name == "background") return std::string("11;") + hex;
+    if (name == "cursor") return std::string("12;") + hex;
+    if (name == "selection_background") return std::string("17;") + hex;
+    if (name == "selection_foreground") return std::string("19;") + hex;
+    if (name.starts_with("color") && name.size() > 5 && name.size() <= 8) {
+        const std::string_view digits = name.substr(5);
+        int index = -1;
+        // No sign and no leading zero: color007 is no colour.
+        if ((digits.size() == 1 || digits[0] != '0') && std::from_chars(digits.data(), digits.data() + digits.size(), index).ec == std::errc{}
+            && std::to_string(index).size() == digits.size() && index >= 0 && index < 256) {
+            return "4;" + std::to_string(index) + ";" + hex;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<std::string> Terminal::colorResetOscs()
+{
+    return {"104", "110", "111", "112", "117", "119"};
+}
+
 void Terminal::oscDispatch(std::string_view payload, bool bel)
 {
     m_lastX = -1;

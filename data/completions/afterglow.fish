@@ -138,6 +138,10 @@ function __afterglow_ctl
                 focus\t'Focus the pane' close\t'Close the pane' set-title\t"Set the pane's title" \
                 set-tab-title\t"Set the title of the pane's tab" resize\t'Move an edge of the pane' \
                 send-key\t'Type keys by name' scroll\t'Scroll the pane' \
+                colors\t"Print the pane's colours" set-colors\t'Set colours of the pane' \
+                set-font-size\t'Set the font size' set-opacity\t"Set the window's background opacity" \
+                set-user-var\t'Set user variables of the pane' \
+                signal-program\t'Send a signal to the program in the foreground' window\t"Change the pane's window" \
                 signal\t'Set a shader signal' notify\t'Show a desktop notification' \
                 scripts\t'Show script diagnostics' open-directory\t'Open a directory' \
                 projects\t'List saved projects' save-project\t'Save the window layout' \
@@ -161,7 +165,7 @@ function __afterglow_ctl
                     complete -C (string join ' ' -- $rest "$cur")
                 end
                 return
-            case --pane --cwd --layout --direction --cells --pages --prompt --env --var --stdin-text --capture --title -w --width -h --height --position
+            case --pane --cwd --layout --direction --cells --pages --prompt --env --var --stdin-text --size --capture --title -w --width -h --height --position
                 # The options after --layout are those of overlay. Elsewhere they are no option of ctl.
                 if test $command = overlay; or not contains -- $argv[$i] --capture --title -w --width -h --height --position
                     if test $i -eq $n
@@ -205,6 +209,9 @@ function __afterglow_ctl
                 return
             case signal:0
                 __afterglow_print 0 1 2 3 4 5 6 7
+                return
+            case signal-program:0
+                __afterglow_print INT TERM HUP KILL QUIT USR1 USR2 STOP CONT TSTP WINCH
                 return
             case 'send-key:*'
                 # Of the many names that send-key takes.
@@ -267,6 +274,15 @@ function __afterglow_ctl
             test $command = new-window; and set offer (string match -v -r -- '^--(no-focus|stdin-text|stdin-ansi)' $offer)
         case focus
             contains -- --direction $argv; or set -a offer --direction\t'Focus the pane on that side'
+        case colors
+            contains -- --json $argv; or set -a offer --json\t'Print JSON'
+        case set-colors
+            contains -- --all $argv; or set -a offer --all\t'Every pane'
+            contains -- --reset $argv; or set -a offer --reset\t'The configured colours first'
+        case window
+            string match -q -r -- '^--(fullscreen|maximized|normal)$' $argv
+            or set -a offer --fullscreen --maximized --normal
+            contains -- --size $argv; or set -a offer --size\t'The cells of one pane'
         case resize
             contains -- --direction $argv; or set -a offer --direction\t'The edge that moves'
             contains -- --cells $argv; or set -a offer --cells\t'Cells to move it (2)'

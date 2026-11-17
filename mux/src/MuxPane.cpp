@@ -233,6 +233,32 @@ std::optional<std::string> MuxPane::firstOutputOnScreen(const AfterglowVt::TextF
     return m_terminal.semanticRegionText(*region, MaxText, nullptr, format).value_or(std::string());
 }
 
+std::optional<std::vector<AfterglowVt::Terminal::NamedColor>> MuxPane::colors() const
+{
+    std::lock_guard lock(m_mutex);
+    if (m_decoding) return std::nullopt;
+    return m_terminal.namedColors();
+}
+
+bool MuxPane::applyColors(const std::vector<std::string>& payloads)
+{
+    bool applied = true;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_decoding) return false;
+        for (const std::string& payload : payloads) {
+            if (!m_terminal.applyColorOsc(payload)) {
+                applied = false;
+                break;
+            }
+        }
+    }
+    // As after output: the window's next frame has what changed.
+    m_changed.store(true);
+    m_wake();
+    return applied;
+}
+
 std::optional<AfterglowPty::ForegroundProcess> MuxPane::foreground() const
 {
     if (!m_pty || m_exited) return std::nullopt;

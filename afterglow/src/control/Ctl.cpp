@@ -9,6 +9,7 @@
 #include "../PaneLaunch.h"
 #include "../config/Keybinds.h"
 #include "../config/Settings.h"
+#include "../config/Theme.h"
 #include "../mux/MuxSessions.h"
 #include "MuxProtocol.h"
 #include "../scripting/OverlaySpec.h"
@@ -17,7 +18,9 @@
 #include <AfterglowProto/Run.h>
 #include <AfterglowProto/Socket.h>
 #include <AfterglowProto/Text.h>
+#include <AfterglowPty/Pty.h>
 #include <AfterglowVt/KeyNames.h>
+#include <AfterglowVt/Terminal.h>
 #include <AfterglowVt/Unicode.h>
 #include <PhosphorIpc/IpcProtocol.h>
 
@@ -58,8 +61,9 @@ of the active window or of the window that was active last.
 With --session NAME, the commands act on mux session NAME (afterglow mux),
 and pane IDs are those of the mux daemon. In a pane of a session, they act
 on that session. While no window shows the session, only ls, send-text,
-get-text, send-key, split, new-tab, move-pane, detach-tab, close, watch and
-focus without --direction work.
+get-text, send-key, colors, set-colors, set-user-var, signal-program, split,
+new-tab, move-pane, detach-tab, close, watch and focus without --direction
+work.
 For a session, split and new-tab prepare the program with the settings of
 the default config file, not the --config or -o of a running Afterglow.
 
@@ -96,6 +100,22 @@ the default config file, not the --config or -o of a running Afterglow.
                                         to the Nth prompt below (above when negative), or to an end
   set-title TITLE...                    set the pane's title ("" to clear)
   set-tab-title TITLE...                set the title of the pane's tab ("" to clear)
+  colors [--json]                       print the pane's colours: foreground, background,
+                                        cursor, selection_foreground, selection_background,
+                                        color0 to color255
+  set-colors [--all] [--reset] [THEME] [NAME=COLOR...]
+                                        set colours of the pane (of every pane with --all) as
+                                        its program would: those of a theme name or file, then
+                                        NAME=COLOR; --reset first gives back the configured ones
+  set-font-size [+|-]N                  set the font size in points, or N points more or fewer
+  set-opacity N                         set the window's background opacity (0 to 1) until
+                                        Window.backgroundOpacity changes
+  set-user-var NAME=VALUE...            set user variables of the pane, as OSC 1337 SetUserVar
+  signal-program SIGNAL                 send SIGNAL (INT, TERM, 9...) to the program in the
+                                        foreground of the pane
+  window [--fullscreen|--maximized|--normal] [--size COLSxROWS]
+                                        change the pane's window, and size it for one pane of
+                                        COLSxROWS cells
   signal CHANNEL VALUE                  set a shader signal (uSignal[CHANNEL], 0-7)
   notify TITLE [BODY...]                desktop notification from the pane
   scripts                               show script and package diagnostics as JSON
@@ -586,6 +606,12 @@ std::optional<QString> absolute(const QString& path)
     return QDir::cleanPath(here + QLatin1Char('/') + path);
 }
 
+/// A colour as the calls take it.
+QString hexColor(AfterglowVt::Rgb rgb)
+{
+    return QStringLiteral("#%1%2%3").arg(rgb.r, 2, 16, QLatin1Char('0')).arg(rgb.g, 2, 16, QLatin1Char('0')).arg(rgb.b, 2, 16, QLatin1Char('0'));
+}
+
 const QStringList Directions = {QStringLiteral("left"), QStringLiteral("right"), QStringLiteral("up"), QStringLiteral("down")};
 
 const QString NoCurrentDirectory = QStringLiteral("the current directory was removed, so give an absolute directory");
@@ -597,7 +623,9 @@ const QStringList Commands = {
     QStringLiteral("notify"), QStringLiteral("scripts"), QStringLiteral("open-directory"), QStringLiteral("projects"),
     QStringLiteral("save-project"), QStringLiteral("open-project"), QStringLiteral("action"), QStringLiteral("watch"),
     QStringLiteral("overlay"), QStringLiteral("screenshot"), QStringLiteral("resize"), QStringLiteral("send-key"),
-    QStringLiteral("scroll"), QStringLiteral("set-tab-title"),
+    QStringLiteral("scroll"), QStringLiteral("set-tab-title"), QStringLiteral("colors"), QStringLiteral("set-colors"),
+    QStringLiteral("set-font-size"), QStringLiteral("set-opacity"), QStringLiteral("set-user-var"), QStringLiteral("signal-program"),
+    QStringLiteral("window"),
 };
 
 // The standard input of `overlay`, as much as an overlay takes. It goes in
@@ -683,6 +711,8 @@ int runCtl(int argc, char** argv)
         valueOptions += {QStringLiteral("--direction"), QStringLiteral("--cells")};
     } else if (command == QLatin1String("scroll")) {
         valueOptions += {QStringLiteral("--pages"), QStringLiteral("--prompt")};
+    } else if (command == QLatin1String("window")) {
+        valueOptions += QStringLiteral("--size");
     }
     auto indexOfOption = [&args, &valueOptions](const QString& flag) -> qsizetype {
         for (qsizetype i = 0; i < args.size(); ++i) {
@@ -1170,6 +1200,139 @@ int runCtl(int argc, char** argv)
             amount = negative ? -qint64(*count) : qint64(*count);
         }
         act = [&, unit, amount](qint64 pane) { return run(QStringLiteral("scroll"), {pane, unit, amount}); };
+    } else if (command == QLatin1String("colors")) {
+        const bool json = takeFlag(QStringLiteral("--json"));
+        if (const auto error = extra(0)) return usage(*error);
+        act = [&client, json](qint64 pane) {
+            const auto result = client.call(QStringLiteral("getColors"), {pane});
+            if (!result) return 1;
+            const QJsonObject colors = result->toObject();
+            if (json) {
+                printJson(QJsonDocument(colors), QJsonDocument::Indented);
+                return 0;
+            }
+            // As kitten @ get-colors: one "name #rrggbb" line each, the
+            // named colours first. One that follows another has none.
+            QStringList names{QStringLiteral("foreground"), QStringLiteral("background"), QStringLiteral("cursor"),
+                              QStringLiteral("selection_foreground"), QStringLiteral("selection_background")};
+            for (int i = 0; i < 256; ++i) names << QStringLiteral("color%1").arg(i);
+            for (const QString& name : std::as_const(names)) {
+                const QJsonValue value = colors.value(name);
+                if (value.isString()) std::printf("%-21s %s\n", qPrintable(name), qPrintable(value.toString()));
+            }
+            return 0;
+        };
+    } else if (command == QLatin1String("set-colors")) {
+        const bool all = takeFlag(QStringLiteral("--all"));
+        const bool reset = takeFlag(QStringLiteral("--reset"));
+        if (const auto error = extra(-1)) return usage(*error);
+        // NAME=COLOR words, and at most one theme: a name or a file. The
+        // words' colours go over the theme's.
+        QJsonObject colors;
+        QStringList themes;
+        QJsonObject given;
+        for (const QString& word : std::as_const(args)) {
+            const qsizetype eq = word.indexOf(QLatin1Char('='));
+            if (eq < 0) {
+                themes << word;
+                continue;
+            }
+            const auto rgb = Themes::rgbFromName(word.mid(eq + 1));
+            if (!rgb) return usage(QStringLiteral("%1 is no colour").arg(word.mid(eq + 1)));
+            if (!AfterglowVt::Terminal::colorOscOf(word.left(eq).toStdString(), *rgb)) return usage(QStringLiteral("no colour is named %1").arg(word.left(eq)));
+            given.insert(word.left(eq), hexColor(*rgb));
+        }
+        if (themes.size() > 1) return usage(QStringLiteral("set-colors takes one theme"));
+        if (!themes.isEmpty()) {
+            const QString path = Themes::locate(themes.first(), Themes::searchDirs(), QDir::currentPath());
+            if (path.isEmpty()) return fail(QStringLiteral("no theme %1 in the theme directories or as a file").arg(themes.first()));
+            QFile file(path);
+            if (!file.open(QIODevice::ReadOnly)) return fail(QStringLiteral("cannot read %1: %2").arg(path, file.errorString()));
+            QString error;
+            const auto theme = Themes::parse(file.readAll(), &error);
+            if (!theme) return fail(QStringLiteral("%1: %2").arg(path, error));
+            const auto put = [&colors](const char* name, const std::optional<AfterglowVt::Rgb>& rgb) {
+                if (rgb) colors.insert(QLatin1String(name), hexColor(*rgb));
+            };
+            put("foreground", theme->foreground);
+            put("background", theme->background);
+            put("cursor", theme->cursor);
+            put("selection_foreground", theme->selectionForeground);
+            put("selection_background", theme->selectionBackground);
+            for (std::size_t i = 0; i < theme->palette.size(); ++i) {
+                if (theme->palette[i]) colors.insert(QStringLiteral("color%1").arg(i), hexColor(*theme->palette[i]));
+            }
+        }
+        for (auto it = given.constBegin(); it != given.constEnd(); ++it) colors.insert(it.key(), it.value());
+        if (colors.isEmpty() && !reset) return usage(QStringLiteral("set-colors needs NAME=COLOR, a theme or --reset"));
+        act = [&client, colors, reset, all](qint64 pane) {
+            if (!all) return client.call(QStringLiteral("setColors"), {pane, colors, reset}) ? 0 : 1;
+            // Each pane of the windows, or of the session.
+            const auto listed = client.call(QStringLiteral("listPanes"), {});
+            if (!listed) return 1;
+            int status = 0;
+            for (const QJsonValue& each : listed->toArray()) {
+                if (!client.call(QStringLiteral("setColors"), {each.toObject().value(QLatin1String("id")).toInteger(), colors, reset})) status = 1;
+            }
+            return status;
+        };
+    } else if (command == QLatin1String("set-font-size")) {
+        if (const auto error = extra(1)) return usage(*error);
+        bool ok = false;
+        const double points = args.value(0).toDouble(&ok);
+        if (args.size() != 1 || !ok || !std::isfinite(points)) return usage(QStringLiteral("set-font-size takes a size in points, or +N or -N"));
+        act = [&, size = args.value(0)](qint64 pane) { return run(QStringLiteral("setFontSize"), {pane, size}); };
+    } else if (command == QLatin1String("set-opacity")) {
+        if (const auto error = extra(1)) return usage(*error);
+        bool ok = false;
+        const double opacity = args.value(0).toDouble(&ok);
+        if (args.size() != 1 || !ok || !(opacity >= 0 && opacity <= 1)) return usage(QStringLiteral("set-opacity takes a number from 0 to 1"));
+        act = [&, opacity](qint64 pane) { return run(QStringLiteral("setOpacity"), {pane, opacity}); };
+    } else if (command == QLatin1String("set-user-var")) {
+        if (const auto error = extra(-1)) return usage(*error);
+        if (args.isEmpty()) return usage(QStringLiteral("set-user-var needs NAME=VALUE"));
+        std::vector<std::pair<QString, QString>> vars;
+        for (const QString& word : std::as_const(args)) {
+            const qsizetype eq = word.indexOf(QLatin1Char('='));
+            if (eq <= 0 || word.left(eq).toUtf8().size() > Control::MaxUserVarName)
+                return usage(QStringLiteral("set-user-var takes NAME=VALUE, with a name of 1 to %1 bytes").arg(Control::MaxUserVarName));
+            vars.emplace_back(word.left(eq), word.mid(eq + 1));
+        }
+        act = [&, vars](qint64 pane) {
+            for (const auto& [name, value] : vars) {
+                if (run(QStringLiteral("setUserVar"), {pane, name, value}) != 0) return 1;
+            }
+            return 0;
+        };
+    } else if (command == QLatin1String("signal-program")) {
+        if (const auto error = extra(1)) return usage(*error);
+        if (args.size() != 1 || !AfterglowPty::signalNumber(args.first().toStdString()))
+            return usage(QStringLiteral("signal-program takes a signal: a name such as INT or TERM, or a number"));
+        act = [&, signal = args.first()](qint64 pane) { return run(QStringLiteral("signalProgram"), {pane, signal}); };
+    } else if (command == QLatin1String("window")) {
+        QString state;
+        int states = 0;
+        for (const char* s : {"fullscreen", "maximized", "normal"}) {
+            if (takeFlag(QStringLiteral("--") + QLatin1String(s))) {
+                state = QLatin1String(s);
+                ++states;
+            }
+        }
+        const std::optional<QString> size = takeValue(QStringLiteral("--size"));
+        if (const auto error = extra(0)) return usage(*error);
+        if (states > 1) return usage(QStringLiteral("window takes one of --fullscreen, --maximized and --normal"));
+        qint64 cols = 0, rows = 0;
+        if (size) {
+            const QStringList parts = size->split(QLatin1Char('x'));
+            const auto c = parts.size() == 2 ? decimal(parts[0]) : std::nullopt;
+            const auto r = parts.size() == 2 ? decimal(parts[1]) : std::nullopt;
+            if (!c || !r || *c < 1 || *r < 1 || *c > quint32(Control::MaxWindowCells) || *r > quint32(Control::MaxWindowCells))
+                return usage(QStringLiteral("--size takes COLSxROWS, each from 1 to %1").arg(Control::MaxWindowCells));
+            cols = *c;
+            rows = *r;
+        }
+        if (!states && !size) return usage(QStringLiteral("window needs --fullscreen, --maximized, --normal or --size"));
+        act = [&, state, cols, rows](qint64 pane) { return run(QStringLiteral("setWindowState"), {pane, state, cols, rows}); };
     } else if (command == QLatin1String("set-tab-title")) {
         if (const auto error = extra(-1)) return usage(*error);
         act = [&, title = (args + trailing).join(QLatin1Char(' '))](qint64 pane) {

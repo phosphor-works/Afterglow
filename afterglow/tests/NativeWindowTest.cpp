@@ -15262,3 +15262,62 @@ TEST_F(NativeWindow, ControlLaunchesWithThePanesTextHeldWithVariablesAndWithoutT
                                         {{QStringLiteral("stdin_text"), QStringLiteral("screen")}}, created),
               QStringLiteral("reading pane text is off (Control.allowReadText)"));
 }
+
+TEST_F(NativeWindow, ControlSetsColoursFontOpacityVariablesSignalsAndTheWindow) {
+    // kitten @ set-colors, get-colors, set-font-size,
+    // set-background-opacity, set-user-vars, signal-child and
+    // resize-os-window.
+    TestControl test(directory, QStringLiteral("window.conf"), window);
+    Control& control = test.control;
+    Pane* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    QVariantMap colors;
+    ASSERT_TRUE(control.colors(pane->id(), colors).isEmpty());
+    const QString configured = colors.value(QStringLiteral("color1")).toString();
+    ASSERT_TRUE(control.setColors(pane->id(), {{QStringLiteral("color1"), QStringLiteral("#ff0010")}, {QStringLiteral("cursor"), QStringLiteral("blue")}}, false)
+                    .isEmpty());
+    ASSERT_TRUE(control.colors(pane->id(), colors).isEmpty());
+    EXPECT_EQ(colors.value(QStringLiteral("color1")).toString(), QStringLiteral("#ff0010"));
+    EXPECT_EQ(colors.value(QStringLiteral("cursor")).toString(), QStringLiteral("#0000ff"));
+    EXPECT_TRUE(pane->withTerminal([](AfterglowVt::Terminal& t) { return t.paletteColor(1) == AfterglowVt::Rgb{0xff, 0x00, 0x10}; }));
+    EXPECT_EQ(control.setColors(pane->id(), {{QStringLiteral("color2"), QStringLiteral("#00ff00")}, {QStringLiteral("color3"), QStringLiteral("nope")}}, false),
+              QStringLiteral("nope is no colour"));
+    ASSERT_TRUE(control.setColors(pane->id(), {}, true).isEmpty());
+    ASSERT_TRUE(control.colors(pane->id(), colors).isEmpty());
+    EXPECT_EQ(colors.value(QStringLiteral("color1")).toString(), configured);
+    EXPECT_TRUE(colors.value(QStringLiteral("cursor")).isNull());
+
+    // The window's opacity, until the setting changes.
+    ASSERT_TRUE(control.setOpacity(pane->id(), 0.5).isEmpty());
+    EXPECT_DOUBLE_EQ(window->backgroundOpacity(), 0.5);
+    EXPECT_FALSE(control.setOpacity(pane->id(), 1.5).isEmpty());
+
+    // The font, as font_bigger: bigger cells, so fewer of them in the pane.
+    const int cols = pane->cols();
+    ASSERT_TRUE(control.setFontSize(pane->id(), QStringLiteral("+4")).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return pane->cols() < cols; })) << cols << " " << pane->cols();
+    ASSERT_TRUE(window->runAction(pane, Action::FontReset));
+    EXPECT_TRUE(waitFor([&] { return pane->cols() == cols; })) << cols << " " << pane->cols();
+    EXPECT_EQ(control.setFontSize(pane->id(), QStringLiteral("200")), QStringLiteral("a font size is 4 to 96 points, or +N or -N points more or fewer"));
+
+    ASSERT_TRUE(control.setUserVar(pane->id(), QStringLiteral("role"), QStringLiteral("build")).isEmpty());
+    EXPECT_EQ(pane->userVars().value(QStringLiteral("role")), QStringLiteral("build"));
+
+    // A signal to the program in the foreground: sleep ends, and its pane closes.
+    quint32 created = 0;
+    ASSERT_TRUE(control.split(pane->id(), QStringLiteral("right"), {QStringLiteral("/bin/sleep"), QStringLiteral("60")}, {}, created).isEmpty());
+    const auto exists = [this, &created] {
+        const auto panes = window->panes();
+        return std::any_of(panes.begin(), panes.end(), [&created](Pane* p) { return p->id() == created; });
+    };
+    ASSERT_TRUE(exists());
+    EXPECT_EQ(control.signalProgram(created, QStringLiteral("NOPE")), QStringLiteral("no signal is named NOPE"));
+    ASSERT_TRUE(waitFor([&] { return control.signalProgram(created, QStringLiteral("TERM")).isEmpty(); }));
+    EXPECT_TRUE(waitFor([&] { return !exists(); }));
+
+    // A size of one pane in cells, in a normal window.
+    ASSERT_TRUE(control.setWindowState(pane->id(), QStringLiteral("normal"), 40, 10).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return pane->cols() == 40 && pane->rows() == 10; })) << pane->cols() << "x" << pane->rows();
+    EXPECT_EQ(control.setWindowState(pane->id(), QStringLiteral("tiny"), 0, 0), QStringLiteral("the state is fullscreen, maximized or normal"));
+    EXPECT_EQ(control.setWindowState(pane->id(), QString(), 40, 0), QStringLiteral("a size is COLSxROWS, each from 1 to 10000"));
+}

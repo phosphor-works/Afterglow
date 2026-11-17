@@ -723,3 +723,16 @@ TEST(Pty, TheDescriptorsThatProcListsCloseFromTheFirst)
     ASSERT_TRUE(WIFEXITED(status));
     EXPECT_EQ(WEXITSTATUS(status), 0);
 }
+
+// The signals of afterglow ctl signal-program, by name or number.
+TEST(Pty, SignalsByNameOrNumber)
+{
+    using AfterglowPty::signalNumber;
+    EXPECT_EQ(signalNumber("INT"), SIGINT);
+    EXPECT_EQ(signalNumber("SIGTERM"), SIGTERM);
+    EXPECT_EQ(signalNumber("sigkill"), SIGKILL);
+    EXPECT_EQ(signalNumber("winch"), SIGWINCH);
+    EXPECT_EQ(signalNumber("9"), 9);
+    EXPECT_EQ(signalNumber(std::to_string(SIGRTMAX)), SIGRTMAX);
+    for (const std::string_view bad : {"", "0", "65", "100", "SIG", "SIGNOPE", "-9", "9x", "+9"}) EXPECT_FALSE(signalNumber(bad)) << bad;
+}

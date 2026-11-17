@@ -619,6 +619,7 @@ A window that answers a command follows its own settings too.
 | Command | No window shows the session | A window shows the session |
 | --- | --- | --- |
 | `ls`, `send-text`, `send-key`, `get-text` (screen, scrollback and last output, also with `--ansi`, `--cursor` and `--wrap-markers`) | The daemon acts | The daemon acts |
+| `colors`, `set-colors`, `set-user-var`, `signal-program` | The daemon acts on its terminal and its program of the pane | The daemon acts, and the window shows the colours with the next frame. The control socket of the window refuses to set the colours and the user variables of a session pane, and to signal its program: the daemon has them. |
 | `close` | The daemon closes the pane, and its program ends. When it is the last pane of the session, the session ends, whatever `Mux.onClose` says. | As without a window |
 | `split` | The daemon starts the program. The pane goes beside its pane, on the side that the command names, and gets the focus. | The daemon starts the program, and the window places the pane in the same way |
 | `new-tab` | The daemon starts the program. The pane gets a new tab after the tab of its pane, and that tab shows. | The daemon starts the program, and the window places the pane in the same way |
@@ -626,7 +627,7 @@ A window that answers a command follows its own settings too.
 | `move-pane`, `detach-tab` | The daemon moves the pane in its layout. A move to a new window makes a new session, as in a window (see [move panes and tabs](#move-panes-and-tabs)). No window shows the new session. A move to a pane of another session joins that session (see [move a pane to another session](#move-a-pane-to-another-session)). | The window moves the pane, as a drag in the window does. A move to a pane of another session joins that session, as without a window. |
 | `get-text --selection`, `get-text --last-visited-output` | Empty: only a window has a selection, and visits outputs | The window answers |
 | `get-text --first-output-on-screen` | The daemon reads its own screen, which shows the newest rows | The window answers, from the rows that it shows |
-| `set-title`, `set-tab-title`, `focus --direction`, `resize`, `scroll`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
+| `set-title`, `set-tab-title`, `focus --direction`, `resize`, `scroll`, `set-font-size`, `set-opacity`, `window`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
 | `overlay`, `screenshot` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window runs the overlay or takes the picture, and answers when it is done |
 | `watch` | The daemon sends the events of the session | The daemon sends the events of the session |
 

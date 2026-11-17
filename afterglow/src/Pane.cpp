@@ -911,6 +911,46 @@ QMap<QString, QString> Pane::userVars() const
     return out;
 }
 
+QVariantMap Pane::colors() const
+{
+    std::vector<AfterglowVt::Terminal::NamedColor> named;
+    {
+        std::lock_guard lock(m_mutex);
+        named = m_terminal.namedColors();
+    }
+    QVariantMap out;
+    for (const auto& color : named) {
+        out.insert(QString::fromStdString(color.name),
+                   color.rgb ? QVariant(QStringLiteral("#%1%2%3")
+                                            .arg(color.rgb->r, 2, 16, QLatin1Char('0'))
+                                            .arg(color.rgb->g, 2, 16, QLatin1Char('0'))
+                                            .arg(color.rgb->b, 2, 16, QLatin1Char('0')))
+                             : QVariant::fromValue(nullptr));
+    }
+    return out;
+}
+
+bool Pane::applyColors(const std::vector<std::string>& payloads)
+{
+    bool applied = true;
+    {
+        std::lock_guard lock(m_mutex);
+        for (const std::string& payload : payloads) {
+            if (!m_terminal.applyColorOsc(payload)) {
+                applied = false;
+                break;
+            }
+        }
+    }
+    Q_EMIT contentChanged();
+    return applied;
+}
+
+bool Pane::signalProgram(int signal)
+{
+    return m_pty && m_pty->signalForeground(signal);
+}
+
 void Pane::setUserVar(const QString& name, const QString& value)
 {
     const QByteArray n = name.toUtf8(), v = value.toUtf8();
