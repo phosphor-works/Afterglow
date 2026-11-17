@@ -1694,3 +1694,59 @@ TEST(Terminal, ResetKeepsShellContexts)
     EXPECT_EQ(t.t.contexts().stack().size(), 1u);
     EXPECT_EQ(t.host.contextChanges, changes);
 }
+
+// As kitty's get-text --ansi: each change of style as SGR, links as OSC 8,
+// and each line reset at its end. Blanks at the end that show a background
+// stay; plain ones go.
+TEST(Terminal, TextWithItsStyles)
+{
+    Term t(20, 4);
+    t.feed("\x1b[1;31mred\x1b[m plain\x1b[48;5;200m  \x1b[m\r\n");
+    t.feed("\x1b]8;id=a;http://x\x1b\\link\x1b]8;;\x1b\\ \x1b[4:3;58;2;1;2;3;38;2;9;8;7mwave\x1b[m\r\n");
+    t.feed("\x1b[92;104;7mhi\x1b[m");
+    TextFormat ansi;
+    ansi.ansi = true;
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen, 1 << 20, nullptr, ansi),
+              "\x1b[0;1;31mred\x1b[m plain\x1b[0;48;5;200m  \x1b[m\n"
+              "\x1b]8;id=a;http://x\x1b\\link\x1b]8;;\x1b\\ \x1b[0;4:3;38;2;9;8;7;58;2;1;2;3mwave\x1b[m\n"
+              "\x1b[0;7;92;104mhi\x1b[m");
+    // Plain text stays as it was.
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen), "red plain\nlink wave\nhi");
+}
+
+TEST(Terminal, TextWithWrapMarkersAndTheCursor)
+{
+    Term t(5, 3);
+    t.feed("abcdefg\r\nxy");
+    TextFormat format;
+    format.wrapMarkers = true;
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen, 1 << 20, nullptr, format), "abcde\rfg\nxy");
+    // The cursor: row 3, column 3, a steady bar, hidden.
+    t.feed("\x1b[6 q\x1b[?25l");
+    format.wrapMarkers = false;
+    format.cursor = true;
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen, 1 << 20, nullptr, format), "abcdefg\nxy\x1b[3;3H\x1b[6 q\x1b[?25l");
+}
+
+// A limit cuts at the last whole character or escape sequence.
+TEST(Terminal, StyledTextCutsNoEscapeSequence)
+{
+    Term t(20, 2);
+    t.feed("a\x1b[31mbc");
+    TextFormat ansi;
+    ansi.ansi = true;
+    for (std::size_t limit = 0; limit < 16; ++limit) {
+        bool truncated = false;
+        const std::string text = t.t.text(Terminal::TextScope::Screen, limit, &truncated, ansi);
+        const std::string whole = "a\x1b[0;31mbc\x1b[m";
+        EXPECT_LE(text.size(), limit);
+        // As in plain text: a row that fills the limit leaves no room for
+        // the line feed after it.
+        EXPECT_EQ(truncated, limit <= whole.size()) << limit;
+        EXPECT_EQ(whole.substr(0, text.size()), text) << limit;
+        // What was kept ends at a boundary.
+        for (const std::size_t boundary : {std::size_t(0), std::size_t(1), std::size_t(8), std::size_t(9), std::size_t(10), whole.size()}) {
+            if (boundary <= limit && boundary > text.size()) ADD_FAILURE() << limit << " cut at " << text.size() << ", not " << boundary;
+        }
+    }
+}

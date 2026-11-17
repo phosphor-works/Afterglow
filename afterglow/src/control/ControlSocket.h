@@ -43,12 +43,22 @@ public:
     // A pane argument is a double, the type of a JSON number: paneId() checks
     // that it is a whole number in the range of a pane ID.
     Q_INVOKABLE void sendText(double pane, const QString& text);
-    /// @p scope: screen, scrollback, selection or last-output.
+    /// @p scope: screen, scrollback, selection, last-output,
+    /// first-output-on-screen or last-visited-output.
     Q_INVOKABLE QString getText(double pane, const QString& scope);
+    /// getText() with @p options: ansi, cursor and wrap_markers, booleans
+    /// (Control::textFormat).
+    Q_INVOKABLE QString getText(double pane, const QString& scope, const QVariantMap& options);
     /// @p direction: left, right, up or down. Returns the new pane.
     Q_INVOKABLE uint split(double pane, const QString& direction, const QStringList& command);
     Q_INVOKABLE uint newTab(double pane, const QString& workingDirectory, const QStringList& command);
     Q_INVOKABLE uint newWindow(const QString& workingDirectory, const QStringList& command);
+    /// split, newTab and newWindow with @p options, as Control::clientSplit
+    /// takes them: env, vars, focus, hold, stdin_text, stdin_ansi, and size
+    /// for a split.
+    Q_INVOKABLE uint split(double pane, const QString& direction, const QStringList& command, const QVariantMap& options);
+    Q_INVOKABLE uint newTab(double pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
+    Q_INVOKABLE uint newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
     Q_INVOKABLE void focus(double pane);
     Q_INVOKABLE void close(double pane);
     Q_INVOKABLE void setTitle(double pane, const QString& title);

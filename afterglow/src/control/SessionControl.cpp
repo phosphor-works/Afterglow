@@ -269,7 +269,11 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
         quint32 created = 0;
         QStringList command;
         for (const QJsonValue& word : args.at(1).toArray()) command << word.toString();
-        if (const QString error = control.newWindow(args.at(0).toString(), command, created); !error.isEmpty()) return failed(error);
+        // With the options of a control client, as the window's own target takes them.
+        const QString error = args.size() == 3
+            ? control.clientNewWindow(args.at(0).toString(), command, args.at(2).toObject().toVariantMap(), created)
+            : control.newWindow(args.at(0).toString(), command, created);
+        if (!error.isEmpty()) return failed(error);
         // A window of its own, outside the session: the ID of its pane there.
         return {qint64(created), {}};
     }
@@ -290,9 +294,17 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
         return {};
     }
     if (fn == QLatin1String("getText")) {
-        // Only a selection comes here: the daemon has the other text.
+        // Only what the window knows comes here: the selection, and the
+        // outputs that its view gives. The daemon has the other text.
+        const auto scope = Control::scopeFromName(args.at(1).toString());
+        if (!scope || (*scope != Control::TextScope::Selection && *scope != Control::TextScope::FirstOutputOnScreen
+                       && *scope != Control::TextScope::LastVisitedOutput)) {
+            return failed(Control::BadTextScope);
+        }
+        AfterglowVt::TextFormat format;
+        if (const QString error = Control::textFormat(args.at(2).toObject().toVariantMap(), format); !error.isEmpty()) return failed(error);
         QString text;
-        if (const QString error = control.readText(id, Control::TextScope::Selection, text); !error.isEmpty()) return failed(error);
+        if (const QString error = control.readText(id, *scope, text, format); !error.isEmpty()) return failed(error);
         return {text, {}};
     }
     if (fn == QLatin1String("setTitle")) {

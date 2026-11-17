@@ -213,11 +213,24 @@ void MuxPane::keepSizeLocked()
     m_size = {m_terminal.cols(), m_terminal.rows(), m_terminal.cellWidth(), m_terminal.cellHeight()};
 }
 
-std::optional<std::string> MuxPane::text(AfterglowVt::Terminal::TextScope scope) const
+std::optional<std::string> MuxPane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format) const
 {
     std::lock_guard lock(m_mutex);
     if (m_decoding) return std::nullopt;
-    return m_terminal.text(scope);
+    return m_terminal.text(scope, MaxText, nullptr, format);
+}
+
+std::optional<std::string> MuxPane::firstOutputOnScreen(const AfterglowVt::TextFormat& format) const
+{
+    std::lock_guard lock(m_mutex);
+    if (m_decoding) return std::nullopt;
+    // The primary screen's rows that show; the alternate screen has no output.
+    if (m_terminal.modes().altScreen) return std::string();
+    const AfterglowVt::Screen& screen = m_terminal.screen();
+    const std::uint64_t top = screen.rowsDropped() + screen.viewportTop();
+    const auto region = m_terminal.firstCommandOutputIn(top, top + std::uint64_t(screen.rows() - 1));
+    if (!region) return std::string();
+    return m_terminal.semanticRegionText(*region, MaxText, nullptr, format).value_or(std::string());
 }
 
 std::optional<AfterglowPty::ForegroundProcess> MuxPane::foreground() const

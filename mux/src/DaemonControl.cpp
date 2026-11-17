@@ -286,16 +286,41 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         return failed(request, "program closed or input queue full");
     }
     if (fn == "getText") {
-        if (args.size() != 2 || !args[1].isString()) return ipcError(request.id, IpcErrorCode::InvalidArg, "getText takes (pane, scope)");
+        if (args.size() < 2 || args.size() > 3 || !args[1].isString() || (args.size() == 3 && !args[2].isObject())) {
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "getText takes (pane, scope[, options])");
+        }
         const std::string& scope = args[1].toString();
-        // A selection is the window's.
-        if (scope == "selection") return window ? forward(request, connection, session, args) : ipcReply(request.id.value_or(0), "");
-        std::optional<AfterglowVt::Terminal::TextScope> textScope;
-        if (scope == "screen") textScope = AfterglowVt::Terminal::TextScope::Screen;
-        else if (scope == "scrollback") textScope = AfterglowVt::Terminal::TextScope::All;
-        else if (scope == "last-output") textScope = AfterglowVt::Terminal::TextScope::LastOutput;
-        if (!textScope) return failed(request, "scope is screen, scrollback, selection or last-output");
-        auto text = pane->text(*textScope);
+        AfterglowVt::TextFormat format;
+        if (args.size() == 3) {
+            // As a window reads them (Control::textFormat).
+            for (const auto& [key, value] : args[2].toObject()) {
+                bool* flag = key == "ansi" ? &format.ansi : key == "cursor" ? &format.cursor : key == "wrap_markers" ? &format.wrapMarkers : nullptr;
+                if (!flag) return failed(request, "unknown getText option " + key + ": the options are ansi, cursor and wrap_markers");
+                if (!value.isBool()) return failed(request, "the getText option " + key + " is true or false");
+                *flag = value.toBool();
+            }
+        }
+        // A selection is the window's, and so is the output that a prompt
+        // jump in it visited last.
+        if (scope == "selection" || scope == "last-visited-output") {
+            return window ? forward(request, connection, session, args) : ipcReply(request.id.value_or(0), "");
+        }
+        // The output at the top of the screen: the window's view, else the
+        // daemon's, which shows the bottom.
+        if (scope == "first-output-on-screen" && window) return forward(request, connection, session, args);
+        std::optional<std::string> text;
+        if (scope == "first-output-on-screen") {
+            text = pane->firstOutputOnScreen(format);
+        } else {
+            std::optional<AfterglowVt::Terminal::TextScope> textScope;
+            if (scope == "screen") textScope = AfterglowVt::Terminal::TextScope::Screen;
+            else if (scope == "scrollback") textScope = AfterglowVt::Terminal::TextScope::All;
+            else if (scope == "last-output") textScope = AfterglowVt::Terminal::TextScope::LastOutput;
+            if (!textScope) {
+                return failed(request, "scope is screen, scrollback, selection, last-output, first-output-on-screen or last-visited-output");
+            }
+            text = pane->text(*textScope, format);
+        }
         if (!text) return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
         std::string reply = ipcReply(request.id.value_or(0), std::move(*text));
         // A connection takes no more at once: it would close with no answer.

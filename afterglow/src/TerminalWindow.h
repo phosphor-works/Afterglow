@@ -145,6 +145,9 @@ public:
     QString scrollFromControl(Pane* pane, const QString& unit, qint64 amount);
     /// The user's title of the tab of @p pane: empty follows the focused pane.
     void setTabTitle(Pane* pane, const QString& title);
+    /// Gives the focus back to @p pane after a launch that took it, in its
+    /// tab, which shows.
+    void keepFocus(Pane* pane);
 
     // For the control interface and scripts.
     quint32 id() const noexcept { return m_id; }
@@ -1540,6 +1543,11 @@ private:
     /// exits: afterglow --hold for the first pane, and each pane of a
     /// restored project that asks for it.
     bool m_holdNextPane = false;
+    std::optional<std::string> m_inputNextPane;
+    /// What the next pane that this window starts gets before its program
+    /// starts, which may exit at once: PaneLaunchOptions::hold and input.
+    /// A launch clears it after, as it may fail first.
+    void setNextPaneLaunch(bool hold, std::optional<std::string> input);
     std::function<void()> m_pendingConfirm; ///< what a confirm prompt goes ahead with
     QList<QPointer<Pane>> m_pendingConfirmPanes; ///< the panes the confirm prompt is about
     bool m_closeConfirmed = false; ///< the window may close without asking

@@ -202,6 +202,12 @@ _afterglow_ctl() {
     # From here, words[1] is the ctl command.
     shift words; (( CURRENT-- ))
     local pane='--pane[the pane]:pane ID:'
+    # The options of a launch, as kitten @ launch has them; --no-focus last,
+    # which new-window does not take.
+    local -a launch=('*--env[a variable for the program]:NAME=VALUE:' '*--var[a user variable of the pane]:NAME=VALUE:'
+        '--hold[keep the pane after the program exits]' '--no-focus[keep the focus where it is]')
+    local -a reads=('--stdin-text[pane text as standard input]:scope:(screen scrollback selection last-output first-output-on-screen last-visited-output)'
+        '--stdin-ansi[with its styles]' )
     case $words[1] in
     split|new-tab|new-window|overlay)
         # A command to run follows "--", and only options come before it.
@@ -219,16 +225,19 @@ _afterglow_ctl() {
         _arguments -S $pane '(--stdin)--raw[send the text as it is]' '(--raw *)--stdin[send standard input]' \
             '(--stdin)*:text:' ;;
     get-text)
+        local scopes='(--screen --scrollback --selection --last-output --first-output-on-screen --last-visited-output)'
         _arguments $pane \
-            '(--screen --scrollback --selection --last-output)'{--screen,--scrollback,--selection,--last-output} ;;
+            $scopes{--screen,--scrollback,--selection,--last-output,--first-output-on-screen,--last-visited-output} \
+            '--ansi[with colors and links as escape sequences]' '--cursor[with the cursor at the end]' \
+            '--wrap-markers[a CR where a row wraps]' ;;
     screenshot) _arguments $pane '(--tab --window)--tab[the panes of its tab]' '(--tab --window)--window[the whole window]' \
             '1:PNG file (- for standard output):_files' ;;
-    split) _arguments $pane '(--left --right --up --down)'{--left,--right,--up,--down} ;;
+    split) _arguments $pane '(--left --right --up --down)'{--left,--right,--up,--down} "${launch[@]}" "${reads[@]}" ;;
     move-pane)
         _arguments $pane '1:target pane ID (0 for new-window, and for new-tab in its own window):' \
             '2:placement:(left right up down new-tab new-window)' ;;
-    new-tab) _arguments $pane '--cwd[working directory]:directory:_directories' ;;
-    new-window) _arguments '--cwd[working directory]:directory:_directories' ;;
+    new-tab) _arguments $pane '--cwd[working directory]:directory:_directories' "${launch[@]}" "${reads[@]}" ;;
+    new-window) _arguments '--cwd[working directory]:directory:_directories' "${launch[@]:0:3}" ;;
     overlay)
         _arguments $pane '--capture[where the result comes from]:capture:(stdout file none)' \
             '--cwd[working directory]:directory:_directories' '--title[the pane title while the command runs]:title:' \
@@ -236,7 +245,8 @@ _afterglow_ctl() {
             '(-w --width)'{-w,--width}'[a popup this wide, in cells or N%]:width:' \
             '(-h --height)'{-h,--height}'[a popup this tall, in cells or N%]:height:' \
             '--position[where the popup sits]:position:(center top bottom left right top-left top-right bottom-left bottom-right)' \
-            '(--border --no-border)--border[draw a border]' '(--border --no-border)--no-border[draw no border]' ;;
+            '(--border --no-border)--border[draw a border]' '(--border --no-border)--no-border[draw no border]' \
+            "${reads[@]}" ;;
     set-title|set-tab-title) _arguments -S $pane '*:title:' ;;
     focus) _arguments $pane '--direction[focus the pane on that side]:direction:(left right up down)' ;;
     resize) _arguments $pane '--direction[the edge that moves]:direction:(left right up down)' '--cells[cells to move it (2)]:cells:' ;;

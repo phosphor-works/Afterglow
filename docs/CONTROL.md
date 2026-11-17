@@ -124,6 +124,7 @@ These settings are separate from [script text permissions](SCRIPTING.md#text-and
 | Item | With `Control.allowReadText=false` |
 | --- | --- |
 | `getText` | Fails with an error. |
+| `stdin_text` in the options of `split` and `newTab` | Fails with an error. |
 | `screenshot` | Fails with the code `denied`, also for a pane that does not exist. Only a pane ID that is not a whole number from 0 to 4294967295, or an unknown scope, fails first, with `CALL_FAILED`. A picture shows the text of the pane, and more. See [screenshots](#screenshots). |
 | `runAction` with `copy`, `paste`, `select_all`, `show_last_output`, `show_first_output_on_screen` or `show_last_visited_output` | Fails with an error. These actions move pane text to the clipboard, into another pane or into a pager. |
 | The `command` field of `listPanes` | Empty. |
@@ -273,10 +274,10 @@ Another number fails with `CALL_FAILED`.
 | `listPanes` | None | A [pane object](#pane-object) for each pane |
 | `focusedPane` | None | The pane that step 3 or 4 of the target order selects |
 | `sendText` | pane, text | None |
-| `getText` | pane, scope | The text. Scopes are `screen`, `scrollback`, `selection` and `last-output`. |
-| `split` | pane, direction, command | The new pane. Directions are `left`, `right`, `up` and `down`. |
-| `newTab` | pane, working directory, command | The new tab's pane |
-| `newWindow` | working directory, command | The new window's pane |
+| `getText` | pane, scope, options (optional) | The text, at most 1 MiB. Scopes are `screen`, `scrollback`, `selection`, `last-output`, `first-output-on-screen` and `last-visited-output`. The last two are the outputs of the [command output actions](INPUT.md#command-output), and empty when there is none. See [text options](#text-options). |
+| `split` | pane, direction, command, options (optional) | The new pane. Directions are `left`, `right`, `up` and `down`. See [launch options](#launch-options). |
+| `newTab` | pane, working directory, command, options (optional) | The new tab's pane. See [launch options](#launch-options). |
+| `newWindow` | working directory, command, options (optional) | The new window's pane. See [launch options](#launch-options). |
 | `focus` | pane | None |
 | `close` | pane | None. The pane closes without a question, also when a program runs in it. |
 | `setTitle` | pane, title | None. An empty title gives the title back to the programs. |
@@ -309,6 +310,40 @@ This rule also applies to the `cwd` option of `overlay`.
 For `newTab` and `newWindow`, an empty working directory uses the `Window.workingDirectory` setting.
 `afterglow ctl` changes a relative directory into an absolute one before it sends it.
 When the current directory was removed, `afterglow ctl` refuses a relative directory and exits with status 1.
+
+## Text options
+
+The options of `getText` are an object, as `kitten @ get-text` has them.
+`afterglow ctl get-text` sends them with `--ansi`, `--cursor` and `--wrap-markers`.
+
+| Option | Type | Function |
+| --- | --- | --- |
+| `ansi` | boolean | Each change of color or attribute as an SGR sequence, and each link as OSC 8. Each line ends with a reset. Blanks at the end of a line stay when they show a background or a link. |
+| `cursor` | boolean | At the end, the cursor's place on the screen (CUP), its shape (DECSCUSR) and whether it shows (DECTCEM). |
+| `wrap_markers` | boolean | A carriage return where a row wraps into the next one. |
+
+Another key, or a value that is not a boolean, fails the call.
+A selection is plain text with all options.
+
+## Launch options
+
+The options of `split`, `newTab` and `newWindow` are an object, as `kitten @ launch` has them.
+`afterglow ctl split`, `new-tab` and `new-window` send them with their options.
+
+| Option | Type | `afterglow ctl` | Function |
+| --- | --- | --- | --- |
+| `env` | object | `--env NAME=VALUE`, `--env NAME` | Variables for the program. A string sets a variable, and `false` removes it. |
+| `vars` | object of strings | `--var NAME=VALUE` | User variables of the pane, as if its program set them with OSC 1337 `SetUserVar`. A name has 1 to 128 bytes and no `=`. |
+| `hold` | boolean | `--hold` | The pane stays open after its program exits, as with `afterglow --hold`. |
+| `focus` | boolean | `--no-focus` | With `false`, the focus stays on the pane that had it. Not for `newWindow`. |
+| `stdin_text` | string | `--stdin-text SCOPE` | The text of the call's pane in a scope of `getText` goes to the program's standard input, which then closes. The program's output still goes to the pane. It needs `Control.allowReadText`. Not for `newWindow`. |
+| `stdin_ansi` | boolean | `--stdin-ansi` | The text of `stdin_text` with its styles, as the `ansi` option of `getText`. |
+| `size` | number | none | For `split`: the new pane's share of the room, above 0 and below 1. |
+
+A pane of a [mux session](MUX.md#control-of-a-session) takes `env` only: the daemon runs its program.
+`afterglow ctl --session` refuses the other options with a usage error.
+A session's window refuses `hold` and `stdin_text`.
+`afterglow ctl overlay --stdin-text SCOPE` reads the text with `getText` first, and sends it as the overlay's standard input.
 
 ## Overlays
 
@@ -866,6 +901,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `run` calls that wait, on one connection | 256 | `run` fails with `CALL_FAILED`. |
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `setTabTitle` title | 256 UTF-16 units | The title is cut. |
+| The text of `getText` and of `stdin_text` | 1 MiB of UTF-8, with the escape sequences of `ansi` and `cursor` | The text is cut after the last whole character or escape sequence that fits. |
 | Keys of one `sendKeys` call | 4096 | The call fails, and no key goes. `afterglow ctl send-key` exits with status 2 before it connects. |
 | Cells of one `resizePane` call | 10000 | The call fails. `afterglow ctl resize` exits with status 2 before it connects. |
 | The amount of a `scroll` call | 1000000000 up or down | The call fails. `afterglow ctl scroll` exits with status 2 before it connects. |
@@ -874,7 +910,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `notify` body | 2048 UTF-16 units | The body is cut. |
 | Wait for the screen and the history of a pane of a mux session that you cannot see, or that shows again before its screen came, before `getText`, a screenshot or a script read of its text | 5 seconds | The read gets the text that the window has, which can be older. The window does not draw or take input while it waits. |
 
-`getText` and `screenshot` have no size limit.
+`screenshot` has no size limit.
 A reply with a long scrollback can take more than the 10 seconds of `afterglow ctl`.
 A screenshot of a large window also takes time: Afterglow waits for a frame and encodes the PNG.
 For a pane of a mux session that you cannot see, `getText` and `screenshot` first get the current screen and history from the daemon.

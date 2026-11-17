@@ -618,18 +618,20 @@ A window that answers a command follows its own settings too.
 
 | Command | No window shows the session | A window shows the session |
 | --- | --- | --- |
-| `ls`, `send-text`, `send-key`, `get-text` (screen, scrollback and last output) | The daemon acts | The daemon acts |
+| `ls`, `send-text`, `send-key`, `get-text` (screen, scrollback and last output, also with `--ansi`, `--cursor` and `--wrap-markers`) | The daemon acts | The daemon acts |
 | `close` | The daemon closes the pane, and its program ends. When it is the last pane of the session, the session ends, whatever `Mux.onClose` says. | As without a window |
 | `split` | The daemon starts the program. The pane goes beside its pane, on the side that the command names, and gets the focus. | The daemon starts the program, and the window places the pane in the same way |
 | `new-tab` | The daemon starts the program. The pane gets a new tab after the tab of its pane, and that tab shows. | The daemon starts the program, and the window places the pane in the same way |
 | `focus` | The daemon keeps the focus for the next window | The window focuses the pane |
 | `move-pane`, `detach-tab` | The daemon moves the pane in its layout. A move to a new window makes a new session, as in a window (see [move panes and tabs](#move-panes-and-tabs)). No window shows the new session. A move to a pane of another session joins that session (see [move a pane to another session](#move-a-pane-to-another-session)). | The window moves the pane, as a drag in the window does. A move to a pane of another session joins that session, as without a window. |
-| `get-text --selection` | Empty: only a window has a selection | The window answers |
+| `get-text --selection`, `get-text --last-visited-output` | Empty: only a window has a selection, and visits outputs | The window answers |
+| `get-text --first-output-on-screen` | The daemon reads its own screen, which shows the newest rows | The window answers, from the rows that it shows |
 | `set-title`, `set-tab-title`, `focus --direction`, `resize`, `scroll`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
 | `overlay`, `screenshot` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window runs the overlay or takes the picture, and answers when it is done |
 | `watch` | The daemon sends the events of the session | The daemon sends the events of the session |
 
 In the refusal, `CALL` is the name of the [control call](CONTROL.md#control-calls) of the command, such as `setTitle`, `runAction` or `screenshot`.
+`split` and `new-tab` take `--env` for a pane of a session, and no other [launch option](CONTROL.md#launch-options): the daemon runs the program.
 The daemon finds the `neighbours` of `ls` from the splits of the session's layout, as a window of any size finds them.
 The `foreground` of `ls` is the process in the daemon's terminal of the pane.
 While a pane decodes an image, `get-text` fails at once with `pane N decodes an image: try again`.

@@ -586,7 +586,8 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     yield 'afterglow ctl send-key ctrl+c ', has('ctrl+c', 'enter')
     yield 'afterglow ctl set-tab-title -', {'--pane'}
     yield 'afterglow ctl focus --pane ', set()
-    yield 'afterglow ctl get-text --screen ', {'--pane'}
+    yield 'afterglow ctl get-text --screen ', {'--pane', '--ansi', '--cursor', '--wrap-markers'}
+    yield 'afterglow ctl get-text --ansi -', has('--pane', '--screen', '--first-output-on-screen', '--last-visited-output', '--cursor')
     yield 'afterglow ctl screenshot -', {'--pane', *screenshot}
     yield 'afterglow ctl screenshot --window -', {'--pane'}
     yield 'afterglow ctl screenshot --tab -', {'--pane'}
@@ -598,7 +599,13 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     yield 'afterglow ctl screenshot - ', {'--pane', *screenshot}
     yield 'afterglow ctl screenshot -x.png ', {'--pane', *screenshot}
     yield 'afterglow ctl screenshot -w ', {'--pane', *screenshot}
-    yield 'afterglow ctl split --left -', {'--pane'}
+    yield 'afterglow ctl split --left -', {'--pane', '--env', '--var', '--hold', '--no-focus', '--stdin-text', '--stdin-ansi'}
+    yield 'afterglow ctl split --stdin-text ', {'screen', 'scrollback', 'selection', 'last-output', 'first-output-on-screen', 'last-visited-output'}
+    yield 'afterglow ctl split --env ', set()
+    # --env and --var can come again; --hold once.
+    yield 'afterglow ctl split --env A=1 --hold -', lambda got: {'--env', '--var', '--no-focus'} <= got and '--hold' not in got
+    yield 'afterglow ctl new-window -', {'--cwd', '--env', '--var', '--hold'}
+    yield 'afterglow ctl overlay --stdin-text ', {'screen', 'scrollback', 'selection', 'last-output', 'first-output-on-screen', 'last-visited-output'}
     yield 'afterglow ctl send-text -', {'--pane', '--raw', '--stdin'}
     yield 'afterglow ctl send-text --stdin -', {'--pane'}
     yield 'afterglow ctl send-text --raw -', {'--pane'}
@@ -606,7 +613,7 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     yield 'afterglow ctl send-text -- -', set()
     yield 'afterglow ctl move-pane 2 ', {'left', 'right', 'up', 'down', 'new-tab', 'new-window'}
     yield 'afterglow ctl new-window --cwd ', {'adir'}
-    yield 'afterglow ctl new-tab --cwd adir ', {'--pane'}
+    yield 'afterglow ctl new-tab --cwd adir ', {'--pane', '--env', '--var', '--hold', '--no-focus', '--stdin-text', '--stdin-ansi'}
     yield 'afterglow ctl open-directory ', {'adir'}
     yield 'afterglow ctl open-directory adir ', {'--layout'}
     # --into-session and --no-session exclude each other.

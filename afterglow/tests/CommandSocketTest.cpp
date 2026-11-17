@@ -1608,6 +1608,29 @@ TEST(CtlBinaryTest, NavigationCommandsCheckTheirArguments)
     }
 }
 
+// The options of get-text and of a launch, as kitten @ get-text and launch
+// have them: their usage errors come before any connection.
+TEST(CtlBinaryTest, TextAndLaunchOptionsCheckTheirArguments)
+{
+    const QString ctl = QStringLiteral("ctl");
+    const auto words = [&ctl](const char* line) {
+        return QStringList{ctl} + QString::fromUtf8(line).split(QLatin1Char(' '));
+    };
+    for (const auto& [args, message] :
+         {std::pair{words("get-text --screen --first-output-on-screen"), QStringLiteral("get-text takes one scope")},
+          std::pair{words("split --env =x"), QStringLiteral("--env takes NAME=VALUE, or NAME to remove it")},
+          std::pair{words("split --var x"), QStringLiteral("--var takes NAME=VALUE, with a name of 1 to 128 bytes")},
+          std::pair{words("new-tab --stdin-ansi"), QStringLiteral("--stdin-ansi needs --stdin-text")},
+          std::pair{words("new-tab --stdin-text all"), QStringLiteral("--stdin-text takes a scope of get-text: all")},
+          std::pair{words("new-window --stdin-text screen"), QStringLiteral("unknown option --stdin-text")},
+          std::pair{words("new-window --no-focus"), QStringLiteral("unknown option --no-focus")},
+          std::pair{words("overlay -n --stdin-text screen -- cat"), QStringLiteral("--stdin-text and -n exclude each other")}}) {
+        const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
+        EXPECT_EQ(r.status, 2) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.err);
+        EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n").arg(message))) << qPrintable(r.err);
+    }
+}
+
 // With standard input closed, Qt's first descriptor would be number 0, and a
 // read of standard input would wait on it for ever.
 TEST(CtlBinaryTest, AClosedStandardInputReadsAsEmpty)
@@ -1802,6 +1825,47 @@ std::optional<bool> waitsInPoll(qint64 pid)
     if (ok && number == SYS_poll) return true;
 #endif
     return ok && number == SYS_ppoll;
+}
+
+// The options go in an object after the call's arguments, and only when one
+// is given: (pane, scope) stays the call of plain text.
+TEST(CtlBinaryTest, TextAndLaunchOptionsGoInTheirCalls)
+{
+    const QJsonObject text{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), QStringLiteral("t")}};
+    const QJsonObject pane{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), 9}};
+    const auto args = [](const AgainstTarget& r) {
+        return r.calls.isEmpty() ? QJsonArray() : r.calls.last().value(QStringLiteral("args")).toArray();
+    };
+    const QStringList three{QStringLiteral("--pane"), QStringLiteral("3")};
+    AgainstTarget r = ctlAgainst(text, three, {}, -1, {}, QStringLiteral("get-text"));
+    EXPECT_EQ(args(r), (QJsonArray{3, QStringLiteral("screen")}));
+    r = ctlAgainst(text, three + QStringList{QStringLiteral("--last-visited-output"), QStringLiteral("--ansi"), QStringLiteral("--cursor"),
+                                             QStringLiteral("--wrap-markers")},
+                   {}, -1, {}, QStringLiteral("get-text"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(args(r), (QJsonArray{3, QStringLiteral("last-visited-output"),
+                                   QJsonObject{{QStringLiteral("ansi"), true}, {QStringLiteral("cursor"), true}, {QStringLiteral("wrap_markers"), true}}}));
+    r = ctlAgainst(pane, three + QStringList{QStringLiteral("--env"), QStringLiteral("A=1"), QStringLiteral("--env"), QStringLiteral("B"),
+                                             QStringLiteral("--var"), QStringLiteral("k=v=w"), QStringLiteral("--hold"), QStringLiteral("--no-focus"),
+                                             QStringLiteral("--stdin-text"), QStringLiteral("last-output"), QStringLiteral("--stdin-ansi"),
+                                             QStringLiteral("--"), QStringLiteral("less")},
+                   {}, -1, {}, QStringLiteral("split"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(r.outcome.out, QStringLiteral("9\n"));
+    EXPECT_EQ(args(r), (QJsonArray{3, QStringLiteral("right"), QJsonArray{QStringLiteral("less")},
+                                   QJsonObject{{QStringLiteral("env"), QJsonObject{{QStringLiteral("A"), QStringLiteral("1")}, {QStringLiteral("B"), false}}},
+                                               {QStringLiteral("vars"), QJsonObject{{QStringLiteral("k"), QStringLiteral("v=w")}}},
+                                               {QStringLiteral("hold"), true}, {QStringLiteral("focus"), false},
+                                               {QStringLiteral("stdin_text"), QStringLiteral("last-output")}, {QStringLiteral("stdin_ansi"), true}}}));
+    r = ctlAgainst(pane, {QStringLiteral("--hold"), QStringLiteral("--var"), QStringLiteral("x=1")}, {}, -1, {}, QStringLiteral("new-window"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(args(r).at(2).toObject(),
+              (QJsonObject{{QStringLiteral("vars"), QJsonObject{{QStringLiteral("x"), QStringLiteral("1")}}}, {QStringLiteral("hold"), true}}));
+    // overlay reads the text first, and sends it as the program's input.
+    r = ctlAgainst(text, three + QStringList{QStringLiteral("--stdin-text"), QStringLiteral("scrollback"), QStringLiteral("--"), QStringLiteral("fzf")});
+    ASSERT_GE(r.calls.size(), 1);
+    EXPECT_EQ(r.calls.first().value(QStringLiteral("fn")).toString(), QStringLiteral("getText"));
+    EXPECT_EQ(r.calls.first().value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("scrollback")}));
 }
 
 // Each command is one call, with its arguments in their JSON types.

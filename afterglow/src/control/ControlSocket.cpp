@@ -146,15 +146,22 @@ void ControlApi::screenshot(double pane, const QString& scope)
 
 QString ControlApi::getText(double pane, const QString& scope)
 {
+    return getText(pane, scope, {});
+}
+
+QString ControlApi::getText(double pane, const QString& scope, const QVariantMap& options)
+{
     const auto id = paneId(pane);
     if (!id) return {};
     const auto s = Control::scopeFromName(scope);
     if (!s) {
-        failed(QStringLiteral("scope is screen, scrollback, selection or last-output"));
+        failed(Control::BadTextScope);
         return {};
     }
+    AfterglowVt::TextFormat format;
+    if (failed(Control::textFormat(options, format))) return {};
     QString text;
-    failed(m_control.readText(*id, *s, text));
+    failed(m_control.readText(*id, *s, text, format));
     return text;
 }
 
@@ -169,6 +176,27 @@ uint ControlApi::newTab(double pane, const QString& workingDirectory, const QStr
 {
     quint32 created = 0;
     if (const auto id = paneId(pane)) failed(m_control.newTab(*id, workingDirectory, command, created));
+    return created;
+}
+
+uint ControlApi::split(double pane, const QString& direction, const QStringList& command, const QVariantMap& options)
+{
+    quint32 created = 0;
+    if (const auto id = paneId(pane)) failed(m_control.clientSplit(*id, direction, command, options, created));
+    return created;
+}
+
+uint ControlApi::newTab(double pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+{
+    quint32 created = 0;
+    if (const auto id = paneId(pane)) failed(m_control.clientNewTab(*id, workingDirectory, command, options, created));
+    return created;
+}
+
+uint ControlApi::newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+{
+    quint32 created = 0;
+    failed(m_control.clientNewWindow(workingDirectory, command, options, created));
     return created;
 }
 

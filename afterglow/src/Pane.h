@@ -279,6 +279,9 @@ public:
     std::optional<AfterglowPty::ForegroundProcess> foreground() const;
     /// The values that the program set with OSC 1337 SetUserVar.
     QMap<QString, QString> userVars() const;
+    /// Sets a user variable as the program would (`afterglow ctl split
+    /// --var`): scripts and control clients hear of it.
+    void setUserVar(const QString& name, const QString& value);
     /// The cursor is in a shell prompt or its input (OSC 133 A or B, before C).
     bool atShellPrompt() const;
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
@@ -293,7 +296,12 @@ public:
     /// session pane gives only what its shell reported, and a pane of a
     /// session of another host gives nothing.
     QString knownDirectory() const;
-    QString text(AfterglowVt::Terminal::TextScope scope);
+    /// At most MaxText bytes of UTF-8, as the terminal reads by default.
+    QString text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format = {});
+    static constexpr std::size_t MaxText = 1024 * 1024;
+    /// The text of output region @p id in @p format, at most MaxText bytes,
+    /// as text(). Empty when it left the history.
+    QString regionText(std::uint64_t id, const AfterglowVt::TextFormat& format = {}) const;
     /// At most `limit` bytes of text. The caller bounds the limit: scripts
     /// to their max_bytes range, show_last_output to Terminal.lastOutputLimit.
     QVariantMap readText(AfterglowVt::Terminal::TextScope scope, std::size_t limit);

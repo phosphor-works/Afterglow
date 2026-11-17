@@ -46,6 +46,18 @@ QVariantMap Pane::semanticRegions() const
     return {{QStringLiteral("regions"), regions}};
 }
 
+QString Pane::regionText(std::uint64_t id, const AfterglowVt::TextFormat& format) const
+{
+    refreshSession();
+    std::optional<std::string> text;
+    {
+        std::lock_guard lock(m_mutex);
+        text = m_terminal.semanticRegionText(id, MaxText, nullptr, format);
+    }
+    // Converted after the lock: the reader thread waits on it.
+    return text ? QString::fromStdString(*text) : QString();
+}
+
 QVariantMap Pane::readRegion(std::uint64_t id, std::size_t limit) const
 {
     refreshSession();

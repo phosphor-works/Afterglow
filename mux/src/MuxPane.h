@@ -213,7 +213,14 @@ public:
     std::vector<WatchEvent> takeWatchEvents();
     /// The text of @p scope, for `afterglow ctl get-text`. Nothing while an
     /// image decodes.
-    std::optional<std::string> text(AfterglowVt::Terminal::TextScope scope) const;
+    std::optional<std::string> text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format = {}) const;
+    /// The most bytes of text() and firstOutputOnScreen(), as the
+    /// terminal reads by default and a window's pane reads.
+    static constexpr std::size_t MaxText = 1024 * 1024;
+    /// The first output with a row on the screen (kitty's
+    /// first_cmd_output_on_screen), empty for none. Nothing while an image
+    /// decodes, as text().
+    std::optional<std::string> firstOutputOnScreen(const AfterglowVt::TextFormat& format = {}) const;
     /// The terminal's modes, which say how a key is sent: nothing while an
     /// image decodes, as text().
     std::optional<AfterglowVt::Modes> modes() const;

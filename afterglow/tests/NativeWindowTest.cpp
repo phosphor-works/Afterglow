@@ -15199,3 +15199,66 @@ TEST_F(NativeWindow, ControlMovesBetweenPanesResizesScrollsAndTypesKeys) {
     EXPECT_TRUE(control.setTabTitle(left->id(), QString()).isEmpty());
     EXPECT_NE(window->tabs().value(0).title, QStringLiteral("build logs"));
 }
+
+TEST_F(NativeWindow, ControlLaunchesWithThePanesTextHeldWithVariablesAndWithoutTheFocus) {
+    // The options of kitten @ launch, and get-text --ansi.
+    Capture test(directory, QStringLiteral("launch.conf"), window);
+    Control& control = test.control;
+    Pane* source = window->focusedPane();
+    ASSERT_NE(source, nullptr);
+    feedFromReader(source, "\x1b[31mred\x1b[m line\r\n");
+    ASSERT_TRUE(settleQueued());
+    const auto paneById = [this](quint32 id) -> Pane* {
+        for (Pane* p : window->panes())
+            if (p->id() == id) return p;
+        return nullptr;
+    };
+    QString text;
+    AfterglowVt::TextFormat ansi;
+    ansi.ansi = true;
+    ASSERT_TRUE(control.readText(source->id(), Control::TextScope::Screen, text, ansi).isEmpty());
+    EXPECT_TRUE(text.startsWith(QStringLiteral("\x1b[0;31mred\x1b[m line"))) << text.toStdString();
+
+    // The screen as cat's standard input, with its styles: cat writes them to
+    // the new pane, which shows red text. The focus stays on the source.
+    quint32 created = 0;
+    ASSERT_TRUE(control.clientSplit(source->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")},
+                                    {{QStringLiteral("stdin_text"), QStringLiteral("screen")}, {QStringLiteral("stdin_ansi"), true},
+                                     {QStringLiteral("focus"), false}, {QStringLiteral("vars"), QVariantMap{{QStringLiteral("role"), QStringLiteral("log")}}}},
+                                    created)
+                    .isEmpty());
+    Pane* reader = paneById(created);
+    ASSERT_NE(reader, nullptr);
+    EXPECT_TRUE(waitFor([&] { return screenOf(reader).contains(QStringLiteral("red line")); })) << screenOf(reader).toStdString();
+    EXPECT_EQ(window->focusedPane(), source);
+    EXPECT_EQ(reader->userVars().value(QStringLiteral("role")), QStringLiteral("log"));
+    // cat ended with the end of its input: the pane closes, as without --hold.
+    EXPECT_TRUE(waitFor([&] { return !paneById(created); }));
+
+    // Held: the pane stays after its program ended, with what it printed and
+    // the variable of its environment.
+    ASSERT_TRUE(control.clientNewTab(source->id(), QString(), {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("echo value=$PICK")},
+                                     {{QStringLiteral("hold"), true}, {QStringLiteral("env"), QVariantMap{{QStringLiteral("PICK"), QStringLiteral("seven")}}}},
+                                     created)
+                    .isEmpty());
+    Pane* held = paneById(created);
+    ASSERT_NE(held, nullptr);
+    EXPECT_TRUE(waitFor([&] { return held->isHeld(); }));
+    EXPECT_TRUE(screenOf(held).contains(QStringLiteral("value=seven"))) << screenOf(held).toStdString();
+    EXPECT_EQ(window->focusedPane(), held);
+
+    // What a launch refuses.
+    EXPECT_EQ(control.clientSplit(source->id(), QStringLiteral("right"), {}, {{QStringLiteral("stdin_text"), QStringLiteral("all")}}, created),
+              QStringLiteral("stdin_text is a text scope: screen, scrollback, selection, last-output, first-output-on-screen or last-visited-output"));
+    EXPECT_EQ(control.clientSplit(source->id(), QStringLiteral("right"), {}, {{QStringLiteral("hold"), QStringLiteral("yes")}}, created),
+              QStringLiteral("hold is true or false"));
+    EXPECT_EQ(control.clientSplit(source->id(), QStringLiteral("right"), {}, {{QStringLiteral("vars"), QVariantMap{{QStringLiteral("a=b"), QStringLiteral("c")}}}}, created),
+              QStringLiteral("a user variable's name has 1 to 128 bytes and no ="));
+    EXPECT_EQ(control.clientNewWindow(QString(), {}, {{QStringLiteral("stdin_text"), QStringLiteral("screen")}}, created),
+              QStringLiteral("newWindow reads no pane: stdin_text is for split and newTab"));
+    // Without read access, no pane text reaches a program.
+    TestControl closed(directory, QStringLiteral("closed.conf"), window);
+    EXPECT_EQ(closed.control.clientSplit(source->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")},
+                                        {{QStringLiteral("stdin_text"), QStringLiteral("screen")}}, created),
+              QStringLiteral("reading pane text is off (Control.allowReadText)"));
+}

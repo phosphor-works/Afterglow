@@ -128,7 +128,7 @@ _afterglow_ctl()
             # Text follows, or the command takes nothing after it.
             return
             ;;
-        --pane | --cwd | --layout | --direction | --cells | --pages | --prompt)
+        --pane | --cwd | --layout | --direction | --cells | --pages | --prompt | --env | --var | --stdin-text)
             ((i++))
             ;;
         --capture | --title | -w | --width | -h | --height | --position)
@@ -158,7 +158,11 @@ _afterglow_ctl()
         esac
     done
     case $prev in
-    --pane | --layout | --cells | --pages | --prompt) return ;;
+    --pane | --layout | --cells | --pages | --prompt | --env | --var) return ;;
+    --stdin-text)
+        _afterglow_matching screen scrollback selection last-output first-output-on-screen last-visited-output
+        return
+        ;;
     --direction)
         _afterglow_matching left right up down
         return
@@ -244,9 +248,16 @@ _afterglow_ctl()
             _afterglow_unused $pane --raw --stdin
         fi
         ;;
-    get-text) _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output" ;;
+    get-text)
+        _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output|--first-output-on-screen|--last-visited-output" \
+            --ansi --cursor --wrap-markers
+        ;;
     screenshot) _afterglow_unused $pane "--tab|--window" ;;
-    split) _afterglow_unused $pane "--left|--right|--up|--down" ;;
+    split)
+        # --env and --var can come again.
+        _afterglow_unused $pane "--left|--right|--up|--down" --hold --no-focus --stdin-text --stdin-ansi
+        _afterglow_matching --env --var
+        ;;
     focus) _afterglow_unused $pane --direction ;;
     resize) _afterglow_unused $pane --direction --cells ;;
     scroll)
@@ -257,8 +268,16 @@ _afterglow_ctl()
             _afterglow_unused $pane "--pages|--prompt|--top|--bottom"
         fi
         ;;
-    new-tab | new-window) _afterglow_unused $pane --cwd ;;
-    overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" ;;
+    new-tab)
+        _afterglow_unused $pane --cwd --hold --no-focus --stdin-text --stdin-ansi
+        _afterglow_matching --env --var
+        ;;
+    new-window)
+        _afterglow_unused --cwd --hold
+        _afterglow_matching --env --var
+        ;;
+    overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" \
+        --stdin-text --stdin-ansi ;;
     open-directory) _afterglow_unused --layout ;;
     save-project) _afterglow_unused $pane --overwrite ;;
     open-project) _afterglow_unused --new "--into-session|--no-session" ;;

@@ -911,6 +911,13 @@ QMap<QString, QString> Pane::userVars() const
     return out;
 }
 
+void Pane::setUserVar(const QString& name, const QString& value)
+{
+    const QByteArray n = name.toUtf8(), v = value.toUtf8();
+    std::lock_guard lock(m_mutex);
+    userVarChanged(std::string_view(n.constData(), std::size_t(n.size())), std::string_view(v.constData(), std::size_t(v.size())));
+}
+
 bool Pane::atShellPrompt() const
 {
     std::lock_guard lock(m_mutex);
@@ -929,13 +936,13 @@ void Pane::announceTitle()
     Q_EMIT titleUpdated(shown);
 }
 
-QString Pane::text(AfterglowVt::Terminal::TextScope scope)
+QString Pane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format)
 {
     refreshSession();
     std::string text;
     {
         std::lock_guard lock(m_mutex);
-        text = m_terminal.text(scope);
+        text = m_terminal.text(scope, MaxText, nullptr, format);
     }
     // Converted after the lock: the reader thread waits on it.
     return QString::fromStdString(text);

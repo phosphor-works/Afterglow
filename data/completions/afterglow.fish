@@ -108,6 +108,15 @@ function __afterglow_window
     __afterglow_print $offer
 end
 
+# The options of a launch that $argv does not give yet; --env and --var can come again.
+function __afterglow_launch_offer
+    printf '%s\n' --env\t'A variable for the program' --var\t'A user variable of the pane'
+    contains -- --hold $argv; or printf '%s\n' --hold\t'Keep the pane after the program exits'
+    contains -- --no-focus $argv; or printf '%s\n' --no-focus\t'Keep the focus where it is'
+    contains -- --stdin-text $argv; or printf '%s\n' --stdin-text\t'Pane text as standard input'
+    contains -- --stdin-ansi $argv; or printf '%s\n' --stdin-ansi\t'With its styles'
+end
+
 function __afterglow_ctl
     set -l cur (commandline -ct)
     set -l options -h\t'Show the usage' --help\t'Show the usage' --session\t'Act on a mux session'
@@ -152,7 +161,7 @@ function __afterglow_ctl
                     complete -C (string join ' ' -- $rest "$cur")
                 end
                 return
-            case --pane --cwd --layout --direction --cells --pages --prompt --capture --title -w --width -h --height --position
+            case --pane --cwd --layout --direction --cells --pages --prompt --env --var --stdin-text --capture --title -w --width -h --height --position
                 # The options after --layout are those of overlay. Elsewhere they are no option of ctl.
                 if test $command = overlay; or not contains -- $argv[$i] --capture --title -w --width -h --height --position
                     if test $i -eq $n
@@ -160,6 +169,7 @@ function __afterglow_ctl
                         test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
                         test $argv[$i] = --capture; and __afterglow_print stdout file none
                         test $argv[$i] = --direction; and __afterglow_print left right up down
+                        test $argv[$i] = --stdin-text; and __afterglow_print screen scrollback selection last-output first-output-on-screen last-visited-output
                         test $argv[$i] = --position
                         and __afterglow_print center top bottom left right top-left top-right bottom-left bottom-right
                         return
@@ -235,17 +245,26 @@ function __afterglow_ctl
                 and set -a offer --stdin\t'Send standard input'
             end
         case get-text
-            string match -q -r -- '^--(screen|scrollback|selection|last-output)$' $argv
+            string match -q -r -- '^--(screen|scrollback|selection|last-output|first-output-on-screen|last-visited-output)$' $argv
             or set -a offer --screen\t'The screen' --scrollback\t'The scrollback' --selection\t'The selection' \
-                --last-output\t'The output of the last command'
+                --last-output\t'The output of the last command' \
+                --first-output-on-screen\t'The first command output on the screen' \
+                --last-visited-output\t'The output that a prompt jump visited last'
+            for flag in --ansi --cursor --wrap-markers
+                contains -- $flag $argv; or set -a offer $flag
+            end
         case screenshot
             string match -q -r -- '^--(tab|window)$' $argv
             or set -a offer --tab\t'The panes of its tab' --window\t'The whole window'
         case split
             string match -q -r -- '^--(left|right|up|down)$' $argv
             or set -a offer --left --right --up --down
+            set -a offer (__afterglow_launch_offer $argv)
         case new-tab new-window
             contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'
+            set -a offer (__afterglow_launch_offer $argv)
+            # new-window reads no pane, and takes the focus.
+            test $command = new-window; and set offer (string match -v -r -- '^--(no-focus|stdin-text|stdin-ansi)' $offer)
         case focus
             contains -- --direction $argv; or set -a offer --direction\t'Focus the pane on that side'
         case resize
@@ -271,6 +290,8 @@ function __afterglow_ctl
             contains -- --position $argv; or set -a offer --position\t'Where the popup sits'
             contains -- --border $argv; or contains -- --no-border $argv
             or set -a offer --border\t'Draw a border' --no-border\t'Draw no border'
+            contains -- --stdin-text $argv; or set -a offer --stdin-text\t'Pane text as standard input'
+            contains -- --stdin-ansi $argv; or set -a offer --stdin-ansi\t'With its styles'
         case open-directory
             contains -- --layout $argv; or set -a offer --layout\t'A saved layout'
         case save-project

@@ -66,19 +66,25 @@ the default config file, not the --config or -o of a running Afterglow.
   ls [--json]                           list panes
   send-text [--raw] TEXT...             type TEXT (\n, \r, \t, \e, \\ and \xHH for U+00HH unless --raw)
   send-text --stdin                     type standard input (UTF-8 text)
-  get-text [--screen|--scrollback|--selection|--last-output]
-                                        print pane text (needs Control.allowReadText)
+  get-text [--screen|--scrollback|--selection|--last-output|--first-output-on-screen|
+            --last-visited-output] [--ansi] [--cursor] [--wrap-markers]
+                                        print pane text (needs Control.allowReadText), with
+                                        its colors and links as escape sequences (--ansi),
+                                        the cursor's place, shape and visibility at the end
+                                        (--cursor), and a CR where a row wraps (--wrap-markers)
   screenshot [--tab|--window] FILE      save the pane, its tab or its window as shown, as a
                                         PNG FILE or on standard output with - (needs
                                         Control.allowReadText)
-  split [--left|--right|--up|--down] [-- CMD...]
+  split [--left|--right|--up|--down] [LAUNCH...] [-- CMD...]
                                         split, run CMD or the shell, and print the new pane
   move-pane TARGET PLACEMENT            move beside pane TARGET (left, right, up or down),
                                         to a new-tab in the window of TARGET (0: its own),
                                         or to a new-window with TARGET 0
   detach-tab                            move the pane's whole tab to a new window
-  new-tab [--cwd DIR] [-- CMD...]       open a tab and print its pane
-  new-window [--cwd DIR] [-- CMD...]    open a window and print its pane
+  new-tab [--cwd DIR] [LAUNCH...] [-- CMD...]
+                                        open a tab and print its pane
+  new-window [--cwd DIR] [--env NAME=VALUE] [--var NAME=VALUE] [--hold] [-- CMD...]
+                                        open a window and print its pane
   focus | close                         focus or close the pane
   focus --direction DIR                 focus the pane to the left, right, up or down of the
                                         pane and print it, or exit with 1 at the edge
@@ -102,7 +108,8 @@ the default config file, not the --config or -o of a running Afterglow.
   action NAME                           run a keybind action (split_right, new_tab...)
                                         or start a script command (script:ID.COMMAND)
   overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n|--no-stdin]
-          [-w|--width N[%]] [-h|--height N[%]] [--position POS] [--border|--no-border] -- CMD...
+          [-w|--width N[%]] [-h|--height N[%]] [--position POS] [--border|--no-border]
+          [--stdin-text SCOPE [--stdin-ansi]] -- CMD...
                                         run CMD over the pane until it exits, print its
                                         result and exit with its status. Standard input,
                                         unless it is a terminal or -n is given, goes to
@@ -111,6 +118,16 @@ the default config file, not the --config or -o of a running Afterglow.
                                         popup at POS (center, top, bottom, left, right,
                                         top-left, top-right, bottom-left or bottom-right)
   watch                                 print events as JSON lines until interrupted
+
+LAUNCH options of split and new-tab, as kitten @ launch has them:
+  --env NAME=VALUE   set a variable for CMD (NAME alone removes it); again for more
+  --var NAME=VALUE   set a user variable of the pane, as OSC 1337 SetUserVar; again for more
+  --hold             keep the pane open after CMD exits
+  --no-focus         keep the focus where it is
+  --stdin-text SCOPE [--stdin-ansi]
+                     the pane's text of a get-text scope (with its styles) as CMD's
+                     standard input (needs Control.allowReadText); overlay takes it too
+A pane of a mux session takes only --env.
 
 Put text or a command that starts with -- after a "--": send-text -- --stdin.
 Give a FILE or PATH that starts with -- as ./--FILE or ./--PATH.
@@ -374,7 +391,7 @@ QString expandHome(const QString& path)
 /// an ssh login or cron). Without @p inherited, the daemon gave none: this
 /// process's. Without @p directory, it starts where the pane is
 /// (Window.workingDirectory inherit), which the daemon knows.
-QJsonValue sessionLaunch(QString directory, const QStringList& command, const InheritedEnvironment* inherited)
+QJsonValue sessionLaunch(QString directory, const QStringList& command, const InheritedEnvironment* inherited, const QVariantMap& environment = {})
 {
     SettingsStore store;
     const Settings& settings = store.settings();
@@ -385,7 +402,7 @@ QJsonValue sessionLaunch(QString directory, const QStringList& command, const In
         else if (!setting.isEmpty() && setting != QLatin1String("inherit") && QFileInfo(expandHome(setting)).isDir()) directory = expandHome(setting);
     }
     // As TerminalWindow prepares a pane of its session.
-    AfterglowMux::Launch launch = localLaunch(settings, directory.isEmpty() ? QDir::homePath() : directory, command, inherited);
+    AfterglowMux::Launch launch = localLaunch(settings, directory.isEmpty() ? QDir::homePath() : directory, command, inherited, environment);
     if (directory.isEmpty()) launch.workingDirectory.clear();
     return QJsonDocument::fromJson(QByteArray::fromStdString(AfterglowProto::Json::write(AfterglowMux::toJson(launch)))).object();
 }
@@ -652,9 +669,12 @@ int runCtl(int argc, char** argv)
     QStringList valueOptions{QStringLiteral("--pane")};
     if (command == QLatin1String("overlay")) {
         valueOptions += {QStringLiteral("--capture"), QStringLiteral("--cwd"),   QStringLiteral("--title"),  QStringLiteral("-w"),
-                         QStringLiteral("--width"),   QStringLiteral("-h"),      QStringLiteral("--height"), QStringLiteral("--position")};
-    } else if (command == QLatin1String("new-window") || command == QLatin1String("new-tab")) {
-        valueOptions += QStringLiteral("--cwd");
+                         QStringLiteral("--width"),   QStringLiteral("-h"),      QStringLiteral("--height"), QStringLiteral("--position"),
+                         QStringLiteral("--stdin-text")};
+    } else if (command == QLatin1String("new-window") || command == QLatin1String("new-tab") || command == QLatin1String("split")) {
+        valueOptions += {QStringLiteral("--env"), QStringLiteral("--var")};
+        if (command != QLatin1String("split")) valueOptions += QStringLiteral("--cwd");
+        if (command != QLatin1String("new-window")) valueOptions += QStringLiteral("--stdin-text");
     } else if (command == QLatin1String("open-directory")) {
         valueOptions += QStringLiteral("--layout");
     } else if (command == QLatin1String("focus")) {
@@ -699,6 +719,68 @@ int runCtl(int argc, char** argv)
         const QString v = args[i + 1];
         args.remove(i, 2);
         return v;
+    };
+
+    // An option that can come more than once: each value, in order.
+    auto takeValues = [&takeValue, &indexOfOption, &missingValue](const QString& flag) {
+        QStringList values;
+        while (!missingValue && indexOfOption(flag) >= 0) {
+            if (const auto value = takeValue(flag)) values << *value;
+        }
+        return values;
+    };
+    // The options of a launch as kitten @ launch has them: --env NAME=VALUE
+    // (NAME alone removes it), --var NAME=VALUE (a user variable), --hold,
+    // --no-focus, and --stdin-text SCOPE [--stdin-ansi], the pane's text as
+    // the program's standard input. The window takes them in the options of
+    // its call. A session's daemon starts the program: only --env reaches it.
+    struct LaunchFlags
+    {
+        QJsonObject options;
+        QVariantMap environment;
+        QString windowOnly; ///< a flag that a pane of a session cannot take
+    };
+    auto takeLaunch = [&](bool reads, bool focuses, LaunchFlags& out) -> std::optional<QString> {
+        QJsonObject env, vars;
+        for (const QString& entry : takeValues(QStringLiteral("--env"))) {
+            const qsizetype eq = entry.indexOf(QLatin1Char('='));
+            const QString name = eq < 0 ? entry : entry.left(eq);
+            if (name.isEmpty() || name.contains(QChar::Null)) return QStringLiteral("--env takes NAME=VALUE, or NAME to remove it");
+            // false removes the variable, as the env of a script's launch.
+            env.insert(name, eq < 0 ? QJsonValue(false) : QJsonValue(entry.mid(eq + 1)));
+            out.environment.insert(name, eq < 0 ? QVariant(false) : QVariant(entry.mid(eq + 1)));
+        }
+        for (const QString& entry : takeValues(QStringLiteral("--var"))) {
+            const qsizetype eq = entry.indexOf(QLatin1Char('='));
+            if (eq <= 0 || entry.left(eq).toUtf8().size() > Control::MaxUserVarName)
+                return QStringLiteral("--var takes NAME=VALUE, with a name of 1 to %1 bytes").arg(Control::MaxUserVarName);
+            vars.insert(entry.left(eq), entry.mid(eq + 1));
+        }
+        if (!env.isEmpty()) out.options.insert(QStringLiteral("env"), env);
+        if (!vars.isEmpty()) {
+            out.options.insert(QStringLiteral("vars"), vars);
+            out.windowOnly = QStringLiteral("--var");
+        }
+        if (takeFlag(QStringLiteral("--hold"))) {
+            out.options.insert(QStringLiteral("hold"), true);
+            out.windowOnly = QStringLiteral("--hold");
+        }
+        if (focuses && takeFlag(QStringLiteral("--no-focus"))) {
+            out.options.insert(QStringLiteral("focus"), false);
+            out.windowOnly = QStringLiteral("--no-focus");
+        }
+        if (reads) {
+            if (const auto scope = takeValue(QStringLiteral("--stdin-text"))) {
+                if (!Control::scopeFromName(*scope)) return QStringLiteral("--stdin-text takes a scope of get-text: %1").arg(*scope);
+                out.options.insert(QStringLiteral("stdin_text"), *scope);
+                out.windowOnly = QStringLiteral("--stdin-text");
+            }
+            if (takeFlag(QStringLiteral("--stdin-ansi"))) {
+                if (!out.options.contains(QStringLiteral("stdin_text"))) return QStringLiteral("--stdin-ansi needs --stdin-text");
+                out.options.insert(QStringLiteral("stdin_ansi"), true);
+            }
+        }
+        return std::nullopt;
     };
 
     Client client;
@@ -836,10 +918,14 @@ int runCtl(int argc, char** argv)
     }
     if (command == QLatin1String("new-window")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());
+        LaunchFlags launch;
+        if (const auto error = takeLaunch(false, false, launch)) return usage(*error);
         if (const auto error = extra(0)) return usage(*error);
         const auto dir = absolute(cwd);
         if (!dir) return fail(NoCurrentDirectory);
-        return printPane(QStringLiteral("newWindow"), {*dir, QJsonArray::fromStringList(trailing)});
+        QJsonArray callArgs{*dir, QJsonArray::fromStringList(trailing)};
+        if (!launch.options.isEmpty()) callArgs.append(launch.options);
+        return printPane(QStringLiteral("newWindow"), callArgs);
     }
 
     // In parts, each whole: a surrogate pair never splits. Text over
@@ -957,16 +1043,25 @@ int runCtl(int argc, char** argv)
     } else if (command == QLatin1String("get-text")) {
         QString scope = QStringLiteral("screen");
         int scopes = 0;
-        for (const char* s : {"scrollback", "selection", "last-output", "screen"}) {
+        for (const char* s : {"scrollback", "selection", "last-output", "screen", "first-output-on-screen", "last-visited-output"}) {
             if (takeFlag(QStringLiteral("--") + QLatin1String(s))) {
                 scope = QLatin1String(s);
                 ++scopes;
             }
         }
+        // As kitten @ get-text --ansi, --add-cursor and --add-wrap-markers.
+        QJsonObject options;
+        for (const auto& [flag, key] : {std::pair{"--ansi", "ansi"}, std::pair{"--cursor", "cursor"}, std::pair{"--wrap-markers", "wrap_markers"}}) {
+            if (takeFlag(QLatin1String(flag))) options.insert(QLatin1String(key), true);
+        }
         if (scopes > 1) return usage(QStringLiteral("get-text takes one scope"));
         if (const auto error = extra(0)) return usage(*error);
-        act = [&client, scope](qint64 pane) {
-            const auto result = client.call(QStringLiteral("getText"), {pane, scope});
+        act = [&client, scope, options](qint64 pane) {
+            // The options only when they ask for something: (pane, scope) is
+            // the call of plain text.
+            QJsonArray callArgs{pane, scope};
+            if (!options.isEmpty()) callArgs.append(options);
+            const auto result = client.call(QStringLiteral("getText"), callArgs);
             if (!result) return 1;
             const QByteArray text = result->toString().toUtf8();
             std::fwrite(text.constData(), 1, std::size_t(text.size()), stdout);
@@ -985,24 +1080,38 @@ int runCtl(int argc, char** argv)
             }
         }
         if (directions > 1) return usage(QStringLiteral("split takes one direction"));
+        LaunchFlags launch;
+        if (const auto error = takeLaunch(true, true, launch)) return usage(*error);
         if (const auto error = extra(0)) return usage(*error);
-        act = [&, dir](qint64 pane) {
+        act = [&, dir, launch](qint64 pane) {
             QJsonArray callArgs{pane, dir, QJsonArray::fromStringList(trailing)};
             // The daemon starts the program that this command prepares.
-            if (client.toDaemon()) callArgs.append(sessionLaunch({}, trailing, client.sessionEnvironment()));
+            if (client.toDaemon()) {
+                if (!launch.windowOnly.isEmpty()) return usage(QStringLiteral("%1 is not for a pane of a mux session").arg(launch.windowOnly));
+                callArgs.append(sessionLaunch({}, trailing, client.sessionEnvironment(), launch.environment));
+            } else if (!launch.options.isEmpty()) {
+                callArgs.append(launch.options);
+            }
             return printPane(QStringLiteral("split"), callArgs);
         };
     } else if (command == QLatin1String("new-tab")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());
+        LaunchFlags launch;
+        if (const auto error = takeLaunch(true, true, launch)) return usage(*error);
         if (const auto error = extra(0)) return usage(*error);
         const auto dir = absolute(cwd);
         if (!dir) return fail(NoCurrentDirectory);
-        act = [&, dir = *dir](qint64 pane) {
+        act = [&, dir = *dir, launch](qint64 pane) {
             // The daemon starts the program in the directory as it comes: a
             // ~ is this command's to expand, as a window expands it.
             const bool daemon = client.toDaemon();
             QJsonArray callArgs{pane, daemon ? expandHome(dir) : dir, QJsonArray::fromStringList(trailing)};
-            if (daemon) callArgs.append(sessionLaunch(dir, trailing, client.sessionEnvironment()));
+            if (daemon) {
+                if (!launch.windowOnly.isEmpty()) return usage(QStringLiteral("%1 is not for a pane of a mux session").arg(launch.windowOnly));
+                callArgs.append(sessionLaunch(dir, trailing, client.sessionEnvironment(), launch.environment));
+            } else if (!launch.options.isEmpty()) {
+                callArgs.append(launch.options);
+            }
             return printPane(QStringLiteral("newTab"), callArgs);
         };
     } else if (command == QLatin1String("move-pane")) {
@@ -1107,7 +1216,14 @@ int runCtl(int argc, char** argv)
         const auto width = takeValue(QStringLiteral("-w")), longWidth = takeValue(QStringLiteral("--width"));
         const auto height = takeValue(QStringLiteral("-h")), longHeight = takeValue(QStringLiteral("--height"));
         const auto position = takeValue(QStringLiteral("--position"));
+        // The pane's text in place of standard input, as kitten @ launch
+        // --stdin-source: read with getText before the call.
+        const auto stdinText = takeValue(QStringLiteral("--stdin-text"));
+        const bool stdinAnsi = takeFlag(QStringLiteral("--stdin-ansi"));
         if (const auto error = extra(0, true)) return usage(*error);
+        if (stdinText && !Control::scopeFromName(*stdinText)) return usage(QStringLiteral("--stdin-text takes a scope of get-text: %1").arg(*stdinText));
+        if (stdinAnsi && !stdinText) return usage(QStringLiteral("--stdin-ansi needs --stdin-text"));
+        if (stdinText && noInput) return usage(QStringLiteral("--stdin-text and -n exclude each other"));
         if (trailing.isEmpty()) return usage(QStringLiteral("overlay needs a command after --"));
         if (width && longWidth) return usage(QStringLiteral("-w and --width exclude each other"));
         if (height && longHeight) return usage(QStringLiteral("-h and --height exclude each other"));
@@ -1137,7 +1253,7 @@ int runCtl(int argc, char** argv)
         // A list piped in, as for fzf. A terminal is no list: the program
         // reads the pane instead, and the call does not wait for an end of
         // file that never comes.
-        if (!noInput && !isatty(STDIN_FILENO)) {
+        if (!noInput && !stdinText && !isatty(STDIN_FILENO)) {
             int status = 0;
             const std::optional<QString> input = readStdin(
                 CtlOverlayInput, QStringLiteral("standard input over %1 MiB, the most that an overlay takes").arg(CtlOverlayInput >> 20),
@@ -1145,7 +1261,14 @@ int runCtl(int argc, char** argv)
             if (!input) return status;
             overlayInput = input->toUtf8();
         }
-        act = [&, options, overlayInput](qint64 pane) mutable {
+        act = [&, options, overlayInput, stdinText, stdinAnsi](qint64 pane) mutable {
+            if (stdinText) {
+                QJsonArray textArgs{pane, *stdinText};
+                if (stdinAnsi) textArgs.append(QJsonObject{{QStringLiteral("ansi"), true}});
+                const auto text = client.call(QStringLiteral("getText"), textArgs);
+                if (!text) return 1;
+                overlayInput = text->toString().toUtf8();
+            }
             if (overlayInput) {
                 // In parts before the call: a list can be larger than one request.
                 const auto name = AfterglowProto::randomHex(16);

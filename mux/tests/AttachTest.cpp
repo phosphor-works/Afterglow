@@ -3113,6 +3113,44 @@ TEST(MuxControl, TheDaemonTypesKeysAndTellsThePanesFacts)
     }
 }
 
+// get-text with the options of kitten @ get-text: the daemon writes its own
+// terminal's text with styles, and finds the first output on its screen.
+// What a window's view knows (the last visited output) is empty without one.
+TEST(MuxControl, TheDaemonWritesTextWithItsStyles)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "t")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("t"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    // A command with OSC 133 marks and red output; the quotes keep the word
+    // off the command line.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]133;A\\a$ \\033]133;B\\acmd\\033]133;C\\a\\n\\033[31mre''d\\033[m\\n\\033]133;D;0\\a'\n"}))
+        << ctl.error.message;
+    ASSERT_TRUE(waitFor([&] {
+        const auto text = ctl.call("getText", Json::Array{pane, "screen"});
+        return text && contains(text->toString(), "\nred");
+    }));
+    const auto styled = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"ansi", true}}});
+    ASSERT_TRUE(styled) << ctl.error.message;
+    EXPECT_TRUE(contains(styled->toString(), "\x1b[0;31mred\x1b[m")) << styled->toString();
+    const auto first = ctl.call("getText", Json::Array{pane, "first-output-on-screen"});
+    ASSERT_TRUE(first) << ctl.error.message;
+    EXPECT_EQ(first->toString(), "\nred\n");
+    const auto visited = ctl.call("getText", Json::Array{pane, "last-visited-output"});
+    ASSERT_TRUE(visited) << ctl.error.message;
+    EXPECT_EQ(visited->toString(), "");
+    const auto cursor = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"cursor", true}}});
+    ASSERT_TRUE(cursor) << ctl.error.message;
+    EXPECT_TRUE(contains(cursor->toString(), "\x1b[?25h")) << cursor->toString();
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"bold", true}}}));
+    EXPECT_EQ(ctl.error.message, "unknown getText option bold: the options are ansi, cursor and wrap_markers");
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"ansi", 1}}}));
+    EXPECT_EQ(ctl.error.message, "the getText option ansi is true or false");
+}
+
 // While a window shows the session, the daemon places the panes that it
 // starts in that window, and passes it what only a window can answer. Only
 // the answer of the window that got a call, with the call's ID, reaches its
@@ -5245,7 +5283,7 @@ TEST(MuxControl, TheDaemonChecksTheArgumentsOfItsControlCalls)
     EXPECT_EQ(selection->toString(), "");
     EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "everything"}));
     EXPECT_EQ(ctl.error.code, IpcErrorCode::CallFailed);
-    EXPECT_EQ(ctl.error.message, "scope is screen, scrollback, selection or last-output");
+    EXPECT_EQ(ctl.error.message, "scope is screen, scrollback, selection, last-output, first-output-on-screen or last-visited-output");
 
     // A launch that is no launch.
     EXPECT_FALSE(ctl.call("split", Json::Array{pane, "right", Json::Array{}, "sh"}));

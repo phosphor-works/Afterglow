@@ -59,6 +59,21 @@ enum class BidiMode : std::uint8_t { Off, Auto, LeftToRight, RightToLeft };
 
 enum class CursorShape : std::uint8_t { Block, Underline, Bar };
 
+/// How Terminal::text() writes cells. Plain by default: the characters,
+/// soft-wrapped rows joined, trailing blanks trimmed.
+struct TextFormat
+{
+    /// Each change of style as an SGR sequence (colors, attributes,
+    /// underline style and color) and each link as OSC 8, reset at the end
+    /// of each line. Trailing blanks with a background or a link stay.
+    bool ansi = false;
+    /// A carriage return where a row wraps into the next one.
+    bool wrapMarkers = false;
+    /// At the end: the cursor's place on the screen (CUP), its shape
+    /// (DECSCUSR) and whether it shows (DECTCEM).
+    bool cursor = false;
+};
+
 enum class MouseTracking : std::uint8_t {
     None,
     X10, ///< 9: press only
@@ -387,6 +402,9 @@ public:
     std::vector<SemanticRegion> semanticRegions() const;
     std::optional<std::string> semanticRegionText(std::uint64_t id, std::size_t maxBytes = 1024 * 1024,
                                                   bool* truncated = nullptr) const;
+    /// semanticRegionText() written in @p format.
+    std::optional<std::string> semanticRegionText(std::uint64_t id, std::size_t maxBytes, bool* truncated,
+                                                  const TextFormat& format) const;
     /// The id of the output region of the command at @p row, a stable row
     /// id of the primary screen: the command whose prompt, input or output
     /// holds the row. A command runs from its prompt to the next prompt, or
@@ -483,6 +501,9 @@ public:
     };
     /// Plain text; soft-wrapped rows join, trailing blanks are trimmed.
     std::string text(TextScope scope, std::size_t maxBytes = 1024 * 1024, bool* truncated = nullptr) const;
+    /// text() written in @p format, as kitty's get-text --ansi,
+    /// --add-wrap-markers and --add-cursor write it.
+    std::string text(TextScope scope, std::size_t maxBytes, bool* truncated, const TextFormat& format) const;
     bool hasCommandOutput() const noexcept { return m_outputStart.valid; }
     /// The stable ids of the first and the last row of the primary screen
     /// that the last output (TextScope::LastOutput) spans, if there is one.
@@ -738,6 +759,9 @@ private:
     bool m_commandRunning = false;
     Mark cursorMark() const;
     std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes = 1024 * 1024, bool* truncated = nullptr) const;
+    std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated, const TextFormat& format) const;
+    /// The escape sequences of TextFormat::cursor.
+    std::string cursorText() const;
     void finishCommand(int exitCode);
     int m_reportedDark = -1; ///< the theme mode last reported (mode 2031)
     bool m_hasCursorColor = false;

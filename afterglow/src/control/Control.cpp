@@ -549,7 +549,7 @@ QString Control::sendText(quint32 id, const QString& text)
     return p->sendInput(text.toStdString(), false) ? QString() : QStringLiteral("program closed or input queue full");
 }
 
-QString Control::readText(quint32 id, TextScope scope, QString& out)
+QString Control::readText(quint32 id, TextScope scope, QString& out, const AfterglowVt::TextFormat& format)
 {
     if (!m_settings.settings().control.allowReadText) {
         return QStringLiteral("reading pane text is off (Control.allowReadText)");
@@ -561,14 +561,21 @@ QString Control::readText(quint32 id, TextScope scope, QString& out)
     using AfterglowVt::Terminal;
     switch (scope) {
     case TextScope::Screen:
-        out = p->text(Terminal::TextScope::Screen);
+        out = p->text(Terminal::TextScope::Screen, format);
         break;
     case TextScope::Scrollback:
-        out = p->text(Terminal::TextScope::All);
+        out = p->text(Terminal::TextScope::All, format);
         break;
     case TextScope::LastOutput:
-        out = p->text(Terminal::TextScope::LastOutput);
+        out = p->text(Terminal::TextScope::LastOutput, format);
         break;
+    case TextScope::FirstOutputOnScreen:
+    case TextScope::LastVisitedOutput: {
+        // Empty when there is none, as the last output of a pane that ran nothing.
+        const auto region = scope == TextScope::FirstOutputOnScreen ? p->firstOutputOnScreen() : p->lastVisitedOutput();
+        out = region ? p->regionText(*region, format) : QString();
+        break;
+    }
     case TextScope::Selection:
         out = p->selectedText();
         break;
@@ -788,6 +795,140 @@ QString Control::newWindow(const QString& cwd, const QStringList& command, const
     QString error;
     auto* added = window->openTab(options, &error);
     if (!added) { window->deleteLater(); return error.isEmpty() ? QStringLiteral("cannot start program") : error; }
+    created = added->id();
+    showNew(window);
+    return {};
+}
+
+QString Control::launchExtras(const QVariantMap& options, LaunchExtras& extras)
+{
+    extras = {};
+    const auto flag = [&options](const char* key, bool& out) -> QString {
+        const QVariant value = options.value(QLatin1String(key));
+        if (!value.isValid()) return {};
+        if (value.typeId() != QMetaType::Bool) return QStringLiteral("%1 is true or false").arg(QLatin1String(key));
+        out = value.toBool();
+        return {};
+    };
+    for (const char* key : {"focus", "hold", "stdin_ansi"}) {
+        bool& out = key == std::string_view("focus") ? extras.focus : key == std::string_view("hold") ? extras.hold : extras.stdinAnsi;
+        if (const QString error = flag(key, out); !error.isEmpty()) return error;
+    }
+    if (const QVariant vars = options.value(QStringLiteral("vars")); vars.isValid()) {
+        if (vars.typeId() != QMetaType::QVariantMap) return QStringLiteral("vars must be a table");
+        extras.vars = vars.toMap();
+        for (auto it = extras.vars.cbegin(); it != extras.vars.cend(); ++it) {
+            // As OSC 1337 SetUserVar takes a name.
+            const qsizetype bytes = it.key().toUtf8().size();
+            if (bytes == 0 || bytes > MaxUserVarName || it.key().contains(QLatin1Char('=')))
+                return QStringLiteral("a user variable's name has 1 to %1 bytes and no =").arg(MaxUserVarName);
+            if (it.value().typeId() != QMetaType::QString) return QStringLiteral("user variable values must be strings");
+        }
+    }
+    if (const QVariant scope = options.value(QStringLiteral("stdin_text")); scope.isValid()) {
+        extras.stdinScope = scope.typeId() == QMetaType::QString ? scopeFromName(scope.toString()) : std::nullopt;
+        if (!extras.stdinScope) return QStringLiteral("stdin_text is a text scope: ") + BadTextScope.mid(QStringLiteral("scope is ").size());
+    }
+    if (extras.stdinAnsi && !extras.stdinScope) return QStringLiteral("stdin_ansi needs stdin_text");
+    return {};
+}
+
+namespace {
+
+/// The daemon runs the program of a session's pane: no hold and no input
+/// of this window reach it.
+QString sessionLaunchRefusal(const TerminalWindow& window, const Control::LaunchExtras& extras)
+{
+    if (!window.showsSession() || (!extras.hold && !extras.stdinScope)) return {};
+    return QStringLiteral("a pane of a mux session takes no hold or stdin_text: the daemon runs its program");
+}
+
+/// The launch of @p extras: the text of @p source as the program's input.
+QString applyLaunchExtras(Control& control, quint32 source, const Control::LaunchExtras& extras, PaneLaunchOptions& options)
+{
+    options.hold = extras.hold;
+    if (!extras.stdinScope) return {};
+    AfterglowVt::TextFormat format;
+    format.ansi = extras.stdinAnsi;
+    QString text;
+    if (const QString error = control.readText(source, *extras.stdinScope, text, format); !error.isEmpty()) return error;
+    options.input = text.toStdString();
+    return {};
+}
+
+/// What @p extras ask of the pane @p added once it runs: its user
+/// variables, and the focus back on @p before.
+void afterLaunch(Pane* added, Pane* before, TerminalWindow* window, const Control::LaunchExtras& extras)
+{
+    for (auto it = extras.vars.cbegin(); it != extras.vars.cend(); ++it) added->setUserVar(it.key(), it.value().toString());
+    if (!extras.focus && before && window) window->keepFocus(before);
+}
+
+} // namespace
+
+QString Control::clientSplit(quint32 id, const QString& direction, const QStringList& command, const QVariantMap& input, quint32& created)
+{
+    created = 0;
+    LaunchExtras extras;
+    if (const QString error = launchExtras(input, extras); !error.isEmpty()) return error;
+    const auto side = splitDirection(direction);
+    if (!side) return badSplitDirection();
+    TerminalWindow* window = nullptr;
+    auto* pane = find(id, &window);
+    if (!pane) return noPane(id);
+    PaneLaunchOptions options;
+    if (const auto error = paneOptions(*window, {}, command, input, options); !error.isEmpty()) return error;
+    if (const auto error = sessionLaunchRefusal(*window, extras); !error.isEmpty()) return error;
+    if (const auto error = applyLaunchExtras(*this, id, extras, options); !error.isEmpty()) return error;
+    Pane* const before = window->focusedPane();
+    QString error;
+    auto* added = window->splitPane(pane, *side, options, &error);
+    if (!added && error == TerminalWindow::noRoomForPane()) return QStringLiteral("not enough room for another pane");
+    if (!added) return error.isEmpty() ? QStringLiteral("cannot split pane") : error;
+    afterLaunch(added, before, window, extras);
+    created = added->id();
+    return {};
+}
+
+QString Control::clientNewTab(quint32 id, const QString& cwd, const QStringList& command, const QVariantMap& input, quint32& created)
+{
+    created = 0;
+    LaunchExtras extras;
+    if (const QString error = launchExtras(input, extras); !error.isEmpty()) return error;
+    TerminalWindow* window = nullptr;
+    Pane* from = find(id, &window);
+    if (!from) return noPane(id);
+    PaneLaunchOptions options;
+    if (const auto error = paneOptions(*window, cwd, command, input, options); !error.isEmpty()) return error;
+    if (const auto error = sessionLaunchRefusal(*window, extras); !error.isEmpty()) return error;
+    if (const auto error = applyLaunchExtras(*this, id, extras, options); !error.isEmpty()) return error;
+    Pane* const before = window->focusedPane();
+    QString error;
+    auto* added = window->openTab(options, &error, from);
+    if (!added) return error.isEmpty() ? QStringLiteral("cannot open a tab") : error;
+    afterLaunch(added, before, window, extras);
+    created = added->id();
+    return {};
+}
+
+QString Control::clientNewWindow(const QString& cwd, const QStringList& command, const QVariantMap& input, quint32& created)
+{
+    created = 0;
+    LaunchExtras extras;
+    if (const QString error = launchExtras(input, extras); !error.isEmpty()) return error;
+    // A new window has no pane to read, and takes the focus as a window does.
+    if (extras.stdinScope) return QStringLiteral("newWindow reads no pane: stdin_text is for split and newTab");
+    if (!extras.focus) return QStringLiteral("newWindow takes the focus: focus is for split and newTab");
+    PaneLaunchOptions options;
+    if (const auto error = launchOptions(cwd, command, input, options); !error.isEmpty()) return error;
+    if (const auto error = localDirectory(options.cwd); !error.isEmpty()) return error;
+    options.hold = extras.hold;
+    auto* window = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
+    if (!window) return QStringLiteral("cannot open a window");
+    QString error;
+    auto* added = window->openTab(options, &error);
+    if (!added) { window->deleteLater(); return error.isEmpty() ? QStringLiteral("cannot start program") : error; }
+    afterLaunch(added, nullptr, window, extras);
     created = added->id();
     showNew(window);
     return {};
@@ -1073,6 +1214,24 @@ bool Control::readsPaneText(const QString& action)
         || action == QLatin1String("show_last_visited_output");
 }
 
+const QString Control::BadTextScope =
+    QStringLiteral("scope is screen, scrollback, selection, last-output, first-output-on-screen or last-visited-output");
+
+QString Control::textFormat(const QVariantMap& options, AfterglowVt::TextFormat& format)
+{
+    format = {};
+    for (auto it = options.constBegin(); it != options.constEnd(); ++it) {
+        bool* flag = it.key() == QLatin1String("ansi") ? &format.ansi
+            : it.key() == QLatin1String("cursor")      ? &format.cursor
+            : it.key() == QLatin1String("wrap_markers") ? &format.wrapMarkers
+                                                         : nullptr;
+        if (!flag) return QStringLiteral("unknown getText option %1: the options are ansi, cursor and wrap_markers").arg(it.key());
+        if (it.value().typeId() != QMetaType::Bool) return QStringLiteral("the getText option %1 is true or false").arg(it.key());
+        *flag = it.value().toBool();
+    }
+    return {};
+}
+
 QString Control::scopeName(TextScope scope)
 {
     switch (scope) {
@@ -1084,6 +1243,10 @@ QString Control::scopeName(TextScope scope)
         return QStringLiteral("selection");
     case TextScope::LastOutput:
         return QStringLiteral("last-output");
+    case TextScope::FirstOutputOnScreen:
+        return QStringLiteral("first-output-on-screen");
+    case TextScope::LastVisitedOutput:
+        return QStringLiteral("last-visited-output");
     }
     return {};
 }
@@ -1122,7 +1285,8 @@ std::optional<CaptureScope> Control::captureScopeFromName(const QString& name)
 
 std::optional<Control::TextScope> Control::scopeFromName(const QString& name)
 {
-    for (TextScope s : {TextScope::Screen, TextScope::Scrollback, TextScope::Selection, TextScope::LastOutput}) {
+    for (TextScope s : {TextScope::Screen, TextScope::Scrollback, TextScope::Selection, TextScope::LastOutput, TextScope::FirstOutputOnScreen,
+                        TextScope::LastVisitedOutput}) {
         if (scopeName(s) == name) {
             return s;
         }

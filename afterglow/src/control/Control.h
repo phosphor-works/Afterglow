@@ -8,6 +8,7 @@
 #include "../scripting/OverlaySpec.h"
 
 #include <AfterglowProto/Remote.h>
+#include <AfterglowVt/Terminal.h>
 
 #include <QHash>
 #include <QJsonObject>
@@ -84,7 +85,9 @@ class Control : public QObject
     Q_OBJECT
 
 public:
-    enum class TextScope { Screen, Scrollback, Selection, LastOutput };
+    /// FirstOutputOnScreen and LastVisitedOutput as kitty's get-text extents
+    /// first_cmd_output_on_screen and last_visited_cmd_output.
+    enum class TextScope { Screen, Scrollback, Selection, LastOutput, FirstOutputOnScreen, LastVisitedOutput };
     using WindowFactory = std::function<TerminalWindow*(const QString& workingDirectory, const QStringList& command, bool empty)>;
     /// Starts a script command ("<script id>.<command>") with no arguments and
     /// no client, from @p source (ev.source). Returns an error, or empty.
@@ -222,7 +225,9 @@ public:
     void detachTab(quint32 pane, PaneMoved done);
     QString sendText(quint32 pane, const QString& text);
     /// Honours Control.allowReadText.
-    QString readText(quint32 pane, TextScope scope, QString& out);
+    /// @p format: plain, or with styles, wrap markers or the cursor (not for
+    /// a selection, which is plain text).
+    QString readText(quint32 pane, TextScope scope, QString& out, const AfterglowVt::TextFormat& format = {});
     /// Bounded script query, subject to Scripts.allowReadText. With
     /// @p clientRun, for a command run whose output goes to a client
     /// (`aglow run`, a socket call), also to Control.allowReadText: the
@@ -244,6 +249,28 @@ public:
     void newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options, PaneMade done);
     QString newWindow(const QString& workingDirectory, const QStringList& command, quint32& created);
     QString newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
+
+    /// What the options of a control client's split, newTab and newWindow
+    /// ask for besides those of a script's launch (cwd, size and env), as
+    /// kitten @ launch does: focus, hold, vars, stdin_text and stdin_ansi.
+    struct LaunchExtras
+    {
+        bool focus = true;
+        bool hold = false;
+        QVariantMap vars;
+        std::optional<TextScope> stdinScope;
+        bool stdinAnsi = false;
+    };
+    static QString launchExtras(const QVariantMap& options, LaunchExtras& extras);
+    /// The longest name of a user variable, in bytes, as OSC 1337 takes it.
+    static constexpr qsizetype MaxUserVarName = 128;
+    /// split, newTab and newWindow for a control client, with the options of
+    /// LaunchExtras. The pane's text goes to the program only with
+    /// Control.allowReadText, as getText.
+    QString clientSplit(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options, quint32& created);
+    QString clientNewTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options,
+                         quint32& created);
+    QString clientNewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
     QString focus(quint32 pane);
     QString close(quint32 pane);
     QString setTitle(quint32 pane, const QString& title);
@@ -370,6 +397,10 @@ public:
     /// and the overlay call of the control socket.
     static QString localDirectory(QString& cwd);
     static QString scopeName(TextScope scope);
+    static const QString BadTextScope;
+    /// The format that the options of getText ask for: ansi, cursor and
+    /// wrap_markers, each a boolean. An error for another key or type.
+    static QString textFormat(const QVariantMap& options, AfterglowVt::TextFormat& format);
     static std::optional<TextScope> scopeFromName(const QString& name);
     /// The capture scope that @p name (pane, tab or window) names.
     static std::optional<CaptureScope> captureScopeFromName(const QString& name);

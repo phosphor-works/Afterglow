@@ -853,6 +853,7 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     pane->setScrollPolicy(m_settings.settings().scrollOnOutput, m_settings.settings().scrollOnInput);
     // Before the program starts: a quick one may exit at once.
     pane->setHold(std::exchange(m_holdNextPane, false));
+    opts.input = std::exchange(m_inputNextPane, std::nullopt);
     pane->setHoldOnFailure(fallback);
     pane->setLaunchedProgram(launchedProgramName(command));
     const AfterglowMux::PaneSize size = paneSize(area);
@@ -882,8 +883,10 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
 Pane* TerminalWindow::createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id)
 {
     // The program runs under the daemon, which holds nothing open: --hold is
-    // for a program of the window, and must not go to the next pane.
+    // for a program of the window, and must not go to the next pane, nor
+    // must its input.
     m_holdNextPane = false;
+    m_inputNextPane.reset();
     // The window's settings, which the session follows (sendSettings): the
     // daemon sends as much history as Terminal.scrollback keeps.
     const AfterglowVt::TerminalOptions& options = m_settings.settings().terminal;
@@ -1119,6 +1122,7 @@ QString TerminalWindow::startSessionPane(Pane* from, std::optional<SplitTree::Di
 {
     if (!m_session) return QStringLiteral("This window shows no session");
     if (m_closing) return closingRefusal();
+    if (options.hold || options.input) return QStringLiteral("a pane of a mux session takes no hold or standard input: the daemon runs its program");
     if (const QString refused = remoteLaunchError(options); !refused.isEmpty()) return refused;
     const int tab = from ? tabOf(from) : -1;
     // The program's first size: the area of a new tab, with the tab bar if
@@ -1454,7 +1458,9 @@ Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QString
     } else {
         area.setHeight(int(available * fraction));
     }
+    setNextPaneLaunch(options.hold, options.input);
     Pane* added = createPane(options.cwd.isEmpty() ? newPaneDirectory(m_focused) : options.cwd, area, command, error, options.environment);
+    setNextPaneLaunch(false, std::nullopt);
     // A shell that did not start leaves the zoom too.
     if (!added) return nullptr;
     if (zoomed) {
@@ -1849,8 +1855,11 @@ Pane* TerminalWindow::openTab(const PaneLaunchOptions& options, QString* error, 
     }
     const int beside = from ? tabOf(from) : -1;
     const QString start = options.cwd.isEmpty() ? newPaneDirectory(beside >= 0 ? from : m_focused.data()) : options.cwd;
-    return newTab(start, options.command, options.environment, error,
-                  beside >= 0 ? beside + 1 : -1);
+    // For the tab's pane, and none after it, also when the tab fails.
+    setNextPaneLaunch(options.hold, options.input);
+    Pane* added = newTab(start, options.command, options.environment, error, beside >= 0 ? beside + 1 : -1);
+    setNextPaneLaunch(false, std::nullopt);
+    return added;
 }
 
 QString TerminalWindow::remoteLaunchError(const PaneLaunchOptions& options) const
@@ -2508,6 +2517,20 @@ QString TerminalWindow::scrollFromControl(Pane* pane, const QString& unit, qint6
     else return QStringLiteral("the unit is lines, pages, prompt, top or bottom");
     scrollPane(target, rows);
     return {};
+}
+
+void TerminalWindow::setNextPaneLaunch(bool hold, std::optional<std::string> input)
+{
+    m_holdNextPane = hold;
+    m_inputNextPane = std::move(input);
+}
+
+void TerminalWindow::keepFocus(Pane* pane)
+{
+    const int tab = pane ? tabOf(pane) : -1;
+    if (tab < 0) return;
+    if (tab != m_currentTab) switchTab(tab);
+    setFocusedPane(pane);
 }
 
 void TerminalWindow::setTabTitle(Pane* pane, const QString& title)

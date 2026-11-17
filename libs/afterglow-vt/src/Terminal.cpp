@@ -3978,7 +3978,199 @@ void Terminal::finishCommand(int exitCode)
     m_host.commandFinished(exitCode);
 }
 
+namespace {
+
+/// The SGR sequence that sets @p style from the default.
+std::string sgrOf(const Style& style)
+{
+    std::string out = "\x1b[0";
+    const auto add = [&out](std::string_view code) {
+        out += ';';
+        out += code;
+    };
+    if (style.has(Attr::Bold)) add("1");
+    if (style.has(Attr::Faint)) add("2");
+    if (style.has(Attr::Italic)) add("3");
+    switch (style.underline) {
+    case UnderlineStyle::None: break;
+    case UnderlineStyle::Single: add("4"); break;
+    case UnderlineStyle::Double: add("4:2"); break;
+    case UnderlineStyle::Curly: add("4:3"); break;
+    case UnderlineStyle::Dotted: add("4:4"); break;
+    case UnderlineStyle::Dashed: add("4:5"); break;
+    }
+    if (style.has(Attr::Blink)) add("5");
+    if (style.has(Attr::Inverse)) add("7");
+    if (style.has(Attr::Invisible)) add("8");
+    if (style.has(Attr::Strikethrough)) add("9");
+    if (style.has(Attr::Overline)) add("53");
+    // The 16 colors in their short forms, as programs write them.
+    const auto color = [&add](const Color& c, int base, int bright, int extended) {
+        switch (c.kind()) {
+        case Color::Kind::Default: break;
+        case Color::Kind::Palette:
+            if (base && c.index() < 8) add(std::to_string(base + c.index()));
+            else if (bright && c.index() < 16) add(std::to_string(bright + c.index() - 8));
+            else add(std::to_string(extended) + ";5;" + std::to_string(c.index()));
+            break;
+        case Color::Kind::Rgb:
+            add(std::to_string(extended) + ";2;" + std::to_string(c.r()) + ";" + std::to_string(c.g()) + ";" + std::to_string(c.b()));
+            break;
+        }
+    };
+    color(style.fg, 30, 90, 38);
+    color(style.bg, 40, 100, 48);
+    color(style.underlineColor, 0, 0, 58);
+    out += 'm';
+    return out;
+}
+
+/// Writes rows of cells for Terminal::text(): plain, or in a TextFormat.
+class TextWriter
+{
+public:
+    TextWriter(const Screen& screen, const TextFormat& format, std::size_t maxBytes)
+        : m_screen(screen)
+        , m_format(format)
+        , m_maxBytes(maxBytes)
+    {
+    }
+
+    /// Writes the cells @p c0 to @p c1 of @p row, then a line feed with
+    /// @p newline. False once the limit cut the text.
+    bool row(const Row& row, int c0, int c1, bool continues, bool newline)
+    {
+        c1 = std::min(c1, m_screen.cols());
+        // The blanks at the end of a line go, unless they show a background
+        // or a link in ANSI.
+        int end = c1;
+        if (m_format.ansi && !continues) {
+            while (end > c0 && blank(row.at(end - 1))) --end;
+        }
+        std::string line;
+        for (int x = c0; x < end; ++x) {
+            const Cell& c = row.at(x);
+            if (c.isTail() || c.isSpacerHead() || (c.isMulticell() && (c.multicellDx() || c.multicellDy()))) {
+                continue;
+            }
+            if (m_format.ansi) styleFor(line, m_screen.styles().get(c.styleId()));
+            detail::appendUtf8(line, c.isEmpty() ? U' ' : c.codepoint());
+            if (c.hasGrapheme()) {
+                for (char32_t e : m_screen.graphemeExtra(row, x)) {
+                    detail::appendUtf8(line, e);
+                }
+            }
+        }
+        if (!continues) {
+            if (!m_format.ansi) {
+                while (!line.empty() && line.back() == ' ') line.pop_back();
+            } else {
+                // Each line stands alone: a pager or an editor that shows a
+                // part of the text shows each line as it was.
+                styleFor(line, Style{});
+            }
+        } else if (m_format.wrapMarkers) {
+            line += '\r';
+        }
+        if (m_out.size() + line.size() > m_maxBytes) {
+            m_out.append(line, 0, cut(line, m_maxBytes > m_out.size() ? m_maxBytes - m_out.size() : 0));
+            m_truncated = true;
+            return false;
+        }
+        m_out += line;
+        if (newline) {
+            if (m_out.size() == m_maxBytes) {
+                m_truncated = true;
+                return false;
+            }
+            m_out += '\n';
+        }
+        return true;
+    }
+
+    bool truncated() const { return m_truncated; }
+    std::string take() { return std::move(m_out); }
+
+private:
+    bool blank(const Cell& c) const
+    {
+        if (!c.isEmpty() && c.codepoint() != U' ') return false;
+        const Style& style = m_screen.styles().get(c.styleId());
+        return style.bg.isDefault() && !style.has(Attr::Inverse) && style.link == 0;
+    }
+
+    /// The escape sequences that change the style and the link to those of
+    /// @p style.
+    void styleFor(std::string& line, const Style& style)
+    {
+        // The link goes as OSC 8, and protection is no rendition.
+        Style look = style;
+        look.link = 0;
+        look.attrs &= std::uint16_t(~Attr::Protected);
+        if (look != m_style) {
+            line += look == Style{} ? std::string("\x1b[m") : sgrOf(look);
+            m_style = look;
+        }
+        if (style.link != m_link) {
+            line += "\x1b]8;";
+            if (style.link != 0) {
+                const std::string_view id = m_screen.styles().linkId(style.link);
+                if (!id.empty()) {
+                    line += "id=";
+                    line += id;
+                }
+                line += ';';
+                line += m_screen.styles().linkUri(style.link);
+            } else {
+                line += ';';
+            }
+            line += "\x1b\\";
+            m_link = style.link;
+        }
+    }
+
+    /// The bytes of @p line that fit in @p room: no part of a character or
+    /// of an escape sequence.
+    static std::size_t cut(const std::string& line, std::size_t room)
+    {
+        std::size_t safe = 0;
+        for (std::size_t i = 0; i < line.size();) {
+            std::size_t next = i + 1;
+            if (line[i] == '\x1b' && next < line.size() && line[next] == '[') {
+                // A CSI ends with its final byte.
+                ++next;
+                while (next < line.size() && !(line[next] >= 0x40 && line[next] <= 0x7e)) ++next;
+                ++next;
+            } else if (line[i] == '\x1b' && next < line.size() && line[next] == ']') {
+                // An OSC ends with ESC backslash.
+                const std::size_t end = line.find("\x1b\\", next);
+                next = end == std::string::npos ? line.size() : end + 2;
+            } else {
+                while (next < line.size() && (static_cast<unsigned char>(line[next]) & 0xc0) == 0x80) ++next;
+            }
+            if (next > room) break;
+            safe = i = next;
+        }
+        return safe;
+    }
+
+    const Screen& m_screen;
+    const TextFormat& m_format;
+    std::size_t m_maxBytes;
+    std::string m_out;
+    bool m_truncated = false;
+    Style m_style;
+    std::uint32_t m_link = 0;
+};
+
+} // namespace
+
 std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated) const
+{
+    return textBetween(from, to, maxBytes, truncated, TextFormat{});
+}
+
+std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated, const TextFormat& format) const
 {
     if (truncated) *truncated = false;
     const Screen& scr = *m_primary;
@@ -3989,108 +4181,68 @@ std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t 
     }
     const long long start = first < 0 ? 0 : first; // the start scrolled out of history
     const int startCol = first < 0 ? 0 : from.col;
-    std::string out;
+    TextWriter writer(scr, format, maxBytes);
     for (long long i = start; i <= last; ++i) {
         const Row& row = scr.absoluteRow(std::size_t(i));
-        const int c0 = i == start ? startCol : 0;
-        const int c1 = i == last ? to.col : scr.cols();
-        std::string line;
-        for (int x = c0; x < c1 && x < scr.cols(); ++x) {
-            const Cell& c = row.at(x);
-            if (c.isTail() || c.isSpacerHead() || (c.isMulticell() && (c.multicellDx() || c.multicellDy()))) {
-                continue;
-            }
-            const char32_t cp = c.isEmpty() ? U' ' : c.codepoint();
-            detail::appendUtf8(line, cp);
-            if (c.hasGrapheme()) {
-                for (char32_t e : scr.graphemeExtra(row, x)) {
-                    detail::appendUtf8(line, e);
-                }
-            }
-        }
         const bool continues = row.wrapped && i < last;
-        if (!continues) {
-            while (!line.empty() && line.back() == ' ') {
-                line.pop_back();
-            }
-        }
-        if (out.size() + line.size() > maxBytes) {
-            std::size_t bytes = maxBytes > out.size() ? maxBytes - out.size() : 0;
-            while (bytes > 0 && bytes < line.size() && (static_cast<unsigned char>(line[bytes]) & 0xc0) == 0x80) --bytes;
-            out.append(line, 0, bytes);
-            if (truncated) *truncated = true;
-            return out;
-        }
-        out += line;
-        if (!continues && i < last) {
-            if (out.size() == maxBytes) { if (truncated) *truncated = true; return out; }
-            out += '\n';
-        }
+        if (!writer.row(row, i == start ? startCol : 0, i == last ? to.col : scr.cols(), continues, !continues && i < last)) break;
     }
-    return out;
+    if (truncated) *truncated = writer.truncated();
+    return writer.take();
 }
 
 std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncated) const
 {
+    return text(scope, maxBytes, truncated, TextFormat{});
+}
+
+std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncated, const TextFormat& format) const
+{
     if (truncated) *truncated = false;
+    std::string out;
     switch (scope) {
     case TextScope::LastOutput:
-        if (!m_outputStart.valid) {
-            return {};
-        }
-        return textBetween(m_outputStart, m_outputEnd.valid ? m_outputEnd : cursorMark(), maxBytes, truncated);
+        if (m_outputStart.valid) out = textBetween(m_outputStart, m_outputEnd.valid ? m_outputEnd : cursorMark(), maxBytes, truncated, format);
+        break;
     case TextScope::All: {
         const Screen& scr = *m_primary;
         const Mark top{scr.rowsDropped(), 0, true};
         const Mark end{scr.rowsDropped() + scr.historySize() + std::uint64_t(scr.rows() - 1), scr.cols(), true};
-        std::string s = textBetween(top, end, maxBytes, truncated);
-        while (!s.empty() && s.back() == '\n') {
-            s.pop_back();
+        out = textBetween(top, end, maxBytes, truncated, format);
+        while (!out.empty() && out.back() == '\n') {
+            out.pop_back();
         }
-        return s;
-    }
-    case TextScope::Screen:
         break;
     }
-    // The active screen's visible rows.
-    const Screen& scr = *m_active;
-    std::string out;
-    for (int y = 0; y < scr.rows(); ++y) {
-        const Row& row = scr.absoluteRow(scr.viewportTop() + std::size_t(y));
-        std::string line;
-        for (int x = 0; x < scr.cols(); ++x) {
-            const Cell& c = row.at(x);
-            if (c.isTail() || c.isSpacerHead() || (c.isMulticell() && (c.multicellDx() || c.multicellDy()))) {
-                continue;
-            }
-            detail::appendUtf8(line, c.isEmpty() ? U' ' : c.codepoint());
-            if (c.hasGrapheme()) {
-                for (char32_t e : scr.graphemeExtra(row, x)) {
-                    detail::appendUtf8(line, e);
-                }
-            }
+    case TextScope::Screen: {
+        // The active screen's visible rows.
+        const Screen& scr = *m_active;
+        TextWriter writer(scr, format, maxBytes);
+        for (int y = 0; y < scr.rows(); ++y) {
+            const Row& row = scr.absoluteRow(scr.viewportTop() + std::size_t(y));
+            const bool continues = row.wrapped && y + 1 < scr.rows();
+            if (!writer.row(row, 0, scr.cols(), continues, !continues && y + 1 < scr.rows())) break;
         }
-        const bool continues = row.wrapped && y + 1 < scr.rows();
-        while (!continues && !line.empty() && line.back() == ' ') {
-            line.pop_back();
+        if (truncated) *truncated = writer.truncated();
+        out = writer.take();
+        while (!out.empty() && out.back() == '\n') {
+            out.pop_back();
         }
-        if (out.size() + line.size() > maxBytes) {
-            std::size_t bytes = maxBytes > out.size() ? maxBytes - out.size() : 0;
-            while (bytes > 0 && bytes < line.size() && (static_cast<unsigned char>(line[bytes]) & 0xc0) == 0x80) --bytes;
-            out.append(line, 0, bytes);
-            if (truncated) *truncated = true;
-            return out;
-        }
-        out += line;
-        if (!continues && y + 1 < scr.rows()) {
-            if (out.size() == maxBytes) { if (truncated) *truncated = true; return out; }
-            out += '\n';
-        }
+        break;
     }
-    while (!out.empty() && out.back() == '\n') {
-        out.pop_back();
     }
+    if (format.cursor) out += cursorText();
     return out;
+}
+
+std::string Terminal::cursorText() const
+{
+    const Screen& scr = *m_active;
+    // DECSCUSR: 1 and 2 a block, 3 and 4 an underline, 5 and 6 a bar, the
+    // odd ones blinking.
+    const int shape = (m_cursorShape == CursorShape::Block ? 1 : m_cursorShape == CursorShape::Underline ? 3 : 5) + (m_modes.cursorBlink ? 0 : 1);
+    return "\x1b[" + std::to_string(scr.cursor.y + 1) + ";" + std::to_string(scr.cursor.x + 1) + "H\x1b[" + std::to_string(shape) + " q\x1b[?25"
+        + (m_modes.cursorVisible ? "h" : "l");
 }
 
 void Terminal::programExited()
@@ -4642,10 +4794,16 @@ std::vector<SemanticRegion> Terminal::semanticRegions() const
 std::optional<std::string> Terminal::semanticRegionText(std::uint64_t id, std::size_t maxBytes, bool* truncated) const
 {
     if (truncated) *truncated = false;
+    return semanticRegionText(id, maxBytes, truncated, TextFormat{});
+}
+
+std::optional<std::string> Terminal::semanticRegionText(std::uint64_t id, std::size_t maxBytes, bool* truncated, const TextFormat& format) const
+{
+    if (truncated) *truncated = false;
     for (const auto& region : semanticRegions()) {
         if (region.id != id) continue;
         if (!region.available) return std::nullopt;
-        return textBetween({region.start.row, region.start.col, true}, {region.end.row, region.end.col, true}, maxBytes, truncated);
+        return textBetween({region.start.row, region.start.col, true}, {region.end.row, region.end.col, true}, maxBytes, truncated, format);
     }
     return std::nullopt;
 }
