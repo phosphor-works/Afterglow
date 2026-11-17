@@ -60,11 +60,22 @@ def main_checkout(repo):
     return os.path.dirname(common) if os.path.basename(common) == '.git' else repo
 
 
-# The Phosphor libraries are built from the checkout next to the main checkout of this repository, but they belong
-# to PlasmaZones, which changes only through its own branch and pull request. This file is .claude/hooks/guard.py,
-# so the repository is two directories up.
+# The Phosphor libraries come from phosphor-libs, and a build can use the phosphor-libs checkout next to the main
+# checkout of this repository. That repository and PlasmaZones change only through their own branches and pull
+# requests. This file is .claude/hooks/guard.py, so the repository is two directories up.
 REPOSITORY = main_checkout(os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')))
-PLASMAZONES = os.path.realpath(os.path.join(REPOSITORY, '..', 'PlasmaZones')) + '/'
+OTHER_REPOSITORIES = {
+    name: os.path.realpath(os.path.join(REPOSITORY, '..', name)) + '/' for name in ('phosphor-libs', 'PlasmaZones')
+}
+
+
+def other_repository(path):
+    """The name of the protected sibling repository that holds path, or None."""
+    real = os.path.realpath(path) + '/'
+    for name, root in OTHER_REPOSITORIES.items():
+        if real.startswith(root):
+            return name
+    return None
 
 SEPARATORS = ';&|()\n`'
 # Words that run the command after them: skipped, with their options, to find the command itself
@@ -145,9 +156,9 @@ MSG_FAILED = ('The guard could not check this call ({}), so it blocks it. Write 
               'ask the user.')
 
 
-def plasmazones_message(path):
-    return (f'{path} is in PlasmaZones. Afterglow builds the Phosphor libraries from that checkout, but PlasmaZones '
-            'changes only through its own branch and pull request. Tell the user what Phosphor needs and why.')
+def other_repository_message(path, name):
+    return (f'{path} is in {name}, which changes only through its own branch and pull request. Afterglow builds the '
+            'Phosphor libraries from phosphor-libs. Tell the user what Phosphor needs and why.')
 
 
 # Reading a command line
@@ -321,8 +332,9 @@ def check_git(args, cwd):
         directory = os.path.join(directory, os.path.expanduser(d))
     if sub in ('add', 'stage', 'commit', 'push', 'rm', 'mv', 'reset', 'checkout', 'switch', 'rebase', 'merge',
                'cherry-pick', 'revert', 'tag', 'restore', 'stash', 'apply', 'am'):
-        if (os.path.realpath(directory) + '/').startswith(PLASMAZONES):
-            return plasmazones_message(directory)
+        name = other_repository(directory)
+        if name:
+            return other_repository_message(directory, name)
     if sub in ('add', 'stage'):
         paths, broad, force = [], False, False
         for k, a in enumerate(rest):
@@ -625,8 +637,9 @@ def check_bash(command, cwd=None):
 
 def check_edit(path):
     real = os.path.realpath(path)
-    if real.startswith(PLASMAZONES):
-        return plasmazones_message(path)
+    name = other_repository(path)
+    if name:
+        return other_repository_message(path, name)
     project = os.path.realpath(os.environ.get('CLAUDE_PROJECT_DIR', os.getcwd())) + '/'
     if not real.startswith(project):
         return None

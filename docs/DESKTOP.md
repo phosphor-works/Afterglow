@@ -280,7 +280,7 @@ Copy the static `aglow` of your build to a remote host whose kernel and processo
 You can also install `aglow` on the remote host from a package.
 You can also build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow and aglow-mux alone](BUILD.md#build-aglow-and-aglow-mux-alone)).
 That build needs no Qt.
-With `AFTERGLOW_BUILD_MUX` on, the default, it also builds `aglow-mux` and needs PCRE2 and phosphor-channel from a PlasmaZones checkout.
+With `AFTERGLOW_BUILD_MUX` on, the default, it also builds `aglow-mux` and needs PCRE2 and phosphor-channel from the pinned phosphor-libs archive, which the configuration downloads.
 With `-DAFTERGLOW_BUILD_MUX=OFF`, it builds `aglow` alone and needs no Phosphor library.
 For file transfer, drag and drop, images and the clipboard, the remote host needs `aglow` or `kitten`, because these are Kitty protocols.
 For script commands, the remote host needs `aglow`, because `kitten` has no counterpart of `aglow run`.

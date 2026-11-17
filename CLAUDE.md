@@ -18,9 +18,10 @@ wrong, and points to the skills that hold the procedures.
 - **Never install and never use `sudo`.** No install target and no system packages. Tell the user what you need
   and why. The one exception: `cmake --install` into a temporary directory (`--prefix` or `DESTDIR` under `/tmp`,
   or a directory under the build tree, as the `aglow_only_build` test does), to check the install layout.
-- **PlasmaZones changes only through its own pull request.** The build compiles the Phosphor libraries from
-  `../PlasmaZones/phosphor-libs`. Never edit that checkout from an Afterglow session. When Afterglow needs a Phosphor
-  change, say what and why, and let the user decide.
+- **phosphor-libs changes only through its own pull request.** The build compiles the Phosphor libraries from the
+  phosphor-libs commit that `cmake/AfterglowDependencies.cmake` pins, or from the tree that
+  `AFTERGLOW_PHOSPHOR_LIBS_DIR` names. Never edit a phosphor-libs or PlasmaZones checkout from an Afterglow session.
+  When Afterglow needs a Phosphor change, say what and why, and let the user decide.
 - **Never touch the user's running Afterglow.** This session usually runs inside one of its panes
   (`AFTERGLOW_PANE_ID` is set). `afterglow ctl`, `aglow run` and `afterglow run` (also `run --complete`) use the
   pane's `AFTERGLOW_SOCKET`, else the socket of the user's Wayland display, so they act on the user's own terminal.

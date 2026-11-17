@@ -17,7 +17,6 @@ To build `aglow` and `aglow-mux` alone, without Qt, see [build aglow and aglow-m
 - xkbcommon, wayland-client, `wayland-scanner` and the 32-bit PCRE2 library.
 - KF6 WindowSystem.
 - GTest, unless you configure with `-DBUILD_TESTING=OFF`.
-- The Phosphor libraries from a PlasmaZones checkout.
 - The static C and C++ runtime libraries (`libc.a` and `libstdc++.a`), for `aglow`.
   Fedora puts them in the packages `glibc-static` and `libstdc++-static`.
   Without them, the configuration stops with a message.
@@ -28,7 +27,7 @@ To build `aglow` and `aglow-mux` alone, without Qt, see [build aglow and aglow-m
   The shell completions offer no script commands. For these five commands, they complete file names.
   A build with `-DAFTERGLOW_BUILD_FUZZERS=ON` does not build `aglow`.
 
-The build compiles zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp and Little CMS from their [source archives](#source-archives).
+The build compiles the Phosphor libraries, zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp and Little CMS from their [source archives](#source-archives).
 These are C sources, so the build needs the C compiler.
 It does not use the copies that the system has.
 The libjpeg-turbo archive also holds libspng and zlib, for image files of its own API.
@@ -52,9 +51,10 @@ The first configuration downloads source archives. It needs network access one t
 
 | Archive | Pin file | Function |
 | --- | --- | --- |
-| CPM.cmake | Both pin files | Downloads the other archives |
-| Luau | `../PlasmaZones/cmake/PhosphorDependencies.cmake` | Runs the Luau scripts |
-| valijson | `../PlasmaZones/cmake/PhosphorDependencies.cmake` | Checks Phosphor JSON files against their schemas |
+| CPM.cmake | `cmake/AfterglowDependencies.cmake` | Downloads the other archives |
+| phosphor-libs | `cmake/AfterglowDependencies.cmake` | Gives the Phosphor libraries. The pin is a commit of phosphor-libs |
+| Luau | `cmake/PhosphorDependencies.cmake` in phosphor-libs | Runs the Luau scripts |
+| valijson | `cmake/PhosphorDependencies.cmake` in phosphor-libs | Checks Phosphor JSON files against their schemas |
 | zlib-ng | `cmake/AfterglowDependencies.cmake` | Compresses and decompresses images and file transfers |
 | xxHash | `cmake/AfterglowDependencies.cmake` | Calculates the block hashes of delta file transfers |
 | libpng | `cmake/AfterglowDependencies.cmake` | Decodes PNG images in `aglow` and `aglow-mux` |
@@ -71,8 +71,7 @@ The first row of this table that applies selects the cache:
 | --- | --- |
 | The configuration command has `-DCPM_SOURCE_CACHE=/path/to/cache` | `/path/to/cache` |
 | The `CPM_SOURCE_CACHE` environment variable is set | The directory in the variable |
-| The configuration command has `-DPHOSPHOR_DEPS_ARCHIVES` and no `-DAFTERGLOW_DEPS_ARCHIVES` | `.cache/cpm` in the Afterglow directory |
-| No other row applies | `.cache/cpm` in the PlasmaZones checkout |
+| No other row applies | `.cache/cpm` in the Afterglow directory |
 
 A build directory keeps the CPM cache of its first configuration.
 To change the cache of a build directory, give `-DCPM_SOURCE_CACHE`.
@@ -80,38 +79,30 @@ When the cache has all archives, a configuration needs no network access.
 
 To build on a computer without network access, prepare the source on a computer with network access:
 
-1. Do steps 1 to 3 of [Build](#build).
+1. Do step 1 of [Build](#build).
 
-2. In the Afterglow directory, download the Phosphor archives into a directory:
-
-```sh
-cmake -DPHOSPHOR_DEPS_FETCH=/path/to/archives -P ../PlasmaZones/cmake/PhosphorDependencies.cmake
-```
-
-3. Download the Afterglow archives into the same directory:
+2. In the Afterglow directory, download the archives into a directory:
 
 ```sh
 cmake -DAFTERGLOW_DEPS_FETCH=/path/to/archives -P cmake/AfterglowDependencies.cmake
 ```
 
-This command also puts an empty `.lock` file next to each Afterglow archive that it downloads. You do not need to copy these files.
-To download the archives in another way, give each one the `FILE` name of its pin in `cmake/AfterglowDependencies.cmake`.
-The pin file also has the URL and the SHA-256 hash of each archive.
+This command downloads the archives of both pin files.
+It also puts an empty `.lock` file next to each Afterglow archive that it downloads. You do not need to copy these files.
+To download the archives in another way, give each one the `FILE` name of its pin.
+The pin files also have the URL and the SHA-256 hash of each archive.
 
-4. Copy the Afterglow and PlasmaZones directories into one parent directory on the build computer.
+3. Copy the Afterglow directory and the archive directory to the build computer.
 
-5. Copy the archive directory to the build computer.
-
-6. On the build computer, configure the build as in step 4 of [Build](#build), with these options:
+4. On the build computer, configure the build as in step 2 of [Build](#build), with this option:
 
 ```sh
--DPHOSPHOR_DEPS_ARCHIVES=/path/to/archives -DAFTERGLOW_DEPS_ARCHIVES=/path/to/archives
+-DAFTERGLOW_DEPS_ARCHIVES=/path/to/archives
 ```
 
-7. Do steps 5 and 6 of [Build](#build).
+5. Do steps 3 and 4 of [Build](#build).
 
-With the two options, the configuration downloads nothing.
-If you set only one option, the configuration downloads CPM.cmake and the archives of the other pin file.
+With this option, the configuration downloads nothing.
 
 ## Qt private APIs
 
@@ -129,50 +120,35 @@ git clone https://github.com/phosphor-works/Afterglow
 cd Afterglow
 ```
 
-2. Get the Phosphor source in the adjacent directory:
-
-```sh
-git clone https://github.com/phosphor-works/PlasmaZones ../PlasmaZones
-```
-
-3. Select the PlasmaZones commit that this Afterglow source was tested with:
-
-```sh
-git -C ../PlasmaZones checkout 1187fd9a4
-```
-
-A later PlasmaZones commit can change the Phosphor API. The build then fails.
-An older PlasmaZones checkout lacks `cmake/PhosphorDependencies.cmake`, or a library such as `phosphor-channel`. The configuration then stops with an error.
-Another older checkout configures, and the build then fails in a Phosphor call.
-
-4. Configure the build with the installation prefix:
+2. Configure the build with the installation prefix:
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 ```
 
 The executable stores the shell integration, terminfo, shader, theme and plugin paths of this prefix.
-Without GTest, add `-DBUILD_TESTING=OFF` to the command, and skip step 6.
+Without GTest, add `-DBUILD_TESTING=OFF` to the command, and skip step 4.
 
-5. Build the application:
+3. Build the application:
 
 ```sh
 cmake --build build
 ```
 
-6. Run the tests:
+4. Run the tests:
 
 ```sh
 ctest --test-dir build --output-on-failure
 ```
 
-To use another Phosphor checkout, add this option to the configuration command:
+The build compiles the Phosphor libraries with Afterglow, from the phosphor-libs commit that `cmake/AfterglowDependencies.cmake` pins.
+To use a phosphor-libs checkout instead, add this option to the configuration command:
 
 ```sh
--DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/PlasmaZones/phosphor-libs
+-DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/phosphor-libs
 ```
 
-The build compiles the Phosphor libraries with Afterglow.
+Use this option to build against a change to phosphor-libs before the pin moves to it.
 
 ## Build aglow and aglow-mux alone
 
@@ -189,16 +165,16 @@ It compiles zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp and Little CMS from 
 | Dependency | Use |
 | --- | --- |
 | PCRE2 with 32-bit code units (`libpcre2-32`), and `pkg-config` | The terminal core, which `aglow-mux` uses, links it for regular expression search |
-| A PlasmaZones checkout, as in the [build steps](#build) | Gives phosphor-channel, which carries the frames of a session to its window. The build uses no other library of the checkout. |
+| The pinned phosphor-libs archive, which the configuration downloads | Gives phosphor-channel, which carries the frames of a session to its window. The build uses no other library of phosphor-libs. |
 
 To build `aglow` without `aglow-mux`, add `-DAFTERGLOW_BUILD_MUX=OFF` to the configuration command.
-That build does not need PCRE2 or a PlasmaZones checkout.
+That build does not need PCRE2 or phosphor-libs.
 
 This build, with or without `aglow-mux`, downloads only CPM.cmake and the archives of `cmake/AfterglowDependencies.cmake`.
-phosphor-channel downloads nothing.
+phosphor-libs is one of them. phosphor-channel downloads nothing more.
 By default, the CPM cache is `.cache/cpm` in the Afterglow directory.
 `-DCPM_SOURCE_CACHE` and the `CPM_SOURCE_CACHE` environment variable change it.
-To build on a computer without network access, download the archives as in step 3 of the procedure in [source archives](#source-archives).
+To build on a computer without network access, download the archives as in step 2 of the procedure in [source archives](#source-archives).
 Copy the archive directory to the build computer.
 Then add `-DAFTERGLOW_DEPS_ARCHIVES=/path/to/archives` to the configuration command.
 
@@ -209,38 +185,28 @@ git clone https://github.com/phosphor-works/Afterglow
 cd Afterglow
 ```
 
-2. For `aglow-mux`, get the Phosphor source in the adjacent directory, at the commit of the [build steps](#build):
-
-```sh
-git clone https://github.com/phosphor-works/PlasmaZones ../PlasmaZones
-git -C ../PlasmaZones checkout 1187fd9a4
-```
-
-Skip this step when you configure with `-DAFTERGLOW_BUILD_MUX=OFF`.
-Without the checkout, the configuration of `aglow-mux` stops with an error.
-
-3. Configure the build with `AFTERGLOW_AGLOW_ONLY`:
+2. Configure the build with `AFTERGLOW_AGLOW_ONLY`:
 
 ```sh
 cmake -B build-aglow -DAFTERGLOW_AGLOW_ONLY=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 ```
 
-When the PlasmaZones checkout is not next to the Afterglow directory, add `-DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/PlasmaZones/phosphor-libs` to the command.
-Without GTest, add `-DBUILD_TESTING=OFF` to the command, and skip step 5.
+To use a phosphor-libs checkout for `aglow-mux`, add `-DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/phosphor-libs` to the command.
+Without GTest, add `-DBUILD_TESTING=OFF` to the command, and skip step 4.
 
-4. Build `aglow` and `aglow-mux`:
+3. Build `aglow` and `aglow-mux`:
 
 ```sh
 cmake --build build-aglow
 ```
 
-5. Run the tests:
+4. Run the tests:
 
 ```sh
 ctest --test-dir build-aglow --output-on-failure
 ```
 
-6. Install `aglow` and `aglow-mux`:
+5. Install `aglow` and `aglow-mux`:
 
 ```sh
 sudo cmake --install build-aglow
@@ -290,7 +256,7 @@ The license notices of the third-party code in the binaries go in `share/license
 | `LICENSE.lcms2` | The notice of Little CMS, which `aglow-mux` also contains | Always |
 | `LICENSE.Unicode` | The Unicode License v3 of the Unicode Character Database, from which the character width and grapheme tables of `afterglow` and `aglow-mux` come | Always |
 | `NOTICE.IJG` | The statement that `aglow` and `aglow-mux` are based in part on the work of the Independent JPEG Group | Always |
-| `LICENSE.Luau` and `LICENSE.Lua` | The notices of Luau and of Lua, which the scripts of `afterglow` run with | Unless the build uses the system's Luau (`PLASMAZONES_SYSTEM_LUAU`) |
+| `LICENSE.Luau` and `LICENSE.Lua` | The notices of Luau and of Lua, which the scripts of `afterglow` run with | Unless the build uses the system's Luau (`PHOSPHOR_SYSTEM_LUAU`) |
 | `LICENSE.valijson` | The notice of valijson, which `afterglow` checks JSON files with | Unless the build uses the system's valijson (`PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON`) |
 | `LICENSE.glibc` | The notice of the GNU C Library, with the steps to link `aglow` again with another C library | When `aglow` is static |
 | `LICENSE.libstdc++` | The notice of libstdc++ and libgcc, with the GCC Runtime Library Exception | When `aglow` is static |
