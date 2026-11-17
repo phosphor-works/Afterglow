@@ -677,7 +677,7 @@ Its calls come from a client on that host, in a pane of the session, for example
 | --- | --- |
 | `overlay`, `screenshot`, `new-window` (with or without a command), `open-directory`, `open-project`, `save-project`, `projects`, `scripts` | Refuses it: `a session of another host runs no program on this computer` |
 | `action script:ID.COMMAND` | Refuses it with `a session of another host runs only the script commands that a script marks remote, with aglow run`. `aglow run` in the session runs the script commands that a script marks remote. |
-| `action` with `paste`, `copy`, `select_all`, `show_last_output`, `new_window`, `open_config`, `reload_config`, `use_package_shaders`, `save_project`, `switch_project`, `cancel_overlay` or `end_script_key_mode` | Refuses it with `a session of another host runs no program on this computer` |
+| `action` with `paste`, `copy`, `select_all`, `show_last_output`, `show_first_output_on_screen`, `show_last_visited_output`, `new_window`, `open_config`, `reload_config`, `use_package_shaders`, `save_project`, `switch_project`, `cancel_overlay` or `end_script_key_mode` | Refuses it with `a session of another host runs no program on this computer` |
 | `notify` | Shows it. It counts against `Notifications.rateLimit` of the pane, as a notification of a program does. |
 | `split` and `new-tab` with a `cwd` or an `env`, and the `split` and `new_tab` effects of scripts with them | Refuses them: `a pane of session NAME, which runs on another host, takes no cwd or env: it starts where the pane that it opens from is`. A new pane starts in the directory of the pane that it opens from, on the host. |
 

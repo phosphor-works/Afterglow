@@ -109,6 +109,12 @@ struct MouseSettings
     /// A click on the command line of a shell that marks its prompt
     /// (OSC 133) moves the shell's cursor there. On, as in Kitty.
     bool clickMovesCursor = true;
+    /// Ctrl+Shift+right-click on a command that shell integration marks
+    /// (OSC 133): its output in Terminal.pager, as in Kitty
+    /// (mouse_show_command_output), its output selected
+    /// (mouse_select_command_output), or a plain right-click.
+    enum class CommandOutputClick { Pager, Select, None };
+    CommandOutputClick commandOutputClick = CommandOutputClick::Pager;
     bool operator==(const MouseSettings&) const = default;
 };
 

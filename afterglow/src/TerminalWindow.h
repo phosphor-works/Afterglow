@@ -847,6 +847,10 @@ private:
     QPointer<Pane> m_inputMethodPane;
     std::uint64_t m_inputMethodText = 0;
     bool performAction(Action action);
+    /// Opens a command output of @p pane in Terminal.pager, in a new tab: the
+    /// last output, or output region @p region. A failure is a notice.
+    /// Always true: the key or click is handled.
+    bool showOutputInPager(Pane* pane, std::optional<std::uint64_t> region);
     void updateChrome();
     /// The command palette's list: every action but the palette itself and
     /// the end of a script key mode, then the script commands that have a

@@ -692,6 +692,45 @@ TEST(Terminal, SemanticRegionsRetainTextThroughReflow)
     EXPECT_GT(t.t.semanticRegions().front().id, regions.back().id);
 }
 
+TEST(Terminal, TheCommandOfARowAndTheFirstOutputOfRows)
+{
+    Term t(20, 10);
+    // Rows 0 to 2: "$ one" and its two lines. Row 3: "$ two" with no
+    // output. Rows 4 and 5: "$ three", which still runs, and its line.
+    t.feed("\x1b]133;A\a$ \x1b]133;B\aone\x1b]133;C\a\r\nout1\r\nout1b\r\n\x1b]133;D;0\a");
+    t.feed("\x1b]133;A\a$ \x1b]133;B\atwo\x1b]133;C\a\r\n\x1b]133;D;0\a");
+    t.feed("\x1b]133;A\a$ \x1b]133;B\athree\x1b]133;C\a\r\nout3\r\n");
+    const auto regions = t.t.semanticRegions();
+    ASSERT_EQ(regions.size(), 9u);
+    const std::uint64_t one = regions[2].id, two = regions[5].id, three = regions[8].id;
+    ASSERT_EQ(t.t.semanticRegionText(one), "\nout1\nout1b\n");
+    // The prompt, the input and the output of a command give its output;
+    // a running command holds the rows down to the cursor.
+    for (const std::uint64_t row : {0, 1, 2}) EXPECT_EQ(t.t.commandOutputAt(row), one) << row;
+    EXPECT_EQ(t.t.commandOutputAt(3), two);
+    for (const std::uint64_t row : {4, 5, 6}) EXPECT_EQ(t.t.commandOutputAt(row), three) << row;
+    EXPECT_EQ(t.t.commandOutputAt(7), std::nullopt);
+    // The first output with a row in a range: one that ends at the start of
+    // a row has nothing there.
+    EXPECT_EQ(t.t.firstCommandOutputIn(0, 9), one);
+    EXPECT_EQ(t.t.firstCommandOutputIn(2, 9), one);
+    EXPECT_EQ(t.t.firstCommandOutputIn(3, 9), two);
+    EXPECT_EQ(t.t.firstCommandOutputIn(4, 9), three);
+    EXPECT_EQ(t.t.firstCommandOutputIn(7, 9), std::nullopt);
+
+    // A shell that marks only the output (C and D): each output is a command.
+    Term bare(20, 10);
+    bare.feed("\x1b]133;C\a\r\nx\r\n\x1b]133;D\a\x1b]133;C\a\r\ny\r\n\x1b]133;D\a");
+    const auto outputs = bare.t.semanticRegions();
+    ASSERT_EQ(outputs.size(), 2u);
+    EXPECT_EQ(bare.t.commandOutputAt(1), outputs[0].id);
+    EXPECT_EQ(bare.t.commandOutputAt(2), outputs[1].id);
+    // No regions: no command.
+    Term none(20, 10);
+    EXPECT_EQ(none.t.commandOutputAt(0), std::nullopt);
+    EXPECT_EQ(none.t.firstCommandOutputIn(0, 9), std::nullopt);
+}
+
 TEST(Terminal, SemanticRegionsWhoseRowsAResizeDropsAreGone)
 {
     Term t(10, 3, 1);

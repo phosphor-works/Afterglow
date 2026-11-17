@@ -32,7 +32,8 @@ bool paneAction(Action action)
     switch (action) {
     case Action::Copy: case Action::Paste: case Action::SelectAll: case Action::Search:
     case Action::ClearScreen: case Action::ResetTerminal: case Action::RenamePane: case Action::NotifyOnFinish:
-    case Action::CopyMode: case Action::ShowHints: case Action::ShowLastOutput: case Action::UrlsOpen:
+    case Action::CopyMode: case Action::ShowHints: case Action::ShowLastOutput: case Action::ShowFirstOutputOnScreen:
+    case Action::ShowLastVisitedOutput: case Action::UrlsOpen:
     case Action::UrlsCopy: case Action::UnicodeInput:
     case Action::ScrollPageUp: case Action::ScrollPageDown: case Action::ScrollTop: case Action::ScrollBottom:
     case Action::JumpPromptUp: case Action::JumpPromptDown:

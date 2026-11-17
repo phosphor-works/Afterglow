@@ -304,8 +304,9 @@ bool chromeFocusReady(ChromeLayer* layer) {
         && focus != layer->rootItem();
 }
 // Mouse input at @p at, window logical pixels, as the compositor sends it.
-void mouseAt(QWindow* window, QEvent::Type type, const QPointF& at, Qt::MouseButton button, Qt::MouseButtons held) {
-    QMouseEvent event(type, at, window->mapToGlobal(at), button, held, Qt::NoModifier);
+void mouseAt(QWindow* window, QEvent::Type type, const QPointF& at, Qt::MouseButton button, Qt::MouseButtons held,
+             Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    QMouseEvent event(type, at, window->mapToGlobal(at), button, held, modifiers);
     QCoreApplication::sendEvent(window, &event);
 }
 void pressLeft(QWindow* window, const QPointF& at) { mouseAt(window, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton); }
@@ -1888,7 +1889,8 @@ TEST_F(NativeWindow, AccessiblePaneRunsThePaneActionsOfThePalette) {
     // The list is the one docs/DESKTOP.md gives.
     const QList<Action> paneActions{
         Action::Copy, Action::Paste, Action::SelectAll, Action::Search, Action::ClearScreen, Action::ResetTerminal,
-        Action::RenamePane, Action::NotifyOnFinish, Action::ShowLastOutput, Action::CopyMode, Action::ShowHints,
+        Action::RenamePane, Action::NotifyOnFinish, Action::ShowLastOutput, Action::ShowFirstOutputOnScreen,
+        Action::ShowLastVisitedOutput, Action::CopyMode, Action::ShowHints,
         Action::UrlsOpen, Action::UrlsCopy, Action::UnicodeInput, Action::ScrollPageUp, Action::ScrollPageDown,
         Action::ScrollTop, Action::ScrollBottom, Action::JumpPromptUp, Action::JumpPromptDown, Action::SplitRight,
         Action::SplitDown, Action::SplitLeft, Action::SplitUp, Action::ClosePane, Action::TogglePaneZoom,
@@ -1899,7 +1901,7 @@ TEST_F(NativeWindow, AccessiblePaneRunsThePaneActionsOfThePalette) {
     for (Action action : Keybinds::allActions())
         if (paneActions.contains(action)) expected.append(Keybinds::title(action));
     expected.append(QAccessibleActionInterface::setFocusAction());
-    EXPECT_EQ(expected.size(), 44);
+    EXPECT_EQ(expected.size(), 46);
     EXPECT_EQ(actions->actionNames(), expected);
     EXPECT_EQ(actions->keyBindingsForAction(QStringLiteral("Copy")), QStringList{QStringLiteral("Ctrl+Shift+C")});
     // Titles only: the token of a pane action, and the title of an action
@@ -10825,6 +10827,69 @@ TEST_F(NativeWindow, AProjectSavesTheTabOfTheLastOutputAsAShell) {
             << QJsonDocument(saved).toJson(QJsonDocument::Compact).toStdString();
     }
     EXPECT_TRUE(found);
+}
+
+TEST_F(NativeWindow, CommandOutputsOpenInThePagerAndACtrlShiftRightClickPicksOne) {
+    // As kitty's show_first_command_output_on_screen,
+    // show_last_visited_command_output and mouse_show_command_output.
+    restartApplication(QStringLiteral("pager.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("pager"), QStringLiteral("/usr/bin/tail -f")}}}}),
+        catWithoutEcho());
+    if (HasFatalFailure()) return;
+    Pane* pane = window->focusedPane();
+    // Rows 0 and 1: "$ one" and its output. Rows 2 and 3: "$ two" and its output.
+    feedFromReader(pane, "\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\one\x1b]133;C\x1b\\\r\nfirst-out\r\n\x1b]133;D;0\x1b\\"
+                         "\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\two\x1b]133;C\x1b\\\r\nsecond-out\r\n\x1b]133;D;0\x1b\\");
+    ASSERT_TRUE(settleQueued());
+    const auto pagerShows = [&](const QString& text, const QString& notText) {
+        Pane* pager = window->focusedPane();
+        if (pager == pane) return false;
+        return waitFor([&] { return screenOf(pager).contains(text); }) && !screenOf(pager).contains(notText);
+    };
+    // Nothing visited yet: a notice, and no tab.
+    ASSERT_TRUE(window->runAction(pane, Action::ShowLastVisitedOutput));
+    EXPECT_EQ(window->tabs().size(), 1);
+    ASSERT_TRUE(window->runAction(pane, Action::ShowFirstOutputOnScreen));
+    ASSERT_EQ(window->tabs().size(), 2);
+    EXPECT_TRUE(pagerShows(QStringLiteral("first-out"), QStringLiteral("second-out"))) << screenOf(window->focusedPane()).toStdString();
+
+    // Ctrl+Shift+right-click on the second output: that output, which is
+    // then the last visited one. A right-click without Shift is no such click.
+    ASSERT_TRUE(window->runAction(pane, Action::ScrollBottom));
+    ASSERT_EQ(window->focusedPane(), pane);
+    const QPointF second = cellCentre(window, pane, 2, 3);
+    mouseAt(window, QEvent::MouseButtonPress, second, Qt::RightButton, Qt::RightButton, Qt::ControlModifier | Qt::ShiftModifier);
+    mouseAt(window, QEvent::MouseButtonRelease, second, Qt::RightButton, Qt::NoButton, Qt::ControlModifier | Qt::ShiftModifier);
+    ASSERT_TRUE(settleQueued());
+    ASSERT_EQ(window->tabs().size(), 3);
+    EXPECT_TRUE(pagerShows(QStringLiteral("second-out"), QStringLiteral("first-out"))) << screenOf(window->focusedPane()).toStdString();
+    ASSERT_TRUE(window->runAction(pane, Action::ShowLastVisitedOutput));
+    ASSERT_EQ(window->tabs().size(), 4);
+    EXPECT_TRUE(pagerShows(QStringLiteral("second-out"), QStringLiteral("first-out"))) << screenOf(window->focusedPane()).toStdString();
+
+    // A prompt jump visits the command at the top of the view. A third
+    // command's long output puts the others in the history, where the
+    // jumps go.
+    std::string third = "\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\three\x1b]133;C\x1b\\\r\n";
+    for (int i = 0; i < 200; ++i) third += "third-out\r\n";
+    feedFromReader(pane, third + "\x1b]133;D;0\x1b\\");
+    ASSERT_TRUE(settleQueued());
+    ASSERT_TRUE(window->runAction(pane, Action::ScrollBottom));
+    int jumps = 0;
+    while (pane->jumpToPrompt(-1)) {
+        ++jumps;
+        EXPECT_EQ(pane->lastVisitedOutput(), pane->commandOutputAtRow(0)) << jumps;
+    }
+    EXPECT_GE(jumps, 2);
+    ASSERT_TRUE(window->runAction(pane, Action::ShowLastVisitedOutput));
+    ASSERT_EQ(window->tabs().size(), 5);
+    EXPECT_TRUE(pagerShows(QStringLiteral("first-out"), QStringLiteral("second-out"))) << screenOf(window->focusedPane()).toStdString();
+
+    // The select choice: the output's text, without its command line.
+    const auto output = pane->lastVisitedOutput();
+    ASSERT_TRUE(output);
+    ASSERT_TRUE(pane->selectOutput(*output));
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("first-out"));
 }
 
 TEST_F(NativeWindow, AWindowWhoseJobNamesNothingClosesWithNoQuestion) {

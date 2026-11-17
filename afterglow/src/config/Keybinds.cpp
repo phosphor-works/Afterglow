@@ -25,6 +25,8 @@ bool Keybinds::isStructural(Action action)
     case Action::ClosePane:
     case Action::NewWindow:
     case Action::ShowLastOutput:
+    case Action::ShowFirstOutputOnScreen:
+    case Action::ShowLastVisitedOutput:
     case Action::NewTab:
     case Action::CloseTab:
     case Action::CloseWindow:
@@ -87,6 +89,8 @@ const ActionInfo Actions[] = {
     {Action::PreviousTab, "previous_tab", "Previous Tab", {"Ctrl+Shift+Tab", "Ctrl+PgUp"}},
     {Action::ShowHints, "show_hints", "Select Text or File Reference", {"Ctrl+Shift+H"}},
     {Action::ShowLastOutput, "show_last_output", "View Last Command Output in Pager", {}},
+    {Action::ShowFirstOutputOnScreen, "show_first_output_on_screen", "View First Command Output on Screen in Pager", {}},
+    {Action::ShowLastVisitedOutput, "show_last_visited_output", "View Last Visited Command Output in Pager", {}},
     {Action::CopyMode, "copy_mode", "Keyboard Copy Mode", {"Ctrl+Shift+Space"}},
     {Action::Copy, "copy", "Copy", {"Ctrl+Shift+C"}},
     {Action::Paste, "paste", "Paste", {"Ctrl+Shift+V"}},

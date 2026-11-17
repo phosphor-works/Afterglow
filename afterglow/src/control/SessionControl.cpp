@@ -91,6 +91,8 @@ bool reachesThisComputer(Action action)
     case Action::Paste:
     case Action::SelectAll:
     case Action::ShowLastOutput:
+    case Action::ShowFirstOutputOnScreen:
+    case Action::ShowLastVisitedOutput:
     case Action::OpenConfig:
     case Action::ReloadConfig:
     case Action::UsePackageShaders:

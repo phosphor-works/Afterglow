@@ -1038,7 +1038,7 @@ TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
         "Terminal": {"cursorBlinkInterval": 20, "scrollOnOutput": true, "scrollOnInput": false,
                      "ambiguousWide": true, "bellSound": " default "},
         "Window": {"balancePadding": true},
-        "Mouse": {"rightClick": "copy-or-paste", "middleClick": "clipboard"},
+        "Mouse": {"rightClick": "copy-or-paste", "middleClick": "clipboard", "commandOutputClick": "select"},
         "Links": {"detectUrls": false, "openWith": "firefox --new-tab", "modifier": "none"}
     })");
     SettingsStore store(config);
@@ -1058,6 +1058,7 @@ TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
     EXPECT_TRUE(s.window.balancePadding);
     EXPECT_EQ(s.mouse.rightClick, MouseSettings::RightClick::CopyOrPaste);
     EXPECT_EQ(s.mouse.middleClick, MouseSettings::MiddleClick::Clipboard);
+    EXPECT_EQ(s.mouse.commandOutputClick, MouseSettings::CommandOutputClick::Select);
     EXPECT_FALSE(s.links.detectUrls);
     EXPECT_EQ(s.links.openWith, QStringLiteral("firefox --new-tab"));
     EXPECT_EQ(s.links.modifier, Qt::KeyboardModifiers(Qt::NoModifier));
@@ -1118,10 +1119,21 @@ TEST_F(ConfigTest, AudioDefaultsAndOverrides)
     EXPECT_EQ(custom.settings().audio.inputSource, QStringLiteral("speakers.monitor"));
 }
 
+TEST_F(ConfigTest, CommandOutputClickDefaultsToThePagerAndFallsBack)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().mouse.commandOutputClick, MouseSettings::CommandOutputClick::Pager);
+    SettingsStore none(write(QStringLiteral("none.json"), R"({"Mouse": {"commandOutputClick": "none"}})"));
+    EXPECT_EQ(none.settings().mouse.commandOutputClick, MouseSettings::CommandOutputClick::None);
+    SettingsStore bad(write(QStringLiteral("bad.json"), R"({"Mouse": {"commandOutputClick": "open"}})"));
+    EXPECT_EQ(bad.settings().mouse.commandOutputClick, MouseSettings::CommandOutputClick::Pager);
+}
+
 TEST_F(ConfigTest, StructuralActionClassification)
 {
     for (Action action : {Action::SplitRight, Action::SplitLeft, Action::SplitDown, Action::SplitUp,
-                          Action::NewTab, Action::NewWindow, Action::ClosePane, Action::CloseTab, Action::CloseWindow}) {
+                          Action::NewTab, Action::NewWindow, Action::ClosePane, Action::CloseTab, Action::CloseWindow,
+                          Action::ShowLastOutput, Action::ShowFirstOutputOnScreen, Action::ShowLastVisitedOutput}) {
         EXPECT_TRUE(Keybinds::isStructural(action));
     }
     for (Action action : {Action::Copy, Action::NextTab, Action::MoveTabLeft, Action::RenamePane, Action::EqualizeSplits}) {

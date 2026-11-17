@@ -14,7 +14,8 @@ set -g __afterglow_actions swap_left swap_right swap_up swap_down rotate_panes_c
     detach_tab save_project switch_project end_script_key_mode cancel_overlay split_right split_down split_left \
     split_up rename_pane close_pane new_window new_tab close_tab rename_tab move_tab_left move_tab_right \
     goto_tab_1 goto_tab_2 goto_tab_3 goto_tab_4 goto_tab_5 goto_tab_6 goto_tab_7 goto_tab_8 goto_tab_9 \
-    close_window toggle_fullscreen next_tab previous_tab show_hints show_last_output copy_mode copy paste \
+    close_window toggle_fullscreen next_tab previous_tab show_hints show_last_output show_first_output_on_screen \
+    show_last_visited_output copy_mode copy paste \
     select_all clear_screen reset notify_on_finish focus_left focus_right focus_up focus_down equalize_splits \
     toggle_pane_zoom resize_left resize_right resize_up resize_down font_bigger font_smaller font_reset \
     scroll_page_up scroll_page_down scroll_top scroll_bottom jump_prompt_up jump_prompt_down search \

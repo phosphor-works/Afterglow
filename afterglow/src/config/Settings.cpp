@@ -123,6 +123,10 @@ const Choice<MouseSettings::RightClick> RightClickChoices[] = {{"menu", MouseSet
 const Choice<MouseSettings::MiddleClick> MiddleClickChoices[] = {{"primary", MouseSettings::MiddleClick::Primary},
                                                                  {"clipboard", MouseSettings::MiddleClick::Clipboard},
                                                                  {"none", MouseSettings::MiddleClick::None}};
+const Choice<MouseSettings::CommandOutputClick> CommandOutputClickChoices[] = {
+    {"pager", MouseSettings::CommandOutputClick::Pager},
+    {"select", MouseSettings::CommandOutputClick::Select},
+    {"none", MouseSettings::CommandOutputClick::None}};
 const Choice<Qt::KeyboardModifiers> ModifierChoices[] = {{"ctrl", Qt::ControlModifier},
                                                          {"shift", Qt::ShiftModifier},
                                                          {"alt", Qt::AltModifier},
@@ -695,6 +699,10 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("clickMovesCursor"), d.mouse.clickMovesCursor, QMetaType::Bool,
          QStringLiteral("Move the cursor of a shell to a click on its command line. It works in a shell with shell "
                         "integration, which marks where its prompt starts.")},
+        enumKey(QStringLiteral("commandOutputClick"), CommandOutputClickChoices, d.mouse.commandOutputClick,
+                QStringLiteral("What Ctrl+Shift+right-click on a command does, in a shell with shell integration. The "
+                               "pager value opens the output of the command in Terminal.pager, in a new tab. The select "
+                               "value selects its output. The none value makes it a plain right click.")),
     };
     schema.groups[LinksGroup] = {
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,
@@ -1951,6 +1959,8 @@ Settings SettingsStore::read()
     s.mouse.touchSelectHold = st.read<int>(MouseGroup, QStringLiteral("touchSelectHold"));
     s.mouse.dragSelection = st.read<bool>(MouseGroup, QStringLiteral("dragSelection"));
     s.mouse.clickMovesCursor = st.read<bool>(MouseGroup, QStringLiteral("clickMovesCursor"));
+    s.mouse.commandOutputClick = readEnum(st, MouseGroup, QStringLiteral("commandOutputClick"), CommandOutputClickChoices,
+                                          s.mouse.commandOutputClick);
 
     // Links
     s.links.detectUrls = st.read<bool>(LinksGroup, QStringLiteral("detectUrls"));

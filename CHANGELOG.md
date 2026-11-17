@@ -127,6 +127,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Search with PCRE2 regular expressions, across soft-wrapped lines.
 - Keyboard selection in character, line and rectangle modes.
 - With `Mouse.dragSelection` on (off by default, as in Kitty), selected text drags to another pane or another desktop application.
+- The output of a command in the pager: the last one, the first one on the screen, the last one that a prompt jump went to, and the one that you Ctrl+Shift+right-click (`Mouse.commandOutputClick`, which can also select it). Scripts read the same outputs with `read_text`.
 - Text hints that copy, open or run commands on regular-expression matches, and URL hints, labeled from `Hints.alphabet`.
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.
 - Keybindings with multi-key sequences, a leader key and named key tables.

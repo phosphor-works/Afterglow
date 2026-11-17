@@ -29,7 +29,7 @@ Its actions are the command palette actions that act on that pane or start from 
 | Group | Pane actions |
 | --- | --- |
 | Text | Copy, Paste, Select All, Search, Keyboard Copy Mode, Select Text or File Reference, Open a URL on Screen, Copy a URL on Screen, Insert Unicode Character |
-| Terminal | Clear Screen and Scrollback, Reset Terminal, Change Pane Title, Notify When the Next Command Finishes, View Last Command Output in Pager |
+| Terminal | Clear Screen and Scrollback, Reset Terminal, Change Pane Title, Notify When the Next Command Finishes, View Last Command Output in Pager, View First Command Output on Screen in Pager, View Last Visited Command Output in Pager |
 | Scroll | Scroll Page Up, Scroll Page Down, Scroll to Top, Scroll to Bottom, Jump to Previous Prompt, Jump to Next Prompt |
 | Layout | Split Right, Split Down, Split Left, Split Up, Resize Pane Left, Resize Pane Right, Resize Pane Up, Resize Pane Down, Swap Pane Left, Swap Pane Right, Swap Pane Above, Swap Pane Below, Focus Pane Left, Focus Pane Right, Focus Pane Above, Focus Pane Below, Close Pane, Toggle Pane Zoom |
 | Move and open | Move Pane to New Tab, Move Pane to New Window, New Tab, New Window |

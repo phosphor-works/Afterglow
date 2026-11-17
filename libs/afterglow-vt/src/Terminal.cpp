@@ -4650,6 +4650,48 @@ std::optional<std::string> Terminal::semanticRegionText(std::uint64_t id, std::s
     return std::nullopt;
 }
 
+std::optional<std::uint64_t> Terminal::commandOutputAt(std::uint64_t row) const
+{
+    const auto regions = semanticRegions();
+    // The commands in their order: each from its first region to the first
+    // region of the next, whose rows it holds.
+    std::optional<std::uint64_t> output;
+    std::uint64_t first = 0;
+    bool open = false;
+    for (std::size_t i = 0; i <= regions.size(); ++i) {
+        const bool next = i == regions.size()
+            || (open && (regions[i].kind == SemanticZoneKind::Prompt || (regions[i].kind == SemanticZoneKind::Output && output)));
+        if (next && open) {
+            const std::uint64_t end = i == regions.size() ? regions[i - 1].end.row : regions[i].start.row;
+            // A command's last row can be the next one's first: the next
+            // one holds it, unless this is the last command.
+            if (row >= first && (row < end || (i == regions.size() && row <= end))) return output;
+            open = false;
+            output.reset();
+        }
+        if (i == regions.size()) break;
+        if (!open) {
+            open = true;
+            first = regions[i].start.row;
+        }
+        if (regions[i].kind == SemanticZoneKind::Output && !output) output = regions[i].id;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::uint64_t> Terminal::firstCommandOutputIn(std::uint64_t top, std::uint64_t bottom) const
+{
+    for (const auto& region : semanticRegions()) {
+        // An output that ends at the start of a row (D after the last line
+        // feed) has nothing on that row.
+        const std::uint64_t last = region.end.col == 0 && region.end.row > region.start.row ? region.end.row - 1 : region.end.row;
+        if (region.kind == SemanticZoneKind::Output && region.available && region.start.row <= bottom && last >= top) {
+            return region.id;
+        }
+    }
+    return std::nullopt;
+}
+
 std::string Terminal::promptClickInput(int col, int row) const
 {
     const Screen& screen = *m_active;

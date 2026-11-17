@@ -89,6 +89,8 @@ _afterglow_actions() {
         'previous_tab:previous tab'
         'show_hints:select text or file reference'
         'show_last_output:view last command output in pager'
+        'show_first_output_on_screen:view first command output on screen in pager'
+        'show_last_visited_output:view last visited command output in pager'
         'copy_mode:keyboard copy mode'
         'copy:copy'
         'paste:paste'

@@ -756,6 +756,7 @@ bool Pane::jumpToPrompt(int direction)
         for (std::size_t abs = top; abs-- > 0;) {
             if (scr.absoluteRow(abs).promptStart) {
                 m_terminal.scrollViewport(long(top) - long(abs));
+                if (const auto output = m_terminal.commandOutputAt(scr.rowsDropped() + abs)) m_lastVisitedOutput = output;
                 return true;
             }
         }
@@ -768,10 +769,75 @@ bool Pane::jumpToPrompt(int direction)
             const long target = std::min<long>(long(abs), long(scr.historySize()));
             if (target == long(top)) return false;
             m_terminal.scrollViewport(long(top) - target);
+            if (const auto output = m_terminal.commandOutputAt(scr.rowsDropped() + abs)) m_lastVisitedOutput = output;
             return true;
         }
     }
     return false;
+}
+
+std::optional<std::uint64_t> Pane::commandOutputAtRow(int row) const
+{
+    // Whether a region is there depends on the rows that came.
+    refreshSession();
+    std::lock_guard lock(m_mutex);
+    const AfterglowVt::Screen& scr = m_terminal.screen();
+    if (m_terminal.modes().altScreen || row < 0 || row >= scr.rows()) return std::nullopt;
+    return m_terminal.commandOutputAt(scr.rowsDropped() + scr.viewportTop() + std::uint64_t(row));
+}
+
+std::optional<std::uint64_t> Pane::firstOutputOnScreen() const
+{
+    refreshSession();
+    std::lock_guard lock(m_mutex);
+    const AfterglowVt::Screen& scr = m_terminal.screen();
+    if (m_terminal.modes().altScreen) return std::nullopt;
+    const std::uint64_t top = scr.rowsDropped() + scr.viewportTop();
+    return m_terminal.firstCommandOutputIn(top, top + std::uint64_t(std::max(1, scr.rows())) - 1);
+}
+
+std::optional<std::uint64_t> Pane::lastVisitedOutput() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_lastVisitedOutput;
+}
+
+void Pane::setLastVisitedOutput(std::uint64_t id)
+{
+    std::lock_guard lock(m_mutex);
+    m_lastVisitedOutput = id;
+}
+
+bool Pane::selectOutput(std::uint64_t id)
+{
+    refreshSession();
+    AfterglowVt::SelectionPoint first;
+    AfterglowVt::SelectionPoint last;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_terminal.modes().altScreen) return false;
+        const auto regions = m_terminal.semanticRegions();
+        const auto region = std::find_if(regions.begin(), regions.end(), [&](const auto& r) { return r.id == id; });
+        if (region == regions.end() || !region->available || region->startTrimmed) return false;
+        const int cols = m_terminal.screen().cols();
+        first = {region->start.row, region->start.col};
+        // C comes where the command line ends: the output starts on the row
+        // after it.
+        if (first.col > 0 && region->end.row > first.row) first = {first.row + 1, 0};
+        // The end is the cell before D, which a last line feed puts at the
+        // start of a row.
+        if (region->end.col > 0) {
+            last = {region->end.row, region->end.col - 1};
+        } else if (region->end.row > first.row) {
+            last = {region->end.row - 1, cols - 1};
+        } else {
+            return false;
+        }
+        if (last.row < first.row || (last.row == first.row && last.col < first.col)) return false;
+    }
+    startSelection(first, AfterglowVt::SelectionMode::Normal, true);
+    extendSelection(last);
+    return true;
 }
 
 QString Pane::title() const

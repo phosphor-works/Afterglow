@@ -75,6 +75,8 @@ enum class Action {
     ResizeDown,
     CopyMode,
     ShowLastOutput,
+    ShowFirstOutputOnScreen,
+    ShowLastVisitedOutput,
     ShowHints,
     SwapLeft, SwapRight, SwapUp, SwapDown,
     RotatePanesClockwise, RotatePanesCounterclockwise, PaneOverview, UsePackageShaders,

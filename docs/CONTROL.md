@@ -125,7 +125,7 @@ These settings are separate from [script text permissions](SCRIPTING.md#text-and
 | --- | --- |
 | `getText` | Fails with an error. |
 | `screenshot` | Fails with the code `denied`, also for a pane that does not exist. Only a pane ID that is not a whole number from 0 to 4294967295, or an unknown scope, fails first, with `CALL_FAILED`. A picture shows the text of the pane, and more. See [screenshots](#screenshots). |
-| `runAction` with `copy`, `paste`, `select_all` or `show_last_output` | Fails with an error. These actions move pane text to the clipboard, into another pane or into a pager. |
+| `runAction` with `copy`, `paste`, `select_all`, `show_last_output`, `show_first_output_on_screen` or `show_last_visited_output` | Fails with an error. These actions move pane text to the clipboard, into another pane or into a pager. |
 | The `command` field of `listPanes` | Empty. |
 | The command in `commandStarted` and `commandFinished` | Empty. |
 | The value in `userVarChanged` | Empty, also for a value that waited while the setting changed. |

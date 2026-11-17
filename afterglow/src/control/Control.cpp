@@ -509,12 +509,21 @@ QString Control::readTextBounded(quint32 id, const QString& scope, int limit, QV
         result = pane->readSelection(std::size_t(limit));
         return {};
     }
+    // A command's output region, as kitty's first_cmd_output_on_screen and
+    // last_visited_cmd_output: unavailable when there is none.
+    if (scope == QLatin1String("first-output-on-screen") || scope == QLatin1String("last-visited-output")) {
+        const auto region = scope == QLatin1String("first-output-on-screen") ? pane->firstOutputOnScreen() : pane->lastVisitedOutput();
+        result = region ? pane->readRegion(*region, std::size_t(limit))
+                        : QVariantMap{{QStringLiteral("text"), QString()}, {QStringLiteral("available"), false},
+                                      {QStringLiteral("truncated"), false}};
+        return {};
+    }
     using Scope = AfterglowVt::Terminal::TextScope;
     Scope kind;
     if (scope == QLatin1String("screen")) kind = Scope::Screen;
     else if (scope == QLatin1String("scrollback")) kind = Scope::All;
     else if (scope == QLatin1String("last-output")) kind = Scope::LastOutput;
-    else return QStringLiteral("text scope must be screen, scrollback, last-output or selection");
+    else return QStringLiteral("text scope must be screen, scrollback, last-output, first-output-on-screen, last-visited-output or selection");
     result = pane->readText(kind, std::size_t(limit));
     return {};
 }
@@ -899,7 +908,8 @@ QVariantMap Control::clientPaneMap(QVariantMap pane) const
 bool Control::readsPaneText(const QString& action)
 {
     return action == QLatin1String("copy") || action == QLatin1String("paste") || action == QLatin1String("select_all")
-        || action == QLatin1String("show_last_output");
+        || action == QLatin1String("show_last_output") || action == QLatin1String("show_first_output_on_screen")
+        || action == QLatin1String("show_last_visited_output");
 }
 
 QString Control::scopeName(TextScope scope)

@@ -282,7 +282,7 @@ declare afterglow: {
     semantic_regions: (pane: PaneRef) -> Effect,
     -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.
     read_region: (pane: PaneRef, region: string, max_bytes: number?) -> Effect,
-    read_text: (pane: PaneRef, scope: ("screen" | "scrollback" | "last-output" | "selection")?, max_bytes: number?) -> Effect,
+    read_text: (pane: PaneRef, scope: ("screen" | "scrollback" | "last-output" | "first-output-on-screen" | "last-visited-output" | "selection")?, max_bytes: number?) -> Effect,
     -- The script's own JSON object, of a package or of a single file by its id; writes use
     -- the revision returned by state_read. The only effects of on_unload, with log.
     state_read: () -> Effect,

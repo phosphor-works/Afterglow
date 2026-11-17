@@ -51,7 +51,9 @@ QVariantMap Pane::readRegion(std::uint64_t id, std::size_t limit) const
     refreshSession();
     std::lock_guard lock(m_mutex);
     bool truncated = false;
-    const auto text = m_terminal.semanticRegionText(id, std::min(limit, std::size_t(1024 * 1024)), &truncated);
+    // Scripts and control check the limit first (1 MiB); the pager of an
+    // output takes Terminal.lastOutputLimit.
+    const auto text = m_terminal.semanticRegionText(id, limit, &truncated);
     return {{QStringLiteral("text"), text ? QString::fromStdString(*text) : QString()},
         {QStringLiteral("available"), text.has_value()}, {QStringLiteral("truncated"), truncated}};
 }

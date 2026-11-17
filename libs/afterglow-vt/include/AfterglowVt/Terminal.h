@@ -387,6 +387,16 @@ public:
     std::vector<SemanticRegion> semanticRegions() const;
     std::optional<std::string> semanticRegionText(std::uint64_t id, std::size_t maxBytes = 1024 * 1024,
                                                   bool* truncated = nullptr) const;
+    /// The id of the output region of the command at @p row, a stable row
+    /// id of the primary screen: the command whose prompt, input or output
+    /// holds the row. A command runs from its prompt to the next prompt, or
+    /// to the next output where a shell marks no prompts. nullopt when no
+    /// command holds the row, or the command has no output.
+    std::optional<std::uint64_t> commandOutputAt(std::uint64_t row) const;
+    /// The id of the first output region that has a row from @p top to
+    /// @p bottom (stable row ids of the primary screen), as kitty's
+    /// first_cmd_output_on_screen.
+    std::optional<std::uint64_t> firstCommandOutputIn(std::uint64_t top, std::uint64_t bottom) const;
     /// True while the cursor is in a shell prompt or its input (OSC 133 A/B, before C).
     bool atShellPrompt() const noexcept { return m_semanticZone != SemanticZone::Output; }
     /// A resize kept the prompt's previous layout for the shell to repaint,

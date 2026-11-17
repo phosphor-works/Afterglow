@@ -86,6 +86,8 @@ A held key also runs these actions once:
 - `move_pane_to_window`
 - `detach_tab`
 - `show_last_output`
+- `show_first_output_on_screen`
+- `show_last_visited_output`
 - `open_config`
 - `reload_config`
 - `toggle_fullscreen`
@@ -217,8 +219,20 @@ A resize during capture cancels the search.
 
 ## Command output
 
-`show_last_output` opens marked command output in a new tab.
-It uses `Terminal.pager`, which defaults to `less -R`.
+Shell integration marks the prompt, the command and the output of each command (OSC 133).
+These actions open the output of a command in a new tab, as in Kitty:
+
+| Action | Output |
+| --- | --- |
+| `show_last_output` | The last command |
+| `show_first_output_on_screen` | The first command whose output shows in the pane |
+| `show_last_visited_output` | The last command that `jump_prompt_up`, `jump_prompt_down` or a Ctrl+Shift+right-click went to |
+
+They have no default keys.
+Press Ctrl+Shift and right-click a prompt, a command or its output to open the output of that command.
+`Mouse.commandOutputClick` changes this click: `select` selects the output, and `none` makes it a plain right-click.
+
+The actions use `Terminal.pager`, which defaults to `less -R`.
 `Terminal.lastOutputLimit` sets the output limit in KiB, from 1 to 65536. The default is 1024 (1 MiB).
 A notice identifies truncation.
 The pager reads a temporary file. Afterglow removes the file when the pane closes.

@@ -3579,6 +3579,7 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
                                               Action::SplitDown,        Action::SplitLeft,      Action::SplitUp,
                                               Action::ClosePane,        Action::CloseTab,       Action::MovePaneToTab,
                                               Action::MovePaneToWindow, Action::DetachTab,      Action::ShowLastOutput,
+                                              Action::ShowFirstOutputOnScreen, Action::ShowLastVisitedOutput,
                                               Action::OpenConfig,       Action::ReloadConfig,   Action::ToggleFullscreen,
                                               Action::TogglePaneZoom,   Action::NotifyOnFinish};
     const auto heldRepeat = [e](Action action) {
@@ -3648,6 +3649,83 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     if (script.isEmpty() || !scriptCommand(script)) return false;
     // Taken, but not run again for each repeat of a held key.
     if (!e->isAutoRepeat()) runScriptCommand(script, m_focused, QStringLiteral("key"));
+    return true;
+}
+
+bool TerminalWindow::showOutputInPager(Pane* pane, std::optional<std::uint64_t> region)
+{
+    // Handled from here on: a failure is a notification, not a key for the program.
+    const auto fail = [pane](const QString& title, const QString& body) {
+        NotificationCenter::instance().showNotice(pane, title, body);
+        return true;
+    };
+    // The pager would run on the host of the session, where the file of
+    // this computer is not.
+    if (m_session && m_session->remote()) {
+        return fail(tr("Could not show the output"),
+                    tr("Session %1 runs on another host, and a pane there cannot read a file of this computer.").arg(m_session->session()));
+    }
+    auto command = QProcess::splitCommand(m_settings.settings().pager);
+    if (command.isEmpty() || QStandardPaths::findExecutable(command.front()).isEmpty()) {
+        return fail(tr("No pager"), command.isEmpty() ? tr("Terminal.pager is empty.")
+                                                      : tr("The pager %1 was not found.").arg(command.front()));
+    }
+    const std::size_t limit = m_settings.settings().lastOutputLimit;
+    // The last output, or a command's output region: the first on the
+    // screen, the one last visited, or the one under the pointer.
+    const auto output = region ? pane->readRegion(*region, limit) : pane->readText(Terminal::TextScope::LastOutput, limit);
+    if (!region && pane->lastOutputArriving()) {
+        return fail(tr("No command output"), tr("The output of the command is still on its way from the session. Try again in a moment."));
+    }
+    if (!output.value(QStringLiteral("available")).toBool()) {
+        return fail(tr("No command output"), region ? tr("The output of the command is no longer in the history.")
+                                                    : tr("Shell integration has not recorded a command yet."));
+    }
+    auto file = std::make_unique<QTemporaryFile>();
+    const QByteArray bytes = output.value(QStringLiteral("text")).toString().toUtf8();
+    if (!file->open() || file->write(bytes) != bytes.size() || !file->flush()) {
+        return fail(tr("Could not show the output"), tr("The temporary file could not be written."));
+    }
+    if (output.value(QStringLiteral("truncated")).toBool()) {
+        file->write(QStringLiteral("\n[Afterglow: output limited to %1]\n").arg(QLocale::c().formattedDataSize(qint64(limit))).toUtf8());
+    }
+    const QString path = file->fileName();
+    file->close();
+    const QString pager = launchedProgramName(command);
+    if (m_session) {
+        // The pager runs under the daemon, and can outlive this window and
+        // Afterglow. A shell opens the file, removes it, and gives the
+        // pager the open file (/dev/fd/4): nothing is left whatever ends
+        // the pager. A trap could not do it: the end of a session hangs
+        // up only the shell, which runs no trap while it waits for the
+        // pager, and the shell gets SIGKILL soon after. The pager gets
+        // the file through a redirection of its own command, which every
+        // sh passes on (ksh closes what a bare exec opened). The path and
+        // the pager's words go as arguments, never into the script.
+        command = QStringList{QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                              QStringLiteral("exec 3<\"$1\"; rm -f -- \"$1\"; shift; exec \"$@\" /dev/fd/4 4<&3 3<&-"),
+                              QStringLiteral("sh"), path}
+            + command;
+    } else {
+        command << path;
+    }
+    QString error;
+    // A project saves the tab as a shell in its directory, not as a
+    // pager of a file that is gone. The daemon of a session does not
+    // keep the command either, and names the pager as the pane's job.
+    m_unsavedLaunch = pager;
+    Pane* created = newTab(focusedDirectory(), command, {}, &error);
+    m_unsavedLaunch.reset();
+    if (!created) return fail(tr("Could not show the output"), error);
+    created->setLaunch(created->launchDirectory(), {});
+    if (m_session) {
+        // The shell of the pane removes it once it is open.
+        file->setAutoRemove(false);
+    } else {
+        // The file goes with the pane, whose program ends with it.
+        file->setParent(created);
+        file.release();
+    }
     return true;
 }
 
@@ -3861,78 +3939,20 @@ bool TerminalWindow::performAction(Action action)
         if (m_overview.open || m_scriptKeyMode) return false;
         startHints();
         return true;
-    case Action::ShowLastOutput: {
+    case Action::ShowLastOutput:
+        return m_focused && showOutputInPager(m_focused, std::nullopt);
+    case Action::ShowFirstOutputOnScreen:
+    case Action::ShowLastVisitedOutput: {
         if (!m_focused) return false;
-        // Handled from here on: a failure is a notification, not a key for the program.
-        const auto fail = [this](const QString& title, const QString& body) {
-            NotificationCenter::instance().showNotice(m_focused, title, body);
+        const auto output = action == Action::ShowFirstOutputOnScreen ? m_focused->firstOutputOnScreen() : m_focused->lastVisitedOutput();
+        if (!output) {
+            NotificationCenter::instance().showNotice(m_focused, tr("No command output"),
+                action == Action::ShowFirstOutputOnScreen
+                    ? tr("No command output shows on the screen.")
+                    : tr("No command has been visited yet. Jump to a prompt, or press Ctrl+Shift and right-click the output of a command."));
             return true;
-        };
-        // The pager would run on the host of the session, where the file of
-        // this computer is not.
-        if (m_session && m_session->remote()) {
-            return fail(tr("Could not show the output"),
-                        tr("Session %1 runs on another host, and a pane there cannot read a file of this computer.").arg(m_session->session()));
         }
-        auto command = QProcess::splitCommand(m_settings.settings().pager);
-        if (command.isEmpty() || QStandardPaths::findExecutable(command.front()).isEmpty()) {
-            return fail(tr("No pager"), command.isEmpty() ? tr("Terminal.pager is empty.")
-                                                          : tr("The pager %1 was not found.").arg(command.front()));
-        }
-        const std::size_t limit = m_settings.settings().lastOutputLimit;
-        const auto output = m_focused->readText(Terminal::TextScope::LastOutput, limit);
-        if (m_focused->lastOutputArriving()) {
-            return fail(tr("No command output"), tr("The output of the command is still on its way from the session. Try again in a moment."));
-        }
-        if (!output.value(QStringLiteral("available")).toBool()) {
-            return fail(tr("No command output"), tr("Shell integration has not recorded a command yet."));
-        }
-        auto file = std::make_unique<QTemporaryFile>();
-        const QByteArray bytes = output.value(QStringLiteral("text")).toString().toUtf8();
-        if (!file->open() || file->write(bytes) != bytes.size() || !file->flush()) {
-            return fail(tr("Could not show the output"), tr("The temporary file could not be written."));
-        }
-        if (output.value(QStringLiteral("truncated")).toBool()) {
-            file->write(QStringLiteral("\n[Afterglow: output limited to %1]\n").arg(QLocale::c().formattedDataSize(qint64(limit))).toUtf8());
-        }
-        const QString path = file->fileName();
-        file->close();
-        const QString pager = launchedProgramName(command);
-        if (m_session) {
-            // The pager runs under the daemon, and can outlive this window and
-            // Afterglow. A shell opens the file, removes it, and gives the
-            // pager the open file (/dev/fd/4): nothing is left whatever ends
-            // the pager. A trap could not do it: the end of a session hangs
-            // up only the shell, which runs no trap while it waits for the
-            // pager, and the shell gets SIGKILL soon after. The pager gets
-            // the file through a redirection of its own command, which every
-            // sh passes on (ksh closes what a bare exec opened). The path and
-            // the pager's words go as arguments, never into the script.
-            command = QStringList{QStringLiteral("/bin/sh"), QStringLiteral("-c"),
-                                  QStringLiteral("exec 3<\"$1\"; rm -f -- \"$1\"; shift; exec \"$@\" /dev/fd/4 4<&3 3<&-"),
-                                  QStringLiteral("sh"), path}
-                + command;
-        } else {
-            command << path;
-        }
-        QString error;
-        // A project saves the tab as a shell in its directory, not as a
-        // pager of a file that is gone. The daemon of a session does not
-        // keep the command either, and names the pager as the pane's job.
-        m_unsavedLaunch = pager;
-        Pane* created = newTab(focusedDirectory(), command, {}, &error);
-        m_unsavedLaunch.reset();
-        if (!created) return fail(tr("Could not show the output"), error);
-        created->setLaunch(created->launchDirectory(), {});
-        if (m_session) {
-            // The shell of the pane removes it once it is open.
-            file->setAutoRemove(false);
-        } else {
-            // The file goes with the pane, whose program ends with it.
-            file->setParent(created);
-            file.release();
-        }
-        return true;
+        return showOutputInPager(m_focused, output);
     }
     case Action::CopyMode:
         if (!m_focused) return false;
@@ -6318,6 +6338,22 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
             paste(mouse.middleClick == MouseSettings::MiddleClick::Clipboard ? QClipboard::Clipboard : QClipboard::Selection);
         }
         return;
+    }
+    // Ctrl+Shift+right-click on a command: its output in the pager, or
+    // selected (Mouse.commandOutputClick), as kitty's
+    // mouse_show_command_output. Elsewhere it is a right-click.
+    constexpr Qt::KeyboardModifiers chordModifiers = Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier | Qt::MetaModifier;
+    if (e->button() == Qt::RightButton && p && (e->modifiers() & chordModifiers) == (Qt::ControlModifier | Qt::ShiftModifier)
+        && mouse.commandOutputClick != MouseSettings::CommandOutputClick::None) {
+        if (const auto output = target->commandOutputAtRow(cellAt(target, e->position()).y())) {
+            target->setLastVisitedOutput(*output);
+            if (mouse.commandOutputClick == MouseSettings::CommandOutputClick::Pager) {
+                showOutputInPager(target, output);
+            } else if (target->selectOutput(*output)) {
+                scheduleRender();
+            }
+            return;
+        }
     }
     if (e->button() == Qt::RightButton) {
         switch (mouse.rightClick) {

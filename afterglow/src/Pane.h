@@ -372,8 +372,24 @@ public:
     QList<PaneStatusRecord> status() const;
 
     /// Scrolls to the previous (@p direction < 0) or next shell prompt.
-    /// Returns false when there is none that way.
+    /// Returns false when there is none that way. The output of the
+    /// command there becomes the last visited output.
     bool jumpToPrompt(int direction);
+
+    // Command outputs (GUI thread): ids of OSC 133 output regions of the
+    // primary screen, which readRegion() reads. None on the alternate screen.
+    /// The output of the command at row @p row of the viewport.
+    std::optional<std::uint64_t> commandOutputAtRow(int row) const;
+    /// The first output that shows in the viewport (kitty's
+    /// first_cmd_output_on_screen).
+    std::optional<std::uint64_t> firstOutputOnScreen() const;
+    /// The output of the last command that a prompt jump or a click on its
+    /// output went to (kitty's last_visited_cmd_output), while it lasts.
+    std::optional<std::uint64_t> lastVisitedOutput() const;
+    void setLastVisitedOutput(std::uint64_t id);
+    /// Selects the text of output region @p id. False when it is gone or
+    /// empty.
+    bool selectOutput(std::uint64_t id);
 
     // Selection (GUI thread). Points are stable row ids (Screen::rowsDropped()
     // plus the row's index in history and screen); selectionPointAt turns a
@@ -699,6 +715,7 @@ private:
     /// selectionPointAt() with m_mutex held.
     AfterglowVt::SelectionPoint pointAt(int col, int row) const;
     std::uint64_t m_selectionSerial = 0;
+    std::optional<std::uint64_t> m_lastVisitedOutput; ///< under m_mutex
 
     struct SearchJob {
         AfterglowVt::TextSnapshot text;

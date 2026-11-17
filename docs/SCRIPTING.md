@@ -1193,8 +1193,18 @@ return afterglow.split(ev.pane, "left", {"fish"}, {
 
 ## Text and semantic regions
 
-`read_text` accepts `screen`, `scrollback`, `last-output` and `selection`.
-The default scope is `last-output`.
+`read_text` accepts these scopes:
+
+| Scope | Text |
+| --- | --- |
+| `screen` | The rows that show |
+| `scrollback` | The history and the rows that show |
+| `last-output` | The output of the last command (the default) |
+| `first-output-on-screen` | The output of the first command whose output shows |
+| `last-visited-output` | The output of the last command that a prompt jump or a Ctrl+Shift+right-click went to |
+| `selection` | The selection |
+
+The output scopes need shell integration (OSC 133).
 Results contain `text`, `available` and `truncated`.
 `max_bytes` limits UTF-8 output to 1 to 1,048,576 bytes (1 MiB). The default is 65,536 bytes.
 Another value is refused with `invalid_effect`.
@@ -1227,7 +1237,7 @@ Unknown or fully discarded IDs are unavailable.
 Reset does not reuse IDs. Retained positions follow text reflow.
 
 Set `Scripts.allowReadText=false` to deny these queries.
-While it is `false`, `afterglow.action` also fails for `copy`, `paste`, `select_all` and `show_last_output`.
+While it is `false`, `afterglow.action` also fails for `copy`, `paste`, `select_all`, `show_last_output`, `show_first_output_on_screen` and `show_last_visited_output`.
 It controls terminal queries, not operating-system file or process access.
 A command run can have a client: `aglow run`, or a `SCRIPT.COMMAND` call of the `commands` target.
 In the handler of such a run, these queries also need `Control.allowReadText`.
@@ -1287,7 +1297,7 @@ The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) give the s
 | `afterglow.pulse` | `(pane: PaneRef, effect: ("portal" \| "flash" \| "shake" \| string \| number), options: { duration_ms: number?, color: number? }?) -> Effect` |
 | `afterglow.semantic_regions` | `(pane: PaneRef) -> Effect` |
 | `afterglow.read_region` | `(pane: PaneRef, region: string, max_bytes: number?) -> Effect` |
-| `afterglow.read_text` | `(pane: PaneRef, scope: ("screen" \| "scrollback" \| "last-output" \| "selection")?, max_bytes: number?) -> Effect` |
+| `afterglow.read_text` | `(pane: PaneRef, scope: ("screen" \| "scrollback" \| "last-output" \| "first-output-on-screen" \| "last-visited-output" \| "selection")?, max_bytes: number?) -> Effect` |
 | `afterglow.state_read` | `() -> Effect` |
 | `afterglow.state_write` | `(value: {[string]: any}, revision: number) -> Effect` |
 | `afterglow.open_directory` | `(cwd: string, layout: string?) -> Effect` |
