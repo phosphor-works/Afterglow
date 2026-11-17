@@ -1,6 +1,6 @@
 ---
 name: ag-build
-description: "Configure, build and test Afterglow, and decide when a build is green. Covers the build directories, the Phosphor libraries built from the PlasmaZones checkout, warnings, the CTest suite, and which tests need a GPU or a nested KWin. Use when: build, rebuild, run the tests, run ctest, does it compile, is it green, before committing."
+description: "Configure, build and test Afterglow, and decide when a build is green. Covers the build directories, the Phosphor libraries built from the pinned phosphor-libs commit, warnings, the CTest suite, and which tests need a GPU or a nested KWin. Use when: build, rebuild, run the tests, run ctest, does it compile, is it green, before committing."
 ---
 
 <!--
@@ -84,29 +84,26 @@ the user's `aglow-mux.service` or `afterglow-mux.service`, and never remove the 
 
 ## The Phosphor libraries
 
-`cmake/AfterglowPhosphor.cmake` compiles the Phosphor libraries from a PlasmaZones checkout. The default is
-`../PlasmaZones/phosphor-libs`. A build directory can name another checkout with `-DAFTERGLOW_PHOSPHOR_LIBS_DIR`.
-Each build directory keeps its own value, and the `grep` at the top of this skill shows it. The state of that
-checkout is part of the Afterglow build. When a build fails or changes for no reason in this repository, check the
-checkout first:
+`cmake/AfterglowPhosphor.cmake` compiles the Phosphor libraries from the phosphor-libs commit that
+`cmake/AfterglowDependencies.cmake` pins. CPM downloads that commit's archive into the CPM cache. A build directory
+can name a phosphor-libs checkout instead with `-DAFTERGLOW_PHOSPHOR_LIBS_DIR`, to build against a change before the
+pin moves. Each build directory keeps its own value, and the `grep` at the top of this skill shows it. When a build
+that names a checkout fails or changes for no reason in this repository, check the checkout first:
 
 | Condition | Check | Action |
 | --- | --- | --- |
-| The checkout is not on `main` or at the commit that `docs/BUILD.md` names, or has uncommitted work. | `git -C <checkout> status -sb` | Tell the user. |
-| The checkout does not contain the PlasmaZones commit that `docs/BUILD.md` names. | `git -C <checkout> merge-base --is-ancestor <commit> HEAD` | Tell the user which commit the build needs. |
-| The checkout contains that commit, and the build fails in a Phosphor call. | Compare the call with the Phosphor header in the checkout. | If Afterglow calls a newer API, name its commit in `docs/BUILD.md` in the same change. Tell the user that the checkout needs it. If PlasmaZones changed the API after the commit, tell the user. |
+| The checkout is not at the pinned commit, or has uncommitted work. | `git -C <checkout> status -sb` and `git -C <checkout> rev-parse HEAD` | Tell the user. |
+| The build fails in a Phosphor call. | Compare the call with the Phosphor header in the tree that the build uses. | If Afterglow calls a newer API, move the pin to a phosphor-libs commit that has it, in the same change: VERSION, URL, FILE and SHA256 together, with the hash of the downloaded archive. Tell the user. |
 
-- Never edit a checkout that a build directory compiles from. Update one only with the user's approval. On a
-  clean `main`, use `git pull --ff-only`. On a detached checkout, use `git checkout <commit>`. A Phosphor change
-  goes through a PlasmaZones branch and pull request. Tell the user what Phosphor needs.
+- Never edit a checkout that a build directory compiles from. Update one only with the user's approval. A Phosphor
+  change goes through a phosphor-libs branch and pull request. Tell the user what Phosphor needs.
 - The renderer uses Qt private APIs. After a Qt update, rebuild everything in the capped scope:
   `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build --clean-first -j6`.
-- The pinned archives (Luau and valijson from `PhosphorDependencies.cmake` in PlasmaZones, zlib-ng, xxHash, libpng,
-  libjpeg-turbo and libwebp from `cmake/AfterglowDependencies.cmake`) download into the CPM cache. By default that is
-  `.cache/cpm` in the PlasmaZones checkout that the build uses, and Afterglow's own `.cache/cpm` when only
-  `PHOSPHOR_DEPS_ARCHIVES` is set (`docs/BUILD.md` has the order). A configure without network works once that cache
-  holds them. A build of `aglow` alone loads no PlasmaZones module, so its default cache is Afterglow's own
-  `.cache/cpm`.
+- The pinned archives (phosphor-libs, zlib-ng, xxHash, libpng, libjpeg-turbo and libwebp from
+  `cmake/AfterglowDependencies.cmake`, and Luau and valijson from `cmake/PhosphorDependencies.cmake` in the pinned
+  phosphor-libs tree) download into the CPM cache, `.cache/cpm` in this repository. A configure without network
+  works once that cache holds them, or with `-DAFTERGLOW_DEPS_ARCHIVES` naming a directory that
+  `cmake -DAFTERGLOW_DEPS_FETCH=<dir> -P cmake/AfterglowDependencies.cmake` filled.
 
 ## Build
 

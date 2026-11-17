@@ -302,9 +302,9 @@ install(FILES ${AFTERGLOW_LICENSE_TEXTS} DESTINATION ${CMAKE_INSTALL_DATADIR}/li
 # valijson; the phosphor rules that install them are skipped with the others
 # (cmake/AfterglowPhosphor.cmake).
 afterglow_install_bundled_notices(${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
-# A system Luau (PLASMAZONES_SYSTEM_LUAU) is a separate package with its own
+# A system Luau (PHOSPHOR_SYSTEM_LUAU) is a separate package with its own
 # notices, and phosphor-scripting fetches no archive for it.
-if(NOT PLASMAZONES_SYSTEM_LUAU)
+if(NOT PHOSPHOR_SYSTEM_LUAU)
     # phosphor_fetch_dependency(luau) sets luau_SOURCE_DIR in that library's scope.
     get_directory_property(AFTERGLOW_LUAU_SOURCE_DIR DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-scripting"
         DEFINITION luau_SOURCE_DIR)

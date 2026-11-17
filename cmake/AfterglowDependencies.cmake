@@ -1,10 +1,12 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-# The third-party sources that Afterglow builds into its own binaries. Each
-# archive is pinned by version, URL and SHA-256. This file is the only place
-# a pin lives. It works as cmake/PhosphorDependencies.cmake in PlasmaZones
-# does, which pins the archives of the Phosphor libraries.
+# The sources that Afterglow builds into its own binaries: the phosphor-libs
+# commit that it builds the Phosphor libraries from, and the third-party
+# libraries. Each archive is pinned by version, URL and SHA-256. This file is
+# the only place a pin lives. The phosphor-libs tree pins its own archives
+# (Luau, valijson) in its cmake/PhosphorDependencies.cmake, which works the
+# same way.
 #
 # The archives are built into the tree, not taken from the system, so that the
 # terminal and the static aglow use the same code, and so that aglow needs no
@@ -17,18 +19,20 @@
 #      extracted into the build tree. Nothing is downloaded and CPM is never
 #      loaded, so an offline packaging build takes this path.
 #   2. Otherwise CPM.cmake (pinned by hash) downloads the archive once into
-#      CPM_SOURCE_CACHE. When PlasmaZones' module has loaded CPM, that is its
-#      cache, .cache/cpm in the PlasmaZones checkout. Else it is .cache/cpm at
-#      this repository's root. The cache variable or the environment variable
-#      CPM_SOURCE_CACHE overrides both. A configure works offline once the
-#      cache holds the archive.
+#      CPM_SOURCE_CACHE, .cache/cpm at this repository's root. The cache
+#      variable or the environment variable CPM_SOURCE_CACHE overrides it. A
+#      configure works offline once the cache holds the archive. CPM's own
+#      override applies: -DCPM_<name>_SOURCE=<dir> uses <dir> in place of the
+#      archive.
 #
 # Script mode, for packagers:
 #
 #   cmake -DAFTERGLOW_DEPS_FETCH=<dir> -P cmake/AfterglowDependencies.cmake
 #
 # downloads every archive into <dir> under its FILE name and checks it, so
-# <dir> can be given as AFTERGLOW_DEPS_ARCHIVES. Each download also leaves an
+# <dir> can be given as AFTERGLOW_DEPS_ARCHIVES. It then downloads the archives
+# that the pinned phosphor-libs tree pins into the same <dir>, which can be
+# given as PHOSPHOR_DEPS_ARCHIVES too. Each download also leaves an
 # empty FILE.lock in <dir> (see _afterglow_download). AFTERGLOW_DEPS_ARCHIVES
 # reads only the archives, so the lock files need not be copied with them.
 #
@@ -38,7 +42,15 @@
 include_guard(GLOBAL)
 
 # ─── Pins ────────────────────────────────────────────────────────────────────
-set(AFTERGLOW_DEPS zlib-ng xxhash libpng libjpeg-turbo libwebp)
+set(AFTERGLOW_DEPS phosphor-libs zlib-ng xxhash libpng libjpeg-turbo libwebp)
+
+# The phosphor-libs commit (LGPL-2.1-or-later, phosphor-works/phosphor-libs)
+# that the Phosphor libraries are built from (cmake/AfterglowPhosphor.cmake).
+# A commit, not a release, so VERSION is the commit hash.
+set(AFTERGLOW_DEP_phosphor-libs_VERSION "c5d6ee8a24f803607b403f90b8625b94b8a25110")
+set(AFTERGLOW_DEP_phosphor-libs_URL "https://github.com/phosphor-works/phosphor-libs/archive/c5d6ee8a24f803607b403f90b8625b94b8a25110.tar.gz")
+set(AFTERGLOW_DEP_phosphor-libs_FILE "phosphor-libs-c5d6ee8a24f803607b403f90b8625b94b8a25110.tar.gz")
+set(AFTERGLOW_DEP_phosphor-libs_SHA256 "f072437c31f9b96e5ed43c32e55bc0e6e8c7ac7323262dbeaf871008c670e8e6")
 
 # zlib-ng (Zlib license), in its zlib-compatible build: o=z images, file
 # transfer compression, and the inflate of the bundled libpng. The hash
@@ -79,7 +91,8 @@ set(AFTERGLOW_DEP_libwebp_URL "https://storage.googleapis.com/downloads.webmproj
 set(AFTERGLOW_DEP_libwebp_FILE "libwebp-1.6.0.tar.gz")
 set(AFTERGLOW_DEP_libwebp_SHA256 "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564")
 
-# CPM.cmake itself, the same release that PlasmaZones pins.
+# CPM.cmake itself, the same release that phosphor-libs pins, so that the
+# phosphor-libs module uses this copy.
 set(AFTERGLOW_CPM_VERSION "0.43.2")
 set(AFTERGLOW_CPM_SHA256 "49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c544a2f232aa")
 
@@ -146,6 +159,20 @@ if(CMAKE_SCRIPT_MODE_FILE)
         endif()
         message(STATUS "${AFTERGLOW_DEP_${name}_FILE}: ok")
     endforeach()
+    # The archives that the pinned phosphor-libs tree pins, read from that tree,
+    # so that a phosphor-libs bump never leaves this list behind.
+    set(libs "${dir}/.phosphor-libs-${AFTERGLOW_DEP_phosphor-libs_VERSION}")
+    file(REMOVE_RECURSE "${libs}")
+    file(ARCHIVE_EXTRACT INPUT "${dir}/${AFTERGLOW_DEP_phosphor-libs_FILE}" DESTINATION "${libs}")
+    file(GLOB top LIST_DIRECTORIES true "${libs}/*")
+    execute_process(COMMAND "${CMAKE_COMMAND}" "-DPHOSPHOR_DEPS_FETCH=${dir}"
+                            -P "${top}/cmake/PhosphorDependencies.cmake"
+                    RESULT_VARIABLE rc)
+    file(REMOVE_RECURSE "${libs}")
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "Could not download the archives that phosphor-libs "
+                            "${AFTERGLOW_DEP_phosphor-libs_VERSION} pins")
+    endif()
     return()
 endif()
 
@@ -154,9 +181,9 @@ set(AFTERGLOW_DEPS_ARCHIVES "" CACHE PATH
     "Directory with the archives that cmake/AfterglowDependencies.cmake pins, for an offline build. Empty: download them with CPM")
 
 # CPM keeps part of its state in ordinary variables of the scope that includes
-# it, so it is loaded here, at the including scope, and not in a function. A
-# build with PlasmaZones' module has loaded it already. An offline build never
-# loads it, so it never reaches the network.
+# it, so it is loaded here, at the including scope, and not in a function. The
+# phosphor-libs module, included after this one, uses it again. An offline
+# build never loads it, so it never reaches the network.
 if(NOT AFTERGLOW_DEPS_ARCHIVES AND NOT COMMAND CPMAddPackage)
     if(NOT DEFINED CPM_SOURCE_CACHE AND NOT DEFINED ENV{CPM_SOURCE_CACHE})
         set(CPM_SOURCE_CACHE "${_AFTERGLOW_DEPS_ROOT}/.cache/cpm" CACHE PATH
