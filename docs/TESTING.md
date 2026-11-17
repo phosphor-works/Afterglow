@@ -54,7 +54,7 @@ When the tools are there and its own sshd cannot start, the test fails.
 | `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the image decoders that `aglow` and `aglow-mux` share, and the attach stream of `aglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
 | `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries (see [BUILD.md](BUILD.md#required-software)). Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests, the `RunBinaryTest.*` tests and the `sshd` test of `RemoteCommandsTest.*` report Skipped. So do the native tests `AglowRunInASessionPaneRunsTheCommandsOfItsWindow`, `AglowRunInASessionOfAnotherHostGetsOnlyRemoteCommands` and `AnSshSessionInASessionPaneRunsRemoteCommandsThroughTheDaemon`. |
 | `AFTERGLOW_AGLOW_ONLY` | `OFF` | Builds only `aglow` and `aglow-mux`, with no Qt (see [BUILD.md](BUILD.md#build-aglow-and-aglow-mux-alone)). The tests are then only those of the libraries that they link, of `aglow` and of `mux/`. The configuration stops when `AFTERGLOW_BUILD_TOOLS`, `AFTERGLOW_BUILD_FUZZERS`, `AFTERGLOW_BUILD_VTDIFF` or `AFTERGLOW_NATIVE_TESTS` is on. |
-| `AFTERGLOW_BUILD_MUX` | `ON` | Shows only with `AFTERGLOW_AGLOW_ONLY`. Builds `aglow-mux` and adds `afterglow_mux_tests` (`Mux.*`). Requires PCRE2 and the PlasmaZones checkout. When it is `OFF`, the build has no tests of `aglow-mux`, `afterglow-vt` or `afterglow-pty`. |
+| `AFTERGLOW_BUILD_MUX` | `ON` | Shows only with `AFTERGLOW_AGLOW_ONLY`. Builds `aglow-mux` and adds `afterglow_mux_tests` (`Mux.*`). Requires PCRE2 and the pinned phosphor-libs archive. When it is `OFF`, the build has no tests of `aglow-mux`, `afterglow-vt` or `afterglow-pty`. |
 | `AFTERGLOW_BUILD_VTDIFF` | `OFF` | Builds `afterglow_vtdiff`, which compares the terminal core with libghostty-vt. Requires libghostty-vt 1.0 in `CMAKE_PREFIX_PATH`. See [Differences with libghostty-vt](#differences-with-libghostty-vt). |
 
 With `AFTERGLOW_NATIVE_TESTS=ON`, run only the native suite:
@@ -70,11 +70,13 @@ It compiles at `-O1`, as the sanitizer documentation recommends. At `-O0` the te
 It turns off `-Wmaybe-uninitialized`, because GCC gives false warnings for instrumented code.
 Run the sanitizer build before a pull request that changes a parser, a protocol or the memory of a pane.
 
-1. Configure the build directory with the Phosphor checkout of `build` (see `AFTERGLOW_PHOSPHOR_LIBS_DIR` in `build/CMakeCache.txt`):
+1. Configure the build directory. When `build` uses a phosphor-libs checkout (see `AFTERGLOW_PHOSPHOR_LIBS_DIR` in `build/CMakeCache.txt`), give the same one:
 
    ```sh
-   cmake --preset debug -DAFTERGLOW_PHOSPHOR_LIBS_DIR=../PlasmaZones/phosphor-libs
+   cmake --preset debug -DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/phosphor-libs
    ```
+
+   Without the option, the build uses the pinned phosphor-libs commit.
 
 2. Build it with two jobs. Each sanitizer compile needs more memory than a normal compile:
 

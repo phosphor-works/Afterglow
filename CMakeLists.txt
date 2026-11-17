@@ -80,10 +80,10 @@ if(AFTERGLOW_AGLOW_ONLY)
             message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds only aglow and aglow-mux, not ${option}. Turn one of them off.")
         endif()
     endforeach()
+    include(cmake/AfterglowDependencies.cmake)
     if(AFTERGLOW_BUILD_MUX)
         include(cmake/AfterglowPhosphor.cmake)
     endif()
-    include(cmake/AfterglowDependencies.cmake)
     add_subdirectory(libs/afterglow-proto)
     add_subdirectory(libs/afterglow-image)
     add_subdirectory(tools/aglow)
@@ -115,13 +115,12 @@ set(CMAKE_INSTALL_RPATH "${AFTERGLOW_INSTALL_RPATH}")
 # phosphor libraries name variables `slots`); use Q_SIGNALS / Q_EMIT instead.
 add_compile_definitions(QT_NO_KEYWORDS)
 
-include(cmake/AfterglowPhosphor.cmake)
-# The pins of zlib-ng and xxHash (libs/afterglow-proto) and of the image
-# codecs (libs/afterglow-image), after the Phosphor module so that a CPM
-# which that module loaded is used again. Like it, this module is included
-# at the top scope: CPM keeps its state in the variables of the scope that
-# loads it.
+# The pins of phosphor-libs, zlib-ng and xxHash (libs/afterglow-proto) and of
+# the image codecs (libs/afterglow-image), and CPM. Included at the top scope:
+# CPM keeps its state in the variables of the scope that loads it. Before the
+# Phosphor module, which fetches the pinned phosphor-libs with it.
 include(cmake/AfterglowDependencies.cmake)
+include(cmake/AfterglowPhosphor.cmake)
 
 option(AFTERGLOW_BUILD_TOOLS "Build developer tools: benchmarks, afterglow_renderpng and the headless conformance host" OFF)
 option(AFTERGLOW_BUILD_AGLOW "Build aglow, the static client of the Kitty protocols and of script commands (no Qt). Without it, afterglow has no run, transfer, dnd, icat or clipboard command" ON)
