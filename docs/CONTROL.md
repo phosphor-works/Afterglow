@@ -127,6 +127,8 @@ These settings are separate from [script text permissions](SCRIPTING.md#text-and
 | `screenshot` | Fails with the code `denied`, also for a pane that does not exist. Only a pane ID that is not a whole number from 0 to 4294967295, or an unknown scope, fails first, with `CALL_FAILED`. A picture shows the text of the pane, and more. See [screenshots](#screenshots). |
 | `runAction` with `copy`, `paste`, `select_all`, `show_last_output`, `show_first_output_on_screen` or `show_last_visited_output` | Fails with an error. These actions move pane text to the clipboard, into another pane or into a pager. |
 | The `command` field of `listPanes` | Empty. |
+| The values in the `user_vars` field of `listPanes` | Empty. The names are sent. |
+| The `cmdline` of the `foreground` field of `listPanes` | Empty. The `pid` and the `cwd` are sent. |
 | The command in `commandStarted` and `commandFinished` | Empty. |
 | The value in `userVarChanged` | Empty, also for a value that waited while the setting changed. |
 | The result of an `overlay` call | Has no `stdout`, also when the setting changed while the program ran. `exit_code` and `truncated` are sent. `afterglow ctl overlay` writes nothing to standard output. |
@@ -278,6 +280,11 @@ Another number fails with `CALL_FAILED`.
 | `focus` | pane | None |
 | `close` | pane | None. The pane closes without a question, also when a program runs in it. |
 | `setTitle` | pane, title | None. An empty title gives the title back to the programs. |
+| `setTabTitle` | pane, title | None. Sets the title of the pane's tab. An empty title gives the title back to the focused pane of the tab. |
+| `focusNeighbour` | pane, direction | The pane to the `left`, `right`, `up` or `down` of the pane in its tab, which gets the focus. At the edge of the tab it fails with `no pane to the left of pane N`, and the focus stays. |
+| `resizePane` | pane, direction, cells | None. Moves a split edge of the pane by a number of cells from 1 to 10000 toward the direction, as the resize actions do with 2 cells, and as tmux's `resize-pane` does. That is the edge on that side of the pane, else the edge on the other side: `left` on the leftmost pane makes it narrower. The tab of the pane shows, and a zoom ends. Fails with `pane N has no edge that can move left` when the pane has no split edge across that direction, or when the edge is at its limit. |
+| `sendKeys` | pane, keys | None. Types the keys of a list of [key names](#key-names), as the pane's program reads typed keys. A name that names no key fails the call, and no key goes. |
+| `scroll` | pane, unit, amount | None. The unit is `lines` or `pages`, with an amount that scrolls down when it is positive and up when it is negative. `prompt` jumps to the prompt that many prompts below, or above with a negative amount. `top` and `bottom` go to the ends, with any amount. Fails while the pane shows a full-screen program, and for `prompt` when there is no prompt in that direction. |
 | `signal` | pane, channel, value | None. Channels are 0 to 7. |
 | `notify` | pane, title, body | None |
 | `runAction` | pane, action | None. Actions are keybind action names, or `script:ID.COMMAND`, which starts a [script command](#script-commands) with no arguments and returns before it ends. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. With `Mux.onClose` at `detach`, closing the last tab of a mux session asks nothing about the programs of the session. They keep running. The call returns before the answer. A keybind action fails while its window shows a prompt or a script dialog, so that it cannot change the answer. For `script:ID.COMMAND`, a pane of 0 is the focused pane. When no pane has the focus, the command runs with no pane. |
@@ -445,6 +452,12 @@ Thus take screenshots on a connection without subscriptions.
 | `rows` | Rows |
 | `focused` | True for the focused pane of the active window |
 | `context` | Where the shell runs when it is not local as you, such as `root` or `deploy@prod-1`. Empty otherwise. |
+| `at_prompt` | True while the cursor is in a shell prompt or its input (shell integration). False while a command runs, and without shell integration. |
+| `user_vars` | An object: the user variables that the program set with OSC 1337 `SetUserVar`, at most 256 |
+| `foreground` | The leader of the foreground process group of the pane: an object with `pid`, `cmdline` (a list of the arguments) and `cwd`. At the prompt it is the shell. `null` when it is not known, for example after the program exited. In a window, a pane of a mux session has `null`. With `afterglow ctl --session`, the daemon gives it. |
+| `neighbours` | An object with `left`, `right`, `up` and `down`: the pane beside the pane on that side in its tab, as `focusNeighbour` finds it. 0 at the edge. |
+
+`at_prompt`, `user_vars`, `foreground` and `neighbours` are only in the objects of `listPanes`.
 
 ## Events
 
@@ -852,6 +865,11 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | The directory of a run | 4096 UTF-16 units | `aglow run` exits with status 2 before it connects. A `run` call with a longer directory fails with `CALL_FAILED`. |
 | `run` calls that wait, on one connection | 256 | `run` fails with `CALL_FAILED`. |
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
+| `setTabTitle` title | 256 UTF-16 units | The title is cut. |
+| Keys of one `sendKeys` call | 4096 | The call fails, and no key goes. `afterglow ctl send-key` exits with status 2 before it connects. |
+| Cells of one `resizePane` call | 10000 | The call fails. `afterglow ctl resize` exits with status 2 before it connects. |
+| The amount of a `scroll` call | 1000000000 up or down | The call fails. `afterglow ctl scroll` exits with status 2 before it connects. |
+| The `cmdline` of `foreground` in `listPanes` | 4096 bytes of the process's arguments | The last argument that goes past the limit is cut, and the arguments after it are left out. |
 | `notify` title | 256 UTF-16 units | The title is cut. |
 | `notify` body | 2048 UTF-16 units | The body is cut. |
 | Wait for the screen and the history of a pane of a mux session that you cannot see, or that shows again before its screen came, before `getText`, a screenshot or a script read of its text | 5 seconds | The read gets the text that the window has, which can be older. The window does not draw or take input while it waits. |
@@ -897,6 +915,24 @@ The word after an option that takes a value, such as `--pane`, `--cwd` or `--tit
 It is that value also when it starts with `-`, but not when it is `--`.
 Give a `FILE` or a `PATH` that starts with `--` as `./--FILE` or `./--PATH`.
 
+## Key names
+
+`afterglow ctl send-key` and the `sendKeys` call take the key names of the [bindings](INPUT.md) and of kitty's `send-key`, such as `ctrl+c`, `Ctrl+Shift+T`, `alt+x`, `Return`, `F5` and `page_up`.
+A name is modifiers and a key, joined with `+`.
+Names ignore case, `_` and `-`.
+
+| Part | Names |
+| --- | --- |
+| Modifiers | `ctrl` or `control`, `shift`, `alt`, `opt` or `option`, `super`, `meta`, `cmd` or `command`. `meta` and `cmd` are the Super key, as in the bindings. |
+| Keys | `enter` or `return`, `tab`, `backspace`, `escape` or `esc`, `up`, `down`, `left`, `right`, `home`, `end`, `insert`, `delete`, `page_up`, `page_down`, `f1` to `f35`, `space`, `plus`, `minus` |
+| Keypad keys | `kp_0` to `kp_9`, `kp_decimal`, `kp_divide`, `kp_multiply`, `kp_subtract`, `kp_add`, `kp_enter`, `kp_equal`, `kp_separator`, `kp_left`, `kp_right`, `kp_up`, `kp_down`, `kp_page_up`, `kp_page_down`, `kp_home`, `kp_end`, `kp_insert`, `kp_delete`, `kp_begin` |
+| Other keys | `caps_lock`, `scroll_lock`, `num_lock`, `print_screen`, `pause`, `menu`, the modifier keys `left_shift` to `right_super`, and the media and volume keys of the kitty keyboard protocol |
+| A character | One character, such as `a`, `1`, `é` or `/`. A letter ignores case: `ctrl+C` is Ctrl with the C key. To type a capital letter, give `shift+a`. `+` and `-` can also come last after a `+`, as in `ctrl++`. |
+
+The keys go as typed keys of the US layout: `shift+1` types `!`.
+Afterglow encodes each key for the program's keyboard mode, as for a key that you type.
+A program that turned on the kitty keyboard protocol gets that encoding, and a release when it asks for releases.
+
 ## Exit status of afterglow ctl
 
 | Exit status | Cause |
@@ -905,6 +941,9 @@ Give a `FILE` or a `PATH` that starts with `--` as `./--FILE` or `./--PATH`.
 | 1 | An error, for example no Afterglow, a call that failed or no reply in time. |
 | 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option given two times is a usage error too. So is an `overlay` option or command that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 4 MiB or not UTF-8 text. So does `screenshot` when its `FILE`, or `-`, is a terminal, or when `FILE` is a socket. `afterglow ctl` finds these errors before it connects. |
 | 0 to 255 from `overlay` | `afterglow ctl overlay` exits with the exit status of its program. Thus a status of 1 or 2 can come from the program. A failed or cancelled overlay gives 1. So does an exit status outside 0 to 255. |
+
+`afterglow ctl focus --direction` exits with status 1 at the edge of the tab.
+A navigation plugin of an editor can then pass the move on, as it does at the edge of a kitty or tmux window.
 
 `afterglow ctl watch` prints events until the connection or a subscription ends.
 Then it exits with status 1.

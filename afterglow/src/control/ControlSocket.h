@@ -52,6 +52,21 @@ public:
     Q_INVOKABLE void focus(double pane);
     Q_INVOKABLE void close(double pane);
     Q_INVOKABLE void setTitle(double pane, const QString& title);
+    /// Focuses the pane beside @p pane on @p direction (left, right, up or
+    /// down) and returns it. Fails at the edge, for a client to pass the
+    /// move on.
+    Q_INVOKABLE uint focusNeighbour(double pane, const QString& direction);
+    /// Moves a split edge of @p pane by @p cells toward @p direction, as the
+    /// resize actions do. Fails when no edge of the pane can move that way.
+    Q_INVOKABLE void resizePane(double pane, const QString& direction, double cells);
+    /// Sends the keys that @p keys name (AfterglowVt::parseKeyName) as typed keys.
+    Q_INVOKABLE void sendKeys(double pane, const QStringList& keys);
+    /// @p unit: lines or pages, with a count that is positive down; top,
+    /// bottom; or prompt, with a count of prompts.
+    Q_INVOKABLE void scroll(double pane, const QString& unit, double amount);
+    /// Sets the title of the tab of @p pane, or gives the title back to the
+    /// focused pane with an empty one.
+    Q_INVOKABLE void setTabTitle(double pane, const QString& title);
     Q_INVOKABLE void signal(double pane, double channel, double value);
     Q_INVOKABLE void notify(double pane, const QString& title, const QString& body);
     /// copy, paste, select_all and show_last_output need Control.allowReadText.

@@ -17,6 +17,7 @@
 #include <AfterglowProto/Run.h>
 #include <AfterglowProto/Socket.h>
 #include <AfterglowProto/Text.h>
+#include <AfterglowVt/KeyNames.h>
 #include <AfterglowVt/Unicode.h>
 #include <PhosphorIpc/IpcProtocol.h>
 
@@ -57,7 +58,8 @@ of the active window or of the window that was active last.
 With --session NAME, the commands act on mux session NAME (afterglow mux),
 and pane IDs are those of the mux daemon. In a pane of a session, they act
 on that session. While no window shows the session, only ls, send-text,
-get-text, split, new-tab, move-pane, detach-tab, focus, close and watch work.
+get-text, send-key, split, new-tab, move-pane, detach-tab, close, watch and
+focus without --direction work.
 For a session, split and new-tab prepare the program with the settings of
 the default config file, not the --config or -o of a running Afterglow.
 
@@ -78,7 +80,16 @@ the default config file, not the --config or -o of a running Afterglow.
   new-tab [--cwd DIR] [-- CMD...]       open a tab and print its pane
   new-window [--cwd DIR] [-- CMD...]    open a window and print its pane
   focus | close                         focus or close the pane
+  focus --direction DIR                 focus the pane to the left, right, up or down of the
+                                        pane and print it, or exit with 1 at the edge
+  resize --direction DIR [--cells N]    move an edge of the pane N cells (2) left, right, up
+                                        or down, as tmux resize-pane does
+  send-key KEY...                       type keys by name: ctrl+c, Return, alt+x, F5, page_up
+  scroll LINES | --pages N | --prompt N | --top | --bottom
+                                        scroll the pane down LINES (up when negative), N pages,
+                                        to the Nth prompt below (above when negative), or to an end
   set-title TITLE...                    set the pane's title ("" to clear)
+  set-tab-title TITLE...                set the title of the pane's tab ("" to clear)
   signal CHANNEL VALUE                  set a shader signal (uSignal[CHANNEL], 0-7)
   notify TITLE [BODY...]                desktop notification from the pane
   scripts                               show script and package diagnostics as JSON
@@ -558,6 +569,8 @@ std::optional<QString> absolute(const QString& path)
     return QDir::cleanPath(here + QLatin1Char('/') + path);
 }
 
+const QStringList Directions = {QStringLiteral("left"), QStringLiteral("right"), QStringLiteral("up"), QStringLiteral("down")};
+
 const QString NoCurrentDirectory = QStringLiteral("the current directory was removed, so give an absolute directory");
 
 const QStringList Commands = {
@@ -566,7 +579,8 @@ const QStringList Commands = {
     QStringLiteral("focus"), QStringLiteral("close"), QStringLiteral("set-title"), QStringLiteral("signal"),
     QStringLiteral("notify"), QStringLiteral("scripts"), QStringLiteral("open-directory"), QStringLiteral("projects"),
     QStringLiteral("save-project"), QStringLiteral("open-project"), QStringLiteral("action"), QStringLiteral("watch"),
-    QStringLiteral("overlay"), QStringLiteral("screenshot"),
+    QStringLiteral("overlay"), QStringLiteral("screenshot"), QStringLiteral("resize"), QStringLiteral("send-key"),
+    QStringLiteral("scroll"), QStringLiteral("set-tab-title"),
 };
 
 // The standard input of `overlay`, as much as an overlay takes. It goes in
@@ -627,7 +641,7 @@ int runCtl(int argc, char** argv)
     // Only these read words after "--": elsewhere they would be dropped unseen.
     static const QStringList TakesTrailing = {QStringLiteral("new-window"), QStringLiteral("split"), QStringLiteral("new-tab"),
                                               QStringLiteral("send-text"), QStringLiteral("set-title"), QStringLiteral("notify"),
-                                              QStringLiteral("overlay")};
+                                              QStringLiteral("overlay"), QStringLiteral("set-tab-title")};
     if (!trailing.isEmpty() && !TakesTrailing.contains(command)) {
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
@@ -643,6 +657,12 @@ int runCtl(int argc, char** argv)
         valueOptions += QStringLiteral("--cwd");
     } else if (command == QLatin1String("open-directory")) {
         valueOptions += QStringLiteral("--layout");
+    } else if (command == QLatin1String("focus")) {
+        valueOptions += QStringLiteral("--direction");
+    } else if (command == QLatin1String("resize")) {
+        valueOptions += {QStringLiteral("--direction"), QStringLiteral("--cells")};
+    } else if (command == QLatin1String("scroll")) {
+        valueOptions += {QStringLiteral("--pages"), QStringLiteral("--prompt")};
     }
     auto indexOfOption = [&args, &valueOptions](const QString& flag) -> qsizetype {
         for (qsizetype i = 0; i < args.size(); ++i) {
@@ -991,6 +1011,60 @@ int runCtl(int argc, char** argv)
         if (!target || args.size() != 2) return usage(QStringLiteral("move-pane needs TARGET and PLACEMENT"));
         act = [&, to = *target, placement = args[1]](qint64 pane) {
             return run(QStringLiteral("movePane"), {pane, qint64(to), placement});
+        };
+    } else if (command == QLatin1String("focus") && indexOfOption(QStringLiteral("--direction")) >= 0) {
+        const std::optional<QString> direction = takeValue(QStringLiteral("--direction"));
+        if (const auto error = extra(0)) return usage(*error);
+        if (!direction || !Directions.contains(*direction)) return usage(QStringLiteral("--direction is left, right, up or down"));
+        act = [&, direction = *direction](qint64 pane) { return printPane(QStringLiteral("focusNeighbour"), {pane, direction}); };
+    } else if (command == QLatin1String("resize")) {
+        const std::optional<QString> direction = takeValue(QStringLiteral("--direction"));
+        const std::optional<QString> cellsText = takeValue(QStringLiteral("--cells"));
+        if (const auto error = extra(0)) return usage(*error);
+        if (!direction || !Directions.contains(*direction)) return usage(QStringLiteral("resize needs --direction left, right, up or down"));
+        // The step of the resize actions.
+        const std::optional<quint32> cells = cellsText ? decimal(*cellsText) : std::optional<quint32>(2);
+        if (!cells || *cells < 1 || *cells > quint32(Control::MaxResizeCells))
+            return usage(QStringLiteral("--cells takes a number from 1 to %1").arg(Control::MaxResizeCells));
+        act = [&, direction = *direction, cells = qint64(*cells)](qint64 pane) {
+            return run(QStringLiteral("resizePane"), {pane, direction, cells});
+        };
+    } else if (command == QLatin1String("send-key")) {
+        if (const auto error = extra(-1)) return usage(*error);
+        if (args.isEmpty()) return usage(QStringLiteral("send-key needs a key"));
+        if (std::size_t(args.size()) > AfterglowVt::MaxKeysAtOnce)
+            return usage(QStringLiteral("send-key sends at most %1 keys at once").arg(AfterglowVt::MaxKeysAtOnce));
+        // Checked here by the rules that afterglow reads them by.
+        for (const QString& name : std::as_const(args)) {
+            if (!AfterglowVt::parseKeyName(name.toStdString())) return usage(QStringLiteral("no key is named '%1'").arg(name));
+        }
+        act = [&, keys = args](qint64 pane) { return run(QStringLiteral("sendKeys"), {pane, QJsonArray::fromStringList(keys)}); };
+    } else if (command == QLatin1String("scroll")) {
+        const auto pages = takeValue(QStringLiteral("--pages"));
+        const auto prompts = takeValue(QStringLiteral("--prompt"));
+        const bool top = takeFlag(QStringLiteral("--top"));
+        const bool bottom = takeFlag(QStringLiteral("--bottom"));
+        if (const auto error = extra(1)) return usage(*error);
+        const std::optional<QString> lines = args.isEmpty() ? std::nullopt : std::optional(args.first());
+        if (int(bool(pages)) + int(bool(prompts)) + int(top) + int(bottom) + int(bool(lines)) != 1)
+            return usage(QStringLiteral("scroll takes one of LINES, --pages N, --prompt N, --top and --bottom"));
+        QString unit = top ? QStringLiteral("top") : bottom ? QStringLiteral("bottom") : pages ? QStringLiteral("pages")
+            : prompts ? QStringLiteral("prompt") : QStringLiteral("lines");
+        qint64 amount = 0;
+        if (const auto text = pages ? pages : prompts ? prompts : lines) {
+            // A count, negative up: -5, 5 or +5.
+            const bool negative = text->startsWith(QLatin1Char('-'));
+            const QString digits = text->startsWith(QLatin1Char('-')) || text->startsWith(QLatin1Char('+')) ? text->mid(1) : *text;
+            const std::optional<quint32> count = decimal(digits);
+            if (!count || *count > Control::MaxScrollAmount)
+                return usage(QStringLiteral("a count is a whole number from -%1 to %1, not %2").arg(Control::MaxScrollAmount).arg(*text));
+            amount = negative ? -qint64(*count) : qint64(*count);
+        }
+        act = [&, unit, amount](qint64 pane) { return run(QStringLiteral("scroll"), {pane, unit, amount}); };
+    } else if (command == QLatin1String("set-tab-title")) {
+        if (const auto error = extra(-1)) return usage(*error);
+        act = [&, title = (args + trailing).join(QLatin1Char(' '))](qint64 pane) {
+            return run(QStringLiteral("setTabTitle"), {pane, title});
         };
     } else if (command == QLatin1String("detach-tab") || command == QLatin1String("focus") || command == QLatin1String("close")) {
         if (const auto error = extra(0)) return usage(*error);

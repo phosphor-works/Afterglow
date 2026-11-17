@@ -898,6 +898,25 @@ pid_t Pane::programPid() const
     return m_pty ? m_pty->pid() : 0;
 }
 
+std::optional<AfterglowPty::ForegroundProcess> Pane::foreground() const
+{
+    return m_pty ? m_pty->foreground() : std::nullopt;
+}
+
+QMap<QString, QString> Pane::userVars() const
+{
+    std::lock_guard lock(m_mutex);
+    QMap<QString, QString> out;
+    for (auto it = m_userVars.constBegin(); it != m_userVars.constEnd(); ++it) out.insert(it.key(), it.value());
+    return out;
+}
+
+bool Pane::atShellPrompt() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_terminal.atShellPrompt();
+}
+
 void Pane::announceTitle()
 {
     QString shown;

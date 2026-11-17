@@ -113,6 +113,33 @@ TEST(MuxLayout, AClosedPaneLeavesItsPlaceToTheOtherSide)
     EXPECT_TRUE(throughText(layout, &error)) << error;
 }
 
+// The panes beside a pane, as a window finds them: the nearest on that
+// side, then the one most in line with it. 0 at the edge and in another tab.
+TEST(MuxLayout, NeighboursFollowTheSplitsOfTheTab)
+{
+    const Layout layout = twoTabs();
+    EXPECT_EQ(layout.neighbour(1, Side::Right), 2u); // 2 is above 3, both beside 1: 2 is more in line at 0.6
+    EXPECT_EQ(layout.neighbour(1, Side::Left), 0u);
+    EXPECT_EQ(layout.neighbour(1, Side::Up), 0u);
+    EXPECT_EQ(layout.neighbour(2, Side::Left), 1u);
+    EXPECT_EQ(layout.neighbour(3, Side::Left), 1u);
+    EXPECT_EQ(layout.neighbour(2, Side::Down), 3u);
+    EXPECT_EQ(layout.neighbour(3, Side::Up), 2u);
+    EXPECT_EQ(layout.neighbour(3, Side::Down), 0u);
+    EXPECT_EQ(layout.neighbour(2, Side::Right), 0u);
+    EXPECT_EQ(layout.neighbour(4, Side::Left), 0u);
+    EXPECT_EQ(layout.neighbour(9, Side::Left), 0u);
+    // Four in a grid, (1 / 3) | (2 / 4): each finds the one across, not the
+    // one at a corner.
+    Layout grid;
+    grid.tabs.push_back(LayoutTab{{split(false), split(true), pane(1), pane(3), split(true), pane(2), pane(4)}, 1, 0, ""});
+    EXPECT_EQ(grid.neighbour(1, Side::Right), 2u);
+    EXPECT_EQ(grid.neighbour(3, Side::Right), 4u);
+    EXPECT_EQ(grid.neighbour(4, Side::Left), 3u);
+    EXPECT_EQ(grid.neighbour(4, Side::Up), 2u);
+    EXPECT_EQ(grid.neighbour(1, Side::Down), 3u);
+}
+
 TEST(MuxLayout, ATabWithoutPanesGoes)
 {
     // The current tab, which is the last: the one before it shows.

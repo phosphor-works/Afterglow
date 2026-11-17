@@ -18,6 +18,7 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <AfterglowVt/TextSearch.h>
 #include <QTimer>
@@ -272,6 +273,14 @@ public:
     /// The process of the program, which leads the terminal session of the
     /// pane. 0 or less for a session pane, and once the program exited.
     pid_t programPid() const;
+    /// The leader of the foreground process group of the program: the
+    /// shell at its prompt. None for a session pane, whose program runs in
+    /// the mux daemon, and once the program exited.
+    std::optional<AfterglowPty::ForegroundProcess> foreground() const;
+    /// The values that the program set with OSC 1337 SetUserVar.
+    QMap<QString, QString> userVars() const;
+    /// The cursor is in a shell prompt or its input (OSC 133 A or B, before C).
+    bool atShellPrompt() const;
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
     /// is local and exists, else the foreground job's directory from /proc.
     /// A session pane's program runs under the daemon, which reads that

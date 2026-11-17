@@ -10,6 +10,7 @@ add_executable(afterglow_vt_tests
     ../src/ITerm2.cpp # internal helpers under test
     GraphicsTest.cpp
     InputTest.cpp
+    KeyNamesTest.cpp
     NotificationTest.cpp
     ParserTest.cpp
     ProgramStatusTest.cpp

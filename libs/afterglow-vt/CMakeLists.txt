@@ -6,6 +6,7 @@ add_library(AfterglowVt SHARED
     src/ITerm2.cpp
     src/ShellContext.cpp
     src/Input.cpp
+    src/KeyNames.cpp
     src/Notifications.cpp
     src/ProgramStatus.cpp
     src/Screen.cpp

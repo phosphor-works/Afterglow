@@ -127,6 +127,8 @@ function __afterglow_ctl
                 split\t'Split the pane' move-pane\t'Move the pane beside another' \
                 detach-tab\t"Move the pane's tab to a new window" new-tab\t'Open a tab' new-window\t'Open a window' \
                 focus\t'Focus the pane' close\t'Close the pane' set-title\t"Set the pane's title" \
+                set-tab-title\t"Set the title of the pane's tab" resize\t'Move an edge of the pane' \
+                send-key\t'Type keys by name' scroll\t'Scroll the pane' \
                 signal\t'Set a shader signal' notify\t'Show a desktop notification' \
                 scripts\t'Show script diagnostics' open-directory\t'Open a directory' \
                 projects\t'List saved projects' save-project\t'Save the window layout' \
@@ -150,13 +152,14 @@ function __afterglow_ctl
                     complete -C (string join ' ' -- $rest "$cur")
                 end
                 return
-            case --pane --cwd --layout --capture --title -w --width -h --height --position
+            case --pane --cwd --layout --direction --cells --pages --prompt --capture --title -w --width -h --height --position
                 # The options after --layout are those of overlay. Elsewhere they are no option of ctl.
                 if test $command = overlay; or not contains -- $argv[$i] --capture --title -w --width -h --height --position
                     if test $i -eq $n
                         # The cursor is at the option's value.
                         test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
                         test $argv[$i] = --capture; and __afterglow_print stdout file none
+                        test $argv[$i] = --direction; and __afterglow_print left right up down
                         test $argv[$i] = --position
                         and __afterglow_print center top bottom left right top-left top-right bottom-left bottom-right
                         return
@@ -192,6 +195,11 @@ function __afterglow_ctl
                 return
             case signal:0
                 __afterglow_print 0 1 2 3 4 5 6 7
+                return
+            case 'send-key:*'
+                # Of the many names that send-key takes.
+                __afterglow_print enter escape tab backspace space up down left right home end page_up page_down \
+                    insert delete f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 ctrl+c ctrl+d ctrl+l ctrl+z
                 return
             case action:0
                 __afterglow_print $__afterglow_actions
@@ -238,6 +246,17 @@ function __afterglow_ctl
             or set -a offer --left --right --up --down
         case new-tab new-window
             contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'
+        case focus
+            contains -- --direction $argv; or set -a offer --direction\t'Focus the pane on that side'
+        case resize
+            contains -- --direction $argv; or set -a offer --direction\t'The edge that moves'
+            contains -- --cells $argv; or set -a offer --cells\t'Cells to move it (2)'
+        case scroll
+            # LINES or one of the options.
+            if test $positional -eq 0; and not string match -q -r -- '^--(pages|prompt|top|bottom)$' $argv
+                set -a offer --pages\t'Pages down, up when negative' --prompt\t'Prompts down, up when negative' \
+                    --top\t'To the top' --bottom\t'To the bottom'
+            end
         case overlay
             contains -- --capture $argv; or set -a offer --capture\t'Where the result comes from'
             contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'

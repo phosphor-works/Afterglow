@@ -184,6 +184,11 @@ struct Layout
     /// The tab of @p pane shows, with @p pane focused. False when no tab
     /// holds it.
     bool focus(std::uint32_t pane);
+    /// The pane beside @p pane on @p side in its tab, as a window finds it
+    /// (SplitTree::neighbour) with the ratios of the splits: the nearest,
+    /// then the one most in line with it. 0 at the edge, and when no tab
+    /// holds @p pane.
+    std::uint32_t neighbour(std::uint32_t pane, Side side) const;
 };
 
 /// The ID of a pane in a value of the wire: a whole number from 1 to

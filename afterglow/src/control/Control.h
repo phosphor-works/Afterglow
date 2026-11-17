@@ -12,6 +12,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QPair>
 #include <QPointer>
@@ -20,6 +21,7 @@
 #include <QStringList>
 #include <QVariantMap>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -54,6 +56,24 @@ struct PaneInfo
     /// Where the shell runs when not here as you ("root", "deploy@prod-1").
     QString context;
     quint32 tabId = 0; ///< stable within this process, unlike the tab's position (tab)
+    /// The facts below are known: listPanes gathers them, with a read of
+    /// /proc for each pane, and the other users of a pane's map do not.
+    bool facts = false;
+    /// The cursor is in a shell prompt or its input (OSC 133).
+    bool atPrompt = false;
+    /// The values of OSC 1337 SetUserVar.
+    QMap<QString, QString> userVars;
+    /// The leader of the foreground process group, for a pane whose program
+    /// runs in this process: none for a session pane, whose daemon knows it.
+    struct Foreground
+    {
+        qint64 pid = 0;
+        QStringList cmdline;
+        QString cwd;
+    };
+    std::optional<Foreground> foreground;
+    /// The pane beside it in its tab, 0 for none: left, right, up, down.
+    std::array<quint32, 4> neighbours{};
 };
 
 /// What afterglow lets other programs (the control socket) and scripts (Luau) do: one
@@ -112,7 +132,8 @@ public:
     void attachWindow(TerminalWindow* window);
     void setScriptCommandRunner(ScriptCommandRunner runner) { m_scriptCommands = std::move(runner); }
 
-    QList<PaneInfo> panes() const;
+    /// With @p facts, each pane's PaneInfo::facts too, for listPanes.
+    QList<PaneInfo> panes(bool facts = false) const;
     std::optional<PaneInfo> paneInfo(quint32 id) const;
     bool hasPane(quint32 id) const { return find(id); }
     /// Sets what @p pane answers to `aglow run`'s query for its ssh
@@ -226,6 +247,22 @@ public:
     QString focus(quint32 pane);
     QString close(quint32 pane);
     QString setTitle(quint32 pane, const QString& title);
+    /// Focuses the pane beside @p pane on @p direction, which @p focused
+    /// gets. An error at the edge.
+    QString focusNeighbour(quint32 pane, const QString& direction, quint32& focused);
+    /// Moves a split edge of @p pane by @p cells toward @p direction, as
+    /// the resize actions and tmux's resize-pane do: the edge on that side,
+    /// else the one on the other side.
+    QString resizePane(quint32 pane, const QString& direction, int cells);
+    static constexpr int MaxResizeCells = 10000;
+    /// Sends the keys that @p keys name as typed keys: none when a name
+    /// names no key.
+    QString sendKeys(quint32 pane, const QStringList& keys);
+    /// @p unit: lines, pages, top, bottom or prompt. A positive @p amount
+    /// goes down, to the newest text.
+    QString scroll(quint32 pane, const QString& unit, qint64 amount);
+    static constexpr qint64 MaxScrollAmount = 1'000'000'000;
+    QString setTabTitle(quint32 pane, const QString& title);
     /// Sets shader signal @p channel (0-7, uSignal in shaders) on the pane.
     QString signal(quint32 pane, int channel, double value);
     static constexpr int MaxSignalPanes = 128;
@@ -382,7 +419,7 @@ private:
     void projectDialog(Pane* pane, bool save);
     void attachPane(Pane* pane);
     Pane* find(quint32 id, TerminalWindow** window = nullptr) const;
-    static PaneInfo describe(TerminalWindow* window, Pane* pane);
+    static PaneInfo describe(TerminalWindow* window, Pane* pane, bool facts = false);
     /// Shows a window made by m_newWindow as Window.startMode asks.
     void showNew(TerminalWindow* window) const;
     /// Encodes @p image as a PNG on m_encoder, then gives its base64 to

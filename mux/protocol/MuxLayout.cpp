@@ -443,6 +443,73 @@ Json::Value toJson(const Layout& layout)
     return out;
 }
 
+std::uint32_t Layout::neighbour(std::uint32_t pane, Side side) const
+{
+    const auto tab = tabOf(pane);
+    if (!tab) return 0;
+    struct Box
+    {
+        double left = 0, top = 0, right = 1, bottom = 1;
+    };
+    // The tree in preorder: each split hands its first side, then its
+    // second, to the nodes after it.
+    std::vector<Box> waiting{Box{}};
+    std::vector<std::pair<std::uint32_t, Box>> boxes;
+    for (const LayoutNode& node : tabs[*tab].tree) {
+        if (waiting.empty()) return 0;
+        const Box area = waiting.back();
+        waiting.pop_back();
+        if (node.pane != 0) {
+            boxes.emplace_back(node.pane, area);
+            continue;
+        }
+        Box first = area, second = area;
+        if (node.down) {
+            first.bottom = second.top = area.top + (area.bottom - area.top) * node.ratio;
+        } else {
+            first.right = second.left = area.left + (area.right - area.left) * node.ratio;
+        }
+        waiting.push_back(second);
+        waiting.push_back(first);
+    }
+    const auto from = std::find_if(boxes.begin(), boxes.end(), [pane](const auto& b) { return b.first == pane; });
+    if (from == boxes.end()) return 0;
+    const Box src = from->second;
+    // Sides that touch are equal up to the rounding of the ratios.
+    constexpr double Touch = 1e-9;
+    std::uint32_t best = 0;
+    double bestScore = 0;
+    for (const auto& [id, r] : boxes) {
+        if (id == pane) continue;
+        double along = 0, across = 0;
+        switch (side) {
+        case Side::Left:
+            along = src.left - r.right;
+            across = std::abs((r.top + r.bottom) - (src.top + src.bottom)) / 2;
+            break;
+        case Side::Right:
+            along = r.left - src.right;
+            across = std::abs((r.top + r.bottom) - (src.top + src.bottom)) / 2;
+            break;
+        case Side::Up:
+            along = src.top - r.bottom;
+            across = std::abs((r.left + r.right) - (src.left + src.right)) / 2;
+            break;
+        case Side::Down:
+            along = r.top - src.bottom;
+            across = std::abs((r.left + r.right) - (src.left + src.right)) / 2;
+            break;
+        }
+        if (along < -Touch) continue;
+        const double score = std::max(along, 0.0) * 4 + across;
+        if (best == 0 || score < bestScore) {
+            best = id;
+            bestScore = score;
+        }
+    }
+    return best;
+}
+
 std::optional<Layout> layoutFrom(const Json::Value& value, std::string* error)
 {
     if (!value.isObject()) {

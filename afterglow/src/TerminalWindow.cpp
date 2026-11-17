@@ -2446,19 +2446,77 @@ void TerminalWindow::setPaneZoom(Pane* pane)
     scheduleRender();
 }
 
-bool TerminalWindow::resizeFocused(SplitTree::Neighbour direction)
+Pane* TerminalWindow::neighbourOf(const Pane* pane, SplitTree::Neighbour direction)
 {
-    if (!m_focused || !m_splits) return false;
+    const int tab = pane ? tabOf(pane) : -1;
+    if (tab < 0 || !m_tabs[std::size_t(tab)]->splits) return nullptr;
+    SplitTree& tree = *m_tabs[std::size_t(tab)]->splits;
+    // Until a layout, a new pane has an empty rectangle, which lies left of
+    // and above every other. The next frame lays the shown tab out anyway;
+    // another tab's tree gets the area that it would show in.
+    if (tab == m_currentTab) {
+        ensureLayout();
+    } else {
+        std::vector<QRect> docks;
+        tree.layout(layoutDocks(windowArea(), &docks), dividerPixels());
+    }
+    return tree.neighbour(pane, direction);
+}
+
+bool TerminalWindow::resizePane(Pane* pane, SplitTree::Neighbour direction, int cells)
+{
+    const int tab = pane ? tabOf(pane) : -1;
+    if (tab < 0 || cells <= 0) return false;
+    // The tree lays out the tab that shows: the edges are where the user sees them.
+    if (tab != m_currentTab) switchTab(tab);
+    if (!m_splits) return false;
     if (m_splits->zoomedPane()) setPaneZoom(nullptr);
     relayout();
     const auto& metrics = m_renderer->fonts().fonts->metrics();
     const bool vertical = direction == SplitTree::Neighbour::Up || direction == SplitTree::Neighbour::Down;
-    const bool changed = m_splits->resizePane(m_focused, direction, 2 * (vertical ? metrics.cellHeight : metrics.cellWidth),
+    const bool changed = m_splits->resizePane(pane, direction, cells * (vertical ? metrics.cellHeight : metrics.cellWidth),
         dividerPixels(), minimumPaneSize());
     m_layoutSize = QSize();
     scheduleSessionLayout();
     scheduleRender();
     return changed;
+}
+
+QString TerminalWindow::scrollFromControl(Pane* pane, const QString& unit, qint64 amount)
+{
+    Pane* const target = inputPane(pane);
+    if (!target) return QStringLiteral("no pane");
+    // As the scroll actions: the alternate screen has no history.
+    if (target->withTerminal([](Terminal& t) { return t.modes().altScreen; }))
+        return QStringLiteral("pane %1 shows a full-screen program, which has no scrollback").arg(pane->id());
+    stopMomentumOf(target);
+    if (unit == QLatin1String("prompt")) {
+        // One jump for each prompt, to the newest that there is.
+        qint64 moved = 0;
+        while (moved < std::abs(amount) && target->jumpToPrompt(amount < 0 ? -1 : 1)) ++moved;
+        if (amount != 0 && moved == 0) return QStringLiteral("pane %1 has no prompt %2").arg(pane->id()).arg(amount < 0 ? QStringLiteral("above") : QStringLiteral("below"));
+        scheduleRender();
+        return {};
+    }
+    // Rows up are positive in scrollPane.
+    const double page = std::max(1, target->rows() - 1);
+    double rows = 0;
+    if (unit == QLatin1String("lines")) rows = -double(amount);
+    else if (unit == QLatin1String("pages")) rows = -double(amount) * page;
+    else if (unit == QLatin1String("top")) rows = double(1L << 30);
+    else if (unit == QLatin1String("bottom")) rows = -double(1L << 30);
+    else return QStringLiteral("the unit is lines, pages, prompt, top or bottom");
+    scrollPane(target, rows);
+    return {};
+}
+
+void TerminalWindow::setTabTitle(Pane* pane, const QString& title)
+{
+    const int tab = pane ? tabOf(pane) : -1;
+    if (tab < 0 || m_tabs[std::size_t(tab)]->title == title) return;
+    m_tabs[std::size_t(tab)]->title = title;
+    // As the Rename Tab prompt: the chrome and the session's layout follow.
+    Q_EMIT tabsChanged();
 }
 
 void TerminalWindow::captureFrame(Pane* pane, CaptureScope scope, CaptureReply reply)
@@ -3804,13 +3862,13 @@ bool TerminalWindow::performAction(Action action)
         setPaneZoom(m_splits->zoomedPane() ? nullptr : m_focused.data());
         return true;
     case Action::ResizeLeft:
-        return resizeFocused(SplitTree::Neighbour::Left);
+        return resizePane(m_focused, SplitTree::Neighbour::Left, 2);
     case Action::ResizeRight:
-        return resizeFocused(SplitTree::Neighbour::Right);
+        return resizePane(m_focused, SplitTree::Neighbour::Right, 2);
     case Action::ResizeUp:
-        return resizeFocused(SplitTree::Neighbour::Up);
+        return resizePane(m_focused, SplitTree::Neighbour::Up, 2);
     case Action::ResizeDown:
-        return resizeFocused(SplitTree::Neighbour::Down);
+        return resizePane(m_focused, SplitTree::Neighbour::Down, 2);
     case Action::SplitRight:
     case Action::SplitDown:
     case Action::SplitLeft:

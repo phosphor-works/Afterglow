@@ -172,11 +172,18 @@ public:
         std::string directory;
         std::string command; ///< the running command (OSC 133), empty at the prompt
         PaneSize size;
+        /// The cursor is in a prompt or its input (OSC 133 A or B, before C).
+        bool atPrompt = false;
+        /// The values of OSC 1337 SetUserVar.
+        std::map<std::string, std::string> userVars;
     };
     /// Without the terminal, also while an image decodes: the reader thread
     /// keeps them, and checks a directory that the shell reports once, with
     /// no lock that the daemon's thread waits for.
     Facts facts() const;
+    /// The leader of the foreground process group: the shell at its prompt.
+    /// Nothing once the program exited. It reads /proc.
+    std::optional<AfterglowPty::ForegroundProcess> foreground() const;
     /// The state and text of the newest program status record (OSC 7501),
     /// as the control target names them (idle, working, done, blocked,
     /// error): idle and empty without one. Nothing while an image decodes.
@@ -207,6 +214,9 @@ public:
     /// The text of @p scope, for `afterglow ctl get-text`. Nothing while an
     /// image decodes.
     std::optional<std::string> text(AfterglowVt::Terminal::TextScope scope) const;
+    /// The terminal's modes, which say how a key is sent: nothing while an
+    /// image decodes, as text().
+    std::optional<AfterglowVt::Modes> modes() const;
 
     /// The window that shows the pane, by Attachment::serial(), or 0 for
     /// none. The calls of its terminal to its host (MuxHost.h) wait for that
@@ -360,6 +370,9 @@ private:
     std::unique_ptr<AfterglowPty::Pty> m_pty;
     std::string m_launchedProgram;
     std::atomic<bool> m_exited{false};
+    /// Terminal::atShellPrompt after the last feed: facts() takes no lock
+    /// that the reader thread holds while an image decodes.
+    std::atomic<bool> m_atPrompt{false};
 
     /// A call that waits for the window. PointerShape, UserVar and
     /// ProtocolLost wait empty, and take their newest value when they go.

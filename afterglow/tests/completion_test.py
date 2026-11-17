@@ -561,7 +561,7 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     yield 'afterglow ctl --session work ', set(ctl_commands)
     yield 'afterglow ctl --session work -', set()
     yield 'afterglow ctl --session work ls ', {'--json'}
-    yield 'afterglow ctl --session work focus ', {'--pane'}
+    yield 'afterglow ctl --session work focus ', {'--pane', '--direction'}
     yield 'afterglow ctl ls ', {'--json'}
     yield 'afterglow ctl ls --json ', set()
     for command in ctl_commands:
@@ -569,7 +569,22 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
             yield f'afterglow ctl {command} -', lacks('--pane')
         else:
             yield f'afterglow ctl {command} -', has('--pane')
-    yield 'afterglow ctl focus ', {'--pane'}
+    yield 'afterglow ctl focus ', {'--pane', '--direction'}
+    yield 'afterglow ctl focus --direction ', {'left', 'right', 'up', 'down'}
+    yield 'afterglow ctl focus --direction up -', {'--pane'}
+    yield 'afterglow ctl resize -', {'--pane', '--direction', '--cells'}
+    yield 'afterglow ctl resize --direction ', {'left', 'right', 'up', 'down'}
+    yield 'afterglow ctl resize --cells ', set()
+    yield 'afterglow ctl resize --cells 4 -', {'--pane', '--direction'}
+    # LINES, or one of the options.
+    yield 'afterglow ctl scroll -', {'--pane', '--pages', '--prompt', '--top', '--bottom'}
+    yield 'afterglow ctl scroll --top -', {'--pane'}
+    yield 'afterglow ctl scroll --prompt ', set()
+    yield 'afterglow ctl scroll --prompt -2 -', {'--pane'}
+    yield 'afterglow ctl scroll -5 -', {'--pane'}
+    yield 'afterglow ctl send-key ', has('ctrl+c', 'enter', 'page_up', 'f5')
+    yield 'afterglow ctl send-key ctrl+c ', has('ctrl+c', 'enter')
+    yield 'afterglow ctl set-tab-title -', {'--pane'}
     yield 'afterglow ctl focus --pane ', set()
     yield 'afterglow ctl get-text --screen ', {'--pane'}
     yield 'afterglow ctl screenshot -', {'--pane', *screenshot}

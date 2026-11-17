@@ -43,6 +43,9 @@ QJsonObject daemonPaneMap(const Control& control, QVariantMap map)
     map.insert(QStringLiteral("window"), 0);
     map.insert(QStringLiteral("tab_id"), map.value(QStringLiteral("tab")).toInt() + 1);
     map.insert(QStringLiteral("context"), QString());
+    QVariantMap neighbours = map.value(QStringLiteral("neighbours")).toMap();
+    for (QVariant& id : neighbours) id = id.toUInt() ? daemonId(id.toUInt()) : 0;
+    map.insert(QStringLiteral("neighbours"), neighbours);
     return QJsonObject::fromVariantMap(map);
 }
 
@@ -294,6 +297,32 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
     }
     if (fn == QLatin1String("setTitle")) {
         if (const QString error = control.setTitle(id, args.at(1).toString()); !error.isEmpty()) return failed(error);
+        return {};
+    }
+    if (fn == QLatin1String("focusNeighbour")) {
+        quint32 focused = 0;
+        if (const QString error = control.focusNeighbour(id, args.at(1).toString(), focused); !error.isEmpty()) return failed(error);
+        // The daemon's ID of the pane: the client knows no other.
+        return {daemonId(focused), {}};
+    }
+    if (fn == QLatin1String("resizePane")) {
+        // As the control target reads the cells: a whole number, which
+        // Control bounds.
+        const double cells = args.at(2).toDouble(0);
+        const int count = std::isfinite(cells) && std::floor(cells) == cells && cells >= 1 && cells <= Control::MaxResizeCells ? int(cells) : 0;
+        if (const QString error = control.resizePane(id, args.at(1).toString(), count); !error.isEmpty()) return failed(error);
+        return {};
+    }
+    if (fn == QLatin1String("scroll")) {
+        const double amount = args.at(2).toDouble(0);
+        if (!std::isfinite(amount) || std::floor(amount) != amount || std::abs(amount) > double(Control::MaxScrollAmount)) {
+            return failed(QStringLiteral("the amount is a whole number from -%1 to %1").arg(Control::MaxScrollAmount));
+        }
+        if (const QString error = control.scroll(id, args.at(1).toString(), qint64(amount)); !error.isEmpty()) return failed(error);
+        return {};
+    }
+    if (fn == QLatin1String("setTabTitle")) {
+        if (const QString error = control.setTabTitle(id, args.at(1).toString()); !error.isEmpty()) return failed(error);
         return {};
     }
     if (fn == QLatin1String("signal")) {

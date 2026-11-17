@@ -11,7 +11,11 @@
 # bash-completion, source aglow.bash as well.
 
 _afterglow_ctl_commands="ls send-text get-text split move-pane detach-tab new-tab new-window focus close set-title
-signal notify scripts open-directory projects save-project open-project action watch overlay screenshot"
+set-tab-title resize send-key scroll signal notify scripts open-directory projects save-project open-project action
+watch overlay screenshot"
+# Key names that ctl send-key takes, of many more.
+_afterglow_keys="enter escape tab backspace space up down left right home end page_up page_down insert delete f1 f2 f3
+f4 f5 f6 f7 f8 f9 f10 f11 f12 ctrl+c ctrl+d ctrl+l ctrl+z"
 # The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp).
 _afterglow_actions="swap_left swap_right swap_up swap_down rotate_panes_clockwise rotate_panes_counterclockwise
 pane_overview use_package_shaders move_pane_to_tab move_pane_to_window detach_tab save_project switch_project
@@ -124,7 +128,7 @@ _afterglow_ctl()
             # Text follows, or the command takes nothing after it.
             return
             ;;
-        --pane | --cwd | --layout)
+        --pane | --cwd | --layout | --direction | --cells | --pages | --prompt)
             ((i++))
             ;;
         --capture | --title | -w | --width | -h | --height | --position)
@@ -154,7 +158,11 @@ _afterglow_ctl()
         esac
     done
     case $prev in
-    --pane | --layout) return ;;
+    --pane | --layout | --cells | --pages | --prompt) return ;;
+    --direction)
+        _afterglow_matching left right up down
+        return
+        ;;
     --cwd)
         _afterglow_files -d
         return
@@ -193,6 +201,11 @@ _afterglow_ctl()
             ;;
         signal:0)
             _afterglow_matching 0 1 2 3 4 5 6 7
+            return
+            ;;
+        send-key:*)
+            # shellcheck disable=SC2086 # the list splits into its words
+            _afterglow_matching $_afterglow_keys
             return
             ;;
         action:0)
@@ -234,6 +247,16 @@ _afterglow_ctl()
     get-text) _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output" ;;
     screenshot) _afterglow_unused $pane "--tab|--window" ;;
     split) _afterglow_unused $pane "--left|--right|--up|--down" ;;
+    focus) _afterglow_unused $pane --direction ;;
+    resize) _afterglow_unused $pane --direction --cells ;;
+    scroll)
+        # LINES or one of the options.
+        if ((positional)); then
+            _afterglow_unused $pane
+        else
+            _afterglow_unused $pane "--pages|--prompt|--top|--bottom"
+        fi
+        ;;
     new-tab | new-window) _afterglow_unused $pane --cwd ;;
     overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" ;;
     open-directory) _afterglow_unused --layout ;;

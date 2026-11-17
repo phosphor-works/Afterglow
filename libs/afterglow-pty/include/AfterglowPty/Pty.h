@@ -83,6 +83,21 @@ AFTERGLOWPTY_EXPORT std::optional<ProcessStat> parseProcessStat(std::string_view
 /// process is gone or the file does not parse.
 AFTERGLOWPTY_EXPORT std::optional<ProcessStat> processStat(pid_t pid);
 
+/// The leader of the foreground process group of a terminal, as `afterglow
+/// ctl ls` and kitty's `ls` show it.
+struct ForegroundProcess
+{
+    /// The bytes of the arguments that are read: past them, the last
+    /// argument is cut and the others are left out.
+    static constexpr std::size_t MaxCmdlineBytes = 4096;
+    pid_t pid = 0;
+    /// Its arguments, from /proc: empty for a process with none (a kernel
+    /// thread) or one that /proc does not show.
+    std::vector<std::string> cmdline;
+    /// Its working directory, empty when it was removed or /proc does not show it.
+    std::string cwd;
+};
+
 /// Receives pty events on the pty's I/O thread.
 class IPtyListener
 {
@@ -155,6 +170,10 @@ public:
     /// The name of the job in the foreground when it is not the child itself
     /// (a program the shell is running); empty while the shell has the terminal.
     std::string foregroundProcess() const;
+    /// The leader of the foreground process group, the shell too: nothing
+    /// once the child exited, while no group has the terminal, and when the
+    /// leader of the group exited or is in another session. It reads only /proc.
+    std::optional<ForegroundProcess> foreground() const;
 
 private:
     Pty(int masterFd, int wakeFd, int pidFd, pid_t pid, IPtyListener& listener);

@@ -3062,6 +3062,57 @@ TEST(MuxControl, WhatOnlyAWindowDoesNeedsOne)
     EXPECT_EQ(ctl.error.code, IpcErrorCode::NoSuchFn);
 }
 
+// Without a window, the daemon types keys by name in the program's keyboard
+// mode, and `ls` says what a window says of a pane: the user variables, the
+// foreground process and the panes beside it, from the splits of the layout.
+// What moves the focus, an edge or the view needs the window.
+TEST(MuxControl, TheDaemonTypesKeysAndTellsThePanesFacts)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "k")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("k"), "");
+    const std::uint32_t first = firstPane(ctl);
+    ASSERT_NE(first, 0u);
+    const auto screen = [&](const std::string& word) {
+        return waitFor([&] {
+            const auto text = ctl.call("getText", Json::Array{std::int64_t(first), "screen"});
+            return text && contains(text->toString(), word);
+        });
+    };
+    // The quotes keep the word off the command line.
+    ASSERT_TRUE(ctl.call("sendKeys", Json::Array{std::int64_t(first), Json::Array{"e", "c", "h", "o", "space", "k", "'", "'", "e",
+                                                                                    "y", "Return"}}))
+        << ctl.error.message;
+    EXPECT_TRUE(screen("\nkey"));
+    // A name that names no key sends none of the keys.
+    EXPECT_FALSE(ctl.call("sendKeys", Json::Array{std::int64_t(first), Json::Array{"x", "nope"}}));
+    EXPECT_EQ(ctl.error.message, "no key is named 'nope'");
+    EXPECT_FALSE(ctl.call("sendKeys", Json::Array{std::int64_t(first), Json::Array{}}));
+    // A user variable, in base64 as iTerm2 sends it.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{std::int64_t(first), "printf '\\033]1337;SetUserVar=mode=%s\\a' djE=; echo s''et\n"}));
+    ASSERT_TRUE(screen("\nset"));
+    const auto split = ctl.call("split", Json::Array{std::int64_t(first), "down", Json::Array{}});
+    ASSERT_TRUE(split) << ctl.error.message;
+    const auto listed = ctl.call("listPanes", {});
+    ASSERT_TRUE(listed) << ctl.error.message;
+    ASSERT_EQ(listed->toArray().size(), 2u);
+    const Json::Value& pane = listed->toArray()[0];
+    EXPECT_EQ(Json::write(pane["user_vars"]), R"({"mode":"v1"})");
+    EXPECT_EQ(pane["neighbours"]["down"].toInteger(), split->toInteger());
+    EXPECT_EQ(pane["neighbours"]["up"].toInteger(), 0);
+    EXPECT_EQ(listed->toArray()[1]["neighbours"]["up"].toInteger(), std::int64_t(first));
+    // The shell, at its prompt.
+    EXPECT_GT(pane["foreground"]["pid"].toInteger().value_or(0), 0) << Json::write(pane);
+    EXPECT_FALSE(pane["foreground"]["cmdline"].toArray().empty()) << Json::write(pane);
+    EXPECT_TRUE(pane["at_prompt"].isBool());
+    for (const char* fn : {"focusNeighbour", "scroll", "setTabTitle"}) {
+        EXPECT_FALSE(ctl.call(fn, Json::Array{std::int64_t(first), "down"})) << fn;
+        EXPECT_NE(ctl.error.message.find(std::string("only a window can do ") + fn), std::string::npos) << ctl.error.message;
+    }
+}
+
 // While a window shows the session, the daemon places the panes that it
 // starts in that window, and passes it what only a window can answer. Only
 // the answer of the window that got a call, with the call's ID, reaches its
@@ -4346,6 +4397,10 @@ void commandLines(bool readText)
     ASSERT_TRUE(listed) << ctl.error.message;
     ASSERT_EQ(listed->toArray().size(), 1u) << Json::write(*listed);
     EXPECT_EQ(listed->toArray()[0]["command"].toString(), shown);
+    // Its output follows: no prompt. The command line of the process in the
+    // foreground needs read access too.
+    EXPECT_FALSE(listed->toArray()[0]["at_prompt"].toBool());
+    EXPECT_EQ(listed->toArray()[0]["foreground"]["cmdline"].toArray().empty(), !readText) << Json::write(*listed);
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]133;D;3\\007'\n"})) << ctl.error.message;
     const std::string finished = watcher.next();
     EXPECT_TRUE(finished.starts_with("commandFinished [" + id + ",\"" + shown + "\",3,")) << finished;

@@ -15095,3 +15095,107 @@ int main(int argc, char** argv)
 }
 
 #include "NativeWindowTest.moc"
+
+TEST_F(NativeWindow, ControlMovesBetweenPanesResizesScrollsAndTypesKeys) {
+    // What `afterglow ctl` does as `kitten @` does: focus-window with a
+    // neighbour that fails at the edge, resize-window, send-key,
+    // scroll-window and set-tab-title.
+    TestControl test(directory, QStringLiteral("navigate.conf"), window);
+    Control& control = test.control;
+    Pane* left = window->focusedPane();
+    ASSERT_NE(left, nullptr);
+    // left | (top / bottom). Top shows the control keys that it reads.
+    quint32 topId = 0, bottomId = 0;
+    ASSERT_TRUE(control.split(left->id(), QStringLiteral("right"),
+                              {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat -v")}, {}, topId)
+                    .isEmpty());
+    ASSERT_TRUE(control.split(topId, QStringLiteral("down"), catWithoutEcho(), {}, bottomId).isEmpty());
+    ASSERT_TRUE(settleQueued());
+    const auto paneById = [this](quint32 id) -> Pane* {
+        for (Pane* p : window->panes())
+            if (p->id() == id) return p;
+        return nullptr;
+    };
+    Pane* top = paneById(topId);
+    ASSERT_NE(top, nullptr);
+
+    quint32 focused = 0;
+    EXPECT_EQ(control.focusNeighbour(left->id(), QStringLiteral("left"), focused), QStringLiteral("no pane to the left of pane %1").arg(left->id()));
+    EXPECT_EQ(focused, 0u);
+    EXPECT_TRUE(control.focusNeighbour(bottomId, QStringLiteral("up"), focused).isEmpty());
+    EXPECT_EQ(focused, topId);
+    EXPECT_EQ(window->focusedPane(), top);
+    EXPECT_TRUE(control.focusNeighbour(topId, QStringLiteral("left"), focused).isEmpty());
+    EXPECT_EQ(focused, left->id());
+    EXPECT_EQ(window->focusedPane(), left);
+    EXPECT_EQ(control.focusNeighbour(bottomId, QStringLiteral("down"), focused), QStringLiteral("no pane below pane %1").arg(bottomId));
+    EXPECT_EQ(control.focusNeighbour(left->id(), QStringLiteral("sideways"), focused), QStringLiteral("direction must be left, right, up or down"));
+
+    // The facts of ls: the panes beside, and the program in the foreground,
+    // which is the sh of the pane: it runs cat without job control.
+    const auto map = [&](quint32 id) {
+        for (const PaneInfo& p : control.panes(true))
+            if (p.id == id) return Control::paneMap(p);
+        return QVariantMap();
+    };
+    const QVariantMap topNeighbours = map(topId).value(QStringLiteral("neighbours")).toMap();
+    EXPECT_EQ(topNeighbours.value(QStringLiteral("left")).toUInt(), left->id());
+    EXPECT_EQ(topNeighbours.value(QStringLiteral("down")).toUInt(), bottomId);
+    EXPECT_EQ(topNeighbours.value(QStringLiteral("up")).toUInt(), 0u);
+    EXPECT_EQ(topNeighbours.value(QStringLiteral("right")).toUInt(), 0u);
+    const QVariantMap foreground = map(left->id()).value(QStringLiteral("foreground")).toMap();
+    EXPECT_EQ(foreground.value(QStringLiteral("pid")).toLongLong(), qint64(left->programPid()));
+    // sh runs cat in its own process at the end: what /proc says.
+    QFile cmdline(QStringLiteral("/proc/%1/cmdline").arg(left->programPid()));
+    ASSERT_TRUE(cmdline.open(QIODevice::ReadOnly));
+    EXPECT_EQ(foreground.value(QStringLiteral("cmdline")).toStringList().value(0),
+              QString::fromUtf8(cmdline.readAll().split('\0').value(0)));
+    EXPECT_FALSE(foreground.value(QStringLiteral("cmdline")).toStringList().isEmpty());
+    EXPECT_FALSE(map(left->id()).value(QStringLiteral("at_prompt")).toBool());
+    // Without read access, the command line goes as the command does.
+    EXPECT_TRUE(control.clientPaneMap(map(left->id())).value(QStringLiteral("foreground")).toMap().value(QStringLiteral("cmdline")).toStringList().isEmpty());
+
+    // The edge between left and the others moves 3 cells right, then back:
+    // left has no edge on its left, so its right edge moves, as in tmux.
+    const int before = left->cols();
+    EXPECT_TRUE(control.resizePane(left->id(), QStringLiteral("right"), 3).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return std::abs(left->cols() - (before + 3)) <= 1; })) << before << " " << left->cols();
+    EXPECT_TRUE(control.resizePane(left->id(), QStringLiteral("left"), 3).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return std::abs(left->cols() - before) <= 1; })) << before << " " << left->cols();
+    EXPECT_TRUE(control.resizePane(left->id(), QStringLiteral("right"), 3).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return std::abs(left->cols() - (before + 3)) <= 1; })) << before << " " << left->cols();
+    // No split stacks it with another pane.
+    EXPECT_EQ(control.resizePane(left->id(), QStringLiteral("up"), 3), QStringLiteral("pane %1 has no edge that can move up").arg(left->id()));
+    // The resize actions move it 2 cells.
+    const int resized = left->cols();
+    ASSERT_TRUE(window->runAction(left, Action::ResizeLeft));
+    EXPECT_TRUE(waitFor([&] { return std::abs(left->cols() - (resized - 2)) <= 1; })) << resized << " " << left->cols();
+
+    // Keys by name, as typed: Ctrl+A is ^A to cat -v. A bad name sends none.
+    EXPECT_EQ(control.sendKeys(topId, {QStringLiteral("y"), QStringLiteral("nope")}), QStringLiteral("no key is named 'nope'"));
+    EXPECT_TRUE(control.sendKeys(topId, {QStringLiteral("ctrl+a"), QStringLiteral("x"), QStringLiteral("Return")}).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return screenOf(top).contains(QStringLiteral("^Ax")); })) << screenOf(top).toStdString();
+    EXPECT_FALSE(screenOf(top).contains(QLatin1Char('y')));
+
+    // Lines up, then the ends. A prompt jump needs a prompt.
+    feedFromReader(left, std::string(200, '\n'));
+    const std::size_t history = historySize(left);
+    ASSERT_GT(history, 100u);
+    const auto viewTop = [&] { return left->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportTop(); }); };
+    EXPECT_TRUE(control.scroll(left->id(), QStringLiteral("lines"), -5).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return viewTop() == history - 5; })) << viewTop();
+    EXPECT_TRUE(control.scroll(left->id(), QStringLiteral("top"), 0).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return viewTop() == 0; })) << viewTop();
+    EXPECT_TRUE(control.scroll(left->id(), QStringLiteral("lines"), 3).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return viewTop() == 3; })) << viewTop();
+    EXPECT_TRUE(control.scroll(left->id(), QStringLiteral("bottom"), 0).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return viewTop() == history; })) << viewTop();
+    EXPECT_EQ(control.scroll(left->id(), QStringLiteral("prompt"), -1), QStringLiteral("pane %1 has no prompt above").arg(left->id()));
+    EXPECT_EQ(control.scroll(left->id(), QStringLiteral("sideways"), 1), QStringLiteral("the unit is lines, pages, prompt, top or bottom"));
+
+    // The tab's title, then the pane's again.
+    EXPECT_TRUE(control.setTabTitle(left->id(), QStringLiteral("build logs")).isEmpty());
+    EXPECT_EQ(window->tabs().value(0).title, QStringLiteral("build logs"));
+    EXPECT_TRUE(control.setTabTitle(left->id(), QString()).isEmpty());
+    EXPECT_NE(window->tabs().value(0).title, QStringLiteral("build logs"));
+}

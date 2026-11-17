@@ -618,6 +618,30 @@ std::string Pty::currentWorkingDirectory() const
     return directoryOf(child).value_or(std::string());
 }
 
+std::optional<ForegroundProcess> Pty::foreground() const
+{
+    const pid_t child = m_pid.load();
+    if (child <= 0) return std::nullopt;
+    const pid_t group = tcgetpgrp(m_master);
+    if (group <= 0 || (group != child && !inSession(group, child))) return std::nullopt;
+    ForegroundProcess out;
+    out.pid = group;
+    std::ifstream file("/proc/" + std::to_string(group) + "/cmdline", std::ios::binary);
+    // The arguments end with a NUL each. A process can rewrite them, so the
+    // last one may not end. A list of every pane must fit in one answer.
+    std::string bytes(ForegroundProcess::MaxCmdlineBytes, '\0');
+    file.read(bytes.data(), std::streamsize(bytes.size()));
+    bytes.resize(std::size_t(file.gcount()));
+    std::size_t at = 0;
+    while (at < bytes.size()) {
+        const std::size_t end = std::min(bytes.find('\0', at), bytes.size());
+        out.cmdline.push_back(bytes.substr(at, end - at));
+        at = end + 1;
+    }
+    out.cwd = directoryOf(group).value_or(std::string());
+    return out;
+}
+
 std::string Pty::foregroundProcess() const
 {
     const pid_t group = tcgetpgrp(m_master);

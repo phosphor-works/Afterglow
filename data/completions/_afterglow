@@ -158,6 +158,10 @@ _afterglow_ctl() {
         'focus:focus the pane'
         'close:close the pane'
         'set-title:set the pane'"'"'s title'
+        'set-tab-title:set the title of the pane'"'"'s tab'
+        'resize:move an edge of the pane'
+        'send-key:type keys by name'
+        'scroll:scroll the pane'
         'signal:set a shader signal'
         'notify:show a desktop notification'
         'scripts:show script diagnostics'
@@ -233,7 +237,17 @@ _afterglow_ctl() {
             '(-h --height)'{-h,--height}'[a popup this tall, in cells or N%]:height:' \
             '--position[where the popup sits]:position:(center top bottom left right top-left top-right bottom-left bottom-right)' \
             '(--border --no-border)--border[draw a border]' '(--border --no-border)--no-border[draw no border]' ;;
-    set-title) _arguments -S $pane '*:title:' ;;
+    set-title|set-tab-title) _arguments -S $pane '*:title:' ;;
+    focus) _arguments $pane '--direction[focus the pane on that side]:direction:(left right up down)' ;;
+    resize) _arguments $pane '--direction[the edge that moves]:direction:(left right up down)' '--cells[cells to move it (2)]:cells:' ;;
+    send-key)
+        _arguments -S $pane '*:key:(enter escape tab backspace space up down left right home end page_up page_down insert delete
+            f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 ctrl+c ctrl+d ctrl+l ctrl+z)' ;;
+    scroll)
+        _arguments $pane '(--prompt --top --bottom 1)--pages[pages down, up when negative]:pages:' \
+            '(--pages --top --bottom 1)--prompt[prompts down, up when negative]:prompts:' \
+            '(--pages --prompt --bottom 1)--top[to the top]' '(--pages --prompt --top 1)--bottom[to the bottom]' \
+            '(--pages --prompt --top --bottom)1:lines down, up when negative:' ;;
     signal) _arguments $pane '1:channel:(0 1 2 3 4 5 6 7)' '2:value:' ;;
     notify) _arguments -S $pane '1:title:' '*:body:' ;;
     open-directory) _arguments '--layout[a saved layout]:layout:' '1:directory:_directories' ;;

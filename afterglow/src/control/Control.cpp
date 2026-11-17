@@ -25,8 +25,10 @@
 #include <QUrl>
 
 #include <AfterglowPty/Pty.h>
+#include <AfterglowVt/KeyNames.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -62,6 +64,43 @@ Control::Control(SettingsStore& settings, WindowFactory newWindow, QObject* pare
 }
 
 namespace {
+
+using Neighbour = SplitTree::Neighbour;
+
+/// The sides of PaneInfo::neighbours, in their order.
+constexpr std::array<Neighbour, 4> Neighbours{Neighbour::Left, Neighbour::Right, Neighbour::Up, Neighbour::Down};
+
+QString neighbourName(Neighbour side)
+{
+    switch (side) {
+    case Neighbour::Left: return QStringLiteral("left");
+    case Neighbour::Right: return QStringLiteral("right");
+    case Neighbour::Up: return QStringLiteral("up");
+    case Neighbour::Down: break;
+    }
+    return QStringLiteral("down");
+}
+
+std::optional<Neighbour> neighbourNamed(const QString& name)
+{
+    for (const Neighbour side : Neighbours) {
+        if (neighbourName(side) == name) return side;
+    }
+    return std::nullopt;
+}
+
+/// "no pane PHRASE pane 3".
+QString sidePhrase(Neighbour side)
+{
+    switch (side) {
+    case Neighbour::Left: return QStringLiteral("to the left of");
+    case Neighbour::Right: return QStringLiteral("to the right of");
+    case Neighbour::Up: return QStringLiteral("above");
+    case Neighbour::Down: break;
+    }
+    return QStringLiteral("below");
+}
+
 QString noPane(quint32 id)
 {
     return QStringLiteral("no pane %1").arg(id);
@@ -224,14 +263,36 @@ Pane* Control::find(quint32 id, TerminalWindow** window) const
     return nullptr;
 }
 
-PaneInfo Control::describe(TerminalWindow* w, Pane* p)
+PaneInfo Control::describe(TerminalWindow* w, Pane* p, bool facts)
 {
-    return PaneInfo{p->id(), w->id(), w->tabIndexOf(p), p->title(), p->knownDirectory(),
-                    p->runningCommand(), p->cols(), p->rows(), w->isActive() && w->focusedPane() == p,
-                    p->contextLabel(), w->tabIdOf(p)};
+    PaneInfo info;
+    info.id = p->id();
+    info.window = w->id();
+    info.tab = w->tabIndexOf(p);
+    info.title = p->title();
+    info.workingDirectory = p->knownDirectory();
+    info.command = p->runningCommand();
+    info.cols = p->cols();
+    info.rows = p->rows();
+    info.focused = w->isActive() && w->focusedPane() == p;
+    info.context = p->contextLabel();
+    info.tabId = w->tabIdOf(p);
+    if (!facts) return info;
+    info.facts = true;
+    info.atPrompt = p->atShellPrompt();
+    info.userVars = p->userVars();
+    if (const auto process = p->foreground()) {
+        PaneInfo::Foreground foreground{process->pid, {}, QString::fromStdString(process->cwd)};
+        for (const std::string& argument : process->cmdline) foreground.cmdline << QString::fromStdString(argument);
+        info.foreground = std::move(foreground);
+    }
+    for (std::size_t side = 0; side < info.neighbours.size(); ++side) {
+        if (const Pane* n = w->neighbourOf(p, Neighbours[side])) info.neighbours[side] = n->id();
+    }
+    return info;
 }
 
-QList<PaneInfo> Control::panes() const
+QList<PaneInfo> Control::panes(bool facts) const
 {
     QList<PaneInfo> out;
     for (const QPointer<TerminalWindow>& w : m_windows) {
@@ -239,7 +300,7 @@ QList<PaneInfo> Control::panes() const
             continue;
         }
         for (Pane* p : w->panes()) {
-            out.append(describe(w, p));
+            out.append(describe(w, p, facts));
         }
     }
     return out;
@@ -409,12 +470,28 @@ QString Control::statusStateName(AfterglowVt::StatusState state)
 
 QVariantMap Control::paneMap(const PaneInfo& p)
 {
-    return {{QStringLiteral("id"), p.id}, {QStringLiteral("window"), p.window},
+    QVariantMap map{{QStringLiteral("id"), p.id}, {QStringLiteral("window"), p.window},
             {QStringLiteral("tab"), p.tab}, {QStringLiteral("tab_id"), p.tabId},
             {QStringLiteral("title"), p.title}, {QStringLiteral("cwd"), p.workingDirectory},
             {QStringLiteral("command"), p.command}, {QStringLiteral("cols"), p.cols},
             {QStringLiteral("rows"), p.rows}, {QStringLiteral("focused"), p.focused},
             {QStringLiteral("context"), p.context}};
+    if (!p.facts) return map;
+    QVariantMap userVars;
+    for (auto it = p.userVars.constBegin(); it != p.userVars.constEnd(); ++it) userVars.insert(it.key(), it.value());
+    // JSON null for none.
+    QVariant foreground = QVariant::fromValue(nullptr);
+    if (p.foreground) {
+        foreground = QVariantMap{{QStringLiteral("pid"), p.foreground->pid}, {QStringLiteral("cmdline"), p.foreground->cmdline},
+                                 {QStringLiteral("cwd"), p.foreground->cwd}};
+    }
+    QVariantMap neighbours;
+    for (std::size_t side = 0; side < p.neighbours.size(); ++side) neighbours.insert(neighbourName(Neighbours[side]), p.neighbours[side]);
+    map.insert(QStringLiteral("at_prompt"), p.atPrompt);
+    map.insert(QStringLiteral("user_vars"), userVars);
+    map.insert(QStringLiteral("foreground"), foreground);
+    map.insert(QStringLiteral("neighbours"), neighbours);
+    return map;
 }
 
 QVariantMap Control::state() const
@@ -750,6 +827,78 @@ QString Control::setTitle(quint32 id, const QString& title)
     return {};
 }
 
+QString Control::focusNeighbour(quint32 id, const QString& direction, quint32& focused)
+{
+    const auto side = neighbourNamed(direction);
+    if (!side) return QStringLiteral("direction must be left, right, up or down");
+    TerminalWindow* w = nullptr;
+    Pane* p = find(id, &w);
+    if (!p) return noPane(id);
+    Pane* n = w->neighbourOf(p, *side);
+    // An error at the edge: a client such as smart-splits.nvim then passes
+    // the move on, or wraps.
+    if (!n) return QStringLiteral("no pane %1 pane %2").arg(sidePhrase(*side)).arg(id);
+    w->revealPane(n);
+    focused = n->id();
+    return {};
+}
+
+QString Control::resizePane(quint32 id, const QString& direction, int cells)
+{
+    const auto side = neighbourNamed(direction);
+    if (!side) return QStringLiteral("direction must be left, right, up or down");
+    if (cells < 1 || cells > MaxResizeCells) return QStringLiteral("cells is a whole number from 1 to %1").arg(MaxResizeCells);
+    TerminalWindow* w = nullptr;
+    Pane* p = find(id, &w);
+    if (!p) return noPane(id);
+    if (!w->resizePane(p, *side, cells)) return QStringLiteral("pane %1 has no edge that can move %2").arg(id).arg(neighbourName(*side));
+    return {};
+}
+
+QString Control::sendKeys(quint32 id, const QStringList& keys)
+{
+    if (keys.isEmpty()) return QStringLiteral("sendKeys needs a key");
+    if (std::size_t(keys.size()) > AfterglowVt::MaxKeysAtOnce)
+        return QStringLiteral("sendKeys sends at most %1 keys at once").arg(AfterglowVt::MaxKeysAtOnce);
+    // Every name first: a bad one sends none of the keys.
+    std::vector<AfterglowVt::NamedKey> named;
+    named.reserve(std::size_t(keys.size()));
+    for (const QString& name : keys) {
+        auto key = AfterglowVt::parseKeyName(name.toStdString());
+        if (!key) return QStringLiteral("no key is named '%1'").arg(name);
+        named.push_back(std::move(*key));
+    }
+    Pane* p = find(id);
+    if (!p) return noPane(id);
+    // Encoded for the program's keyboard mode, as a typed key is.
+    const std::string bytes = p->withTerminal([&named](AfterglowVt::Terminal& t) {
+        std::string out;
+        for (const AfterglowVt::NamedKey& key : named) out += AfterglowVt::encodeNamedKey(key, t.modes());
+        return out;
+    });
+    if (bytes.empty()) return {};
+    return p->sendInput(bytes, false) ? QString() : QStringLiteral("program closed or input queue full");
+}
+
+QString Control::scroll(quint32 id, const QString& unit, qint64 amount)
+{
+    if (std::abs(amount) > MaxScrollAmount) return QStringLiteral("the amount is a whole number from -%1 to %1").arg(MaxScrollAmount);
+    TerminalWindow* w = nullptr;
+    Pane* p = find(id, &w);
+    if (!p) return noPane(id);
+    return w->scrollFromControl(p, unit, amount);
+}
+
+QString Control::setTabTitle(quint32 id, const QString& title)
+{
+    TerminalWindow* w = nullptr;
+    Pane* p = find(id, &w);
+    if (!p) return noPane(id);
+    // As a pane's title: it shows in the tab bar, and a session's layout keeps it.
+    w->setTabTitle(p, sanitizedLine(title, 256));
+    return {};
+}
+
 QString Control::signal(quint32 id, int channel, double value)
 {
     Pane* p = find(id);
@@ -901,7 +1050,19 @@ QString Control::runClientAction(quint32 id, const QString& action)
 
 QVariantMap Control::clientPaneMap(QVariantMap pane) const
 {
-    if (!m_settings.settings().control.allowReadText && pane.contains(QStringLiteral("command"))) pane.insert(QStringLiteral("command"), QString());
+    if (m_settings.settings().control.allowReadText) return pane;
+    if (pane.contains(QStringLiteral("command"))) pane.insert(QStringLiteral("command"), QString());
+    // The values of user variables and the command line of the foreground
+    // program can carry secrets too.
+    if (pane.contains(QStringLiteral("user_vars"))) {
+        QVariantMap vars = pane.value(QStringLiteral("user_vars")).toMap();
+        for (QVariant& value : vars) value = QString();
+        pane.insert(QStringLiteral("user_vars"), vars);
+    }
+    if (QVariantMap foreground = pane.value(QStringLiteral("foreground")).toMap(); !foreground.isEmpty()) {
+        foreground.insert(QStringLiteral("cmdline"), QStringList());
+        pane.insert(QStringLiteral("foreground"), foreground);
+    }
     return pane;
 }
 

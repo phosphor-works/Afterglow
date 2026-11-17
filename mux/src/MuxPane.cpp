@@ -200,7 +200,9 @@ MuxPane::Facts MuxPane::facts() const
         facts.directory = m_checkedDirectory;
         facts.size = m_size;
         if (m_commandRunning) facts.command = m_command;
+        facts.userVars = m_userVars;
     }
+    facts.atPrompt = m_atPrompt.load();
     if (facts.directory.empty()) facts.directory = directory();
     return facts;
 }
@@ -216,6 +218,19 @@ std::optional<std::string> MuxPane::text(AfterglowVt::Terminal::TextScope scope)
     std::lock_guard lock(m_mutex);
     if (m_decoding) return std::nullopt;
     return m_terminal.text(scope);
+}
+
+std::optional<AfterglowPty::ForegroundProcess> MuxPane::foreground() const
+{
+    if (!m_pty || m_exited) return std::nullopt;
+    return m_pty->foreground();
+}
+
+std::optional<AfterglowVt::Modes> MuxPane::modes() const
+{
+    std::lock_guard lock(m_mutex);
+    if (m_decoding) return std::nullopt;
+    return m_terminal.modes();
 }
 
 std::string MuxPane::directory() const
@@ -994,6 +1009,7 @@ void MuxPane::ptyData(std::string_view bytes)
         } unset{m_feedLock};
         m_terminal.feed(bytes);
         waitForDownload(lock);
+        m_atPrompt.store(m_terminal.atShellPrompt());
         // What the daemon's thread did not wait for while an image decoded,
         // in its order. After the feed: the decode ends in the middle of a
         // command of the program, which the parse finishes first.

@@ -12,6 +12,8 @@
 
 #include "Daemon.h"
 
+#include <AfterglowVt/KeyNames.h>
+
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -73,14 +75,16 @@ bool among(std::string_view fn, std::initializer_list<std::string_view> names)
 bool takesPane(std::string_view fn)
 {
     return among(fn, {"sendText", "getText", "split", "newTab", "focus", "close", "setTitle", "signal", "notify", "runAction", "movePane",
-                      "detachTab", "saveProject", "overlay", "screenshot"});
+                      "detachTab", "saveProject", "overlay", "screenshot", "focusNeighbour", "resizePane", "sendKeys", "scroll",
+                      "setTabTitle"});
 }
 
 /// The calls that only a window answers.
 bool windowCall(std::string_view fn)
 {
     return among(fn, {"setTitle", "signal", "notify", "runAction", "newWindow", "openDirectory", "projects", "saveProject", "openProject",
-                      "scriptDiagnostics", "overlay", "overlayInput", "screenshot"});
+                      "scriptDiagnostics", "overlay", "overlayInput", "screenshot", "focusNeighbour", "resizePane", "scroll",
+                      "setTabTitle"});
 }
 
 /// The number of arguments of a call that the daemon takes only as a
@@ -109,14 +113,42 @@ std::optional<Side> sideOf(const Json::Value& value)
     return std::nullopt;
 }
 
+/// User variables can carry secrets: their values leave only with read
+/// access, as those of userVarChanged.
+Json::Value userVarsJson(const std::map<std::string, std::string>& vars, bool readText)
+{
+    Json::Object out;
+    for (const auto& [name, value] : vars) out.emplace_back(name, readText ? value : std::string());
+    return out;
+}
+
+/// The command line of the program in the foreground needs read access, as
+/// a pane's command does. Its directory goes, as the pane's does.
+Json::Value foregroundJson(const std::optional<AfterglowPty::ForegroundProcess>& process, bool readText)
+{
+    if (!process) return nullptr;
+    Json::Array cmdline;
+    if (readText) cmdline.assign(process->cmdline.begin(), process->cmdline.end());
+    return Json::Object{{"pid", std::int64_t(process->pid)}, {"cmdline", std::move(cmdline)}, {"cwd", process->cwd}};
+}
+
+/// The pane beside @p pane on each side in the layout, 0 for none.
+Json::Value neighboursJson(const Layout& layout, std::uint32_t pane)
+{
+    Json::Object out;
+    for (const Side side : {Side::Left, Side::Right, Side::Up, Side::Down}) out.emplace_back(sideName(side), std::int64_t(layout.neighbour(pane, side)));
+    return out;
+}
+
 /// What `afterglow ctl ls` says of @p pane, as a window's control target says
-/// it: the window is 0, and the ID of a tab is its place from 1.
-Json::Value paneMap(const Session& session, const MuxPane& pane, bool readText)
+/// it: the window is 0, and the ID of a tab is its place from 1. With
+/// @p listed, the facts that only listPanes gives, as a window gives them.
+Json::Value paneMap(const Session& session, const MuxPane& pane, bool readText, bool listed = false)
 {
     const Layout& layout = session.layout();
     const std::size_t tab = layout.tabOf(pane.id()).value_or(0);
     const MuxPane::Facts facts = pane.facts();
-    return Json::Object{
+    Json::Object map{
         {"id", std::int64_t(pane.id())},
         {"window", 0},
         {"tab", std::int64_t(tab)},
@@ -130,6 +162,12 @@ Json::Value paneMap(const Session& session, const MuxPane& pane, bool readText)
         {"focused", session.focusedPane() == pane.id()},
         {"context", ""},
     };
+    if (!listed) return map;
+    map.emplace_back("at_prompt", facts.atPrompt);
+    map.emplace_back("user_vars", userVarsJson(facts.userVars, readText));
+    map.emplace_back("foreground", foregroundJson(pane.foreground(), readText));
+    map.emplace_back("neighbours", neighboursJson(layout, pane.id()));
+    return map;
 }
 
 } // namespace
@@ -212,7 +250,7 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
     if (fn == "listPanes") {
         Json::Array panes;
         for (const std::uint32_t id : session.layout().panes()) {
-            if (const MuxPane* p = session.pane(id)) panes.push_back(paneMap(session, *p, readText));
+            if (const MuxPane* p = session.pane(id)) panes.push_back(paneMap(session, *p, readText, true));
         }
         return ipcReply(request.id.value_or(0), std::move(panes));
     }
@@ -223,6 +261,28 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         // text would pass it. The words of a window's refusal.
         if (shownWindow && shownWindow->holdsInput(pane->id())) return failed(request, "program closed or input queue full");
         if (pane->input(args[1].toString()) == MuxPane::Input::Written) return ipcReply(request.id.value_or(0), nullptr);
+        return failed(request, "program closed or input queue full");
+    }
+    if (fn == "sendKeys") {
+        if (args.size() != 2 || !args[1].isArray()) return ipcError(request.id, IpcErrorCode::InvalidArg, "sendKeys takes (pane, keys)");
+        // Every name first: a bad one sends none of the keys.
+        if (args[1].toArray().size() > AfterglowVt::MaxKeysAtOnce) {
+            return failed(request, "sendKeys sends at most " + std::to_string(AfterglowVt::MaxKeysAtOnce) + " keys at once");
+        }
+        std::vector<AfterglowVt::NamedKey> keys;
+        for (const Json::Value& name : args[1].toArray()) {
+            auto key = name.isString() ? AfterglowVt::parseKeyName(name.toString()) : std::nullopt;
+            if (!key) return failed(request, "no key is named '" + (name.isString() ? name.toString() : Json::write(name)) + "'");
+            keys.push_back(std::move(*key));
+        }
+        if (keys.empty()) return failed(request, "sendKeys needs a key");
+        const auto modes = pane->modes();
+        if (!modes) return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
+        std::string bytes;
+        for (const AfterglowVt::NamedKey& key : keys) bytes += AfterglowVt::encodeNamedKey(key, *modes);
+        // As sendText: after the window's input that waits.
+        if (shownWindow && shownWindow->holdsInput(pane->id())) return failed(request, "program closed or input queue full");
+        if (bytes.empty() || pane->input(bytes) == MuxPane::Input::Written) return ipcReply(request.id.value_or(0), nullptr);
         return failed(request, "program closed or input queue full");
     }
     if (fn == "getText") {

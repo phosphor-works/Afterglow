@@ -59,6 +59,7 @@
 
 #include <csignal>
 #include <cstdlib>
+#include <tuple>
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -1580,6 +1581,33 @@ TEST(CtlBinaryTest, ARepeatedFlagOrAChannelPastTheLastIsAUsageError)
     }
 }
 
+// The commands of kitten @ that ctl has: their usage errors come before any
+// connection.
+TEST(CtlBinaryTest, NavigationCommandsCheckTheirArguments)
+{
+    const QString ctl = QStringLiteral("ctl");
+    const auto words = [&ctl](const char* line) {
+        return QStringList{ctl} + QString::fromUtf8(line).split(QLatin1Char(' '));
+    };
+    for (const auto& [args, message] :
+         {std::pair{words("focus --direction"), QStringLiteral("--direction needs a value")},
+          std::pair{words("focus --direction sideways"), QStringLiteral("--direction is left, right, up or down")},
+          std::pair{words("resize"), QStringLiteral("resize needs --direction left, right, up or down")},
+          std::pair{words("resize --direction up --cells 0"), QStringLiteral("--cells takes a number from 1 to 10000")},
+          std::pair{words("resize --direction up --cells 10001"), QStringLiteral("--cells takes a number from 1 to 10000")},
+          std::pair{words("send-key"), QStringLiteral("send-key needs a key")},
+          std::pair{words("send-key ctrl+c hyper+x"), QStringLiteral("no key is named 'hyper+x'")},
+          std::pair{words("scroll"), QStringLiteral("scroll takes one of LINES, --pages N, --prompt N, --top and --bottom")},
+          std::pair{words("scroll 3 --top"), QStringLiteral("scroll takes one of LINES, --pages N, --prompt N, --top and --bottom")},
+          std::pair{words("scroll --pages x"), QStringLiteral("a count is a whole number from -1000000000 to 1000000000, not x")},
+          std::pair{words("scroll 1000000001"), QStringLiteral("a count is a whole number from -1000000000 to 1000000000, not 1000000001")},
+          std::pair{words("scroll 1 2"), QStringLiteral("unexpected argument 2")}}) {
+        const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
+        EXPECT_EQ(r.status, 2) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.err);
+        EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n").arg(message))) << qPrintable(r.err);
+    }
+}
+
 // With standard input closed, Qt's first descriptor would be number 0, and a
 // read of standard input would wait on it for ever.
 TEST(CtlBinaryTest, AClosedStandardInputReadsAsEmpty)
@@ -1774,6 +1802,60 @@ std::optional<bool> waitsInPoll(qint64 pid)
     if (ok && number == SYS_poll) return true;
 #endif
     return ok && number == SYS_ppoll;
+}
+
+// Each command is one call, with its arguments in their JSON types.
+TEST(CtlBinaryTest, NavigationCommandsSendTheirCalls)
+{
+    const QJsonObject done{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), QJsonValue::Null}};
+    const auto call = [](const AgainstTarget& r) {
+        return r.calls.isEmpty() ? QJsonObject() : r.calls.last();
+    };
+    const QStringList pane{QStringLiteral("--pane"), QStringLiteral("3")};
+    // focus --direction prints the pane that has the focus now.
+    AgainstTarget r = ctlAgainst({{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), 5}},
+                                 pane + QStringList{QStringLiteral("--direction"), QStringLiteral("left")}, {}, -1, {}, QStringLiteral("focus"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(r.outcome.out, QStringLiteral("5\n"));
+    EXPECT_EQ(call(r).value(QStringLiteral("fn")).toString(), QStringLiteral("focusNeighbour"));
+    EXPECT_EQ(call(r).value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("left")}));
+    // At the edge: the error of the call, and status 1.
+    r = ctlAgainst({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("code"), QStringLiteral("CALL_FAILED")},
+                    {QStringLiteral("message"), QStringLiteral("no pane to the left of pane 3")}},
+                   pane + QStringList{QStringLiteral("--direction"), QStringLiteral("left")}, {}, -1, {}, QStringLiteral("focus"));
+    EXPECT_EQ(r.outcome.status, 1);
+    EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: no pane to the left of pane 3\n"));
+    // resize takes 2 cells by default, as the resize actions.
+    r = ctlAgainst(done, pane + QStringList{QStringLiteral("--direction"), QStringLiteral("up")}, {}, -1, {}, QStringLiteral("resize"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(call(r).value(QStringLiteral("fn")).toString(), QStringLiteral("resizePane"));
+    EXPECT_EQ(call(r).value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("up"), 2}));
+    r = ctlAgainst(done, pane + QStringList{QStringLiteral("--cells"), QStringLiteral("7"), QStringLiteral("--direction"), QStringLiteral("right")},
+                   {}, -1, {}, QStringLiteral("resize"));
+    EXPECT_EQ(call(r).value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("right"), 7}));
+    // The names as given: afterglow encodes them for the program.
+    r = ctlAgainst(done, pane + QStringList{QStringLiteral("ctrl+c"), QStringLiteral("Return")}, {}, -1, {}, QStringLiteral("send-key"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(call(r).value(QStringLiteral("fn")).toString(), QStringLiteral("sendKeys"));
+    EXPECT_EQ(call(r).value(QStringLiteral("args")).toArray(),
+              (QJsonArray{3, QJsonArray{QStringLiteral("ctrl+c"), QStringLiteral("Return")}}));
+    // A count up is negative.
+    for (const auto& [args, unit, amount] :
+         {std::tuple{QStringList{QStringLiteral("-5")}, QStringLiteral("lines"), -5},
+          std::tuple{QStringList{QStringLiteral("+5")}, QStringLiteral("lines"), 5},
+          std::tuple{QStringList{QStringLiteral("--pages"), QStringLiteral("2")}, QStringLiteral("pages"), 2},
+          std::tuple{QStringList{QStringLiteral("--prompt"), QStringLiteral("-1")}, QStringLiteral("prompt"), -1},
+          std::tuple{QStringList{QStringLiteral("--top")}, QStringLiteral("top"), 0},
+          std::tuple{QStringList{QStringLiteral("--bottom")}, QStringLiteral("bottom"), 0}}) {
+        r = ctlAgainst(done, pane + args, {}, -1, {}, QStringLiteral("scroll"));
+        EXPECT_EQ(r.outcome.status, 0) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.outcome.err);
+        EXPECT_EQ(call(r).value(QStringLiteral("fn")).toString(), QStringLiteral("scroll"));
+        EXPECT_EQ(call(r).value(QStringLiteral("args")).toArray(), (QJsonArray{3, unit, amount})) << qPrintable(args.join(QLatin1Char(' ')));
+    }
+    r = ctlAgainst(done, pane + QStringList{QStringLiteral("--"), QStringLiteral("--build"), QStringLiteral("logs")}, {}, -1, {},
+                   QStringLiteral("set-tab-title"));
+    EXPECT_EQ(call(r).value(QStringLiteral("fn")).toString(), QStringLiteral("setTabTitle"));
+    EXPECT_EQ(call(r).value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("--build logs")}));
 }
 
 TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)

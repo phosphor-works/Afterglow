@@ -131,6 +131,20 @@ public:
     QStringList actionShortcuts(Action action) const;
     /// Switches to @p pane's tab, focuses it and raises the window.
     void revealPane(Pane* pane);
+    /// The pane beside @p pane on @p direction in its tab, as the focus
+    /// actions find it: null at the edge. It lays the tab out first: a pane
+    /// that a split just made has its place only from the next layout.
+    Pane* neighbourOf(const Pane* pane, SplitTree::Neighbour direction);
+    /// Moves a split edge of @p pane by @p cells toward @p direction
+    /// (SplitTree::resizePane), in its tab, which shows. False when no edge
+    /// can move that way.
+    bool resizePane(Pane* pane, SplitTree::Neighbour direction, int cells);
+    /// Scrolls @p pane (its overlay while one runs) as `afterglow ctl
+    /// scroll` asks: @p unit lines, pages, top, bottom or prompt, with
+    /// @p amount positive down. The reason when it cannot, else empty.
+    QString scrollFromControl(Pane* pane, const QString& unit, qint64 amount);
+    /// The user's title of the tab of @p pane: empty follows the focused pane.
+    void setTabTitle(Pane* pane, const QString& title);
 
     // For the control interface and scripts.
     quint32 id() const noexcept { return m_id; }
@@ -673,7 +687,6 @@ private:
     /// the next frame would: for a caller that measures them before it.
     void ensureLayout();
     void setPaneZoom(Pane* pane);
-    bool resizeFocused(SplitTree::Neighbour direction);
     bool handleShortcut(QKeyEvent* e);
     void updateKeyMode();
     bool copyModeKey(QKeyEvent* e);

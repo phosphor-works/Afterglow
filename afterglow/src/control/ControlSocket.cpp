@@ -68,8 +68,14 @@ std::optional<quint32> ControlApi::paneId(double value)
 QVariantList ControlApi::listPanes()
 {
     QVariantList panes;
-    for (PaneInfo& p : m_control.panes()) {
+    const bool readText = m_settings.settings().control.allowReadText;
+    for (PaneInfo& p : m_control.panes(true)) {
         p.command = readable(m_settings, p.command);
+        // As those of userVarChanged and the command: only with read access.
+        if (!readText) {
+            for (QString& value : p.userVars) value.clear();
+            if (p.foreground) p.foreground->cmdline.clear();
+        }
         panes.append(Control::paneMap(p));
     }
     return panes;
@@ -186,6 +192,47 @@ void ControlApi::close(double pane)
 void ControlApi::setTitle(double pane, const QString& title)
 {
     if (const auto id = paneId(pane)) failed(m_control.setTitle(*id, title));
+}
+
+uint ControlApi::focusNeighbour(double pane, const QString& direction)
+{
+    const auto id = paneId(pane);
+    if (!id) return 0;
+    quint32 focused = 0;
+    failed(m_control.focusNeighbour(*id, direction, focused));
+    return focused;
+}
+
+void ControlApi::resizePane(double pane, const QString& direction, double cells)
+{
+    const auto id = paneId(pane);
+    if (!id) return;
+    if (!isWhole(cells) || cells < 1 || cells > Control::MaxResizeCells) {
+        failed(QStringLiteral("cells is a whole number from 1 to %1").arg(Control::MaxResizeCells));
+        return;
+    }
+    failed(m_control.resizePane(*id, direction, int(cells)));
+}
+
+void ControlApi::sendKeys(double pane, const QStringList& keys)
+{
+    if (const auto id = paneId(pane)) failed(m_control.sendKeys(*id, keys));
+}
+
+void ControlApi::scroll(double pane, const QString& unit, double amount)
+{
+    const auto id = paneId(pane);
+    if (!id) return;
+    if (!isWhole(amount) || std::abs(amount) > double(Control::MaxScrollAmount)) {
+        failed(QStringLiteral("the amount is a whole number from -%1 to %1").arg(Control::MaxScrollAmount));
+        return;
+    }
+    failed(m_control.scroll(*id, unit, qint64(amount)));
+}
+
+void ControlApi::setTabTitle(double pane, const QString& title)
+{
+    if (const auto id = paneId(pane)) failed(m_control.setTabTitle(*id, title));
 }
 
 void ControlApi::signal(double pane, double channel, double value)
